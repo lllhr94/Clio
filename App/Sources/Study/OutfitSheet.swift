@@ -25,6 +25,7 @@ struct OutfitSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section {
                     Picker("软件源", selection: $mirror) {
                         ForEach(Self.mirrors, id: \.1) { Text($0.0).tag($0.1) }
@@ -49,8 +50,8 @@ struct OutfitSheet: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle("装常用软件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

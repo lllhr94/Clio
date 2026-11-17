@@ -1,5 +1,6 @@
 import AgentKit
 import SwiftUI
+import UserNotifications
 import UIKit
 
 /// A model a Bot can think with.
@@ -163,6 +164,33 @@ final class TeamModel: ObservableObject {
         saveSettings()
     }
 
+    /// Asks a service for its models again. Returns how many it has.
+    @discardableResult
+    func refreshModels(_ id: String) async throws -> Int {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
+        let endpoint = settings.endpoints[index]
+        guard let key = apiKey(for: id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
+        var models = try await endpoint.provider(key: key).models()
+        if endpoint.id == "deepseek" { models = models.filter { $0.hasPrefix("deepseek") } }
+        if endpoint.kind == .anthropic { models = models.filter { $0.hasPrefix("claude") } }
+        guard !models.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
+        settings.endpoints[index].models = models
+        saveSettings()
+        return models.count
+    }
+
+    func replaceKey(_ id: String, _ key: String) {
+        Vault.save(key, as: "key-\(id)")
+        objectWillChange.send()
+    }
+
+    func editMemory(_ id: String, _ text: String) {
+        guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if words.isEmpty { memories.remove(at: index) } else { memories[index].text = words }
+        saveMemory()
+    }
+
     func setDefaultModel(_ ref: String) {
         settings.defaultModel = ref
         saveSettings()
@@ -237,6 +265,13 @@ final class TeamModel: ObservableObject {
         withAnimation(.smooth(duration: 0.35)) { rooms.insert(room, at: 0) }
         saveRooms()
         return room
+    }
+
+    func updateRoom(_ id: String, name: String, members: [String]) {
+        guard let index = rooms.firstIndex(where: { $0.id == id }) else { return }
+        rooms[index].name = name
+        rooms[index].members = members
+        saveRooms()
     }
 
     func deleteRoom(_ id: String) {
@@ -742,12 +777,12 @@ final class TeamModel: ObservableObject {
     private func turn(_ bot: BotInfo, in key: String, room: RoomInfo?) async -> Bool {
         let picked = options(key).model ?? bot.model ?? settings.defaultModel
         guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
-            fail(key, "还没有可用的模型。到 设置 → 模型 里加一个。")
+            fail(key, "还没有可用的模型\n到调弦里添一家模型服务。", next: .tuning)
             return false
         }
         let endpoint = found.endpoint
         guard let apiKey = apiKey(for: endpoint.id), !apiKey.isEmpty else {
-            fail(key, "\(endpoint.name) 的密钥找不到了，请到设置里重新填一次。")
+            fail(key, "\(endpoint.name) 的密钥找不到了\n到调弦里给它换一次密钥。", next: .tuning)
             return false
         }
         let messages = context(for: key, bot: bot, room: room, vision: endpoint.vision != false)
@@ -777,14 +812,16 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("（被你叫停了）"), note: true), to: key)
             return false
         } catch {
-            fail(key, "没回成：\(error.localizedDescription)")
+            let advice = Explain.model(error, service: endpoint.name)
+            fail(key, advice.title + "\n" + advice.detail, next: advice.next)
+            Diag.note("\(endpoint.name)：\(error.localizedDescription)")
             return false
         }
     }
 
-    private func fail(_ key: String, _ text: String) {
-        Diag.note(text)
-        append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true), to: key)
+    private func fail(_ key: String, _ text: String, next: Explain.Next? = nil) {
+        Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
+        append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
     }
 
@@ -1076,7 +1113,41 @@ final class TeamModel: ObservableObject {
     var nextLetter: Later? { laters.min { $0.at < $1.at } }
 
     /// Called when the app comes back to the front.
-    func wake() { deliverDue() }
+    func wake() {
+        deliverDue()
+        morningIfDue()
+    }
+
+    // MARK: 晨信
+
+    /// Once a day, after the hour the user chose, the main companion writes a short morning letter.
+    func morningIfDue() {
+        guard phase == .ready, Pref.morningOn, let main = mainBotId, bots.contains(where: { $0.id == main }) else { return }
+        let now = Date()
+        guard Calendar.current.component(.hour, from: now) >= Pref.morningHour else { return }
+        let today = now.formatted(.iso8601.year().month().day())
+        guard UserDefaults.standard.string(forKey: "morning.last") != today else { return }
+        UserDefaults.standard.set(today, forKey: "morning.last")
+        let key = Self.key(bot: main)
+        guard !isWorking(key) else { return }
+        send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key)
+    }
+
+    /// The daily nudge, at the hour the user chose; opening it lets the letter be written.
+    static func scheduleMorning() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["clio.morning"])
+        guard Pref.morningOn else { return }
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        let content = UNMutableNotificationContent()
+        content.title = "晨信"
+        content.body = "新的一天，打开看看旅伴给你写了什么。"
+        content.sound = .default
+        var parts = DateComponents()
+        parts.hour = Pref.morningHour
+        parts.minute = 0
+        center.add(UNNotificationRequest(identifier: "clio.morning", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
+    }
 
     // MARK: Demo
 

@@ -194,6 +194,7 @@ private struct HostEditor: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section("称呼") { TextField("比如：香港 VPS", text: $host.name) }
                 Section("地址") {
                     TextField("域名或 IP", text: $host.address).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
@@ -213,8 +214,8 @@ private struct HostEditor: View {
                     Text(host.useKey ? "记得先把「远山」页里的公钥加到服务器上。" : "密码只存在这台手机的钥匙串里。")
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle(host.name.isEmpty ? "新主机" : host.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -243,6 +244,7 @@ private struct ServerEditor: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section("称呼") { TextField("比如：VPS 浏览器", text: $server.name) }
                 Section {
                     TextField("https://…/mcp", text: $server.url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
@@ -252,8 +254,8 @@ private struct ServerEditor: View {
                 }
                 Section { Toggle("借给旅伴用", isOn: $server.enabled) }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle(server.name.isEmpty ? "新 MCP 服务" : server.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

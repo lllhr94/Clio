@@ -35,6 +35,8 @@ struct ChatLine: Identifiable, Equatable {
     var seconds: Int?
     /// A reply: the tokens its turn used.
     var tokens: Int?
+    /// A note about a failure: what to do next.
+    var next: Explain.Next?
 }
 
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
@@ -177,7 +179,9 @@ final class ChatModel: ObservableObject {
         for entry in all.suffix(limit) {
             let message = entry.message
             if entry.note == true {
-                out.append(ChatLine(id: entry.id, kind: .note, text: message.text))
+                var note = ChatLine(id: entry.id, kind: .note, text: message.text)
+                note.next = entry.next.flatMap(Explain.Next.init(rawValue:))
+                out.append(note)
                 open = nil
                 continue
             }

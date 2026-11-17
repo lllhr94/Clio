@@ -20,6 +20,7 @@ struct CarePage: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section {
                     Toggle("连模型密钥一起备份", isOn: $withKeys)
                     Button(making ? "正在打包…" : "做一份备份") { make() }.disabled(making)
@@ -67,8 +68,8 @@ struct CarePage: View {
                     }
                 } footer: { Text("不包含密钥、密码和聊天内容。") }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle("养护")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }

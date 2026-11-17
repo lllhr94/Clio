@@ -58,3 +58,52 @@ struct RoamSlip: View {
         }
     }
 }
+
+
+/// 远游 as a small window on the chat page: the real page, shrunk, live. Tap to open it full; the cross puts it away.
+struct RoamThumb: View {
+    @ObservedObject var browser: BrowserSession
+    let open: () -> Void
+    private let scale: CGFloat = 0.3
+    private let page = CGSize(width: 390, height: 640)
+
+    var body: some View {
+        if browser.used && !browser.thumbHidden && browser.url != nil {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4) {
+                    if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "safari").font(.system(size: 10, weight: .semibold)) }
+                    Text(browser.url?.host() ?? "远游").font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button {
+                        Haptics.light()
+                        withAnimation(Ink.Motion.settle) { browser.thumbHidden = true }
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("收起小窗")
+                }
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, 6)
+                .frame(height: 22)
+                WebHost(view: browser.view)
+                    .frame(width: page.width, height: page.height)
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
+                    .clipped()
+                    .allowsHitTesting(false)
+            }
+            .background(Ink.paperRaised)
+            .clipShape(.rect(cornerRadius: Ink.Radius.small))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small).strokeBorder(browser.handoff != nil ? Ink.warn : Ink.rule, lineWidth: browser.handoff != nil ? 2 : 1))
+            .shadow(color: Ink.ink.opacity(0.12), radius: 10, y: 4)
+            .contentShape(.rect)
+            .onTapGesture {
+                Haptics.light()
+                open()
+            }
+            .accessibilityLabel("远游小窗，点开看全屏")
+            .transition(.scale(scale: 0.7, anchor: .topTrailing).combined(with: .opacity))
+        }
+    }
+}

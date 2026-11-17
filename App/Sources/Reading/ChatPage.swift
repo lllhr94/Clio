@@ -60,19 +60,7 @@ struct ChatPage: View {
 
     /// What it is doing, in plain words, for the line under the conversation.
     private var liveWords: String? {
-        if waiting != nil { return "等你落印：输入框上方有一张笺，点开看看它想做什么" }
-        guard let doing else { return nil }
-        switch doing {
-        case "正在想": return "收到了，\(bot.name)正在想"
-        case "正在回复": return "\(bot.name)正在写"
-        case "正在压缩前文": return "聊得有点长了，先把前文压成一份提要"
-        case "等你批准": return "等你落印"
-        default:
-            if doing.hasSuffix("在想") { return "收到了，\(doing)" }
-            let parts = doing.split(separator: "：", maxSplits: 1).map(String.init)
-            guard parts.count == 2 else { return doing }
-            return "正在\(Trace.word(for: parts[0]))：\(parts[1])"
-        }
+        Live.words(doing, name: bot.name, waiting: waiting != nil)
     }
 
     private var liveIcon: String {
@@ -147,6 +135,18 @@ struct ChatPage: View {
                 .zIndex(1)
             header
                 .zIndex(2)
+            if !roaming {
+                HStack {
+                    Spacer()
+                    RoamThumb(browser: team.browser) {
+                        typing = false
+                        roaming = true
+                    }
+                }
+                .padding(.top, 60)
+                .padding(.trailing, Ink.Space.l)
+                .zIndex(3)
+            }
         }
         .safeAreaInset(edge: .bottom) { composer }
         .overlay {
@@ -179,6 +179,8 @@ struct ChatPage: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
+        .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
+        .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $abilities) {
             AbilitiesSheet(team: team, key: chat.key, name: bot.name)
                 .presentationDetents([.medium, .large])
@@ -563,10 +565,65 @@ struct ChatPage: View {
                 reading = ReadingFile(url: url)
             })
         case .note:
-            Text(line.text)
-                .font(Ink.footnote)
-                .foregroundStyle(Ink.inkFaint)
-                .frame(maxWidth: .infinity, alignment: .center)
+            if let next = line.next {
+                trouble(line, next: next)
+            } else {
+                Text(line.text)
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+    }
+
+    /// A failure, said plainly, with the one thing to do about it. Only the latest one keeps its button.
+    private func trouble(_ line: ChatLine, next: Explain.Next) -> some View {
+        let parts = line.text.split(separator: "\n", maxSplits: 1).map(String.init)
+        let latest = chat.lines.last(where: { $0.kind == .note })?.id == line.id && chat.lines.last?.id == line.id
+        let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Label(advice.title, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Ink.stop)
+            if !advice.detail.isEmpty {
+                Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+            }
+            if latest, let button = advice.button {
+                Button {
+                    Haptics.light()
+                    act(next)
+                } label: {
+                    Text(button)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .padding(.horizontal, Ink.Space.l)
+                        .frame(height: 34)
+                        .background(Ink.accentWash, in: .capsule)
+                }
+                .buttonStyle(PressStyle(haptic: false))
+                .padding(.top, Ink.Space.xs)
+            }
+        }
+        .padding(Ink.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card))
+    }
+
+    private func act(_ next: Explain.Next) {
+        switch next {
+        case .retry: chat.retry()
+        case .tuning: tuningOpen = true
+        case .care: careOpen = true
+        case .compress:
+            say("正在把前文压成提要…")
+            Task {
+                do {
+                    let folded = try await team.compress(chat.key)
+                    say("压好了：较早的 \(folded) 条写成了提要。再发一次试试。")
+                } catch {
+                    say(error.localizedDescription)
+                }
+            }
         }
     }
 
@@ -825,6 +882,8 @@ struct ChatPage: View {
     /// When the companion started on the current turn, for the seconds under the conversation.
     @State private var workingSince: Date?
     @State private var cardOpen = false
+    @State private var tuningOpen = false
+    @State private var careOpen = false
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty

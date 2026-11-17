@@ -15,6 +15,9 @@ packages:
   SwiftNIOSSH:
     url: https://github.com/Wellz26/swift-nio-ssh.git
     minorVersion: 0.3.4
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath
+    exactVersion: 1.7.3
   SwiftNIO:
     url: https://github.com/apple/swift-nio
     from: 2.65.0
@@ -40,6 +43,7 @@ targets:
       - package: SwiftNIO
         product: NIOCore
       - package: SwiftTerm
+      - package: SwiftMath
       - package: SwiftNIOSSH
         product: NIOSSH
     info:

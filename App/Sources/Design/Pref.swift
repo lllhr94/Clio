@@ -48,11 +48,37 @@ enum Pref {
     static var compressAt: Int { int("chat.compressAt", 60_000) }
     /// How many recent messages stay word for word after compressing.
     static var keepRecent: Int { int("chat.keepRecent", 12) }
+
+    // MARK: 晨信
+
+    static var morningOn: Bool { bool("morning.on", false) }
+    static var morningHour: Int { int("morning.hour", 7) }
 }
 
 extension View {
     /// Light, dark, or as the system says.
     func clioScheme(_ scheme: String) -> some View {
         preferredColorScheme(scheme == "light" ? .light : (scheme == "dark" ? .dark : nil))
+    }
+}
+
+extension View {
+    /// A Form dressed in paper: raised paper rows, ruled lines, serif titles — the same look as the rest of Clio.
+    func paperForm() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(Ink.paper)
+            .tint(Ink.accent)
+            .environment(\.defaultMinListRowHeight, 48)
+    }
+}
+
+/// Rows inside a paper Form get the raised paper ground and quiet rules.
+struct PaperRows<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        Group { content }
+            .listRowBackground(Ink.paperRaised)
+            .listRowSeparatorTint(Ink.rule)
     }
 }

@@ -1,6 +1,24 @@
 import Prose
 import SwiftUI
 
+/// Parsed pages kept so a long conversation is not parsed again on every redraw.
+enum ParsedCache {
+    private final class Box { let blocks: [Prose.Block]; init(_ blocks: [Prose.Block]) { self.blocks = blocks } }
+    private static let cache: NSCache<NSString, Box> = {
+        let cache = NSCache<NSString, Box>()
+        cache.countLimit = 400
+        return cache
+    }()
+
+    static func blocks(_ text: String) -> [Prose.Block] {
+        let key = text as NSString
+        if let kept = cache.object(forKey: key) { return kept.blocks }
+        let parsed = Prose.parse(text)
+        cache.setObject(Box(parsed), forKey: key)
+        return parsed
+    }
+}
+
 /// A companion's words, set as a page: paragraphs, lists, tables, code and quotes.
 /// While a reply is still arriving, only its last block changes, and that block's newest glyphs fade in.
 struct ProseView: View {
@@ -20,7 +38,7 @@ struct ProseView: View {
 
     var body: some View {
         let _ = (face, size, leading)
-        let blocks = Prose.parse(text)
+        let blocks = streaming ? Prose.parse(text) : ParsedCache.blocks(text)
         VStack(alignment: .leading, spacing: Ink.Space.l) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
@@ -68,13 +86,7 @@ private struct BlockView: View {
         case .table(let table):
             TableBlock(table: table)
         case .math(let text):
-            // Typeset formulas come in stage 7; until then the source, set apart.
-            Text(text)
-                .font(Ink.code)
-                .foregroundStyle(Ink.ink)
-                .padding(Ink.Space.m)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Ink.accentWash.opacity(0.5), in: .rect(cornerRadius: Ink.Radius.small))
+            FormulaBlock(latex: text, streaming: fading)
         case .rule:
             Rectangle().fill(Ink.rule).frame(height: 1).padding(.vertical, Ink.Space.s)
         }

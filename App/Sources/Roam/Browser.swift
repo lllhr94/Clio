@@ -13,6 +13,8 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var handoff: String?
     /// True once a companion has used the browser in this launch.
     @Published private(set) var used = false
+    /// The user put the small window away; it comes back the next time a page is opened.
+    @Published var thumbHidden = false
 
     let view: WKWebView
     private var loaded: CheckedContinuation<Void, Never>?
@@ -35,6 +37,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
 
     func open(_ target: URL) async {
         used = true
+        thumbHidden = false
         view.load(URLRequest(url: target))
         await settle()
     }

@@ -20,19 +20,23 @@ struct ClioRoot: View {
     @ObservedObject private var asker = Asker.shared
     @AppStorage("look.scheme") private var scheme = "system"
     @Environment(\.scenePhase) private var scenePhase
+    /// Keeps the first-launch setup on screen through its last page, after the service is already connected.
+    @State private var holdingSetup = false
 
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            if team.phase == .setup {
-                SetupView(team: team, first: true) {}
+            if team.phase == .setup || holdingSetup {
+                SetupView(team: team, first: true) { holdingSetup = false }
                     .transition(.blurReplace)
+                    .onAppear { holdingSetup = true }
             } else {
                 Desk(team: team)
                     .transition(.blurReplace)
             }
         }
         .animation(Ink.Motion.settle, value: team.phase)
+        .animation(Ink.Motion.settle, value: holdingSetup)
         .tint(Ink.accent)
         .clioScheme(scheme)
         .sheet(item: $asker.current) { form in
@@ -42,6 +46,7 @@ struct ClioRoot: View {
             if now == .active { team.wake() }
         }
         .task {
+            team.wake()
             // Messages set for later land in their chats while the app is open too.
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
@@ -67,6 +72,10 @@ struct Desk: View {
     @State private var notice: String?
     @State private var vaulting = false
     @State private var caring = false
+    @State private var drawer = false
+    @State private var picked: DrawerItem?
+    @State private var looking = false
+    @State private var roomEditing: RoomInfo?
     @State private var searching = false
     @State private var query = ""
 
@@ -103,6 +112,7 @@ struct Desk: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header
                     companions
+                    waitingCard
                     if let next = team.nextLetter { letter(next) }
                     HStack {
                         Text("近来的絮语")
@@ -195,8 +205,22 @@ struct Desk: View {
             }
         }
         .animation(Ink.Motion.unfold, value: opened)
+        .animation(Ink.Motion.settle, value: team.approvals.count)
+        .sheet(isPresented: $drawer, onDismiss: {
+            // Open what was picked once the drawer is out of the way.
+            if let item = picked {
+                picked = nil
+                open(item)
+            }
+        }) {
+            DrawerSheet { picked = $0 }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $looking) { LookPage() }
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
+        .sheet(item: $roomEditing) { room in RoomEditor(team: team, room: room) }
         .sheet(isPresented: $dressing) { PortraitPage() }
         .sheet(isPresented: $studying) { StudyPage() }
         .fullScreenCover(isPresented: $denning) { DenPage() }
@@ -235,6 +259,23 @@ struct Desk: View {
         }
     }
 
+    private func open(_ item: DrawerItem) {
+        switch item {
+        case .newCompanion: editing = EditTarget(id: "new", bot: nil)
+        case .importCard: importing = true
+        case .gathering: gathering = true
+        case .portrait: dressing = true
+        case .study: studying = true
+        case .den: denning = true
+        case .hills: hilling = true
+        case .vault: vaulting = true
+        case .tuning: tuning = true
+        case .look: looking = true
+        case .grants: granting = true
+        case .care: caring = true
+        }
+    }
+
     @ViewBuilder
     private func page(for target: Opened) -> some View {
         switch target {
@@ -258,22 +299,14 @@ struct Desk: View {
                 Text("今天想聊点什么？").font(Ink.reading).foregroundStyle(Ink.inkSoft)
             }
             Spacer()
-            Menu {
-                Button("新旅伴", systemImage: "person.badge.plus") { editing = EditTarget(id: "new", bot: nil) }
-                Button("收名帖", systemImage: "square.and.arrow.down") { importing = true }
-                Button("雅集", systemImage: "person.3") { gathering = true }
-                Button("书案", systemImage: "books.vertical") { studying = true }
-                Button("斗室", systemImage: "terminal") { denning = true }
-                Button("远山", systemImage: "mountain.2") { hilling = true }
-                Button("信匣", systemImage: "lock.rectangle.stack") { vaulting = true }
-                Button("应许", systemImage: "checkmark.seal") { granting = true }
-                Button("形象", systemImage: "paintpalette") { dressing = true }
-                Button("调弦", systemImage: "slider.horizontal.3") { tuning = true }
-                Button("养护", systemImage: "stethoscope") { caring = true }
+            Button {
+                Haptics.light()
+                drawer = true
             } label: {
                 Whale(size: 84, pose: team.doing.isEmpty ? .idle : .thinking)
             }
-            .accessibilityLabel("菜单")
+            .buttonStyle(PressStyle(haptic: false))
+            .accessibilityLabel("打开抽屉")
         }
         .padding(.top, Ink.Space.xxl)
     }
@@ -301,7 +334,7 @@ struct Desk: View {
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     .contextMenu {
-                        Button("改名帖", systemImage: "pencil") { editing = EditTarget(id: bot.id, bot: bot) }
+                        Button("看名帖", systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
                         ShareLink(item: NameCard.file(for: bot)) { Label("递名帖", systemImage: "square.and.arrow.up") }
                     }
                 }
@@ -321,6 +354,39 @@ struct Desk: View {
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
         .padding(.top, Ink.Space.xl)
+    }
+
+    /// Slips waiting for the user's seal, any conversation: one card, tap to go there.
+    @ViewBuilder
+    private var waitingCard: some View {
+        if let first = team.approvals.first, let chat = first.chat {
+            let name = team.bots.first { $0.id == first.botId }?.name ?? "旅伴"
+            Button {
+                Haptics.tick(0.6)
+                if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else { opened = .companion(String(chat.dropFirst(4))) }
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Image(systemName: "seal")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Ink.warn)
+                        .frame(width: 34, height: 34)
+                        .background(Ink.warn.opacity(0.14), in: .circle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(team.approvals.count > 1 ? "\(team.approvals.count) 张笺等你落印" : "\(name)等你落印")
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
+                        Text("\(name)想\(first.tool ?? "做一件事")" + ((first.reason ?? "").isEmpty ? "" : "：\(first.reason!)"))
+                            .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Text("去看看").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                }
+                .padding(Ink.Space.l)
+                .paperCard()
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .padding(.top, Ink.Space.xl)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
     }
 
     private func letter(_ next: Later) -> some View {
@@ -364,10 +430,17 @@ struct Desk: View {
                         Spacer()
                         Text(Self.when(item.at)).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                     }
-                    Text(item.preview.isEmpty ? "…" : item.preview)
-                        .font(Ink.secondary)
-                        .foregroundStyle(Ink.inkSoft)
-                        .lineLimit(1)
+                    if let live = Live.brief(team.doing[item.id.id], waiting: team.approvals.contains { $0.chat == item.id.id }) {
+                        HStack(spacing: Ink.Space.xs) {
+                            Circle().fill(Ink.accent).frame(width: 6, height: 6)
+                            Text(live).font(Ink.secondary).foregroundStyle(Ink.accent).lineLimit(1)
+                        }
+                    } else {
+                        Text(item.preview.isEmpty ? "…" : item.preview)
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(.vertical, Ink.Space.m)
@@ -375,8 +448,11 @@ struct Desk: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .contextMenu {
-            if case .gathering(let id) = item.id {
+            if case .gathering(let id) = item.id, let room = team.rooms.first(where: { $0.id == id }) {
+                Button("改雅集", systemImage: "pencil") { roomEditing = room }
                 Button("散了这个雅集", systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
+            } else if let bot = item.bot {
+                Button("看名帖", systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
             }
         }
     }

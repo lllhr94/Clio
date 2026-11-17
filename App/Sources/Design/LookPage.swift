@@ -21,6 +21,8 @@ struct LookPage: View {
     @AppStorage("chat.contextCount") private var contextCount = 0
     @AppStorage("chat.temperature") private var temperature = -1.0
     @AppStorage("chat.maxOutput") private var maxOutput = 0
+    @AppStorage("morning.on") private var morningOn = false
+    @AppStorage("morning.hour") private var morningHour = 7
 
     private let sample = """
     ## 小样
@@ -33,6 +35,7 @@ struct LookPage: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section {
                     ProseView(text: sample)
                         .padding(.vertical, Ink.Space.s)
@@ -94,11 +97,22 @@ struct LookPage: View {
                 }
 
                 Section {
+                    Toggle("每天一封晨信", isOn: $morningOn)
+                    if morningOn {
+                        Stepper("\(morningHour) 点以后第一次打开时写", value: $morningHour, in: 5...11)
+                    }
+                } header: { Text("晨信") } footer: {
+                    Text("主旅伴会看看你的日程、提醒和天气，写一封短短的便笺。到点会提醒你一声，打开 Clio 就开始写。")
+                }
+                .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
+                .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
+
+                Section {
                     Button("全部恢复默认", role: .destructive) { reset() }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle("纸墨与絮语")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }

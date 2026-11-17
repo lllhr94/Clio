@@ -108,6 +108,7 @@ private struct SecretEditor: View {
     var body: some View {
         NavigationStack {
             Form {
+                PaperRows {
                 Section {
                     TextField("名字，比如：香港 VPS", text: $item.title)
                     Picker("种类", selection: $item.kind) {
@@ -128,8 +129,8 @@ private struct SecretEditor: View {
                 }
                 Section("备注") { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }
             }
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper)
+            }
+            .paperForm()
             .navigationTitle(isNew ? "存一条" : item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
