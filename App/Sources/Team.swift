@@ -861,18 +861,22 @@ final class TeamModel: ObservableObject {
 
     private func tools(for bot: BotInfo, key: String) -> [AgentTool] {
         let botId = bot.id
-        return Grant.gate([
-            WebSearchTool(),
-            WebReadTool(),
-            RememberTool { [weak self] fact in await self?.remember(fact, by: botId) },
-            ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] },
-            RecallTool { [weak self] words in await self?.recall(words) ?? [] },
-            CalendarListTool(),
-            CalendarAddTool(),
-            RemindersListTool(),
-            ReminderAddTool(),
-            LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: key) },
-        ] + RoamTools.all(browser) + Workspace.tools() + Den.tools() + Phone.tools() + Hills.shared.tools() + SecretTools.all(botName: bot.name))
+        var all: [AgentTool] = [WebSearchTool(), WebReadTool()]
+        all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
+        all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
+        all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
+        all.append(CalendarListTool())
+        all.append(CalendarAddTool())
+        all.append(RemindersListTool())
+        all.append(ReminderAddTool())
+        all.append(LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: key) })
+        all += RoamTools.all(browser)
+        all += Workspace.tools()
+        all += Den.tools()
+        all += Phone.tools()
+        all += Hills.shared.tools()
+        all += SecretTools.all(botName: bot.name)
+        return Grant.gate(all)
     }
 
     // MARK: Approvals
