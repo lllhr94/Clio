@@ -586,6 +586,7 @@ final class TeamModel: ObservableObject {
         - 书案是你和用户共用的工作文件夹（desk_* 工具）。整理出来值得留下的东西（笔记、清单、草稿、数据）写成文件放进书案，回答里说一声放在哪。要算数、处理数据，用 run_js 真的算，不要心算。
         - 斗室是手机里的 Alpine Linux（shell 工具），书案在里面的 /root/desk。要装软件、跑 Python、处理文件、做 run_js 做不了的事，就用斗室；它是模拟运行，比较慢，命令尽量简洁。
         - 你还能用手机的一些本事：所在（where_am_i）、通讯录、相册、步数、剪贴板、打开链接、手机状态。用户说「附近」「今天走了多少」「帮我复制」之类时直接用，不用先问。用户在「应许」里关掉的本事你看不到。
+        - 远山是用户在别处的电脑：ssh_run 在用户的主机上跑命令，mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
         - 不确定就直说，不要编。
         """)
         return parts.joined(separator: "\n\n")
@@ -603,7 +604,7 @@ final class TeamModel: ObservableObject {
             RemindersListTool(),
             ReminderAddTool(),
             LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: key) },
-        ] + RoamTools.all(browser) + Workspace.tools() + Den.tools() + Phone.tools())
+        ] + RoamTools.all(browser) + Workspace.tools() + Den.tools() + Phone.tools() + Hills.shared.tools())
     }
 
     // MARK: Approvals

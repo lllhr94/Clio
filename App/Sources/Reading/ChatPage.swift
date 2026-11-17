@@ -678,6 +678,7 @@ private struct Trace: View {
         case "书案": "books.vertical"
         case "斗室": "terminal"
         case "所在": "location"
+        case "远山": "mountain.2"
         case "通讯录": "person.crop.circle"
         case "相册": "photo.on.rectangle"
         case "步数": "figure.walk"

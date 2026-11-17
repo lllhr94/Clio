@@ -6,6 +6,12 @@ options:
 packages:
   AgentKit:
     path: ../AgentKit
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel
+    from: 0.9.2
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio
+    from: 2.65.0
 targets:
   Clio:
     type: application
@@ -24,12 +30,15 @@ targets:
         product: AgentKit
       - package: AgentKit
         product: Prose
+      - package: Citadel
+      - package: SwiftNIO
+        product: NIOCore
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.9"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "0.10"
+        CFBundleVersion: "10"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

@@ -10,7 +10,7 @@ import UserNotifications
 
 /// 应许: what companions may do, one ability at a time. Each is off, asks every time, or goes ahead.
 enum Grant: String, CaseIterable, Identifiable, Sendable {
-    case web, browser, desk, den, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
+    case web, browser, desk, den, hills, mcp, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
 
     var id: String { rawValue }
 
@@ -31,6 +31,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .browser: "远游"
         case .desk: "书案"
         case .den: "斗室"
+        case .hills: "远山 · SSH"
+        case .mcp: "远山 · MCP"
         case .memory: "拾遗"
         case .letters: "来信"
         case .calendar: "日历"
@@ -51,6 +53,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .browser: "在 app 里的浏览器打开、点击、填写网页"
         case .desk: "在书案里读写文件、跑 JS 计算"
         case .den: "在斗室的 Linux 里跑命令、装软件"
+        case .hills: "用 SSH 在你的远程主机上跑命令"
+        case .mcp: "用你接入的 MCP 服务提供的工具"
         case .memory: "记下或忘掉关于你的事"
         case .letters: "约好时间，到点给你发消息"
         case .calendar: "查看日程；新建日程总会先问你"
@@ -71,6 +75,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .browser: "safari"
         case .desk: "books.vertical"
         case .den: "terminal"
+        case .hills: "server.rack"
+        case .mcp: "point.3.connected.trianglepath.dotted"
         case .memory: "bookmark"
         case .letters: "envelope"
         case .calendar: "calendar"
@@ -88,7 +94,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Sensitive things ask first until the user says otherwise.
     var standard: Policy {
         switch self {
-        case .location, .contacts, .photos, .clipboard, .links: .ask
+        case .location, .contacts, .photos, .clipboard, .links, .hills: .ask
         default: .allow
         }
     }
@@ -106,6 +112,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders
         case "shell": .den
+        case "ssh_run": .hills
         case "where_am_i": .location
         case "contacts_search": .contacts
         case "photos_recent": .photos
@@ -115,6 +122,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "device_status": .device
         default:
             if name.hasPrefix("browser_") { .browser }
+            else if name.hasPrefix("mcp_") { .mcp }
             else if name.hasPrefix("desk_") || name == "run_js" { .desk }
             else { nil }
         }
