@@ -3,12 +3,8 @@
 
 name: Build
 
+# Built only when asked: changes are saved to the repository as they are made, and built together once a batch is done.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - docs/**
-      - "*.md"
   workflow_dispatch:
     inputs:
       runner:
