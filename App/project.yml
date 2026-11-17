@@ -20,7 +20,7 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.5"
+        CFBundleShortVersionString: "0.6"
         CFBundleVersion: "5"
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true

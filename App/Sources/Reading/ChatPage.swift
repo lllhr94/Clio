@@ -126,6 +126,9 @@ struct ChatPage: View {
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? "雅集 · \(bot.name)" : bot.name)
         }
+        .fullScreenCover(isPresented: $roaming) {
+            RoamPage(browser: team.browser)
+        }
         .fullScreenCover(item: $approving) { approval in
             ApproveView(approval: approval, team: team)
         }
@@ -157,6 +160,7 @@ struct ChatPage: View {
     private struct Viewing: Identifiable { let id: String }
     private struct Noting: Identifiable { let id: String; let text: String }
     @State private var noting: Noting?
+    @State private var roaming = false
 
     @AppStorage("mascot.shown") private var mascotShown = true
 
@@ -206,6 +210,10 @@ struct ChatPage: View {
             .padding(.leading, -Ink.Space.xs)
             .glassChip()
             Spacer(minLength: 0)
+            RoamButton(browser: team.browser) { open in
+                typing = false
+                roaming = open
+            }
             if !isRoom { modelMenu }
         }
         .padding(.horizontal, Ink.Space.l)
@@ -383,6 +391,10 @@ struct ChatPage: View {
 
     private var composer: some View {
         VStack(spacing: Ink.Space.s) {
+            RoamSlip(browser: team.browser) {
+                typing = false
+                roaming = true
+            }
             if let waiting {
                 Button {
                     Haptics.grab()
@@ -662,6 +674,7 @@ private struct Trace: View {
         switch label {
         case "搜索": "magnifyingglass"
         case "读网页": "globe"
+        case "远游": "safari"
         case "记住", "忘掉": "bookmark"
         case "看日历", "新建日程": "calendar"
         case "看提醒事项", "加提醒": "checklist"
