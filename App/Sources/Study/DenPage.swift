@@ -8,6 +8,8 @@ struct DenPage: View {
     @State private var history: [String] = []
     @State private var back = 0
     @FocusState private var typing: Bool
+    /// Commands typed while one is still running wait their turn, so output never interleaves.
+    @State private var line: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -166,12 +168,16 @@ struct DenPage: View {
     }
 
     private func send() {
-        let line = command.trimmingCharacters(in: .whitespaces)
-        guard !line.isEmpty else { return }
+        let typed = command.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else { return }
         Haptics.tick(0.5)
-        history.append(line)
+        history.append(typed)
         back = 0
         command = ""
-        Task { _ = await den.run(line, timeout: 600) }
+        let before = self.line
+        self.line = Task {
+            await before?.value
+            _ = await den.run(typed, timeout: 600)
+        }
     }
 }

@@ -177,6 +177,11 @@ static dispatch_queue_t readers;
     if (err < 0)
         return err;
 
+    // The Alpine tarball carries no /dev, /proc or /tmp; make them before anything goes in.
+    generic_mkdirat(AT_PWD, "/dev", 0755);
+    generic_mkdirat(AT_PWD, "/proc", 0755);
+    generic_mkdirat(AT_PWD, "/tmp", 01777);
+    generic_mkdirat(AT_PWD, "/run", 0755);
     generic_mknodat(AT_PWD, "/dev/tty", S_IFCHR | 0666, dev_make(TTY_ALTERNATE_MAJOR, DEV_TTY_MINOR));
     generic_mknodat(AT_PWD, "/dev/ptmx", S_IFCHR | 0666, dev_make(TTY_ALTERNATE_MAJOR, DEV_PTMX_MINOR));
     generic_mknodat(AT_PWD, "/dev/null", S_IFCHR | 0666, dev_make(MEM_MAJOR, DEV_NULL_MINOR));
