@@ -74,11 +74,18 @@ echo "::group::root"
 # fakefsify runs on this Mac only once, so build it straight from its few sources (works on Intel and Apple runners alike).
 ARCHIVE="$(brew --prefix libarchive)"
 FAKEFSIFY="$OUT/fakefsify"
+cat > "$OUT/fakefsify-stubs.c" <<'STUBS'
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+void ish_printk(const char *msg, ...) { va_list args; va_start(args, msg); vfprintf(stderr, msg, args); va_end(args); }
+void die(const char *msg, ...) { va_list args; va_start(args, msg); vfprintf(stderr, msg, args); va_end(args); fputc('\n', stderr); abort(); }
+STUBS
 (
   unset SDKROOT IPHONEOS_DEPLOYMENT_TARGET
   xcrun --sdk macosx clang -O2 -w -I"$SRC" -I"$OUT/ios" -I"$ARCHIVE/include" \
     "$SRC/tools/fakefsify.c" "$SRC/tools/fakefs.c" "$SRC/util/fchdir.c" \
-    "$SRC/fs/fake-db.c" "$SRC/fs/fake-migrate.c" "$SRC/fs/fake-rebuild.c" \
+    "$SRC/fs/fake-db.c" "$SRC/fs/fake-migrate.c" "$SRC/fs/fake-rebuild.c" "$OUT/fakefsify-stubs.c" \
     -L"$ARCHIVE/lib" -larchive -lsqlite3 -o "$FAKEFSIFY"
 )
 curl -fsSL "$ALPINE_URL" -o "$OUT/alpine.tar.gz"
