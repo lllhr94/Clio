@@ -218,7 +218,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
 enum RoamTools {
     static func all(_ browser: BrowserSession) -> [AgentTool] {
         [
-            RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。", parameters: ["type": "object", "properties": ["url": ["type": "string"]], "required": ["url"]], label: { "远游：\(URL(string: $0["url"]?.string ?? "")?.host ?? ($0["url"]?.string ?? ""))" }) { arguments in
+            RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。", parameters: ["type": "object", "properties": ["url": ["type": "string"]], "required": ["url"]], label: { "远游：\($0["url"]?.string ?? "")" }) { arguments in
                 var address = arguments["url"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !address.isEmpty, !address.contains("://") { address = "https://" + address }
                 guard let url = URL(string: address), url.scheme?.hasPrefix("http") == true else { return ToolOutput("网址不对：\(address)", isError: true) }

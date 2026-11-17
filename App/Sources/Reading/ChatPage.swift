@@ -338,7 +338,11 @@ struct ChatPage: View {
                 }
             }
         case .steps:
-            Trace(line: line)
+            Trace(line: line) { url in
+                typing = false
+                Task { await team.browser.open(url) }
+                roaming = true
+            }
         case .note:
             Text(line.text)
                 .font(Ink.footnote)
@@ -607,7 +611,17 @@ struct ChatPage: View {
 /// 行迹: one line when closed, a timeline when open. A running trace shows its newest step.
 private struct Trace: View {
     let line: ChatLine
+    var visit: (URL) -> Void = { _ in }
     @State private var open = false
+
+    /// Pages a companion opened in 远游 during these steps, newest last, each once.
+    private var pages: [URL] {
+        var seen: [URL] = []
+        for tool in line.tools where tool.hasPrefix("远游：http") && !tool.hasSuffix("（没成功）") {
+            if let url = URL(string: String(tool.dropFirst(3)).trimmingCharacters(in: .whitespaces)), !seen.contains(url) { seen.append(url) }
+        }
+        return seen
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -649,6 +663,34 @@ private struct Trace: View {
         }
         .clipped()
         .animation(Ink.Motion.settle, value: line.tools.count)
+        if !pages.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.s) {
+                    ForEach(pages, id: \.self) { url in
+                        Button {
+                            Haptics.light()
+                            visit(url)
+                        } label: {
+                            HStack(spacing: Ink.Space.s) {
+                                Image(systemName: "safari").font(.system(size: 15)).foregroundStyle(Ink.accent)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(url.host() ?? url.absoluteString).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(url.path().isEmpty || url.path() == "/" ? "首页" : url.path()).font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                }
+                            }
+                            .padding(.horizontal, Ink.Space.m)
+                            .padding(.vertical, Ink.Space.s)
+                            .frame(maxWidth: 220, alignment: .leading)
+                            .paperCard()
+                        }
+                        .buttonStyle(PressStyle())
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+            .padding(.top, Ink.Space.s)
+        }
     }
 
     private func step(_ tool: String, last: Bool) -> some View {

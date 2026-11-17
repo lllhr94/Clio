@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// What the desk can open, one at a time.
 enum Opened: Identifiable, Hashable {
@@ -56,6 +57,8 @@ struct Desk: View {
     @State private var denning = false
     @State private var granting = false
     @State private var hilling = false
+    @State private var importing = false
+    @State private var notice: String?
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -131,6 +134,32 @@ struct Desk: View {
         .fullScreenCover(isPresented: $denning) { DenPage() }
         .sheet(isPresented: $granting) { GrantsPage() }
         .sheet(isPresented: $hilling) { HillsPage() }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in
+            switch result {
+            case .failure(let error): notice = "没打开：\(error.localizedDescription)"
+            case .success(let url):
+                do {
+                    let card = try NameCard.read(url)
+                    let taken = Set(team.bots.map(\.name))
+                    var name = card.name
+                    if taken.contains(name) { name += "·二" }
+                    Task {
+                        do {
+                            try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions)
+                            Haptics.thud()
+                            notice = "收下了\(name)的名帖。"
+                        } catch {
+                            notice = "没收下：\(error.localizedDescription)"
+                        }
+                    }
+                } catch {
+                    notice = error.localizedDescription
+                }
+            }
+        }
+        .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+            Button("好", role: .cancel) { notice = nil }
+        }
         .fullScreenCover(isPresented: $tuning) {
             SettingsView(team: team) {}
         }
@@ -161,6 +190,7 @@ struct Desk: View {
             Spacer()
             Menu {
                 Button("新旅伴", systemImage: "person.badge.plus") { editing = EditTarget(id: "new", bot: nil) }
+                Button("收名帖", systemImage: "square.and.arrow.down") { importing = true }
                 Button("雅集", systemImage: "person.3") { gathering = true }
                 Button("书案", systemImage: "books.vertical") { studying = true }
                 Button("斗室", systemImage: "terminal") { denning = true }
@@ -200,6 +230,7 @@ struct Desk: View {
                     .buttonStyle(PressStyle(haptic: false))
                     .contextMenu {
                         Button("改名帖", systemImage: "pencil") { editing = EditTarget(id: bot.id, bot: bot) }
+                        ShareLink(item: NameCard.file(for: bot)) { Label("递名帖", systemImage: "square.and.arrow.up") }
                     }
                 }
                 Button {
