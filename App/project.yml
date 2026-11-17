@@ -28,8 +28,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.8"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "0.9"
+        CFBundleVersion: "9"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -42,6 +42,10 @@ targets:
         NSCalendarsFullAccessUsageDescription: 旅伴帮你查日程、加日程（加之前会问你）。
         NSRemindersFullAccessUsageDescription: 旅伴帮你查提醒事项、加提醒（加之前会问你）。
         NSPhotoLibraryAddUsageDescription: 保存旅伴给你的图片和笺。
+        NSPhotoLibraryUsageDescription: 你允许时，旅伴可以看相册里最近照片的时间和地点。
+        NSLocationWhenInUseUsageDescription: 你问附近、天气、路线时，旅伴用它知道你大概在哪。
+        NSContactsUsageDescription: 你允许时，旅伴可以按名字查通讯录里的人。
+        NSMotionUsageDescription: 你允许时，旅伴可以读手机记的步数。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio

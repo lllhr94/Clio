@@ -54,6 +54,7 @@ struct Desk: View {
     @State private var gathering = false
     @State private var studying = false
     @State private var denning = false
+    @State private var granting = false
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -127,6 +128,7 @@ struct Desk: View {
         .sheet(isPresented: $dressing) { PortraitPage() }
         .sheet(isPresented: $studying) { StudyPage() }
         .fullScreenCover(isPresented: $denning) { DenPage() }
+        .sheet(isPresented: $granting) { GrantsPage() }
         .fullScreenCover(isPresented: $tuning) {
             SettingsView(team: team) {}
         }
@@ -160,6 +162,7 @@ struct Desk: View {
                 Button("雅集", systemImage: "person.3") { gathering = true }
                 Button("书案", systemImage: "books.vertical") { studying = true }
                 Button("斗室", systemImage: "terminal") { denning = true }
+                Button("应许", systemImage: "checkmark.seal") { granting = true }
                 Button("形象", systemImage: "paintpalette") { dressing = true }
                 Button("调弦", systemImage: "slider.horizontal.3") { tuning = true }
             } label: {

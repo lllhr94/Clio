@@ -1,0 +1,212 @@
+import AgentKit
+import Contacts
+import CoreLocation
+import CoreMotion
+import EventKit
+import Foundation
+import Photos
+import SwiftUI
+import UserNotifications
+
+/// 应许: what companions may do, one ability at a time. Each is off, asks every time, or goes ahead.
+enum Grant: String, CaseIterable, Identifiable, Sendable {
+    case web, browser, desk, den, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
+
+    var id: String { rawValue }
+
+    enum Policy: String, CaseIterable, Sendable {
+        case off, ask, allow
+        var title: String {
+            switch self {
+            case .off: "不许"
+            case .ask: "每次问"
+            case .allow: "放行"
+            }
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .web: "寻访"
+        case .browser: "远游"
+        case .desk: "书案"
+        case .den: "斗室"
+        case .memory: "拾遗"
+        case .letters: "来信"
+        case .calendar: "日历"
+        case .reminders: "提醒事项"
+        case .location: "所在"
+        case .contacts: "通讯录"
+        case .photos: "相册"
+        case .motion: "步数"
+        case .clipboard: "剪贴板"
+        case .links: "打开链接与 app"
+        case .device: "手机状态"
+        }
+    }
+
+    var note: String {
+        switch self {
+        case .web: "联网搜索、读网页"
+        case .browser: "在 app 里的浏览器打开、点击、填写网页"
+        case .desk: "在书案里读写文件、跑 JS 计算"
+        case .den: "在斗室的 Linux 里跑命令、装软件"
+        case .memory: "记下或忘掉关于你的事"
+        case .letters: "约好时间，到点给你发消息"
+        case .calendar: "查看日程；新建日程总会先问你"
+        case .reminders: "查看提醒；新建提醒总会先问你"
+        case .location: "知道你现在大概在哪里"
+        case .contacts: "按名字查通讯录里的人"
+        case .photos: "看相册里最近的照片（时间、地点）"
+        case .motion: "读手机记的步数和走过的距离"
+        case .clipboard: "读或写剪贴板"
+        case .links: "替你打开网址、地图、电话或其他 app"
+        case .device: "电量、存储空间、系统版本"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .web: "magnifyingglass"
+        case .browser: "safari"
+        case .desk: "books.vertical"
+        case .den: "terminal"
+        case .memory: "bookmark"
+        case .letters: "envelope"
+        case .calendar: "calendar"
+        case .reminders: "checklist"
+        case .location: "location"
+        case .contacts: "person.crop.circle"
+        case .photos: "photo.on.rectangle"
+        case .motion: "figure.walk"
+        case .clipboard: "doc.on.clipboard"
+        case .links: "arrow.up.forward.app"
+        case .device: "iphone"
+        }
+    }
+
+    /// Sensitive things ask first until the user says otherwise.
+    var standard: Policy {
+        switch self {
+        case .location, .contacts, .photos, .clipboard, .links: .ask
+        default: .allow
+        }
+    }
+
+    var policy: Policy {
+        get { UserDefaults.standard.string(forKey: "grant.\(rawValue)").flatMap(Policy.init(rawValue:)) ?? standard }
+        nonmutating set { UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)") }
+    }
+
+    static func of(tool name: String) -> Grant? {
+        switch name {
+        case "web_search", "web_read": .web
+        case "remember", "forget": .memory
+        case "message_later": .letters
+        case "calendar_events", "calendar_add": .calendar
+        case "reminders", "reminder_add": .reminders
+        case "shell": .den
+        case "where_am_i": .location
+        case "contacts_search": .contacts
+        case "photos_recent": .photos
+        case "steps": .motion
+        case "clipboard_read", "clipboard_write": .clipboard
+        case "open_link": .links
+        case "device_status": .device
+        default:
+            if name.hasPrefix("browser_") { .browser }
+            else if name.hasPrefix("desk_") || name == "run_js" { .desk }
+            else { nil }
+        }
+    }
+
+    /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.
+    static func gate(_ tools: [AgentTool]) -> [AgentTool] {
+        tools.compactMap { tool in
+            guard let grant = of(tool: tool.spec.name) else { return tool }
+            switch grant.policy {
+            case .off: return nil
+            case .allow: return tool
+            case .ask: return Asking(inner: tool, grant: grant)
+            }
+        }
+    }
+
+    // MARK: The system's side
+
+    enum System: Equatable { case none, notAsked, granted, denied, limited }
+
+    @MainActor
+    var system: System {
+        switch self {
+        case .location:
+            switch CLLocationManager().authorizationStatus {
+            case .notDetermined: return .notAsked
+            case .authorizedAlways, .authorizedWhenInUse: return .granted
+            default: return .denied
+            }
+        case .contacts:
+            switch CNContactStore.authorizationStatus(for: .contacts) {
+            case .notDetermined: return .notAsked
+            case .authorized: return .granted
+            case .limited: return .limited
+            default: return .denied
+            }
+        case .photos:
+            switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
+            case .notDetermined: return .notAsked
+            case .authorized: return .granted
+            case .limited: return .limited
+            default: return .denied
+            }
+        case .motion:
+            switch CMPedometer.authorizationStatus() {
+            case .notDetermined: return .notAsked
+            case .authorized: return .granted
+            default: return .denied
+            }
+        case .calendar:
+            switch EKEventStore.authorizationStatus(for: .event) {
+            case .notDetermined: return .notAsked
+            case .fullAccess, .writeOnly: return .granted
+            default: return .denied
+            }
+        case .reminders:
+            switch EKEventStore.authorizationStatus(for: .reminder) {
+            case .notDetermined: return .notAsked
+            case .fullAccess: return .granted
+            default: return .denied
+            }
+        default:
+            return .none
+        }
+    }
+
+    /// Shows the system's own question for this ability.
+    @MainActor
+    func requestSystem() async {
+        switch self {
+        case .location: _ = await Spot.shared.authorize()
+        case .contacts: _ = try? await CNContactStore().requestAccess(for: .contacts)
+        case .photos: _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        case .motion: _ = await Phone.steps(days: 1)
+        case .calendar: _ = try? await EKEventStore().requestFullAccessToEvents()
+        case .reminders: _ = try? await EKEventStore().requestFullAccessToReminders()
+        case .letters: _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        default: break
+        }
+    }
+}
+
+/// A tool whose ability is set to ask: every call waits for the user's seal.
+struct Asking: AgentTool {
+    let inner: AgentTool
+    let grant: Grant
+
+    var spec: ToolSpec { inner.spec }
+    func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
+    func approval(for arguments: JSONValue) -> ApprovalAsk? {
+        inner.approval(for: arguments) ?? ApprovalAsk(title: "用\(grant.title)", reason: inner.label(for: arguments))
+    }
+    func run(_ arguments: JSONValue) async throws -> ToolOutput { try await inner.run(arguments) }
+}
