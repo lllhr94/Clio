@@ -10,7 +10,15 @@ targets:
   Clio:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources:
+      - Sources
+      - path: Den
+        excludes: ["ish-src", "ish-src/**", "build", "build/**", "*.sh", "DenKernel.m"]
+      - path: Den/DenKernel.m
+        compilerFlags: "-DGUEST_ARM64=1 -DENGINE_ASBESTOS=1 -std=gnu11 -I$(SRCROOT)/Den/ish-src -I$(SRCROOT)/Den/build/ios -Wno-everything"
+      - path: Den/build/rootfs/alpine
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: AgentKit
         product: AgentKit
@@ -20,8 +28,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.7"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.8"
+        CFBundleVersion: "8"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -41,3 +49,11 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGNING_ALLOWED: "NO"
+        SWIFT_OBJC_BRIDGING_HEADER: Den/Clio-Bridging-Header.h
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - $(SRCROOT)/Den/build/ios/libish.a
+          - $(SRCROOT)/Den/build/ios/libish_emu.a
+          - $(SRCROOT)/Den/build/ios/libfakefs.a
+          - -lsqlite3
+          - -lresolv

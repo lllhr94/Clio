@@ -22,7 +22,7 @@ jobs:
   build:
     name: Clio (iOS, unsigned)
     runs-on: ${{ inputs.runner || 'macos-latest' }}
-    timeout-minutes: 40
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -41,6 +41,9 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tail -n 80
+
+      - name: Build 斗室 (iSH ARM64 kernel + Alpine root)
+        run: bash Den/build-ish.sh
 
       - name: Generate the Xcode project
         run: |
@@ -71,6 +74,8 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$APP/Info.plist"
+          test -f "$APP/alpine/meta.db" || { echo "::error::斗室的 Linux 没有打进包里"; exit 1; }
+          du -sh "$APP" "$APP/alpine"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry Clio-unsigned.ipa Payload

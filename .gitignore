@@ -6,3 +6,4 @@ App/Payload/
 *.ipa
 xcodebuild.log
 .DS_Store
+App/Den/ish-src/
