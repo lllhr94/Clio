@@ -79,8 +79,21 @@ struct ChatPage: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             header
+                .zIndex(2)
         }
         .safeAreaInset(edge: .bottom) { composer }
+        .overlay {
+            GeometryReader { proxy in
+                Mascot(pose: pose, raised: waiting != nil, bounds: proxy.size)
+            }
+        }
+        .simultaneousGesture(
+            // A swipe in from the left edge goes back, as it does everywhere else on iOS.
+            DragGesture(minimumDistance: 24)
+                .onEnded { value in
+                    if value.startLocation.x < 28, value.translation.width > 80, abs(value.translation.height) < 60 { leave() }
+                }
+        )
         .onAppear { chat.open() }
         .onDisappear {
             chat.close()
@@ -116,21 +129,38 @@ struct ChatPage: View {
 
     private struct Viewing: Identifiable { let id: String }
 
+    @AppStorage("mascot.shown") private var mascotShown = true
+
+    private func leave() {
+        typing = false
+        if dictation.listening { dictation.stop() }
+        Haptics.light()
+        back()
+    }
+
     // MARK: Top bar
 
     private var header: some View {
         HStack(spacing: Ink.Space.s) {
-            Button(action: back) {
+            Button(action: leave) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 38, height: 38)
                     .glassEffect(.regular, in: .circle)
+                    .padding(4)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
+            .padding(-4)
             .accessibilityLabel("回到案头")
             HStack(spacing: Ink.Space.s) {
                 Whale(size: 26, pose: pose)
+                    .onTapGesture {
+                        // Brings the whale back after it was put away.
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
+                    }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
@@ -359,11 +389,6 @@ struct ChatPage: View {
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
             .glassEffect(.regular, in: .rect(cornerRadius: Ink.Radius.sheet))
-            .overlay(alignment: .topTrailing) {
-                Whale(size: 44, pose: pose)
-                    .offset(x: -Ink.Space.l, y: -34)
-                    .allowsHitTesting(false)
-            }
         }
         .padding(.horizontal, Ink.Space.m)
         .padding(.bottom, Ink.Space.s)
