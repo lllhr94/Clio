@@ -117,9 +117,9 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "shell": .den
         case "ssh_run", "ssh_add_host": .hills
         case "ask_user", "vault_list", "browser_fill_secret": .vault
-        case "where_am_i": .location
-        case "contacts_search": .contacts
-        case "photos_recent": .photos
+        case "where_am_i", "place_lookup": .location
+        case "contacts_search", "contacts_add": .contacts
+        case "photos_recent", "photos_save": .photos
         case "steps": .motion
         case "clipboard_read", "clipboard_write": .clipboard
         case "open_link": .links

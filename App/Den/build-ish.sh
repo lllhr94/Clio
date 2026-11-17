@@ -13,6 +13,11 @@ ISH_REPO="https://github.com/OpenMinis/ish-arm64"
 ISH_COMMIT="c5c264da19148512167aa493d7bd4e50aae1b74e"
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz"
 
+if [ -f "$OUT/ios/libish.a" ] && [ -f "$OUT/ios/libish_emu.a" ] && [ -f "$OUT/ios/libfakefs.a" ] && [ -f "$OUT/rootfs/alpine/meta.db" ] && [ -d "$SRC/kernel" ]; then
+  echo "斗室 is already built (cache); skipping."
+  exit 0
+fi
+
 echo "::group::tools"
 brew install meson ninja llvm lld libarchive >/dev/null 2>&1 || brew install meson ninja llvm lld libarchive
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"

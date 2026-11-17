@@ -1,6 +1,13 @@
 import AgentKit
 import SwiftUI
 
+/// One step of a trace, opened up.
+struct StepDetail: Equatable {
+    var input: String
+    var output: String
+    var seconds: Int?
+}
+
 /// One row of a chat.
 struct ChatLine: Identifiable, Equatable {
     enum Kind { case user, bot, steps, note }
@@ -22,6 +29,8 @@ struct ChatLine: Identifiable, Equatable {
     var refs: [String] = []
     /// A steps row: what was done, in order.
     var tools: [String] = []
+    /// A steps row: for each step, what went in, what came out, and how long it took.
+    var details: [StepDetail] = []
     /// A steps row: how long its steps took; a reply: how long the turn took, in seconds.
     var seconds: Int?
     /// A reply: the tokens its turn used.
@@ -162,7 +171,9 @@ final class ChatModel: ObservableObject {
         var out: [ChatLine] = []
         var open: Int?
         var openedAt: Double = 0
+        var stepAt: Double = 0
         var turnAt: Double?
+        var calls: [String: String] = [:]
         for entry in all.suffix(limit) {
             let message = entry.message
             if entry.note == true {
@@ -186,17 +197,23 @@ final class ChatModel: ObservableObject {
                     out.append(line)
                     open = nil
                 }
+                for call in message.toolCalls { calls[call.id] = call.arguments }
                 if !message.toolCalls.isEmpty, open == nil {
                     out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
                     open = out.count - 1
                     openedAt = entry.at
                 }
+                if !message.toolCalls.isEmpty { stepAt = entry.at }
             case .tool:
                 if open == nil {
                     out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
                     open = out.count - 1
                     openedAt = entry.at
+                    stepAt = entry.at
                 }
+                let input = message.toolCallId.flatMap { calls[$0] } ?? ""
+                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil))
+                stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)
                 out[open!].seconds = max(1, Int((entry.at - openedAt) / 1000))

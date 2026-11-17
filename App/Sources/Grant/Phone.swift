@@ -103,6 +103,60 @@ enum Phone {
                 }
                 return ToolOutput(words)
             },
+            DeskTool(name: "place_lookup", description: "查地点：给地址或地名，返回坐标和规范地址；或给经纬度，返回所在地名。", parameters: ["type": "object", "properties": ["query": ["type": "string", "description": "地址或地名"], "latitude": ["type": "number"], "longitude": ["type": "number"]]], label: { "所在：查「\($0["query"]?.string ?? "坐标")」" }) { arguments in
+                let geocoder = CLGeocoder()
+                let places: [CLPlacemark]
+                if let lat = arguments["latitude"]?.number, let lon = arguments["longitude"]?.number {
+                    places = (try? await geocoder.reverseGeocodeLocation(CLLocation(latitude: lat, longitude: lon))) ?? []
+                } else {
+                    places = (try? await geocoder.geocodeAddressString(arguments["query"]?.string ?? "")) ?? []
+                }
+                guard !places.isEmpty else { return ToolOutput("没查到。", isError: true) }
+                let lines = places.prefix(5).map { place -> String in
+                    let words = [place.name, place.country, place.administrativeArea, place.locality, place.subLocality, place.thoroughfare, place.subThoroughfare].compactMap { $0 }
+                    var seen: [String] = []
+                    for word in words where !seen.contains(word) { seen.append(word) }
+                    let spot = place.location.map { String(format: "（%.5f, %.5f）", $0.coordinate.latitude, $0.coordinate.longitude) } ?? ""
+                    return seen.joined(separator: " ") + spot
+                }
+                return ToolOutput(lines.joined(separator: "\n"))
+            },
+            DeskTool(name: "contacts_add", description: "在用户通讯录里新建一个联系人。", parameters: ["type": "object", "properties": ["name": ["type": "string"], "phone": ["type": "string"], "email": ["type": "string"], "organization": ["type": "string"], "note": ["type": "string"]], "required": ["name"]], label: { "通讯录：加「\($0["name"]?.string ?? "")」" }, approval: { arguments in
+                ApprovalAsk(title: "加一个联系人", reason: [arguments["name"]?.string, arguments["phone"]?.string, arguments["email"]?.string].compactMap { $0 }.joined(separator: " · "))
+            }) { arguments in
+                let store = CNContactStore()
+                if CNContactStore.authorizationStatus(for: .contacts) == .notDetermined { _ = try? await store.requestAccess(for: .contacts) }
+                let contact = CNMutableContact()
+                let name = arguments["name"]?.string ?? ""
+                if name.count <= 4, let first = name.first, name.unicodeScalars.allSatisfy({ $0.value > 0x2E80 }) {
+                    contact.familyName = String(first)
+                    contact.givenName = String(name.dropFirst())
+                } else {
+                    contact.givenName = name
+                }
+                if let phone = arguments["phone"]?.string, !phone.isEmpty { contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: phone))] }
+                if let email = arguments["email"]?.string, !email.isEmpty { contact.emailAddresses = [CNLabeledValue(label: CNLabelHome, value: email as NSString)] }
+                if let organization = arguments["organization"]?.string { contact.organizationName = organization }
+                let request = CNSaveRequest()
+                request.add(contact, toContainerWithIdentifier: nil)
+                do { try store.execute(request) } catch { return ToolOutput("没加上：\(error.localizedDescription)", isError: true) }
+                return ToolOutput("加好了：\(name)")
+            },
+            DeskTool(name: "photos_save", description: "把书案里的一张图片存进用户的相册。", parameters: ["type": "object", "properties": ["path": ["type": "string", "description": "书案里的图片路径"]], "required": ["path"]], label: { "相册：存「\($0["path"]?.string ?? "")」" }, approval: { arguments in
+                ApprovalAsk(title: "存一张图到相册", reason: arguments["path"]?.string ?? "")
+            }) { arguments in
+                guard let file = Workspace.resolve(arguments["path"]?.string), let data = try? Data(contentsOf: file), UIImage(data: data) != nil else {
+                    return ToolOutput("书案里没有这张图，或者它不是图片。", isError: true)
+                }
+                do {
+                    try await PHPhotoLibrary.shared().performChanges {
+                        PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+                    }
+                    return ToolOutput("存进相册了。")
+                } catch {
+                    return ToolOutput("没存上：\(error.localizedDescription)。可能要在「设置 › Clio › 照片」里允许添加。", isError: true)
+                }
+            },
             DeskTool(name: "contacts_search", description: "按名字在用户通讯录里找人，给出电话、邮箱、单位、生日。", parameters: ["type": "object", "properties": ["name": ["type": "string"]], "required": ["name"]], label: { "通讯录：找「\($0["name"]?.string ?? "")」" }) { arguments in
                 let store = CNContactStore()
                 if CNContactStore.authorizationStatus(for: .contacts) == .notDetermined { _ = try? await store.requestAccess(for: .contacts) }

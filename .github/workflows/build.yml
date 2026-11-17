@@ -42,6 +42,15 @@ jobs:
           set -o pipefail
           swift test 2>&1 | tail -n 80
 
+      - name: Reuse 斗室 built before
+        uses: actions/cache@v4
+        with:
+          path: |
+            App/Den/build/ios
+            App/Den/build/rootfs
+            App/Den/ish-src
+          key: den-${{ hashFiles('App/Den/build-ish.sh') }}
+
       - name: Build 斗室 (iSH ARM64 kernel + Alpine root)
         run: bash Den/build-ish.sh
 

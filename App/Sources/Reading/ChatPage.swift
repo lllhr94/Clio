@@ -1,3 +1,4 @@
+import AgentKit
 import AVFoundation
 import PhotosUI
 import SwiftUI
@@ -652,6 +653,7 @@ private struct Trace: View {
     let line: ChatLine
     var visit: (URL) -> Void = { _ in }
     @State private var open = Pref.traceOpen
+    @State private var peeking: Set<Int> = []
 
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
     private var pages: [URL] {
@@ -690,7 +692,7 @@ private struct Trace: View {
             if open {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(line.tools.enumerated()), id: \.offset) { index, tool in
-                        step(tool, last: index == line.tools.count - 1)
+                        step(tool, index: index, last: index == line.tools.count - 1)
                     }
                 }
                 .padding(.top, Ink.Space.m)
@@ -732,11 +734,13 @@ private struct Trace: View {
         }
     }
 
-    private func step(_ tool: String, last: Bool) -> some View {
+    private func step(_ tool: String, index: Int, last: Bool) -> some View {
         let parts = tool.split(separator: "：", maxSplits: 1).map(String.init)
         let name = parts.first ?? tool
         let detail = parts.count > 1 ? parts[1] : nil
         let failed = tool.hasSuffix("（没成功）")
+        let more = index < line.details.count ? line.details[index] : nil
+        let shown = peeking.contains(index)
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(spacing: 0) {
                 Image(systemName: Self.icon(for: name))
@@ -747,13 +751,52 @@ private struct Trace: View {
                 if !last { Rectangle().fill(Ink.rule).frame(width: 1).frame(maxHeight: .infinity) }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(Self.word(for: name)).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                if let detail { Text(detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(2) }
+                HStack(spacing: Ink.Space.s) {
+                    Text(Self.word(for: name)).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                    if let seconds = more?.seconds { Text("\(max(seconds, 0)) 秒").font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkFaint) }
+                    Spacer(minLength: 0)
+                    if more != nil {
+                        Image(systemName: shown ? "chevron.up" : "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                    }
+                }
+                if let detail { Text(detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(shown ? nil : 2) }
+                if shown, let more {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                        if !more.input.isEmpty, more.input != "{}" {
+                            Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                            Text(Self.tidy(more.input)).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(12)
+                        }
+                        Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
+                        Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                    }
+                    .textSelection(.enabled)
+                    .padding(Ink.Space.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small))
+                    .padding(.top, Ink.Space.xs)
+                    .transition(.opacity)
+                }
             }
             .padding(.bottom, last ? 0 : Ink.Space.l)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard more != nil else { return }
+                withAnimation(Ink.Motion.settle) {
+                    if shown { peeking.remove(index) } else { peeking.insert(index) }
+                }
+            }
             Spacer(minLength: 0)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Tool arguments as short lines: `key: value`.
+    static func tidy(_ json: String) -> String {
+        guard let value = JSONValue.parse(json), case .object(let map) = value else { return json }
+        return map.keys.sorted().map { key in
+            let item = map[key]!
+            return "\(key): \(item.string ?? item.compact)"
+        }.joined(separator: "\n")
     }
 
     /// The glossary's names for what a tool does.
