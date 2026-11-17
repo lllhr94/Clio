@@ -63,7 +63,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee xcodebuild.log | grep -E "error|BUILD|\.swift:[0-9]+:[0-9]+: (error|warning)" | tail -n 120
+            build 2>&1 | tee xcodebuild.log | grep -iE "error|failed|BUILD|undefined|not found" | grep -v "^\s*$" | tail -n 150
 
       - name: Package the IPA
         run: |
