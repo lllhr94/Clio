@@ -6,7 +6,7 @@ struct ProtoRoot: View {
         case chat = "絮语"
         case home = "案头"
         case note = "笺"
-        case whale = "鲸鱼"
+        case whale = "形象"
     }
 
     @State private var page: Page = .home
@@ -17,7 +17,7 @@ struct ProtoRoot: View {
             Ink.paper.ignoresSafeArea()
             Group {
                 switch page {
-                case .chat: ProtoChat()
+                case .chat: ProtoChat(back: { go(.home) })
                 case .home: ProtoHome(open: { go(.chat) })
                 case .note: ProtoNote()
                 case .whale: ProtoWhale()
@@ -26,21 +26,6 @@ struct ProtoRoot: View {
             .transition(.blurReplace)
             .padding(.bottom, page == .chat ? 0 : 64)
             if page != .chat { bar }
-        }
-        .overlay(alignment: .topTrailing) {
-            if page == .chat {
-                Button { go(.home) } label: {
-                    Text("样机")
-                        .font(Ink.footnote)
-                        .foregroundStyle(Ink.inkSoft)
-                        .padding(.horizontal, Ink.Space.s)
-                        .frame(height: 24)
-                        .background(Ink.paperRaised.opacity(0.9), in: .capsule)
-                }
-                .buttonStyle(PressStyle())
-                .padding(.trailing, Ink.Space.page)
-                .padding(.top, 58)
-            }
         }
         .tint(Ink.accent)
     }
@@ -294,71 +279,71 @@ struct ProtoNote: View {
     }
 }
 
-/// The whale's three outlines and four poses, the colors, and whether the reading face was found.
+/// 形象: put a portrait together from swappable parts.
 struct ProtoWhale: View {
-    @AppStorage("whale.look") private var picked = 0
+    @State private var persona = Persona.stored
+    @State private var pose: WhalePose = .idle
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                Text("挑一只鲸鱼")
+                Text("形象")
                     .font(Ink.display)
                     .foregroundStyle(Ink.ink)
                     .padding(.top, Ink.Space.xxl)
-                Text("点一下选中，其他页面会跟着换。")
+                Text("每一样都能换。以后每位旅伴可以有自己的一套。")
                     .font(Ink.secondary)
                     .foregroundStyle(Ink.inkSoft)
 
-                ForEach(0..<WhaleLook.looks.count, id: \.self) { index in
-                    Button {
-                        withAnimation(Ink.Motion.unfold) { picked = index }
-                    } label: {
-                        VStack(alignment: .leading, spacing: Ink.Space.m) {
-                            HStack {
-                                Text("\(index + 1) · \(WhaleLook.names[index])")
-                                    .font(Ink.readingBold)
-                                    .foregroundStyle(Ink.ink)
-                                Spacer()
-                                Image(systemName: picked == index ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(picked == index ? Ink.accent : Ink.inkFaint)
-                                    .contentTransition(.symbolEffect(.replace))
-                            }
-                            HStack(spacing: Ink.Space.m) {
-                                Whale(size: 96, pose: .idle, look: index)
-                                VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                    HStack(spacing: Ink.Space.m) {
-                                        ForEach(WhalePose.allCases, id: \.self) { pose in
-                                            VStack(spacing: Ink.Space.xs) {
-                                                Whale(size: 44, pose: pose, look: index)
-                                                Text(pose.word).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                            }
-                                        }
-                                    }
-                                    HStack(spacing: Ink.Space.s) {
-                                        ForEach(0..<Ink.washes.count, id: \.self) { wash in
-                                            Whale(size: 28, wash: Ink.washes[wash], look: index, still: true)
-                                        }
-                                    }
-                                }
-                            }
+                VStack(spacing: Ink.Space.l) {
+                    Whale(size: 144, pose: pose, persona: persona)
+                        .animation(Ink.Motion.unfold, value: persona)
+                    HStack(spacing: Ink.Space.s) {
+                        ForEach(WhalePose.allCases, id: \.self) { item in
+                            chip(item.word, picked: pose == item) { pose = item }
                         }
-                        .padding(Ink.Space.l)
-                        .paperCard()
-                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(picked == index ? Ink.accent.opacity(0.6) : .clear, lineWidth: 2))
                     }
-                    .buttonStyle(PressStyle())
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Ink.Space.xl)
+                .paperCard()
+
+                part("轮廓") {
+                    ForEach(0..<WhaleLook.looks.count, id: \.self) { index in
+                        swatch(WhaleLook.names[index], picked: persona.outline == index, preview: with { $0.outline = index }) { persona.outline = index }
+                    }
+                }
+                part("墨色") {
+                    ForEach(0..<Persona.tones.count, id: \.self) { index in
+                        swatch(Persona.tones[index].name, picked: persona.tone == index, preview: with { $0.tone = index }) { persona.tone = index }
+                    }
+                }
+                part("底色") {
+                    ForEach(0..<Persona.washNames.count, id: \.self) { index in
+                        swatch(Persona.washNames[index], picked: persona.wash == index, preview: with { $0.wash = index }) { persona.wash = index }
+                    }
+                }
+                part("画框") {
+                    ForEach(Persona.Frame.allCases, id: \.self) { frame in
+                        swatch(frame.word, picked: persona.frame == frame, preview: with { $0.frame = frame }) { persona.frame = frame }
+                    }
+                }
+                part("饰物") {
+                    ForEach(Persona.Charm.allCases, id: \.self) { charm in
+                        swatch(charm.word, picked: persona.charm == charm, preview: with { $0.charm = charm }) { persona.charm = charm }
+                    }
                 }
 
                 Text("颜色").font(Ink.title).foregroundStyle(Ink.ink).padding(.top, Ink.Space.s)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Ink.Space.s), count: 4), spacing: Ink.Space.s) {
-                    swatch("纸", Ink.paper)
-                    swatch("卡片", Ink.paperRaised)
-                    swatch("我的话", Ink.mine)
-                    swatch("细线", Ink.rule)
-                    swatch("墨", Ink.ink)
-                    swatch("淡墨", Ink.inkSoft)
-                    swatch("黛蓝", Ink.accent)
-                    swatch("蓝晕", Ink.accentWash)
+                    color("纸", Ink.paper)
+                    color("卡片", Ink.paperRaised)
+                    color("我的话", Ink.mine)
+                    color("细线", Ink.rule)
+                    color("墨", Ink.ink)
+                    color("淡墨", Ink.inkSoft)
+                    color("黛蓝", Ink.accent)
+                    color("蓝晕", Ink.accentWash)
                 }
 
                 Text(Ink.hasSongti ? "阅读字体：宋体，已找到。" : "阅读字体：没找到宋体，现在用的是系统衬线体。请把这一行截图给我。")
@@ -369,9 +354,59 @@ struct ProtoWhale: View {
             .padding(.bottom, Ink.Space.huge)
         }
         .scrollIndicators(.hidden)
+        .onChange(of: persona) { _, next in Persona.store(next) }
     }
 
-    private func swatch(_ name: String, _ color: Color) -> some View {
+    private func with(_ change: (inout Persona) -> Void) -> Persona {
+        var next = persona
+        change(&next)
+        return next
+    }
+
+    private func part<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Text(title).font(Ink.readingBold).foregroundStyle(Ink.ink)
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.m) { content() }
+                    .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
+        }
+    }
+
+    private func swatch(_ name: String, picked: Bool, preview: Persona, _ pick: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(Ink.Motion.unfold) { pick() }
+        } label: {
+            VStack(spacing: Ink.Space.s) {
+                Whale(size: 56, persona: preview, still: true)
+                Text(name).font(Ink.footnote).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+            }
+            .padding(Ink.Space.s)
+            .frame(minWidth: 76)
+            .background(picked ? Ink.paperRaised : .clear, in: .rect(cornerRadius: Ink.Radius.card))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(picked ? Ink.accent.opacity(0.55) : Ink.rule, lineWidth: picked ? 1.5 : 1))
+        }
+        .buttonStyle(PressStyle())
+    }
+
+    private func chip(_ name: String, picked: Bool, _ pick: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(Ink.Motion.settle) { pick() }
+        } label: {
+            Text(name)
+                .font(Ink.secondary)
+                .foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.m)
+                .frame(height: 32)
+                .background(picked ? Ink.paperRaised : .clear, in: .capsule)
+                .overlay(Capsule().strokeBorder(picked ? Ink.accent.opacity(0.5) : Ink.rule, lineWidth: 1))
+        }
+        .buttonStyle(PressStyle())
+    }
+
+    private func color(_ name: String, _ color: Color) -> some View {
         VStack(spacing: Ink.Space.xs) {
             RoundedRectangle(cornerRadius: Ink.Radius.small)
                 .fill(color)

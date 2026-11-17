@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 絮语: the chat screen, with made-up content that shows every kind of row.
 struct ProtoChat: View {
+    var back: () -> Void = {}
     @State private var traceOpen = false
     @State private var shown: Double = 0
     @State private var writing = false
@@ -44,11 +45,15 @@ struct ProtoChat: View {
 
     private var header: some View {
         HStack(spacing: Ink.Space.s) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Ink.ink)
-                .frame(width: 38, height: 38)
-                .glassEffect(.regular, in: .circle)
+            Button(action: back) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .frame(width: 38, height: 38)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("回到案头")
             VStack(alignment: .leading, spacing: 0) {
                 Text("周末去哪儿走走").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
@@ -109,7 +114,7 @@ struct ProtoChat: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(Ink.inkFaint)
-                        .rotationEffect(.degrees(traceOpen ? 180 : 0))
+                        .rotationEffect(.degrees(traceOpen ? -180 : 0))
                 }
                 .contentShape(Rectangle())
             }
@@ -121,9 +126,13 @@ struct ProtoChat: View {
                     step("calendar", "落印", "新建日程 · 周六 10:00 去磁器口", "已应许", last: true)
                 }
                 .padding(.top, Ink.Space.m)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(Ink.Motion.settle.delay(0.08)),
+                    removal: .opacity.animation(.easeOut(duration: 0.12))
+                ))
             }
         }
+        .clipped()
     }
 
     private func step(_ icon: String, _ name: String, _ detail: String, _ time: String, last: Bool) -> some View {

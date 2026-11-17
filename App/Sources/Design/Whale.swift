@@ -111,23 +111,86 @@ enum WhalePose: String, CaseIterable {
     }
 }
 
-/// The whale in its round frame: a companion's portrait, and the small mascot by the composer.
+/// The parts a portrait is put together from. Every part can be swapped; nothing about the look is fixed.
+struct Persona: Codable, Equatable {
+    enum Frame: String, Codable, CaseIterable {
+        case circle, squircle, bare
+
+        var word: String {
+            switch self {
+            case .circle: "圆"
+            case .squircle: "方"
+            case .bare: "无框"
+            }
+        }
+    }
+
+    enum Charm: String, Codable, CaseIterable {
+        case none, beret, scarf, glasses, flower, star
+
+        var word: String {
+            switch self {
+            case .none: "无"
+            case .beret: "贝雷帽"
+            case .scarf: "围巾"
+            case .glasses: "眼镜"
+            case .flower: "簪花"
+            case .star: "星子"
+            }
+        }
+    }
+
+    var outline = 0
+    var tone = 0
+    var wash = 0
+    var frame = Frame.circle
+    var charm = Charm.none
+
+    /// The ink the silhouette is drawn in.
+    static let tones: [(name: String, color: Color)] = [
+        ("黛蓝", Ink.accent),
+        ("墨", Color(hex: 0x3A3632)),
+        ("赭石", Color(hex: 0x9A6A44)),
+        ("松绿", Color(hex: 0x4F6E5A)),
+        ("绛紫", Color(hex: 0x7E4A5C)),
+    ]
+
+    /// What the silhouette sits on.
+    static let washNames = ["蓝晕", "藕荷", "竹青", "缃色"]
+
+    var toneColor: Color { Self.tones[min(max(tone, 0), Self.tones.count - 1)].color }
+    var washColor: Color { Ink.washes[min(max(wash, 0), Ink.washes.count - 1)] }
+
+    /// The portrait the user put together, kept between launches.
+    static var stored: Persona {
+        guard let data = UserDefaults.standard.data(forKey: "persona"),
+              let persona = try? JSONDecoder().decode(Persona.self, from: data) else { return Persona() }
+        return persona
+    }
+
+    static func store(_ persona: Persona) {
+        if let data = try? JSONEncoder().encode(persona) { UserDefaults.standard.set(data, forKey: "persona") }
+    }
+}
+
+/// A companion's portrait: the whale, framed and dressed as its persona says.
 struct Whale: View {
     var size: CGFloat = 44
     var pose: WhalePose = .idle
-    var wash: Color = Ink.accentWash
-    var tone: Color = Ink.accent
-    /// Which outline; nil follows the one the user picked.
-    var look: Int?
+    /// Nil follows the portrait the user put together.
+    var persona: Persona?
+    /// Overrides for places with their own palette, such as a note.
+    var wash: Color?
+    var tone: Color?
     /// Portraits in lists hold still.
     var still = false
 
-    @AppStorage("whale.look") private var picked = 0
+    @AppStorage("persona") private var storedData = Data()
     @Environment(\.accessibilityReduceMotion) private var calm
 
-    private var outline: WhaleLook {
-        let index = look ?? picked
-        return WhaleLook.looks[min(max(index, 0), WhaleLook.looks.count - 1)]
+    private var parts: Persona {
+        if let persona { return persona }
+        return (try? JSONDecoder().decode(Persona.self, from: storedData)) ?? Persona()
     }
 
     var body: some View {
@@ -141,51 +204,117 @@ struct Whale: View {
     }
 
     private func figure(at time: Double) -> some View {
+        let parts = self.parts
+        let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
+        let ink = tone ?? parts.toneColor
+        let ground = wash ?? parts.washColor
         let bob = pose == .writing ? sin(time * 5) * 0.012 : sin(time * 1.4) * 0.02
         let wag: Double = switch pose {
         case .writing: sin(time * 9) * 10
         case .waiting: sin(time * 3) * 6
         default: sin(time * 1.4) * 3
         }
-        let inner = size * 0.78
+        let inner = size * (parts.frame == .bare ? 0.96 : 0.78)
+        let hole = parts.frame == .bare ? Ink.paper : ground
         return ZStack {
-            Circle().fill(wash)
+            switch parts.frame {
+            case .circle: Circle().fill(ground)
+            case .squircle: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous).fill(ground)
+            case .bare: Color.clear
+            }
             ZStack {
                 WhaleTail(look: outline)
-                    .fill(tone)
+                    .fill(ink)
                     .rotationEffect(.degrees(wag), anchor: UnitPoint(x: outline.start + 0.1, y: outline.mid))
-                WhaleBody(look: outline).fill(tone)
-                // The eye: a dot of the wash, so it stays a silhouette.
+                WhaleBody(look: outline).fill(ink)
+                // The eye is a dot of the ground, so it stays a silhouette.
                 Circle()
-                    .fill(wash)
+                    .fill(hole)
                     .frame(width: inner * 0.058, height: inner * 0.058)
                     .position(x: inner * outline.eye.x, y: inner * outline.eye.y)
-                if pose == .thinking { bubbles(time, inner) }
-                if pose == .waiting { spout(time, inner) }
+                charm(parts.charm, outline, inner, ink, hole)
+                if pose == .thinking { bubbles(time, inner, ink) }
+                if pose == .waiting { spout(time, inner, ink) }
             }
             .frame(width: inner, height: inner)
             .offset(x: -size * 0.01, y: size * (0.04 + bob))
         }
         .frame(width: size, height: size)
-        .clipShape(Circle())
+        .clipShape(clip(parts.frame))
         .accessibilityHidden(true)
     }
 
-    private func bubbles(_ time: Double, _ inner: CGFloat) -> some View {
+    private func clip(_ frame: Persona.Frame) -> AnyShape {
+        switch frame {
+        case .circle: AnyShape(Circle())
+        case .squircle: AnyShape(RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+        case .bare: AnyShape(Rectangle())
+        }
+    }
+
+    /// Small things the whale can wear; drawn in the same two inks, so it stays a silhouette.
+    @ViewBuilder
+    private func charm(_ charm: Persona.Charm, _ outline: WhaleLook, _ inner: CGFloat, _ ink: Color, _ hole: Color) -> some View {
+        let eye = CGPoint(x: inner * outline.eye.x, y: inner * outline.eye.y)
+        let crown = CGPoint(x: inner * 0.70, y: inner * (outline.back + 0.03))
+        switch charm {
+        case .none:
+            EmptyView()
+        case .beret:
+            ZStack {
+                Ellipse().fill(ink).frame(width: inner * 0.30, height: inner * 0.11)
+                Capsule().fill(ink).frame(width: inner * 0.03, height: inner * 0.06).offset(y: -inner * 0.07)
+            }
+            .rotationEffect(.degrees(-12))
+            .position(x: crown.x, y: crown.y - inner * 0.03)
+        case .scarf:
+            ZStack(alignment: .bottom) {
+                Capsule().fill(hole).frame(width: inner * 0.07, height: inner * 0.52)
+                Capsule().fill(hole).frame(width: inner * 0.06, height: inner * 0.20)
+                    .rotationEffect(.degrees(24), anchor: .top)
+                    .offset(x: -inner * 0.03, y: inner * 0.16)
+            }
+            .rotationEffect(.degrees(8))
+            .position(x: inner * (outline.start + 0.24), y: inner * (outline.mid + 0.02))
+        case .glasses:
+            Circle()
+                .stroke(hole, lineWidth: max(1, inner * 0.022))
+                .frame(width: inner * 0.15, height: inner * 0.15)
+                .position(eye)
+        case .flower:
+            ZStack {
+                ForEach(0..<5, id: \.self) { petal in
+                    Ellipse().fill(ink)
+                        .frame(width: inner * 0.05, height: inner * 0.09)
+                        .offset(y: -inner * 0.045)
+                        .rotationEffect(.degrees(Double(petal) * 72))
+                }
+                Circle().fill(hole).frame(width: inner * 0.035, height: inner * 0.035)
+            }
+            .position(x: crown.x - inner * 0.06, y: crown.y - inner * 0.06)
+        case .star:
+            Image(systemName: "sparkle")
+                .font(.system(size: inner * 0.16, weight: .bold))
+                .foregroundStyle(ink)
+                .position(x: crown.x + inner * 0.14, y: crown.y - inner * 0.04)
+        }
+    }
+
+    private func bubbles(_ time: Double, _ inner: CGFloat, _ ink: Color) -> some View {
         ForEach(0..<3, id: \.self) { index in
             let phase = (time * 0.7 + Double(index) / 3).truncatingRemainder(dividingBy: 1)
             Circle()
-                .fill(tone.opacity(0.75 * (1 - phase)))
+                .fill(ink.opacity(0.75 * (1 - phase)))
                 .frame(width: inner * (0.05 + 0.03 * CGFloat(index)), height: inner * (0.05 + 0.03 * CGFloat(index)))
                 .position(x: inner * (0.74 + 0.07 * CGFloat(index)), y: inner * (0.24 - 0.2 * phase))
         }
     }
 
-    private func spout(_ time: Double, _ inner: CGFloat) -> some View {
+    private func spout(_ time: Double, _ inner: CGFloat, _ ink: Color) -> some View {
         let rise = (sin(time * 3) + 1) / 2
         return ForEach([-1.0, 1.0], id: \.self) { side in
             Capsule()
-                .fill(tone)
+                .fill(ink)
                 .frame(width: inner * 0.035, height: inner * (0.08 + 0.07 * rise))
                 .rotationEffect(.degrees(side * 22))
                 .position(x: inner * (0.66 + 0.035 * side), y: inner * (0.13 - 0.03 * rise))
