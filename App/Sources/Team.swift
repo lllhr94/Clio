@@ -255,9 +255,65 @@ final class TeamModel: ObservableObject {
 
     // MARK: Memory
 
+    /// How many things stay in every conversation; older ones sink into 旧事.
+    static let surfaceLimit = 40
+
+    var surfaceMemories: [Memory] { memories.filter { $0.deep != true } }
+    var deepMemories: [Memory] { memories.filter { $0.deep == true } }
+
     func remember(_ fact: String, by bot: String?) {
-        guard !memories.contains(where: { $0.text == fact }) else { return }
-        memories.append(Memory(id: UUID().uuidString, text: fact, at: Now.ms, by: bot))
+        if let index = memories.firstIndex(where: { $0.text == fact }) {
+            memories[index].deep = nil
+            memories[index].used = Now.ms
+        } else {
+            memories.append(Memory(id: UUID().uuidString, text: fact, at: Now.ms, by: bot, used: Now.ms))
+        }
+        settleMemory()
+        saveMemory()
+    }
+
+    /// Keeps the surface small: the least recently used things sink first.
+    private func settleMemory() {
+        let surface = surfaceMemories.sorted { ($0.used ?? $0.at) < ($1.used ?? $1.at) }
+        guard surface.count > Self.surfaceLimit else { return }
+        let sinking = Set(surface.prefix(surface.count - Self.surfaceLimit).map(\.id))
+        for index in memories.indices where sinking.contains(memories[index].id) { memories[index].deep = true }
+    }
+
+    /// Looks through everything kept, deep or not, for what matches the words. What is found comes back to the surface.
+    func recall(_ words: String) -> [String] {
+        let query = words.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
+        var terms = query.split(whereSeparator: { $0.isWhitespace || "，,、。".contains($0) }).map(String.init)
+        // Chinese has no spaces: also try every two-character piece of a long term.
+        for term in terms where term.count > 2 {
+            let chars = Array(term)
+            for i in 0..<(chars.count - 1) { terms.append(String(chars[i...i + 1])) }
+        }
+        let scored = memories.map { memory -> (Memory, Int) in
+            let text = memory.text.lowercased()
+            return (memory, terms.reduce(0) { $0 + (text.contains($1) ? ($1.count > 2 ? 3 : 1) : 0) })
+        }
+        .filter { $0.1 > 0 }
+        .sorted { $0.1 > $1.1 }
+        .prefix(8)
+        let found = Set(scored.map(\.0.id))
+        for index in memories.indices where found.contains(memories[index].id) {
+            memories[index].deep = nil
+            memories[index].used = Now.ms
+        }
+        if !found.isEmpty {
+            settleMemory()
+            saveMemory()
+        }
+        return scored.map(\.0.text)
+    }
+
+    func setDeep(_ id: String, _ deep: Bool) {
+        guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[index].deep = deep ? true : nil
+        memories[index].used = Now.ms
+        if !deep { settleMemory() }
         saveMemory()
     }
 
@@ -647,8 +703,13 @@ final class TeamModel: ObservableObject {
             parts.append("现在是群聊「\(room.name)」，成员有用户和 \(names.joined(separator: "、"))。用户和其他 Bot 的话以【名字】开头。你只说你自己的部分：不要替别人说话，不要在开头写自己的名字，别人说过的不重复；没什么要补充就简短回应。")
         }
         parts.append("现在是 \(When.show(Date()))，\(TimeZone.current.identifier)。")
-        if !memories.isEmpty {
-            parts.append("你记得的关于用户的事：\n" + memories.map { "- \($0.text)" }.joined(separator: "\n"))
+        let surface = surfaceMemories
+        if !surface.isEmpty {
+            parts.append("你记得的关于用户的事：\n" + surface.map { "- \($0.text)" }.joined(separator: "\n"))
+        }
+        let deepCount = deepMemories.count
+        if deepCount > 0 {
+            parts.append("另有 \(deepCount) 件较早的旧事收在拾遗深处，不在上面。用户提到过去的人和事、而上面没有时，先用 recall 翻一翻。")
         }
         parts.append("""
         说话：中文，口语，亲切自然，像熟悉的朋友聊天。先说结论，能短就短；内容多时再分点。不说客套话。
@@ -674,6 +735,7 @@ final class TeamModel: ObservableObject {
             WebReadTool(),
             RememberTool { [weak self] fact in await self?.remember(fact, by: botId) },
             ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] },
+            RecallTool { [weak self] words in await self?.recall(words) ?? [] },
             CalendarListTool(),
             CalendarAddTool(),
             RemindersListTool(),

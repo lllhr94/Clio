@@ -246,6 +246,27 @@ struct ForgetTool: AgentTool {
     }
 }
 
+/// Looks through 拾遗, including the older things not shown in every conversation.
+struct RecallTool: AgentTool {
+    let find: @Sendable (String) async -> [String]
+
+    var spec: ToolSpec {
+        ToolSpec(name: "recall", description: "在拾遗里翻找关于用户的旧事（包括不在每次对话里出现的较早记忆）。用户说起以前的人、事、约定，而你眼下记得的事里没有时用。", parameters: [
+            "type": "object",
+            "properties": ["words": ["type": "string", "description": "要找的关键词，几个词用空格隔开"]],
+            "required": ["words"],
+        ])
+    }
+
+    func label(for arguments: JSONValue) -> String { "拾遗：翻找「\(arguments["words"]?.string ?? "")」" }
+
+    func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        let words = arguments["words"]?.string ?? ""
+        let found = await find(words)
+        return ToolOutput(found.isEmpty ? "拾遗里没有和「\(words)」有关的事。" : "找到了：\n" + found.map { "- \($0)" }.joined(separator: "\n"))
+    }
+}
+
 /// A message the Bot sends the user later, as a notification.
 struct LaterTool: AgentTool {
     let botName: String

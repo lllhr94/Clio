@@ -53,6 +53,10 @@ struct Memory: Codable, Identifiable, Equatable {
     var text: String
     var at: Double
     var by: String?
+    /// 旧事: kept, but not in every conversation; found again with `recall`.
+    var deep: Bool?
+    /// Milliseconds: when it was last recalled or written.
+    var used: Double?
 }
 
 /// A message a Bot set for later; it shows in the chat once its time has come.

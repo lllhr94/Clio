@@ -37,8 +37,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.13"
-        CFBundleVersion: "13"
+        CFBundleShortVersionString: "0.14"
+        CFBundleVersion: "14"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

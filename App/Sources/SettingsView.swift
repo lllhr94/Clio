@@ -122,11 +122,20 @@ struct SettingsView: View {
                                     .font(.system(size: 15))
                                     .foregroundStyle(Ink.inkSoft)
                             }
-                            ForEach(team.memories) { memory in
+                            ForEach(team.surfaceMemories + team.deepMemories) { memory in
                                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                                     Text(memory.text)
                                         .font(.system(size: 15))
+                                        .foregroundStyle(memory.deep == true ? Ink.inkSoft : Ink.ink)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                    if memory.deep == true {
+                                        Text("旧事")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(Ink.inkFaint)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Ink.rule.opacity(0.6), in: .capsule)
+                                    }
                                     Button {
                                         Haptics.light()
                                         withAnimation(.smooth) { team.deleteMemory(memory.id) }
@@ -139,6 +148,18 @@ struct SettingsView: View {
                                     .accessibilityLabel("忘掉这条")
                                 }
                                 .transition(.opacity)
+                                .contextMenu {
+                                    if memory.deep == true {
+                                        Button("常记在心", systemImage: "pin") { withAnimation(.smooth) { team.setDeep(memory.id, false) } }
+                                    } else {
+                                        Button("收进旧事", systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(memory.id, true) } }
+                                    }
+                                }
+                            }
+                            if !team.memories.isEmpty {
+                                Text("常记的事每次聊天都带着；旧事收在深处，旅伴需要时会翻找。超过 \(TeamModel.surfaceLimit) 件时，最久没提起的会自动沉下去。长按一条可以挪动。")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Ink.inkFaint)
                             }
                         }
                     }
