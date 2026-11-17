@@ -71,15 +71,16 @@ ls -lh "$OUT/ios"/*.a
 echo "::endgroup::"
 
 echo "::group::root"
-rm -rf "$OUT/host"
+# fakefsify runs on this Mac only once, so build it straight from its few sources (works on Intel and Apple runners alike).
+ARCHIVE="$(brew --prefix libarchive)"
+FAKEFSIFY="$OUT/fakefsify"
 (
   unset SDKROOT IPHONEOS_DEPLOYMENT_TARGET
-  export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-  meson setup "$OUT/host" "$SRC" -Dguest_arch=arm64 --buildtype=release 2>&1 | tail -n 30
+  xcrun --sdk macosx clang -O2 -w -I"$SRC" -I"$OUT/ios" -I"$ARCHIVE/include" \
+    "$SRC/tools/fakefsify.c" "$SRC/tools/fakefs.c" "$SRC/util/fchdir.c" \
+    "$SRC/fs/fake-db.c" "$SRC/fs/fake-migrate.c" "$SRC/fs/fake-rebuild.c" \
+    -L"$ARCHIVE/lib" -larchive -lsqlite3 -o "$FAKEFSIFY"
 )
-ninja -C "$OUT/host" tools/fakefsify 2>&1 | tail -n 20 || ninja -C "$OUT/host" fakefsify 2>&1 | tail -n 20
-FAKEFSIFY="$(find "$OUT/host" -name fakefsify -type f -perm -u+x | head -1)"
-test -n "$FAKEFSIFY" || { echo "::error::fakefsify was not built"; exit 1; }
 curl -fsSL "$ALPINE_URL" -o "$OUT/alpine.tar.gz"
 rm -rf "$OUT/rootfs"
 mkdir -p "$OUT/rootfs"
