@@ -52,6 +52,7 @@ struct Desk: View {
     @State private var tuning = false
     @State private var dressing = false
     @State private var gathering = false
+    @State private var studying = false
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -123,6 +124,7 @@ struct Desk: View {
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
         .sheet(isPresented: $dressing) { PortraitPage() }
+        .sheet(isPresented: $studying) { StudyPage() }
         .fullScreenCover(isPresented: $tuning) {
             SettingsView(team: team) {}
         }
@@ -154,6 +156,7 @@ struct Desk: View {
             Menu {
                 Button("新旅伴", systemImage: "person.badge.plus") { editing = EditTarget(id: "new", bot: nil) }
                 Button("雅集", systemImage: "person.3") { gathering = true }
+                Button("书案", systemImage: "books.vertical") { studying = true }
                 Button("形象", systemImage: "paintpalette") { dressing = true }
                 Button("调弦", systemImage: "slider.horizontal.3") { tuning = true }
             } label: {

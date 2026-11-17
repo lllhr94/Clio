@@ -675,6 +675,7 @@ private struct Trace: View {
         case "搜索": "magnifyingglass"
         case "读网页": "globe"
         case "远游": "safari"
+        case "书案": "books.vertical"
         case "记住", "忘掉": "bookmark"
         case "看日历", "新建日程": "calendar"
         case "看提醒事项", "加提醒": "checklist"
