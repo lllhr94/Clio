@@ -347,7 +347,7 @@ struct ChatPage: View {
             team.setWeb(!on, in: chat.key)
             say(on ? "联网关了：这段絮语里，旅伴不会搜索、读网页，也不会用远游。" : "联网开了：旅伴需要时会去搜索、读网页，或用远游打开网站。")
         } label: {
-            chip(on ? "globe" : "globe.badge.chevron.backward", "联网", lit: on)
+            chip(on ? "globe" : "network.slash", "联网", lit: on)
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel(on ? "联网：开着，点一下关掉" : "联网：关着，点一下打开")
