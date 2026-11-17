@@ -17,10 +17,14 @@
 #include "kernel/mm.h"
 #include "fs/dev.h"
 #include "fs/devices.h"
-#include "fs/fake.h"
+#include "fs/path.h"
 #include "fs/real.h"
 #include "fs/sock.h"
 #include "debug.h"
+
+// From fs/fake.h, which is marked internal to the kernel.
+int fakefs_bind_mount(const char *linux_path, const char *host_path, bool read_only);
+void fakefs_set_rootfs_data_path(const char *abs_host_path);
 
 static NSString *const DenExited = @"DenProcessExited";
 static BOOL denBooted = NO;
