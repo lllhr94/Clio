@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Clio's own whale: a round silhouette drawn here, in three candidate outlines.
 struct WhaleLook: Equatable {
@@ -140,11 +141,21 @@ struct Persona: Codable, Equatable {
         }
     }
 
+    enum Kind: String, Codable { case whale, picture }
+
+    /// The drawn whale, or pictures the user brought.
+    var kind = Kind.whale
     var outline = 0
     var tone = 0
     var wash = 0
     var frame = Frame.circle
     var charm = Charm.none
+    /// A picture's file name for each pose; the idle one stands in for any pose without its own.
+    var pictures: [String: String] = [:]
+
+    func picture(for pose: WhalePose) -> String? {
+        pictures[pose.rawValue] ?? pictures[WhalePose.idle.rawValue]
+    }
 
     /// The ink the silhouette is drawn in.
     static let tones: [(name: String, color: Color)] = [
@@ -203,8 +214,52 @@ struct Whale: View {
         }
     }
 
+    @ViewBuilder
     private func figure(at time: Double) -> some View {
         let parts = self.parts
+        if parts.kind == .picture, let name = parts.picture(for: pose), let image = Pictures.image(name) {
+            painted(image, name, parts, time)
+        } else {
+            drawn(parts, time)
+        }
+    }
+
+    /// A picture the user brought, kept alive by small movements that differ by pose.
+    private func painted(_ image: UIImage, _ name: String, _ parts: Persona, _ time: Double) -> some View {
+        let breathe = 1 + sin(time * 1.6) * 0.012
+        let lift: Double = switch pose {
+        case .writing: sin(time * 6) * 0.012
+        case .waiting: abs(sin(time * 3.2)) * -0.035
+        default: sin(time * 1.4) * 0.008
+        }
+        let tilt: Double = switch pose {
+        case .thinking: sin(time * 0.9) * 4
+        case .writing: sin(time * 6) * 1.2
+        default: 0
+        }
+        return ZStack {
+            switch parts.frame {
+            case .circle: Circle().fill(wash ?? parts.washColor)
+            case .squircle: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous).fill(wash ?? parts.washColor)
+            case .bare: Color.clear
+            }
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .scaleEffect(x: 1, y: breathe, anchor: .bottom)
+                .rotationEffect(.degrees(tilt), anchor: .bottom)
+                .offset(y: size * lift)
+                .id(name)
+                .transition(.opacity)
+        }
+        .frame(width: size, height: size)
+        .clipShape(clip(parts.frame))
+        .animation(.easeInOut(duration: 0.3), value: name)
+        .accessibilityHidden(true)
+    }
+
+    private func drawn(_ parts: Persona, _ time: Double) -> some View {
         let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
         let ink = tone ?? parts.toneColor
         let ground = wash ?? parts.washColor
@@ -319,5 +374,42 @@ struct Whale: View {
                 .rotationEffect(.degrees(side * 22))
                 .position(x: inner * (0.66 + 0.035 * side), y: inner * (0.13 - 0.03 * rise))
         }
+    }
+}
+
+/// Pictures the user brought for portraits: kept small, on disk, and in memory once read.
+enum Pictures {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    private static var folder: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Portraits", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
+    static func image(_ name: String) -> UIImage? {
+        if let kept = cache.object(forKey: name as NSString) { return kept }
+        guard let image = UIImage(contentsOfFile: folder.appendingPathComponent(name).path) else { return nil }
+        cache.setObject(image, forKey: name as NSString)
+        return image
+    }
+
+    /// Keeps a picture at most 768 points on its long side, transparency and all; returns its file name.
+    static func keep(_ data: Data) -> String? {
+        guard let source = UIImage(data: data) else { return nil }
+        let scale = min(1, 768 / max(source.size.width, source.size.height))
+        let size = CGSize(width: source.size.width * scale, height: source.size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in source.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let png = small.pngData() else { return nil }
+        let name = UUID().uuidString + ".png"
+        do {
+            try png.write(to: folder.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return nil
+        }
+        cache.setObject(small, forKey: name as NSString)
+        return name
     }
 }

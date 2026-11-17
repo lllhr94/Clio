@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// Stage 0: three screens of made-up content, to settle the look before anything real is built on it.
@@ -308,16 +309,25 @@ struct ProtoWhale: View {
                 .padding(.vertical, Ink.Space.xl)
                 .paperCard()
 
-                part("轮廓") {
-                    ForEach(0..<WhaleLook.looks.count, id: \.self) { index in
-                        swatch(WhaleLook.names[index], picked: persona.outline == index, preview: with { $0.outline = index }) { persona.outline = index }
+                HStack(spacing: Ink.Space.s) {
+                    chip("鲸鱼", picked: persona.kind == .whale) { persona.kind = .whale }
+                    chip("画像", picked: persona.kind == .picture) { persona.kind = .picture }
+                }
+
+                if persona.kind == .picture {
+                    VStack(alignment: .leading, spacing: Ink.Space.m) {
+                        Text("每个姿态放一张图").font(Ink.readingBold).foregroundStyle(Ink.ink)
+                        Text("只放闲坐一张也行，其他姿态会用它加上动作。透明底的图最好看。")
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                        HStack(spacing: Ink.Space.m) {
+                            ForEach(WhalePose.allCases, id: \.self) { slot in
+                                PictureSlot(pose: slot, persona: $persona)
+                            }
+                        }
                     }
                 }
-                part("墨色") {
-                    ForEach(0..<Persona.tones.count, id: \.self) { index in
-                        swatch(Persona.tones[index].name, picked: persona.tone == index, preview: with { $0.tone = index }) { persona.tone = index }
-                    }
-                }
+
                 part("底色") {
                     ForEach(0..<Persona.washNames.count, id: \.self) { index in
                         swatch(Persona.washNames[index], picked: persona.wash == index, preview: with { $0.wash = index }) { persona.wash = index }
@@ -328,10 +338,23 @@ struct ProtoWhale: View {
                         swatch(frame.word, picked: persona.frame == frame, preview: with { $0.frame = frame }) { persona.frame = frame }
                     }
                 }
+
+                if persona.kind == .whale {
+                part("轮廓") {
+                    ForEach(0..<WhaleLook.looks.count, id: \.self) { index in
+                        swatch(WhaleLook.names[index], picked: persona.outline == index, preview: with { $0.outline = index }) { persona.outline = index }
+                    }
+                }
+                part("墨色") {
+                    ForEach(0..<Persona.tones.count, id: \.self) { index in
+                        swatch(Persona.tones[index].name, picked: persona.tone == index, preview: with { $0.tone = index }) { persona.tone = index }
+                    }
+                }
                 part("饰物") {
                     ForEach(Persona.Charm.allCases, id: \.self) { charm in
                         swatch(charm.word, picked: persona.charm == charm, preview: with { $0.charm = charm }) { persona.charm = charm }
                     }
+                }
                 }
 
                 Text("颜色").font(Ink.title).foregroundStyle(Ink.ink).padding(.top, Ink.Space.s)
@@ -413,6 +436,52 @@ struct ProtoWhale: View {
                 .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small).strokeBorder(Ink.rule, lineWidth: 1))
                 .frame(height: 44)
             Text(name).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+        }
+    }
+}
+
+/// One pose's picture: tap to pick from the photo library, hold to clear.
+private struct PictureSlot: View {
+    let pose: WhalePose
+    @Binding var persona: Persona
+    @State private var item: PhotosPickerItem?
+
+    var body: some View {
+        VStack(spacing: Ink.Space.xs) {
+            PhotosPicker(selection: $item, matching: .images) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: Ink.Radius.card)
+                        .fill(Ink.paperRaised)
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: persona.pictures[pose.rawValue] == nil ? [4, 3] : [])))
+                    if let name = persona.pictures[pose.rawValue], let image = Pictures.image(name) {
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .clipShape(.rect(cornerRadius: Ink.Radius.card))
+                    } else {
+                        Image(systemName: "plus").foregroundStyle(Ink.inkFaint)
+                    }
+                }
+                .frame(width: 64, height: 64)
+            }
+            .buttonStyle(PressStyle())
+            .contextMenu {
+                if persona.pictures[pose.rawValue] != nil {
+                    Button("移除", systemImage: "trash", role: .destructive) { persona.pictures[pose.rawValue] = nil }
+                }
+            }
+            Text(pose.word).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+        }
+        .onChange(of: item) { _, picked in
+            guard let picked else { return }
+            Task {
+                if let data = try? await picked.loadTransferable(type: Data.self), let name = Pictures.keep(data) {
+                    withAnimation(Ink.Motion.unfold) {
+                        persona.pictures[pose.rawValue] = name
+                        persona.kind = .picture
+                    }
+                    Haptics.tick(0.6)
+                }
+                item = nil
+            }
         }
     }
 }
