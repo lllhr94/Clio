@@ -862,7 +862,7 @@ private struct Trace: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    static func keepsakeIcon(_ kind: Keepsake.Kind) -> String {
+    private static func keepsakeIcon(_ kind: Keepsake.Kind) -> String {
         switch kind {
         case .event: "calendar.badge.checkmark"
         case .reminder: "checklist"
