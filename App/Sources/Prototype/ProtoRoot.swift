@@ -12,13 +12,26 @@ struct ProtoRoot: View {
 
     @State private var page: Page = .home
     @Namespace private var marker
+    /// The real team: stage 1 puts the working chat behind the 絮语 page.
+    @StateObject private var team = TeamModel()
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var companion: BotInfo? {
+        team.bots.first { team.isMain($0) } ?? team.bots.first
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Ink.paper.ignoresSafeArea()
             Group {
                 switch page {
-                case .chat: ProtoChat(back: { go(.home) })
+                case .chat:
+                    if team.phase == .setup || companion == nil {
+                        SetupView(team: team) { go(team.phase == .setup ? .home : .chat) }
+                    } else if let companion {
+                        ChatPage(team: team, bot: companion, back: { go(.home) })
+                            .id(companion.id)
+                    }
                 case .home: ProtoHome(open: { go(.chat) })
                 case .note: ProtoNote()
                 case .whale: ProtoWhale()
@@ -29,6 +42,9 @@ struct ProtoRoot: View {
             if page != .chat { bar }
         }
         .tint(Ink.accent)
+        .onChange(of: scenePhase) { _, now in
+            if now == .active { team.wake() }
+        }
     }
 
     private func go(_ next: Page) {

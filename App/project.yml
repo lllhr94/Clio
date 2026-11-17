@@ -13,12 +13,15 @@ targets:
     sources: [Sources]
     dependencies:
       - package: AgentKit
+        product: AgentKit
+      - package: AgentKit
+        product: Prose
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.1"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.2"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
