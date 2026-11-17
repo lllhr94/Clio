@@ -126,6 +126,15 @@ struct ChatPage: View {
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? "雅集 · \(bot.name)" : bot.name)
         }
+        .sheet(item: $quoting) { item in
+            QuoteSheet(text: item.text) { picked in
+                quoting = nil
+                guard let picked else { return }
+                withAnimation(Ink.Motion.settle) { quote = picked }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
+            }
+            .presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $leafing) {
             LeavesSheet(team: team, key: chat.key, name: bot.name)
                 .presentationDetents([.medium, .large])
@@ -164,6 +173,9 @@ struct ChatPage: View {
     private struct Viewing: Identifiable { let id: String }
     private struct Noting: Identifiable { let id: String; let text: String }
     @State private var noting: Noting?
+    @State private var quoting: Noting?
+    /// Words from a reply the next message asks about.
+    @State private var quote: String?
     @State private var roaming = false
     @State private var leafing = false
 
@@ -362,6 +374,10 @@ struct ChatPage: View {
                 chat.retry()
             }
             icon(voice.isSpeaking ? "speaker.slash" : "speaker.wave.2", "朗读") { speak(line.text) }
+            icon("text.quote", "引用追问") {
+                Haptics.light()
+                quoting = Noting(id: line.id, text: line.text)
+            }
             icon("scroll", "做成笺") {
                 Haptics.light()
                 noting = Noting(id: line.id, text: line.text)
@@ -462,6 +478,23 @@ struct ChatPage: View {
                     .onTapGesture { dictation.problem = nil }
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
+                if let quote {
+                    HStack(alignment: .top, spacing: Ink.Space.s) {
+                        Rectangle().fill(Ink.accent).frame(width: 2)
+                        Text(quote).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                        Spacer(minLength: 0)
+                        Button {
+                            withAnimation(Ink.Motion.settle) { self.quote = nil }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 15)).foregroundStyle(Ink.inkFaint)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("不引用了")
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Ink.Space.xs)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
                 if editing != nil {
                     HStack(spacing: Ink.Space.s) {
                         Image(systemName: "pencil").font(.system(size: 12, weight: .semibold))
@@ -565,6 +598,10 @@ struct ChatPage: View {
                 if let editing {
                     chat.resend(editing, text: draft)
                     self.editing = nil
+                } else if let quote {
+                    let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+                    chat.send(quoted + "\n\n" + draft, photos: photos)
+                    self.quote = nil
                 } else {
                     chat.send(draft, photos: photos)
                 }
