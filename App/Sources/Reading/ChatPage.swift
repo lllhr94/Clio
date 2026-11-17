@@ -136,6 +136,9 @@ struct ChatPage: View {
             }
             .presentationDetents([.medium, .large])
         }
+        .sheet(item: $reading) { file in
+            NavigationStack { StudyFile(url: file.url) }
+        }
         .sheet(isPresented: $leafing) {
             LeavesSheet(team: team, key: chat.key, name: bot.name)
                 .presentationDetents([.medium, .large])
@@ -179,6 +182,8 @@ struct ChatPage: View {
     @State private var quote: String?
     @State private var roaming = false
     @State private var leafing = false
+    private struct ReadingFile: Identifiable { let url: URL; var id: URL { url } }
+    @State private var reading: ReadingFile?
 
     @AppStorage("mascot.shown") private var mascotShown = true
 
@@ -351,11 +356,13 @@ struct ChatPage: View {
                 }
             }
         case .steps:
-            Trace(line: line) { url in
+            Trace(line: line, visit: { url in
                 typing = false
                 Task { await team.browser.open(url) }
                 roaming = true
-            }
+            }, openFile: { url in
+                reading = ReadingFile(url: url)
+            })
         case .note:
             Text(line.text)
                 .font(Ink.footnote)
@@ -652,6 +659,38 @@ struct ChatPage: View {
 private struct Trace: View {
     let line: ChatLine
     var visit: (URL) -> Void = { _ in }
+    var openFile: (URL) -> Void = { _ in }
+
+    /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
+    private struct Keepsake: Identifiable {
+        enum Kind { case event, reminder, file, command }
+        let id: Int
+        let kind: Kind
+        let title: String
+        let detail: String
+        var url: URL?
+    }
+
+    private var keepsakes: [Keepsake] {
+        var out: [Keepsake] = []
+        for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
+            let output = index < line.details.count ? line.details[index].output : ""
+            if tool.hasPrefix("新建日程：") {
+                out.append(Keepsake(id: index, kind: .event, title: String(tool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
+            } else if tool.hasPrefix("加提醒：") {
+                out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
+            } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
+                let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path), !out.contains(where: { $0.url == file }) {
+                    out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file), url: file))
+                }
+            } else if tool.hasPrefix("斗室：") {
+                let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                out.append(Keepsake(id: index, kind: .command, title: String(tool.dropFirst(3)), detail: tail.isEmpty ? "（没有输出）" : tail))
+            }
+        }
+        return out
+    }
     @State private var open = Pref.traceOpen
     @State private var peeking: Set<Int> = []
 
@@ -704,6 +743,39 @@ private struct Trace: View {
         }
         .clipped()
         .animation(Ink.Motion.settle, value: line.tools.count)
+        if !line.live {
+            ForEach(keepsakes) { item in
+                Button {
+                    Haptics.light()
+                    switch item.kind {
+                    case .file: if let url = item.url { openFile(url) }
+                    case .event, .reminder: if let url = item.url { UIApplication.shared.open(url) }
+                    case .command: break
+                    }
+                } label: {
+                    HStack(alignment: .top, spacing: Ink.Space.m) {
+                        Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: 16)).foregroundStyle(Ink.accent).frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.kind == .command ? "# " + item.title : item.title)
+                                .font(item.kind == .command ? .system(size: 13, weight: .medium, design: .monospaced) : .system(size: 14, weight: .medium))
+                                .foregroundStyle(Ink.ink).lineLimit(2)
+                            Text(item.detail)
+                                .font(item.kind == .command ? .system(size: 11, design: .monospaced) : Ink.footnote)
+                                .foregroundStyle(Ink.inkSoft).lineLimit(3)
+                        }
+                        Spacer(minLength: 0)
+                        if item.kind != .command {
+                            Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        }
+                    }
+                    .padding(Ink.Space.m)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .paperCard()
+                }
+                .buttonStyle(PressStyle())
+                .padding(.top, Ink.Space.s)
+            }
+        }
         if !pages.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: Ink.Space.s) {
@@ -788,6 +860,15 @@ private struct Trace: View {
             Spacer(minLength: 0)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    static func keepsakeIcon(_ kind: Keepsake.Kind) -> String {
+        switch kind {
+        case .event: "calendar.badge.checkmark"
+        case .reminder: "checklist"
+        case .file: "doc.text"
+        case .command: "terminal"
+        }
     }
 
     /// Tool arguments as short lines: `key: value`.
