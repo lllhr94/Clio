@@ -26,7 +26,7 @@ final class Hills: ObservableObject {
     }
 
     /// What an MCP server said it can do, kept so tools can be listed without a network call.
-    struct Borrowed: Codable, Hashable, Sendable {
+    struct Borrowed: Codable, Sendable {
         var server: String
         var name: String
         var description: String
