@@ -679,6 +679,7 @@ final class TeamModel: ObservableObject {
     }
 
     private func fail(_ key: String, _ text: String) {
+        Diag.note(text)
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true), to: key)
         notify(key, .failed(text))
     }

@@ -66,6 +66,7 @@ struct Desk: View {
     @State private var importing = false
     @State private var notice: String?
     @State private var vaulting = false
+    @State private var caring = false
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -142,6 +143,7 @@ struct Desk: View {
         .sheet(isPresented: $granting) { GrantsPage(team: team) }
         .sheet(isPresented: $hilling) { HillsPage() }
         .sheet(isPresented: $vaulting) { SecretsPage() }
+        .sheet(isPresented: $caring) { CarePage(team: team) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in
             switch result {
             case .failure(let error): notice = "没打开：\(error.localizedDescription)"
@@ -207,6 +209,7 @@ struct Desk: View {
                 Button("应许", systemImage: "checkmark.seal") { granting = true }
                 Button("形象", systemImage: "paintpalette") { dressing = true }
                 Button("调弦", systemImage: "slider.horizontal.3") { tuning = true }
+                Button("养护", systemImage: "stethoscope") { caring = true }
             } label: {
                 Whale(size: 84, pose: team.doing.isEmpty ? .idle : .thinking)
             }

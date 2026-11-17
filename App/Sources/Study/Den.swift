@@ -73,6 +73,7 @@ final class Den: ObservableObject {
         }
         if code < 0 {
             finish(.broken("Linux 没能启动（错误 \(code)）"))
+            Diag.note("斗室没能启动：\(code)")
             return false
         }
         finish(.awake)
