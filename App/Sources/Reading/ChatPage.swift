@@ -1,4 +1,5 @@
 import AgentKit
+import UniformTypeIdentifiers
 import AVFoundation
 import PhotosUI
 import SwiftUI
@@ -50,6 +51,38 @@ struct ChatPage: View {
         return .idle
     }
 
+    /// Whether the line under the conversation says what is going on: whenever the companion works and nothing else shows it.
+    private var showsLive: Bool {
+        guard doing != nil || waiting != nil else { return false }
+        if let last = chat.lines.last, last.kind == .steps, last.live { return false }
+        return chat.streaming.isEmpty || waiting != nil
+    }
+
+    /// What it is doing, in plain words, for the line under the conversation.
+    private var liveWords: String? {
+        if waiting != nil { return "等你落印：输入框上方有一张笺，点开看看它想做什么" }
+        guard let doing else { return nil }
+        switch doing {
+        case "正在想": return "收到了，\(bot.name)正在想"
+        case "正在回复": return "\(bot.name)正在写"
+        case "正在压缩前文": return "聊得有点长了，先把前文压成一份提要"
+        case "等你批准": return "等你落印"
+        default:
+            if doing.hasSuffix("在想") { return "收到了，\(doing)" }
+            let parts = doing.split(separator: "：", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return doing }
+            return "正在\(Trace.word(for: parts[0]))：\(parts[1])"
+        }
+    }
+
+    private var liveIcon: String {
+        if waiting != nil { return "seal" }
+        guard let doing else { return "ellipsis" }
+        let name = doing.split(separator: "：", maxSplits: 1).first.map(String.init) ?? doing
+        if doing.contains("：") { return Trace.icon(for: name) }
+        return doing == "正在回复" ? "pencil.line" : "sparkles"
+    }
+
     /// The companion's state in the glossary's words.
     private var status: String {
         if waiting != nil { return "候印" }
@@ -75,6 +108,11 @@ struct ChatPage: View {
                         ProseView(text: chat.streaming, streaming: true)
                             .id("streaming")
                     }
+                    if let words = liveWords, showsLive {
+                        LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
+                            .id("live")
+                            .transition(.opacity.combined(with: .offset(y: 8)))
+                    }
                     if let error = chat.error {
                         Text(error)
                             .font(Ink.secondary)
@@ -97,6 +135,10 @@ struct ChatPage: View {
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            .onChange(of: working, initial: true) { _, now in
+                workingSince = now ? (workingSince ?? Date()) : nil
+            }
+            .animation(Ink.Motion.settle, value: showsLive)
             // Text scrolling up fades under the header instead of running into it.
             LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0.92), Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
                 .frame(height: 72)
@@ -135,6 +177,11 @@ struct ChatPage: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
+        .sheet(isPresented: $abilities) {
+            AbilitiesSheet(team: team, key: chat.key, name: bot.name)
+                .presentationDetents([.medium, .large])
         }
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
@@ -212,11 +259,6 @@ struct ChatPage: View {
             .accessibilityLabel("回到案头")
             HStack(spacing: Ink.Space.s) {
                 Whale(size: 26, pose: pose)
-                    .onTapGesture {
-                        // Brings the whale back after it was put away.
-                        Haptics.tick(0.5)
-                        withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
-                    }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
@@ -232,6 +274,20 @@ struct ChatPage: View {
             }
             .padding(.leading, -Ink.Space.xs)
             .glassChip()
+            .contentShape(.capsule)
+            .onTapGesture {
+                guard !isRoom else { return }
+                Haptics.light()
+                typing = false
+                cardOpen = true
+            }
+            .contextMenu {
+                if !isRoom { Button("看名帖", systemImage: "person.text.rectangle") { cardOpen = true } }
+                Button(mascotShown ? "收起浮着的鲸鱼" : "放出浮着的鲸鱼", systemImage: mascotShown ? "eye.slash" : "eye") {
+                    withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
+                }
+            }
+            .accessibilityHint(isRoom ? "" : "点一下看名帖")
             Spacer(minLength: 0)
             RoamButton(browser: team.browser) { open in
                 typing = false
@@ -250,38 +306,140 @@ struct ChatPage: View {
             }
             .buttonStyle(PressStyle())
             .accessibilityLabel("絮语页")
-            if !isRoom { modelMenu }
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.top, Ink.Space.s)
     }
 
-    private var modelMenu: some View {
-        Menu {
-            ForEach(team.models) { item in
+    // MARK: Composer chips
+
+    private var options: TeamModel.ChatOptions { team.options(chat.key) }
+
+    /// A chip in the row under the text field. Lit when what it stands for is on.
+    private func chip(_ icon: String, _ name: String?, lit: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 13, weight: .medium))
+            if let name { Text(name).font(.system(size: 13, weight: .medium)).lineLimit(1) }
+        }
+        .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
+        .padding(.horizontal, name == nil ? 0 : Ink.Space.m)
+        .frame(minWidth: 32, minHeight: 32)
+        .background(lit ? Ink.accentWash : Color.clear, in: .capsule)
+        .overlay(Capsule().strokeBorder(lit ? Color.clear : Ink.rule, lineWidth: 1))
+        .contentShape(.capsule)
+    }
+
+    /// One line under the composer saying what just changed; it goes away by itself.
+    private func say(_ text: String) {
+        withAnimation(Ink.Motion.settle) { hint = text }
+        let said = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
+            if hint == said { withAnimation(Ink.Motion.settle) { hint = nil } }
+        }
+    }
+
+    private var webChip: some View {
+        let on = options.web
+        return Button {
+            Haptics.tick(0.6)
+            team.setWeb(!on, in: chat.key)
+            say(on ? "联网关了：这段絮语里，旅伴不会搜索、读网页，也不会用远游。" : "联网开了：旅伴需要时会去搜索、读网页，或用远游打开网站。")
+        } label: {
+            chip(on ? "globe" : "globe.badge.chevron.backward", "联网", lit: on)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(on ? "联网：开着，点一下关掉" : "联网：关着，点一下打开")
+    }
+
+    private var abilitiesChip: some View {
+        let off = options.off.count
+        return Button {
+            Haptics.light()
+            typing = false
+            abilities = true
+        } label: {
+            chip("wand.and.stars", off == 0 ? "本事" : "本事 · 关了 \(off)", lit: false)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel("这段絮语里旅伴能用的本事")
+    }
+
+    private func shortName(_ ref: String?) -> String {
+        guard let found = team.resolve(ref) else { return "选模型" }
+        let name = found.model
+        return name.count > 16 ? String(name.prefix(15)) + "…" : name
+    }
+
+    private var modelChip: some View {
+        let own = options.model
+        let current = team.model(for: chat.key, bot: bot)
+        return Menu {
+            Section("这段絮语用哪个模型") {
                 Button {
                     Haptics.tick(0.5)
-                    Task { try? await team.saveBot(id: bot.id, name: bot.name, role: bot.role ?? "", color: bot.color ?? "blue", model: item.ref) }
+                    team.setModel(nil, in: chat.key)
+                    say("跟着\(bot.name)走：用 \(shortName(bot.model ?? team.settings.defaultModel))。")
                 } label: {
-                    if (bot.model ?? team.settings.defaultModel) == item.ref {
-                        Label("\(item.name ?? item.ref) · \(item.providerName ?? "")", systemImage: "checkmark")
-                    } else {
-                        Text("\(item.name ?? item.ref) · \(item.providerName ?? "")")
+                    if own == nil { Label("跟着\(bot.name)走", systemImage: "checkmark") } else { Text("跟着\(bot.name)走") }
+                }
+                ForEach(team.models) { item in
+                    Button {
+                        Haptics.tick(0.5)
+                        team.setModel(item.ref, in: chat.key)
+                        say("这段絮语改用 \(item.name ?? item.ref)，\(bot.name)别处的絮语不变。")
+                    } label: {
+                        if own == item.ref {
+                            Label("\(item.name ?? item.ref) · \(item.providerName ?? "")", systemImage: "checkmark")
+                        } else {
+                            Text("\(item.name ?? item.ref) · \(item.providerName ?? "")")
+                        }
                     }
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkle").font(.system(size: 12, weight: .semibold))
-                Text(team.resolve(bot.model ?? team.settings.defaultModel)?.model ?? "选模型")
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(Ink.ink)
-            .frame(maxWidth: 150)
-            .glassChip()
+            chip("sparkle", shortName(current), lit: own != nil)
         }
+        .accessibilityLabel("模型：\(shortName(current))")
+    }
+
+    // MARK: Attachments
+
+    /// Files picked from the Files app land in 书案/收件, and the companion is told where.
+    private func receive(_ urls: [URL]) {
+        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            var target = inbox.appendingPathComponent(url.lastPathComponent)
+            var number = 2
+            while FileManager.default.fileExists(atPath: target.path) {
+                let base = url.deletingPathExtension().lastPathComponent
+                let ext = url.pathExtension
+                target = inbox.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                number += 1
+            }
+            do {
+                try FileManager.default.copyItem(at: url, to: target)
+                if target.pathExtension.lowercased() == "pdf", let text = PDFText.extract(target), !text.isEmpty {
+                    try? Data(text.utf8).write(to: target.appendingPathExtension("txt"))
+                }
+                files.append(Workspace.relative(target))
+            } catch {
+                say("没拿到「\(url.lastPathComponent)」：\(error.localizedDescription)")
+            }
+        }
+        if !urls.isEmpty { Haptics.tick(0.6) }
+    }
+
+    /// What goes after the message so the companion knows about the files.
+    private var fileNote: String {
+        guard !files.isEmpty else { return "" }
+        let lines = files.map { path -> String in
+            let pdf = path.lowercased().hasSuffix(".pdf") && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
+            return "- 书案/\(path)" + (pdf ? "（文字已抽出到 \(path).txt）" : "")
+        }
+        return "\n\n［我放进书案的文件，可以用 desk_read 读，或在斗室的 /root/desk 里处理：\n" + lines.joined(separator: "\n") + "］"
     }
 
     // MARK: Rows
@@ -289,13 +447,54 @@ struct ChatPage: View {
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
             Whale(size: 96, pose: pose)
-            Text("同\(bot.name)说点什么吧")
+            Text(isRoom ? "雅集里的旅伴会轮流说话" : "同\(bot.name)说点什么吧")
                 .font(Ink.reading)
                 .foregroundStyle(Ink.inkSoft)
+            VStack(spacing: Ink.Space.s) {
+                ForEach(starters, id: \.0) { item in
+                    Button {
+                        Haptics.light()
+                        draft = item.1
+                        typing = true
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: item.2).font(.system(size: 15)).foregroundStyle(Ink.accent).frame(width: 22)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.0).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
+                                Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, Ink.Space.l)
+                        .padding(.vertical, Ink.Space.m)
+                        .paperCard()
+                    }
+                    .buttonStyle(PressStyle())
+                }
+            }
+            .padding(.top, Ink.Space.m)
+            Text("点一张填进输入框，改一改再发。")
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkFaint)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        .padding(.top, 72)
     }
+
+    /// Ways to begin, only for abilities this conversation has.
+    private var starters: [(String, String, String)] {
+        let off = Set(options.off)
+        var out: [(String, String, String)] = []
+        func on(_ grant: Grant) -> Bool { grant.policy != .off && !off.contains(grant.rawValue) }
+        if on(.calendar) { out.append(("看看日程", "我今天和明天有什么安排？", "calendar")) }
+        if on(.web) { out.append(("查点东西", "帮我查一下最近重庆有什么值得去的展览", "magnifyingglass")) }
+        if on(.location) { out.append(("看看附近", "我现在在哪？附近有什么好吃的", "location")) }
+        if on(.den) { out.append(("在斗室算一算", "在斗室里用 Python 算一下：每月存 2000，年化 3%，十年后有多少", "terminal")) }
+        if on(.desk) { out.append(("记到书案", "帮我在书案里建一份本周待办清单", "books.vertical")) }
+        out.append(("问问它会什么", "你能帮我做哪些事？挑几样有意思的说说", "sparkles"))
+        return Array(out.prefix(5))
+    }
+
 
     @ViewBuilder
     private func row(_ line: ChatLine) -> some View {
@@ -376,6 +575,7 @@ struct ChatPage: View {
             icon("doc.on.doc", "复制") {
                 UIPasteboard.general.string = line.text
                 Haptics.tick(0.5)
+                say("复制好了。")
             }
             icon("arrow.clockwise", "重来一次") {
                 Haptics.light()
@@ -544,6 +744,30 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
+                if !files.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: Ink.Space.s) {
+                            ForEach(files, id: \.self) { path in
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc").font(.system(size: 12))
+                                    Text((path as NSString).lastPathComponent).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                    Button {
+                                        withAnimation(Ink.Motion.settle) { files.removeAll { $0 == path } }
+                                    } label: {
+                                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .foregroundStyle(Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .frame(height: 30)
+                                .background(Ink.mine, in: .capsule)
+                            }
+                        }
+                        .padding(.top, 6)
+                    }
+                    .scrollIndicators(.hidden)
+                }
                 TextField(dictation.listening ? "正在听，说完点右边" : "同\(bot.name)说点什么…", text: $draft, axis: .vertical)
                     .font(Ink.label)
                     .foregroundStyle(Ink.ink)
@@ -554,18 +778,39 @@ struct ChatPage: View {
                     Menu {
                         Button("照片", systemImage: "photo.on.rectangle") { pickerShown = true }
                         Button("拍照", systemImage: "camera") { takingPhoto = true }
+                        Button("文件", systemImage: "folder") { importingFile = true }
                     } label: {
-                        chipLabel("plus", nil)
+                        chip("plus", nil)
                     }
+                    .accessibilityLabel("加照片或文件")
                     .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
-                    chipLabel("globe", "联网")
-                    Spacer()
+                    .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                        if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
+                    }
+                    ScrollView(.horizontal) {
+                        HStack(spacing: Ink.Space.s) {
+                            webChip
+                            abilitiesChip
+                            if !isRoom { modelChip }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    Spacer(minLength: 0)
                     action
                 }
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
             .glassEffect(.regular, in: .rect(cornerRadius: Ink.Radius.sheet))
+            if let hint {
+                Text(hint)
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .onTapGesture { withAnimation(Ink.Motion.settle) { self.hint = nil } }
+            }
         }
         .padding(.horizontal, Ink.Space.m)
         .padding(.bottom, Ink.Space.s)
@@ -573,20 +818,16 @@ struct ChatPage: View {
     }
 
     @State private var pickerShown = false
-
-    private func chipLabel(_ icon: String, _ name: String?) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium))
-            if let name { Text(name).font(.system(size: 13, weight: .medium)) }
-        }
-        .foregroundStyle(Ink.inkSoft)
-        .padding(.horizontal, name == nil ? 0 : Ink.Space.m)
-        .frame(minWidth: 32, minHeight: 32)
-        .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 1))
-    }
+    @State private var importingFile = false
+    @State private var files: [String] = []
+    @State private var hint: String?
+    @State private var abilities = false
+    /// When the companion started on the current turn, for the seconds under the conversation.
+    @State private var workingSince: Date?
+    @State private var cardOpen = false
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty
     }
 
     private var action: some View {
@@ -608,13 +849,15 @@ struct ChatPage: View {
                     self.editing = nil
                 } else if let quote {
                     let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
-                    chat.send(quoted + "\n\n" + draft, photos: photos)
+                    chat.send(quoted + "\n\n" + draft + fileNote, photos: photos)
                     self.quote = nil
                 } else {
-                    chat.send(draft, photos: photos)
+                    let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    chat.send((words.isEmpty && !files.isEmpty ? "看看这些文件。" : draft) + fileNote, photos: photos)
                 }
                 draft = ""
                 photos = []
+                files = []
                 position.scrollTo(edge: .bottom)
             default:
                 Haptics.grab()
@@ -915,5 +1158,75 @@ private struct Trace: View {
         case "看提醒事项", "加提醒": "checklist"
         default: label.hasPrefix("约好") ? "envelope" : "sparkle"
         }
+    }
+}
+
+
+/// The line under the conversation while the companion works: what it is doing, and for how long.
+private struct LiveStatus: View {
+    let words: String
+    let icon: String
+    let since: Date
+    var waiting = false
+    @State private var breathe = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Ink.Space.m) {
+            ZStack {
+                Circle()
+                    .fill(waiting ? Ink.warn.opacity(0.16) : Ink.accentWash)
+                    .scaleEffect(breathe ? 1.18 : 0.92)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(waiting ? Ink.warn : Ink.accent)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 2) {
+                    Text(words)
+                        .font(Ink.secondary)
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(2)
+                        .contentTransition(.opacity)
+                    if !waiting { Dots() }
+                }
+                TimelineView(.periodic(from: since, by: 1)) { context in
+                    let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+                    Text(seconds < 2 ? "刚刚收到" : "已经 \(seconds) 秒")
+                        .font(Ink.footnote.monospacedDigit())
+                        .foregroundStyle(Ink.inkFaint)
+                        .contentTransition(.numericText())
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, Ink.Space.s)
+        .background(Ink.paperRaised.opacity(0.7), in: .rect(cornerRadius: Ink.Radius.card))
+        .animation(Ink.Motion.settle, value: words)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { breathe = true }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Three dots that rise in turn.
+private struct Dots: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 20)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Ink.inkSoft)
+                        .frame(width: 3.5, height: 3.5)
+                        .offset(y: -2.5 * max(0, sin((time * 5) - Double(index) * 0.8)))
+                }
+            }
+            .padding(.leading, 2)
+        }
+        .frame(height: 10)
     }
 }

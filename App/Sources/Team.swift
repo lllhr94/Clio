@@ -342,6 +342,65 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
+    // MARK: This conversation's own settings
+
+    /// What the user set for one conversation only: abilities switched off, and a model of its own.
+    struct ChatOptions: Codable, Equatable {
+        /// `Grant` names turned off in this conversation.
+        var off: [String] = []
+        /// `endpointId/modelId`; nil follows the companion.
+        var model: String?
+
+        var web: Bool { !off.contains(Grant.web.rawValue) && !off.contains(Grant.browser.rawValue) }
+    }
+
+    private var optionBook: [String: ChatOptions] = [:]
+    private static func optionsFile(_ key: String) -> String { "chats/\(key)~options.json" }
+
+    func options(_ key: String) -> ChatOptions {
+        if let kept = optionBook[key] { return kept }
+        let loaded = keeping ? (Disk.load(ChatOptions.self, Self.optionsFile(key)) ?? ChatOptions()) : ChatOptions()
+        optionBook[key] = loaded
+        return loaded
+    }
+
+    func setOptions(_ key: String, _ value: ChatOptions) {
+        objectWillChange.send()
+        optionBook[key] = value
+        if keeping { Disk.save(value, Self.optionsFile(key)) }
+    }
+
+    /// Switches one ability on or off for this conversation.
+    func setAbility(_ grant: Grant, on: Bool, in key: String) {
+        var value = options(key)
+        value.off.removeAll { $0 == grant.rawValue }
+        if !on { value.off.append(grant.rawValue) }
+        setOptions(key, value)
+    }
+
+    /// 联网: searching, reading pages and 远游 together.
+    func setWeb(_ on: Bool, in key: String) {
+        var value = options(key)
+        value.off.removeAll { $0 == Grant.web.rawValue || $0 == Grant.browser.rawValue }
+        if !on { value.off += [Grant.web.rawValue, Grant.browser.rawValue] }
+        setOptions(key, value)
+    }
+
+    func setModel(_ ref: String?, in key: String) {
+        var value = options(key)
+        value.model = ref
+        setOptions(key, value)
+    }
+
+    /// The model this conversation will use.
+    func model(for key: String, bot: BotInfo) -> String? { options(key).model ?? bot.model ?? settings.defaultModel }
+
+    private func offBlock(_ key: String) -> String {
+        let off = options(key).off.compactMap(Grant.init(rawValue:))
+        guard !off.isEmpty else { return "" }
+        return "\n\n在这段絮语里，用户关掉了这些本事：" + off.map(\.title).joined(separator: "、") + "。需要用到时，告诉用户可以在输入框下的「本事」里打开，不要假装做了。"
+    }
+
     // MARK: Searching
 
     struct Hit: Identifiable {
@@ -681,7 +740,8 @@ final class TeamModel: ObservableObject {
     /// One Bot speaks once. False when the group should not go on.
     @discardableResult
     private func turn(_ bot: BotInfo, in key: String, room: RoomInfo?) async -> Bool {
-        guard let found = resolve(bot.model ?? settings.defaultModel) ?? resolve(settings.defaultModel) else {
+        let picked = options(key).model ?? bot.model ?? settings.defaultModel
+        guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
             fail(key, "还没有可用的模型。到 设置 → 模型 里加一个。")
             return false
         }
@@ -697,7 +757,7 @@ final class TeamModel: ObservableObject {
         var agent = Agent(
             provider: endpoint.provider(key: apiKey),
             model: found.model,
-            system: system(for: bot, room: room) + summaryBlock(key),
+            system: system(for: bot, room: room) + summaryBlock(key) + offBlock(key),
             tools: tools(for: bot, key: key),
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
@@ -920,7 +980,11 @@ final class TeamModel: ObservableObject {
         all += Phone.tools()
         all += Hills.shared.tools()
         all += SecretTools.all(botName: bot.name)
-        return Grant.gate(all)
+        let off = Set(options(key).off)
+        return Grant.gate(all).filter { tool in
+            guard let grant = Grant.of(tool: tool.spec.name) else { return true }
+            return !off.contains(grant.rawValue)
+        }
     }
 
     // MARK: Approvals
