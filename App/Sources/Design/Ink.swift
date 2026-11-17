@@ -30,19 +30,24 @@ enum Ink {
     static let warn = pair(0xC08A3E, 0xD9A65C)
     static let stop = pair(0xB4534B, 0xD4776F)
 
-    /// The washes a companion's portrait can sit on.
-    static let washes: [Color] = [
-        accentWash,
-        pair(0xEFE3E0, 0x3A2E2C),
-        pair(0xE3EADF, 0x2C352B),
-        pair(0xF1E6D2, 0x3A3226),
+    /// The grounds a companion's portrait can sit on, each with a name to keep and a name to show.
+    static let tints: [(key: String, title: String, color: Color)] = [
+        ("dai", "黛", accentWash),
+        ("yan", "胭", pair(0xEFE3E0, 0x3A2E2C)),
+        ("zhu", "竹", pair(0xE3EADF, 0x2C352B)),
+        ("xiang", "缃", pair(0xF1E6D2, 0x3A3226)),
+        ("teng", "藤", pair(0xE8E3EF, 0x332E3A)),
+        ("cang", "苍", pair(0xE6E6E3, 0x2F2F2D)),
     ]
 
-    /// A companion's own ground, picked from its color name so it stays the same.
+    static var washes: [Color] { tints.map(\.color) }
+
+    /// A companion's own ground: its chosen tint, or one picked from its name so it stays the same.
     static func wash(named name: String?) -> Color {
         let key = name ?? ""
+        if let tint = tints.first(where: { $0.key == key }) { return tint.color }
         let sum = key.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        return washes[sum % washes.count]
+        return tints[sum % tints.count].color
     }
 
     static func wash(for bot: BotInfo) -> Color { wash(named: bot.color ?? bot.id) }

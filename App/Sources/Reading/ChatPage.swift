@@ -126,6 +126,10 @@ struct ChatPage: View {
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? "雅集 · \(bot.name)" : bot.name)
         }
+        .sheet(isPresented: $leafing) {
+            LeavesSheet(team: team, key: chat.key, name: bot.name)
+                .presentationDetents([.medium, .large])
+        }
         .fullScreenCover(isPresented: $roaming) {
             RoamPage(browser: team.browser)
         }
@@ -161,6 +165,7 @@ struct ChatPage: View {
     private struct Noting: Identifiable { let id: String; let text: String }
     @State private var noting: Noting?
     @State private var roaming = false
+    @State private var leafing = false
 
     @AppStorage("mascot.shown") private var mascotShown = true
 
@@ -214,6 +219,19 @@ struct ChatPage: View {
                 typing = false
                 roaming = open
             }
+            Button {
+                Haptics.light()
+                typing = false
+                leafing = true
+            } label: {
+                Image(systemName: "book.pages")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Ink.ink)
+                    .frame(width: 38, height: 38)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("絮语页")
             if !isRoom { modelMenu }
         }
         .padding(.horizontal, Ink.Space.l)

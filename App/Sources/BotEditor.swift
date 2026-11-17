@@ -16,18 +16,16 @@ struct BotEditor: View {
     @State private var confirmingDelete = false
     @FocusState private var naming: Bool
 
-    private static let palette = ["blue", "violet", "magenta", "red", "orange", "yellow", "green", "aurora", "cyan", "brown", "gray", "black"]
 
     init(team: TeamModel, bot: BotInfo?) {
         self.team = team
         self.bot = bot
         _name = State(initialValue: bot?.name ?? "")
         _role = State(initialValue: bot?.role ?? "")
-        _color = State(initialValue: bot?.color.flatMap { BadgeLook.tones[$0] == nil ? nil : $0 } ?? "blue")
+        _color = State(initialValue: bot?.color.flatMap { key in Ink.tints.contains { $0.key == key } ? key : nil } ?? "dai")
         _instructions = State(initialValue: bot?.instructions ?? "")
     }
 
-    private var tone: UInt32 { BadgeLook.tone(named: color) }
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSave: Bool { !trimmed.isEmpty && !busy }
 
@@ -124,30 +122,24 @@ struct BotEditor: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        label("颜色").padding(.top, 6)
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 6), spacing: 12) {
-                            ForEach(Self.palette, id: \.self) { item in
+                        label("底色").padding(.top, 6)
+                        HStack(spacing: Ink.Space.m) {
+                            ForEach(Ink.tints, id: \.key) { tint in
                                 Button {
                                     Haptics.tick(0.6)
-                                    color = item
+                                    color = tint.key
                                 } label: {
-                                    Circle()
-                                        .fill(Color.shade(BadgeLook.tone(named: item), lift: 0.36))
-                                        .overlay(Circle().strokeBorder(.white, lineWidth: 3))
-                                        .overlay {
-                                            if color == item {
-                                                Image(systemName: "checkmark")
-                                                    .font(.system(size: 15, weight: .black))
-                                                    .foregroundStyle(.white)
-                                            }
-                                        }
+                                    Text(tint.title)
+                                        .font(Ink.serif(16, bold: color == tint.key))
+                                        .foregroundStyle(Ink.ink)
                                         .frame(width: 44, height: 44)
-                                        .scaleEffect(color == item ? 1.12 : 1)
-                                        .shadow(color: Color.shade(BadgeLook.tone(named: item), amount: 0.6).opacity(0.25), radius: 6, y: 4)
-                                        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: color)
+                                        .background(tint.color, in: .circle)
+                                        .overlay(Circle().strokeBorder(color == tint.key ? Ink.accent : Ink.rule, lineWidth: color == tint.key ? 2 : 1))
+                                        .scaleEffect(color == tint.key ? 1.08 : 1)
+                                        .animation(Ink.Motion.press, value: color)
                                 }
                                 .buttonStyle(.plain)
-                                .accessibilityLabel(item)
+                                .accessibilityLabel(tint.title)
                             }
                         }
                     }

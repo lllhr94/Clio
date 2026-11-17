@@ -284,6 +284,81 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
+    // MARK: Leaves
+
+    /// An earlier conversation put aside, so the current one can start fresh.
+    struct Leaf: Codable, Identifiable, Equatable {
+        var id: String
+        var title: String
+        /// Milliseconds: when it was last spoken in.
+        var at: Double
+        var count: Int
+    }
+
+    private var leafBook: [String: [Leaf]] = [:]
+
+    func leaves(_ key: String) -> [Leaf] {
+        if let kept = leafBook[key] { return kept }
+        let loaded = keeping ? (Disk.load([Leaf].self, Self.leafList(key)) ?? []) : []
+        leafBook[key] = loaded
+        return loaded
+    }
+
+    private static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
+    private static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
+
+    private func setLeaves(_ key: String, _ list: [Leaf]) {
+        objectWillChange.send()
+        leafBook[key] = list
+        if keeping { Disk.save(list, Self.leafList(key)) }
+    }
+
+    /// Puts the current conversation aside and starts an empty one. Nothing happens to an empty chat.
+    func turnLeaf(_ key: String) {
+        stop(key)
+        let current = history(key)
+        guard current.contains(where: { $0.note != true }) else { return }
+        let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
+        let title = String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
+        let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
+        if keeping { Disk.save(current, Self.leafFile(key, leaf.id)) }
+        setLeaves(key, [leaf] + leaves(key))
+        entries[key] = []
+        if keeping { Disk.save([Entry](), Disk.chatFile(key)) }
+        clearPreview(key)
+        notify(key, .changed)
+    }
+
+    /// Brings an earlier conversation back to the front; the current one is put aside in its place.
+    func openLeaf(_ key: String, _ leaf: Leaf) {
+        let kept = keeping ? (Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []) : []
+        turnLeaf(key)
+        entries[key] = kept
+        if keeping {
+            Disk.save(kept, Disk.chatFile(key))
+            Disk.remove(Self.leafFile(key, leaf.id))
+        }
+        setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
+        touch(key, preview: last)
+        notify(key, .changed)
+    }
+
+    func dropLeaf(_ key: String, _ leaf: Leaf) {
+        if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
+        setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+    }
+
+    private func clearPreview(_ key: String) {
+        if let index = bots.firstIndex(where: { Self.key(bot: $0.id) == key }) {
+            bots[index].preview = nil
+            saveBots()
+        } else if let index = rooms.firstIndex(where: { Self.key(room: $0.id) == key }) {
+            rooms[index].preview = nil
+            saveRooms()
+        }
+    }
+
     private func append(_ entry: Entry, to key: String) {
         var list = history(key)
         list.append(entry)

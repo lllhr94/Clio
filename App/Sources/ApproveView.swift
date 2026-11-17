@@ -32,13 +32,13 @@ struct ApproveView: View {
 
     var body: some View {
         ZStack {
-            Aurora(seed: 5.2).ignoresSafeArea()
+            Ink.paper.ignoresSafeArea()
             VStack(spacing: 0) {
                 HStack {
                     if waiting > 0 {
                         Text("后面还有 \(waiting) 张")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0x1B1B22))
+                            .foregroundStyle(Ink.ink)
                             .padding(.horizontal, 14)
                             .frame(height: 34)
                             .glassEffect(.regular, in: .capsule)
@@ -66,13 +66,13 @@ struct ApproveView: View {
                 ZStack {
                     if waiting > 0 {
                         SlipShape()
-                            .fill(.white)
+                            .fill(Ink.paperRaised)
                             .frame(width: 300, height: 300)
                             .rotationEffect(.degrees(5))
                             .offset(x: 14, y: 12)
                             .blur(radius: 1.5)
                             .opacity(0.8)
-                            .shadow(color: Color(hex: 0x141432).opacity(0.10), radius: 14, y: 14)
+                            .shadow(color: Ink.ink.opacity(0.10), radius: 14, y: 14)
                             .transition(.opacity)
                     }
                     slip
@@ -93,16 +93,15 @@ struct ApproveView: View {
 
                 VStack(spacing: 10) {
                     Text(title)
-                        .font(.system(size: 30, weight: .heavy))
-                        .tracking(-0.5)
-                        .foregroundStyle(Color(hex: 0x0B0B0F))
+                        .font(Ink.serif(28, bold: true))
+                        .foregroundStyle(Ink.ink)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                         .minimumScaleFactor(0.7)
                         .contentTransition(.opacity)
                     Text(note ?? subtitle)
                         .font(.system(size: 17))
-                        .foregroundStyle(note == nil ? Color(hex: 0x2A2A33) : Color(hex: 0xB4232F))
+                        .foregroundStyle(note == nil ? Ink.inkSoft : Ink.stop)
                         .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
                     controls
@@ -156,7 +155,7 @@ struct ApproveView: View {
                 } label: {
                     Text("不批准")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color(hex: 0x3A3A45))
+                        .foregroundStyle(Ink.inkSoft)
                         .frame(height: 46)
                         .padding(.horizontal, 24)
                         .contentShape(Rectangle())
@@ -174,26 +173,26 @@ struct ApproveView: View {
     private var slip: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("审 批 单")
+                Text("落 印 笺")
                     .font(.system(size: 12, weight: .bold))
                     .tracking(2)
                 Spacer()
                 Text(Self.clock(current.at.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date(), "HH:mm"))
                     .font(.system(size: 12, design: .monospaced))
             }
-            .foregroundStyle(Color(hex: 0x4A4A55))
+            .foregroundStyle(Ink.inkSoft)
 
             HStack(spacing: 12) {
-                Face(tone: BadgeLook.tone(named: bot?.color), size: 46, mood: verdict == nil ? .asking : .happy, ears: Ears.of(name))
+                Whale(size: 46, pose: verdict == nil ? .waiting : .idle, wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("申请人").font(.system(size: 13)).foregroundStyle(Color(hex: 0x4A4A55))
-                    Text(name).font(.system(size: 20, weight: .heavy)).lineLimit(1)
+                    Text("来自").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                    Text(name).font(Ink.serif(20, bold: true)).lineLimit(1)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("想做的事").font(.system(size: 13)).foregroundStyle(Color(hex: 0x4A4A55))
+                Text("想做的事").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
                     Text(tool).font(.system(size: 17, weight: .semibold)).lineLimit(2)
                 }
@@ -201,7 +200,7 @@ struct ApproveView: View {
                     Text(text).font(.system(size: 15)).lineLimit(4)
                 }
                 if let reason = current.reason, !reason.isEmpty {
-                    Text(reason).font(.system(size: 14)).foregroundStyle(Color(hex: 0x3A3A45)).lineLimit(4)
+                    Text(reason).font(.system(size: 14)).foregroundStyle(Ink.inkSoft).lineLimit(4)
                 }
                 if let code = current.detail?.code, !code.isEmpty {
                     Text(code)
@@ -210,29 +209,29 @@ struct ApproveView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(hex: 0xF1F0F6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .background(Ink.mine, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
 
             DashLine()
-                .stroke(Color(hex: 0xCFCFD8), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                .stroke(Ink.rule, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
                 .frame(height: 1.5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("批准人").font(.system(size: 13)).foregroundStyle(Color(hex: 0x4A4A55))
+                Text("落印").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
                 Text("你").font(.system(size: 17, weight: .semibold))
             }
             .frame(height: 62, alignment: .bottomLeading)
         }
-        .foregroundStyle(Color(hex: 0x0B0B0F))
+        .foregroundStyle(Ink.ink)
         .padding(.init(top: 26, leading: 20, bottom: 22, trailing: 20))
         .frame(width: 300)
-        .background(SlipShape().fill(.white))
+        .background(SlipShape().fill(Ink.paperRaised))
         .overlay(alignment: .bottomTrailing) {
             Stamp(
                 word: verdict == .rejected ? "已拒绝" : "已批准",
                 date: Self.clock(stampedAt, "MM-dd HH:mm"),
-                ink: verdict == .rejected ? Color(hex: 0x3A3A45) : Color(hex: 0xC4222F)
+                ink: verdict == .rejected ? Ink.inkSoft : Color(hex: 0xB23A2E)
             )
             .scaleEffect(verdict != nil ? 1 : 2.8)
             .opacity(verdict != nil ? 1 : 0)
@@ -240,7 +239,7 @@ struct ApproveView: View {
             .padding(.trailing, 16)
             .padding(.bottom, 14)
         }
-        .shadow(color: Color(hex: 0x141432).opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
+        .shadow(color: Ink.ink.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
     }
 
     private static func clock(_ date: Date, _ format: String) -> String {
@@ -351,23 +350,23 @@ private struct SlideTrack: View {
         GeometryReader { proxy in
             let travel = max(1, proxy.size.width - knob - 10)
             ZStack(alignment: .leading) {
-                Text("滑动批准")
+                Text("滑过去，落印")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color(hex: 0x3A3A45))
+                    .foregroundStyle(Ink.inkSoft)
                     .frame(maxWidth: .infinity)
                     .opacity(1 - Double(progress) * 1.6)
                 Capsule()
-                    .fill(Color(hex: 0x1F6AE8).opacity(0.18))
+                    .fill(Ink.accentWash)
                     .frame(width: knob + 10 + travel * progress, height: height)
                 Circle()
-                    .fill(LinearGradient(colors: [Color(hex: 0x2A6FE6), Color(hex: 0x1756CC)], startPoint: .top, endPoint: .bottom))
+                    .fill(Ink.accent)
                     .overlay {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 19, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Ink.paper)
                     }
                     .frame(width: knob, height: knob)
-                    .shadow(color: Color(hex: 0x1756CC).opacity(0.4), radius: 8, y: 5)
+                    .shadow(color: Ink.ink.opacity(0.18), radius: 6, y: 4)
                     .scaleEffect(1 + 0.06 * progress)
                     .offset(x: 5 + travel * progress)
                     .gesture(
@@ -404,6 +403,30 @@ private struct DashLine: Shape {
         var p = Path()
         p.move(to: CGPoint(x: rect.minX, y: rect.midY))
         p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return p
+    }
+}
+
+/// A slip of paper with a perforated top edge.
+struct SlipShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let count = max(1, Int(rect.width / 18))
+        let step = rect.width / CGFloat(count)
+        let bite = step * 0.3
+        let corner: CGFloat = 18
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        for index in 0..<count {
+            let cx = rect.minX + (CGFloat(index) + 0.5) * step
+            p.addLine(to: CGPoint(x: cx - bite, y: rect.minY))
+            p.addArc(center: CGPoint(x: cx, y: rect.minY), radius: bite, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: true)
+        }
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - corner))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX - corner, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX + corner, y: rect.maxY))
+        p.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - corner), control: CGPoint(x: rect.minX, y: rect.maxY))
+        p.closeSubpath()
         return p
     }
 }
