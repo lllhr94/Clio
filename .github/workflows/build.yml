@@ -108,8 +108,19 @@ jobs:
             gh release create latest --repo "$REPO" --prerelease \
               --title "Clio（未签名 IPA，最新构建）" \
               --notes "每次构建自动更新。下载 Clio-unsigned.ipa，用签名工具签名后安装。"
-          gh release upload latest Clio-unsigned.ipa --repo "$REPO" --clobber
-          gh release edit latest --repo "$REPO" --notes "最新构建：${{ github.sha }}。下载 Clio-unsigned.ipa，用签名工具签名后安装。"
+          # Upload under a new name first, then swap names, so the fixed link is never empty or half-written.
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/Build/Products/Release-iphoneos/Clio.app/Info.plist)"
+          cp Clio-unsigned.ipa "Clio-$VERSION.ipa"
+          gh release upload latest "Clio-$VERSION.ipa" --repo "$REPO" --clobber
+          NEW_ID="$(gh api "repos/$REPO/releases/tags/latest" -q ".assets[] | select(.name == \"Clio-$VERSION.ipa\") | .id")"
+          OLD_ID="$(gh api "repos/$REPO/releases/tags/latest" -q '.assets[] | select(.name == "Clio-unsigned.ipa") | .id')"
+          if [ -n "$OLD_ID" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$OLD_ID"; fi
+          gh api -X PATCH "repos/$REPO/releases/assets/$NEW_ID" -f name=Clio-unsigned.ipa >/dev/null
+          # Keep this version on its own too, for going back.
+          gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create "v$VERSION" --repo "$REPO" --prerelease --title "Clio $VERSION" --notes "构建 ${{ github.sha }}"
+          gh release upload "v$VERSION" "Clio-$VERSION.ipa" --repo "$REPO" --clobber
+          gh release edit latest --repo "$REPO" --notes "最新构建：Clio $VERSION（${{ github.sha }}）。下载 Clio-unsigned.ipa，用签名工具签名后安装。每个版本也单独留在 v$VERSION 里。"
 
       - uses: actions/upload-artifact@v4
         if: failure()
