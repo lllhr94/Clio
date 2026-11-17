@@ -82,7 +82,7 @@ final class TeamModel: ObservableObject {
     private var runs: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     private var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     private var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
-    private var laters: [Later] = []
+    @Published private var laters: [Later] = []
     private var labels: [String: String] = [:]
     /// Tokens the model has written in the turn running in each chat.
     private var written: [String: Int] = [:]
@@ -658,6 +658,9 @@ final class TeamModel: ObservableObject {
             touch(item.chat, preview: item.text, speaker: speaker)
         }
     }
+
+    /// The soonest message a companion has set for later.
+    var nextLetter: Later? { laters.min { $0.at < $1.at } }
 
     /// Called when the app comes back to the front.
     func wake() { deliverDue() }

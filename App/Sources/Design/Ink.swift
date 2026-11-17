@@ -38,6 +38,15 @@ enum Ink {
         pair(0xF1E6D2, 0x3A3226),
     ]
 
+    /// A companion's own ground, picked from its color name so it stays the same.
+    static func wash(named name: String?) -> Color {
+        let key = name ?? ""
+        let sum = key.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return washes[sum % washes.count]
+    }
+
+    static func wash(for bot: BotInfo) -> Color { wash(named: bot.color ?? bot.id) }
+
     // MARK: Type
 
     /// Whether the system's Songti is there; the serif system face stands in when it is not.

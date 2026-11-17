@@ -92,6 +92,7 @@ private struct Inline: View {
     let text: String
     let font: Font
     let fading: Bool
+    @Environment(\.noteInk) private var noteInk
 
     private var styled: AttributedString {
         var out = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
@@ -101,7 +102,7 @@ private struct Inline: View {
                 out[run.range].font = Ink.code
                 out[run.range].backgroundColor = Ink.accentWash
             }
-            if intent.contains(.stronglyEmphasized) {
+            if intent.contains(.stronglyEmphasized), noteInk == nil {
                 out[run.range].foregroundColor = Ink.ink
             }
         }
@@ -116,7 +117,7 @@ private struct Inline: View {
         Text(styled)
             .font(font)
             .lineSpacing(Ink.leading)
-            .foregroundStyle(Ink.ink)
+            .foregroundStyle(noteInk ?? Ink.ink)
             .textRenderer(TailFade(on: fading))
             .fixedSize(horizontal: false, vertical: true)
     }

@@ -10,12 +10,12 @@ struct SettingsView: View {
 
     var body: some View {
         ZStack {
-            Aurora(seed: 6.3).ignoresSafeArea()
+            Ink.paper.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        Text("设置")
-                            .font(.system(size: 34, weight: .heavy))
+                        Text("调弦")
+                            .font(Ink.display)
                             .tracking(-0.8)
                         Spacer()
                         Button {
@@ -42,7 +42,7 @@ struct SettingsView: View {
                                 onLeaveDemo()
                             }
                             .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(Color(hex: 0x1756CC))
+                            .foregroundStyle(Ink.accent)
                         }
                         .padding(.top, 18)
                     } else {
@@ -54,7 +54,7 @@ struct SettingsView: View {
                                         Text(endpoint.name).font(.system(size: 16, weight: .bold))
                                         Text("\(URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL) · \(endpoint.models.count) 个模型")
                                             .font(.system(size: 13))
-                                            .foregroundStyle(Color(hex: 0x3A3A45))
+                                            .foregroundStyle(Ink.inkSoft)
                                     }
                                     Spacer()
                                     Button {
@@ -62,7 +62,7 @@ struct SettingsView: View {
                                     } label: {
                                         Image(systemName: "trash")
                                             .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(Color(hex: 0xB4232F))
+                                            .foregroundStyle(Ink.stop)
                                             .frame(width: 36, height: 36)
                                     }
                                     .buttonStyle(.plain)
@@ -76,7 +76,7 @@ struct SettingsView: View {
                             } label: {
                                 Label("添加服务", systemImage: "plus")
                                     .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(Color(hex: 0x1756CC))
+                                    .foregroundStyle(Ink.accent)
                             }
                             .buttonStyle(.plain)
                         }
@@ -105,22 +105,22 @@ struct SettingsView: View {
                                         Spacer()
                                         Image(systemName: "chevron.up.chevron.down")
                                             .font(.system(size: 13, weight: .bold))
-                                            .foregroundStyle(Color(hex: 0x4A4A55))
+                                            .foregroundStyle(Ink.inkSoft)
                                     }
                                 }
                                 .buttonStyle(.plain)
-                                Text("没单独选模型的 Bot 都用它。DeepSeek 看不了图，发图片给 Bot 时最好用 Claude 或别的能看图的模型。")
+                                Text("没单独选模型的旅伴都用它。DeepSeek 看不了图，发图片给旅伴时最好用 Claude 或别的能看图的模型。")
                                     .font(.system(size: 13))
-                                    .foregroundStyle(Color(hex: 0x4A4A55))
+                                    .foregroundStyle(Ink.inkSoft)
                             }
                         }
 
-                        section("它们记得你的事")
+                        section("拾遗 · 旅伴记得的事")
                         card {
                             if team.memories.isEmpty {
-                                Text("还没有。聊天时说起你自己的事，Bot 会记下来，以后每次聊天都记得。")
+                                Text("还没有。聊天时说起你自己的事，旅伴会记下来，以后每次聊天都记得。")
                                     .font(.system(size: 15))
-                                    .foregroundStyle(Color(hex: 0x3A3A45))
+                                    .foregroundStyle(Ink.inkSoft)
                             }
                             ForEach(team.memories) { memory in
                                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -133,7 +133,7 @@ struct SettingsView: View {
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(.system(size: 18))
-                                            .foregroundStyle(Color(hex: 0x9A9AA6))
+                                            .foregroundStyle(Ink.inkFaint)
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel("忘掉这条")
@@ -143,20 +143,18 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Bot 团队 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                    Text("Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color(hex: 0x6A6A75))
+                        .foregroundStyle(Ink.inkSoft)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 30)
                 }
-                .foregroundStyle(Color(hex: 0x0B0B0F))
+                .foregroundStyle(Ink.ink)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 40)
             }
             .scrollIndicators(.hidden)
         }
-        .preferredColorScheme(.light)
-        .fontDesign(.rounded)
         .sheet(isPresented: $adding) {
             SetupView(team: team) { adding = false }
         }
@@ -171,7 +169,7 @@ struct SettingsView: View {
 
     private func section(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 20, weight: .heavy))
+            .font(Ink.title)
             .padding(.horizontal, 4)
             .padding(.top, 26)
             .padding(.bottom, 10)
@@ -181,7 +179,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) { content() }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 24))
+            .paperCard(radius: 22)
     }
 }
 
@@ -196,7 +194,7 @@ struct RoomEditor: View {
 
     var body: some View {
         ZStack {
-            Aurora(seed: 8.1).ignoresSafeArea()
+            Ink.paper.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
@@ -214,19 +212,19 @@ struct RoomEditor: View {
                         .accessibilityLabel("关闭")
                         Spacer()
                     }
-                    Text("拉个群")
-                        .font(.system(size: 30, weight: .heavy))
-                    Text("你说一句，群里的 Bot 按顺序接话。")
+                    Text("雅集")
+                        .font(Ink.display)
+                    Text("你说一句，雅集里的旅伴按顺序接话。")
                         .font(.system(size: 16))
-                        .foregroundStyle(Color(hex: 0x2A2A33))
+                        .foregroundStyle(Ink.ink)
                     TextField("群名，比如：周末去哪玩", text: $name)
                         .font(.system(size: 18, weight: .semibold))
                         .padding(.horizontal, 16)
                         .frame(height: 52)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 18))
-                    Text("选至少两个 Bot")
+                        .paperCard(radius: 18)
+                    Text("选至少两位旅伴")
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color(hex: 0x4A4A55))
+                        .foregroundStyle(Ink.inkSoft)
                         .padding(.leading, 6)
                         .padding(.top, 6)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 14) {
@@ -239,7 +237,7 @@ struct RoomEditor: View {
                                 }
                             } label: {
                                 VStack(spacing: 6) {
-                                    Face(tone: BadgeLook.tone(named: bot.color), size: 56, mood: picked ? .happy : .sleepy, ears: Ears.of(bot.name))
+                                    Whale(size: 56, wash: Ink.wash(for: bot), still: true).opacity(picked ? 1 : 0.55)
                                         .padding(.top, 10)
                                     Text(bot.name)
                                         .font(.system(size: 14, weight: .bold))
@@ -247,8 +245,8 @@ struct RoomEditor: View {
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
-                                .background(Color.white.opacity(picked ? 0.85 : 0.4), in: .rect(cornerRadius: 22))
-                                .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(picked ? Color(hex: 0x1756CC).opacity(0.5) : .clear, lineWidth: 2))
+                                .background(picked ? Ink.paperRaised : Ink.paper, in: .rect(cornerRadius: 22))
+                                .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(picked ? Ink.accent.opacity(0.5) : .clear, lineWidth: 2))
                                 .scaleEffect(picked ? 1.04 : 1)
                             }
                             .buttonStyle(.plain)
@@ -273,14 +271,12 @@ struct RoomEditor: View {
                     .disabled(!canSave)
                     .padding(.top, 8)
                 }
-                .foregroundStyle(Color(hex: 0x0B0B0F))
+                .foregroundStyle(Ink.ink)
                 .padding(.horizontal, 22)
                 .padding(.top, 10)
                 .padding(.bottom, 40)
             }
             .scrollIndicators(.hidden)
         }
-        .preferredColorScheme(.light)
-        .fontDesign(.rounded)
     }
 }

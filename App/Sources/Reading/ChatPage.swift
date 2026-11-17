@@ -29,7 +29,15 @@ struct ChatPage: View {
         _chat = StateObject(wrappedValue: ChatModel(bot: bot, team: team))
     }
 
-    private var bot: BotInfo { team.bots.first { $0.id == chat.bot.id } ?? chat.bot }
+    init(team: TeamModel, room: RoomInfo, back: @escaping () -> Void) {
+        self.team = team
+        self.back = back
+        _chat = StateObject(wrappedValue: ChatModel(room: room, team: team))
+    }
+
+    private var isRoom: Bool { chat.roomId != nil }
+
+    private var bot: BotInfo { isRoom ? chat.bot : (team.bots.first { $0.id == chat.bot.id } ?? chat.bot) }
     private var doing: String? { team.doing[chat.key] }
     private var working: Bool { doing != nil || !chat.streaming.isEmpty }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
@@ -115,6 +123,9 @@ struct ChatPage: View {
             chat.close()
             if dictation.listening { dictation.stop() }
         }
+        .sheet(item: $noting) { note in
+            NoteSheet(text: note.text, from: isRoom ? "雅集 · \(bot.name)" : bot.name)
+        }
         .fullScreenCover(item: $approving) { approval in
             ApproveView(approval: approval, team: team)
         }
@@ -144,6 +155,8 @@ struct ChatPage: View {
     }
 
     private struct Viewing: Identifiable { let id: String }
+    private struct Noting: Identifiable { let id: String; let text: String }
+    @State private var noting: Noting?
 
     @AppStorage("mascot.shown") private var mascotShown = true
 
@@ -193,7 +206,7 @@ struct ChatPage: View {
             .padding(.leading, -Ink.Space.xs)
             .glassChip()
             Spacer(minLength: 0)
-            modelMenu
+            if !isRoom { modelMenu }
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.top, Ink.Space.s)
@@ -282,6 +295,12 @@ struct ChatPage: View {
             .padding(.leading, Ink.Space.huge)
         case .bot:
             VStack(alignment: .leading, spacing: Ink.Space.m) {
+                if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
+                    HStack(spacing: Ink.Space.s) {
+                        Whale(size: 22, wash: Ink.wash(for: speaker), still: true)
+                        Text(speaker.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+                    }
+                }
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)
                 } else {
@@ -313,6 +332,10 @@ struct ChatPage: View {
                 chat.retry()
             }
             icon(voice.isSpeaking ? "speaker.slash" : "speaker.wave.2", "朗读") { speak(line.text) }
+            icon("scroll", "做成笺") {
+                Haptics.light()
+                noting = Noting(id: line.id, text: line.text)
+            }
             Spacer()
             Text(Self.numbers(line))
                 .font(Ink.footnote.monospacedDigit())

@@ -33,7 +33,7 @@ struct BotEditor: View {
 
     var body: some View {
         ZStack {
-            Aurora(seed: 7.4).ignoresSafeArea()
+            Ink.paper.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 18) {
                     HStack {
@@ -52,40 +52,39 @@ struct BotEditor: View {
                         Spacer()
                     }
 
-                    BadgeCard(look: BadgeLook(
-                        name: trimmed.isEmpty ? "新 Bot" : trimmed,
-                        role: role.isEmpty ? "它负责什么" : role,
-                        status: bot == nil ? "马上到岗" : "在岗",
-                        light: Color(hex: 0x34C98A),
-                        tone: tone
-                    ))
-                    .rotationEffect(.degrees(-3))
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: color)
-                    .padding(.vertical, 6)
+                    VStack(spacing: Ink.Space.m) {
+                        Whale(size: 96, wash: Ink.wash(named: color))
+                        Text(trimmed.isEmpty ? "新旅伴" : trimmed).font(Ink.title).foregroundStyle(Ink.ink)
+                        Text(role.isEmpty ? "一句话说说它" : role).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Ink.Space.xl)
+                    .paperCard()
+                    .animation(Ink.Motion.unfold, value: color)
 
                     VStack(alignment: .leading, spacing: 8) {
                         label("名字")
-                        TextField("比如：小助手", text: $name)
+                        TextField("比如：团子", text: $name)
                             .font(.system(size: 18, weight: .semibold))
                             .focused($naming)
                             .submitLabel(.done)
                             .padding(.horizontal, 16)
                             .frame(height: 52)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                            .paperCard(radius: 18)
                         label("它负责什么").padding(.top, 6)
                         TextField("比如：查资料 · 写总结", text: $role)
                             .font(.system(size: 17))
                             .submitLabel(.done)
                             .padding(.horizontal, 16)
                             .frame(height: 52)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                            .paperCard(radius: 18)
                         label("性格和说明").padding(.top, 6)
                         TextField("比如：说话温柔，爱用表情；擅长做饭，会根据冰箱里有的东西出主意。", text: $instructions, axis: .vertical)
                             .font(.system(size: 16))
                             .lineLimit(3...8)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                            .paperCard(radius: 18)
                         if !team.models.isEmpty {
                             label("用哪个模型").padding(.top, 6)
                             Menu {
@@ -117,11 +116,11 @@ struct BotEditor: View {
                                     Spacer()
                                     Image(systemName: "chevron.up.chevron.down")
                                         .font(.system(size: 13, weight: .bold))
-                                        .foregroundStyle(Color(hex: 0x4A4A55))
+                                        .foregroundStyle(Ink.inkSoft)
                                 }
                                 .padding(.horizontal, 16)
                                 .frame(height: 52)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                                .paperCard(radius: 18)
                             }
                             .buttonStyle(.plain)
                         }
@@ -152,12 +151,12 @@ struct BotEditor: View {
                             }
                         }
                     }
-                    .foregroundStyle(Color(hex: 0x0B0B0F))
+                    .foregroundStyle(Ink.ink)
 
                     if let error {
                         Text(error)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0xB4232F))
+                            .foregroundStyle(Ink.stop)
                             .multilineTextAlignment(.center)
                     }
 
@@ -181,7 +180,7 @@ struct BotEditor: View {
                     if let bot, !team.isMain(bot) {
                         Button("让它离职") { confirmingDelete = true }
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0xB4232F))
+                            .foregroundStyle(Ink.stop)
                             .buttonStyle(.plain)
                             .frame(height: 44)
                             .disabled(busy)
@@ -198,8 +197,6 @@ struct BotEditor: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
         }
-        .preferredColorScheme(.light)
-        .fontDesign(.rounded)
         .onAppear { if bot == nil { naming = true } }
     }
 
@@ -212,7 +209,7 @@ struct BotEditor: View {
     private func label(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13, weight: .bold))
-            .foregroundStyle(Color(hex: 0x4A4A55))
+            .foregroundStyle(Ink.inkSoft)
             .padding(.leading, 6)
     }
 

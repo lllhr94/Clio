@@ -22,7 +22,7 @@ struct SetupView: View {
 
     var body: some View {
         ZStack {
-            Aurora(seed: 5.2).ignoresSafeArea()
+            Ink.paper.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if !first {
@@ -39,14 +39,14 @@ struct SetupView: View {
                         .controlSize(.large)
                         .accessibilityLabel("关闭")
                     }
-                    Face(tone: 0xF5A04A, size: 72, mood: busy ? .busy : .happy, ears: .bear)
+                    Whale(size: 72, pose: busy ? .thinking : .idle)
                         .padding(.top, first ? 30 : 4)
-                    Text(first ? "先给团子接上大脑" : "添加模型服务")
-                        .font(.system(size: 30, weight: .heavy))
+                    Text(first ? "先给旅伴接上一支笔" : "添加模型服务")
+                        .font(Ink.display)
                         .tracking(-0.5)
-                    Text("Bot 用你自己的密钥直接连模型，对话只存在这台手机上。")
+                    Text("旅伴用你自己的密钥直接连模型，对话只存在这台手机上。")
                         .font(.system(size: 16))
-                        .foregroundStyle(Color(hex: 0x2A2A33))
+                        .foregroundStyle(Ink.ink)
 
                     VStack(spacing: 10) {
                         ForEach(Endpoint.presets) { preset in tile(preset) }
@@ -62,12 +62,12 @@ struct SetupView: View {
                         HStack {
                             Text("密钥 API Key")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color(hex: 0x4A4A55))
+                                .foregroundStyle(Ink.inkSoft)
                             Spacer()
                             if let help = helpURL {
                                 Button("去哪拿？") { openURL(help) }
                                     .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(Color(hex: 0x1756CC))
+                                    .foregroundStyle(Ink.accent)
                             }
                         }
                         .padding(.horizontal, 6)
@@ -78,13 +78,13 @@ struct SetupView: View {
                             .focused($keyFocused)
                             .padding(.horizontal, 16)
                             .frame(height: 52)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                            .paperCard(radius: 18)
                     }
 
                     if let error {
                         Text(error)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0xB4232F))
+                            .foregroundStyle(Ink.stop)
                             .transition(.opacity)
                     }
 
@@ -100,11 +100,11 @@ struct SetupView: View {
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.capsule)
                     .controlSize(.large)
-                    .tint(Color(hex: 0x1F6AE8))
+                    .tint(Ink.accent)
                     .disabled(busy || key.trimmingCharacters(in: .whitespaces).isEmpty)
                     .padding(.top, 6)
                 }
-                .foregroundStyle(Color(hex: 0x0B0B0F))
+                .foregroundStyle(Ink.ink)
                 .padding(.horizontal, 22)
                 .padding(.top, 10)
                 .padding(.bottom, 40)
@@ -114,8 +114,6 @@ struct SetupView: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
         }
-        .preferredColorScheme(.light)
-        .fontDesign(.rounded)
     }
 
     private var helpURL: URL? {
@@ -141,18 +139,18 @@ struct SetupView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(preset.name).font(.system(size: 17, weight: .bold))
-                    Text(note).font(.system(size: 13)).foregroundStyle(Color(hex: 0x3A3A45))
+                    Text(note).font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
                 }
                 Spacer()
                 Image(systemName: picked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22))
-                    .foregroundStyle(picked ? Color(hex: 0x1756CC) : Color(hex: 0x9A9AA6))
+                    .foregroundStyle(picked ? Ink.accent : Ink.inkFaint)
                     .contentTransition(.symbolEffect(.replace))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
-            .background(Color.white.opacity(picked ? 0.85 : 0.45), in: .rect(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(picked ? Color(hex: 0x1756CC).opacity(0.5) : .white.opacity(0.8), lineWidth: picked ? 2 : 1))
+            .background(picked ? Ink.paperRaised : Ink.paper, in: .rect(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(picked ? Ink.accent.opacity(0.5) : Ink.rule, lineWidth: picked ? 2 : 1))
             .scaleEffect(picked ? 1 : 0.98)
         }
         .buttonStyle(.plain)
@@ -162,7 +160,7 @@ struct SetupView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color(hex: 0x4A4A55))
+                .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, 6)
             TextField(hint, text: text)
                 .font(.system(size: 17))
@@ -171,7 +169,7 @@ struct SetupView: View {
                 .autocorrectionDisabled()
                 .padding(.horizontal, 16)
                 .frame(height: 52)
-                .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                .paperCard(radius: 18)
         }
         .transition(.move(edge: .top).combined(with: .opacity))
     }

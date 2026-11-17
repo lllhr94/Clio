@@ -19,8 +19,7 @@ struct ClioApp: App {
 
     var body: some Scene {
         WindowGroup {
-            // Stage 0: only the prototype is shown. The working app comes back in stage 1.
-            ProtoRoot()
+            ClioRoot()
         }
     }
 }
