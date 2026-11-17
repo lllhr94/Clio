@@ -84,6 +84,8 @@ final class TeamModel: ObservableObject {
     private var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     private var laters: [Later] = []
     private var labels: [String: String] = [:]
+    /// Tokens the model has written in the turn running in each chat.
+    private var written: [String: Int] = [:]
 
     init() { load() }
 
@@ -363,6 +365,7 @@ final class TeamModel: ObservableObject {
         } else if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) {
             await turn(bot, in: key, room: nil)
         }
+        settleUsage(key)
         if runs[key]?.token == token {
             runs[key] = nil
             doing[key] = nil
@@ -441,9 +444,50 @@ final class TeamModel: ObservableObject {
             }
             append(Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: speaker, label: label), to: key)
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
-        case .usage:
-            break
+        case .usage(_, let output):
+            written[key, default: 0] += output
         }
+    }
+
+    /// Puts the turn's token count on its last reply.
+    private func settleUsage(_ key: String) {
+        guard let total = written.removeValue(forKey: key), total > 0 else { return }
+        var list = history(key)
+        guard let index = list.lastIndex(where: { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }) else { return }
+        list[index].tokens = (list[index].tokens ?? 0) + total
+        entries[key] = list
+        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        notify(key, .changed)
+    }
+
+    /// Asks again: everything after the last thing the user said goes, and the companion answers anew.
+    func retry(_ key: String) {
+        guard phase != .demo else { return }
+        stop(key)
+        var list = history(key)
+        guard let last = list.lastIndex(where: { $0.message.role == .user && $0.note != true }) else { return }
+        list.removeSubrange((last + 1)...)
+        entries[key] = list
+        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        notify(key, .changed)
+        start(key)
+    }
+
+    /// Changes something the user said and goes on from there; what came after it is dropped.
+    func resend(_ key: String, entry id: String, text: String) {
+        guard phase != .demo else { return }
+        stop(key)
+        var list = history(key)
+        guard let index = list.firstIndex(where: { $0.id == id }) else { return }
+        var edited = list[index]
+        edited.message.text = text
+        edited.at = Now.ms
+        list.removeSubrange(index...)
+        list.append(edited)
+        entries[key] = list
+        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        notify(key, .changed)
+        start(key)
     }
 
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.

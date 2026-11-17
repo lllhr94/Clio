@@ -22,6 +22,10 @@ struct ChatLine: Identifiable, Equatable {
     var refs: [String] = []
     /// A steps row: what was done, in order.
     var tools: [String] = []
+    /// A steps row: how long its steps took; a reply: how long the turn took, in seconds.
+    var seconds: Int?
+    /// A reply: the tokens its turn used.
+    var tokens: Int?
 }
 
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
@@ -157,6 +161,8 @@ final class ChatModel: ObservableObject {
         hasEarlier = all.count > limit
         var out: [ChatLine] = []
         var open: Int?
+        var openedAt: Double = 0
+        var turnAt: Double?
         for entry in all.suffix(limit) {
             let message = entry.message
             if entry.note == true {
@@ -171,22 +177,29 @@ final class ChatModel: ObservableObject {
                 line.refs = entry.photos
                 out.append(line)
                 open = nil
+                turnAt = entry.at
             case .assistant:
                 if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    out.append(ChatLine(id: entry.id, kind: .bot, text: message.text, speaker: entry.speaker))
+                    var line = ChatLine(id: entry.id, kind: .bot, text: message.text, speaker: entry.speaker)
+                    if let turnAt { line.seconds = max(1, Int((entry.at - turnAt) / 1000)) }
+                    line.tokens = entry.tokens
+                    out.append(line)
                     open = nil
                 }
                 if !message.toolCalls.isEmpty, open == nil {
                     out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
                     open = out.count - 1
+                    openedAt = entry.at
                 }
             case .tool:
                 if open == nil {
                     out.append(ChatLine(id: "steps-\(entry.id)", kind: .steps, text: ""))
                     open = out.count - 1
+                    openedAt = entry.at
                 }
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)
+                out[open!].seconds = max(1, Int((entry.at - openedAt) / 1000))
             }
         }
         let working = team.isWorking(key)
@@ -291,6 +304,25 @@ final class ChatModel: ObservableObject {
     func answer(_ question: Question, selected: [String], custom: String) {
         let text = (selected + [custom.trimmingCharacters(in: .whitespacesAndNewlines)]).filter { !$0.isEmpty }.joined(separator: "，")
         send(text)
+    }
+
+    /// Asks the companion to answer the last message again.
+    func retry() {
+        guard !demo else { return }
+        withAnimation(.smooth) { error = nil }
+        target = ""
+        streaming = ""
+        team.retry(key)
+    }
+
+    /// Changes something already said, and answers from there.
+    func resend(_ id: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !demo, !trimmed.isEmpty else { return }
+        withAnimation(.smooth) { error = nil }
+        target = ""
+        streaming = ""
+        team.resend(key, entry: id, text: trimmed)
     }
 
     func stop() {

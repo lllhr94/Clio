@@ -16,6 +16,10 @@ struct ChatPage: View {
     @State private var takingPhoto = false
     @State private var approving: Approval?
     @State private var viewing: String?
+    /// The message being changed and sent again.
+    @State private var editing: String?
+    @State private var position = ScrollPosition(edge: .bottom)
+    @State private var farFromEnd = false
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
 
@@ -74,8 +78,14 @@ struct ChatPage: View {
                 .padding(.bottom, Ink.Space.xxl)
                 .animation(Ink.Motion.unfold, value: chat.lines.count)
             }
+            .scrollPosition($position)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY > 320
+            } action: { _, far in
+                withAnimation(Ink.Motion.settle) { farFromEnd = far }
+            }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             // Text scrolling up fades under the header instead of running into it.
@@ -252,10 +262,20 @@ struct ChatPage: View {
                         .font(Ink.label)
                         .foregroundStyle(Ink.ink)
                         .lineSpacing(4)
-                        .textSelection(.enabled)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, Ink.Space.m)
-                        .background(Ink.mine, in: .rect(cornerRadius: 18))
+                        .background(editing == line.id ? Ink.accentWash : Ink.mine, in: .rect(cornerRadius: 18))
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 18))
+                        .contextMenu {
+                            Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
+                            Button("改了重发", systemImage: "pencil") {
+                                withAnimation(Ink.Motion.settle) {
+                                    editing = line.id
+                                    draft = line.text
+                                }
+                                typing = true
+                            }
+                        }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -288,9 +308,29 @@ struct ChatPage: View {
                 UIPasteboard.general.string = line.text
                 Haptics.tick(0.5)
             }
+            icon("arrow.clockwise", "重来一次") {
+                Haptics.light()
+                chat.retry()
+            }
             icon(voice.isSpeaking ? "speaker.slash" : "speaker.wave.2", "朗读") { speak(line.text) }
             Spacer()
+            Text(Self.numbers(line))
+                .font(Ink.footnote.monospacedDigit())
+                .foregroundStyle(Ink.inkFaint)
         }
+    }
+
+    /// 「23 秒 · 3.4 千字」: how long the turn took and how much was written.
+    static func numbers(_ line: ChatLine) -> String {
+        var parts: [String] = []
+        if let seconds = line.seconds { parts.append(seconds >= 60 ? "\(seconds / 60) 分 \(seconds % 60) 秒" : "\(seconds) 秒") }
+        if let tokens = line.tokens {
+            parts.append(tokens >= 1000 ? String(format: "%.1f 千 tokens", Double(tokens) / 1000) : "\(tokens) tokens")
+        } else {
+            let count = line.text.count
+            parts.append(count >= 1000 ? String(format: "%.1f 千字", Double(count) / 1000) : "\(count) 字")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func icon(_ name: String, _ label: String, _ action: @escaping () -> Void) -> some View {
@@ -343,11 +383,42 @@ struct ChatPage: View {
                 .buttonStyle(PressStyle())
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            if farFromEnd {
+                Button {
+                    Haptics.light()
+                    withAnimation(Ink.Motion.unfold) { position.scrollTo(edge: .bottom) }
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .frame(width: 36, height: 36)
+                        .glassEffect(.regular, in: .circle)
+                }
+                .buttonStyle(PressStyle())
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                .accessibilityLabel("回到最新")
+            }
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
                     .onTapGesture { dictation.problem = nil }
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
+                if editing != nil {
+                    HStack(spacing: Ink.Space.s) {
+                        Image(systemName: "pencil").font(.system(size: 12, weight: .semibold))
+                        Text("改了重发：之后的对话会重新来过").font(Ink.footnote)
+                        Spacer()
+                        Button("算了") {
+                            withAnimation(Ink.Motion.settle) {
+                                editing = nil
+                                draft = ""
+                            }
+                        }
+                        .font(Ink.footnote.weight(.semibold))
+                    }
+                    .foregroundStyle(Ink.accent)
+                    .padding(.top, Ink.Space.xs)
+                }
                 if !photos.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: Ink.Space.s) {
@@ -432,9 +503,15 @@ struct ChatPage: View {
                 chat.stop()
             case 2:
                 Haptics.grab()
-                chat.send(draft, photos: photos)
+                if let editing {
+                    chat.resend(editing, text: draft)
+                    self.editing = nil
+                } else {
+                    chat.send(draft, photos: photos)
+                }
                 draft = ""
                 photos = []
+                position.scrollTo(edge: .bottom)
             default:
                 Haptics.grab()
                 typing = false
@@ -490,7 +567,7 @@ private struct Trace: View {
                     } else {
                         Image(systemName: "checkmark.circle").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ok)
                     }
-                    Text(line.live ? (line.tools.last ?? "沉吟") : "行迹 · \(line.tools.count) 步")
+                    Text(line.live ? (line.tools.last ?? "沉吟") : "行迹 · \(line.tools.count) 步" + (line.seconds.map { " · \($0) 秒" } ?? ""))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)

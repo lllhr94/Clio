@@ -43,6 +43,8 @@ struct Entry: Codable, Identifiable, Equatable {
     var label: String?
     /// Not for the model: a line for the user only.
     var note: Bool?
+    /// On the last reply of a turn: how many tokens the model wrote in that turn.
+    var tokens: Int?
 }
 
 /// Something the user told a Bot to remember about them.
