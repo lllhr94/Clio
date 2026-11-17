@@ -18,6 +18,7 @@ enum Opened: Identifiable, Hashable {
 struct ClioRoot: View {
     @StateObject private var team = TeamModel()
     @ObservedObject private var asker = Asker.shared
+    @AppStorage("look.scheme") private var scheme = "system"
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -33,6 +34,7 @@ struct ClioRoot: View {
         }
         .animation(Ink.Motion.settle, value: team.phase)
         .tint(Ink.accent)
+        .clioScheme(scheme)
         .sheet(item: $asker.current) { form in
             FormSheet(form: form)
         }

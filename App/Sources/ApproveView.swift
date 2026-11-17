@@ -114,7 +114,6 @@ struct ApproveView: View {
                 .padding(.bottom, 12)
             }
         }
-        .preferredColorScheme(.light)
         .fontDesign(.rounded)
         .onAppear {
             Haptics.prepare()

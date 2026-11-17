@@ -20,13 +20,19 @@ public struct ModelRequest: Sendable {
     public var messages: [Message]
     public var tools: [ToolSpec]
     public var maxTokens: Int
+    /// Nil: the model's own default.
+    public var temperature: Double?
+    /// Set when the user chose a limit; providers that need one use `maxTokens` otherwise.
+    public var outputLimit: Int?
 
-    public init(model: String, system: String, messages: [Message], tools: [ToolSpec] = [], maxTokens: Int = 8192) {
+    public init(model: String, system: String, messages: [Message], tools: [ToolSpec] = [], maxTokens: Int = 8192, temperature: Double? = nil, outputLimit: Int? = nil) {
         self.model = model
         self.system = system
         self.messages = messages
         self.tools = tools
         self.maxTokens = maxTokens
+        self.temperature = temperature
+        self.outputLimit = outputLimit
     }
 }
 

@@ -56,6 +56,8 @@ public struct Agent: Sendable {
     public var tools: [AgentTool]
     public var maxSteps: Int
     public var approve: @Sendable (ApprovalAsk, String) async -> Bool
+    public var temperature: Double?
+    public var outputLimit: Int?
 
     public init(provider: ModelProvider, model: String, system: String, tools: [AgentTool] = [], maxSteps: Int = 16, approve: @escaping @Sendable (ApprovalAsk, String) async -> Bool = { _, _ in false }) {
         self.provider = provider
@@ -66,12 +68,23 @@ public struct Agent: Sendable {
         self.approve = approve
     }
 
+    /// Asks once with no tools and returns the whole answer: for summaries and titles.
+    public func ask(_ prompt: String) async throws -> String {
+        let request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit)
+        var text = ""
+        for try await event in provider.stream(request) {
+            try Task.checkCancellation()
+            if case .text(let piece) = event { text += piece }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
         var messages = history
         let specs = tools.map(\.spec)
         for _ in 0..<maxSteps {
             try Task.checkCancellation()
-            let request = ModelRequest(model: model, system: system, messages: messages, tools: specs)
+            let request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit)
             var text = ""
             var reasoning = ""
             var calls: [Int: ToolCall] = [:]

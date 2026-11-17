@@ -28,19 +28,20 @@ enum Haptics {
     }
 
     /// A tap on a button.
-    static func light() { mediumGen.impactOccurred(intensity: 0.8) }
+    static func light() { guard Pref.haptics else { return }; mediumGen.impactOccurred(intensity: 0.8) }
 
     /// Taking hold of something.
-    static func grab() { mediumGen.impactOccurred(intensity: 1.0) }
+    static func grab() { guard Pref.haptics else { return }; mediumGen.impactOccurred(intensity: 1.0) }
 
     /// One notch of travel; `strength` in 0...1.
-    static func tick(_ strength: CGFloat = 0.7) { rigidGen.impactOccurred(intensity: max(0.3, min(1, strength))) }
+    static func tick(_ strength: CGFloat = 0.7) { guard Pref.haptics else { return }; rigidGen.impactOccurred(intensity: max(0.3, min(1, strength))) }
 
     /// Something locking into place.
-    static func lock() { heavyGen.impactOccurred(intensity: 1.0) }
+    static func lock() { guard Pref.haptics else { return }; heavyGen.impactOccurred(intensity: 1.0) }
 
     /// The stamp landing: a deep hit, a short rumble under it, then a sharper bounce.
     static func thud() {
+        guard Pref.haptics else { return }
         guard let engine else { fallbackThud(); return }
         func p(_ id: CHHapticEvent.ParameterID, _ value: Float) -> CHHapticEventParameter {
             CHHapticEventParameter(parameterID: id, value: value)

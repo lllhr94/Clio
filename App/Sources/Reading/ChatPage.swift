@@ -367,9 +367,11 @@ struct ChatPage: View {
                 noting = Noting(id: line.id, text: line.text)
             }
             Spacer()
-            Text(Self.numbers(line))
-                .font(Ink.footnote.monospacedDigit())
-                .foregroundStyle(Ink.inkFaint)
+            if Pref.stats {
+                Text(Self.numbers(line))
+                    .font(Ink.footnote.monospacedDigit())
+                    .foregroundStyle(Ink.inkFaint)
+            }
         }
     }
 
@@ -612,7 +614,7 @@ struct ChatPage: View {
 private struct Trace: View {
     let line: ChatLine
     var visit: (URL) -> Void = { _ in }
-    @State private var open = false
+    @State private var open = Pref.traceOpen
 
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
     private var pages: [URL] {

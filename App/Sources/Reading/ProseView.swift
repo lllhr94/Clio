@@ -4,15 +4,26 @@ import SwiftUI
 /// A companion's words, set as a page: paragraphs, lists, tables, code and quotes.
 /// While a reply is still arriving, only its last block changes, and that block's newest glyphs fade in.
 struct ProseView: View {
+    // Read so a change in 纸墨 redraws the text.
+    @AppStorage("look.face") private var face = "song"
+    @AppStorage("look.size") private var size = 17.0
+    @AppStorage("look.leading") private var leading = 8.0
+    @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
     var streaming = false
 
+    init(text: String, streaming: Bool = false) {
+        self.text = text
+        self.streaming = streaming
+    }
+
     var body: some View {
+        let _ = (face, size, leading)
         let blocks = Prose.parse(text)
         VStack(alignment: .leading, spacing: Ink.Space.l) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                BlockView(block: block, fading: streaming && index == blocks.count - 1)
+                BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -6,12 +6,37 @@ struct LeavesSheet: View {
     let key: String
     let name: String
     @Environment(\.dismiss) private var dismiss
+    @State private var folding = false
+    @State private var note: String?
+    @State private var showDigest = false
 
     private var leaves: [TeamModel.Leaf] { team.leaves(key) }
     private var hasCurrent: Bool { team.history(key).contains { $0.note != true } }
 
     var body: some View {
         NavigationStack {
+            content
+        }
+    }
+
+    private func fold() {
+        folding = true
+        note = nil
+        Task {
+            do {
+                let count = try await team.compress(key)
+                note = "压好了：较早的 \(count) 条写成了前情提要。"
+                Haptics.thud()
+            } catch {
+                note = error.localizedDescription
+                Haptics.lock()
+            }
+            folding = false
+        }
+    }
+
+    private var content: some View {
+        Group {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
@@ -35,6 +60,55 @@ struct LeavesSheet: View {
                         }
                         .buttonStyle(PressStyle())
                         .disabled(!hasCurrent)
+
+                        Button {
+                            fold()
+                        } label: {
+                            HStack(spacing: Ink.Space.m) {
+                                if folding { ProgressView().frame(width: 22) } else {
+                                    Image(systemName: "rectangle.compress.vertical").font(.system(size: 18)).foregroundStyle(Ink.accent)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(folding ? "正在写前情提要…" : "压缩前文").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text("较早的话写成一份前情提要，只留最近 \(Pref.keepRecent) 条原样。聊得久、回复变慢时用。原文会收进下面。")
+                                        .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                    Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
+                                        .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                        }
+                        .buttonStyle(PressStyle())
+                        .disabled(folding || !hasCurrent)
+
+                        if let note {
+                            Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).padding(.horizontal, Ink.Space.xs)
+                        }
+
+                        if let digest = team.summary(key) {
+                            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                                Button {
+                                    withAnimation(Ink.Motion.unfold) { showDigest.toggle() }
+                                } label: {
+                                    HStack {
+                                        Text("前情提要").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
+                                        Spacer()
+                                        Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Ink.inkFaint)
+                                            .rotationEffect(.degrees(showDigest ? -180 : 0))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                if showDigest {
+                                    ProseView(text: digest)
+                                        .padding(Ink.Space.l)
+                                        .paperCard()
+                                        .transition(.opacity)
+                                }
+                            }
+                            .padding(.horizontal, Ink.Space.xs)
+                        }
 
                         if leaves.isEmpty {
                             Text("还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。")

@@ -68,6 +68,8 @@ public struct OpenAIProvider: ModelProvider {
             "stream": true,
             "stream_options": ["include_usage": true],
         ]
+        if let temperature = request.temperature { body["temperature"] = temperature }
+        if let limit = request.outputLimit { body["max_tokens"] = limit }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { tool in
                 ["type": "function", "function": ["name": tool.name, "description": tool.description, "parameters": tool.parameters.any]]

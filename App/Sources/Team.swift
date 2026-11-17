@@ -249,10 +249,10 @@ final class TeamModel: ObservableObject {
 
     /// What a Bot is up to, in a few words, and the color of its light.
     func status(of bot: BotInfo) -> (text: String, light: Color) {
-        if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Color(hex: 0xF5A623)) }
-        if doing[Self.key(bot: bot.id)] != nil || busyBots.contains(bot.id) { return ("正在干活", Color(hex: 0x5B8DEF)) }
-        if phase == .ready, resolve(bot.model ?? settings.defaultModel) == nil { return ("还没有模型", Color(hex: 0xF0616D)) }
-        return ("空闲", Color(hex: 0x34C98A))
+        if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Ink.warn) }
+        if doing[Self.key(bot: bot.id)] != nil || busyBots.contains(bot.id) { return ("正在干活", Ink.accent) }
+        if phase == .ready, resolve(bot.model ?? settings.defaultModel) == nil { return ("还没有模型", Ink.stop) }
+        return ("空闲", Ink.ok)
     }
 
     // MARK: Memory
@@ -342,6 +342,114 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
+    // MARK: Compressing
+
+    private var summaryBook: [String: String] = [:]
+    @Published private(set) var compressing: Set<String> = []
+
+    private static func summaryFile(_ key: String) -> String { "chats/\(key)~summary.json" }
+
+    /// The digest of the part of this conversation that was folded away.
+    func summary(_ key: String) -> String? {
+        if let kept = summaryBook[key] { return kept.isEmpty ? nil : kept }
+        let loaded = keeping ? (Disk.load(String.self, Self.summaryFile(key)) ?? "") : ""
+        summaryBook[key] = loaded
+        return loaded.isEmpty ? nil : loaded
+    }
+
+    private func setSummary(_ key: String, _ text: String?) {
+        objectWillChange.send()
+        summaryBook[key] = text ?? ""
+        guard keeping else { return }
+        if let text, !text.isEmpty { Disk.save(text, Self.summaryFile(key)) } else { Disk.remove(Self.summaryFile(key)) }
+    }
+
+    private func summaryBlock(_ key: String) -> String {
+        guard let summary = summary(key) else { return "" }
+        return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文用户收在絮语页里）：\n" + summary
+    }
+
+    /// How long the conversation is, in characters.
+    func size(of key: String) -> Int {
+        history(key).filter { $0.note != true }.reduce(0) { $0 + $1.message.text.count }
+    }
+
+    /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
+    @discardableResult
+    func compress(_ key: String) async throws -> Int {
+        guard !compressing.contains(key) else { return 0 }
+        let all = history(key)
+        let real = all.indices.filter { all[$0].note != true }
+        let keep = max(4, Pref.keepRecent)
+        guard real.count > keep + 4 else { throw TeamError(message: "这段絮语还不长，用不着压缩。") }
+        var cut = real[real.count - keep]
+        while cut < all.count, !(all[cut].note != true && all[cut].message.role == .user) { cut += 1 }
+        guard cut < all.count, cut > 0 else { throw TeamError(message: "找不到合适的地方断开，过一会儿再试。") }
+
+        let speakerBot: BotInfo? = {
+            if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) { return bot }
+            if let room = rooms.first(where: { Self.key(room: $0.id) == key }) { return bots.first { $0.id == room.members?.first } }
+            return nil
+        }()
+        guard let bot = speakerBot, let found = resolve(bot.model ?? settings.defaultModel) ?? resolve(settings.defaultModel),
+              let apiKey = apiKey(for: found.endpoint.id), !apiKey.isEmpty else {
+            throw TeamError(message: "没有能用的模型来写前情提要。")
+        }
+        compressing.insert(key)
+        defer { compressing.remove(key) }
+
+        var lines: [String] = []
+        var folded = 0
+        for entry in all[..<cut] where entry.note != true {
+            let message = entry.message
+            switch message.role {
+            case .user:
+                lines.append("用户：\(message.text)")
+                folded += 1
+            case .assistant:
+                guard !message.text.isEmpty else { continue }
+                let name = entry.speaker.flatMap { id in bots.first { $0.id == id }?.name } ?? bot.name
+                lines.append("\(name)：\(message.text)")
+                folded += 1
+            case .tool:
+                if let label = entry.label { lines.append("（用了工具：\(label)）") }
+            }
+        }
+        var transcript = lines.joined(separator: "\n")
+        if transcript.count > 60_000 { transcript = "……\n" + String(transcript.suffix(60_000)) }
+        let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
+        let prompt = """
+        \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
+        要保留：用户说过的关于自己的事、偏好、做过的决定、约定和待办、没解决的问题、重要的数字、名字、地址和链接。
+        要略去：寒暄、反复的过程、已经过时的内容。
+        用条目写，第三人称，900 字以内，只输出提要本身。
+
+        \(transcript)
+        """
+        let agent = Agent(provider: found.endpoint.provider(key: apiKey), model: found.model, system: "你擅长把长对话整理成准确、简洁的提要。")
+        let digest = try await agent.ask(prompt)
+        guard !digest.isEmpty else { throw TeamError(message: "模型没给出提要。") }
+
+        // Keep the full text as a leaf, so nothing is lost.
+        let current = history(key)
+        let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
+        let leaf = Leaf(id: UUID().uuidString, title: "压缩前的原文 · " + String(first.replacingOccurrences(of: "\n", with: " ").prefix(20)), at: current.last?.at ?? Now.ms,
+                        count: current.filter { $0.note != true && $0.message.role != .tool }.count)
+        if keeping {
+            Disk.save(current, Self.leafFile(key, leaf.id))
+            if let old = summary(key) { Disk.save(old, Self.leafSummary(key, leaf.id)) }
+        }
+        setLeaves(key, [leaf] + leaves(key))
+
+        let marker = Entry(id: UUID().uuidString, at: (current[cut].at) - 1, message: .assistant("前情提要：较早的 \(folded) 条已压缩成摘要，原文收在絮语页"), note: true)
+        let kept = [marker] + Array(current[current.index(current.startIndex, offsetBy: min(cut, current.count))...])
+        entries[key] = kept
+        if keeping { Disk.save(kept, Disk.chatFile(key)) }
+        setSummary(key, digest)
+        notify(key, .changed)
+        return folded
+    }
+
     // MARK: Leaves
 
     /// An earlier conversation put aside, so the current one can start fresh.
@@ -364,6 +472,7 @@ final class TeamModel: ObservableObject {
 
     private static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
     private static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
+    private static func leafSummary(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary.json" }
 
     private func setLeaves(_ key: String, _ list: [Leaf]) {
         objectWillChange.send()
@@ -379,7 +488,11 @@ final class TeamModel: ObservableObject {
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
         let title = String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
         let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
-        if keeping { Disk.save(current, Self.leafFile(key, leaf.id)) }
+        if keeping {
+            Disk.save(current, Self.leafFile(key, leaf.id))
+            if let old = summary(key) { Disk.save(old, Self.leafSummary(key, leaf.id)) }
+        }
+        setSummary(key, nil)
         setLeaves(key, [leaf] + leaves(key))
         entries[key] = []
         if keeping { Disk.save([Entry](), Disk.chatFile(key)) }
@@ -390,7 +503,10 @@ final class TeamModel: ObservableObject {
     /// Brings an earlier conversation back to the front; the current one is put aside in its place.
     func openLeaf(_ key: String, _ leaf: Leaf) {
         let kept = keeping ? (Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []) : []
+        let keptSummary = keeping ? Disk.load(String.self, Self.leafSummary(key, leaf.id)) : nil
         turnLeaf(key)
+        setSummary(key, keptSummary)
+        if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
         entries[key] = kept
         if keeping {
             Disk.save(kept, Disk.chatFile(key))
@@ -403,7 +519,10 @@ final class TeamModel: ObservableObject {
     }
 
     func dropLeaf(_ key: String, _ leaf: Leaf) {
-        if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
+        if keeping {
+            Disk.remove(Self.leafFile(key, leaf.id))
+            Disk.remove(Self.leafSummary(key, leaf.id))
+        }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
     }
 
@@ -489,6 +608,10 @@ final class TeamModel: ObservableObject {
 
     private func run(_ key: String, token: UUID) async {
         let grace = UIApplication.shared.beginBackgroundTask(withName: "bot-turn")
+        if Pref.autoCompress, size(of: key) > Pref.compressAt {
+            doing[key] = "正在压缩前文"
+            _ = try? await compress(key)
+        }
         if key.hasPrefix("room-") {
             if let room = rooms.first(where: { Self.key(room: $0.id) == key }) {
                 for member in (room.members ?? []).compactMap({ id in bots.first { $0.id == id } }) {
@@ -527,13 +650,15 @@ final class TeamModel: ObservableObject {
         guard messages.contains(where: { $0.role == .user }) else { return false }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
-        let agent = Agent(
+        var agent = Agent(
             provider: endpoint.provider(key: apiKey),
             model: found.model,
-            system: system(for: bot, room: room),
+            system: system(for: bot, room: room) + summaryBlock(key),
             tools: tools(for: bot, key: key),
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
+        if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
+        if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         doing[key] = room == nil ? "正在想" : "\(bot.name)在想"
         do {
             try await agent.run(history: messages) { [weak self] event in
@@ -635,7 +760,8 @@ final class TeamModel: ObservableObject {
         while start > 0 {
             let entry = all[start - 1]
             size += entry.message.text.count + entry.message.toolCalls.reduce(0) { $0 + $1.arguments.count }
-            if size > 48_000, start < all.count - 1 { break }
+            if size > Pref.contextChars, start < all.count - 1 { break }
+            if Pref.contextCount > 0, all.count - start >= Pref.contextCount { break }
             start -= 1
         }
         while start < all.count, all[start].message.role != .user { start += 1 }

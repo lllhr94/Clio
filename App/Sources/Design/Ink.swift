@@ -67,15 +67,25 @@ enum Ink {
 
     static let display = serif(30, bold: true, relativeTo: .largeTitle)
     static let title = serif(22, bold: true, relativeTo: .title2)
-    static let reading = serif(17, relativeTo: .body)
-    static let readingBold = serif(17, bold: true, relativeTo: .body)
+    /// Reading text, in the face and size the user picked in 纸墨.
+    static var reading: Font { body(Pref.size, bold: false) }
+    static var readingBold: Font { body(Pref.size, bold: true) }
+
+    static func body(_ size: Double, bold: Bool) -> Font {
+        switch Pref.face {
+        case .song: serif(size, bold: bold, relativeTo: .body)
+        case .sans: .system(size: size, weight: bold ? .semibold : .regular)
+        case .rounded: .system(size: size, weight: bold ? .semibold : .regular, design: .rounded)
+        case .serif: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
+        }
+    }
     static let label = Font.system(size: 16, weight: .medium)
     static let secondary = Font.system(size: 14)
     static let footnote = Font.system(size: 12)
     static let code = Font.system(size: 14, design: .monospaced)
 
     /// The space between the lines of reading text.
-    static let leading: CGFloat = 8
+    static var leading: CGFloat { Pref.leading }
 
     // MARK: Space and corners
 

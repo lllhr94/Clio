@@ -16,11 +16,11 @@ struct RemotePhoto: View {
 
     var body: some View {
         ZStack {
-            Color.white.opacity(0.55)
+            Ink.paperRaised.opacity(0.7)
             if let image {
                 Image(uiImage: image).resizable().scaledToFill()
             } else if failed {
-                Image(systemName: "photo").foregroundStyle(Color(hex: 0x4A4A55))
+                Image(systemName: "photo").foregroundStyle(Ink.inkSoft)
             } else {
                 ProgressView().controlSize(.small)
             }

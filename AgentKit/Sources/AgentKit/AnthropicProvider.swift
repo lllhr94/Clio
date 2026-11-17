@@ -70,11 +70,12 @@ public struct AnthropicProvider: ModelProvider {
         }
         var body: [String: Any] = [
             "model": request.model,
-            "max_tokens": request.maxTokens,
+            "max_tokens": request.outputLimit ?? request.maxTokens,
             "stream": true,
             "messages": turns.map { ["role": $0.role, "content": $0.blocks] },
         ]
         if !request.system.isEmpty { body["system"] = request.system }
+        if let temperature = request.temperature { body["temperature"] = min(1, temperature) }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
         }

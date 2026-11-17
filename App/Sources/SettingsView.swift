@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var adding = false
     @State private var removing: Endpoint?
+    @State private var looking = false
 
     var body: some View {
         ZStack {
@@ -114,6 +115,26 @@ struct SettingsView: View {
                                     .foregroundStyle(Ink.inkSoft)
                             }
                         }
+
+                        section("纸墨与絮语")
+                        Button {
+                            Haptics.light()
+                            looking = true
+                        } label: {
+                            HStack(spacing: Ink.Space.m) {
+                                Image(systemName: "textformat.size").font(.system(size: 18)).foregroundStyle(Ink.accent).frame(width: 28)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("字体、字号、明暗、触感").font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                                    Text("还有压缩、上下文长度、温度这些对话的设置").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                            }
+                            .padding(16)
+                            .paperCard()
+                        }
+                        .buttonStyle(PressStyle())
+                        .sheet(isPresented: $looking) { LookPage() }
 
                         section("拾遗 · 旅伴记得的事")
                         card {
