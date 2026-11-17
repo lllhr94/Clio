@@ -137,7 +137,7 @@ struct Desk: View {
         .sheet(isPresented: $dressing) { PortraitPage() }
         .sheet(isPresented: $studying) { StudyPage() }
         .fullScreenCover(isPresented: $denning) { DenPage() }
-        .sheet(isPresented: $granting) { GrantsPage() }
+        .sheet(isPresented: $granting) { GrantsPage(team: team) }
         .sheet(isPresented: $hilling) { HillsPage() }
         .sheet(isPresented: $vaulting) { SecretsPage() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in

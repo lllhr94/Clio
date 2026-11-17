@@ -313,6 +313,7 @@ struct RoamTool: AgentTool {
 /// The browser shown to the user: address, the page, and handing back when a companion asked for help.
 struct RoamPage: View {
     @ObservedObject var browser: BrowserSession
+    @ObservedObject private var asker = Asker.shared
     @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @FocusState private var editing: Bool
@@ -399,6 +400,7 @@ struct RoamPage: View {
         }
         .background(Ink.paper)
         .animation(Ink.Motion.unfold, value: browser.handoff)
+        .sheet(item: $asker.current) { form in FormSheet(form: form) }
         .onAppear { address = browser.url?.absoluteString ?? "" }
         .onChange(of: browser.url) { _, url in
             if !editing { address = url?.absoluteString ?? "" }

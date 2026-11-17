@@ -10,6 +10,8 @@ struct DenPage: View {
     @FocusState private var typing: Bool
     /// Commands typed while one is still running wait their turn, so output never interleaves.
     @State private var line: Task<Void, Never>?
+    @State private var inkstone = false
+    @State private var outfitting = false
 
     var body: some View {
         ZStack {
@@ -40,6 +42,14 @@ struct DenPage: View {
             }
         }
         .task { _ = await den.wake() }
+        .fullScreenCover(isPresented: $inkstone) { InkstonePage() }
+        .sheet(isPresented: $outfitting) {
+            OutfitSheet { command in
+                outfitting = false
+                if let command { queue(command) }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     private var header: some View {
@@ -71,7 +81,21 @@ struct DenPage: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Ink.stop)
             }
+            Button {
+                Haptics.light()
+                inkstone = true
+            } label: {
+                Image(systemName: "apple.terminal")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .frame(width: 36, height: 36)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("笔砚")
             Menu {
+                Button("笔砚（真终端）", systemImage: "apple.terminal") { inkstone = true }
+                Button("装常用软件", systemImage: "shippingbox") { outfitting = true }
                 Button("清屏", systemImage: "eraser") { den.clear() }
             } label: {
                 Image(systemName: "ellipsis")
@@ -174,10 +198,14 @@ struct DenPage: View {
         history.append(typed)
         back = 0
         command = ""
+        queue(typed)
+    }
+
+    private func queue(_ typed: String) {
         let before = self.line
         self.line = Task {
             await before?.value
-            _ = await den.run(typed, timeout: 600)
+            _ = await den.run(typed, timeout: 900)
         }
     }
 }

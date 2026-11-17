@@ -18,6 +18,7 @@
 #include "fs/dev.h"
 #include "fs/devices.h"
 #include "fs/path.h"
+#include "fs/tty.h"
 #include "fs/real.h"
 #include "fs/sock.h"
 #include "debug.h"
@@ -417,6 +418,134 @@ static dispatch_queue_t readers;
         send_signal(task, SIGKILL_, info);
     unlock(&pids_lock);
     return task != NULL;
+}
+
+@end
+
+
+// MARK: 笔砚 — a pseudo-terminal whose screen is a view in the app
+
+@interface DenTerminal ()
+@property (nonatomic, copy) void (^output)(NSData *);
+@property (nonatomic, copy) void (^exited)(void);
+@property (nonatomic) struct tty *tty;
+@property (nonatomic) int pid;
+@property (atomic) BOOL gone;
+@end
+
+static int den_tty_init(struct tty *tty) {
+    return 0;
+}
+
+static int den_tty_write(struct tty *tty, const void *buf, size_t len, bool blocking) {
+    void *owner = tty->data;
+    if (owner == NULL)
+        return (int) len;
+    DenTerminal *terminal = (__bridge DenTerminal *) owner;
+    NSData *data = [NSData dataWithBytes:buf length:len];
+    void (^output)(NSData *) = terminal.output;
+    if (output)
+        dispatch_async(dispatch_get_main_queue(), ^{ output(data); });
+    return (int) len;
+}
+
+static void den_tty_cleanup(struct tty *tty) {
+    if (tty->data != NULL) {
+        DenTerminal *terminal = CFBridgingRelease(tty->data);
+        terminal.tty = NULL;
+    }
+    tty->data = NULL;
+}
+
+static struct tty_driver_ops den_tty_ops = {
+    .init = den_tty_init,
+    .write = den_tty_write,
+    .cleanup = den_tty_cleanup,
+};
+static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
+
+@implementation DenTerminal
+
++ (instancetype)openWithOutput:(void (^)(NSData *))output exited:(void (^)(void))exited error:(int *)error {
+    if (!denBooted) {
+        if (error) *error = -1;
+        return nil;
+    }
+    DenTerminal *terminal = [DenTerminal new];
+    terminal.output = output;
+    terminal.exited = exited;
+
+    struct task *saved = current;
+    int err = become_new_init_child();
+    if (err < 0) {
+        current = saved;
+        if (error) *error = err;
+        return nil;
+    }
+    struct tty *tty = pty_open_fake(&den_pty_driver);
+    if (IS_ERR(tty)) {
+        current = saved;
+        if (error) *error = (int) PTR_ERR(tty);
+        return nil;
+    }
+    tty->data = (void *) CFBridgingRetain(terminal);
+    terminal.tty = tty;
+    NSString *stdioFile = [NSString stringWithFormat:@"/dev/pts/%d", tty->num];
+    err = create_stdio(stdioFile.fileSystemRepresentation, TTY_PSEUDO_SLAVE_MAJOR, tty->num);
+    if (err < 0) {
+        current = saved;
+        if (error) *error = err;
+        return nil;
+    }
+    lock(&ttys_lock);
+    tty_release(tty);
+    unlock(&ttys_lock);
+
+    const char argv[] = "/bin/sh\0-c\0cd /root 2>/dev/null; exec /bin/sh -l\0";
+    const char envp[] = "TERM=xterm-256color\0HOME=/root\0LANG=C.UTF-8\0PYTHONMALLOC=malloc\0PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
+    err = do_execve("/bin/sh", 3, argv, envp);
+    if (err < 0) {
+        current = saved;
+        if (error) *error = err;
+        return nil;
+    }
+    terminal.pid = current->pid;
+    task_start(current);
+    current = saved;
+
+    [NSNotificationCenter.defaultCenter addObserver:terminal selector:@selector(processExited:) name:DenExited object:nil];
+    if (error) *error = 0;
+    return terminal;
+}
+
+- (void)processExited:(NSNotification *)note {
+    if ([note.userInfo[@"pid"] intValue] != self.pid || self.gone)
+        return;
+    self.gone = YES;
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    if (self.exited)
+        self.exited();
+}
+
+- (void)send:(NSData *)data {
+    struct tty *tty = self.tty;
+    if (tty == NULL || self.gone || data.length == 0)
+        return;
+    tty_input(tty, data.bytes, data.length, 0);
+}
+
+- (void)resizeColumns:(int)columns rows:(int)rows {
+    struct tty *tty = self.tty;
+    if (tty == NULL || self.gone || columns <= 0 || rows <= 0)
+        return;
+    lock(&tty->lock);
+    tty_set_winsize(tty, (struct winsize_) {.col = (word_t) columns, .row = (word_t) rows});
+    unlock(&tty->lock);
+}
+
+- (void)close {
+    if (!self.gone)
+        [DenKernel kill:self.pid];
 }
 
 @end

@@ -28,4 +28,17 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 
 @end
 
+/// 笔砚: an interactive shell on a pseudo-terminal, for a real terminal view.
+@interface DenTerminal : NSObject
+
+/// Starts a login shell. Output arrives on the main queue; `exited` fires once when the shell ends.
++ (nullable instancetype)openWithOutput:(void (^)(NSData *data))output exited:(void (^)(void))exited error:(int *)error NS_SWIFT_NAME(open(output:exited:error:));
+
+@property (nonatomic, readonly) int pid;
+- (void)send:(NSData *)data NS_SWIFT_NAME(send(_:));
+- (void)resizeColumns:(int)columns rows:(int)rows NS_SWIFT_NAME(resize(columns:rows:));
+- (void)close;
+
+@end
+
 NS_ASSUME_NONNULL_END

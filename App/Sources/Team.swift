@@ -32,6 +32,8 @@ struct Approval: Identifiable, Equatable {
     var roomId: String?
     var chat: String?
     var tool: String?
+    /// The tool's own name, for 「以后都允许」.
+    var toolName: String?
     var reason: String?
     var detail: Detail?
     /// When it was asked, in milliseconds.
@@ -530,7 +532,7 @@ final class TeamModel: ObservableObject {
             model: found.model,
             system: system(for: bot, room: room),
             tools: tools(for: bot, key: key),
-            approve: { [weak self] ask, _ in await self?.ask(ask, bot: botId, chat: key) ?? false }
+            approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
         doing[key] = room == nil ? "正在想" : "\(bot.name)在想"
         do {
@@ -748,11 +750,33 @@ final class TeamModel: ObservableObject {
 
     // MARK: Approvals
 
-    private func ask(_ ask: ApprovalAsk, bot: String, chat: String) async -> Bool {
+    // MARK: Standing permission
+
+    /// Tools the user said may always go ahead, by name.
+    @Published private(set) var alwaysAllowed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "always.allowed") ?? [])
+    /// Chats where everything goes ahead until the app is closed.
+    @Published private(set) var trusted: Set<String> = []
+
+    func allowAlways(_ tool: String) {
+        alwaysAllowed.insert(tool)
+        UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+    }
+
+    func revokeAlways(_ tool: String) {
+        alwaysAllowed.remove(tool)
+        UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+    }
+
+    func trust(_ chat: String, _ on: Bool) {
+        if on { trusted.insert(chat) } else { trusted.remove(chat) }
+    }
+
+    private func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
+        if alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
         let id = UUID().uuidString
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
-            tool: ask.title, reason: ask.reason, detail: ask.detail.map { Approval.Detail(text: $0) },
+            tool: ask.title, toolName: tool, reason: ask.reason, detail: ask.detail.map { Approval.Detail(text: $0) },
             at: Now.ms, answerable: true
         )
         let before = doing[chat]
@@ -769,7 +793,9 @@ final class TeamModel: ObservableObject {
     }
 
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
-    func answer(_ approval: Approval, allow: Bool) async throws {
+    func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false) async throws {
+        if allow, always, let name = approval.toolName { allowAlways(name) }
+        if allow, trustChat, let chat = approval.chat { trust(chat, true) }
         if phase == .demo {
             try? await Task.sleep(nanoseconds: 250_000_000)
             approvals.removeAll { $0.id == approval.id }

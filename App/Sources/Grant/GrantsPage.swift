@@ -2,7 +2,9 @@ import SwiftUI
 
 /// 应许: every ability on one page, with the user's say and the system's say side by side.
 struct GrantsPage: View {
+    @ObservedObject var team: TeamModel
     @Environment(\.dismiss) private var dismiss
+    @State private var asking = false
     @Environment(\.scenePhase) private var phase
     @State private var policies: [Grant: Grant.Policy] = [:]
     @State private var systems: [Grant: Grant.System] = [:]
@@ -24,6 +26,23 @@ struct GrantsPage: View {
                         Text("旅伴能做什么，一项一项由你定。「每次问」会在用之前请你落印；「不许」它就看不到这项本事。有些还要过手机系统那一关。")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
+                        Button {
+                            askAll()
+                        } label: {
+                            HStack(spacing: Ink.Space.m) {
+                                Image(systemName: "checkmark.seal").font(.system(size: 20)).foregroundStyle(Ink.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(asking ? "正在一项项问系统…" : "一并应许").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text("依次弹出还没回答过的系统授权；只读的本事一并设为放行，写入的仍由你逐项定。")
+                                        .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                        }
+                        .buttonStyle(PressStyle())
+                        .disabled(asking)
                         ForEach(groups, id: \.0) { group in
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
                                 Text(group.0)
@@ -34,6 +53,24 @@ struct GrantsPage: View {
                                     ForEach(group.1) { grant in
                                         row(grant)
                                         if grant != group.1.last { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                                    }
+                                }
+                                .paperCard()
+                            }
+                        }
+                        if !team.alwaysAllowed.isEmpty {
+                            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                                Text("落印时说过「以后都允许」的").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                                VStack(spacing: 0) {
+                                    ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
+                                        HStack {
+                                            Text(tool).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink)
+                                            Spacer()
+                                            Button("收回") { withAnimation(.smooth) { team.revokeAlways(tool) } }
+                                                .font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.stop)
+                                        }
+                                        .padding(.horizontal, Ink.Space.l)
+                                        .padding(.vertical, Ink.Space.m)
                                     }
                                 }
                                 .paperCard()
@@ -62,6 +99,24 @@ struct GrantsPage: View {
         }
         .onAppear(perform: load)
         .onChange(of: phase) { _, now in if now == .active { load() } }
+    }
+
+    /// Asks the system about every ability not yet asked, one after another, and lets the reading ones go ahead.
+    private func askAll() {
+        asking = true
+        Task {
+            for grant in Grant.allCases where grant.system == .notAsked {
+                await grant.requestSystem()
+                try? await Task.sleep(nanoseconds: 350_000_000)
+            }
+            await Grant.letters.requestSystem()
+            for grant in [Grant.location, .photos, .motion, .device, .calendar, .reminders, .contacts] where grant.policy == .ask || grant.policy == .off {
+                if grant.system == .granted || grant.system == .limited || grant.system == .none { grant.policy = .allow }
+            }
+            load()
+            asking = false
+            Haptics.thud()
+        }
     }
 
     private func load() {

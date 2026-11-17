@@ -12,6 +12,8 @@ struct ApproveView: View {
     @State private var verdict: Verdict?
     @State private var stampedAt = Date()
     @State private var busy = false
+    @State private var always = false
+    @State private var trustChat = false
     @State private var handled: Set<String> = []
     @State private var note: String?
     /// 0...1: how far the stamp is pressing the slip down.
@@ -106,7 +108,7 @@ struct ApproveView: View {
                         .contentTransition(.opacity)
                     controls
                         .padding(.top, 18)
-                        .frame(height: 124, alignment: .top)
+                        .frame(height: 164, alignment: .top)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
@@ -149,6 +151,10 @@ struct ApproveView: View {
             VStack(spacing: 6) {
                 SlideTrack(progress: $slide, onTick: tick) { answer(allow: true) }
                     .disabled(busy)
+                HStack(spacing: Ink.Space.s) {
+                    choice("以后都允许", on: $always)
+                    choice("这段絮语都放行", on: $trustChat)
+                }
                 Button {
                     Haptics.light()
                     answer(allow: false)
@@ -258,6 +264,25 @@ struct ApproveView: View {
     }
 
     /// The stamp only falls once the computer has taken the answer.
+    private func choice(_ title: String, on: Binding<Bool>) -> some View {
+        Button {
+            Haptics.tick(0.5)
+            on.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
+                Text(title).font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(on.wrappedValue ? Ink.accentWash : Color.clear, in: .capsule)
+            .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : Ink.rule))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+    }
+
     private func answer(allow: Bool) {
         guard !busy else { return }
         busy = true
@@ -265,7 +290,7 @@ struct ApproveView: View {
         let asked = current
         Task {
             do {
-                try await team.answer(asked, allow: allow)
+                try await team.answer(asked, allow: allow, always: always, trustChat: trustChat)
                 handled.insert(asked.id)
                 stamp(allow ? .allowed : .rejected)
             } catch {
@@ -308,6 +333,8 @@ struct ApproveView: View {
             slide = 0
             note = nil
             busy = false
+            always = false
+            trustChat = false
         }
     }
 }
