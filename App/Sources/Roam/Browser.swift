@@ -114,6 +114,13 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         return (result as? String) ?? ""
     }
 
+    /// Fills a field with something from 信匣. Unlike `type`, password fields are allowed; the text is never logged.
+    func fillSecret(_ ref: Int, text: String, submit: Bool) async throws -> String {
+        let result = try await view.callAsyncJavaScript(Self.secretScript, arguments: ["ref": ref, "text": text, "submit": submit], in: nil, contentWorld: .page)
+        if submit { await settle(timeout: 12) }
+        return (result as? String) ?? ""
+    }
+
     func scroll(down: Bool) async throws {
         _ = try await view.callAsyncJavaScript("window.scrollBy({top: (down ? 0.85 : -0.85) * window.innerHeight, behavior: 'instant'});", arguments: ["down": down], in: nil, contentWorld: .page)
     }
@@ -188,10 +195,26 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     return '点了 [' + ref + ']';
     """
 
+    private static let secretScript = """
+    const el = document.querySelector('[data-clio-ref="' + ref + '"]');
+    if (!el) return '找不到编号 ' + ref + '，页面可能变了，请先 browser_read。';
+    el.scrollIntoView({block: 'center', behavior: 'instant'});
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+    if (submit) {
+      el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true}));
+      if (el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }
+    }
+    return '从信匣填进了 [' + ref + ']' + (submit ? '，并提交' : '');
+    """
+
     private static let typeScript = """
     const el = document.querySelector('[data-clio-ref="' + ref + '"]');
     if (!el) return '找不到编号 ' + ref + '，页面可能变了，请先 browser_read。';
-    if ((el.getAttribute('type') || '').toLowerCase() === 'password') return '密码框只能由用户自己填。请用 browser_handoff 请用户接手。';
+    if ((el.getAttribute('type') || '').toLowerCase() === 'password') return '密码框不能直接填。用信匣：browser_fill_secret（没存过就先 ask_user 请用户填进信匣），或用 browser_handoff 请用户接手。';
     el.scrollIntoView({block: 'center', behavior: 'instant'});
     el.focus();
     if (el.isContentEditable) {
@@ -216,8 +239,13 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
 
 /// The browser tools a companion gets. Each runs on the main thread, where the browser lives.
 enum RoamTools {
+    /// The browser the secret-filling tool reaches for.
+    @MainActor static weak var browser: BrowserSession?
+
+    @MainActor
     static func all(_ browser: BrowserSession) -> [AgentTool] {
-        [
+        Self.browser = browser
+        return [
             RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。", parameters: ["type": "object", "properties": ["url": ["type": "string"]], "required": ["url"]], label: { "远游：\($0["url"]?.string ?? "")" }) { arguments in
                 var address = arguments["url"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !address.isEmpty, !address.contains("://") { address = "https://" + address }

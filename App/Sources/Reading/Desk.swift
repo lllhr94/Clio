@@ -17,6 +17,7 @@ enum Opened: Identifiable, Hashable {
 /// The app's root: setting up a model first, then the desk.
 struct ClioRoot: View {
     @StateObject private var team = TeamModel()
+    @ObservedObject private var asker = Asker.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -32,6 +33,9 @@ struct ClioRoot: View {
         }
         .animation(Ink.Motion.settle, value: team.phase)
         .tint(Ink.accent)
+        .sheet(item: $asker.current) { form in
+            FormSheet(form: form)
+        }
         .onChange(of: scenePhase) { _, now in
             if now == .active { team.wake() }
         }
@@ -59,6 +63,7 @@ struct Desk: View {
     @State private var hilling = false
     @State private var importing = false
     @State private var notice: String?
+    @State private var vaulting = false
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -134,6 +139,7 @@ struct Desk: View {
         .fullScreenCover(isPresented: $denning) { DenPage() }
         .sheet(isPresented: $granting) { GrantsPage() }
         .sheet(isPresented: $hilling) { HillsPage() }
+        .sheet(isPresented: $vaulting) { SecretsPage() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in
             switch result {
             case .failure(let error): notice = "没打开：\(error.localizedDescription)"
@@ -195,6 +201,7 @@ struct Desk: View {
                 Button("书案", systemImage: "books.vertical") { studying = true }
                 Button("斗室", systemImage: "terminal") { denning = true }
                 Button("远山", systemImage: "mountain.2") { hilling = true }
+                Button("信匣", systemImage: "lock.rectangle.stack") { vaulting = true }
                 Button("应许", systemImage: "checkmark.seal") { granting = true }
                 Button("形象", systemImage: "paintpalette") { dressing = true }
                 Button("调弦", systemImage: "slider.horizontal.3") { tuning = true }

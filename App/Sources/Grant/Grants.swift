@@ -10,7 +10,7 @@ import UserNotifications
 
 /// 应许: what companions may do, one ability at a time. Each is off, asks every time, or goes ahead.
 enum Grant: String, CaseIterable, Identifiable, Sendable {
-    case web, browser, desk, den, hills, mcp, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
+    case web, browser, desk, den, hills, mcp, vault, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
 
     var id: String { rawValue }
 
@@ -33,6 +33,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .den: "斗室"
         case .hills: "远山 · SSH"
         case .mcp: "远山 · MCP"
+        case .vault: "信匣"
         case .memory: "拾遗"
         case .letters: "来信"
         case .calendar: "日历"
@@ -55,6 +56,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .den: "在斗室的 Linux 里跑命令、装软件"
         case .hills: "用 SSH 在你的远程主机上跑命令"
         case .mcp: "用你接入的 MCP 服务提供的工具"
+        case .vault: "递笺请你填写、看信匣目录、从信匣取密码填网页（取用总会先问你）"
         case .memory: "记下或忘掉关于你的事"
         case .letters: "约好时间，到点给你发消息"
         case .calendar: "查看日程；新建日程总会先问你"
@@ -77,6 +79,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .den: "terminal"
         case .hills: "server.rack"
         case .mcp: "point.3.connected.trianglepath.dotted"
+        case .vault: "lock.rectangle.stack"
         case .memory: "bookmark"
         case .letters: "envelope"
         case .calendar: "calendar"
@@ -112,7 +115,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders
         case "shell": .den
-        case "ssh_run": .hills
+        case "ssh_run", "ssh_add_host": .hills
+        case "ask_user", "vault_list", "browser_fill_secret": .vault
         case "where_am_i": .location
         case "contacts_search": .contacts
         case "photos_recent": .photos

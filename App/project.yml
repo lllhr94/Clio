@@ -37,8 +37,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.14"
-        CFBundleVersion: "14"
+        CFBundleShortVersionString: "0.15"
+        CFBundleVersion: "15"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -54,6 +54,7 @@ targets:
         NSPhotoLibraryUsageDescription: 你允许时，旅伴可以看相册里最近照片的时间和地点。
         NSLocationWhenInUseUsageDescription: 你问附近、天气、路线时，旅伴用它知道你大概在哪。
         NSContactsUsageDescription: 你允许时，旅伴可以按名字查通讯录里的人。
+        NSFaceIDUsageDescription: 看或复制信匣里的密码前，先确认是你本人。
         NSMotionUsageDescription: 你允许时，旅伴可以读手机记的步数。
     settings:
       base:
