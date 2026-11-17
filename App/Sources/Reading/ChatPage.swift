@@ -78,6 +78,12 @@ struct ChatPage: View {
             .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            // Text scrolling up fades under the header instead of running into it.
+            LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0.92), Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 72)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+                .zIndex(1)
             header
                 .zIndex(2)
         }
