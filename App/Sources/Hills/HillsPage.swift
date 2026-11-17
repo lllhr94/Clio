@@ -111,6 +111,19 @@ struct HillsPage: View {
                     .foregroundStyle(Ink.accent)
                     .disabled(testing != nil)
             }
+            if let key = HostKeyKeeper.known(host.address, host.port) {
+                HStack(spacing: Ink.Space.s) {
+                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Button("重新信任") {
+                        HostKeyKeeper.forget(host.address, host.port)
+                        tested[host.id] = "已忘掉旧指纹，下次连接时记住新的。"
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Ink.accent)
+                }
+                .padding(.leading, 32)
+            }
             if let result = tested[host.id] {
                 Text(result).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
             }

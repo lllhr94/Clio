@@ -3,6 +3,7 @@ import Citadel
 import CryptoKit
 import Foundation
 import NIOCore
+import NIOSSH
 
 /// 远山: computers far away. SSH hosts the companions can run commands on, and MCP servers whose tools they can borrow.
 @MainActor
@@ -95,7 +96,7 @@ final class Hills: ObservableObject {
         }
         return try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
-                let client = try await SSHClient.connect(host: host.address, port: host.port, authenticationMethod: method, hostKeyValidator: .acceptAnything(), reconnect: .never, connectTimeout: .seconds(15))
+                let client = try await SSHClient.connect(host: host.address, port: host.port, authenticationMethod: method, hostKeyValidator: .custom(HostKeyKeeper(host: host.address, port: host.port)), reconnect: .never, connectTimeout: .seconds(15))
                 var output = ""
                 var code = 0
                 do {
@@ -343,5 +344,45 @@ struct MCPClient: Sendable {
     private func unwrap(_ message: JSONValue) throws -> JSONValue {
         if let error = message["error"] { throw MCPError.rpc(error["message"]?.string ?? error.compact) }
         return message["result"] ?? [:]
+    }
+}
+
+
+/// Remembers each server's key the first time, and refuses to go on if it ever changes.
+final class HostKeyKeeper: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
+    let host: String
+    let port: Int
+
+    init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
+
+    static func slot(_ host: String, _ port: Int) -> String { "hostkey.\(host.lowercased()):\(port)" }
+
+    /// What the user sees: SHA256 of the key, like `ssh-keygen -l` prints.
+    static func fingerprint(_ openSSH: String) -> String {
+        let parts = openSSH.split(separator: " ")
+        guard parts.count >= 2, let blob = Data(base64Encoded: String(parts[1])) else { return openSSH }
+        let digest = SHA256.hash(data: blob)
+        return "SHA256:" + Data(digest).base64EncodedString().replacingOccurrences(of: "=", with: "")
+    }
+
+    static func known(_ host: String, _ port: Int) -> String? { UserDefaults.standard.string(forKey: slot(host, port)) }
+    static func forget(_ host: String, _ port: Int) { UserDefaults.standard.removeObject(forKey: slot(host, port)) }
+
+    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        let seen = String(openSSHPublicKey: hostKey)
+        let slot = Self.slot(host, port)
+        if let known = UserDefaults.standard.string(forKey: slot) {
+            if known == seen {
+                validationCompletePromise.succeed(())
+            } else {
+                validationCompletePromise.fail(ProviderError("\(host) 的服务器指纹变了（以前 \(Self.fingerprint(known))，现在 \(Self.fingerprint(seen))）。可能是重装了系统，也可能有人在中间冒充。确认没问题后，到「远山」里点这台主机的「重新信任」。"))
+            }
+        } else {
+            UserDefaults.standard.set(seen, forKey: slot)
+            validationCompletePromise.succeed(())
+        }
     }
 }

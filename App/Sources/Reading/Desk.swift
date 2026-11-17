@@ -67,6 +67,8 @@ struct Desk: View {
     @State private var notice: String?
     @State private var vaulting = false
     @State private var caring = false
+    @State private var searching = false
+    @State private var query = ""
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -102,11 +104,68 @@ struct Desk: View {
                     header
                     companions
                     if let next = team.nextLetter { letter(next) }
-                    Text("近来的絮语")
-                        .font(Ink.title)
-                        .foregroundStyle(Ink.ink)
-                        .padding(.top, Ink.Space.xxl)
-                        .padding(.bottom, Ink.Space.s)
+                    HStack {
+                        Text("近来的絮语")
+                            .font(Ink.title)
+                            .foregroundStyle(Ink.ink)
+                        Spacer()
+                        Button {
+                            Haptics.light()
+                            withAnimation(Ink.Motion.settle) {
+                                searching.toggle()
+                                if !searching { query = "" }
+                            }
+                        } label: {
+                            Image(systemName: searching ? "xmark" : "magnifyingglass")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(width: 36, height: 36)
+                        }
+                        .accessibilityLabel(searching ? "不找了" : "找一找")
+                    }
+                    .padding(.top, Ink.Space.xxl)
+                    .padding(.bottom, Ink.Space.s)
+                    if searching {
+                        TextField("找过去聊过的话", text: $query)
+                            .font(.system(size: 16))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.search)
+                            .padding(.horizontal, Ink.Space.l)
+                            .frame(height: 44)
+                            .paperCard()
+                            .padding(.bottom, Ink.Space.m)
+                            .transition(.opacity)
+                    }
+                    if searching && !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        let hits = team.search(query)
+                        if hits.isEmpty {
+                            Text("没找到「\(query)」。").font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(.vertical, Ink.Space.l)
+                        }
+                        ForEach(hits) { hit in
+                            Button {
+                                Haptics.light()
+                                if let leaf = hit.leaf, let found = team.leaves(hit.key).first(where: { $0.id == leaf }) {
+                                    team.openLeaf(hit.key, found)
+                                }
+                                if hit.key.hasPrefix("bot-") { opened = .companion(String(hit.key.dropFirst(4))) } else { opened = .gathering(String(hit.key.dropFirst(5))) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack {
+                                        Text(hit.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                                        if hit.leaf != nil { Text("收起的一叶").font(.system(size: 11)).foregroundStyle(Ink.inkFaint) }
+                                        Spacer()
+                                        Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                                    }
+                                    Text(hit.snippet).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
+                                }
+                                .padding(.vertical, Ink.Space.m)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressStyle())
+                            Rectangle().fill(Ink.rule).frame(height: 1)
+                        }
+                    } else {
                     if recent.isEmpty {
                         Text("还没有聊过。点上面的旅伴，说第一句话吧。")
                             .font(Ink.secondary)
@@ -118,6 +177,7 @@ struct Desk: View {
                         if index != recent.count - 1 {
                             Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
                         }
+                    }
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)

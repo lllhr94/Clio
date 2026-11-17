@@ -342,6 +342,50 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
+    // MARK: Searching
+
+    struct Hit: Identifiable {
+        let id = UUID()
+        var key: String
+        var name: String
+        var snippet: String
+        var at: Double
+        /// In a leaf put aside, not the conversation now.
+        var leaf: String?
+    }
+
+    /// Finds the words in every conversation, now and put aside. Newest first.
+    func search(_ words: String) -> [Hit] {
+        let needle = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard needle.count >= 1 else { return [] }
+        var chats: [(String, String)] = bots.map { (Self.key(bot: $0.id), $0.name) }
+        chats += rooms.map { (Self.key(room: $0.id), $0.name) }
+        var hits: [Hit] = []
+        func scan(_ list: [Entry], key: String, name: String, leaf: String?) {
+            for entry in list.reversed() where entry.note != true && entry.message.role != .tool {
+                let text = entry.message.text
+                guard let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
+                let start = text.index(range.lowerBound, offsetBy: -24, limitedBy: text.startIndex) ?? text.startIndex
+                let end = text.index(range.upperBound, offsetBy: 60, limitedBy: text.endIndex) ?? text.endIndex
+                let snippet = (start == text.startIndex ? "" : "…") + text[start..<end].replacingOccurrences(of: "\n", with: " ") + (end == text.endIndex ? "" : "…")
+                hits.append(Hit(key: key, name: name, snippet: snippet, at: entry.at, leaf: leaf))
+                if hits.count > 200 { return }
+            }
+        }
+        for (key, name) in chats {
+            scan(history(key), key: key, name: name, leaf: nil)
+            for leaf in leaves(key) {
+                if leaf.title.localizedCaseInsensitiveContains(needle) {
+                    hits.append(Hit(key: key, name: name, snippet: leaf.title, at: leaf.at, leaf: leaf.id))
+                }
+                if keeping, let kept = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) {
+                    scan(kept, key: key, name: name, leaf: leaf.id)
+                }
+            }
+        }
+        return Array(hits.sorted { $0.at > $1.at }.prefix(80))
+    }
+
     // MARK: Compressing
 
     private var summaryBook: [String: String] = [:]
