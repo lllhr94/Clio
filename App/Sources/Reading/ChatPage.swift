@@ -22,7 +22,10 @@ struct ChatPage: View {
     @State private var viewing: String?
     /// The message being changed and sent again.
     @State private var editing: String?
-    @State private var position = ScrollPosition(edge: .bottom)
+    @State private var scroller: ScrollViewProxy?
+    /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
+    /// on again when they come back to the bottom, send something, or tap 回到最新.
+    @State private var following = true
     @State private var farFromEnd = false
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
@@ -93,51 +96,68 @@ struct ChatPage: View {
     var body: some View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
-                    if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
-                    ForEach(chat.lines) { line in
-                        row(line)
-                            .transition(.opacity.combined(with: .offset(y: 12)))
-                    }
-                    if !chat.streaming.isEmpty {
-                        ProseView(text: chat.streaming, streaming: true)
-                            .id("streaming")
-                    }
-                    if let words = liveWords, showsLive {
-                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                            LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                            if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                            if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
+                            ForEach(chat.lines) { line in
+                                row(line)
+                                    .transition(.opacity.combined(with: .offset(y: 12)))
+                            }
+                            if !chat.streaming.isEmpty {
+                                ProseView(text: chat.streaming, streaming: true)
+                                    .id("streaming")
+                            }
+                            if let words = liveWords, showsLive {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                                    LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
+                                    if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
+                                }
+                                .id("live")
+                                .transition(.opacity.combined(with: .offset(y: 8)))
+                            }
+                            if let error = chat.error {
+                                Text(error)
+                                    .font(Ink.secondary)
+                                    .foregroundStyle(Ink.stop)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
                         }
-                        .id("live")
-                        .transition(.opacity.combined(with: .offset(y: 8)))
+                        // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
+                        Color.clear.frame(height: 1).id(Self.end)
                     }
-                    if let error = chat.error {
-                        Text(error)
-                            .font(Ink.secondary)
-                            .foregroundStyle(Ink.stop)
-                            .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, Ink.Space.page)
+                    .padding(.top, 76)
+                    .padding(.bottom, Ink.Space.xxl)
+                }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentSize.height - geometry.visibleRect.maxY > 320
+                } action: { _, far in
+                    withAnimation(Ink.Motion.settle) { farFromEnd = far }
+                }
+                .onScrollPhaseChange { old, phase, context in
+                    // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
+                    if phase == .interacting { following = false }
+                    if phase == .idle, old != .idle {
+                        following = context.geometry.contentSize.height - context.geometry.visibleRect.maxY < 80
                     }
                 }
-                .padding(.horizontal, Ink.Space.page)
-                .padding(.top, 76)
-                .padding(.bottom, Ink.Space.xxl)
-                .animation(Ink.Motion.unfold, value: chat.lines.count)
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: working, initial: true) { _, now in
+                    workingSince = now ? (workingSince ?? Date()) : nil
+                }
+                .onChange(of: chat.lines.last?.id) { followToEnd() }
+                .onChange(of: chat.lines.count) { followToEnd() }
+                .onChange(of: showsLive) { followToEnd() }
+                .onChange(of: chat.error) { followToEnd() }
+                .onChange(of: chat.streaming.count / 80) { followToEnd(settle: false) }
+                .animation(Ink.Motion.settle, value: showsLive)
+                .onAppear { scroller = proxy }
             }
-            .scrollPosition($position)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY > 320
-            } action: { _, far in
-                withAnimation(Ink.Motion.settle) { farFromEnd = far }
-            }
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of: working, initial: true) { _, now in
-                workingSince = now ? (workingSince ?? Date()) : nil
-            }
-            .animation(Ink.Motion.settle, value: showsLive)
             // Text scrolling up fades under the header instead of running into it.
             LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0.92), Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
                 .frame(height: 72)
@@ -818,6 +838,7 @@ struct ChatPage: View {
 
     /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
     private func redo(from entry: String? = nil, text: String? = nil) {
+        following = true
         let changed = team.changedFiles(chat.key, from: entry)
         guard !changed.isEmpty else {
             if let entry, let text { chat.resend(entry, text: text) } else { chat.retry() }
@@ -827,6 +848,7 @@ struct ChatPage: View {
     }
 
     private func finishRedo(_ ask: UndoAsk, restoring: Bool) {
+        following = true
         if let entry = ask.entry, let text = ask.text { chat.resend(entry, text: text, restoring: restoring) } else { chat.retry(restoring: restoring) }
     }
 
@@ -943,21 +965,6 @@ struct ChatPage: View {
                 }
                 .buttonStyle(PressStyle())
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-            if farFromEnd {
-                Button {
-                    Haptics.light()
-                    withAnimation(Ink.Motion.unfold) { position.scrollTo(edge: .bottom) }
-                } label: {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 36, height: 36)
-                        .glassFace(in: Circle())
-                }
-                .buttonStyle(PressStyle())
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                .accessibilityLabel("回到最新")
             }
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
@@ -1096,6 +1103,47 @@ struct ChatPage: View {
         .padding(.horizontal, Ink.Space.m)
         .padding(.bottom, Ink.Space.s)
         .animation(Ink.Motion.unfold, value: waiting?.id)
+        .overlay(alignment: .top) {
+            // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
+            if farFromEnd && !following {
+                Button {
+                    Haptics.light()
+                    following = true
+                    toEnd(animated: true)
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .frame(width: 36, height: 36)
+                        .glassFace(in: Circle())
+                }
+                .buttonStyle(PressStyle())
+                .offset(y: -46)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                .accessibilityLabel("回到最新")
+            }
+        }
+    }
+
+    private static let end = "foot-of-page"
+
+    /// Back to the newest line, if the page is following: once as soon as what arrived is laid out,
+    /// and once more after the new row has settled in, since its height is only right by then.
+    private func followToEnd(settle: Bool = true) {
+        guard following else { return }
+        DispatchQueue.main.async { if following { toEnd() } }
+        if settle {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if following { toEnd(animated: true) } }
+        }
+    }
+
+    private func toEnd(animated: Bool = false) {
+        guard let scroller else { return }
+        if animated {
+            withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
+        } else {
+            scroller.scrollTo(Self.end, anchor: .bottom)
+        }
     }
 
     @State private var pickerShown = false
@@ -1147,7 +1195,8 @@ struct ChatPage: View {
                 draft = ""
                 photos = []
                 files = []
-                position.scrollTo(edge: .bottom)
+                following = true
+                followToEnd()
             default:
                 Haptics.grab()
                 typing = false
@@ -1524,6 +1573,7 @@ private struct LiveStatus: View {
                 Circle()
                     .fill(waiting ? Ink.warn.opacity(0.16) : Ink.accentWash)
                     .scaleEffect(breathe ? 1.18 : 0.92)
+                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathe)
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(waiting ? Ink.warn : Ink.accent)
@@ -1553,9 +1603,7 @@ private struct LiveStatus: View {
         .padding(.vertical, Ink.Space.s)
         .background(Ink.paperRaised.opacity(0.7), in: .rect(cornerRadius: Ink.Radius.card))
         .animation(Ink.Motion.settle, value: words)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { breathe = true }
-        }
+        .onAppear { breathe = true }
         .accessibilityElement(children: .combine)
     }
 }
