@@ -104,24 +104,33 @@ final class Hills: ObservableObject {
     /// The channel could not be opened on a kept connection: it has probably gone stale.
     private struct Stale: Error {}
 
-    /// Runs one command on a kept connection. A stale connection is dropped and the command tried once more on a fresh one;
-    /// a command that already started is never sent twice.
-    nonisolated static func run(_ command: String, on host: Host, timeout: Double = 60) async throws -> Outcome {
-        do {
-            return try await runOnce(command, on: host, timeout: timeout, fresh: false)
-        } catch is Stale {
-            await HillPool.shared.drop(host)
+    /// A command ran past its time.
+    struct TimedOut: LocalizedError {
+        let seconds: Int
+        var errorDescription: String? { "超过 \(seconds) 秒没跑完。长任务可以放到后台跑。" }
+    }
+
+    /// Runs one command on a kept connection. A connection that has dropped is made again, up to twice;
+    /// a command that already started is never sent a second time. `onOutput` hears the output as it arrives.
+    nonisolated static func run(_ command: String, on host: Host, timeout: Double = 60, onOutput: (@Sendable (String) -> Void)? = nil) async throws -> Outcome {
+        var attempt = 0
+        while true {
             do {
-                return try await runOnce(command, on: host, timeout: timeout, fresh: true)
+                return try await runOnce(command, on: host, timeout: timeout, fresh: attempt > 0, onOutput: onOutput)
             } catch is Stale {
-                throw ProviderError("连上了 \(host.name)，但开不了会话。")
+                attempt += 1
+                await HillPool.shared.drop(host)
+                if attempt > 2 { throw ProviderError("连上了 \(host.name)，但重连两次都开不了会话。") }
+                Diag.note("远山 \(host.name) 掉线，第 \(attempt) 次重连")
             }
         }
     }
 
-    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, fresh: Bool) async throws -> Outcome {
+    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, fresh: Bool, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
         try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
+                // A failure to log in is a real answer (wrong password, host down), never retried; only a kept connection
+                // that will not open a channel any more counts as stale.
                 let client = try await HillPool.shared.client(for: host, fresh: fresh)
                 var output = ""
                 var code = 0
@@ -137,7 +146,11 @@ final class Hills: ObservableObject {
                     for try await chunk in stream {
                         switch chunk {
                         case .stdout(let buffer), .stderr(let buffer):
-                            output += String(buffer: buffer)
+                            let piece = String(buffer: buffer)
+                            output += piece
+                            if let onOutput {
+                                for line in piece.split(separator: "\n", omittingEmptySubsequences: true) { onOutput(String(line)) }
+                            }
                         }
                         if output.count > 200_000 { break }
                     }
@@ -149,7 +162,7 @@ final class Hills: ObservableObject {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw ProviderError("超过 \(Int(timeout)) 秒没跑完。长任务可以用 ssh_job_start 放到后台。")
+                throw TimedOut(seconds: Int(timeout))
             }
             let first = try await group.next()!
             group.cancelAll()
@@ -169,12 +182,6 @@ final class Hills: ObservableObject {
         let result = try await run(script, on: host, timeout: 30)
         guard result.output.contains("started") else { throw ProviderError("没能在 \(host.name) 上开始：\(result.output)") }
         return id
-    }
-
-    struct JobState: Sendable {
-        var running: Bool
-        var exit: Int?
-        var tail: String
     }
 
     nonisolated static func checkJob(_ id: String, on host: Host, lines: Int = 40) async throws -> JobState {
@@ -340,7 +347,7 @@ final class Hills: ObservableObject {
                 }
                 do {
                     let result = try await Hills.run(arguments["command"]?.string ?? "", on: host, timeout: min(600, max(5, arguments["timeout"]?.number ?? 60)))
-                    let text = Shell.clip(result.output)
+                    let text = Shell.mask(Shell.clip(result.output), secrets: Vault.allStrings())
                     return ToolOutput((text.isEmpty ? "（没有输出）" : text) + (result.code == 0 ? "" : "\n（退出码 \(result.code)）"), isError: result.code != 0)
                 } catch {
                     return ToolOutput("连 \(host.name) 出错：\(error.localizedDescription)", isError: true)
@@ -364,7 +371,7 @@ final class Hills: ObservableObject {
                 do {
                     let state = try await Hills.checkJob(arguments["job"]?.string ?? "", on: host, lines: min(400, max(5, Int(arguments["lines"]?.number ?? 40))))
                     let head = state.running ? "还在跑。" : "跑完了，退出码 \(state.exit.map(String.init) ?? "不明")。"
-                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : state.tail))
+                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : Shell.mask(Shell.clip(state.tail), secrets: Vault.allStrings())))
                 } catch {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }

@@ -9,6 +9,8 @@ struct StepDetail: Equatable {
     var seconds: Int?
     /// A picture the step brought back, such as a page's screenshot (a kept photo's name).
     var photo: String?
+    /// For the person only: a changed file's whole comparison.
+    var full: String?
 }
 
 /// One row of a chat.
@@ -219,7 +221,7 @@ final class ChatModel: ObservableObject {
                     stepAt = entry.at
                 }
                 let input = message.toolCallId.flatMap { calls[$0] } ?? ""
-                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first))
+                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail))
                 stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)
@@ -331,22 +333,22 @@ final class ChatModel: ObservableObject {
     }
 
     /// Asks the companion to answer the last message again.
-    func retry() {
+    func retry(restoring: Bool = false) {
         guard !demo else { return }
         withAnimation(.smooth) { error = nil }
         target = ""
         streaming = ""
-        team.retry(key)
+        team.retry(key, restoring: restoring)
     }
 
     /// Changes something already said, and answers from there.
-    func resend(_ id: String, text: String) {
+    func resend(_ id: String, text: String, restoring: Bool = false) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !demo, !trimmed.isEmpty else { return }
         withAnimation(.smooth) { error = nil }
         target = ""
         streaming = ""
-        team.resend(key, entry: id, text: trimmed)
+        team.resend(key, entry: id, text: trimmed, restoring: restoring)
     }
 
     func stop() {

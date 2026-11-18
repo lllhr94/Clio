@@ -38,6 +38,8 @@ public struct Message: Codable, Equatable, Sendable {
     public var toolCallId: String?
     public var toolName: String?
     public var isError: Bool
+    /// For the person only: kept with the chat, never sent to a model (a changed file's full comparison).
+    public var detail: String?
 
     public init(role: Role, text: String, images: [ImagePart] = [], reasoning: String? = nil, toolCalls: [ToolCall] = [], toolCallId: String? = nil, toolName: String? = nil, isError: Bool = false) {
         self.role = role

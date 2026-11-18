@@ -33,7 +33,28 @@ final class DiffTests: XCTestCase {
         let old = (1...100).map(String.init).joined(separator: "\n")
         let change = Diff.between(old, "", limit: 20)
         XCTAssertEqual(change.removed, 100)
-        XCTAssertTrue(change.text.contains("……还有 90 行"))
+        XCTAssertTrue(change.text.contains("后面还有"))
+        XCTAssertEqual(change.full.components(separatedBy: "\n").filter { $0.hasPrefix("- ") }.count, 100)
+    }
+
+    func testTwoChangesFarApartMakeTwoHunks() {
+        let old = (1...30).map { "第\($0)行" }.joined(separator: "\n")
+        var lines = old.components(separatedBy: "\n")
+        lines[2] = "改了三"
+        lines[25] = "改了二十六"
+        let change = Diff.between(old, lines.joined(separator: "\n"))
+        XCTAssertEqual(change.removed, 2)
+        XCTAssertEqual(change.added, 2)
+        let headers = change.full.components(separatedBy: "\n").filter { $0.hasPrefix(Diff.marker) }
+        XCTAssertEqual(headers, ["@@ 第 3 行", "@@ 第 26 行"])
+        XCTAssertFalse(change.full.contains("第10行"), "lines far from any change stay out")
+    }
+
+    func testInsertionInTheMiddle() {
+        let change = Diff.between("a\nb\nc", "a\nb\nNEW\nc")
+        XCTAssertEqual(change.removed, 0)
+        XCTAssertEqual(change.added, 1)
+        XCTAssertEqual(change.full, "@@ 第 3 行\n  a\n  b\n+ NEW\n  c")
     }
 
     func testCountsAndHunkReadBack() {
@@ -157,31 +178,63 @@ final class ConversationTests: XCTestCase {
     }
 }
 
-/// A host kept in memory: files in a dictionary, and a shell that only echoes.
-private final class FakeHost: WorkHost, @unchecked Sendable {
-    private let lock = NSLock()
-    private var files: [String: Data] = [:]
+/// A host kept in memory: files in a dictionary, a shell that answers from a script and remembers every command.
+private class MockHost: WorkspaceHost, @unchecked Sendable {
+    let lock = NSLock()
+    var files: [String: Data] = [:]
+    var commands: [String] = []
+    var reply: (String) -> ExecResult = { _ in ExecResult(code: 0, output: "") }
+
     var title: String { "假主机" }
-    var prefix: String { "fake" }
-    var home: String { "/" }
-    var canRun: Bool { true }
+    var shellTitle: String { "假主机" }
+    var root: String { "/work" }
+    var canBackground: Bool { false }
 
     init(_ files: [String: String] = [:]) {
         self.files = files.mapValues { Data($0.utf8) }
     }
 
-    func run(_ command: String, timeout: Double) async throws -> (code: Int, output: String) { (0, command) }
+    func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
+        lock.lock()
+        commands.append(command)
+        let answer = reply(command)
+        lock.unlock()
+        for line in answer.output.split(separator: "\n") { onOutput(String(line)) }
+        return answer
+    }
 
-    func read(_ path: String) async throws -> Data {
+    func readFile(_ path: String) async throws -> Data {
         lock.lock(); defer { lock.unlock() }
-        guard let data = files[path] else { throw ProviderError("没有这个文件：\(path)") }
+        guard let data = files[path] else { throw WorkspaceError.missing(path) }
         return data
     }
 
-    func write(_ path: String, _ data: Data) async throws {
+    func writeFile(_ path: String, _ data: Data) async throws {
         lock.lock(); defer { lock.unlock() }
         files[path] = data
     }
+
+    func removeFile(_ path: String) async throws {
+        lock.lock(); defer { lock.unlock() }
+        files[path] = nil
+    }
+
+    func listDir(_ path: String, depth: Int) async throws -> String {
+        lock.lock(); defer { lock.unlock() }
+        return files.keys.sorted().joined(separator: "\n")
+    }
+
+    func viewImage(_ path: String) async throws -> (image: ImagePart, width: Int, height: Int) {
+        guard files[path] != nil else { throw WorkspaceError.missing(path) }
+        return (ImagePart(mediaType: "image/png", data: Data([1, 2, 3])), 10, 20)
+    }
+
+    func isInside(_ path: String) -> Bool { WorkspacePath.isInside(path, root: "/work") }
+
+    // Declared here, not left to the protocol's defaults, so the far host below can override them.
+    func startJob(_ command: String) async throws -> String { throw WorkspaceError.cannot("没有后台") }
+    func checkJob(_ id: String, lines: Int) async throws -> JobState { throw WorkspaceError.cannot("没有后台") }
+    func stopJob(_ id: String) async throws { throw WorkspaceError.cannot("没有后台") }
 
     func text(_ path: String) -> String? {
         lock.lock(); defer { lock.unlock() }
@@ -189,57 +242,200 @@ private final class FakeHost: WorkHost, @unchecked Sendable {
     }
 }
 
-final class HostFilesTests: XCTestCase {
-    func testWriteNewThenOverwrite() async {
-        let host = FakeHost()
-        let first = await HostFiles.write(host, "a.md", "一\n二")
-        XCTAssertFalse(first.isError)
-        XCTAssertTrue(first.text.hasPrefix("新建了 a.md"))
-        XCTAssertTrue(first.text.contains("2 行"))
-        let second = await HostFiles.write(host, "a.md", "一\n三")
-        XCTAssertEqual(Diff.counts(in: second.text)?.removed, 1)
-        XCTAssertEqual(Diff.counts(in: second.text)?.added, 1)
-        XCTAssertEqual(host.text("a.md"), "一\n三")
-        let same = await HostFiles.write(host, "a.md", "一\n三")
-        XCTAssertTrue(same.text.contains("没变"))
+/// A far computer: background jobs work.
+private final class FarHost: MockHost, @unchecked Sendable {
+    override var canBackground: Bool { true }
+    override func startJob(_ command: String) async throws -> String { "job7" }
+    override func checkJob(_ id: String, lines: Int) async throws -> JobState { JobState(running: false, exit: 0, tail: "done token=s3cr3t-value") }
+    override func stopJob(_ id: String) async throws {}
+}
+
+/// Kept changes, for the tests that look at what the tools asked to snapshot.
+private final class Book: @unchecked Sendable {
+    let lock = NSLock()
+    var changed: [String] = []
+    func add(_ path: String) { lock.lock(); changed.append(path); lock.unlock() }
+}
+
+final class WorkspaceToolTests: XCTestCase {
+    private func tools(_ host: WorkspaceHost, canSee: Bool = true, secrets: [String] = [], book: Book = Book()) -> [String: AgentTool] {
+        let kit = WorkspaceKit(canSee: canSee, secrets: { secrets }, beforeChange: { _, path in book.add(path) })
+        return Dictionary(uniqueKeysWithValues: WorkspaceTools.all(host: host, kit: kit).map { ($0.spec.name, $0) })
     }
 
-    func testEditOnce() async {
-        let host = FakeHost(["n.txt": "苹果\n香蕉\n苹果派"])
-        let missing = await HostFiles.edit(host, "n.txt", old: "西瓜", new: "x")
-        XCTAssertTrue(missing.isError)
-        XCTAssertTrue(missing.text.contains("fake_read"))
-        let many = await HostFiles.edit(host, "n.txt", old: "苹果", new: "梨")
-        XCTAssertTrue(many.isError)
-        XCTAssertTrue(many.text.contains("2 次"))
-        let empty = await HostFiles.edit(host, "n.txt", old: "", new: "梨")
+    func testEightToolsAndViewImageOnlyForSeeingModels() {
+        let host = MockHost()
+        XCTAssertEqual(Set(tools(host).keys), WorkspaceTools.names)
+        XCTAssertNil(tools(host, canSee: false)["view_image"])
+        XCTAssertEqual(tools(host, canSee: false).count, 7)
+    }
+
+    func testShellClipsHidesSecretsAndReportsExit() async throws {
+        let host = MockHost()
+        host.reply = { _ in ExecResult(code: 2, output: String(repeating: "x", count: 30_000) + "\npassword=hunter2-long") }
+        let output = try await tools(host, secrets: ["hunter2-long"])["shell"]!.run(["command": "cat secrets"])
+        XCTAssertTrue(output.isError)
+        XCTAssertTrue(output.text.contains("中间省略"))
+        XCTAssertTrue(output.text.contains(Shell.hidden))
+        XCTAssertFalse(output.text.contains("hunter2-long"))
+        XCTAssertTrue(output.text.hasSuffix("（退出码 2）"))
+    }
+
+    func testShellTimeoutAndEmptyCommand() async throws {
+        let host = MockHost()
+        host.reply = { _ in ExecResult(code: -1, output: "", timedOut: true) }
+        let shell = tools(host)["shell"]!
+        let late = try await shell.run(["command": "sleep 999", "timeout": 5])
+        XCTAssertTrue(late.isError)
+        XCTAssertTrue(late.text.contains("超过 5 秒"))
+        let empty = try await shell.run(["command": "  "])
         XCTAssertTrue(empty.isError)
-        let done = await HostFiles.edit(host, "n.txt", old: "香蕉", new: "橘子")
-        XCTAssertFalse(done.isError)
-        XCTAssertEqual(host.text("n.txt"), "苹果\n橘子\n苹果派")
-        XCTAssertEqual(Diff.hunk(in: done.text)?.contains("- 香蕉"), true)
-        XCTAssertEqual(Diff.hunk(in: done.text)?.contains("+ 橘子"), true)
     }
 
-    func testReadRanges() async {
-        let host = FakeHost(["l.txt": (1...10).map { "第\($0)行" }.joined(separator: "\n")])
-        let part = await HostFiles.read(host, "l.txt", from: 3, lines: 2)
+    func testBackgroundOnlyOnFarHosts() async throws {
+        let near = try await tools(MockHost())["shell"]!.run(["command": "make", "background": true])
+        XCTAssertTrue(near.isError)
+        let far = FarHost()
+        let shell = tools(far, secrets: ["s3cr3t-value"])["shell"]!
+        let started = try await shell.run(["command": "make", "background": true])
+        XCTAssertFalse(started.isError)
+        XCTAssertTrue(started.text.contains("job7"))
+        let checked = try await shell.run(["job": "job7"])
+        XCTAssertTrue(checked.text.contains("跑完了，退出码 0"))
+        XCTAssertFalse(checked.text.contains("s3cr3t-value"))
+        XCTAssertNil(tools(MockHost())["shell"]!.spec.parameters["properties"]?["background"])
+        XCTAssertNotNil(shell.spec.parameters["properties"]?["background"])
+    }
+
+    func testReadRangesMissingAndBinary() async throws {
+        let host = MockHost(["l.txt": (1...10).map { "第\($0)行" }.joined(separator: "\n")])
+        host.files["x.bin"] = Data([0xFF, 0xFE, 0x00])
+        let read = tools(host)["read_file"]!
+        let part = try await read.run(["path": "l.txt", "from": 3, "lines": 2])
         XCTAssertEqual(part.text, "3\t第3行\n4\t第4行\n……共 10 行，后面还有。")
-        let tail = await HostFiles.read(host, "l.txt", from: 9, lines: 5)
+        let tail = try await read.run(["path": "l.txt", "from": 9, "lines": 5])
         XCTAssertEqual(tail.text, "9\t第9行\n10\t第10行")
-        let past = await HostFiles.read(host, "l.txt", from: 30, lines: 5)
+        let past = try await read.run(["path": "l.txt", "from": 30])
         XCTAssertTrue(past.isError)
-        let none = await HostFiles.read(host, "nope.txt")
+        let none = try await read.run(["path": "nope.txt"])
         XCTAssertTrue(none.isError)
         XCTAssertTrue(none.text.contains("没有这个文件"))
+        let binary = try await read.run(["path": "x.bin"])
+        XCTAssertTrue(binary.isError)
+        XCTAssertTrue(binary.text.contains("view_image"))
     }
 
-    func testBinaryIsNotRead() async throws {
-        let host = FakeHost()
-        try await host.write("x.bin", Data([0xFF, 0xFE, 0x00, 0xC3]))
-        let output = await HostFiles.read(host, "x.bin", notText: "试试别的。")
-        XCTAssertTrue(output.isError)
-        XCTAssertTrue(output.text.hasSuffix("试试别的。"))
+    func testWriteNewThenOverwriteKeepsAFullComparison() async throws {
+        let host = MockHost()
+        let book = Book()
+        let write = tools(host, book: book)["write_file"]!
+        let first = try await write.run(["path": "a.md", "content": "一\n二"])
+        XCTAssertTrue(first.text.hasPrefix("新建了 a.md：−0 +2 行"))
+        let second = try await write.run(["path": "a.md", "content": "一\n三"])
+        XCTAssertEqual(Diff.counts(in: second.text)?.removed, 1)
+        XCTAssertEqual(Diff.counts(in: second.text)?.added, 1)
+        XCTAssertEqual(second.detail, "@@ 第 2 行\n  一\n- 二\n+ 三")
+        XCTAssertEqual(host.text("a.md"), "一\n三")
+        let same = try await write.run(["path": "a.md", "content": "一\n三"])
+        XCTAssertTrue(same.text.contains("没变"))
+        XCTAssertEqual(book.changed, ["a.md", "a.md", "a.md"], "every write first asks for a snapshot")
+    }
+
+    func testEditOnce() async throws {
+        let host = MockHost(["n.txt": "苹果\n香蕉\n苹果派"])
+        let edit = tools(host)["edit_file"]!
+        let missing = try await edit.run(["path": "n.txt", "old": "西瓜", "new": "x"])
+        XCTAssertTrue(missing.isError)
+        XCTAssertTrue(missing.text.contains("read_file"))
+        let many = try await edit.run(["path": "n.txt", "old": "苹果", "new": "梨"])
+        XCTAssertTrue(many.text.contains("2 次"))
+        let empty = try await edit.run(["path": "n.txt", "old": "", "new": "梨"])
+        XCTAssertTrue(empty.isError)
+        let done = try await edit.run(["path": "n.txt", "old": "香蕉", "new": "橘子"])
+        XCTAssertFalse(done.isError)
+        XCTAssertEqual(host.text("n.txt"), "苹果\n橘子\n苹果派")
+        XCTAssertEqual(done.detail?.contains("- 香蕉"), true)
+        XCTAssertEqual(done.detail?.contains("+ 橘子"), true)
+        XCTAssertTrue(done.text.contains("  苹果"), "the answer shows the lines around the change")
+    }
+
+    func testGlobIsOneFindCommand() async throws {
+        let host = MockHost()
+        host.reply = { command in
+            command.contains("find . -type f") ? ExecResult(code: 0, output: "./a.md\n./notes/b.md\n./c.txt\n./src/x/y.py") : ExecResult(code: 0, output: "")
+        }
+        let glob = tools(host)["glob"]!
+        let md = try await glob.run(["pattern": "*.md"])
+        XCTAssertTrue(md.text.contains("a.md"))
+        XCTAssertTrue(md.text.contains("notes/b.md"))
+        XCTAssertFalse(md.text.contains("c.txt"))
+        let deep = try await glob.run(["pattern": "src/**/*.py"])
+        XCTAssertTrue(deep.text.contains("src/x/y.py"))
+        XCTAssertEqual(host.commands.count, 2, "one command per search, never a walk file by file")
+    }
+
+    func testGrepIsOneGrepCommandAndHidesSecrets() async throws {
+        let host = MockHost()
+        host.reply = { command in
+            command.contains("grep -rnIE") ? ExecResult(code: 0, output: "app/.env:3:TOKEN=abcdef123456\napp/main.py:9:print(1)") : ExecResult(code: 1, output: "")
+        }
+        let grep = tools(host, secrets: ["abcdef123456"])["grep"]!
+        let found = try await grep.run(["pattern": "TOKEN|print", "include": "*.py", "ignore_case": true])
+        XCTAssertTrue(found.text.contains("搜到 2 处"))
+        XCTAssertFalse(found.text.contains("abcdef123456"))
+        XCTAssertEqual(host.commands.count, 1)
+        XCTAssertTrue(host.commands[0].contains("--include='*.py'"))
+        XCTAssertTrue(host.commands[0].contains("-i "))
+    }
+
+    func testListDirAndViewImage() async throws {
+        let host = MockHost(["b.txt": "", "a.png": "png"])
+        let listed = try await tools(host)["list_dir"]!.run([:])
+        XCTAssertEqual(listed.text, "a.png\nb.txt")
+        let picture = try await tools(host)["view_image"]!.run(["path": "a.png"])
+        XCTAssertEqual(picture.images.count, 1)
+        XCTAssertTrue(picture.text.contains("10×20"))
+    }
+
+    func testShellHostDefaultsReadAndWriteThroughBase64() async throws {
+        let host = MockHost()
+        host.reply = { command in
+            if command.contains("base64 <") { return ExecResult(code: 0, output: Data("你好".utf8).base64EncodedString()) }
+            if command.contains("CLIO_OK") { return ExecResult(code: 0, output: "CLIO_OK") }
+            return ExecResult(code: 0, output: "")
+        }
+        // A host with only a shell: the protocol's defaults do the file work.
+        struct ShellOnly: WorkspaceHost {
+            let inner: MockHost
+            var title: String { "壳" }
+            var shellTitle: String { "壳" }
+            var root: String { "~" }
+            var canBackground: Bool { false }
+            func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
+                try await inner.execStream(command, timeout: timeout, onOutput: onOutput)
+            }
+            func isInside(_ path: String) -> Bool { true }
+        }
+        let shellOnly = ShellOnly(inner: host)
+        let data = try await shellOnly.readFile("a.txt")
+        XCTAssertEqual(String(data: data, encoding: .utf8), "你好")
+        try await shellOnly.writeFile("dir/b.txt", Data("嗨".utf8))
+        XCTAssertTrue(host.commands.contains { $0.contains("base64 -d >> 'dir/b.txt.clio-part'") })
+        XCTAssertTrue(host.commands.last?.contains("mv -f 'dir/b.txt.clio-part' 'dir/b.txt'") == true)
+    }
+}
+
+final class WorkspacePathTests: XCTestCase {
+    func testInsideAndOutside() {
+        XCTAssertTrue(WorkspacePath.isInside("notes/a.md", root: "/root/desk"))
+        XCTAssertTrue(WorkspacePath.isInside("/root/desk/notes/a.md", root: "/root/desk"))
+        XCTAssertFalse(WorkspacePath.isInside("/etc/passwd", root: "/root/desk"))
+        XCTAssertFalse(WorkspacePath.isInside("../../etc/passwd", root: "/root/desk"))
+        XCTAssertTrue(WorkspacePath.isInside("a/../b", root: "/root/desk"))
+        XCTAssertTrue(WorkspacePath.isInside("~/proj/x", root: "~", home: ["/home/lin"]))
+        XCTAssertTrue(WorkspacePath.isInside("/home/lin/proj", root: "~", home: ["/home/lin"]))
+        XCTAssertFalse(WorkspacePath.isInside("/var/www", root: "~", home: ["/home/lin"]))
+        XCTAssertFalse(WorkspacePath.isInside("/root/desk-other/x", root: "/root/desk"))
     }
 }
 
@@ -257,5 +453,13 @@ final class ShellTests: XCTestCase {
         XCTAssertTrue(clipped.hasSuffix(String(repeating: "b", count: 10)))
         XCTAssertTrue(clipped.contains("省略 80 字"))
         XCTAssertEqual(Shell.clip("short", max: 20), "short")
+        let big = String(repeating: "z", count: 25_000)
+        XCTAssertTrue(Shell.clip(big).hasPrefix(String(repeating: "z", count: 10_000) + "\n……"))
+    }
+
+    func testMaskLongestFirstAndSkipsShortValues() {
+        let text = "key=sk-abcdef123456 short=abc again sk-abcdef123456"
+        let masked = Shell.mask(text, secrets: ["sk-abcdef", "sk-abcdef123456", "abc"])
+        XCTAssertEqual(masked, "key=\(Shell.hidden) short=abc again \(Shell.hidden)")
     }
 }

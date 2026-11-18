@@ -21,17 +21,24 @@ struct OutfitSheet: View {
 
     @State private var mirror = "mirrors.tuna.tsinghua.edu.cn"
     @State private var chosen: Set<String> = ["Python", "常用小工具"]
+    /// Milliseconds to each mirror; -1 when it did not answer.
+    @State private var latency: [String: Int] = [:]
+    @State private var measuring = true
+    /// The user picked a mirror by hand: the speed test no longer changes it.
+    @State private var pickedByHand = false
 
     var body: some View {
         NavigationStack {
             Form {
                 PaperRows {
                 Section {
-                    Picker("软件源", selection: $mirror) {
-                        ForEach(Self.mirrors, id: \.1) { Text($0.0).tag($0.1) }
+                    Picker("软件源", selection: Binding(get: { mirror }, set: { mirror = $0; pickedByHand = true })) {
+                        ForEach(Self.mirrors, id: \.1) { Text(label($0)).tag($0.1) }
                     }
                     .pickerStyle(.segmented)
-                } header: { Text("软件源") } footer: { Text("国内用清华或中科大会快很多。") }
+                } header: { Text("软件源") } footer: {
+                    Text(measuring ? "正在测哪个源最快……" : "测过了：数字是毫秒，越小越快，已经替你选了最快的。没有数字的是连不上。")
+                }
                 Section("要装的") {
                     ForEach(Self.kits, id: \.0) { kit in
                         Button {
@@ -52,6 +59,7 @@ struct OutfitSheet: View {
             }
             }
             .paperForm()
+            .task { await measure() }
             .navigationTitle("装常用软件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -60,6 +68,40 @@ struct OutfitSheet: View {
                     Button("开装") { done(command) }.fontWeight(.semibold).disabled(chosen.isEmpty && mirror == "dl-cdn.alpinelinux.org")
                 }
             }
+        }
+    }
+
+    private func label(_ mirror: (String, String)) -> String {
+        guard let ms = latency[mirror.1] else { return mirror.0 }
+        return ms < 0 ? mirror.0 + " ×" : "\(mirror.0) \(ms)"
+    }
+
+    /// Asks every mirror for the same small file at once and keeps the quickest answer.
+    private func measure() async {
+        measuring = true
+        await withTaskGroup(of: (String, Int).self) { group in
+            for (_, host) in Self.mirrors {
+                group.addTask { (host, await Self.ping(host)) }
+            }
+            for await (host, ms) in group { latency[host] = ms }
+        }
+        measuring = false
+        if !pickedByHand, let best = latency.filter({ $0.value >= 0 }).min(by: { $0.value < $1.value })?.key {
+            withAnimation(Ink.Motion.settle) { mirror = best }
+        }
+    }
+
+    private static func ping(_ host: String) async -> Int {
+        guard let url = URL(string: "https://\(host)/alpine/latest-stable/main/aarch64/APKINDEX.tar.gz") else { return -1 }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.httpMethod = "HEAD"
+        let start = Date()
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse).map({ $0.statusCode < 400 }) ?? false else { return -1 }
+            return Int(Date().timeIntervalSince(start) * 1000)
+        } catch {
+            return -1
         }
     }
 

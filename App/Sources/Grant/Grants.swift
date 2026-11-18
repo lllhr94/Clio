@@ -118,6 +118,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders
         case "shell": .den
+        case "read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "view_image": .desk
         case "ssh_run", "ssh_add_host": .hills
         case "ask_user", "vault_list", "browser_fill_secret": .vault
         case "where_am_i", "place_lookup": .location
@@ -139,9 +140,10 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.
-    static func gate(_ tools: [AgentTool]) -> [AgentTool] {
+    /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
+    static func gate(_ tools: [AgentTool], workspace: [String: Grant] = [:]) -> [AgentTool] {
         tools.compactMap { tool in
-            guard let grant = of(tool: tool.spec.name) else { return tool }
+            guard let grant = workspace[tool.spec.name] ?? of(tool: tool.spec.name) else { return tool }
             switch grant.policy {
             case .off: return nil
             case .allow: return tool

@@ -96,7 +96,8 @@ final class Den: ObservableObject {
     }
 
     /// Runs a shell command. Stops waiting after `timeout` seconds and kills it.
-    func run(_ command: String, timeout: Double = 120, shown: Bool = true) async -> Outcome {
+    /// Runs one command. `onOutput` hears each line as it is printed.
+    func run(_ command: String, timeout: Double = 120, shown: Bool = true, onOutput: (@Sendable (String) -> Void)? = nil) async -> Outcome {
         guard await wake() else {
             if case .broken(let why) = state { return Outcome(code: -1, output: "", errorOutput: why, timedOut: false) }
             return Outcome(code: -1, output: "", errorOutput: "斗室没醒。", timedOut: false)
@@ -106,6 +107,7 @@ final class Den: ObservableObject {
         let result: Outcome = await withCheckedContinuation { continuation in
             let once = Once(continuation)
             pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: { [weak self] line, isError in
+                onOutput?(line)
                 guard shown else { return }
                 MainActor.assumeIsolated { self?.note(isError ? .error : .out, line) }
             }, done: { code, output, errorOutput in
@@ -155,30 +157,5 @@ final class Den: ObservableObject {
             waiting?.resume(returning: outcome)
             return waiting != nil
         }
-    }
-
-    // MARK: Tools
-
-    static func tools() -> [AgentTool] {
-        [
-            DeskTool(name: "shell", description: """
-            在斗室里跑 shell 命令。斗室是手机里的一个 Alpine Linux（aarch64，模拟运行，比电脑慢很多）。
-            - 书案就在 /root/desk，desk_* 工具写的文件这里都能看到。
-            - 缺什么就 apk add（比如 python3、git、curl、nodejs）。装过的东西会一直留着。
-            - 一次跑一条或几条命令，命令要能自己结束，不要开交互程序（vim、top、python 交互模式）。长任务可以加 timeout（秒，最多 600）。
-            - 输出太长会被截断，必要时用 head、tail、grep 缩小范围。
-            """, parameters: ["type": "object", "properties": ["command": ["type": "string"], "timeout": ["type": "number", "description": "最多等几秒，默认 120"]], "required": ["command"]], label: { "斗室：\(($0["command"]?.string ?? "").prefix(40))" }) { arguments in
-                let command = arguments["command"]?.string ?? ""
-                guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return ToolOutput("命令是空的。", isError: true) }
-                let timeout = min(600, max(5, arguments["timeout"]?.number ?? 120))
-                let result = await Den.shared.run(command, timeout: timeout)
-                var text = result.output
-                if !result.errorOutput.isEmpty { text += (text.isEmpty ? "" : "\n") + result.errorOutput }
-                text = Shell.clip(text)
-                if result.timedOut { return ToolOutput((text.isEmpty ? "" : text + "\n") + "（超过 \(Int(timeout)) 秒没跑完，已经停掉。）", isError: true) }
-                let tail = result.code == 0 ? "" : "\n（退出码 \(result.code)）"
-                return ToolOutput((text.isEmpty ? "（没有输出）" : text) + tail, isError: result.code != 0)
-            },
-        ]
     }
 }

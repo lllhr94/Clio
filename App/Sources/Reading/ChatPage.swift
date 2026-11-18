@@ -101,7 +101,7 @@ struct ChatPage: View {
                     if let words = liveWords, showsLive {
                         VStack(alignment: .leading, spacing: Ink.Space.xs) {
                             LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                            if (team.doing[chat.key] ?? "").hasPrefix("斗室：") { DenTail() }
+                            if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
                         }
                         .id("live")
                         .transition(.opacity.combined(with: .offset(y: 8)))
@@ -245,6 +245,18 @@ struct ChatPage: View {
             LeavesSheet(team: team, key: chat.key, name: bot.name)
                 .presentationDetents([.medium, .large])
         }
+        .confirmationDialog(
+            undoAsk.map { "这一轮改过 \($0.files.count) 个文件" } ?? "",
+            isPresented: Binding(get: { undoAsk != nil }, set: { if !$0 { undoAsk = nil } }),
+            titleVisibility: .visible,
+            presenting: undoAsk
+        ) { ask in
+            Button("文件也还原，再来") { finishRedo(ask, restoring: true) }
+            Button("只重来，文件留着") { finishRedo(ask, restoring: false) }
+            Button("算了", role: .cancel) {}
+        } message: { ask in
+            Text(ask.files.prefix(6).joined(separator: "\n") + (ask.files.count > 6 ? "\n……" : "") + "\n\n还原就是放回这一轮动手之前的样子；新建的文件会删掉。")
+        }
         .fullScreenCover(isPresented: $roaming) {
             RoamPage(browser: team.browser)
         }
@@ -283,6 +295,8 @@ struct ChatPage: View {
     /// Words from a reply the next message asks about.
     @State private var quote: String?
     @State private var roaming = false
+    /// A retry or an edit waiting to hear whether the files it changed should go back too.
+    @State private var undoAsk: UndoAsk?
     @State private var leafing = false
     private struct ReadingFile: Identifiable { let url: URL; var id: URL { url } }
     @State private var reading: ReadingFile?
@@ -600,7 +614,7 @@ struct ChatPage: View {
             let pdf = path.lowercased().hasSuffix(".pdf") && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
             return "- 书案/\(path)" + (pdf ? "（文字已抽出到 \(path).txt）" : "")
         }
-        return "\n\n［我放进书案的文件，可以用 desk_read 读，或在斗室的 /root/desk 里处理：\n" + lines.joined(separator: "\n") + "］"
+        return "\n\n［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、view_image 看图，或用 shell 处理：\n" + lines.joined(separator: "\n") + "］"
     }
 
     // MARK: Rows
@@ -768,9 +782,31 @@ struct ChatPage: View {
         .background(Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card))
     }
 
+    struct UndoAsk: Identifiable {
+        let id = UUID()
+        /// Nil: a retry of the last answer. Otherwise the edited message.
+        var entry: String?
+        var text: String?
+        var files: [String]
+    }
+
+    /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
+    private func redo(from entry: String? = nil, text: String? = nil) {
+        let changed = team.changedFiles(chat.key, from: entry)
+        guard !changed.isEmpty else {
+            if let entry, let text { chat.resend(entry, text: text) } else { chat.retry() }
+            return
+        }
+        undoAsk = UndoAsk(entry: entry, text: text, files: changed.map { WorkPlace(code: $0.place).title + "：" + $0.path })
+    }
+
+    private func finishRedo(_ ask: UndoAsk, restoring: Bool) {
+        if let entry = ask.entry, let text = ask.text { chat.resend(entry, text: text, restoring: restoring) } else { chat.retry(restoring: restoring) }
+    }
+
     private func act(_ next: Explain.Next) {
         switch next {
-        case .retry: chat.retry()
+        case .retry: redo()
         case .tuning: tuningOpen = true
         case .care: careOpen = true
         case .compress:
@@ -795,7 +831,7 @@ struct ChatPage: View {
             }
             icon("arrow.clockwise", "重来一次") {
                 Haptics.light()
-                chat.retry()
+                redo()
             }
             icon(voice.isSpeaking ? "speaker.slash" : "speaker.wave.2", "朗读") { speak(line.text) }
             icon("text.quote", "引用追问") {
@@ -1071,7 +1107,7 @@ struct ChatPage: View {
             case 2:
                 Haptics.grab()
                 if let editing {
-                    chat.resend(editing, text: draft)
+                    redo(from: editing, text: draft)
                     self.editing = nil
                 } else if let quote {
                     let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
@@ -1138,12 +1174,25 @@ private struct Trace: View {
         let title: String
         let detail: String
         var url: URL?
+        /// A changed file's whole comparison.
+        var diff: String?
     }
+
+    /// A file change opened to its whole comparison.
+    private struct DiffShow: Identifiable {
+        let id = UUID()
+        let title: String
+        let place: String
+        let diff: String
+        let url: URL?
+    }
+    @State private var diffing: DiffShow?
 
     private var keepsakes: [Keepsake] {
         var out: [Keepsake] = []
         for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
             let output = index < line.details.count ? line.details[index].output : ""
+            let full = index < line.details.count ? line.details[index].full : nil
             if tool.hasPrefix("新建日程：") {
                 out.append(Keepsake(id: index, kind: .event, title: String(tool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
             } else if tool.hasPrefix("加提醒：") {
@@ -1153,18 +1202,18 @@ private struct Trace: View {
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
                     if let kept = out.firstIndex(where: { $0.url == file }) {
-                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + " · 改了几次", url: file)
+                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
                     } else {
-                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + change, url: file))
+                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + change, url: file, diff: full))
                     }
                 }
             } else if tool.hasPrefix("斗室：") || tool.hasPrefix("远山 · ") {
                 let rest = tool.split(separator: "：", maxSplits: 1).last.map(String.init) ?? tool
-                if rest.hasPrefix("读 ") || rest.hasPrefix("找 ") || rest.hasPrefix("看后台任务") { continue }
+                if ["读 ", "找 ", "搜 ", "翻看 ", "看图 ", "看后台任务", "看看后台任务", "停掉后台任务", "后台跑"].contains(where: { rest.hasPrefix($0) }) { continue }
                 if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
                     let where_ = tool.split(separator: "：", maxSplits: 1).first.map(String.init) ?? ""
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
-                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: where_ + " · " + String(rest.dropFirst(2)) + change))
+                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: where_ + " · " + String(rest.dropFirst(2)) + change, diff: full))
                     continue
                 }
                 guard tool.hasPrefix("斗室：") else { continue }
@@ -1231,9 +1280,14 @@ private struct Trace: View {
                 Button {
                     Haptics.light()
                     switch item.kind {
-                    case .file: if let url = item.url { openFile(url) }
+                    case .file, .remoteFile:
+                        if let diff = item.diff, !diff.isEmpty {
+                            diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
+                        } else if let url = item.url {
+                            openFile(url)
+                        }
                     case .event, .reminder: if let url = item.url { UIApplication.shared.open(url) }
-                    case .command, .remoteFile: break
+                    case .command: break
                     }
                 } label: {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
@@ -1245,9 +1299,15 @@ private struct Trace: View {
                             Text(item.detail)
                                 .font(item.kind == .command ? .system(size: 11, design: .monospaced) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
+                            if let diff = item.diff, !diff.isEmpty {
+                                // The first few changed lines, so the card shows what changed at a glance.
+                                DiffText(hunk: DiffText.glance(diff), limit: 5)
+                                    .padding(.top, 4)
+                                    .allowsHitTesting(false)
+                            }
                         }
                         Spacer(minLength: 0)
-                        if item.kind != .command, item.kind != .remoteFile {
+                        if item.kind != .command, item.kind != .remoteFile || item.diff != nil {
                             Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                     }
@@ -1259,6 +1319,13 @@ private struct Trace: View {
                 .padding(.top, Ink.Space.s)
             }
         }
+        Color.clear.frame(height: 0)
+            .sheet(item: $diffing) { show in
+                DiffSheet(title: show.title, place: show.place, diff: show.diff, url: show.url) { url in
+                    diffing = nil
+                    openFile(url)
+                }
+            }
         if !pages.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: Ink.Space.s) {
@@ -1463,31 +1530,6 @@ private struct LiveStatus: View {
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { breathe = true }
         }
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// What 斗室's command is printing right now: the last few lines, as they arrive.
-private struct DenTail: View {
-    @ObservedObject private var den = Den.shared
-
-    var body: some View {
-        let lines = Array(den.log.suffix(5).filter { $0.kind != .command })
-        if !lines.isEmpty {
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(lines) { line in
-                    Text(line.text)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(line.kind == .error ? Ink.stop : Ink.inkSoft)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            .padding(Ink.Space.s)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small))
-            .animation(.easeOut(duration: 0.15), value: den.log.count)
-            .accessibilityLabel("斗室正在输出：" + (lines.last?.text ?? ""))
-        }
     }
 }
 

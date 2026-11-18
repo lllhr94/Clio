@@ -20,11 +20,14 @@ public struct ToolOutput: Equatable, Sendable {
     public var isError: Bool
     /// Pictures the tool brings back, for models that can see: a page's screenshot, a photo from the desk.
     public var images: [ImagePart]
+    /// For the person only, never sent to the model: the full comparison of a changed file, say.
+    public var detail: String?
 
-    public init(_ text: String, isError: Bool = false, images: [ImagePart] = []) {
+    public init(_ text: String, isError: Bool = false, images: [ImagePart] = [], detail: String? = nil) {
         self.text = text
         self.isError = isError
         self.images = images
+        self.detail = detail
     }
 }
 
@@ -164,6 +167,7 @@ public struct Agent: Sendable {
             await emit(.toolFinished(id: call.id, ok: !output.isError))
             var result = Message.toolResult(output.text, for: call, isError: output.isError)
             result.images = output.images
+            result.detail = output.detail
             return result
         } catch {
             await emit(.toolFinished(id: call.id, ok: false))

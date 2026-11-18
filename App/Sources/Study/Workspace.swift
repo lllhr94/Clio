@@ -90,72 +90,10 @@ enum Workspace {
         return (data as Data, image.width, image.height)
     }
 
-    static func tools(canSee: Bool) -> [AgentTool] {
+    /// What only 书案 has: deleting, and a quick JavaScript calculator. Reading, writing and finding are the workspace tools.
+    static func tools() -> [AgentTool] {
         let pathParameter: JSONValue = ["type": "string", "description": "书案里的相对路径，比如 notes/旅行.md"]
         var tools: [AgentTool] = []
-        tools.append(DeskTool(name: "desk_list", description: "看书案（你和用户共用的工作文件夹）里有哪些文件。path 留空看全部。", parameters: ["type": "object", "properties": ["path": pathParameter]], label: { "书案：翻看 \($0["path"]?.string ?? "")" }) { arguments in
-            guard let folder = resolve(arguments["path"]?.string) else { return ToolOutput("路径不能跳出书案。", isError: true) }
-            return ToolOutput("书案/\(relative(folder) == "/" ? "" : relative(folder))\n" + listing(folder))
-        })
-        tools.append(DeskTool(name: "desk_find", description: "按文件名找书案里的文件。pattern 用通配符：*.md 找所有 md；**/*.py 找各层的 py；notes/2026-* 找某个文件夹里的。结果按修改时间排，新的在前。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只在这个文件夹里找，留空是整个书案"]], "required": ["pattern"]], label: { "书案：找 \($0["pattern"]?.string ?? "")" }) { arguments in
-            guard let folder = resolve(arguments["path"]?.string) else { return ToolOutput("路径不能跳出书案。", isError: true) }
-            let pattern = (arguments["pattern"]?.string ?? "*").trimmingCharacters(in: .whitespaces)
-            guard let regex = globRegex(pattern) else { return ToolOutput("看不懂这个通配符：\(pattern)", isError: true) }
-            let byName = !pattern.contains("/")
-            let base = relative(folder) == "/" ? "" : relative(folder) + "/"
-            let found = files(under: folder).filter { item in
-                let inside = item.path.hasPrefix(base) ? String(item.path.dropFirst(base.count)) : item.path
-                return matches(regex, byName ? (inside as NSString).lastPathComponent : inside)
-            }.sorted { $0.date > $1.date }
-            guard !found.isEmpty else { return ToolOutput("没找到符合 \(pattern) 的文件。") }
-            let shown = found.prefix(200).map { "\($0.path)  \(size($0.size))" }.joined(separator: "\n")
-            return ToolOutput("找到 \(found.count) 个：\n" + shown + (found.count > 200 ? "\n……只列了前 200 个。" : ""))
-        })
-        tools.append(DeskTool(name: "desk_grep", description: "在书案的文本文件里搜内容，返回「文件:行号: 那一行」。pattern 是正则（搜普通文字也行）。可以用 include 限定文件，比如 *.md。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只搜这个文件夹或文件，留空是整个书案"], "include": ["type": "string", "description": "文件名通配符，比如 *.swift"], "ignore_case": ["type": "boolean"]], "required": ["pattern"]], label: { "书案：搜 \($0["pattern"]?.string ?? "")" }) { arguments in
-            guard let place = resolve(arguments["path"]?.string) else { return ToolOutput("路径不能跳出书案。", isError: true) }
-            let words = arguments["pattern"]?.string ?? ""
-            guard !words.isEmpty else { return ToolOutput("要搜什么？", isError: true) }
-            let options: NSRegularExpression.Options = arguments["ignore_case"]?.bool == true ? [.caseInsensitive] : []
-            let regex = (try? NSRegularExpression(pattern: words, options: options)) ?? (try! NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: words), options: options))
-            let include = arguments["include"]?.string.flatMap { Glob.regex($0) }
-            var isFolder: ObjCBool = false
-            FileManager.default.fileExists(atPath: place.path, isDirectory: &isFolder)
-            let candidates = isFolder.boolValue ? files(under: place).map(\.path) : [relative(place)]
-            var hits: [String] = []
-            var fileCount = 0
-            for path in candidates {
-                if let include, !matches(include, (path as NSString).lastPathComponent) { continue }
-                guard let file = resolve(path), let data = try? Data(contentsOf: file), data.count < 4_000_000,
-                      let text = String(data: data, encoding: .utf8) else { continue }
-                var hitHere = false
-                for (number, line) in text.components(separatedBy: "\n").enumerated() where matches(regex, line) {
-                    hits.append("\(path):\(number + 1): \(line.count > 200 ? String(line.prefix(200)) + "…" : line)")
-                    hitHere = true
-                    if hits.count >= 300 { break }
-                }
-                if hitHere { fileCount += 1 }
-                if hits.count >= 300 { break }
-            }
-            guard !hits.isEmpty else { return ToolOutput("没搜到「\(words)」。") }
-            return ToolOutput("\(fileCount) 个文件里有 \(hits.count) 处\(hits.count >= 300 ? "（只列前 300 处）" : "")：\n" + hits.joined(separator: "\n"))
-        })
-        tools.append(DeskTool(name: "desk_read", description: "读书案里的一个文本文件。大文件可以用 from（从第几行起，1 开始）和 lines（读几行）分段读。", parameters: ["type": "object", "properties": ["path": pathParameter, "from": ["type": "number"], "lines": ["type": "number"]], "required": ["path"]], label: { "书案：读 \($0["path"]?.string ?? "")" }) { arguments in
-            await HostFiles.read(DeskHost(), arguments["path"]?.string ?? "", from: Int(arguments["from"]?.number ?? 1), lines: Int(arguments["lines"]?.number ?? 400), notText: canSee ? "是图片的话用 view_image 看。" : "")
-        })
-        if canSee {
-            tools.append(DeskTool(name: "view_image", description: "看书案里的一张图片（jpg、png、heic 等），比如用户发来的截图、扫描件、你在斗室里画的图表。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：看图 \($0["path"]?.string ?? "")" }) { arguments in
-                guard let file = resolve(arguments["path"]?.string) else { return ToolOutput("路径不能跳出书案。", isError: true) }
-                guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个文件：\(relative(file))", isError: true) }
-                guard let shot = picture(file) else { return ToolOutput("\(relative(file)) 打不开，可能不是图片。", isError: true) }
-                return ToolOutput("这是 \(relative(file))（\(shot.width)×\(shot.height)）。", images: [ImagePart(mediaType: "image/jpeg", data: shot.data)])
-            })
-        }
-        tools.append(DeskTool(name: "desk_write", description: "在书案里写一个文件（整份内容）。已有的会被覆盖；文件夹会自动建好。只改一小段时用 desk_edit。", parameters: ["type": "object", "properties": ["path": pathParameter, "content": ["type": "string"]], "required": ["path", "content"]], label: { "书案：写 \($0["path"]?.string ?? "")" }) { arguments in
-            await HostFiles.write(DeskHost(), arguments["path"]?.string ?? "", arguments["content"]?.string ?? "")
-        })
-        tools.append(DeskTool(name: "desk_edit", description: "改书案里文件的一段：把 old 换成 new。old 要和文件里一字不差，并且只出现一次。", parameters: ["type": "object", "properties": ["path": pathParameter, "old": ["type": "string"], "new": ["type": "string"]], "required": ["path", "old", "new"]], label: { "书案：改 \($0["path"]?.string ?? "")" }) { arguments in
-            await HostFiles.edit(DeskHost(), arguments["path"]?.string ?? "", old: arguments["old"]?.string ?? "", new: arguments["new"]?.string ?? "")
-        })
         tools.append(DeskTool(name: "desk_delete", description: "删掉书案里的文件或文件夹。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：删 \($0["path"]?.string ?? "")" }, approval: { arguments in
             ApprovalAsk(title: "删掉书案里的东西", reason: arguments["path"]?.string ?? "")
         }) { arguments in
