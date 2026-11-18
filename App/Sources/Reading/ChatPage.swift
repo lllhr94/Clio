@@ -130,7 +130,7 @@ struct ChatPage: View {
                         Color.clear.frame(height: 1).id(Self.end)
                     }
                     .padding(.horizontal, Ink.Space.page)
-                    .padding(.top, 76)
+                    .padding(.top, Ink.Space.m)
                     .padding(.bottom, Ink.Space.xxl)
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -154,6 +154,10 @@ struct ChatPage: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
+                // reads through between the buttons, and the glass no longer picks up colours from the page.
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .safeAreaBar(edge: .top) { header }
                 .onChange(of: working, initial: true) { _, now in
                     workingSince = now ? (workingSince ?? Date()) : nil
                 }
@@ -165,14 +169,6 @@ struct ChatPage: View {
                 .animation(Ink.Motion.settle, value: showsLive)
                 .onAppear { scroller = proxy }
             }
-            // Text scrolling up fades under the header instead of running into it.
-            LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0.92), Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .frame(height: 72)
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-                .zIndex(1)
-            header
-                .zIndex(2)
             if !roaming {
                 HStack {
                     Spacer()
@@ -884,7 +880,7 @@ struct ChatPage: View {
     }
 
     private func footer(_ line: ChatLine) -> some View {
-        HStack(spacing: Ink.Space.xl) {
+        HStack(spacing: Ink.Space.s) {
             icon("doc.on.doc", "复制") {
                 UIPasteboard.general.string = line.text
                 Haptics.tick(0.5)
@@ -903,24 +899,28 @@ struct ChatPage: View {
                 Haptics.light()
                 noting = Noting(id: line.id, text: line.text)
             }
-            Spacer()
+            Spacer(minLength: Ink.Space.s)
             if Pref.stats {
                 Text(Self.numbers(line))
                     .font(Ink.footnote.monospacedDigit())
                     .foregroundStyle(Ink.inkFaint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .layoutPriority(1)
             }
         }
+        .padding(.leading, -6)
     }
 
-    /// 「23 秒 · 3.4 千字」: how long the turn took and how much was written.
+    /// 「2分31秒 · 6.4k tokens」: how long the turn took and how much was written, short enough for one line.
     static func numbers(_ line: ChatLine) -> String {
         var parts: [String] = []
-        if let seconds = line.seconds { parts.append(seconds >= 60 ? "\(seconds / 60) 分 \(seconds % 60) 秒" : "\(seconds) 秒") }
+        if let seconds = line.seconds { parts.append(seconds >= 60 ? "\(seconds / 60)分\(seconds % 60)秒" : "\(seconds)秒") }
         if let tokens = line.tokens {
-            parts.append(tokens >= 1000 ? String(format: "%.1f 千 tokens", Double(tokens) / 1000) : "\(tokens) tokens")
+            parts.append(tokens >= 1000 ? String(format: "%.1fk tokens", Double(tokens) / 1000) : "\(tokens) tokens")
         } else {
             let count = line.text.count
-            parts.append(count >= 1000 ? String(format: "%.1f 千字", Double(count) / 1000) : "\(count) 字")
+            parts.append(count >= 1000 ? String(format: "%.1f千字", Double(count) / 1000) : "\(count)字")
         }
         return parts.joined(separator: " · ")
     }
@@ -928,9 +928,9 @@ struct ChatPage: View {
     private func icon(_ name: String, _ label: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(Ink.inkSoft)
-                .frame(width: 28, height: 28)
+                .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
@@ -1066,14 +1066,8 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                TextField(dictation.listening ? "正在听，说完点右边" : "同\(bot.name)说点什么…", text: $draft, axis: .vertical)
-                    .font(Ink.label)
-                    .foregroundStyle(Ink.ink)
-                    .lineLimit(1...6)
-                    .focused($typing)
-                    .onChange(of: draft) { old, new in keepLongPaste(old, new) }
-                    .padding(.top, Ink.Space.xs)
-                HStack(spacing: Ink.Space.s) {
+                // One row at rest, like any messaging app: add, write, speak or send.
+                HStack(alignment: .bottom, spacing: Ink.Space.s) {
                     Button {
                         Haptics.light()
                         typing = false
@@ -1087,6 +1081,18 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
+                    TextField(dictation.listening ? "正在听，说完点右边" : "同\(bot.name)说点什么…", text: $draft, axis: .vertical)
+                        .font(Ink.label)
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1...6)
+                        .focused($typing)
+                        .onChange(of: draft) { old, new in keepLongPaste(old, new) }
+                        .padding(.vertical, 6)
+                        .frame(minHeight: 34)
+                    action
+                }
+                // While writing: what this message goes out with. Web, where the work happens, abilities, model.
+                if composing {
                     ScrollView(.horizontal) {
                         HStack(spacing: Ink.Space.s) {
                             webChip
@@ -1096,12 +1102,12 @@ struct ChatPage: View {
                         }
                     }
                     .scrollIndicators(.hidden)
-                    Spacer(minLength: 0)
-                    action
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
-            .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, Ink.Space.m)
+            .animation(Ink.Motion.settle, value: composing)
+            .padding(.horizontal, Ink.Space.s)
+            .padding(.vertical, Ink.Space.s)
             .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet))
             if let hint {
                 Text(hint)
@@ -1178,6 +1184,11 @@ struct ChatPage: View {
     @State private var cardOpen = false
     @State private var tuningOpen = false
     @State private var careOpen = false
+
+    /// Writing something: the row of chips shows under the text field.
+    private var composing: Bool {
+        typing || !draft.isEmpty || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
+    }
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty
