@@ -536,21 +536,18 @@ final class TeamModel: ObservableObject {
     }
 
     /// How long the conversation is, in characters.
-    func size(of key: String) -> Int {
-        history(key).filter { $0.note != true }.reduce(0) { $0 + $1.message.text.count }
-    }
+    func size(of key: String) -> Int { Turns.size(history(key)) }
 
     /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
     @discardableResult
     func compress(_ key: String) async throws -> Int {
         guard !compressing.contains(key) else { return 0 }
         let all = history(key)
-        let real = all.indices.filter { all[$0].note != true }
-        let keep = max(4, Pref.keepRecent)
-        guard real.count > keep + 4 else { throw TeamError(message: "这段絮语还不长，用不着压缩。") }
-        var cut = real[real.count - keep]
-        while cut < all.count, !(all[cut].note != true && all[cut].message.role == .user) { cut += 1 }
-        guard cut < all.count, cut > 0 else { throw TeamError(message: "找不到合适的地方断开，过一会儿再试。") }
+        let cut: Int
+        switch Turns.foldCut(all, keep: Pref.keepRecent) {
+        case .success(let found): cut = found
+        case .failure(let problem): throw TeamError(message: problem.words)
+        }
 
         let speakerBot: BotInfo? = {
             if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) { return bot }
@@ -564,25 +561,10 @@ final class TeamModel: ObservableObject {
         compressing.insert(key)
         defer { compressing.remove(key) }
 
-        var lines: [String] = []
-        var folded = 0
-        for entry in all[..<cut] where entry.note != true {
-            let message = entry.message
-            switch message.role {
-            case .user:
-                lines.append("用户：\(message.text)")
-                folded += 1
-            case .assistant:
-                guard !message.text.isEmpty else { continue }
-                let name = entry.speaker.flatMap { id in bots.first { $0.id == id }?.name } ?? bot.name
-                lines.append("\(name)：\(message.text)")
-                folded += 1
-            case .tool:
-                if let label = entry.label { lines.append("（用了工具：\(label)）") }
-            }
-        }
-        var transcript = lines.joined(separator: "\n")
-        if transcript.count > 60_000 { transcript = "……\n" + String(transcript.suffix(60_000)) }
+        let crew = bots
+        let (transcript, folded) = Turns.transcript(all[..<cut], name: { entry in
+            entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name
+        }, label: \.label)
         let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
         let prompt = """
         \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
@@ -660,9 +642,7 @@ final class TeamModel: ObservableObject {
     func unfold(_ key: String, _ leaf: Leaf) {
         guard keeping, let marker = leaf.marker, let original = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) else { return }
         stop(key)
-        let known = Set(original.map(\.id))
-        let since = history(key).filter { !known.contains($0.id) && $0.id != marker }
-        let restored = original + since
+        let restored = Turns.unfolded(original: original, current: history(key), marker: marker)
         entries[key] = restored
         Disk.save(restored, Disk.chatFile(key))
         setSummary(key, Disk.load(String.self, Self.leafSummary(key, leaf.id)))
@@ -1128,12 +1108,7 @@ final class TeamModel: ObservableObject {
 
     /// Asks again: everything after the last thing the user said goes, and the companion answers anew.
     /// The turns a retry (or an edit of message `id`) would undo: the last one, or every one from that message on.
-    func turnsToUndo(_ key: String, from id: String? = nil) -> [String] {
-        let users = history(key).filter { $0.message.role == .user && $0.note != true }
-        guard let id else { return users.last.map { [$0.id] } ?? [] }
-        guard let index = users.firstIndex(where: { $0.id == id }) else { return [] }
-        return users[index...].map(\.id)
-    }
+    func turnsToUndo(_ key: String, from id: String? = nil) -> [String] { Turns.toUndo(history(key), from: id) }
 
     /// Files those turns changed.
     func changedFiles(_ key: String, from id: String? = nil) -> [Snapshots.Kept] {
@@ -1144,9 +1119,7 @@ final class TeamModel: ObservableObject {
         guard phase != .demo else { return }
         stop(key)
         let turns = turnsToUndo(key)
-        var list = history(key)
-        guard let last = list.lastIndex(where: { $0.message.role == .user && $0.note != true }) else { return }
-        list.removeSubrange((last + 1)...)
+        guard let list = Turns.retried(history(key)) else { return }
         entries[key] = list
         if keeping { Disk.save(list, Disk.chatFile(key)) }
         notify(key, .changed)
@@ -1169,13 +1142,12 @@ final class TeamModel: ObservableObject {
         guard phase != .demo else { return }
         stop(key)
         let turns = turnsToUndo(key, from: id)
-        var list = history(key)
-        guard let index = list.firstIndex(where: { $0.id == id }) else { return }
-        var edited = list[index]
-        edited.message.text = text
-        edited.at = Now.ms
-        list.removeSubrange(index...)
-        list.append(edited)
+        guard let list = Turns.edited(history(key), id: id, change: { entry in
+            var edited = entry
+            edited.message.text = text
+            edited.at = Now.ms
+            return edited
+        }) else { return }
         entries[key] = list
         if keeping { Disk.save(list, Disk.chatFile(key)) }
         notify(key, .changed)
@@ -1454,4 +1426,11 @@ final class TeamModel: ObservableObject {
         doing = [:]
         load()
     }
+}
+
+/// The conversation's lines, as the shared scheduling logic in Craft reads them.
+extension Entry: Said {
+    var role: Message.Role { message.role }
+    var text: String { message.text }
+    var isNote: Bool { note == true }
 }

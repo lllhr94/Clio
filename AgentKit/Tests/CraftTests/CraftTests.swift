@@ -525,3 +525,114 @@ final class RelayTests: XCTestCase {
         XCTAssertNil(Relay.next(after: "@阿青 你看\n然后我们继续聊", from: "1", among: members), "only the last line counts")
     }
 }
+
+final class TurnsTests: XCTestCase {
+    private struct Line: Said, Equatable {
+        var id: String
+        var role: Message.Role
+        var text: String
+        var isNote = false
+        var speaker: String?
+        var label: String?
+    }
+
+    private func user(_ id: String, _ text: String = "问") -> Line { Line(id: id, role: .user, text: text) }
+    private func bot(_ id: String, _ text: String = "答", speaker: String? = nil) -> Line { Line(id: id, role: .assistant, text: text, speaker: speaker) }
+    private func tool(_ id: String, _ label: String? = nil) -> Line { Line(id: id, role: .tool, text: "结果", label: label) }
+    private func note(_ id: String, _ text: String = "（被你叫停了）") -> Line { Line(id: id, role: .assistant, text: text, isNote: true) }
+
+    func testSizeLeavesNotesOut() {
+        XCTAssertEqual(Turns.size([user("1", "abc"), note("n", "很长很长的提示"), bot("2", "de")]), 5)
+    }
+
+    func testRetryUndoesTheLastTurnOnly() {
+        let lines = [user("u1"), bot("b1"), user("u2"), bot("b2a", ""), tool("t"), bot("b2"), note("n")]
+        XCTAssertEqual(Turns.toUndo(lines), ["u2"])
+        XCTAssertEqual(Turns.retried(lines)?.map(\.id), ["u1", "b1", "u2"])
+    }
+
+    func testRetryWithNothingSaid() {
+        let lines = [note("n", "开场白"), bot("b")]
+        XCTAssertNil(Turns.retried(lines))
+        XCTAssertEqual(Turns.toUndo(lines), [])
+    }
+
+    func testANoteFromTheUserSideIsNotATurn() {
+        let restored = Line(id: "r", role: .user, text: "把这轮改过的 1 个文件还原了。", isNote: true)
+        let lines = [user("u1"), bot("b1"), restored]
+        XCTAssertEqual(Turns.toUndo(lines), ["u1"])
+        XCTAssertEqual(Turns.retried(lines)?.map(\.id), ["u1"])
+    }
+
+    func testEditKeepsWhatCameBeforeAndDropsWhatCameAfter() {
+        let lines = [user("u1"), bot("b1"), user("u2"), bot("b2"), user("u3"), bot("b3")]
+        XCTAssertEqual(Turns.toUndo(lines, from: "u2"), ["u2", "u3"])
+        let edited = Turns.edited(lines, id: "u2") { line in
+            var changed = line
+            changed.text = "改过的问题"
+            return changed
+        }
+        XCTAssertEqual(edited?.map(\.id), ["u1", "b1", "u2"])
+        XCTAssertEqual(edited?.last?.text, "改过的问题")
+        XCTAssertNil(Turns.edited(lines, id: "gone") { $0 })
+        XCTAssertEqual(Turns.toUndo(lines, from: "gone"), [])
+    }
+
+    func testFoldCutsBeforeAUserMessageAndKeepsTheRecentPart() {
+        var lines: [Line] = []
+        for turn in 1...8 {
+            lines.append(user("u\(turn)"))
+            lines.append(bot("b\(turn)"))
+        }
+        // 16 real lines, keep 4: the cut lands on a user message with at least 4 lines after it.
+        guard case .success(let cut) = Turns.foldCut(lines, keep: 4) else { return XCTFail("should fold") }
+        XCTAssertEqual(lines[cut].role, .user)
+        XCTAssertEqual(lines[cut].id, "u7")
+        XCTAssertGreaterThanOrEqual(lines.count - cut, 4)
+    }
+
+    func testFoldSkipsToolLinesToFindATurnStart() {
+        var lines: [Line] = []
+        for turn in 1...6 {
+            lines += [user("u\(turn)"), bot("c\(turn)", ""), tool("t\(turn)"), bot("b\(turn)")]
+        }
+        guard case .success(let cut) = Turns.foldCut(lines, keep: 5) else { return XCTFail("should fold") }
+        XCTAssertEqual(lines[cut].id, "u6")
+    }
+
+    func testFoldRefusesShortConversations() {
+        let lines = [user("u1"), bot("b1"), user("u2"), bot("b2"), note("n"), note("m")]
+        XCTAssertEqual(Turns.foldCut(lines, keep: 4), .failure(.tooShort))
+        XCTAssertEqual(Turns.FoldProblem.tooShort.words, "这段絮语还不长，用不着压缩。")
+    }
+
+    func testFoldNeedsAUserMessageToCutBefore() {
+        // One question, then a long run of the companion working: nowhere to start a kept turn.
+        var lines = [user("u1")]
+        for step in 1...12 { lines += [bot("c\(step)", ""), tool("t\(step)")] }
+        XCTAssertEqual(Turns.foldCut(lines, keep: 4), .failure(.noBreak))
+    }
+
+    func testTranscriptNamesSpeakersAndMentionsTools() {
+        let lines = [user("u1", "周六去哪"), bot("c", ""), tool("t", "搜索：重庆天气"), tool("t2"), bot("b1", "磁器口", speaker: "x"), note("n"), bot("b2", "好")]
+        let written = Turns.transcript(lines, name: { $0.speaker == "x" ? "团子" : "旅伴" }, label: \.label)
+        XCTAssertEqual(written.text, "用户：周六去哪\n（用了工具：搜索：重庆天气）\n团子：磁器口\n旅伴：好")
+        XCTAssertEqual(written.folded, 3)
+    }
+
+    func testTranscriptKeepsTheNewestPartWhenLong() {
+        let lines = [user("u1", String(repeating: "旧", count: 50)), bot("b1", String(repeating: "新", count: 50))]
+        let written = Turns.transcript(lines, name: { _ in "旅伴" }, label: { _ in nil }, limit: 20)
+        XCTAssertTrue(written.text.hasPrefix("……\n"))
+        XCTAssertTrue(written.text.hasSuffix(String(repeating: "新", count: 20)))
+        XCTAssertFalse(written.text.contains("旧"))
+    }
+
+    func testUnfoldBringsBackTheOriginalAndKeepsWhatWasSaidSince() {
+        let original = [user("u1"), bot("b1"), user("u2"), bot("b2"), user("u3"), bot("b3")]
+        let marker = note("m", "前情提要：较早的 4 条已压缩")
+        let current = [marker, user("u3"), bot("b3"), user("u4"), bot("b4")]
+        let back = Turns.unfolded(original: original, current: current, marker: "m")
+        XCTAssertEqual(back.map(\.id), ["u1", "b1", "u2", "b2", "u3", "b3", "u4", "b4"])
+    }
+}
