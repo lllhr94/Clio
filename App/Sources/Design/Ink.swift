@@ -1,5 +1,21 @@
+import Observation
 import SwiftUI
 import UIKit
+
+/// The accent the user picked in 纸墨与絮语. Ink reads it, so every view drawn with the accent redraws when it changes.
+@Observable
+final class Theme {
+    static let shared = Theme()
+
+    private(set) var key: String = UserDefaults.standard.string(forKey: "look.accent") ?? "dai"
+
+    func pick(_ key: String) {
+        self.key = key
+        UserDefaults.standard.set(key, forKey: "look.accent")
+    }
+
+    var palette: Ink.Palette { Ink.palettes.first { $0.key == key } ?? Ink.palettes[0] }
+}
 
 /// Clio's design system: every color, type size, space and corner comes from here.
 enum Ink {
@@ -23,8 +39,27 @@ enum Ink {
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
     static let inkFaint = pair(0xA8A294, 0x6E685D)
     static let rule = pair(0xE4DCCB, 0x37332D)
-    static let accent = pair(0x4A6A8A, 0x8FB0CF)
-    static let accentWash = pair(0xE3EAF0, 0x2A3642)
+    /// The accent and its pale ground, from the palette the user picked.
+    static var accent: Color { Theme.shared.palette.accent }
+    static var accentWash: Color { Theme.shared.palette.wash }
+
+    struct Palette: Identifiable {
+        var key: String
+        var title: String
+        var accent: Color
+        var wash: Color
+        var id: String { key }
+    }
+
+    /// 主色: ink colors with old names. 黛 is the first and the default.
+    static let palettes: [Palette] = [
+        Palette(key: "dai", title: "黛", accent: pair(0x4A6A8A, 0x8FB0CF), wash: pair(0xE3EAF0, 0x2A3642)),
+        Palette(key: "yan", title: "胭", accent: pair(0xA4504A, 0xD98C84), wash: pair(0xF2E1DE, 0x3D2B29)),
+        Palette(key: "zhu", title: "竹", accent: pair(0x4F7A5A, 0x8DBB97), wash: pair(0xE1ECE3, 0x283A2D)),
+        Palette(key: "xiang", title: "缃", accent: pair(0x93702F, 0xD2AA62), wash: pair(0xF3E8D2, 0x3D3322)),
+        Palette(key: "teng", title: "藤", accent: pair(0x6E5A92, 0xA996CF), wash: pair(0xE9E4F2, 0x332C42)),
+        Palette(key: "mo", title: "墨", accent: pair(0x3F3D39, 0xC9C2B5), wash: pair(0xE8E5DF, 0x35332F)),
+    ]
     static let mine = pair(0xECE4D3, 0x322E28)
     static let ok = pair(0x5E8C6A, 0x7FB08C)
     static let warn = pair(0xC08A3E, 0xD9A65C)
@@ -32,7 +67,7 @@ enum Ink {
 
     /// The grounds a companion's portrait can sit on, each with a name to keep and a name to show.
     static let tints: [(key: String, title: String, color: Color)] = [
-        ("dai", "黛", accentWash),
+        ("dai", "黛", pair(0xE3EAF0, 0x2A3642)),
         ("yan", "胭", pair(0xEFE3E0, 0x3A2E2C)),
         ("zhu", "竹", pair(0xE3EADF, 0x2C352B)),
         ("xiang", "缃", pair(0xF1E6D2, 0x3A3226)),

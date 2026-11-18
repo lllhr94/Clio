@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 纸墨与絮语: how Clio looks, how it feels in the hand, and how conversations are carried.
 struct LookPage: View {
@@ -25,7 +26,20 @@ struct LookPage: View {
     @AppStorage("diary.on") private var diaryOn = false
     @AppStorage("morning.hour") private var morningHour = 7
     @AppStorage("notify.done") private var notifyDone = true
+    @AppStorage("live.on") private var liveOn = true
     @AppStorage("look.fps") private var fps = false
+    @State private var icon = UIApplication.shared.alternateIconName
+    @State private var iconNote: String?
+
+    /// 桌面图标: the companion in other colors. Nil is the usual one.
+    private static let iconChoices: [(name: String?, preview: String, title: String)] = [
+        (nil, "IconPreview-Default", "晴蓝"),
+        ("AppIcon-Rose", "IconPreview-Rose", "桃粉"),
+        ("AppIcon-Mint", "IconPreview-Mint", "薄荷"),
+        ("AppIcon-Honey", "IconPreview-Honey", "蜂蜜"),
+        ("AppIcon-Lilac", "IconPreview-Lilac", "丁香"),
+        ("AppIcon-Night", "IconPreview-Night", "夜色"),
+    ]
 
     private let sample = """
     ## 小样
@@ -60,6 +74,8 @@ struct LookPage: View {
                     .pickerStyle(.segmented)
                     LabeledSlider(title: "字号", value: $size, range: 14...23, step: 1) { "\(Int($0))" }
                     LabeledSlider(title: "行距", value: $leading, range: 2...16, step: 1) { "\(Int($0))" }
+                    palettes
+                    icons
                 }
 
                 Section("动静") {
@@ -119,8 +135,9 @@ struct LookPage: View {
 
                 Section {
                     Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
+                    Toggle("锁屏和灵动岛显示旅伴在做什么", isOn: $liveOn)
                 } header: { Text("在后台") } footer: {
-                    Text("旅伴干活时你切走，iOS 会给一小段时间（通常半分钟左右）让它接着干。这期间干完了、出错了会发通知；要你批准时总会通知。时间快用完还没干完，会先把写到一半的存下来，回到 Clio 点「接着做」就从那里继续。点通知直接回到那段絮语。")
+                    Text("旅伴干活时，锁屏和灵动岛上有一张小卡片：谁在做、正在做什么、做了多久，要你批准时会亮一下，做完了留几分钟再消失。\n旅伴干活时你切走，iOS 会给一小段时间（通常半分钟左右）让它接着干。这期间干完了、出错了会发通知；要你批准时总会通知。时间快用完还没干完，会先把写到一半的存下来，回到 Clio 点「接着做」就从那里继续。点通知直接回到那段絮语。")
                 }
 
                 Section {
@@ -136,13 +153,84 @@ struct LookPage: View {
         .clioScheme(scheme)
     }
 
+    /// 主色: the accent everything is drawn with.
+    private var palettes: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text("主色")
+            HStack(spacing: 0) {
+                ForEach(Ink.palettes) { palette in
+                    let picked = Theme.shared.key == palette.key
+                    Button {
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { Theme.shared.pick(palette.key) }
+                    } label: {
+                        VStack(spacing: 4) {
+                            Circle().fill(palette.accent).frame(width: 28, height: 28)
+                                .padding(3)
+                                .overlay(Circle().strokeBorder(picked ? palette.accent : Color.clear, lineWidth: 2))
+                            Text(palette.title).font(.system(size: 12, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("主色：\(palette.title)")
+                    .accessibilityAddTraits(picked ? .isSelected : [])
+                }
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
+    /// 桌面图标: the app's icon on the home screen.
+    private var icons: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text("桌面图标")
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.m) {
+                    ForEach(Self.iconChoices, id: \.preview) { item in
+                        let picked = icon == item.name
+                        Button {
+                            Haptics.tick(0.5)
+                            Task {
+                                do {
+                                    try await UIApplication.shared.setAlternateIconName(item.name)
+                                    icon = item.name
+                                    iconNote = nil
+                                } catch {
+                                    iconNote = "没换成：\(error.localizedDescription)"
+                                }
+                            }
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(item.preview)
+                                    .resizable()
+                                    .frame(width: 54, height: 54)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 2 : 1))
+                                Text(item.title).font(.system(size: 12, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("桌面图标：\(item.title)")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+            if let iconNote { Text(iconNote).font(Ink.footnote).foregroundStyle(Ink.stop) }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
+        liveOn = true
+        Theme.shared.pick("dai")
         Haptics.thud()
     }
 }

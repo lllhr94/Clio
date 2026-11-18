@@ -737,3 +737,133 @@ final class TideTests: XCTestCase {
         XCTAssertEqual(Tide.arrivals(after: "2026-11-10", through: "2026-11-11", seed: "a").waiting.count, 1)
     }
 }
+
+final class ModelTraitsTests: XCTestCase {
+    func testDeepSeekFlashSeesAndProDoesNot() {
+        XCTAssertTrue(ModelTraits.guess("deepseek-flash").sees)
+        XCTAssertTrue(ModelTraits.guess("deepseek-v4-flash").sees, "the old Flash name leads to V4.1 Flash")
+        XCTAssertFalse(ModelTraits.guess("deepseek-v4-pro").sees)
+        XCTAssertFalse(ModelTraits.guess("deepseek-chat").sees)
+        XCTAssertTrue(ModelTraits.guess("deepseek-flash").thinks)
+        XCTAssertEqual(ModelTraits.guess("deepseek-flash").window, 1_048_576)
+    }
+
+    func testOtherFamilies() {
+        XCTAssertTrue(ModelTraits.guess("claude-sonnet-4-5").sees)
+        XCTAssertTrue(ModelTraits.guess("claude-sonnet-4-5").thinks)
+        XCTAssertFalse(ModelTraits.guess("claude-3-5-haiku").thinks)
+        XCTAssertTrue(ModelTraits.guess("gpt-5").sees)
+        XCTAssertTrue(ModelTraits.guess("o4-mini").sees)
+        XCTAssertFalse(ModelTraits.guess("o3-mini").sees)
+        XCTAssertTrue(ModelTraits.guess("qwen-vl-max").sees)
+        XCTAssertTrue(ModelTraits.guess("qwen3-vl-plus").sees)
+        XCTAssertFalse(ModelTraits.guess("qwen-max").sees)
+        XCTAssertTrue(ModelTraits.guess("glm-4.5v").sees)
+        XCTAssertFalse(ModelTraits.guess("glm-5.3").sees)
+        XCTAssertTrue(ModelTraits.guess("openai/gpt-5").sees, "the maker in front is ignored")
+        XCTAssertTrue(ModelTraits.guess("google/gemini-2.5-flash").thinks)
+        XCTAssertFalse(ModelTraits.guess("some-local-model").sees)
+        XCTAssertTrue(ModelTraits.guess("some-local-model").tools)
+    }
+
+    func testListsDropModelsThatCannotChat() {
+        let listed = ["gpt-5", "text-embedding-3-small", "tts-1", "whisper-1", "dall-e-3", "gpt-image-1", "omni-moderation-latest", "gpt-4o-realtime-preview", "BAAI/bge-m3", "Qwen/Qwen3-8B"]
+        XCTAssertEqual(listed.filter(ModelTraits.isChat), ["gpt-5", "Qwen/Qwen3-8B"])
+    }
+
+    func testSummary() {
+        XCTAssertEqual(ModelTraits(sees: true, thinks: true, window: 1_048_576).summary, "看图 · 思考 · 1M")
+        XCTAssertEqual(ModelTraits(sees: false, window: 131_072).summary, "131K")
+    }
+}
+
+final class ExplainPictureTests: XCTestCase {
+    func testARefusedPictureSaysSo() {
+        let advice = Explain.model(ProviderError(status: 400, "image_url is not supported by this model"), service: "某服务")
+        XCTAssertEqual(advice.title, "这个模型好像不收图片")
+        XCTAssertEqual(advice.next, .tuning)
+    }
+}
+
+final class DocSearchTests: XCTestCase {
+    func testFindsPassagesAndPages() {
+        let manual = "[第 1 页]\n公司简介\n\n[第 2 页]\n报销的流程：先填单，再找主管签字，最后交财务。\n\n[第 3 页]\n请假要提前三天说。"
+        let notes = "周末去重庆吃火锅。\n\n报销记得留发票。"
+        let hits = DocSearch.find("报销流程", in: [("手册.pdf", manual), ("笔记.md", notes)])
+        XCTAssertEqual(hits.first?.path, "手册.pdf")
+        XCTAssertEqual(hits.first?.page, 2)
+        XCTAssertTrue(hits.first?.snippet.contains("主管签字") == true)
+        XCTAssertTrue(DocSearch.find("火锅 重庆", in: [("笔记.md", notes)]).first?.snippet.contains("火锅") == true)
+        XCTAssertTrue(DocSearch.find("天气", in: [("笔记.md", notes)]).isEmpty)
+    }
+
+    func testTermsAndPairs() {
+        XCTAssertEqual(DocSearch.terms("Swift，并发  swift"), ["swift", "并发"])
+        XCTAssertEqual(DocSearch.pairs("报销流程"), ["报销", "销流", "流程"])
+        XCTAssertEqual(DocSearch.pairs("ab"), [])
+    }
+}
+
+final class RoutineTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private func date(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
+    }
+
+    func testDueOnceTheTimeHasCome() {
+        // 2026-11-16 is a Monday.
+        let routine = Routine(botId: "b", title: "新闻", prompt: "整理新闻", hour: 8, minute: 30, created: date(15, 12).timeIntervalSince1970)
+        XCTAssertNil(routine.due(now: date(16, 8, 0), calendar: calendar))
+        let due = routine.due(now: date(16, 9, 0), calendar: calendar)
+        XCTAssertEqual(due?.at, date(16, 8, 30))
+        XCTAssertEqual(due?.missed, 0)
+        var done = routine
+        done.lastRun = date(16, 9, 0).timeIntervalSince1970
+        XCTAssertNil(done.due(now: date(16, 20, 0), calendar: calendar))
+        // Three days away: done once, two missed.
+        XCTAssertEqual(done.due(now: date(19, 10, 0), calendar: calendar)?.missed, 2)
+    }
+
+    func testWeekdaysOnly() {
+        let routine = Routine(botId: "b", title: "日报", prompt: "写日报", hour: 18, minute: 0, days: [1, 2, 3, 4, 5], created: date(13, 0).timeIntervalSince1970)
+        // Saturday the 21st and Sunday the 22nd are skipped: Friday the 20th is the latest.
+        XCTAssertEqual(routine.due(now: date(22, 20, 0), calendar: calendar)?.at, date(20, 18, 0))
+        XCTAssertEqual(routine.next(after: date(20, 19, 0), calendar: calendar), date(23, 18, 0))
+        XCTAssertEqual(routine.when, "工作日 18:00")
+    }
+
+    func testReadingDaysAndClocks() {
+        XCTAssertEqual(Routine.days(from: "每天"), [])
+        XCTAssertEqual(Routine.days(from: "工作日"), [1, 2, 3, 4, 5])
+        XCTAssertEqual(Routine.days(from: "周一、周三、周五"), [1, 3, 5])
+        XCTAssertEqual(Routine.days(from: "6,7"), [6, 7])
+        XCTAssertEqual(Routine.clock("08:30")?.hour, 8)
+        XCTAssertEqual(Routine.clock("8点半")?.minute, 30)
+        XCTAssertEqual(Routine.clock("下午3点")?.hour, 15)
+        XCTAssertNil(Routine.clock("明天"))
+        XCTAssertEqual(Routine.weekday(7), 1)
+        XCTAssertEqual(Routine.weekday(1), 2)
+    }
+}
+
+final class SkillTests: XCTestCase {
+    func testReadsTheBlockOnTop() {
+        let skill = Skill.parse("---\nname: 周报\ndescription: \"写周报时用\"\n---\n\n# 周报\n先列做完的事。", fallback: "文件名")
+        XCTAssertEqual(skill.name, "周报")
+        XCTAssertEqual(skill.description, "写周报时用")
+        XCTAssertEqual(skill.body, "# 周报\n先列做完的事。")
+        XCTAssertEqual(Skill.parse(skill.text, fallback: "x"), skill, "what is written reads back the same")
+    }
+
+    func testWithoutTheBlock() {
+        let skill = Skill.parse("# 记账\n\n把花销记进账本。\n每月底汇总。", fallback: "记账")
+        XCTAssertEqual(skill.name, "记账")
+        XCTAssertEqual(skill.description, "把花销记进账本。")
+        XCTAssertTrue(Skill.menu([skill]).hasPrefix("- 记账：把花销记进账本。"))
+    }
+}

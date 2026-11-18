@@ -267,6 +267,30 @@ struct RecallTool: AgentTool {
     }
 }
 
+/// Asks another companion to do part of the work. It works in its own conversation and its answer comes back.
+struct DelegateTool: AgentTool {
+    let others: [(name: String, role: String)]
+    let ask: @Sendable (String, String) async -> ToolOutput
+
+    var spec: ToolSpec {
+        let list = others.map { $0.role.isEmpty ? $0.name : "\($0.name)（\($0.role)）" }.joined(separator: "、")
+        return ToolSpec(name: "ask_companion", description: "请团队里另一位旅伴帮忙做一件事，等它做完把结果交回给你。适合交给更擅长的那位（查资料、写稿、算账……），或者一件事里能分出去的一块。它在自己的絮语里干活，用户看得到。请它时把要做的事、要的结果写完整，它看不到你们的对话。能请的有：\(list)。", parameters: [
+            "type": "object",
+            "properties": [
+                "name": ["type": "string", "description": "请谁，写名字"],
+                "task": ["type": "string", "description": "请它做什么：背景、要求、要交回什么"],
+            ],
+            "required": ["name", "task"],
+        ])
+    }
+
+    func label(for arguments: JSONValue) -> String { "请\(arguments["name"]?.string ?? "旅伴")帮忙" }
+
+    func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        await ask(arguments["name"]?.string ?? "", arguments["task"]?.string ?? "")
+    }
+}
+
 /// A message the Bot sends the user later, as a notification.
 struct LaterTool: AgentTool {
     let botName: String
@@ -314,6 +338,36 @@ enum Notify {
         let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let trigger = UNCalendarNotificationTrigger(dateMatching: parts, repeats: false)
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: later.id, content: content, trigger: trigger))
+    }
+
+    /// The kind of notification that can be answered right there: 同意 / 不同意.
+    static let approvalCategory = "clio.approval"
+
+    static func registerCategories() {
+        let allow = UNNotificationAction(identifier: "allow", title: "同意", options: [.authenticationRequired])
+        let deny = UNNotificationAction(identifier: "deny", title: "不同意", options: [.destructive])
+        let category = UNNotificationCategory(identifier: approvalCategory, actions: [allow, deny], intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([category])
+    }
+
+    /// A companion waits for a yes. Asks that came after reading the web open the app instead, so the details are seen first.
+    static func approval(_ approval: Approval, from name: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "\(name)在等你批准"
+        content.body = String("\(approval.tool ?? "")：\(approval.reason ?? "")".prefix(180))
+        content.sound = .default
+        content.userInfo = ["chat": approval.chat ?? "", "approval": approval.id]
+        if approval.forced != true, approval.detail?.code == nil {
+            content.categoryIdentifier = approvalCategory
+            content.body += "\n长按可以直接同意或不同意。"
+        }
+        content.interruptionLevel = .timeSensitive
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: approval.id, content: content, trigger: nil))
+    }
+
+    /// Takes away the notification for an approval answered in the app.
+    static func clear(_ id: String) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
     }
 
     /// A Bot finished while the app was away.

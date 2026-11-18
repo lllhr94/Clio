@@ -19,22 +19,6 @@ public enum Tokens {
     /// About how many tokens a picture costs a model.
     public static let perImage = 800
 
-    /// A model's context window, by its name. Unknown models get 128K, the common floor.
-    public static func window(for model: String) -> Int {
-        let name = model.lowercased()
-        func has(_ part: String) -> Bool { name.contains(part) }
-        if has("deepseek-v4") || name == "deepseek-chat" || name == "deepseek-reasoner" { return 1_048_576 }
-        if has("gemini") { return 1_048_576 }
-        if has("gpt-4.1") { return 1_047_576 }
-        if has("gpt-5") { return 400_000 }
-        if has("claude") { return has("1m") ? 1_000_000 : 200_000 }
-        if has("kimi") || has("moonshot") { return 262_144 }
-        if has("grok-4") { return 256_000 }
-        if has("glm-4.6") || has("glm-5") { return 200_000 }
-        if has("o3") || has("o4") { return 200_000 }
-        return 131_072
-    }
-
     /// 657 · 15.5K · 1.05M
     public static func short(_ count: Int) -> String {
         switch count {

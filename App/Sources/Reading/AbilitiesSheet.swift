@@ -89,17 +89,3 @@ struct AbilitiesSheet: View {
         .padding(.vertical, Ink.Space.m)
     }
 }
-
-/// The words inside a PDF, so a companion can read one from 书案.
-enum PDFText {
-    static func extract(_ url: URL, limit: Int = 400_000) -> String? {
-        guard let document = PDFDocument(url: url) else { return nil }
-        var out = ""
-        for index in 0..<document.pageCount {
-            guard let page = document.page(at: index), let text = page.string else { continue }
-            out += "\n\n——第 \(index + 1) 页——\n" + text
-            if out.count > limit { break }
-        }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}

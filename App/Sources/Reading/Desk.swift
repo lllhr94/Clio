@@ -60,6 +60,7 @@ struct ClioRoot: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
                 team.deliverDue()
+                team.routinesIfDue()
             }
         }
     }

@@ -1,3 +1,4 @@
+import ActivityKit
 import SwiftUI
 import WidgetKit
 
@@ -80,5 +81,130 @@ struct CompanionWidget: Widget {
 struct ClioWidgets: WidgetBundle {
     var body: some Widget {
         CompanionWidget()
+        TurnActivityWidget()
+    }
+}
+
+
+/// The Live Activity: a companion's turn on the lock screen and in the Dynamic Island.
+struct TurnActivityWidget: Widget {
+    private static let paper = Color(red: 0.97, green: 0.95, blue: 0.91)
+    private static let ink = Color(red: 0.16, green: 0.15, blue: 0.14)
+    private static let soft = Color(red: 0.42, green: 0.39, blue: 0.36)
+    private static let accent = Color(red: 0.43, green: 0.60, blue: 0.78)
+    private static let warn = Color(red: 0.85, green: 0.65, blue: 0.36)
+    private static let ok = Color(red: 0.50, green: 0.69, blue: 0.55)
+    private static let stop = Color(red: 0.83, green: 0.47, blue: 0.44)
+
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: TurnAttributes.self) { context in
+            LockScreenTurn(context: context)
+                .activityBackgroundTint(Self.paper.opacity(0.92))
+                .activitySystemActionForegroundColor(Self.ink)
+                .widgetURL(URL(string: "clio://chat/\(context.attributes.chat)"))
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Label(context.attributes.name, systemImage: "water.waves")
+                        .font(.system(size: 15, weight: .semibold, design: .serif))
+                        .foregroundStyle(Self.accent)
+                        .lineLimit(1)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    Self.clock(context.state)
+                        .font(.system(size: 14, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 64, alignment: .trailing)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    HStack(spacing: 8) {
+                        Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
+                        Text(context.state.doing).font(.system(size: 14)).lineLimit(2)
+                        Spacer(minLength: 0)
+                        if context.state.steps > 0 {
+                            Text("\(context.state.steps) 步").font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } compactLeading: {
+                Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
+            } compactTrailing: {
+                if context.state.phase == .working {
+                    Self.clock(context.state).font(.system(size: 13).monospacedDigit()).frame(maxWidth: 44)
+                } else {
+                    Text(Self.word(context.state.phase)).font(.system(size: 13, weight: .medium)).foregroundStyle(Self.tint(context.state.phase))
+                }
+            } minimal: {
+                Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
+            }
+            .widgetURL(URL(string: "clio://chat/\(context.attributes.chat)"))
+            .keylineTint(Self.accent)
+        }
+    }
+
+    static func symbol(_ phase: TurnAttributes.ContentState.Phase) -> String {
+        switch phase {
+        case .working: return "water.waves"
+        case .waiting: return "hand.raised.fill"
+        case .done: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    static func tint(_ phase: TurnAttributes.ContentState.Phase) -> Color {
+        switch phase {
+        case .working: return accent
+        case .waiting: return warn
+        case .done: return ok
+        case .failed: return stop
+        }
+    }
+
+    static func word(_ phase: TurnAttributes.ContentState.Phase) -> String {
+        switch phase {
+        case .working: return "在做"
+        case .waiting: return "等你"
+        case .done: return "好了"
+        case .failed: return "出错"
+        }
+    }
+
+    /// Counts up while working; the time it took once done.
+    @ViewBuilder
+    static func clock(_ state: TurnAttributes.ContentState) -> some View {
+        if let ended = state.ended {
+            Text(Duration.seconds(max(0, ended.timeIntervalSince(state.started))).formatted(.time(pattern: .minuteSecond)))
+        } else {
+            Text(timerInterval: state.started...Date.distantFuture, countsDown: false)
+        }
+    }
+
+    struct LockScreenTurn: View {
+        let context: ActivityViewContext<TurnAttributes>
+
+        var body: some View {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    Circle().fill(TurnActivityWidget.tint(context.state.phase).opacity(0.18))
+                    Image(systemName: TurnActivityWidget.symbol(context.state.phase))
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(TurnActivityWidget.tint(context.state.phase))
+                }
+                .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(context.attributes.name).font(.system(size: 16, weight: .semibold, design: .serif)).foregroundStyle(TurnActivityWidget.ink)
+                        Text(TurnActivityWidget.word(context.state.phase)).font(.system(size: 12, weight: .medium)).foregroundStyle(TurnActivityWidget.tint(context.state.phase))
+                        Spacer(minLength: 0)
+                        TurnActivityWidget.clock(context.state).font(.system(size: 13).monospacedDigit()).foregroundStyle(TurnActivityWidget.soft).frame(maxWidth: 70, alignment: .trailing)
+                    }
+                    Text(context.state.doing).font(.system(size: 14, design: .serif)).foregroundStyle(TurnActivityWidget.ink).lineLimit(2)
+                    if context.state.steps > 0 {
+                        Text("用了 \(context.state.steps) 次工具").font(.system(size: 11)).foregroundStyle(TurnActivityWidget.soft)
+                    }
+                }
+            }
+            .padding(14)
+        }
     }
 }

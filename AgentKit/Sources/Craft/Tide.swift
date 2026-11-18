@@ -117,7 +117,7 @@ public enum Tide {
     }
 
     /// FNV-1a: a hash that stays the same between launches (Swift's own does not).
-    static func fnv(_ text: String) -> UInt64 {
+    public static func fnv(_ text: String) -> UInt64 {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in text.utf8 {
             hash ^= UInt64(byte)

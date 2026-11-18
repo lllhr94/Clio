@@ -56,6 +56,8 @@ public enum AgentEvent: Equatable, Sendable {
     case toolWriting(name: String, characters: Int)
     /// The request failed before anything came back, in a way that usually passes; asking again (1, 2…).
     case retrying(attempt: Int)
+    /// The service refused the thinking setting; the rest of this turn goes without it.
+    case thinkingRefused(Thinking, reason: String)
     case toolFinished(id: String, ok: Bool)
     /// A finished message, to keep.
     case message(Message)
@@ -72,6 +74,8 @@ public struct Agent: Sendable {
     public var approve: @Sendable (ApprovalAsk, String) async -> Bool
     public var temperature: Double?
     public var outputLimit: Int?
+    /// How hard to think.
+    public var thinking: Thinking = .auto
     /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
     public var retryDelays: [Double] = [1, 3]
 
@@ -86,11 +90,20 @@ public struct Agent: Sendable {
 
     /// Asks once with no tools and returns the whole answer: for summaries and titles.
     public func ask(_ prompt: String) async throws -> String {
-        let request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit)
+        var request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit, thinking: thinking)
         var text = ""
-        for try await event in provider.stream(request) {
-            try Task.checkCancellation()
-            if case .text(let piece) = event { text += piece }
+        do {
+            for try await event in provider.stream(request) {
+                try Task.checkCancellation()
+                if case .text(let piece) = event { text += piece }
+            }
+        } catch let failure as ProviderError where text.isEmpty && request.thinking != .auto && (failure.status == 400 || failure.status == 422) {
+            // The model does not take the thinking setting: ask once more without it.
+            request.thinking = .auto
+            for try await event in provider.stream(request) {
+                try Task.checkCancellation()
+                if case .text(let piece) = event { text += piece }
+            }
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -109,11 +122,13 @@ public struct Agent: Sendable {
     public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
         var messages = history
         let specs = tools.map(\.spec)
+        var thinking = self.thinking
         for _ in 0..<maxSteps {
             try Task.checkCancellation()
-            let request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit)
+            var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
             var text = ""
             var reasoning = ""
+            var signature = ""
             var calls: [Int: ToolCall] = [:]
             var order: [Int] = []
             let clock = ContinuousClock()
@@ -129,6 +144,8 @@ public struct Agent: Sendable {
                         case .reasoning(let piece):
                             reasoning += piece
                             await emit(.reasoning(piece))
+                        case .reasoningSignature(let piece):
+                            signature += piece
                         case .toolCallStart(let index, let id, let name):
                             if calls[index] == nil { order.append(index) }
                             calls[index] = ToolCall(id: id, name: name, arguments: calls[index]?.arguments ?? "")
@@ -164,6 +181,14 @@ public struct Agent: Sendable {
                         if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
                         continue
                     }
+                    // A model that does not take the thinking setting says so with a 400: go on without it.
+                    if !cancelled, thinking != .auto, text.isEmpty, reasoning.isEmpty, calls.isEmpty,
+                       let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 {
+                        await emit(.thinkingRefused(thinking, reason: failure.message))
+                        thinking = .auto
+                        request.thinking = .auto
+                        continue
+                    }
                     // What was written so far stays.
                     if !text.isEmpty { await emit(.message(.assistant(text))) }
                     if cancelled { throw CancellationError() }
@@ -171,7 +196,8 @@ public struct Agent: Sendable {
                 }
             }
             let made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
-            let reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
+            var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
+            if !signature.isEmpty { reply.reasoningSignature = signature }
             if !text.isEmpty || !made.isEmpty {
                 messages.append(reply)
                 await emit(.message(reply))

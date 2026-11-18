@@ -45,6 +45,8 @@ public struct AnthropicProvider: ModelProvider {
                 turns.append((role, blocks))
             }
         }
+        // With thinking on, Claude wants its signed thoughts back in front of what it said; without, they are left out.
+        let thinking = request.thinking != .auto && request.thinking != .off
         for message in request.messages {
             switch message.role {
             case .user:
@@ -55,6 +57,9 @@ public struct AnthropicProvider: ModelProvider {
                 add("user", blocks)
             case .assistant:
                 var blocks: [[String: Any]] = []
+                if thinking, let thought = message.reasoning, let signature = message.reasoningSignature, !signature.isEmpty {
+                    blocks.append(["type": "thinking", "thinking": thought, "signature": signature])
+                }
                 if !message.text.isEmpty { blocks.append(["type": "text", "text": message.text]) }
                 for call in message.toolCalls {
                     var input: Any = [String: Any]()
@@ -82,11 +87,39 @@ public struct AnthropicProvider: ModelProvider {
             "messages": turns.map { ["role": $0.role, "content": $0.blocks] },
         ]
         if !request.system.isEmpty { body["system"] = request.system }
-        if let temperature = request.temperature { body["temperature"] = min(1, temperature) }
+        if let temperature = request.temperature, !thinking { body["temperature"] = min(1, temperature) }
+        switch request.thinking {
+        case .auto:
+            break
+        case .off:
+            body["thinking"] = ["type": "disabled"]
+        case .low, .medium, .high, .max:
+            if adaptive(request.model) {
+                body["thinking"] = ["type": "adaptive"]
+                let effort: [Thinking: String] = [.low: "low", .medium: "medium", .high: "high", .max: "max"]
+                body["output_config"] = ["effort": effort[request.thinking] ?? "high"]
+            } else {
+                // Older models think within a budget, and the budget has to fit under max_tokens.
+                let budgets: [Thinking: Int] = [.low: 2048, .medium: 6000, .high: 12000, .max: 20000]
+                let budget = budgets[request.thinking] ?? 6000
+                body["thinking"] = ["type": "enabled", "budget_tokens": budget] as [String: Any]
+                body["max_tokens"] = Swift.max(request.outputLimit ?? request.maxTokens, budget + 8192)
+            }
+        }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
         }
         return body
+    }
+
+    /// Claude 4.6 and later choose how long to think themselves and take an effort level; earlier ones take a token budget.
+    static func adaptive(_ model: String) -> Bool {
+        let name = model.lowercased()
+        guard let match = name.range(of: #"(opus|sonnet|haiku)-(\d{1,2})(?:[-.](\d{1,2}))?(?!\d)"#, options: .regularExpression) else { return false }
+        let numbers = name[match].split { !$0.isNumber }.compactMap { Int($0) }
+        guard let major = numbers.first else { return false }
+        let minor = numbers.count > 1 ? numbers[1] : 0
+        return major > 4 || (major == 4 && minor >= 6)
     }
 
     static func decode(_ payload: String) throws -> [StreamEvent] {
@@ -117,6 +150,7 @@ public struct AnthropicProvider: ModelProvider {
             case "text_delta": if let text = delta["text"]?.string { return [.text(text)] }
             case "input_json_delta": if let part = delta["partial_json"]?.string, !part.isEmpty { return [.toolCallArguments(index: index, delta: part)] }
             case "thinking_delta": if let thought = delta["thinking"]?.string { return [.reasoning(thought)] }
+            case "signature_delta": if let signature = delta["signature"]?.string { return [.reasoningSignature(signature)] }
             default: break
             }
         case "message_delta":

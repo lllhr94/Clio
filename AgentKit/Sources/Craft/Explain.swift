@@ -46,6 +46,10 @@ public enum Explain {
             if words.contains("context") && (words.contains("length") || words.contains("long") || words.contains("maximum")) || words.contains("too many tokens") {
                 return Advice(title: "这段絮语太长了，模型装不下", detail: "把较早的部分压成提要，就能接着聊。", next: .compress)
             }
+            if failure.status == 400 || failure.status == 422,
+               words.contains("image") || words.contains("vision") || words.contains("multimodal") || words.contains("image_url") || words.contains("图片") {
+                return Advice(title: "这个模型好像不收图片", detail: "到调弦 › 模型服务里点开它，把「看图」关掉（或点「试试它能不能看图」）。之后发来的照片会换成编号，旅伴用 photo_text 读图上的字。", next: .tuning)
+            }
             if words.contains("model") && (words.contains("not exist") || words.contains("not found") || words.contains("does not exist") || words.contains("unknown")) {
                 return Advice(title: "\(service) 不认这个模型名", detail: "可能模型已下线或名字写错了。到调弦里换一个模型。", next: .tuning)
             }

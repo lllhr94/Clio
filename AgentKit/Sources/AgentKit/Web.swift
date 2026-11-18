@@ -278,10 +278,13 @@ public struct WebReadTool: AgentTool {
     public var spec: ToolSpec {
         ToolSpec(
             name: "web_read",
-            description: "打开一个网址，读出网页正文。用来读搜索结果的原文、用户发来的链接。",
+            description: "打开一个网址，读出网页正文。用来读搜索结果的原文、用户发来的链接。也能读 PDF（论文、说明书、报告），长的分段读。",
             parameters: [
                 "type": "object",
-                "properties": ["url": ["type": "string", "description": "完整网址，以 http 或 https 开头"]],
+                "properties": [
+                    "url": ["type": "string", "description": "完整网址，以 http 或 https 开头"],
+                    "page": ["type": "number", "description": "是 PDF 时，从第几页读起（默认 1）"],
+                ],
                 "required": ["url"],
             ]
         )
@@ -303,7 +306,15 @@ public struct WebReadTool: AgentTool {
         // A public address can send us on to a local one; what came back from there is not handed over.
         if LocalAddress.isLocal(page.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
         let type = page.type ?? ""
-        if type.contains("pdf") { return ToolOutput("这是 PDF，暂时读不了。", isError: true) }
+        if type.contains("pdf") || PDFText.looksLike(page.data) {
+            let from = Int(arguments["page"]?.number ?? 1)
+            guard let reading = PDFText.read(page.data, from: from, count: 30) else { return ToolOutput("这个 PDF 打不开，可能损坏了或加了密码。", isError: true) }
+            var text = reading.shown(limit: limit)
+            if reading.read.count > 0, reading.blank.count == reading.read.count {
+                text += "\n\n这几页都没有文字层，像是扫描件。可以让用户存到书案，再用 photo_text 一页页认字。"
+            }
+            return ToolOutput("\(page.url.absoluteString)\n\n" + text)
+        }
         if type.hasPrefix("image/") || type.hasPrefix("video/") || type.hasPrefix("audio/") {
             return ToolOutput("这个链接是\(type)文件，不是网页。", isError: true)
         }

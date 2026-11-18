@@ -24,8 +24,10 @@ public struct ModelRequest: Sendable {
     public var temperature: Double?
     /// Set when the user chose a limit; providers that need one use `maxTokens` otherwise.
     public var outputLimit: Int?
+    /// How hard to think; `.auto` leaves it to the model.
+    public var thinking: Thinking
 
-    public init(model: String, system: String, messages: [Message], tools: [ToolSpec] = [], maxTokens: Int = 8192, temperature: Double? = nil, outputLimit: Int? = nil) {
+    public init(model: String, system: String, messages: [Message], tools: [ToolSpec] = [], maxTokens: Int = 8192, temperature: Double? = nil, outputLimit: Int? = nil, thinking: Thinking = .auto) {
         self.model = model
         self.system = system
         self.messages = messages
@@ -33,6 +35,7 @@ public struct ModelRequest: Sendable {
         self.maxTokens = maxTokens
         self.temperature = temperature
         self.outputLimit = outputLimit
+        self.thinking = thinking
     }
 }
 
@@ -40,6 +43,8 @@ public struct ModelRequest: Sendable {
 public enum StreamEvent: Equatable, Sendable {
     case text(String)
     case reasoning(String)
+    /// Claude signs its thoughts; the signature goes back with them, or Claude will not take them.
+    case reasoningSignature(String)
     /// A tool call begins; `index` keeps its pieces together.
     case toolCallStart(index: Int, id: String, name: String)
     case toolCallArguments(index: Int, delta: String)

@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import UIKit
 import JavaScriptCore
+import PDFKit
 import UniformTypeIdentifiers
 
 /// 书案: the companions' working folder. It lives in the app's Documents, so the Files app shows it too.
@@ -114,6 +115,38 @@ enum Workspace {
             guard !text.isEmpty else { return ToolOutput("这张图上没认出字。") }
             return ToolOutput("图上的字（机器识别，可能有错字）：\n\n" + String(text.prefix(12_000)))
         })
+        tools.append(DeskTool(name: "read_pdf", description: "读书案里的 PDF：论文、说明书、合同、报告。按页读，长的分段读（from 从第几页起，pages 读几页，默认 15）。扫描件没有文字层的页，会自动认字。", parameters: ["type": "object", "properties": ["path": pathParameter, "from": ["type": "number", "description": "从第几页读起，默认 1"], "pages": ["type": "number", "description": "读几页，默认 15，最多 40"]], "required": ["path"]], label: { "读 PDF：\(($0["path"]?.string ?? "").split(separator: "/").last ?? "")" }) { arguments in
+            guard let file = resolve(arguments["path"]?.string), let data = try? Data(contentsOf: file) else {
+                return ToolOutput("书案里没有这个文件：\(arguments["path"]?.string ?? "")", isError: true)
+            }
+            let from = Int(arguments["from"]?.number ?? 1)
+            let count = min(40, max(1, Int(arguments["pages"]?.number ?? 15)))
+            guard var reading = PDFText.read(data, from: from, count: count) else { return ToolOutput("\(relative(file)) 打不开，可能不是 PDF、坏了或加了密码。", isError: true) }
+            // Pages that are only pictures: read the words off them, a few at a time.
+            let blank = reading.blank.prefix(5)
+            if !blank.isEmpty, let document = PDFDocument(data: data) {
+                for number in blank {
+                    guard let page = document.page(at: number - 1) else { continue }
+                    let bounds = page.bounds(for: .mediaBox)
+                    let scale = 1600 / max(bounds.width, bounds.height, 1)
+                    let image = page.thumbnail(of: CGSize(width: bounds.width * scale, height: bounds.height * scale), for: .mediaBox)
+                    let words = await Scan.read(image)
+                    if let index = reading.read.firstIndex(where: { $0.number == number }), !words.isEmpty {
+                        reading.read[index].text = "（扫描页，机器认的字，可能有错）\n" + words
+                    }
+                }
+            }
+            return ToolOutput(reading.shown(limit: 24_000))
+        })
+        tools.append(DeskTool(name: "search_docs", description: "在书案的资料里找和问题有关的段落：PDF、Markdown、文本、网页存档、表格都算。先用它找到在哪个文件哪一页，再用 read_pdf 或 read_file 细读。关键词用空格隔开。", parameters: ["type": "object", "properties": ["query": ["type": "string", "description": "关键词，比如：报销 发票 期限"], "folder": ["type": "string", "description": "只在这个文件夹里找（可不填）"]], "required": ["query"]], label: { "翻资料：\(($0["query"]?.string ?? "").prefix(20))" }) { arguments in
+            let query = arguments["query"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !query.isEmpty else { return ToolOutput("要给关键词。", isError: true) }
+            guard let folder = resolve(arguments["folder"]?.string) else { return ToolOutput("文件夹不对。", isError: true) }
+            let documents = PaperShelf.documents(under: folder)
+            guard !documents.isEmpty else { return ToolOutput("\(relative(folder)) 里还没有能翻的资料（PDF、md、txt 等）。用户可以从文件 App 把资料放进书案。") }
+            let hits = DocSearch.find(query, in: documents)
+            return ToolOutput("翻了 \(documents.count) 份资料。" + DocSearch.shown(hits, query: query))
+        })
         tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 和 writeFile(path, text) 读写书案里的文件。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
             await Reckoner.run(arguments["code"]?.string ?? "")
         })
@@ -212,5 +245,47 @@ enum Reckoner {
             return json.toString()
         }
         return value.toString() ?? ""
+    }
+}
+
+
+/// The papers in 书案 as text, for `search_docs`. A PDF's text is kept aside after the first reading, until the file changes.
+enum PaperShelf {
+    static let kinds: Set<String> = ["pdf", "txt", "md", "markdown", "csv", "tsv", "json", "html", "htm", "xml", "yaml", "yml", "log", "org", "rst", "tex"]
+
+    private static var shelf: URL {
+        let folder = Disk.url("doccache")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    static func documents(under folder: URL) -> [(path: String, text: String)] {
+        var found: [(path: String, text: String)] = []
+        var total = 0
+        for file in Workspace.files(under: folder, cap: 3000) {
+            let ext = (file.path as NSString).pathExtension.lowercased()
+            guard kinds.contains(ext), file.size > 0, file.size < 40_000_000 else { continue }
+            // The text kept beside a PDF when it came in: the PDF itself is read instead, with its pages.
+            if file.path.lowercased().hasSuffix(".pdf.txt"), Workspace.resolve(String(file.path.dropLast(4))).map({ FileManager.default.fileExists(atPath: $0.path) }) == true { continue }
+            guard let url = Workspace.resolve(file.path), let text = text(of: url, ext: ext, size: file.size, date: file.date), !text.isEmpty else { continue }
+            found.append((file.path, text))
+            total += text.count
+            if total > 30_000_000 { break }
+        }
+        return found
+    }
+
+    private static func text(of url: URL, ext: String, size: Int, date: Date) -> String? {
+        guard ext == "pdf" else {
+            guard size < 8_000_000, let data = try? Data(contentsOf: url) else { return nil }
+            let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
+            return ext.hasPrefix("htm") ? text.map { WebText.page($0).text } : text
+        }
+        let name = String(format: "%016llx", Tide.fnv("\(Workspace.relative(url))|\(size)|\(date.timeIntervalSince1970)")) + ".txt"
+        let kept = shelf.appendingPathComponent(name)
+        if let text = try? String(contentsOf: kept, encoding: .utf8) { return text }
+        guard let data = try? Data(contentsOf: url), let text = PDFText.all(data) else { return nil }
+        try? Data(text.utf8).write(to: kept, options: .atomic)
+        return text
     }
 }

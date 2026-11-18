@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import Foundation
 
 /// A Bot as this phone keeps it.
@@ -79,19 +80,44 @@ struct Endpoint: Codable, Identifiable, Equatable {
     var name: String
     var kind: Kind
     var baseURL: String
+    /// The models in use: the ones offered when picking a model.
     var models: [String]
-    /// False when its models cannot look at photos.
-    var vision: Bool?
+    /// Everything the service listed last time, in use or not.
+    var listed: [String]?
+    /// What the user set right about a model; the rest is guessed from its name.
+    var overrides: [String: ModelTraits]?
+    /// How to ask it for thinking; nil: as its service does.
+    var style: ThinkingStyle?
+    /// The listed service it came from (`Service.id`).
+    var service: String?
 
-    static let presets: [Endpoint] = [
-        Endpoint(id: "deepseek", name: "DeepSeek", kind: .openai, baseURL: "https://api.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"], vision: false),
-        Endpoint(id: "claude", name: "Claude", kind: .anthropic, baseURL: "https://api.anthropic.com", models: [], vision: true),
-        Endpoint(id: "custom", name: "其他（OpenAI 兼容）", kind: .openai, baseURL: "https://", models: [], vision: true),
-    ]
+    init(id: String, name: String, kind: Kind, baseURL: String, models: [String], service: String? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.baseURL = baseURL
+        self.models = models
+        self.service = service
+    }
+
+    /// What a model can do: as the user set it, or else as its name suggests.
+    func traits(_ model: String) -> ModelTraits { overrides?[model] ?? ModelTraits.guess(model) }
+
+    /// The user changed what this model can do (true), or it is still the guess.
+    func corrected(_ model: String) -> Bool { overrides?[model] != nil }
+
+    var thinkingStyle: ThinkingStyle {
+        if let style { return style }
+        if kind == .anthropic { return .none }
+        return Service.of(self)?.style ?? ThinkingStyle.guess(baseURL: baseURL)
+    }
+
+    /// Every model it knows of: in use first, then the rest of the list.
+    var allModels: [String] { models + (listed ?? []).filter { !models.contains($0) } }
 
     func provider(key: String) -> ModelProvider {
         switch kind {
-        case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key)
+        case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle)
         case .anthropic: return AnthropicProvider(baseURL: baseURL, apiKey: key)
         }
     }

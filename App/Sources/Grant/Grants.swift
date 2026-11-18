@@ -114,11 +114,11 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         switch name {
         case "web_search", "web_read": .web
         case "remember", "forget", "recall": .memory
-        case "message_later": .letters
+        case "message_later", "schedule_task", "scheduled_tasks", "cancel_task": .letters
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders
         case "shell": .den
-        case "read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "view_image", "photo_text": .desk
+        case "read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "view_image", "photo_text", "read_pdf", "search_docs": .desk
         case "ssh_run", "ssh_add_host": .hills
         case "ask_user", "vault_list", "browser_fill_secret": .vault
         case "where_am_i", "place_lookup": .location

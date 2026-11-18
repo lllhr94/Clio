@@ -45,13 +45,18 @@ final class ProviderTests: XCTestCase {
             ],
             tools: [WebSearchTool().spec]
         )
-        let body = OpenAIProvider.body(request)
+        // A service that does not keep thoughts gets them back only inside the running turn.
+        let plain = try XCTUnwrap(OpenAIProvider.body(request, style: .gemini)["messages"] as? [[String: Any]])
+        XCTAssertNil(plain[2]["reasoning_content"])
+        XCTAssertEqual(plain[4]["reasoning_content"] as? String, "要搜")
+        // DeepSeek wants every earlier thought back once tools are in play.
+        let body = OpenAIProvider.body(request, style: .deepseek)
         let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
         XCTAssertEqual(messages.count, 6)
         XCTAssertEqual(messages[0]["role"] as? String, "system")
-        // Thoughts from earlier turns are dropped; the running turn keeps them.
-        XCTAssertNil(messages[2]["reasoning_content"])
+        XCTAssertEqual(messages[2]["reasoning_content"] as? String, "旧的想法")
         XCTAssertEqual(messages[4]["reasoning_content"] as? String, "要搜")
+        XCTAssertNil(body["thinking"], "nothing about thinking unless asked")
         let parts = try XCTUnwrap(messages[3]["content"] as? [[String: Any]])
         XCTAssertEqual(parts.first?["type"] as? String, "image_url")
         XCTAssertEqual(((parts.first?["image_url"] as? [String: Any])?["url"] as? String), "data:image/jpeg;base64,AQID")
@@ -346,4 +351,132 @@ final class RetryTests: XCTestCase {
         } catch {}
         XCTAssertEqual(provider.calls, 1)
     }
+}
+
+final class ThinkingTests: XCTestCase {
+    private func request(_ thinking: Thinking, model: String = "m") -> ModelRequest {
+        ModelRequest(model: model, system: "", messages: [.user("你好")], thinking: thinking)
+    }
+
+    func testEachServiceSpellsThinkingItsOwnWay() {
+        let deepseekOff = OpenAIProvider.body(request(.off), style: .deepseek)
+        XCTAssertEqual((deepseekOff["thinking"] as? [String: String])?["type"], "disabled")
+        XCTAssertNil(deepseekOff["reasoning_effort"])
+        let deepseekMax = OpenAIProvider.body(request(.max), style: .deepseek)
+        XCTAssertEqual((deepseekMax["thinking"] as? [String: String])?["type"], "enabled")
+        XCTAssertEqual(deepseekMax["reasoning_effort"] as? String, "max")
+        XCTAssertEqual(OpenAIProvider.body(request(.medium), style: .deepseek)["reasoning_effort"] as? String, "high")
+
+        let qwen = OpenAIProvider.body(request(.low), style: .qwen)
+        XCTAssertEqual(qwen["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(qwen["thinking_budget"] as? Int, 1024)
+        XCTAssertEqual(OpenAIProvider.body(request(.off), style: .qwen)["enable_thinking"] as? Bool, false)
+
+        XCTAssertEqual(OpenAIProvider.body(request(.off), style: .effort)["reasoning_effort"] as? String, "none")
+        XCTAssertEqual(OpenAIProvider.body(request(.high), style: .effort)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(OpenAIProvider.body(request(.off), style: .kimi)["reasoning_effort"] as? String, "low", "Kimi cannot stop thinking")
+        XCTAssertEqual((OpenAIProvider.body(request(.high), style: .openrouter)["reasoning"] as? [String: String])?["effort"], "high")
+        XCTAssertEqual(OpenAIProvider.body(request(.auto), style: .minimax)["reasoning_split"] as? Bool, true)
+        XCTAssertNil(OpenAIProvider.body(request(.auto), style: .effort)["reasoning_effort"])
+        XCTAssertNil(OpenAIProvider.body(request(.max), style: .none)["reasoning_effort"])
+    }
+
+    func testStyleIsGuessedFromTheAddress() {
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.deepseek.com"), .deepseek)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"), .qwen)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://open.bigmodel.cn/api/paas/v4"), .glm)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://ark.cn-beijing.volces.com/api/v3"), .doubao)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://openrouter.ai/api/v1"), .openrouter)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://example.com/v1"), .effort)
+    }
+
+    func testThoughtsInTagsAreTakenOutOfTheAnswer() {
+        var splitter = ThinkSplitter()
+        var events: [StreamEvent] = []
+        for piece in ["<thi", "nk>先想", "想</th", "ink>\n\n答", "案"] { events += splitter.feed(piece) }
+        events += splitter.flush()
+        let thought = events.compactMap { if case .reasoning(let text) = $0 { return text } else { return nil } }.joined()
+        let answer = events.compactMap { if case .text(let text) = $0 { return text } else { return nil } }.joined()
+        XCTAssertEqual(thought, "先想想")
+        XCTAssertEqual(answer, "答案")
+    }
+
+    func testAnAnswerAboutTheTagIsLeftAlone() {
+        var splitter = ThinkSplitter()
+        var events = splitter.feed("用 <think> 标签")
+        events += splitter.flush()
+        XCTAssertEqual(events, [.text("用 <think> 标签")])
+        var short = ThinkSplitter()
+        XCTAssertEqual(short.feed("<"), [])
+        XCTAssertEqual(short.feed("b>粗体"), [.text("<b>粗体")])
+    }
+
+    func testClaudeTakesEffortOrABudget() throws {
+        XCTAssertTrue(AnthropicProvider.adaptive("claude-opus-4-6"))
+        XCTAssertTrue(AnthropicProvider.adaptive("anthropic/claude-sonnet-4.6"))
+        XCTAssertTrue(AnthropicProvider.adaptive("claude-opus-5"))
+        XCTAssertFalse(AnthropicProvider.adaptive("claude-sonnet-4-5-20250929"))
+        XCTAssertFalse(AnthropicProvider.adaptive("claude-opus-4-20250514"))
+        XCTAssertFalse(AnthropicProvider.adaptive("claude-3-7-sonnet-20250219"))
+
+        var newer = request(.high, model: "claude-opus-4-8")
+        newer.temperature = 0.7
+        let adaptive = AnthropicProvider.body(newer)
+        XCTAssertEqual((adaptive["thinking"] as? [String: String])?["type"], "adaptive")
+        XCTAssertEqual((adaptive["output_config"] as? [String: String])?["effort"], "high")
+        XCTAssertNil(adaptive["temperature"], "no temperature while thinking")
+
+        let budget = AnthropicProvider.body(request(.medium, model: "claude-sonnet-4-5"))
+        let thinking = try XCTUnwrap(budget["thinking"] as? [String: Any])
+        XCTAssertEqual(thinking["type"] as? String, "enabled")
+        let tokens = try XCTUnwrap(thinking["budget_tokens"] as? Int)
+        XCTAssertGreaterThan(try XCTUnwrap(budget["max_tokens"] as? Int), tokens)
+        XCTAssertNil(AnthropicProvider.body(request(.auto, model: "claude-opus-4-8"))["thinking"])
+    }
+
+    func testClaudeGetsItsSignedThoughtsBack() throws {
+        XCTAssertEqual(try AnthropicProvider.decode(#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#), [.reasoningSignature("sig")])
+        var said = Message.assistant("好", reasoning: "想过了")
+        said.reasoningSignature = "sig"
+        let request = ModelRequest(model: "claude-opus-4-8", system: "", messages: [.user("问"), said, .user("再问")], thinking: .high)
+        let turns = try XCTUnwrap(AnthropicProvider.body(request)["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(turns[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(blocks.first?["type"] as? String, "thinking")
+        XCTAssertEqual(blocks.first?["signature"] as? String, "sig")
+        let plain = ModelRequest(model: "claude-opus-4-8", system: "", messages: [.user("问"), said, .user("再问")])
+        let plainBlocks = try XCTUnwrap((AnthropicProvider.body(plain)["messages"] as? [[String: Any]])?[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(plainBlocks.first?["type"] as? String, "text")
+    }
+
+    func testARefusedThinkingSettingIsDropped() async throws {
+        final class Picky: ModelProvider, @unchecked Sendable {
+            var seen: [Thinking] = []
+            func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+                seen.append(request.thinking)
+                return AsyncThrowingStream { continuation in
+                    if request.thinking != .auto {
+                        continuation.finish(throwing: ProviderError(status: 400, "reasoning_effort not supported"))
+                    } else {
+                        continuation.yield(.text("好"))
+                        continuation.finish()
+                    }
+                }
+            }
+            func models() async throws -> [String] { [] }
+        }
+        let picky = Picky()
+        var agent = Agent(provider: picky, model: "m", system: "")
+        agent.thinking = .high
+        let heard = Heard()
+        try await agent.run(history: [.user("你好")]) { await heard.add($0) }
+        XCTAssertEqual(picky.seen, [.high, .auto])
+        let events = await heard.events
+        XCTAssertTrue(events.contains(.thinkingRefused(.high, reason: "reasoning_effort not supported")))
+        XCTAssertTrue(events.contains(.text("好")))
+    }
+}
+
+private actor Heard {
+    var events: [AgentEvent] = []
+    func add(_ event: AgentEvent) { events.append(event) }
 }

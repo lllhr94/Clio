@@ -13,7 +13,8 @@ struct SetupView: View {
 
     @Environment(\.openURL) private var openURL
     @State private var step: Step = .service
-    @State private var choice = Endpoint.presets[0]
+    @State private var choice = Service.catalog[0]
+    @State private var region = 0
     @State private var key = ""
     @State private var baseURL = ""
     @State private var name = ""
@@ -23,16 +24,7 @@ struct SetupView: View {
     @State private var connected: Endpoint?
     @FocusState private var keyFocused: Bool
 
-    private var custom: Bool { choice.id == "custom" }
-
-    /// Services that speak the OpenAI way, with their addresses filled in for you.
-    private static let compatible: [(name: String, url: String, note: String)] = [
-        ("Kimi", "https://api.moonshot.cn/v1", "月之暗面"),
-        ("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "阿里云百炼"),
-        ("豆包", "https://ark.cn-beijing.volces.com/api/v3", "火山方舟"),
-        ("硅基流动", "https://api.siliconflow.cn/v1", "多家开源模型"),
-        ("OpenRouter", "https://openrouter.ai/api/v1", "海外，模型最全"),
-    ]
+    private var custom: Bool { choice.custom }
 
     var body: some View {
         ZStack {
@@ -120,101 +112,10 @@ struct SetupView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: Ink.Space.s) {
-                    FieldTitle(text: "选一家")
-                    ForEach(Endpoint.presets) { preset in tile(preset) }
-                }
-
-                if custom {
-                    VStack(alignment: .leading, spacing: Ink.Space.s) {
-                        FieldTitle(text: "是哪一家", note: "点一个自动填好地址；不在里面就自己填")
-                        ScrollView(.horizontal) {
-                            HStack(spacing: Ink.Space.s) {
-                                ForEach(Self.compatible, id: \.name) { item in
-                                    Button {
-                                        Haptics.tick(0.5)
-                                        name = item.name
-                                        baseURL = item.url
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(item.name).font(.system(size: 14, weight: .semibold))
-                                            Text(item.note).font(.system(size: 11))
-                                        }
-                                        .foregroundStyle(baseURL == item.url ? Ink.accent : Ink.ink)
-                                        .padding(.horizontal, Ink.Space.m)
-                                        .padding(.vertical, Ink.Space.s)
-                                        .background(baseURL == item.url ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small))
-                                    }
-                                    .buttonStyle(PressStyle(haptic: false))
-                                }
-                            }
-                        }
-                        .scrollIndicators(.hidden)
-                        TextField("称呼，比如 Kimi", text: $name).paperField()
-                        TextField("地址，https://…/v1", text: $baseURL)
-                            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .paperField()
-                        TextField("模型名（可不填，会自动去拿）", text: $modelName)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .paperField()
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-
-                VStack(alignment: .leading, spacing: Ink.Space.s) {
-                    HStack {
-                        FieldTitle(text: "密钥（API Key）", note: "只存在这台手机的钥匙串里")
-                        Spacer()
-                        if let help = helpURL {
-                            Button("去哪拿？") { openURL(help) }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Ink.accent)
-                        }
-                    }
-                    HStack(spacing: Ink.Space.s) {
-                        SecureField("sk-…", text: $key)
-                            .font(.system(size: 16, design: .monospaced))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .focused($keyFocused)
-                        Button {
-                            if let pasted = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !pasted.isEmpty {
-                                key = pasted
-                                Haptics.tick(0.5)
-                            }
-                        } label: {
-                            Text("粘贴").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
-                        }
-                    }
-                    .paperField()
-                }
-
-                if let advice {
-                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        Label(advice.title, systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Ink.stop)
-                        Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-                    }
-                    .padding(Ink.Space.l)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Ink.stop.opacity(0.08), in: .rect(cornerRadius: Ink.Radius.card))
-                    .transition(.opacity)
-                }
-
-                Button(action: connect) {
-                    HStack(spacing: Ink.Space.s) {
-                        if busy { ProgressView().tint(Ink.paper) }
-                        Text(busy ? "正在试连，顺便拿模型列表…" : "连上试试")
-                            .font(.system(size: 17, weight: .semibold))
-                    }
-                    .foregroundStyle(Ink.paper)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(canConnect ? Ink.accent : Ink.inkFaint, in: .capsule)
-                }
-                .buttonStyle(PressStyle(haptic: false))
-                .disabled(!canConnect)
+                servicePicker
+                keyField
+                adviceCard
+                connectButton
             }
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.xl)
@@ -225,45 +126,166 @@ struct SetupView: View {
         .scrollIndicators(.hidden)
     }
 
-    private var canConnect: Bool { !busy && !key.trimmingCharacters(in: .whitespaces).isEmpty && (!custom || baseURL.hasPrefix("http")) }
+    @ViewBuilder
+    private var servicePicker: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: "选一家", note: "都能用自己的密钥直连。不在里面的，选最后的「自定义」")
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: Ink.Space.s), GridItem(.flexible(), spacing: Ink.Space.s)], spacing: Ink.Space.s) {
+                ForEach(Service.catalog) { item in tile(item) }
+            }
+        }
 
-    private var helpURL: URL? {
-        switch choice.id {
-        case "deepseek": return URL(string: "https://platform.deepseek.com/api_keys")
-        case "claude": return URL(string: "https://console.anthropic.com/settings/keys")
-        default: return nil
+        if choice.addresses.count > 1 {
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                FieldTitle(text: "用哪个地址", note: "账号在哪边注册的就选哪边，密钥不通用")
+                Picker("地址", selection: $region) {
+                    ForEach(choice.addresses.indices, id: \.self) { index in
+                        Text(choice.addresses[index].label).tag(index)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .transition(.opacity)
+        }
+
+        if custom {
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                FieldTitle(text: "服务的地址", note: choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1")
+                TextField("称呼，比如 我的中转站", text: $name).paperField()
+                TextField("https://…", text: $baseURL)
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .paperField()
+                if baseURL.hasPrefix("http") {
+                    Text("实际请求：" + finalURL)
+                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                        .padding(.leading, Ink.Space.xs)
+                }
+            }
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+
+        if custom || choice.asksModel {
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                FieldTitle(text: "模型名", note: choice.asksModel ? "这家要你自己填" : "可以不填，会自动去拿列表")
+                TextField(choice.modelHint ?? "比如 gpt-5、qwen-plus", text: $modelName)
+                    .font(.system(size: 15, design: .monospaced))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .paperField()
+            }
+            .transition(.opacity)
+        }
+
+    }
+
+    private var keyField: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack {
+                FieldTitle(text: "密钥（API Key）", note: "只存在这台手机的钥匙串里")
+                Spacer()
+                if let help = helpURL {
+                    Button("去哪拿？") { openURL(help) }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                }
+            }
+            HStack(spacing: Ink.Space.s) {
+                SecureField("sk-…", text: $key)
+                    .font(.system(size: 16, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($keyFocused)
+                Button {
+                    if let pasted = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !pasted.isEmpty {
+                        key = pasted
+                        Haptics.tick(0.5)
+                    }
+                } label: {
+                    Text("粘贴").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                }
+            }
+            .paperField()
         }
     }
 
-    private func tile(_ preset: Endpoint) -> some View {
-        let picked = preset.id == choice.id
-        let note: String = switch preset.id {
-        case "deepseek": "便宜，中文好，国内直连。不能看图"
-        case "claude": "最聪明，能看图；国内要能连外网"
-        default: "Kimi、通义、豆包、硅基流动、OpenRouter 等"
+    @ViewBuilder
+    private var adviceCard: some View {
+        if let advice {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                Label(advice.title, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Ink.stop)
+                Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+            }
+            .padding(Ink.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Ink.stop.opacity(0.08), in: .rect(cornerRadius: Ink.Radius.card))
+            .transition(.opacity)
         }
+    }
+
+    private var connectButton: some View {
+        Button(action: connect) {
+            HStack(spacing: Ink.Space.s) {
+                if busy { ProgressView().tint(Ink.paper) }
+                Text(busy ? "正在试连，顺便拿模型列表…" : "连上试试")
+                    .font(.system(size: 17, weight: .semibold))
+            }
+            .foregroundStyle(Ink.paper)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(canConnect ? Ink.accent : Ink.inkFaint, in: .capsule)
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .disabled(!canConnect)
+    }
+
+    private var canConnect: Bool {
+        guard !busy, !key.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        if custom, !baseURL.hasPrefix("http") { return false }
+        if choice.asksModel, modelName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
+        return true
+    }
+
+    private var helpURL: URL? { choice.keyPage.flatMap { URL(string: $0) } }
+
+    private var address: String {
+        if custom { return baseURL.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return choice.addresses[min(region, choice.addresses.count - 1)].url
+    }
+
+    private var finalURL: String {
+        var base = address
+        while base.hasSuffix("/") { base.removeLast() }
+        return base + (choice.kind == .anthropic ? "/v1/messages" : "/chat/completions")
+    }
+
+    private func tile(_ item: Service) -> some View {
+        let picked = item.id == choice.id
+        let added = team.settings.endpoints.contains { $0.service == item.id && !item.custom }
         return Button {
             Haptics.tick(0.6)
-            choice = preset
-            advice = nil
-        } label: {
-            HStack(spacing: Ink.Space.m) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(preset.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
-                    Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                }
-                Spacer()
-                Image(systemName: picked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(picked ? Ink.accent : Ink.inkFaint)
-                    .contentTransition(.symbolEffect(.replace))
+            withAnimation(Ink.Motion.settle) {
+                choice = item
+                region = 0
+                advice = nil
             }
-            .padding(.horizontal, Ink.Space.l)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(item.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                    if added { Image(systemName: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(Ink.ok) }
+                    Spacer(minLength: 0)
+                }
+                Text(item.note).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(2, reservesSpace: true)
+            }
+            .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, Ink.Space.m)
-            .background(picked ? Ink.paperRaised : Ink.paper, in: .rect(cornerRadius: Ink.Radius.card))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(picked ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
             .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(picked ? Ink.accent.opacity(0.55) : Ink.rule, lineWidth: picked ? 1.5 : 1))
         }
         .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("\(item.name)：\(item.note)" + (added ? "，已接过" : ""))
     }
 
     // MARK: Done
@@ -275,10 +297,14 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("接好了").font(Ink.display).foregroundStyle(Ink.ink)
                 if let connected {
-                    Text("\(connected.name) 能用 \(connected.models.count) 个模型，旅伴先用 \(team.modelTitle(team.settings.defaultModel))。")
+                    let listed = connected.listed?.count ?? 0
+                    Text("\(connected.name) 在用 \(connected.models.count) 个模型" + (listed > connected.models.count ? "（列表里共 \(listed) 个）" : "") + "，旅伴先用 \(team.modelTitle(team.settings.defaultModel))。")
                         .font(Ink.reading).foregroundStyle(Ink.inkSoft)
+                    if let found = team.resolve(team.settings.defaultModel) {
+                        TraitChips(traits: found.endpoint.traits(found.model))
+                    }
                 }
-                Text("想换模型，可以在调弦里改默认，也可以在聊天时从输入框下另选。")
+                Text("在调弦 › 模型服务里点开这一家，可以挑更多模型、看每个能不能看图、改它们能做什么。聊天时输入框下也能换模型、调思考强度。")
                     .font(Ink.secondary).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
@@ -303,46 +329,56 @@ struct SetupView: View {
 
     private func connect() {
         let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        var endpoint = choice
-        if custom {
-            let address = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            endpoint.baseURL = address
-            endpoint.id = "custom-\(UUID().uuidString.prefix(6))"
-            let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            endpoint.name = given.isEmpty ? (URL(string: address)?.host ?? "自定义") : given
-        }
+        let typed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let taken = Set(team.settings.endpoints.map(\.id))
+        var id = custom ? "custom-\(UUID().uuidString.prefix(6).lowercased())" : choice.id
+        if taken.contains(id) { id += "-\(UUID().uuidString.prefix(4).lowercased())" }
+        var title = custom ? (given.isEmpty ? (URL(string: address)?.host ?? "自定义") : given) : choice.name
+        if team.settings.endpoints.contains(where: { $0.name == title }) { title += " 2" }
+        var endpoint = Endpoint(id: id, name: title, kind: choice.kind, baseURL: address, models: [], service: custom ? nil : choice.id)
+        let service = custom ? nil : choice
         busy = true
         advice = nil
         keyFocused = false
         Task {
             do {
-                var models = try await endpoint.provider(key: secret).models()
-                if endpoint.id == "deepseek" {
-                    models = models.filter { $0.hasPrefix("deepseek") }
-                } else if endpoint.kind == .anthropic {
-                    models = models.filter { $0.hasPrefix("claude") }
-                }
-                let typed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !typed.isEmpty, !models.contains(typed) { models.insert(typed, at: 0) }
-                guard !models.isEmpty else { throw TeamError(message: "连上了，但没找到能用的模型。请填上模型名再试。") }
+                let listed = TeamModel.keep(try await endpoint.provider(key: secret).models(), for: endpoint)
+                var models = TeamModel.firstPicks(listed, service: service)
+                if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
+                guard !models.isEmpty else { throw TeamError(message: "连上了，但没找到能聊天的模型。请填上模型名再试。") }
+                endpoint.listed = listed
                 endpoint.models = models
                 finish(endpoint, secret)
             } catch {
-                // Some services do not list their models; a typed name is enough to go on.
-                let typed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if custom, !typed.isEmpty, (error as? ProviderError)?.status != 401 {
-                    endpoint.models = [typed]
-                    finish(endpoint, secret)
-                    return
+                // Some services do not list their models: with a model name to try, a one-word question decides.
+                let fallback = typed.isEmpty ? (service?.suggested ?? []) : [typed]
+                let status = (error as? ProviderError)?.status
+                if !fallback.isEmpty, status != 401, status != 403 {
+                    do {
+                        var ask = Agent(provider: endpoint.provider(key: secret), model: fallback[0], system: "")
+                        ask.thinking = .off
+                        _ = try await ask.ask("回一个字：好")
+                        endpoint.models = fallback
+                        finish(endpoint, secret)
+                        return
+                    } catch {
+                        fail(error, service: endpoint.name)
+                        return
+                    }
                 }
-                busy = false
-                Haptics.lock()
-                if let plain = error as? TeamError {
-                    advice = Explain.Advice(title: plain.message, detail: "", next: nil)
-                } else {
-                    advice = Explain.model(error, service: endpoint.name)
-                }
+                fail(error, service: endpoint.name)
             }
+        }
+    }
+
+    private func fail(_ error: Error, service: String) {
+        busy = false
+        Haptics.lock()
+        if let plain = error as? TeamError {
+            advice = Explain.Advice(title: plain.message, detail: "", next: nil)
+        } else {
+            advice = Explain.model(error, service: service)
         }
     }
 

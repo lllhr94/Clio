@@ -32,6 +32,8 @@ public struct Message: Codable, Equatable, Sendable {
     public var images: [ImagePart]
     /// What a thinking model thought before it answered.
     public var reasoning: String?
+    /// Claude's signature over `reasoning`; only Claude reads it.
+    public var reasoningSignature: String?
     /// An assistant message's tool calls.
     public var toolCalls: [ToolCall]
     /// A tool message: the call it answers.

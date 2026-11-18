@@ -4,10 +4,13 @@ import Foundation
 public struct OpenAIProvider: ModelProvider {
     public var baseURL: String
     public var apiKey: String
+    /// How this service wants to hear about thinking.
+    public var style: ThinkingStyle
 
-    public init(baseURL: String, apiKey: String) {
+    public init(baseURL: String, apiKey: String, style: ThinkingStyle? = nil) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.style = style ?? ThinkingStyle.guess(baseURL: baseURL)
     }
 
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -16,8 +19,8 @@ public struct OpenAIProvider: ModelProvider {
             http.httpMethod = "POST"
             http.setValue("application/json", forHTTPHeaderField: "Content-Type")
             http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            http.httpBody = try HTTP.json(Self.body(request))
-            return HTTP.stream(http, decode: Self.decode)
+            http.httpBody = try HTTP.json(Self.body(request, style: style))
+            return Self.splittingThoughts(HTTP.stream(http, decode: Self.decode))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -30,11 +33,36 @@ public struct OpenAIProvider: ModelProvider {
         return (list["data"]?.array ?? []).compactMap { $0["id"]?.string }.sorted()
     }
 
-    static func body(_ request: ModelRequest) -> [String: Any] {
+    /// Moves thoughts written between <think> tags out of the answer.
+    static func splittingThoughts(_ events: AsyncThrowingStream<StreamEvent, Error>) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                var splitter = ThinkSplitter()
+                do {
+                    for try await event in events {
+                        if case .text(let piece) = event {
+                            for split in splitter.feed(piece) { continuation.yield(split) }
+                        } else {
+                            continuation.yield(event)
+                        }
+                    }
+                    for split in splitter.flush() { continuation.yield(split) }
+                    continuation.finish()
+                } catch {
+                    for split in splitter.flush() { continuation.yield(split) }
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    static func body(_ request: ModelRequest, style: ThinkingStyle = .effort) -> [String: Any] {
         var messages: [[String: Any]] = []
         if !request.system.isEmpty { messages.append(["role": "system", "content": request.system]) }
-        // A thinking model needs its thoughts back only inside the turn still running.
-        let turnStart = request.messages.lastIndex { $0.role == .user } ?? 0
+        // Services that keep a model's thoughts want all of them back once tools are in play (DeepSeek refuses a
+        // tool call without them); the others need them only inside the turn still running.
+        let turnStart = (style.echoesReasoning && !request.tools.isEmpty) ? -1 : (request.messages.lastIndex { $0.role == .user } ?? 0)
         // Tool messages carry text only here; pictures a tool brought back follow as a user message after them.
         var held: [ImagePart] = []
         func release() {
@@ -83,6 +111,7 @@ public struct OpenAIProvider: ModelProvider {
             "stream_options": ["include_usage": true],
         ]
         if let temperature = request.temperature { body["temperature"] = temperature }
+        for (field, value) in style.fields(request.thinking) { body[field] = value }
         if let limit = request.outputLimit { body["max_tokens"] = limit }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { tool in

@@ -131,12 +131,8 @@ struct BotEditor: View {
                                 } label: {
                                     if model.isEmpty { Label("跟全局默认走", systemImage: "checkmark") } else { Text("跟全局默认走") }
                                 }
-                                ForEach(team.models) { item in
-                                    Button {
-                                        model = item.ref
-                                    } label: {
-                                        if model == item.ref { Label(Self.title(item), systemImage: "checkmark") } else { Text(Self.title(item)) }
-                                    }
+                                ModelChoices(team: team, current: model.isEmpty ? nil : model) { ref in
+                                    model = ref
                                 }
                             } label: {
                                 HStack {

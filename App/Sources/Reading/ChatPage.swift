@@ -657,24 +657,52 @@ struct ChatPage: View {
                 } label: {
                     if own == nil { Label("跟着\(bot.name)走", systemImage: "checkmark") } else { Text("跟着\(bot.name)走") }
                 }
-                ForEach(team.models) { item in
-                    Button {
-                        Haptics.tick(0.5)
-                        team.setModel(item.ref, in: chat.key)
-                        say("这段絮语改用 \(item.name ?? item.ref)，\(bot.name)别处的絮语不变。")
-                    } label: {
-                        if own == item.ref {
-                            Label("\(item.name ?? item.ref) · \(item.providerName ?? "")", systemImage: "checkmark")
-                        } else {
-                            Text("\(item.name ?? item.ref) · \(item.providerName ?? "")")
-                        }
-                    }
-                }
+            }
+            ModelChoices(team: team, current: own) { ref in
+                Haptics.tick(0.5)
+                team.setModel(ref, in: chat.key)
+                let found = team.resolve(ref)
+                let sight = (found.map { $0.endpoint.traits($0.model).sees } ?? false) ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
+                say("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。")
             }
         } label: {
             chip("sparkle", shortName(current), lit: own != nil)
         }
         .accessibilityLabel("模型：\(shortName(current))")
+    }
+
+    /// How hard the model thinks in this conversation.
+    private var thinkChip: some View {
+        let level = options.thinking ?? .auto
+        let now = isRoom ? nil : team.current(chat.key, bot: bot)
+        return Menu {
+            Section("这段絮语想多深") {
+                ForEach(Thinking.allCases, id: \.self) { option in
+                    Button {
+                        Haptics.tick(0.5)
+                        team.setThinking(option, in: chat.key)
+                        say(option == .auto ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。")
+                    } label: {
+                        if option == level { Label(option.title, systemImage: "checkmark") } else { Label(option.title, systemImage: option.symbol) }
+                        Text(option.line)
+                    }
+                }
+            }
+            if let now {
+                Section {
+                    if !now.traits.thinks {
+                        Text("\(now.model) 好像不会思考，选了也许没变化。")
+                    } else if now.endpoint.kind == .openai, !now.endpoint.thinkingStyle.canStop {
+                        Text("\(now.endpoint.name) 的模型总要想一想，「不想」会按「浅想」来。")
+                    } else {
+                        Text("模型不接受某一档时，会自动改回默认，并在对话里说一声。")
+                    }
+                }
+            }
+        } label: {
+            chip(level == .auto ? "brain" : level.symbol, level == .auto ? "思考" : level.title, lit: level != .auto)
+        }
+        .accessibilityLabel("思考强度：\(level.title)")
     }
 
     /// Where this conversation works: 书案, 斗室 or a 远山 host.
@@ -838,9 +866,9 @@ struct ChatPage: View {
         guard !files.isEmpty else { return "" }
         let lines = files.map { path -> String in
             let pdf = path.lowercased().hasSuffix(".pdf") && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
-            return "- 书案/\(path)" + (pdf ? "（文字已抽出到 \(path).txt）" : "")
+            return "- 书案/\(path)" + (pdf ? "（PDF：用 read_pdf 按页读；文字也抽出到了 \(path).txt）" : "")
         }
-        return "\n\n［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、view_image 看图，或用 shell 处理：\n" + lines.joined(separator: "\n") + "］"
+        return "\n\n［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、read_pdf 读 PDF、view_image 看图，或用 shell 处理：\n" + lines.joined(separator: "\n") + "］"
     }
 
     // MARK: Rows
@@ -1338,6 +1366,7 @@ struct ChatPage: View {
                             placeChip
                             abilitiesChip
                             if !isRoom { modelChip }
+                            thinkChip
                         }
                     }
                     .scrollIndicators(.hidden)
