@@ -51,6 +51,7 @@ struct ClioRoot: View {
             if now == .background {
                 team.leaving()
                 Hitches.shared.save()
+                WidgetFeed.publish(team)
             }
         }
         .task {
@@ -323,6 +324,11 @@ struct Desk: View {
             if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else if chat.hasPrefix("bot-") { opened = .companion(String(chat.dropFirst(4))) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
+        .onOpenURL { url in
+            // The home-screen widget: clio://chat/bot-….
+            guard url.scheme == "clio", url.host == "chat" else { return }
+            NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)
+        }
         .task { answerShortcut() }
     }
 

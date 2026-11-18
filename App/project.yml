@@ -29,6 +29,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Shared
       - path: Den
         excludes: ["ish-src", "ish-src/**", "build", "build/**", "*.sh", "DenKernel.m"]
       - path: Den/DenKernel.m
@@ -37,6 +38,7 @@ targets:
         type: folder
         buildPhase: resources
     dependencies:
+      - target: ClioWidget
       - package: AgentKit
         product: AgentKit
       - package: AgentKit
@@ -77,6 +79,9 @@ targets:
         NSHealthUpdateUsageDescription: Clio 不会往「健康」里写任何东西。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleURLName: io.github.lllhr94.clio
+            CFBundleURLSchemes: [clio]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio
@@ -92,3 +97,24 @@ targets:
           - $(SRCROOT)/Den/build/ios/libfakefs.a
           - -lsqlite3
           - -lresolv
+  ClioWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widget
+      - Shared
+    info:
+      path: ClioWidget-Info.plist
+      properties:
+        CFBundleDisplayName: Clio
+        CFBundleShortVersionString: "0.27"
+        CFBundleVersion: "29"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio.widget
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        SKIP_INSTALL: "YES"
