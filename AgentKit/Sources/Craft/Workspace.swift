@@ -91,7 +91,7 @@ public enum WorkspaceError: LocalizedError, Equatable {
 
 /// Swapping one passage for another.
 public enum HostEdit {
-    public enum Problem: Equatable, Sendable {
+    public enum Problem: Error, Equatable, Sendable {
         case empty
         case missing
         case many(Int)

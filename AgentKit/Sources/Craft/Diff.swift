@@ -49,9 +49,9 @@ public enum Diff {
         while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
         let oldMiddle = Array(a[prefix..<(a.count - suffix)])
         let newMiddle = Array(b[prefix..<(b.count - suffix)])
-        var lines: [Line] = a[..<prefix].map { .same($0) }
+        var lines: [Line] = a[..<prefix].map { Line.same($0) }
         if oldMiddle.count * newMiddle.count > 4_000_000 {
-            lines += oldMiddle.map { .gone($0) } + newMiddle.map { .came($0) }
+            lines += oldMiddle.map { Line.gone($0) } + newMiddle.map { Line.came($0) }
         } else {
             var gone = Set<Int>()
             var came = Set<Int>()
@@ -76,12 +76,12 @@ public enum Diff {
                     j += 1
                 } else {
                     // Cannot happen with a well-formed difference; never loop forever on a malformed one.
-                    lines += oldMiddle[i...].map { .gone($0) } + newMiddle[j...].map { .came($0) }
+                    lines += oldMiddle[i...].map { Line.gone($0) } + newMiddle[j...].map { Line.came($0) }
                     break
                 }
             }
         }
-        lines += a[(a.count - suffix)...].map { .same($0) }
+        lines += a[(a.count - suffix)...].map { Line.same($0) }
         return lines
     }
 
