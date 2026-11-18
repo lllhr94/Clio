@@ -106,6 +106,14 @@ public enum Balance {
         if host == "openrouter.ai" {
             return Source(url: URL(string: "https://openrouter.ai/api/v1/credits")!, topUp: URL(string: "https://openrouter.ai/settings/credits")!)
         }
+        if host == "api.moonshot.cn" || host == "api.moonshot.ai" {
+            let china = host.hasSuffix(".cn")
+            return Source(url: URL(string: "https://\(host)/v1/users/me/balance")!, topUp: URL(string: china ? "https://platform.moonshot.cn/console" : "https://platform.moonshot.ai/console")!)
+        }
+        if host == "api.siliconflow.cn" || host == "api.siliconflow.com" {
+            let china = host.hasSuffix(".cn")
+            return Source(url: URL(string: "https://\(host)/v1/user/info")!, topUp: URL(string: china ? "https://cloud.siliconflow.cn" : "https://cloud.siliconflow.com")!)
+        }
         return nil
     }
 
@@ -122,6 +130,18 @@ public enum Balance {
             if let topped = amount("topped_up_balance") { parts.append("充值 \(symbol)" + String(format: "%.2f", topped)) }
             if let granted = amount("granted_balance"), granted > 0 { parts.append("赠送 \(symbol)" + String(format: "%.2f", granted)) }
             return Reading(amount: total, symbol: symbol, detail: parts.isEmpty ? nil : parts.joined(separator: " · "))
+        }
+        func number(_ value: JSONValue?) -> Double? { value?.number ?? value?.string.flatMap { Double($0) } }
+        func money(_ symbol: String, _ value: Double?) -> String { symbol + String(format: "%.2f", value ?? 0) }
+        if host == "api.moonshot.cn" || host == "api.moonshot.ai" {
+            let symbol = host.hasSuffix(".cn") ? "¥" : "$"
+            guard let data = json["data"], let available = number(data["available_balance"]) else { return nil }
+            return Reading(amount: available, symbol: symbol, detail: "现金 " + money(symbol, number(data["cash_balance"])) + " · 代金券 " + money(symbol, number(data["voucher_balance"])))
+        }
+        if host == "api.siliconflow.cn" || host == "api.siliconflow.com" {
+            let symbol = host.hasSuffix(".cn") ? "¥" : "$"
+            guard let data = json["data"], let total = number(data["totalBalance"]) else { return nil }
+            return Reading(amount: total, symbol: symbol, detail: "充值 " + money(symbol, number(data["chargeBalance"])) + " · 赠送 " + money(symbol, number(data["balance"])))
         }
         if host == "openrouter.ai" {
             guard let data = json["data"], let credits = data["total_credits"]?.number else { return nil }

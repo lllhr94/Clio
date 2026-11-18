@@ -637,33 +637,6 @@ final class TurnsTests: XCTestCase {
     }
 }
 
-final class TokensTests: XCTestCase {
-    func testEstimateWeighsChineseAndLatinText() {
-        XCTAssertEqual(Tokens.estimate(""), 0)
-        XCTAssertEqual(Tokens.estimate("你好"), 2)
-        XCTAssertEqual(Tokens.estimate("hello world"), 3)
-        XCTAssertEqual(Tokens.estimate("重庆 weather"), 4)
-        XCTAssertGreaterThan(Tokens.estimate(String(repeating: "字", count: 1000)), Tokens.estimate(String(repeating: "a", count: 1000)))
-    }
-
-    func testWindowGuessesFromTheModelName() {
-        XCTAssertEqual(Tokens.window(for: "deepseek-chat"), 128_000)
-        XCTAssertEqual(Tokens.window(for: "claude-sonnet-4-5"), 200_000)
-        XCTAssertEqual(Tokens.window(for: "google/gemini-2.5-pro"), 1_048_576)
-        XCTAssertEqual(Tokens.window(for: "moonshotai/kimi-k2"), 256_000)
-        XCTAssertEqual(Tokens.window(for: "something-new"), 128_000)
-    }
-
-    func testShortNumbers() {
-        XCTAssertEqual(Tokens.short(657), "657")
-        XCTAssertEqual(Tokens.short(15_500), "15.5K")
-        XCTAssertEqual(Tokens.short(15_000), "15K")
-        XCTAssertEqual(Tokens.short(128_000), "128K")
-        XCTAssertEqual(Tokens.short(1_050_000), "1.05M")
-        XCTAssertEqual(Tokens.short(2_000_000), "2M")
-    }
-}
-
 final class UsageTests: XCTestCase {
     func testEstimateWeighsChineseAboveLatin() {
         XCTAssertEqual(Tokens.estimate(""), 0)
@@ -714,6 +687,17 @@ final class UsageTests: XCTestCase {
         XCTAssertEqual(reading?.shown, "¥9.24")
         XCTAssertEqual(reading?.detail, "充值 ¥9.24")
         XCTAssertNil(Balance.parse(#"{"error":"bad key"}"#, baseURL: "https://api.deepseek.com"))
+    }
+
+    func testMoonshotAndSiliconFlowBalance() {
+        XCTAssertEqual(Balance.source(baseURL: "https://api.moonshot.cn/v1")?.url.absoluteString, "https://api.moonshot.cn/v1/users/me/balance")
+        let moon = Balance.parse(#"{"code":0,"data":{"available_balance":49.58,"voucher_balance":46.58,"cash_balance":3},"status":true}"#, baseURL: "https://api.moonshot.cn/v1")
+        XCTAssertEqual(moon?.shown, "¥49.58")
+        XCTAssertEqual(moon?.detail, "现金 ¥3.00 · 代金券 ¥46.58")
+        XCTAssertEqual(Balance.source(baseURL: "https://api.siliconflow.cn/v1")?.url.absoluteString, "https://api.siliconflow.cn/v1/user/info")
+        let silicon = Balance.parse(#"{"code":20000,"data":{"balance":"0.88","chargeBalance":"88.00","totalBalance":"88.88"}}"#, baseURL: "https://api.siliconflow.cn/v1")
+        XCTAssertEqual(silicon?.shown, "¥88.88")
+        XCTAssertEqual(silicon?.detail, "充值 ¥88.00 · 赠送 ¥0.88")
     }
 
     func testOpenRouterBalance() {

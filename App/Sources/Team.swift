@@ -1335,7 +1335,7 @@ final class TeamModel: ObservableObject {
         return estimate
     }
 
-    /// What is left on the account of `endpoint`, for the services that tell (DeepSeek, OpenRouter).
+    /// What is left on the account of `endpoint`, for the services that tell (DeepSeek, Moonshot, SiliconFlow, OpenRouter).
     func balance(_ endpoint: Endpoint) async throws -> Balance.Reading {
         guard let source = Balance.source(baseURL: endpoint.baseURL) else { throw TeamError(message: "\(endpoint.name) 不提供余额查询。") }
         guard let secret = apiKey(for: endpoint.id), !secret.isEmpty else { throw TeamError(message: "\(endpoint.name) 的密钥找不到了。") }
