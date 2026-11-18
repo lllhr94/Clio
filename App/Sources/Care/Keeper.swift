@@ -16,9 +16,9 @@ enum Keeper {
 
     private static var kept: [String: Kept] = [:]
     /// What the chat is doing now, for the progress bar's second line.
-    static var words: (String) -> String? = { _ in nil }
+    static var words: @MainActor (String) -> String? = { _ in nil }
     /// iOS is taking the time back before the turn is done.
-    static var expired: (String) -> Void = { _ in }
+    static var expired: @MainActor (String) -> Void = { _ in }
 
     /// Asks iOS for time to finish this chat's turn. Call while the app is on screen.
     static func begin(_ key: String, title: String) {

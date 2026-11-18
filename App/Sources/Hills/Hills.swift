@@ -5,6 +5,7 @@ import CryptoKit
 import Foundation
 import NIOCore
 import NIOSSH
+import Security
 
 /// 远山: computers far away. SSH hosts the companions can run commands on, and MCP servers whose tools they can borrow.
 @MainActor
