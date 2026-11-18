@@ -80,7 +80,10 @@ final class TeamModel: ObservableObject {
     @Published private(set) var memories: [Memory] = []
     @Published private(set) var settings = TeamSettings()
     /// What each chat's Bot is doing now, by chat key.
-    @Published private(set) var doing: [String: String] = [:]
+    @Published private(set) var doing: [String: String] = [:] {
+        // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
+        didSet { Hitches.shared.doing(doing.values.sorted().first.map { "旅伴：" + $0 }, as: "work") }
+    }
     /// Bots speaking in a group right now.
     @Published private(set) var busyBots: Set<String> = []
 
@@ -871,6 +874,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
+        streamed[key] = nil
         if let turn = history(key).last(where: { $0.message.role == .user && $0.note != true }) {
             Snapshots.shared.begin(key, turn: turn.id)
         }
@@ -882,49 +886,92 @@ final class TeamModel: ObservableObject {
         runs[key] = (token, task)
     }
 
-    /// Extra time iOS gives a turn after the app leaves the screen, by chat.
-    private var graces: [String: UIBackgroundTaskIdentifier] = [:]
+    /// Extra time iOS gives a turn after the app leaves the screen, by turn.
+    private var graces: [UUID: UIBackgroundTaskIdentifier] = [:]
+    /// What each chat's reply has streamed so far and not yet kept as a message, and who is writing it.
+    private var streamed: [String: (speaker: String?, text: String)] = [:]
+    /// Chats being paused because the background time is running out, with what each was doing then.
+    /// Their cancel adds no 「被你叫停了」, and the partial reply the agent hands back is already kept.
+    private var pausing: [String: (doing: String, saved: Bool)] = [:]
+    /// Watches the background time while turns are going and the app is away.
+    private var watching: Task<Void, Never>?
 
     /// What a chat is called: the companion's name, or the gathering's.
     func chatName(_ key: String) -> String {
         key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? "雅集") : (bots.first { Self.key(bot: $0.id) == key }?.name ?? "旅伴")
     }
 
-    /// iOS is about to stop the app in the background: say where things stopped, so the user can come back to it.
-    private func graceRunsOut(_ key: String) {
-        if Pref.notifyDone, runs[key] != nil, !pausedInBackground.contains(key) {
-            let name = chatName(key)
-            Notify.now("\(name)停在半路", "离开 Clio 太久，iOS 让它先停下了（\(doing[key] ?? "还在干活")）。回来就接着做。", chat: key)
-            pausedInBackground.insert(key)
-        }
-        if let grace = graces.removeValue(forKey: key), grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
+    private func endGrace(_ token: UUID) {
+        if let grace = graces.removeValue(forKey: token), grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
     }
 
-    /// Chats whose turn iOS cut short in the background; they carry on when the app comes back.
-    private var pausedInBackground: Set<String> = []
-
-    /// Called when the app is on screen again: turns cut short pick up where they were.
-    func resumePaused() {
-        let keys = pausedInBackground
-        pausedInBackground = []
-        for key in keys where runs[key] == nil {
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: .user("（刚才 app 在后台被系统暂停了，请接着刚才没做完的事继续。）")), to: key)
-            start(key)
+    /// The app went to the background. While turns are going, watch the time iOS gives;
+    /// with under 3 seconds left, keep what each turn has written and pause it.
+    func leaving() {
+        guard !runs.isEmpty, watching == nil else { return }
+        watching = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self else { return }
+                let app = UIApplication.shared
+                if app.applicationState == .active || self.runs.isEmpty { break }
+                if app.backgroundTimeRemaining < 3 {
+                    for key in Array(self.runs.keys) { self.pause(key) }
+                    break
+                }
+            }
+            self?.watching = nil
         }
+    }
+
+    /// iOS takes the time back now: the last chance to keep what was written (if the watch missed it), then the time goes back.
+    private func graceRunsOut(_ key: String, token: UUID) {
+        if runs[key]?.token == token { pause(key) }
+        endGrace(token)
+    }
+
+    /// The background time is nearly gone and this chat's turn is not done: keep the reply written so far,
+    /// stop cleanly, and say so; back in Clio, 「接着做」 goes on from there. A turn waiting for 候印 is left
+    /// as it is: nothing is in flight, and the card is still there on return.
+    private func pause(_ key: String) {
+        guard runs[key] != nil, pausing[key] == nil, !approvals.contains(where: { $0.chat == key }) else { return }
+        // Kept now, before iOS freezes the app; the cancel below would hand the same text back only later.
+        let kept = streamed.removeValue(forKey: key)
+        let partial = kept?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !partial.isEmpty {
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(partial + "……"), speaker: kept?.speaker), to: key)
+        }
+        pausing[key] = (doing: doing[key] ?? "干活", saved: !partial.isEmpty)
+        if Pref.notifyDone {
+            Notify.now("\(chatName(key))停在半路", "离开 Clio 太久，iOS 只给了这么些时间。" + (partial.isEmpty ? "" : "写好的部分已存下，") + "回来点「接着做」。", chat: key)
+        }
+        Diag.note("后台时间用完，\(chatName(key)) 的这一轮先停下" + (partial.isEmpty ? "" : "（存下 \(partial.count) 字）"))
+        stop(key)
+    }
+
+    /// The note under a paused turn, with its 「接着做」 button; written once the turn has wound down, so it is the last line.
+    private func notePause(_ key: String) {
+        guard let paused = pausing.removeValue(forKey: key) else { return }
+        let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
+        append(Entry(
+            id: UUID().uuidString, at: Now.ms,
+            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)点「接着做」从停下的地方继续。"),
+            note: true, next: Explain.Next.resume.rawValue
+        ), to: key)
+    }
+
+    /// 「接着做」: a turn iOS cut short in the background goes on from where it stopped.
+    func resume(_ key: String) {
+        guard runs[key] == nil else { return }
+        append(Entry(id: UUID().uuidString, at: Now.ms, message: .user("接着做：刚才 app 在后台被系统暂停了，请从停下的地方继续，写过的不用重复。")), to: key)
+        touch(key, preview: nil)
+        start(key)
     }
 
     private func run(_ key: String, token: UUID) async {
-        let grace = UIApplication.shared.beginBackgroundTask(withName: "bot-turn") { [weak self] in
-            MainActor.assumeIsolated { self?.graceRunsOut(key) }
-        }
-        graces[key] = grace
-        Keeper.words = { [weak self] key in self.flatMap { team in Live.words(team.doing[key], name: team.chatName(key)) } }
-        Keeper.expired = { [weak self] key in self?.graceRunsOut(key) }
-        let title = chatName(key)
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard let self, self.runs[key]?.token == token else { return }
-            Keeper.begin(key, title: "\(title) 正在干活")
+        // If the user leaves while it works, iOS gives a little time (about half a minute) to finish; see `leaving`.
+        graces[token] = UIApplication.shared.beginBackgroundTask(withName: "clio-turn") { [weak self] in
+            MainActor.assumeIsolated { self?.graceRunsOut(key, token: token) }
         }
         if Pref.autoCompress, size(of: key) > Pref.compressAt {
             doing[key] = "正在压缩前文"
@@ -962,11 +1009,10 @@ final class TeamModel: ObservableObject {
             runs[key] = nil
             doing[key] = nil
         }
+        notePause(key)
         notify(key, .finished)
         nameChatIfNew(key)
-        Keeper.end(key)
-        if graces[key] == grace { graces[key] = nil }
-        if grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
+        endGrace(token)
     }
 
     /// One Bot speaks once. False when the group should not go on.
@@ -1006,7 +1052,9 @@ final class TeamModel: ObservableObject {
             }
             return true
         } catch is CancellationError {
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("（被你叫停了）"), note: true), to: key)
+            if pausing[key] == nil {
+                append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("（被你叫停了）"), note: true), to: key)
+            }
             return false
         } catch {
             let advice = Explain.model(error, service: endpoint.name)
@@ -1020,12 +1068,16 @@ final class TeamModel: ObservableObject {
         Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
+        if Pref.notifyDone, UIApplication.shared.applicationState != .active {
+            Notify.now("\(chatName(key))出了点问题", text.replacingOccurrences(of: "\n", with: "。"), chat: key)
+        }
     }
 
     private func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
         switch event {
         case .text(let piece):
             if doing[key] != "正在回复" { doing[key] = "正在回复" }
+            streamed[key, default: (speaker: speaker, text: "")].text += piece
             notify(key, .text(piece))
         case .reasoning:
             if doing[key] != "正在想" { doing[key] = "正在想" }
@@ -1034,9 +1086,18 @@ final class TeamModel: ObservableObject {
             doing[key] = label
             ToolTail.shared.clear()
             notify(key, .tool(label))
+        case .toolWriting(let name, let characters):
+            let amount = characters < 1000 ? "\(characters) 字" : String(format: "%.1f 千字", Double(characters) / 1000)
+            let what = ["write_file": "写文件", "edit_file": "改文件", "shell": "命令", "run_js": "脚本"][name] ?? name
+            doing[key] = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
         case .toolFinished:
             break
         case .message(let message):
+            if message.role == .assistant {
+                streamed[key] = nil
+                // The partial reply a paused turn hands back on its way out was kept already.
+                if pausing[key] != nil, message.toolCalls.isEmpty { return }
+            }
             var kept = message
             var label: String?
             if message.role == .tool {
@@ -1337,7 +1398,6 @@ final class TeamModel: ObservableObject {
     func wake() {
         deliverDue()
         morningIfDue()
-        resumePaused()
     }
 
     // MARK: 晨信

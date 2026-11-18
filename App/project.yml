@@ -75,10 +75,6 @@ targets:
         NSHealthUpdateUsageDescription: Clio 不会往「健康」里写任何东西。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        BGTaskSchedulerPermittedIdentifiers:
-          - io.github.lllhr94.clio.turn.*
-        UIBackgroundModes:
-          - processing
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio

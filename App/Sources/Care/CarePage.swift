@@ -16,6 +16,9 @@ struct CarePage: View {
     @State private var probes: [String: String] = [:]
     @State private var probing = false
     @State private var copied = false
+    @State private var hitchesCopied = false
+    @AppStorage("care.hitches") private var recordingHitches = false
+    @ObservedObject private var hitches = Hitches.shared
 
     var body: some View {
         NavigationStack {
@@ -86,6 +89,28 @@ struct CarePage: View {
                 } header: { Text("最近的错误") }
 
                 Section {
+                    Toggle("掉帧记录仪", isOn: $recordingHitches)
+                    if hitches.recent.isEmpty {
+                        Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
+                    } else {
+                        ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
+                            Text(hitch.line).font(.system(size: 12, design: .monospaced)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
+                        }
+                        Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
+                            UIPasteboard.general.string = hitches.report
+                            hitchesCopied = true
+                            Haptics.tick(0.6)
+                        }
+                        Button("清空掉帧记录", role: .destructive) {
+                            hitches.clear()
+                            hitchesCopied = false
+                        }
+                    }
+                } header: { Text("掉帧记录") } footer: {
+                    Text("打开后记下每一次超过 16 毫秒的卡顿（120 Hz 的屏幕一帧本该 8 毫秒），连同当时在哪一页、在做什么（滚动、打字、旅伴在干活）。觉得哪里卡，复制下来贴给我。开着时屏幕一直跑满帧率，会稍微费电，查完可以关掉。")
+                }
+
+                Section {
                     Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
                         UIPasteboard.general.string = report
                         copied = true
@@ -95,6 +120,7 @@ struct CarePage: View {
             }
             }
             .paperForm()
+            .hitchPage("养护")
             .navigationTitle("养护")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
@@ -161,6 +187,7 @@ struct CarePage: View {
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)
+        if !hitches.recent.isEmpty { lines.append(hitches.report.split(separator: "\n").prefix(21).joined(separator: "\n")) }
         return lines.joined(separator: "\n")
     }
 

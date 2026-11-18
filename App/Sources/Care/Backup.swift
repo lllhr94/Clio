@@ -99,18 +99,3 @@ enum Backup {
         return Summary(files: count, bytes: data.count)
     }
 }
-
-/// 诊断: the last few things that went wrong, kept for the 诊断 page.
-enum Diag {
-    private static let key = "diag.log"
-
-    static func note(_ text: String) {
-        var log = UserDefaults.standard.stringArray(forKey: key) ?? []
-        let stamp = Date().formatted(.dateTime.month().day().hour().minute().second())
-        log.append("\(stamp)  \(text)")
-        UserDefaults.standard.set(Array(log.suffix(60)), forKey: key)
-    }
-
-    static var log: [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
-    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
-}

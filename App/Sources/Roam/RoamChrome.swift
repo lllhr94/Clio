@@ -63,6 +63,8 @@ struct RoamSlip: View {
 /// 远游 as a small window on the chat page: the real page, shrunk, live. Tap to open it full; the cross puts it away.
 struct RoamThumb: View {
     @ObservedObject var browser: BrowserSession
+    /// The conversation under it is scrolling: show the still picture even while a tool works, so the page is not drawn twice per frame.
+    var frozen = false
     let open: () -> Void
     private let scale: CGFloat = 0.3
     private let page = CGSize(width: 390, height: 640)
@@ -86,13 +88,25 @@ struct RoamThumb: View {
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, 6)
                 .frame(height: 22)
-                // The live page is only a picture here: a tap anywhere on it opens 远游 full screen.
-                WebHost(view: browser.view, interactive: false)
-                    .frame(width: page.width, height: page.height)
-                    .scaleEffect(scale, anchor: .topLeading)
-                    .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
-                    .clipped()
-                    .overlay(Color.white.opacity(0.001))
+                // Live only while a browser tool works; otherwise a still picture of the page, which costs nothing to draw.
+                // Either way a tap anywhere on it opens 远游 full screen.
+                ZStack(alignment: .topLeading) {
+                    if browser.acting || browser.still == nil {
+                        WebHost(view: browser.view, interactive: false, hidden: frozen && browser.still != nil)
+                            .frame(width: page.width, height: page.height)
+                            .scaleEffect(scale, anchor: .topLeading)
+                            .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
+                    }
+                    if let still = browser.still, !browser.acting || frozen {
+                        Image(uiImage: still)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: page.width * scale, height: page.height * scale, alignment: .top)
+                    }
+                }
+                .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
+                .clipped()
+                .overlay(Color.white.opacity(0.001))
             }
             .background(Ink.paperRaised)
             .clipShape(.rect(cornerRadius: Ink.Radius.small))

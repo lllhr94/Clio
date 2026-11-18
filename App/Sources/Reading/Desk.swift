@@ -20,6 +20,7 @@ struct ClioRoot: View {
     @ObservedObject private var asker = Asker.shared
     @AppStorage("look.scheme") private var scheme = "system"
     @AppStorage("look.fps") private var fps = false
+    @AppStorage("care.hitches") private var hitches = false
     @Environment(\.scenePhase) private var scenePhase
     /// Keeps the first-launch setup on screen through its last page, after the service is already connected.
     @State private var holdingSetup = false
@@ -37,6 +38,7 @@ struct ClioRoot: View {
             }
         }
         .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
+        .onChange(of: hitches, initial: true) { _, on in Hitches.shared.set(on) }
         .animation(Ink.Motion.settle, value: team.phase)
         .animation(Ink.Motion.settle, value: holdingSetup)
         .tint(Ink.accent)
@@ -46,6 +48,10 @@ struct ClioRoot: View {
         }
         .onChange(of: scenePhase) { _, now in
             if now == .active { team.wake() }
+            if now == .background {
+                team.leaving()
+                Hitches.shared.save()
+            }
         }
         .task {
             team.wake()

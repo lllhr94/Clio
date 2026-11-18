@@ -52,6 +52,8 @@ public enum AgentEvent: Equatable, Sendable {
     case text(String)
     case reasoning(String)
     case toolStarted(id: String, name: String, label: String)
+    /// The model is still writing a long tool call's arguments: how many characters so far. At most every 150 ms.
+    case toolWriting(name: String, characters: Int)
     case toolFinished(id: String, ok: Bool)
     /// A finished message, to keep.
     case message(Message)
@@ -99,6 +101,8 @@ public struct Agent: Sendable {
             var reasoning = ""
             var calls: [Int: ToolCall] = [:]
             var order: [Int] = []
+            let clock = ContinuousClock()
+            var lastWriting = clock.now
             do {
                 for try await event in provider.stream(request) {
                     switch event {
@@ -117,6 +121,14 @@ public struct Agent: Sendable {
                             calls[index] = ToolCall(id: "call_\(index)", name: "", arguments: "")
                         }
                         calls[index]?.arguments += delta
+                        // A long file being written as arguments can take a while; say how far it got, without a word per piece.
+                        if let call = calls[index], clock.now - lastWriting >= .milliseconds(150) {
+                            let written = call.arguments.utf16.count
+                            if written > 400 {
+                                lastWriting = clock.now
+                                await emit(.toolWriting(name: call.name, characters: written))
+                            }
+                        }
                     case .usage(let input, let output):
                         await emit(.usage(input: input, output: output))
                     case .finish:

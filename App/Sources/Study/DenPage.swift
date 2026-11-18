@@ -42,6 +42,7 @@ struct DenPage: View {
             }
         }
         .task { _ = await den.wake() }
+        .hitchPage("斗室")
         .fullScreenCover(isPresented: $inkstone) { InkstonePage() }
         .sheet(isPresented: $outfitting) {
             OutfitSheet { command in

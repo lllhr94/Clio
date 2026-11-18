@@ -74,6 +74,7 @@ struct HillsPage: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
+            .hitchPage("远山")
             .navigationTitle("远山")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } } }

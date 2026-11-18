@@ -16,6 +16,11 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var used = false
     /// The user put the small window away; it comes back the next time a page is opened.
     @Published var thumbHidden = false
+    /// A browser tool is at work. Only then does the small window show the live page; the rest of the time it shows `still`.
+    @Published private(set) var acting = false
+    /// How the page last looked, for the small window.
+    @Published private(set) var still: UIImage?
+    private var actors = 0
 
     let view: WKWebView
     private var loaded: CheckedContinuation<Void, Never>?
@@ -136,6 +141,40 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         sync()
         finishWaiting()
+        if !acting { keepStill() }
+    }
+
+    // MARK: The small window's picture
+
+    func beginActing() {
+        actors += 1
+        if !acting { acting = true }
+    }
+
+    /// The last browser tool is done: picture the page while it is still on screen, then let the small window go still.
+    func endActing() {
+        actors = max(0, actors - 1)
+        guard actors == 0 else { return }
+        keepStill { [weak self] in
+            guard let self, self.actors == 0 else { return }
+            self.acting = false
+        }
+    }
+
+    /// Pictures the page for the small window. Only a page on screen can be pictured; otherwise the last picture stays.
+    func keepStill(then done: (@MainActor () -> Void)? = nil) {
+        guard view.window != nil, view.url != nil else {
+            done?()
+            return
+        }
+        let configuration = WKSnapshotConfiguration()
+        configuration.snapshotWidth = 180
+        view.takeSnapshot(with: configuration) { [weak self] image, _ in
+            MainActor.assumeIsolated {
+                if let image { self?.still = image }
+                done?()
+            }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -410,7 +449,16 @@ struct RoamTool: AgentTool {
     var spec: ToolSpec { ToolSpec(name: name, description: description, parameters: parameters) }
     func label(for arguments: JSONValue) -> String { shown(arguments) }
     func approval(for arguments: JSONValue) -> ApprovalAsk? { asking?(arguments) }
-    func run(_ arguments: JSONValue) async throws -> ToolOutput { try await act(arguments) }
+    func run(_ arguments: JSONValue) async throws -> ToolOutput { try await Self.acting(act, arguments) }
+
+    /// While a browser tool runs, the small window shows the live page.
+    @MainActor
+    private static func acting(_ act: @MainActor @Sendable (JSONValue) async throws -> ToolOutput, _ arguments: JSONValue) async throws -> ToolOutput {
+        let browser = RoamTools.browser
+        browser?.beginActing()
+        defer { browser?.endActing() }
+        return try await act(arguments)
+    }
 }
 
 // MARK: The page
@@ -535,6 +583,7 @@ struct RoamPage: View {
         .animation(Ink.Motion.unfold, value: browser.handoff)
         .sheet(item: $asker.current) { form in FormSheet(form: form) }
         .onAppear { address = browser.url?.absoluteString ?? "" }
+        .hitchPage("远游")
         .onChange(of: browser.url) { _, url in
             if !editing { address = url?.absoluteString ?? "" }
         }
@@ -560,17 +609,21 @@ struct WebHost: UIViewRepresentable {
     let view: WKWebView
     /// False for a picture of the page (the small window): touches pass through to SwiftUI instead of landing on the page.
     var interactive = true
+    /// Kept in place but not drawn, while a still picture stands in for it.
+    var hidden = false
 
     func makeUIView(context: Context) -> UIView {
         let holder = UIView()
         holder.backgroundColor = .clear
         holder.isUserInteractionEnabled = interactive
+        holder.isHidden = hidden
         attach(to: holder)
         return holder
     }
 
     func updateUIView(_ holder: UIView, context: Context) {
         holder.isUserInteractionEnabled = interactive
+        holder.isHidden = hidden
         if view.superview !== holder { attach(to: holder) }
     }
 

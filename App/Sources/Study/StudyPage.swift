@@ -80,6 +80,7 @@ struct StudyFolder: View {
                 .padding(.vertical, Ink.Space.l)
             }
         }
+        .hitchPage("书案")
         .navigationTitle(top ? "书案" : folder.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

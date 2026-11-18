@@ -26,6 +26,8 @@ struct ChatPage: View {
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
     @State private var following = true
+    /// The conversation is moving under the reader's finger or settling after it.
+    @State private var scrolling = false
     @State private var farFromEnd = false
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
@@ -139,6 +141,11 @@ struct ChatPage: View {
                     withAnimation(Ink.Motion.settle) { farFromEnd = far }
                 }
                 .onScrollPhaseChange { old, phase, context in
+                    let moving = phase != .idle
+                    if moving != scrolling {
+                        scrolling = moving
+                        Hitches.shared.doing(moving ? "滚动絮语" : nil, as: "scroll")
+                    }
                     // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
                     if phase == .interacting { following = false }
                     if phase == .idle, old != .idle {
@@ -169,7 +176,7 @@ struct ChatPage: View {
             if !roaming {
                 HStack {
                     Spacer()
-                    RoamThumb(browser: team.browser) {
+                    RoamThumb(browser: team.browser, frozen: scrolling) {
                         typing = false
                         roaming = true
                     }
@@ -193,6 +200,8 @@ struct ChatPage: View {
                 }
         )
         .onAppear { chat.open() }
+        .hitchPage(isRoom ? "雅集" : "絮语")
+        .onChange(of: typing) { _, now in Hitches.shared.doing(now ? "打字" : nil, as: "typing") }
         .onDisappear {
             chat.close()
             if dictation.listening { dictation.stop() }
@@ -801,9 +810,10 @@ struct ChatPage: View {
         let latest = chat.lines.last(where: { $0.kind == .note })?.id == line.id && chat.lines.last?.id == line.id
         let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Label(advice.title, systemImage: "exclamationmark.triangle")
+            // A pause is not a failure: said in ink, not in red.
+            Label(advice.title, systemImage: next == .resume ? "pause.circle" : "exclamationmark.triangle")
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Ink.stop)
+                .foregroundStyle(next == .resume ? Ink.ink : Ink.stop)
             if !advice.detail.isEmpty {
                 Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
             }
@@ -825,7 +835,7 @@ struct ChatPage: View {
         }
         .padding(Ink.Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card))
+        .background(next == .resume ? Ink.paperRaised.opacity(0.7) : Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card))
     }
 
     struct UndoAsk: Identifiable {
@@ -855,6 +865,9 @@ struct ChatPage: View {
     private func act(_ next: Explain.Next) {
         switch next {
         case .retry: redo()
+        case .resume:
+            following = true
+            team.resume(chat.key)
         case .tuning: tuningOpen = true
         case .care: careOpen = true
         case .compress:

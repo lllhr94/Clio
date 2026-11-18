@@ -24,7 +24,6 @@ struct LookPage: View {
     @AppStorage("morning.on") private var morningOn = false
     @AppStorage("morning.hour") private var morningHour = 7
     @AppStorage("notify.done") private var notifyDone = true
-    @AppStorage("notify.keepGoing") private var keepGoing = true
     @AppStorage("look.fps") private var fps = false
 
     private let sample = """
@@ -112,10 +111,9 @@ struct LookPage: View {
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
-                    Toggle("干得久时向系统要时间", isOn: $keepGoing)
-                    Toggle("离开时干完活通知我", isOn: $notifyDone)
+                    Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
                 } header: { Text("在后台") } footer: {
-                    Text("一轮活干了几秒还没完，Clio 会向 iOS 申请「继续处理」：你切走以后锁屏上有一条进度，旅伴接着干。iOS 不肯给或时间用完时，会发通知告诉你停在哪，回到 Clio 就自动接着做。点通知直接回到那段絮语。")
+                    Text("旅伴干活时你切走，iOS 会给一小段时间（通常半分钟左右）让它接着干。这期间干完了、出错了会发通知；要你批准时总会通知。时间快用完还没干完，会先把写到一半的存下来，回到 Clio 点「接着做」就从那里继续。点通知直接回到那段絮语。")
                 }
 
                 Section {
@@ -132,11 +130,11 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "notify.keepGoing",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
-        scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true; keepGoing = true
+        scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
         Haptics.thud()
     }

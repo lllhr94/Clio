@@ -12,6 +12,8 @@ public enum Explain {
         case compress
         /// Open 养护 and test the connection.
         case care
+        /// Go on with a turn iOS paused in the background.
+        case resume
     }
 
     public struct Advice: Equatable, Sendable {
@@ -31,6 +33,7 @@ public enum Explain {
             case .retry: "再试一次"
             case .compress: "压缩前文"
             case .care: "去养护里试连"
+            case .resume: "接着做"
             case nil: nil
             }
         }

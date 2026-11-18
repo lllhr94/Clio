@@ -48,6 +48,7 @@ struct SettingsView: View {
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
+            .hitchPage("调弦")
             .navigationTitle("调弦")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

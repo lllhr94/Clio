@@ -95,6 +95,7 @@ struct InkstonePage: View {
         }
         .background(Ink.paper.ignoresSafeArea())
         .task(id: hill?.id) { if hill == nil { _ = await den.wake() } }
+        .hitchPage("笔砚")
     }
 
     private func switchTo(_ host: Hills.Host?) {
