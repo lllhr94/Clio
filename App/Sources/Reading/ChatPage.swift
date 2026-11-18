@@ -36,6 +36,8 @@ struct ChatPage: View {
     /// Nothing has happened for a few minutes: the whale dozes.
     @State private var dozing = false
     @State private var stirs = 0
+    /// How many of the newest lines are drawn; 「更早的」 adds more.
+    @State private var shownCount = 60
     /// What happened in the other conversations while the user was away from this one.
     @State private var away: [Happening] = []
     @State private var farFromEnd = false
@@ -68,6 +70,33 @@ struct ChatPage: View {
         if cheering { return .cheering }
         if dozing { return .sleeping }
         return .idle
+    }
+
+    /// 「更早的」: draws forty more of the older lines, keeping the line you were looking at in place.
+    private var earlier: some View {
+        Button {
+            Haptics.light()
+            let anchor = chat.lines.suffix(shownCount).first?.id
+            shownCount += 40
+            if let anchor {
+                Task { @MainActor in
+                    await Task.yield()
+                    scroller?.scrollTo(anchor, anchor: .top)
+                }
+            }
+        } label: {
+            Label("更早的 \(chat.lines.count - shownCount) 条", systemImage: "arrow.up")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Ink.inkSoft)
+                .frame(maxWidth: .infinity, minHeight: 36)
+        }
+        .buttonStyle(TapStyle())
+    }
+
+    /// A failure already explained in the conversation (the card with 再试一次) is not repeated in red under it.
+    private func saidInNote(_ error: String) -> Bool {
+        guard let last = chat.lines.last, last.kind == .note else { return false }
+        return error.split(separator: "\n").first.map { last.text.contains($0) } ?? false
     }
 
     /// Something happened: the whale wakes, and the doze clock starts over.
@@ -113,50 +142,66 @@ struct ChatPage: View {
         }
     }
 
+    /// The lines of the conversation, what is arriving, and what waits to be sent.
+    private var conversationContent: some View {
+        VStack(spacing: 0) {
+            // A plain stack, not a lazy one: every line is measured, so "the bottom" is always exactly where it is.
+            // A lazy stack guesses the height of lines it has not drawn, and scrolling to the end could stop short.
+            // To keep that cheap, only the newest lines are drawn; older ones come in on request.
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
+                if chat.lines.count > shownCount { earlier }
+                ForEach(chat.lines.suffix(shownCount)) { line in
+                    row(line)
+                        .id(line.id)
+                        .transition(.opacity.combined(with: .offset(y: 12)))
+                }
+                if !chat.streaming.isEmpty {
+                    ProseView(text: chat.streaming, streaming: true)
+                        .id("streaming")
+                }
+                if let words = liveWords, showsLive {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                        LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
+                        if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
+                    }
+                    .id("live")
+                    .transition(.opacity.combined(with: .offset(y: 8)))
+                }
+                if let error = chat.error, !saidInNote(error) {
+                    Text(error)
+                        .font(Ink.secondary)
+                        .foregroundStyle(Ink.stop)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                ForEach(team.queued[chat.key] ?? []) { item in
+                    queuedRow(item)
+                        .transition(.opacity.combined(with: .offset(y: 8)))
+                }
+            }
+            // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
+            Color.clear.frame(height: 1).id(Self.end)
+        }
+        .padding(.horizontal, Ink.Space.page)
+        .padding(.top, Ink.Space.m)
+        .padding(.bottom, Ink.Space.xxl)
+    }
+
     /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
     /// Kept apart from `body` so the compiler checks each piece on its own.
     private var conversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 0) {
-                    LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
-                        ForEach(chat.lines) { line in
-                            row(line)
-                                .transition(.opacity.combined(with: .offset(y: 12)))
-                        }
-                        if !chat.streaming.isEmpty {
-                            ProseView(text: chat.streaming, streaming: true)
-                                .id("streaming")
-                        }
-                        if let words = liveWords, showsLive {
-                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                                LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                                if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
-                            }
-                            .id("live")
-                            .transition(.opacity.combined(with: .offset(y: 8)))
-                        }
-                        if let error = chat.error {
-                            Text(error)
-                                .font(Ink.secondary)
-                                .foregroundStyle(Ink.stop)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        ForEach(team.queued[chat.key] ?? []) { item in
-                            queuedRow(item)
-                                .transition(.opacity.combined(with: .offset(y: 8)))
-                        }
-                    }
-                    // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
-                    Color.clear.frame(height: 1).id(Self.end)
-                }
-                .padding(.horizontal, Ink.Space.page)
-                .padding(.top, Ink.Space.m)
-                .padding(.bottom, Ink.Space.xxl)
+                conversationContent
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
+            // Nothing moves while the reader is up reading older lines.
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY > 2
+            } action: { _, behind in
+                if behind, following { toEnd() }
+            }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height - geometry.visibleRect.maxY > 320
             } action: { _, far in

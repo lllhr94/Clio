@@ -54,6 +54,8 @@ public enum AgentEvent: Equatable, Sendable {
     case toolStarted(id: String, name: String, label: String)
     /// The model is still writing a long tool call's arguments: how many characters so far. At most every 150 ms.
     case toolWriting(name: String, characters: Int)
+    /// The request failed before anything came back, in a way that usually passes; asking again (1, 2…).
+    case retrying(attempt: Int)
     case toolFinished(id: String, ok: Bool)
     /// A finished message, to keep.
     case message(Message)
@@ -70,6 +72,8 @@ public struct Agent: Sendable {
     public var approve: @Sendable (ApprovalAsk, String) async -> Bool
     public var temperature: Double?
     public var outputLimit: Int?
+    /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
+    public var retryDelays: [Double] = [1, 3]
 
     public init(provider: ModelProvider, model: String, system: String, tools: [AgentTool] = [], maxSteps: Int = 16, approve: @escaping @Sendable (ApprovalAsk, String) async -> Bool = { _, _ in false }) {
         self.provider = provider
@@ -91,6 +95,17 @@ public struct Agent: Sendable {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Failures that usually pass on their own: a connection dropped or refused on the way, a server that is busy.
+    static func passing(_ error: Error) -> Bool {
+        if let url = error as? URLError {
+            let codes: [URLError.Code] = [.secureConnectionFailed, .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                                          .notConnectedToInternet, .dnsLookupFailed, .cannotFindHost, .badServerResponse]
+            return codes.contains(url.code)
+        }
+        if let failure = error as? ProviderError, let status = failure.status { return status == 429 || status >= 500 }
+        return false
+    }
+
     public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
         var messages = history
         let specs = tools.map(\.spec)
@@ -103,45 +118,57 @@ public struct Agent: Sendable {
             var order: [Int] = []
             let clock = ContinuousClock()
             var lastWriting = clock.now
-            do {
-                for try await event in provider.stream(request) {
-                    switch event {
-                    case .text(let piece):
-                        text += piece
-                        await emit(.text(piece))
-                    case .reasoning(let piece):
-                        reasoning += piece
-                        await emit(.reasoning(piece))
-                    case .toolCallStart(let index, let id, let name):
-                        if calls[index] == nil { order.append(index) }
-                        calls[index] = ToolCall(id: id, name: name, arguments: calls[index]?.arguments ?? "")
-                    case .toolCallArguments(let index, let delta):
-                        if calls[index] == nil {
-                            order.append(index)
-                            calls[index] = ToolCall(id: "call_\(index)", name: "", arguments: "")
-                        }
-                        calls[index]?.arguments += delta
-                        // A long file being written as arguments can take a while; say how far it got, without a word per piece.
-                        if let call = calls[index], clock.now - lastWriting >= .milliseconds(150) {
-                            let written = call.arguments.utf16.count
-                            if written > 400 {
-                                lastWriting = clock.now
-                                await emit(.toolWriting(name: call.name, characters: written))
+            var attempt = 0
+            while true {
+                do {
+                    for try await event in provider.stream(request) {
+                        switch event {
+                        case .text(let piece):
+                            text += piece
+                            await emit(.text(piece))
+                        case .reasoning(let piece):
+                            reasoning += piece
+                            await emit(.reasoning(piece))
+                        case .toolCallStart(let index, let id, let name):
+                            if calls[index] == nil { order.append(index) }
+                            calls[index] = ToolCall(id: id, name: name, arguments: calls[index]?.arguments ?? "")
+                        case .toolCallArguments(let index, let delta):
+                            if calls[index] == nil {
+                                order.append(index)
+                                calls[index] = ToolCall(id: "call_\(index)", name: "", arguments: "")
                             }
+                            calls[index]?.arguments += delta
+                            // A long file being written as arguments can take a while; say how far it got, without a word per piece.
+                            if let call = calls[index], clock.now - lastWriting >= .milliseconds(150) {
+                                let written = call.arguments.utf16.count
+                                if written > 400 {
+                                    lastWriting = clock.now
+                                    await emit(.toolWriting(name: call.name, characters: written))
+                                }
+                            }
+                        case .usage(let input, let output, let cached):
+                            await emit(.usage(input: input, output: output, cached: cached))
+                        case .finish:
+                            break
                         }
-                    case .usage(let input, let output, let cached):
-                        await emit(.usage(input: input, output: output, cached: cached))
-                    case .finish:
-                        break
                     }
+                    break
+                } catch {
+                    let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+                    // Nothing came through yet and the failure looks passing (a dropped or refused connection, a busy server):
+                    // ask again, a couple of times, before telling the user.
+                    if !cancelled, text.isEmpty, reasoning.isEmpty, calls.isEmpty, attempt < retryDelays.count, Self.passing(error) {
+                        let wait = retryDelays[attempt]
+                        attempt += 1
+                        await emit(.retrying(attempt: attempt))
+                        if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                        continue
+                    }
+                    // What was written so far stays.
+                    if !text.isEmpty { await emit(.message(.assistant(text))) }
+                    if cancelled { throw CancellationError() }
+                    throw error
                 }
-            } catch {
-                // What was written so far stays.
-                if !text.isEmpty { await emit(.message(.assistant(text))) }
-                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
-                    throw CancellationError()
-                }
-                throw error
             }
             let made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
             let reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)

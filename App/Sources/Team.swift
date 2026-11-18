@@ -1131,6 +1131,8 @@ final class TeamModel: ObservableObject {
             doing[key] = label
             ToolTail.shared.clear()
             notify(key, .tool(label))
+        case .retrying(let attempt):
+            doing[key] = "连接不稳，正在重连（第 \(attempt) 次）"
         case .toolWriting(let name, let characters):
             let amount = characters < 1000 ? "\(characters) 字" : String(format: "%.1f 千字", Double(characters) / 1000)
             let what = ["write_file": "写文件", "edit_file": "改文件", "shell": "命令", "run_js": "脚本"][name] ?? name

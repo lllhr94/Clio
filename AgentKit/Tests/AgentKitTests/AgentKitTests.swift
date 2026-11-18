@@ -276,3 +276,74 @@ final class LocalAddressTests: XCTestCase {
         }
     }
 }
+
+/// Fails the first `failures` requests the way a dropped connection does, then answers.
+private final class FlakyProvider: ModelProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: Int
+    private let error: Error
+    private(set) var calls = 0
+
+    init(failures: Int, error: Error) {
+        self.failures = failures
+        self.error = error
+    }
+
+    func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+        lock.lock()
+        calls += 1
+        let fail = failures > 0
+        if fail { failures -= 1 }
+        lock.unlock()
+        let error = self.error
+        return AsyncThrowingStream { continuation in
+            if fail {
+                continuation.finish(throwing: error)
+            } else {
+                continuation.yield(.text("到了"))
+                continuation.finish()
+            }
+        }
+    }
+
+    func models() async throws -> [String] { [] }
+}
+
+final class RetryTests: XCTestCase {
+    func testADroppedConnectionIsTriedAgain() async throws {
+        let provider = FlakyProvider(failures: 2, error: URLError(.secureConnectionFailed))
+        var agent = Agent(provider: provider, model: "m", system: "")
+        agent.retryDelays = [0, 0]
+        let recorder = Recorder()
+        try await agent.run(history: [.user("在吗")]) { await recorder.add($0) }
+        let events = await recorder.events
+        XCTAssertEqual(provider.calls, 3)
+        XCTAssertTrue(events.contains(.retrying(attempt: 1)))
+        XCTAssertTrue(events.contains(.retrying(attempt: 2)))
+        XCTAssertTrue(events.contains(.message(.assistant("到了"))))
+    }
+
+    func testGivesUpAfterTheLastTry() async {
+        let provider = FlakyProvider(failures: 5, error: URLError(.timedOut))
+        var agent = Agent(provider: provider, model: "m", system: "")
+        agent.retryDelays = [0, 0]
+        do {
+            try await agent.run(history: [.user("在吗")]) { _ in }
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .timedOut)
+        }
+        XCTAssertEqual(provider.calls, 3)
+    }
+
+    func testAWrongKeyIsNotTriedAgain() async {
+        let provider = FlakyProvider(failures: 1, error: ProviderError(status: 401, "bad key"))
+        var agent = Agent(provider: provider, model: "m", system: "")
+        agent.retryDelays = [0, 0]
+        do {
+            try await agent.run(history: [.user("在吗")]) { _ in }
+            XCTFail("should fail")
+        } catch {}
+        XCTAssertEqual(provider.calls, 1)
+    }
+}
