@@ -98,80 +98,100 @@ struct ChatPage: View {
         }
     }
 
+    /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
+    /// Kept apart from `body` so the compiler checks each piece on its own.
+    private var conversation: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                        if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
+                        ForEach(chat.lines) { line in
+                            row(line)
+                                .transition(.opacity.combined(with: .offset(y: 12)))
+                        }
+                        if !chat.streaming.isEmpty {
+                            ProseView(text: chat.streaming, streaming: true)
+                                .id("streaming")
+                        }
+                        if let words = liveWords, showsLive {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                                LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
+                                if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
+                            }
+                            .id("live")
+                            .transition(.opacity.combined(with: .offset(y: 8)))
+                        }
+                        if let error = chat.error {
+                            Text(error)
+                                .font(Ink.secondary)
+                                .foregroundStyle(Ink.stop)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                    }
+                    // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
+                    Color.clear.frame(height: 1).id(Self.end)
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.top, Ink.Space.m)
+                .padding(.bottom, Ink.Space.xxl)
+            }
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY > 320
+            } action: { _, far in
+                withAnimation(Ink.Motion.settle) { farFromEnd = far }
+            }
+            .onScrollPhaseChange { old, phase, context in
+                let moving = phase != .idle
+                if moving != scrolling {
+                    scrolling = moving
+                    Hitches.shared.doing(moving ? "滚动絮语" : nil, as: "scroll")
+                }
+                // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
+                if phase == .interacting { following = false }
+                if phase == .idle, old != .idle {
+                    following = context.geometry.contentSize.height - context.geometry.visibleRect.maxY < 80
+                }
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
+            // reads through between the buttons, and the glass no longer picks up colours from the page.
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .safeAreaBar(edge: .top) { header }
+            .onChange(of: working, initial: true) { _, now in
+                workingSince = now ? (workingSince ?? Date()) : nil
+            }
+            .onChange(of: chat.lines.last?.id) { followToEnd() }
+            .onChange(of: chat.lines.count) { followToEnd() }
+            .onChange(of: showsLive) { followToEnd() }
+            .onChange(of: chat.error) { followToEnd() }
+            .onChange(of: chat.streaming.count / 80) { followToEnd(settle: false) }
+            .animation(Ink.Motion.settle, value: showsLive)
+            .onAppear { scroller = proxy }
+        }
+    }
+
+    /// The composer, with what keeps the 用量 ring up to date and opens its sheet.
+    private var composerBar: some View {
+        composer
+        .task { context = team.contextEstimate(chat.key) }
+        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
+        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
+        .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
+        .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
+            UsageSheet(team: team, key: chat.key)
+                .presentationDetents([.medium, .large])
+        }
+        .onChange(of: typing) { _, now in Hitches.shared.doing(now ? "打字" : nil, as: "typing") }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
-                            if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
-                            ForEach(chat.lines) { line in
-                                row(line)
-                                    .transition(.opacity.combined(with: .offset(y: 12)))
-                            }
-                            if !chat.streaming.isEmpty {
-                                ProseView(text: chat.streaming, streaming: true)
-                                    .id("streaming")
-                            }
-                            if let words = liveWords, showsLive {
-                                VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                                    LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                                    if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
-                                }
-                                .id("live")
-                                .transition(.opacity.combined(with: .offset(y: 8)))
-                            }
-                            if let error = chat.error {
-                                Text(error)
-                                    .font(Ink.secondary)
-                                    .foregroundStyle(Ink.stop)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                            }
-                        }
-                        // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
-                        Color.clear.frame(height: 1).id(Self.end)
-                    }
-                    .padding(.horizontal, Ink.Space.page)
-                    .padding(.top, Ink.Space.m)
-                    .padding(.bottom, Ink.Space.xxl)
-                }
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentSize.height - geometry.visibleRect.maxY > 320
-                } action: { _, far in
-                    withAnimation(Ink.Motion.settle) { farFromEnd = far }
-                }
-                .onScrollPhaseChange { old, phase, context in
-                    let moving = phase != .idle
-                    if moving != scrolling {
-                        scrolling = moving
-                        Hitches.shared.doing(moving ? "滚动絮语" : nil, as: "scroll")
-                    }
-                    // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
-                    if phase == .interacting { following = false }
-                    if phase == .idle, old != .idle {
-                        following = context.geometry.contentSize.height - context.geometry.visibleRect.maxY < 80
-                    }
-                }
-                .scrollIndicators(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
-                // reads through between the buttons, and the glass no longer picks up colours from the page.
-                .scrollEdgeEffectStyle(.soft, for: .top)
-                .safeAreaBar(edge: .top) { header }
-                .onChange(of: working, initial: true) { _, now in
-                    workingSince = now ? (workingSince ?? Date()) : nil
-                }
-                .onChange(of: chat.lines.last?.id) { followToEnd() }
-                .onChange(of: chat.lines.count) { followToEnd() }
-                .onChange(of: showsLive) { followToEnd() }
-                .onChange(of: chat.error) { followToEnd() }
-                .onChange(of: chat.streaming.count / 80) { followToEnd(settle: false) }
-                .animation(Ink.Motion.settle, value: showsLive)
-                .onAppear { scroller = proxy }
-            }
+            conversation
             if !roaming {
                 HStack {
                     Spacer()
@@ -185,7 +205,7 @@ struct ChatPage: View {
                 .zIndex(3)
             }
         }
-        .safeAreaInset(edge: .bottom) { composer }
+        .safeAreaInset(edge: .bottom) { composerBar }
         .overlay {
             GeometryReader { proxy in
                 Mascot(pose: pose, raised: waiting != nil, bounds: proxy.size)
@@ -200,15 +220,6 @@ struct ChatPage: View {
         )
         .onAppear { chat.open() }
         .hitchPage(isRoom ? "雅集" : "絮语")
-        .task { context = team.contextEstimate(chat.key) }
-        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
-        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
-        .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
-        .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
-            UsageSheet(team: team, key: chat.key)
-                .presentationDetents([.medium, .large])
-        }
-        .onChange(of: typing) { _, now in Hitches.shared.doing(now ? "打字" : nil, as: "typing") }
         .onDisappear {
             chat.close()
             if dictation.listening { dictation.stop() }
