@@ -321,6 +321,27 @@ struct Desk: View {
             guard let chat = note.object as? String else { return }
             if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else if chat.hasPrefix("bot-") { opened = .companion(String(chat.dropFirst(4))) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
+        .task { answerShortcut() }
+    }
+
+    /// Siri or a shortcut: the newest conversation, or a fresh leaf with the newest companion. Nothing is sent.
+    private func answerShortcut() {
+        guard let ask = ShortcutDoor.pending else { return }
+        ShortcutDoor.pending = nil
+        let newestCompanion = recent.first { thread in
+            if case .companion = thread.id { return true }
+            return false
+        }?.id ?? team.bots.first.map { Opened.companion($0.id) }
+        let target = ask == .fresh ? newestCompanion : (recent.first?.id ?? newestCompanion)
+        guard let target else { return }
+        if ask == .fresh { team.turnLeaf(target.id) }
+        ShortcutDoor.forChat[target.id] = ask
+        if opened == target {
+            NotificationCenter.default.post(name: .clioShortcutReady, object: nil)
+        } else {
+            opened = target
+        }
     }
 
     private var clearingIsRoom: Bool {

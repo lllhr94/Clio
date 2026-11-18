@@ -2,6 +2,7 @@ import AgentKit
 import Craft
 import Foundation
 import ImageIO
+import UIKit
 import JavaScriptCore
 import UniformTypeIdentifiers
 
@@ -101,6 +102,17 @@ enum Workspace {
             guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个：\(relative(file))", isError: true) }
             try FileManager.default.removeItem(at: file)
             return ToolOutput("删掉了 \(relative(file))")
+        })
+        tools.append(DeskTool(name: "photo_text", description: "读出图片上的字（中文、英文都行）：用户发来的照片（给对话里［］中写的照片编号），或书案里的图片（给相对路径）。看不了图的模型也能靠它读题目、截图、文件照片。机器识别，可能有错字。", parameters: ["type": "object", "properties": ["photo": ["type": "string", "description": "照片编号，或书案里的图片路径"]], "required": ["photo"]], label: { "读图上的字：\(($0["photo"]?.string ?? "").prefix(24))" }) { arguments in
+            let name = arguments["photo"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // A photo sent in a chat is a bare file name; anything with a folder in it is a path in 书案.
+            let data = name.contains("/") ? nil : Disk.photo(name)
+            guard let data = data ?? resolve(name).flatMap({ try? Data(contentsOf: $0) }), let image = UIImage(data: data) else {
+                return ToolOutput("找不到这张图：\(name)。用户发的照片给编号，书案里的图给路径。", isError: true)
+            }
+            let text = await Scan.read(image)
+            guard !text.isEmpty else { return ToolOutput("这张图上没认出字。") }
+            return ToolOutput("图上的字（机器识别，可能有错字）：\n\n" + String(text.prefix(12_000)))
         })
         tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 和 writeFile(path, text) 读写书案里的文件。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
             await Reckoner.run(arguments["code"]?.string ?? "")

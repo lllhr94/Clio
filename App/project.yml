@@ -1,6 +1,8 @@
 name: Clio
 options:
   bundleIdPrefix: io.github.lllhr94
+  # Chinese first: Siri reads the app's shortcut phrases in this language.
+  developmentLanguage: zh-Hans
   deploymentTarget:
     iOS: "26.0"
 packages:

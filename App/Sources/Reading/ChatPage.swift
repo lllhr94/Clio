@@ -216,9 +216,38 @@ struct ChatPage: View {
         .padding(.leading, Ink.Space.huge)
     }
 
+    /// Starts dictation; what is heard is added after what was already written.
+    private func listen() {
+        Haptics.grab()
+        typing = false
+        spokenBase = draft
+        dictation.onText = { heard in draft = spokenBase + heard }
+        Task { await dictation.start() }
+    }
+
+    /// Siri or a shortcut sent us here: put the words in, listen, or just wait at the composer. Nothing is sent.
+    private func takeShortcut() {
+        guard let ask = ShortcutDoor.take(for: chat.key) else { return }
+        switch ask {
+        case .ask(let words):
+            if !words.isEmpty { draft = words }
+            typing = true
+        case .dictate:
+            listen()
+        case .fresh:
+            typing = true
+        }
+    }
+
     /// The composer, with what keeps the 用量 ring up to date and opens its sheet.
     private var composerBar: some View {
         composer
+        .task {
+            // Let the page settle in before the keyboard or the microphone comes up.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            takeShortcut()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
         .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
         .task { context = team.contextEstimate(chat.key) }
         .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
@@ -1299,11 +1328,7 @@ struct ChatPage: View {
                 following = true
                 followToEnd()
             default:
-                Haptics.grab()
-                typing = false
-                spokenBase = draft
-                dictation.onText = { heard in draft = spokenBase + heard }
-                Task { await dictation.start() }
+                listen()
             }
         } label: {
             ZStack {

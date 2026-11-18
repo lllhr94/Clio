@@ -1249,7 +1249,8 @@ final class TeamModel: ObservableObject {
                 if vision, photoEntries.contains(entry.id) {
                     message.images = entry.photos.compactMap { Disk.photo($0).map { ImagePart(data: $0) } }
                 } else {
-                    message.text += "\n［发了 \(entry.photos.count) 张图片\(vision ? "，已经看过" : "，你现在用的模型看不了图")］"
+                    let ids = entry.photos.joined(separator: "、")
+                    message.text += "\n［发了 \(entry.photos.count) 张图片，编号 \(ids)" + (vision ? "，已经看过" : "；你现在用的模型看不了图，要读图上的字就用 photo_text") + "］"
                 }
             }
             messages.append(message)
