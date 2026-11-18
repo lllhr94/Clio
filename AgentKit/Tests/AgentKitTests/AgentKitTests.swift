@@ -245,3 +245,14 @@ final class WebTextTests: XCTestCase {
         XCTAssertEqual(JSONValue.parse(value!.compact), value)
     }
 }
+
+final class CachedUsageTests: XCTestCase {
+    func testDeepSeekAndOpenAIReportCacheHits() throws {
+        XCTAssertEqual(try OpenAIProvider.decode(#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":64}}"#), [.usage(input: 100, output: 5, cached: 64)])
+        XCTAssertEqual(try OpenAIProvider.decode(#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":32}}}"#), [.usage(input: 100, output: 5, cached: 32)])
+    }
+
+    func testClaudeCountsCacheReadsAndWritesAsInput() throws {
+        XCTAssertEqual(try AnthropicProvider.decode(#"{"type":"message_start","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":10,"output_tokens":1}}}"#), [.usage(input: 330, output: 0, cached: 300)])
+    }
+}

@@ -57,7 +57,7 @@ public enum AgentEvent: Equatable, Sendable {
     case toolFinished(id: String, ok: Bool)
     /// A finished message, to keep.
     case message(Message)
-    case usage(input: Int, output: Int)
+    case usage(input: Int, output: Int, cached: Int = 0)
 }
 
 /// One Bot's turn: asks the model, runs the tools it calls, and asks again until it answers.
@@ -129,8 +129,8 @@ public struct Agent: Sendable {
                                 await emit(.toolWriting(name: call.name, characters: written))
                             }
                         }
-                    case .usage(let input, let output):
-                        await emit(.usage(input: input, output: output))
+                    case .usage(let input, let output, let cached):
+                        await emit(.usage(input: input, output: output, cached: cached))
                     case .finish:
                         break
                     }

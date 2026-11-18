@@ -84,7 +84,7 @@ struct Endpoint: Codable, Identifiable, Equatable {
     var vision: Bool?
 
     static let presets: [Endpoint] = [
-        Endpoint(id: "deepseek", name: "DeepSeek", kind: .openai, baseURL: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"], vision: false),
+        Endpoint(id: "deepseek", name: "DeepSeek", kind: .openai, baseURL: "https://api.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"], vision: false),
         Endpoint(id: "claude", name: "Claude", kind: .anthropic, baseURL: "https://api.anthropic.com", models: [], vision: true),
         Endpoint(id: "custom", name: "其他（OpenAI 兼容）", kind: .openai, baseURL: "https://", models: [], vision: true),
     ]

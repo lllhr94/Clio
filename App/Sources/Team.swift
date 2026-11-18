@@ -203,7 +203,8 @@ final class TeamModel: ObservableObject {
     }
 
     static func preferred(_ endpoint: Endpoint) -> String? {
-        endpoint.models.first { $0 == "deepseek-chat" }
+        endpoint.models.first { $0 == "deepseek-v4-flash" }
+            ?? endpoint.models.first { $0 == "deepseek-chat" }
             ?? endpoint.models.first { $0.contains("sonnet") }
             ?? endpoint.models.first
     }
@@ -405,6 +406,8 @@ final class TeamModel: ObservableObject {
         var place: String?
         /// The current conversation's title, written by the model after the first exchange (12 characters at most).
         var title: String?
+        /// Tokens this conversation has used, as the services reported them (counted from 0.27 on).
+        var spend: Spend?
 
         var web: Bool { !off.contains(Grant.web.rawValue) && !off.contains(Grant.browser.rawValue) }
     }
@@ -855,6 +858,11 @@ final class TeamModel: ObservableObject {
         let token = UUID()
         taint.clear(key)
         streamed[key] = nil
+        var counted = options(key)
+        var spend = counted.spend ?? Spend()
+        spend.turns += 1
+        counted.spend = spend
+        setOptions(key, counted)
         if let turn = history(key).last(where: { $0.message.role == .user && $0.note != true }) {
             Snapshots.shared.begin(key, turn: turn.id)
         }
@@ -992,6 +1000,7 @@ final class TeamModel: ObservableObject {
         notePause(key)
         notify(key, .finished)
         nameChatIfNew(key)
+        watchBalance(key)
         endGrace(token)
     }
 
@@ -1090,8 +1099,13 @@ final class TeamModel: ObservableObject {
             kept.images = []
             append(Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: speaker, photos: shots, label: label), to: key)
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
-        case .usage(_, let output):
+        case .usage(let input, let output, let cached):
             written[key, default: 0] += output
+            var kept = self.options(key)
+            var spend = kept.spend ?? Spend()
+            spend.add(input: input, output: output, cached: cached)
+            kept.spend = spend
+            setOptions(key, kept)
         }
     }
 
@@ -1273,6 +1287,91 @@ final class TeamModel: ObservableObject {
             return !off.contains(grant.rawValue)
         }
         .map { TaintGuard($0, key: key, book: taint, isInside: { host.isInside($0) }) }
+    }
+
+    // MARK: 用量
+
+    /// About how big the next request will be, by part, and how much of the model's window that is.
+    struct ContextEstimate: Equatable {
+        var system = 0
+        var tools = 0
+        var messages = 0
+        var window = Tokens.window(for: "")
+        var model = ""
+
+        var total: Int { system + tools + messages }
+        var share: Double { window > 0 ? Double(total) / Double(window) : 0 }
+    }
+
+    /// Who answers in a chat and with which model: the companion, or a gathering's first member.
+    private func speaker(of key: String) -> (bot: BotInfo, room: RoomInfo?, found: (endpoint: Endpoint, model: String)?)? {
+        let room = rooms.first { Self.key(room: $0.id) == key }
+        let bot = room.flatMap { room in bots.first { $0.id == room.members?.first } } ?? bots.first { Self.key(bot: $0.id) == key }
+        guard let bot else { return nil }
+        let picked = options(key).model ?? bot.model ?? settings.defaultModel
+        return (bot, room, resolve(picked) ?? resolve(settings.defaultModel))
+    }
+
+    /// The model service a chat talks to.
+    func chatEndpoint(_ key: String) -> Endpoint? { speaker(of: key)?.found?.endpoint }
+
+    func contextEstimate(_ key: String) -> ContextEstimate {
+        var estimate = ContextEstimate()
+        guard let who = speaker(of: key) else { return estimate }
+        let (bot, room, found) = (who.bot, who.room, who.found)
+        let vision = found?.endpoint.vision != false
+        estimate.model = found?.model ?? ""
+        estimate.window = Tokens.window(for: estimate.model)
+        estimate.system = Tokens.estimate(system(for: bot, room: room) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine)
+        estimate.tools = tools(for: bot, key: key, canSee: vision).reduce(0) { total, tool in
+            let spec = tool.spec
+            let schema = (try? JSONEncoder().encode(spec.parameters)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+            return total + Tokens.estimate(spec.name + spec.description + schema)
+        }
+        estimate.messages = context(for: key, bot: bot, room: room, vision: vision).reduce(0) { total, message in
+            total + Tokens.estimate(message.text) + message.images.count * Tokens.perImage
+                + message.toolCalls.reduce(0) { $0 + Tokens.estimate($1.name + $1.arguments) }
+        }
+        return estimate
+    }
+
+    /// What is left on the account of `endpoint`, for the services that tell (DeepSeek, OpenRouter).
+    func balance(_ endpoint: Endpoint) async throws -> Balance.Reading {
+        guard let source = Balance.source(baseURL: endpoint.baseURL) else { throw TeamError(message: "\(endpoint.name) 不提供余额查询。") }
+        guard let secret = apiKey(for: endpoint.id), !secret.isEmpty else { throw TeamError(message: "\(endpoint.name) 的密钥找不到了。") }
+        var request = URLRequest(url: source.url, timeoutInterval: 15)
+        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200, let reading = Balance.parse(String(decoding: data, as: UTF8.self), baseURL: endpoint.baseURL) else {
+            throw TeamError(message: status == 401 ? "密钥不对，查不了余额。" : "没查到余额（\(status)）。")
+        }
+        return reading
+    }
+
+    /// The reminder line for a service's balance; 0 is off.
+    static func balanceFloor(_ endpointId: String) -> Double { UserDefaults.standard.double(forKey: "balance.alert.\(endpointId)") }
+    static func setBalanceFloor(_ endpointId: String, _ value: Double) { UserDefaults.standard.set(value, forKey: "balance.alert.\(endpointId)") }
+
+    private var balanceCheckedAt: [String: Date] = [:]
+
+    /// After a turn: at most every half hour, look at the balance of a service with a reminder line set, and say so once it is under.
+    private func watchBalance(_ key: String) {
+        guard let endpoint = chatEndpoint(key), Balance.source(baseURL: endpoint.baseURL) != nil else { return }
+        let floor = Self.balanceFloor(endpoint.id)
+        guard floor > 0 else { return }
+        if let last = balanceCheckedAt[endpoint.id], Date().timeIntervalSince(last) < 1800 { return }
+        balanceCheckedAt[endpoint.id] = Date()
+        Task { [weak self] in
+            guard let self, let reading = try? await self.balance(endpoint), reading.amount < floor else { return }
+            let warned = "balance.warned.\(endpoint.id)"
+            let now = Date().timeIntervalSince1970
+            guard now - UserDefaults.standard.double(forKey: warned) > 12 * 3600 else { return }
+            UserDefaults.standard.set(now, forKey: warned)
+            Notify.now("\(endpoint.name) 余额只剩 \(reading.shown)", "低于你设的提醒线 \(reading.symbol)\(Int(floor))，记得去充值。", chat: key)
+            Diag.note("\(endpoint.name) 余额 \(reading.shown)，低于提醒线")
+        }
     }
 
     // MARK: Approvals

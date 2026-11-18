@@ -94,7 +94,12 @@ public struct AnthropicProvider: ModelProvider {
         switch type {
         case "message_start":
             let usage = json["message"]?["usage"]
-            if let input = usage?["input_tokens"]?.number { return [.usage(input: Int(input), output: 0)] }
+            // Claude counts cache reads and writes apart from input_tokens; the whole prompt is all three.
+            if let input = usage?["input_tokens"]?.number {
+                let read = usage?["cache_read_input_tokens"]?.number ?? 0
+                let written = usage?["cache_creation_input_tokens"]?.number ?? 0
+                return [.usage(input: Int(input + read + written), output: 0, cached: Int(read))]
+            }
         case "content_block_start":
             let index = Int(json["index"]?.number ?? 0)
             let block = json["content_block"] ?? .null

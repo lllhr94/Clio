@@ -44,7 +44,8 @@ public enum StreamEvent: Equatable, Sendable {
     case toolCallStart(index: Int, id: String, name: String)
     case toolCallArguments(index: Int, delta: String)
     case finish(reason: String?)
-    case usage(input: Int, output: Int)
+    /// Tokens for one request. `input` counts the whole prompt, `cached` the part of it the service had cached.
+    case usage(input: Int, output: Int, cached: Int = 0)
 }
 
 public struct ProviderError: Error, LocalizedError, Equatable {

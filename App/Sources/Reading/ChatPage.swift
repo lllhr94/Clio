@@ -28,6 +28,9 @@ struct ChatPage: View {
     @State private var following = true
     /// The conversation is moving under the reader's finger or settling after it.
     @State private var scrolling = false
+    /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
+    @State private var context: TeamModel.ContextEstimate?
+    @State private var usageOpen = false
     @State private var farFromEnd = false
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
@@ -197,6 +200,14 @@ struct ChatPage: View {
         )
         .onAppear { chat.open() }
         .hitchPage(isRoom ? "雅集" : "絮语")
+        .task { context = team.contextEstimate(chat.key) }
+        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
+        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
+        .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
+        .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
+            UsageSheet(team: team, key: chat.key)
+                .presentationDetents([.medium, .large])
+        }
         .onChange(of: typing) { _, now in Hitches.shared.doing(now ? "打字" : nil, as: "typing") }
         .onDisappear {
             chat.close()
@@ -1089,6 +1100,15 @@ struct ChatPage: View {
                         .onChange(of: draft) { old, new in keepLongPaste(old, new) }
                         .padding(.vertical, 6)
                         .frame(minHeight: 34)
+                    Button {
+                        Haptics.light()
+                        typing = false
+                        usageOpen = true
+                    } label: {
+                        ContextRing(share: context?.share ?? 0, showsNumber: !composing)
+                    }
+                    .buttonStyle(TapStyle())
+                    .accessibilityLabel("用量：下次请求约占上下文的 \(UsageSheet.percent(context?.share ?? 0))")
                     action
                 }
                 // While writing: what this message goes out with. Web, where the work happens, abilities, model.

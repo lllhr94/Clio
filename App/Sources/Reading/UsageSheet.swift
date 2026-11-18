@@ -1,0 +1,255 @@
+import Craft
+import SwiftUI
+
+/// 用量: how full the next request's context is, what this conversation has used, and what is left on the service's account.
+struct UsageSheet: View {
+    @ObservedObject var team: TeamModel
+    let key: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var estimate: TeamModel.ContextEstimate?
+    @State private var reading: Balance.Reading?
+    @State private var balanceProblem: String?
+    @State private var loadingBalance = false
+    @State private var floor: Double = 0
+    @State private var folding = false
+    @State private var note: String?
+
+    private var spend: Spend { team.options(key).spend ?? Spend() }
+    private var endpoint: Endpoint? { team.chatEndpoint(key) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    heading("上下文")
+                    contextCard
+                    heading("本对话").padding(.top, Ink.Space.m)
+                    spendCard
+                    if let endpoint, let source = Balance.source(baseURL: endpoint.baseURL) {
+                        heading("\(endpoint.name) 余额").padding(.top, Ink.Space.m)
+                        balanceCard(endpoint, source: source)
+                    }
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle("用量")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+        }
+        .hitchPage("用量")
+        .task {
+            estimate = team.contextEstimate(key)
+            if let endpoint { floor = TeamModel.balanceFloor(endpoint.id) }
+            await loadBalance()
+        }
+    }
+
+    private func heading(_ text: String) -> some View {
+        Text(text).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+    }
+
+    // MARK: 上下文
+
+    private var contextCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text("预计下次请求").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            if let estimate {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(Self.percent(estimate.share)).font(Ink.serif(30, bold: true)).foregroundStyle(Ink.ink)
+                    Spacer()
+                    Text("\(Tokens.short(estimate.total)) / \(Tokens.short(estimate.window))")
+                        .font(.system(size: 15, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Ink.inkSoft)
+                }
+                ProgressView(value: min(1, estimate.share))
+                    .tint(Self.color(estimate.share))
+                Text("系统 \(Tokens.short(estimate.system)) · 工具 \(Tokens.short(estimate.tools)) · 消息 \(Tokens.short(estimate.messages))")
+                    .font(.system(size: 13).monospacedDigit())
+                    .foregroundStyle(Ink.inkSoft)
+                Text(explanation(estimate))
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button(folding ? "正在写前情提要…" : "压缩前文", systemImage: "rectangle.compress.vertical") { fold() }
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Ink.accent)
+                        .buttonStyle(TapStyle())
+                        .disabled(folding)
+                    Spacer()
+                }
+                .padding(.top, Ink.Space.xs)
+                if let note {
+                    Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                }
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 80)
+            }
+        }
+        .padding(Ink.Space.l)
+        .paperCard()
+    }
+
+    private func explanation(_ estimate: TeamModel.ContextEstimate) -> String {
+        var words = "按字数估算：中文一个字约 0.6 token，其他字符约 0.3。分项各自估，加起来可能和总量略有出入。"
+        words += "上限按 \(estimate.model.isEmpty ? "所用模型" : estimate.model) 的上下文长度算。"
+        if spend.lastInput > 0 { words += "上一次请求，服务方实际算的是 \(Tokens.short(spend.lastInput))。" }
+        return words
+    }
+
+    private func fold() {
+        folding = true
+        note = nil
+        Task {
+            do {
+                let count = try await team.compress(key)
+                note = "压好了：较早的 \(count) 条写成了前情提要，原文收在絮语页。"
+                Haptics.thud()
+                estimate = team.contextEstimate(key)
+            } catch {
+                note = error.localizedDescription
+            }
+            folding = false
+        }
+    }
+
+    // MARK: 本对话
+
+    private var spendCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            HStack(alignment: .top, spacing: 0) {
+                stat(Tokens.short(spend.input), "累计输入")
+                stat(Tokens.short(spend.output), "输出")
+                stat("\(Int((spend.cacheShare * 100).rounded()))%", "缓存命中")
+            }
+            Text(spend.turns == 0 && spend.input == 0
+                 ? "从 0.27 起开始记，这段絮语之后的每一轮都会算进来。"
+                 : "共 \(spend.turns) 轮 · 输入含缓存命中的部分，命中越多越省钱")
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkFaint)
+        }
+        .padding(Ink.Space.l)
+        .paperCard()
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(Ink.serif(24, bold: true)).foregroundStyle(Ink.ink).monospacedDigit()
+            Text(label).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: 余额
+
+    private func balanceCard(_ endpoint: Endpoint, source: Balance.Source) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let reading {
+                        Text(reading.shown).font(Ink.serif(28, bold: true)).foregroundStyle(floor > 0 && reading.amount < floor ? Ink.stop : Ink.ink)
+                        if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
+                    } else if loadingBalance {
+                        ProgressView()
+                    } else {
+                        Text(balanceProblem ?? "还没查").font(Ink.footnote).foregroundStyle(Ink.stop)
+                        Button("再查一次") { Task { await loadBalance() } }
+                            .font(.system(size: 13, weight: .medium))
+                            .buttonStyle(TapStyle())
+                    }
+                }
+                Spacer()
+                Link(destination: source.topUp) {
+                    Label("去充值", systemImage: "arrow.up.right")
+                        .labelStyle(TrailingIcon())
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Ink.accent)
+                }
+            }
+            Rectangle().fill(Ink.rule).frame(height: 1)
+            HStack {
+                Text("低余额提醒").foregroundStyle(Ink.ink)
+                Spacer()
+                Picker("低余额提醒", selection: $floor) {
+                    Text("不提醒").tag(0.0)
+                    ForEach([1.0, 5, 10, 20, 50], id: \.self) { value in
+                        Text("低于 \(reading?.symbol ?? "¥")\(Int(value))").tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Ink.inkSoft)
+            }
+            .font(.system(size: 15))
+            Text("旅伴干完一轮活后顺便查一次余额（半小时最多一次），低于这条线就发通知，半天内只提醒一次。")
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Ink.Space.l)
+        .paperCard()
+        .onChange(of: floor) { _, value in TeamModel.setBalanceFloor(endpoint.id, value) }
+    }
+
+    private func loadBalance() async {
+        guard let endpoint, Balance.source(baseURL: endpoint.baseURL) != nil else { return }
+        loadingBalance = true
+        balanceProblem = nil
+        do {
+            reading = try await team.balance(endpoint)
+        } catch {
+            balanceProblem = error.localizedDescription
+        }
+        loadingBalance = false
+    }
+
+    // MARK: Shared with the ring under the composer
+
+    /// 「1%」; anything above nothing shows at least 1%.
+    static func percent(_ share: Double) -> String {
+        guard share > 0 else { return "0%" }
+        return "\(max(1, Int((share * 100).rounded())))%"
+    }
+
+    static func color(_ share: Double) -> Color {
+        share >= 0.8 ? Ink.stop : share >= 0.5 ? Ink.warn : Ink.accent
+    }
+}
+
+/// Title first, then the icon: 「去充值 ↗」.
+private struct TrailingIcon: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.title
+            configuration.icon
+        }
+    }
+}
+
+/// How full the next request's context is, as a small ring by the send button. A tap opens 用量.
+struct ContextRing: View {
+    let share: Double
+    var showsNumber = true
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ZStack {
+                Circle().stroke(Ink.rule, lineWidth: 2.5)
+                Circle()
+                    .trim(from: 0, to: max(0.03, min(1, share)))
+                    .stroke(UsageSheet.color(share), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 15, height: 15)
+            if showsNumber {
+                Text(UsageSheet.percent(share))
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Ink.inkSoft)
+                    .fixedSize()
+            }
+        }
+        .frame(minWidth: 30, minHeight: 34)
+        .contentShape(Rectangle())
+    }
+}

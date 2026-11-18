@@ -636,3 +636,89 @@ final class TurnsTests: XCTestCase {
         XCTAssertEqual(back.map(\.id), ["u1", "b1", "u2", "b2", "u3", "b3", "u4", "b4"])
     }
 }
+
+final class TokensTests: XCTestCase {
+    func testEstimateWeighsChineseAndLatinText() {
+        XCTAssertEqual(Tokens.estimate(""), 0)
+        XCTAssertEqual(Tokens.estimate("你好"), 2)
+        XCTAssertEqual(Tokens.estimate("hello world"), 3)
+        XCTAssertEqual(Tokens.estimate("重庆 weather"), 4)
+        XCTAssertGreaterThan(Tokens.estimate(String(repeating: "字", count: 1000)), Tokens.estimate(String(repeating: "a", count: 1000)))
+    }
+
+    func testWindowGuessesFromTheModelName() {
+        XCTAssertEqual(Tokens.window(for: "deepseek-chat"), 128_000)
+        XCTAssertEqual(Tokens.window(for: "claude-sonnet-4-5"), 200_000)
+        XCTAssertEqual(Tokens.window(for: "google/gemini-2.5-pro"), 1_048_576)
+        XCTAssertEqual(Tokens.window(for: "moonshotai/kimi-k2"), 256_000)
+        XCTAssertEqual(Tokens.window(for: "something-new"), 128_000)
+    }
+
+    func testShortNumbers() {
+        XCTAssertEqual(Tokens.short(657), "657")
+        XCTAssertEqual(Tokens.short(15_500), "15.5K")
+        XCTAssertEqual(Tokens.short(15_000), "15K")
+        XCTAssertEqual(Tokens.short(128_000), "128K")
+        XCTAssertEqual(Tokens.short(1_050_000), "1.05M")
+        XCTAssertEqual(Tokens.short(2_000_000), "2M")
+    }
+}
+
+final class UsageTests: XCTestCase {
+    func testEstimateWeighsChineseAboveLatin() {
+        XCTAssertEqual(Tokens.estimate(""), 0)
+        XCTAssertEqual(Tokens.estimate("你好世界你好世界你好"), 6, "ten Chinese characters, about six tokens")
+        XCTAssertEqual(Tokens.estimate("hello world"), 4, "eleven other characters, 3.3 rounded up")
+        XCTAssertEqual(Tokens.estimate("重庆 weather"), 4)
+    }
+
+    func testWindowsByModelName() {
+        XCTAssertEqual(Tokens.window(for: "deepseek-v4-pro"), 1_048_576)
+        XCTAssertEqual(Tokens.window(for: "deepseek-chat"), 1_048_576)
+        XCTAssertEqual(Tokens.window(for: "claude-sonnet-4-5"), 200_000)
+        XCTAssertEqual(Tokens.window(for: "gemini-2.5-pro"), 1_048_576)
+        XCTAssertEqual(Tokens.window(for: "some-local-model"), 131_072)
+    }
+
+    func testShortNumbers() {
+        XCTAssertEqual(Tokens.short(657), "657")
+        XCTAssertEqual(Tokens.short(15_520), "15.5K")
+        XCTAssertEqual(Tokens.short(262_144), "262K")
+        XCTAssertEqual(Tokens.short(1_048_576), "1.05M")
+    }
+
+    func testSpendAddsUpAndRemembersTheLastRequest() {
+        var spend = Spend()
+        spend.add(input: 10_000, output: 300, cached: 0)
+        spend.add(input: 12_000, output: 357, cached: 9_000)
+        spend.add(input: 0, output: 20, cached: 0)
+        XCTAssertEqual(spend.input, 22_000)
+        XCTAssertEqual(spend.output, 677)
+        XCTAssertEqual(spend.lastInput, 12_000, "an output-only report does not reset the last input")
+        XCTAssertEqual(spend.cacheShare, 9_000.0 / 22_000.0, accuracy: 0.0001)
+        XCTAssertEqual(Spend().cacheShare, 0)
+    }
+
+    func testBalanceSources() {
+        XCTAssertEqual(Balance.source(baseURL: "https://api.deepseek.com")?.url.absoluteString, "https://api.deepseek.com/user/balance")
+        XCTAssertEqual(Balance.source(baseURL: "https://api.deepseek.com/v1")?.topUp.absoluteString, "https://platform.deepseek.com/top_up")
+        XCTAssertNotNil(Balance.source(baseURL: "https://openrouter.ai/api/v1"))
+        XCTAssertNil(Balance.source(baseURL: "https://api.anthropic.com"))
+        XCTAssertNil(Balance.source(baseURL: "https://"))
+    }
+
+    func testDeepSeekBalance() {
+        let body = #"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"9.24","granted_balance":"0.00","topped_up_balance":"9.24"}]}"#
+        let reading = Balance.parse(body, baseURL: "https://api.deepseek.com")
+        XCTAssertEqual(reading?.amount, 9.24)
+        XCTAssertEqual(reading?.shown, "¥9.24")
+        XCTAssertEqual(reading?.detail, "充值 ¥9.24")
+        XCTAssertNil(Balance.parse(#"{"error":"bad key"}"#, baseURL: "https://api.deepseek.com"))
+    }
+
+    func testOpenRouterBalance() {
+        let reading = Balance.parse(#"{"data":{"total_credits":20,"total_usage":4.5}}"#, baseURL: "https://openrouter.ai/api/v1")
+        XCTAssertEqual(reading?.amount, 15.5)
+        XCTAssertEqual(reading?.shown, "$15.50")
+    }
+}

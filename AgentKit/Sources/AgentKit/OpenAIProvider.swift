@@ -117,7 +117,9 @@ public struct OpenAIProvider: ModelProvider {
             if let reason = choice["finish_reason"]?.string { events.append(.finish(reason: reason)) }
         }
         if let usage = json["usage"], case .object = usage {
-            events.append(.usage(input: Int(usage["prompt_tokens"]?.number ?? 0), output: Int(usage["completion_tokens"]?.number ?? 0)))
+            // DeepSeek says prompt_cache_hit_tokens; OpenAI and most others, prompt_tokens_details.cached_tokens.
+            let cached = usage["prompt_cache_hit_tokens"]?.number ?? usage["prompt_tokens_details"]?["cached_tokens"]?.number ?? 0
+            events.append(.usage(input: Int(usage["prompt_tokens"]?.number ?? 0), output: Int(usage["completion_tokens"]?.number ?? 0), cached: Int(cached)))
         }
         return events
     }
