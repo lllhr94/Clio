@@ -173,10 +173,7 @@ struct LeavesSheet: View {
                         }
 
                         if leaves.isEmpty {
-                            Text("还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。")
-                                .font(Ink.footnote)
-                                .foregroundStyle(Ink.inkFaint)
-                                .padding(.horizontal, Ink.Space.xs)
+                            EmptyNote(symbol: "book.pages", words: "还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。")
                         } else {
                             Text("收起的絮语").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
                             VStack(spacing: 0) {

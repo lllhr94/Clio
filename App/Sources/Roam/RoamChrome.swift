@@ -16,7 +16,7 @@ struct RoamButton: View {
                         .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(Ink.ink)
                         .symbolEffect(.pulse, isActive: browser.loading)
-                        .frame(width: 38, height: 38)
+                        .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                         .glassFace(in: Circle())
                     if browser.handoff != nil {
                         Circle().fill(Ink.warn).frame(width: 9, height: 9).offset(x: -2, y: 2)

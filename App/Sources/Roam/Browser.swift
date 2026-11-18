@@ -525,7 +525,7 @@ struct RoamPage: View {
                         .onSubmit(go)
                 }
                 .padding(.horizontal, Ink.Space.m)
-                .frame(height: 38)
+                .frame(height: Ink.Bar.height)
                 .glassBacking(in: Capsule())
                 .contentShape(Capsule())
                 .onTapGesture { editing = true }
@@ -537,7 +537,7 @@ struct RoamPage: View {
                     Image(systemName: browser.desktop ? "desktopcomputer" : "iphone")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(browser.desktop ? Ink.accent : Ink.ink)
-                        .frame(width: 32, height: 36)
+                        .frame(width: 36, height: Ink.Bar.height)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(TapStyle())
@@ -551,7 +551,7 @@ struct RoamPage: View {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Ink.ink)
-                            .frame(width: 32, height: 36)
+                            .frame(width: 36, height: Ink.Bar.height)
                     }
                     .accessibilityLabel("下载过的文件")
                 }

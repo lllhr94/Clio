@@ -101,6 +101,13 @@ enum Ink {
         static let page: CGFloat = 20
     }
 
+    /// Floating controls over a page (the top bar, the composer, chips): one height, one distance from the edges,
+    /// so what sits side by side lines up and both sides mirror each other.
+    enum Bar {
+        static let height: CGFloat = 44
+        static let edge: CGFloat = 12
+    }
+
     enum Radius {
         static let small: CGFloat = 8
         static let card: CGFloat = 14
@@ -144,7 +151,7 @@ extension View {
     /// A small glass capsule: only for controls that float above content.
     func glassChip() -> some View {
         padding(.horizontal, Ink.Space.m)
-            .frame(height: 38)
+            .frame(height: Ink.Bar.height)
             .glassFace(in: Capsule())
     }
 

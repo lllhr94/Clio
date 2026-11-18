@@ -198,10 +198,10 @@ struct Desk: View {
                     } else {
                     TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? "鲸鱼")
                     if shownThreads.isEmpty {
-                        Text(recent.isEmpty ? "还没有聊过。点上面的旅伴，说第一句话吧。" : "都归档了。下面能翻出来。")
-                            .font(Ink.secondary)
-                            .foregroundStyle(Ink.inkSoft)
-                            .padding(.vertical, Ink.Space.l)
+                        EmptyNote(
+                            symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
+                            words: recent.isEmpty ? "还没有聊过。点上面的旅伴，说第一句话吧。" : "都归档了，下面能翻出来。"
+                        )
                     }
                     ForEach(Array(shownThreads.enumerated()), id: \.element.id) { index, item in
                         thread(item)

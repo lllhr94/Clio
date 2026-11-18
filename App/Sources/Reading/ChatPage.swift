@@ -305,8 +305,8 @@ struct ChatPage: View {
                         roaming = true
                     }
                 }
-                .padding(.top, 60)
-                .padding(.trailing, Ink.Space.l)
+                .padding(.top, Ink.Bar.height + Ink.Space.s * 2)
+                .padding(.trailing, Ink.Bar.edge)
                 .zIndex(3)
             }
         }
@@ -475,18 +475,15 @@ struct ChatPage: View {
         HStack(spacing: Ink.Space.s) {
             Button(action: leave) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .frame(width: 38, height: 38)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
-                    .padding(4)
-                    .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
-            .padding(-4)
             .accessibilityLabel("回到案头")
             HStack(spacing: Ink.Space.s) {
-                Whale(size: 26, pose: pose)
+                Whale(size: 30, pose: pose)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
@@ -527,15 +524,15 @@ struct ChatPage: View {
                 leafing = true
             } label: {
                 Image(systemName: "book.pages")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(Ink.ink)
-                    .frame(width: 38, height: 38)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
             .accessibilityLabel("絮语页")
         }
-        .padding(.horizontal, Ink.Space.l)
+        .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
     }
 
@@ -1311,7 +1308,7 @@ struct ChatPage: View {
                     .onTapGesture { withAnimation(Ink.Motion.settle) { self.hint = nil } }
             }
         }
-        .padding(.horizontal, Ink.Space.m)
+        .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
         .animation(Ink.Motion.unfold, value: waiting?.id)
         .overlay(alignment: .top) {

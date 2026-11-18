@@ -94,7 +94,7 @@ struct HillsPage: View {
     private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l) }
 
     private func empty(_ text: String) -> some View {
-        Text(text).font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(Ink.Space.l).frame(maxWidth: .infinity, alignment: .leading)
+        EmptyNote(symbol: "mountain.2", words: text)
     }
 
     private func section<Content: View>(_ title: String, add: @escaping () -> Void, @ViewBuilder content: () -> Content) -> some View {
