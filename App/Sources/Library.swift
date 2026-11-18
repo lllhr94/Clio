@@ -108,7 +108,7 @@ struct TeamSettings: Codable, Equatable {
 enum Disk {
     static let root: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Team", isDirectory: true)
-        for folder in ["", "chats", "media"] {
+        for folder in ["", "chats", "media", "diary"] {
             try? FileManager.default.createDirectory(at: base.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
         }
         return base

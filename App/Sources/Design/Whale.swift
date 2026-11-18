@@ -99,8 +99,12 @@ enum WhalePose: String, CaseIterable {
     case thinking
     /// 落笔
     case writing
-    /// 候印
+    /// 候印: holds up a fin for you.
     case waiting
+    /// 欢喜: a turn is done; a little flip.
+    case cheering
+    /// 打盹: nothing has happened for a while.
+    case sleeping
 
     var word: String {
         switch self {
@@ -108,6 +112,8 @@ enum WhalePose: String, CaseIterable {
         case .thinking: "沉吟"
         case .writing: "落笔"
         case .waiting: "候印"
+        case .cheering: "欢喜"
+        case .sleeping: "打盹"
         }
     }
 }
@@ -230,11 +236,14 @@ struct Whale: View {
         let lift: Double = switch pose {
         case .writing: sin(time * 6) * 0.012
         case .waiting: abs(sin(time * 3.2)) * -0.035
+        case .cheering: abs(sin(time * 7)) * -0.07
+        case .sleeping: sin(time * 0.7) * 0.01
         default: sin(time * 1.4) * 0.008
         }
         let tilt: Double = switch pose {
         case .thinking: sin(time * 0.9) * 4
         case .writing: sin(time * 6) * 1.2
+        case .sleeping: 7
         default: 0
         }
         return ZStack {
@@ -263,10 +272,17 @@ struct Whale: View {
         let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
         let ink = tone ?? parts.toneColor
         let ground = wash ?? parts.washColor
-        let bob = pose == .writing ? sin(time * 5) * 0.012 : sin(time * 1.4) * 0.02
+        let bob: Double = switch pose {
+        case .writing: sin(time * 5) * 0.012
+        case .cheering: abs(sin(time * 7)) * -0.08
+        case .sleeping: sin(time * 0.7) * 0.012
+        default: sin(time * 1.4) * 0.02
+        }
         let wag: Double = switch pose {
         case .writing: sin(time * 9) * 10
         case .waiting: sin(time * 3) * 6
+        case .cheering: sin(time * 14) * 14
+        case .sleeping: sin(time * 0.7) * 2
         default: sin(time * 1.4) * 3
         }
         let inner = size * (parts.frame == .bare ? 0.96 : 0.78)
@@ -282,14 +298,23 @@ struct Whale: View {
                     .fill(ink)
                     .rotationEffect(.degrees(wag), anchor: UnitPoint(x: outline.start + 0.1, y: outline.mid))
                 WhaleBody(look: outline).fill(ink)
-                // The eye is a dot of the ground, so it stays a silhouette.
-                Circle()
-                    .fill(hole)
-                    .frame(width: inner * 0.058, height: inner * 0.058)
-                    .position(x: inner * outline.eye.x, y: inner * outline.eye.y)
+                // The eye is a dot of the ground, so it stays a silhouette; asleep, a closed line.
+                if pose == .sleeping {
+                    Capsule()
+                        .fill(hole)
+                        .frame(width: inner * 0.075, height: inner * 0.018)
+                        .position(x: inner * outline.eye.x, y: inner * (outline.eye.y + 0.01))
+                } else {
+                    Circle()
+                        .fill(hole)
+                        .frame(width: inner * 0.058, height: inner * 0.058)
+                        .position(x: inner * outline.eye.x, y: inner * outline.eye.y)
+                }
                 charm(parts.charm, outline, inner, ink, hole)
                 if pose == .thinking { bubbles(time, inner, ink) }
                 if pose == .waiting { spout(time, inner, ink) }
+                if pose == .cheering { sparks(time, inner, ink) }
+                if pose == .sleeping { dozing(time, inner, ink) }
             }
             .frame(width: inner, height: inner)
             .offset(x: -size * 0.01, y: size * (0.04 + bob))
@@ -362,6 +387,31 @@ struct Whale: View {
                 .fill(ink.opacity(0.75 * (1 - phase)))
                 .frame(width: inner * (0.05 + 0.03 * CGFloat(index)), height: inner * (0.05 + 0.03 * CGFloat(index)))
                 .position(x: inner * (0.74 + 0.07 * CGFloat(index)), y: inner * (0.24 - 0.2 * phase))
+        }
+    }
+
+    /// Done: little stars pop around it.
+    private func sparks(_ time: Double, _ inner: CGFloat, _ ink: Color) -> some View {
+        let spots: [CGPoint] = [CGPoint(x: 0.86, y: 0.14), CGPoint(x: 0.62, y: 0.08), CGPoint(x: 0.95, y: 0.36)]
+        return ForEach(0..<3, id: \.self) { index in
+            let phase = (time * 1.6 + Double(index) / 3).truncatingRemainder(dividingBy: 1)
+            let spot = spots[index]
+            Image(systemName: "sparkle")
+                .font(.system(size: inner * (0.13 + 0.04 * CGFloat(index))))
+                .foregroundStyle(ink.opacity(1 - phase))
+                .scaleEffect(0.6 + phase * 0.6)
+                .position(x: inner * spot.x, y: inner * (spot.y - 0.06 * CGFloat(phase)))
+        }
+    }
+
+    /// Asleep: a small z drifts up and fades.
+    private func dozing(_ time: Double, _ inner: CGFloat, _ ink: Color) -> some View {
+        ForEach(0..<2, id: \.self) { index in
+            let phase = (time * 0.35 + Double(index) / 2).truncatingRemainder(dividingBy: 1)
+            Text("z")
+                .font(.system(size: inner * (0.14 + 0.06 * CGFloat(index)), weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.8 * (1 - phase)))
+                .position(x: inner * (0.78 + 0.12 * phase), y: inner * (0.26 - 0.2 * phase))
         }
     }
 

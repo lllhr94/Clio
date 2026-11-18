@@ -52,6 +52,8 @@ enum Pref {
     // MARK: 晨信
 
     static var morningOn: Bool { bool("morning.on", false) }
+    /// In the evening, the companions talked with that day each write a page of diary (costs a little: one short request each).
+    static var diaryOn: Bool { bool("diary.on", false) }
     /// A notification when a companion finishes, fails, or stops halfway, while the app is away.
     static var notifyDone: Bool { bool("notify.done", true) }
     /// The frame-rate meter in the corner, for checking smoothness.

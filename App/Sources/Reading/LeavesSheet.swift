@@ -12,6 +12,10 @@ struct LeavesSheet: View {
     @State private var editingDigest = false
     @State private var digestDraft = ""
     @State private var unfolding: TeamModel.Leaf?
+    @State private var reading: BotInfo?
+
+    /// The companion of a one-to-one conversation, for its diary.
+    private var companion: BotInfo? { key.hasPrefix("bot-") ? team.bots.first { TeamModel.key(bot: $0.id) == key } : nil }
 
     private var leaves: [TeamModel.Leaf] { team.leaves(key) }
     private var hasCurrent: Bool { team.history(key).contains { $0.note != true } }
@@ -88,6 +92,26 @@ struct LeavesSheet: View {
 
                         if let note {
                             Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).padding(.horizontal, Ink.Space.xs)
+                        }
+
+                        if let companion {
+                            Button {
+                                Haptics.light()
+                                reading = companion
+                            } label: {
+                                HStack(spacing: Ink.Space.m) {
+                                    Image(systemName: "book.closed").font(.system(size: 18)).foregroundStyle(Ink.accent)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(companion.name)的日记").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                        Text(Pref.diaryOn ? "晚上写一页当天的事，你可以回一句" : "还没打开：调弦 › 旅伴的日常").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                                }
+                                .padding(Ink.Space.l)
+                                .paperCard()
+                            }
+                            .buttonStyle(PressStyle())
                         }
 
                         if let digest = team.summary(key) {
@@ -209,6 +233,7 @@ struct LeavesSheet: View {
                 Text("压缩前的整段原文会放回絮语里，压缩之后说的话都还在。前情提要退回压缩之前的样子。")
             }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .sheet(item: $reading) { bot in DiarySheet(team: team, bot: bot) }
         }
     }
 }

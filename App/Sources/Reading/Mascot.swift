@@ -15,6 +15,8 @@ struct Mascot: View {
     @AppStorage("mascot.y") private var restY = 0.80
     @GestureState private var drag: CGSize = .zero
     @State private var hop = false
+    /// Turns once round when a turn is done: the flip.
+    @State private var flip = 0.0
 
     private let size: CGFloat = 44
 
@@ -33,6 +35,11 @@ struct Mascot: View {
             Whale(size: size, pose: pose)
                 .shadow(color: .black.opacity(drag == .zero ? 0.06 : 0.16), radius: drag == .zero ? 4 : 12, y: drag == .zero ? 2 : 8)
                 .scaleEffect(drag == .zero ? (hop ? 1.12 : 1) : 1.1)
+                .rotationEffect(.degrees(flip))
+                .onChange(of: pose) { _, now in
+                    guard now == .cheering else { return }
+                    withAnimation(.spring(response: 0.7, dampingFraction: 0.72)) { flip += 360 }
+                }
                 .contentShape(Circle())
                 .gesture(
                     DragGesture(minimumDistance: 3)

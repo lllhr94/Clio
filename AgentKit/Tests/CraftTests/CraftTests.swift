@@ -706,3 +706,34 @@ final class UsageTests: XCTestCase {
         XCTAssertEqual(reading?.shown, "$15.50")
     }
 }
+
+final class TideTests: XCTestCase {
+    func testTheDayTurnsAtFiveInTheMorning() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let lateNight = calendar.date(from: DateComponents(year: 2026, month: 11, day: 19, hour: 2))!
+        let morning = calendar.date(from: DateComponents(year: 2026, month: 11, day: 19, hour: 6))!
+        XCTAssertEqual(Tide.day(of: lateNight, calendar: calendar), "2026-11-18")
+        XCTAssertEqual(Tide.day(of: morning, calendar: calendar), "2026-11-19")
+    }
+
+    func testTheSameDayBringsTheSameThing() {
+        XCTAssertEqual(Tide.find(on: "2026-11-18", seed: "a"), Tide.find(on: "2026-11-18", seed: "a"))
+        let week = (10...16).map { Tide.find(on: "2026-11-\($0)", seed: "a").name }
+        XCTAssertGreaterThan(Set(week).count, 1, "different days bring different things")
+        XCTAssertEqual(Tide.find(on: "2027-01-01", seed: "a").name, "一页新日历")
+    }
+
+    func testDaysAfterTheLastVisit() {
+        XCTAssertEqual(Tide.days(after: nil, through: "2026-11-18"), ["2026-11-18"])
+        XCTAssertEqual(Tide.days(after: "2026-11-18", through: "2026-11-18"), [])
+        XCTAssertEqual(Tide.days(after: "2026-11-29", through: "2026-12-02"), ["2026-11-30", "2026-12-01", "2026-12-02"])
+    }
+
+    func testAWeekWaitsAndTheRestIsPutAway() {
+        let away = Tide.arrivals(after: "2026-11-01", through: "2026-11-11", seed: "a")
+        XCTAssertEqual(away.waiting.map(\.day), (5...11).map { String(format: "2026-11-%02d", $0) })
+        XCTAssertEqual(away.putAway.map(\.day), ["2026-11-02", "2026-11-03", "2026-11-04"])
+        XCTAssertEqual(Tide.arrivals(after: "2026-11-10", through: "2026-11-11", seed: "a").waiting.count, 1)
+    }
+}

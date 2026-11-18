@@ -747,7 +747,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// A model with no tools for small chores — titles, digests — using the conversation's own model.
-    private func helper(for key: String, system: String) -> Agent? {
+    func helper(for key: String, system: String) -> Agent? {
         let bot: BotInfo? = bots.first { Self.key(bot: $0.id) == key }
             ?? rooms.first { Self.key(room: $0.id) == key }.flatMap { room in bots.first { $0.id == room.members?.first } }
         let ref = options(key).model ?? bot?.model ?? settings.defaultModel
@@ -942,6 +942,7 @@ final class TeamModel: ObservableObject {
     /// The app went to the background. While turns are going, watch the time iOS gives;
     /// with under 3 seconds left, keep what each turn has written and pause it.
     func leaving() {
+        diaryIfDue()
         guard !runs.isEmpty, watching == nil else { return }
         watching = Task { [weak self] in
             while !Task.isCancelled {
@@ -1051,6 +1052,8 @@ final class TeamModel: ObservableObject {
         nameChatIfNew(key)
         watchBalance(key)
         endGrace(token)
+        // Told in the other conversations when the user comes back to them (你不在时).
+        if !cancelled { record(ok ? .done : .failed, in: key) }
         // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
         // A turn that failed or was stopped leaves the queue for the user to send or take back.
         let now = sendQueuedNow.remove(key) != nil
@@ -1277,6 +1280,7 @@ final class TeamModel: ObservableObject {
             parts.append("现在是群聊「\(room.name)」，成员有用户和 \(names.joined(separator: "、"))。用户和其他 Bot 的话以【名字】开头。你只说你自己的部分：不要替别人说话，不要在开头写自己的名字，别人说过的不重复；没什么要补充就简短回应。想请另一位接着说时，在回复最后单独写一行「@名字」（只写一位；最多连着点名三次，之后就轮到用户）。")
         }
         parts.append("现在是 \(When.show(Date()))，\(TimeZone.current.identifier)。")
+        if room == nil, let line = diaryLine(bot.id) { parts.append(line) }
         let surface = surfaceMemories
         if !surface.isEmpty {
             parts.append("你记得的关于用户的事：\n" + surface.map { "- \($0.text)" }.joined(separator: "\n"))
@@ -1464,6 +1468,7 @@ final class TeamModel: ObservableObject {
         )
         let before = doing[chat]
         doing[chat] = "等你批准"
+        record(.waiting, in: chat)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { approvals.append(approval) }
         Haptics.tick(0.8)
         if UIApplication.shared.applicationState != .active {
@@ -1523,6 +1528,8 @@ final class TeamModel: ObservableObject {
     func wake() {
         deliverDue()
         morningIfDue()
+        diaryIfDue()
+        TideBook.shared.refresh()
     }
 
     // MARK: 晨信

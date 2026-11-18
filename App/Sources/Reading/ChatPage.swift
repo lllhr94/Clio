@@ -31,6 +31,13 @@ struct ChatPage: View {
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
     @State private var context: TeamModel.ContextEstimate?
     @State private var usageOpen = false
+    /// A turn has just finished well: the whale flips.
+    @State private var cheering = false
+    /// Nothing has happened for a few minutes: the whale dozes.
+    @State private var dozing = false
+    @State private var stirs = 0
+    /// What happened in the other conversations while the user was away from this one.
+    @State private var away: [Happening] = []
     @State private var farFromEnd = false
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
@@ -58,7 +65,15 @@ struct ChatPage: View {
         if waiting != nil { return .waiting }
         if !chat.streaming.isEmpty || doing == "正在回复" { return .writing }
         if working || typing || dictation.listening { return .thinking }
+        if cheering { return .cheering }
+        if dozing { return .sleeping }
         return .idle
+    }
+
+    /// Something happened: the whale wakes, and the doze clock starts over.
+    private func stir() {
+        if dozing { dozing = false }
+        stirs += 1
     }
 
     /// Whether the line under the conversation says what is going on: whenever the companion works and nothing else shows it.
@@ -257,7 +272,25 @@ struct ChatPage: View {
             UsageSheet(team: team, key: chat.key)
                 .presentationDetents([.medium, .large])
         }
-        .onChange(of: typing) { _, now in Hitches.shared.doing(now ? "打字" : nil, as: "typing") }
+        .onChange(of: typing) { _, now in
+            Hitches.shared.doing(now ? "打字" : nil, as: "typing")
+            stir()
+        }
+        .onChange(of: working) { _, now in
+            stir()
+            guard !now, chat.error == nil, chat.lines.last?.kind == .bot else { return }
+            cheering = true
+            Task {
+                try? await Task.sleep(nanoseconds: 2_400_000_000)
+                cheering = false
+            }
+        }
+        .onChange(of: scrolling) { stir() }
+        .task(id: stirs) {
+            try? await Task.sleep(nanoseconds: 180_000_000_000)
+            if !Task.isCancelled { dozing = true }
+        }
+        .task { away = team.whileAway(from: chat.key) }
     }
 
     var body: some View {
@@ -294,6 +327,7 @@ struct ChatPage: View {
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             chat.close()
+            team.markSeen(chat.key)
             if dictation.listening { dictation.stop() }
         }
         .sheet(item: $noting) { note in
@@ -1044,8 +1078,63 @@ struct ChatPage: View {
 
     // MARK: Composer
 
+    /// 你不在时: the other conversations that finished, failed or are waiting for you, one line each. Costs nothing.
+    private var awayCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+            HStack {
+                Text("你不在时").font(Ink.serif(14, bold: true)).foregroundStyle(Ink.inkSoft)
+                Spacer()
+                Button {
+                    withAnimation(Ink.Motion.settle) { away = [] }
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint).frame(width: 28, height: 28)
+                }
+                .buttonStyle(TapStyle(grow: 8))
+                .accessibilityLabel("知道了")
+            }
+            ForEach(away) { item in
+                Button {
+                    Haptics.tick(0.6)
+                    withAnimation(Ink.Motion.settle) { away = [] }
+                    NotificationCenter.default.post(name: .clioOpenChat, object: item.chat)
+                } label: {
+                    HStack(spacing: Ink.Space.s) {
+                        Image(systemName: Self.awayIcon(item.kind)).foregroundStyle(item.kind == .failed ? Ink.stop : (item.kind == .waiting ? Ink.warn : Ink.accent)).frame(width: 18)
+                        Text("\(team.chatName(item.chat))：\(Self.awayWords(item.kind))").font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                    }
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, Ink.Space.s)
+        .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card))
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    static func awayIcon(_ kind: Happening.Kind) -> String {
+        switch kind {
+        case .done: "checkmark.circle"
+        case .failed: "exclamationmark.circle"
+        case .waiting: "seal"
+        }
+    }
+
+    static func awayWords(_ kind: Happening.Kind) -> String {
+        switch kind {
+        case .done: "那边的活做完了，回复在等你看"
+        case .failed: "那边出了点问题"
+        case .waiting: "在等你批准"
+        }
+    }
+
     private var composer: some View {
         VStack(spacing: Ink.Space.s) {
+            if !away.isEmpty, waiting == nil { awayCard }
             RoamSlip(browser: team.browser) {
                 typing = false
                 roaming = true

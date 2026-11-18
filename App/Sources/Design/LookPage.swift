@@ -22,6 +22,7 @@ struct LookPage: View {
     @AppStorage("chat.temperature") private var temperature = -1.0
     @AppStorage("chat.maxOutput") private var maxOutput = 0
     @AppStorage("morning.on") private var morningOn = false
+    @AppStorage("diary.on") private var diaryOn = false
     @AppStorage("morning.hour") private var morningHour = 7
     @AppStorage("notify.done") private var notifyDone = true
     @AppStorage("look.fps") private var fps = false
@@ -108,6 +109,12 @@ struct LookPage: View {
                     Text("主旅伴会看看你的日程、提醒和天气，写一封短短的便笺。到点会提醒你一声，打开 Clio 就开始写。")
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
+
+                Section {
+                    Toggle("晚上写日记", isOn: $diaryOn)
+                } header: { Text("旅伴的日常") } footer: {
+                    Text("打开后，晚上九点以后你第一次离开 Clio 时，当天聊过的旅伴各写一页日记，三五句话，收在絮语页的日记本里，你可以回一句。每位旅伴一晚一次短请求，大约一两千 token。\n不花 token 的都一直开着：案头每天有潮水带来的小东西，攒进收藏册，隔几天来也不会错过；进一段絮语时，会告诉你别的絮语在你不在时做完了、出错了还是在等你批准。几天没来，谁也不会少什么。")
+                }
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
