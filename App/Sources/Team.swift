@@ -119,8 +119,8 @@ final class TeamModel: ObservableObject {
     /// Hears 同意 / 不同意 from notifications.
     private var answering: NSObjectProtocol?
 
-    static func key(bot id: String) -> String { "bot-\(id)" }
-    static func key(room id: String) -> String { "room-\(id)" }
+    nonisolated static func key(bot id: String) -> String { "bot-\(id)" }
+    nonisolated static func key(room id: String) -> String { "room-\(id)" }
 
     var models: [ModelInfo] {
         settings.endpoints.flatMap { endpoint in
