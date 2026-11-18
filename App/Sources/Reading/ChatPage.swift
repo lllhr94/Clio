@@ -1144,9 +1144,12 @@ struct ChatPage: View {
     /// and once more after the new row has settled in, since its height is only right by then.
     private func followToEnd(settle: Bool = true) {
         guard following else { return }
-        DispatchQueue.main.async { if following { toEnd() } }
-        if settle {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if following { toEnd(animated: true) } }
+        Task { @MainActor in
+            await Task.yield()
+            if following { toEnd() }
+            guard settle else { return }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if following { toEnd(animated: true) }
         }
     }
 
