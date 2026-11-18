@@ -3,13 +3,18 @@
 
 name: Build
 
-# Built only when asked: changes are saved to the repository as they are made, and built together once a batch is done.
+# Built only when asked. A build checks that everything compiles; only a build with publish on replaces the
+# latest IPA, and that happens once every task of a version is green (section 13.5 of the plan).
 on:
   workflow_dispatch:
     inputs:
       runner:
         description: Runner label (macos-latest, or macos-15-intel when the arm64 machines are busy)
         default: macos-latest
+      publish:
+        description: "Publish the IPA: on main it replaces latest/Clio-unsigned.ipa; on another branch it goes to a probe-<branch> release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -83,6 +88,11 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$APP/Info.plist"
           test -f "$APP/alpine/meta.db" || { echo "::error::斗室的 Linux 没有打进包里"; exit 1; }
           du -sh "$APP" "$APP/alpine"
+          # A probe branch can carry entitlements (App/Clio.entitlements); sign ad hoc so they travel inside the binary.
+          if [ -f Clio.entitlements ]; then
+            codesign --force --deep --sign - --entitlements Clio.entitlements --timestamp=none "$APP"
+            codesign -d --entitlements - "$APP" || true
+          fi
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry Clio-unsigned.ipa Payload
@@ -96,6 +106,7 @@ jobs:
 
       # A plain download link on the Releases page, so the IPA can be fetched from a phone.
       - name: Publish the IPA to the latest release
+        if: inputs.publish && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -117,6 +128,20 @@ jobs:
             gh release create "v$VERSION" --repo "$REPO" --prerelease --title "Clio $VERSION" --notes "构建 ${{ github.sha }}"
           gh release upload "v$VERSION" "Clio-$VERSION.ipa" --repo "$REPO" --clobber
           gh release edit latest --repo "$REPO" --notes "最新构建：Clio $VERSION（${{ github.sha }}）。下载 Clio-unsigned.ipa，用签名工具签名后安装。每个版本也单独留在 v$VERSION 里。"
+
+      # A probe from another branch gets its own release, so latest is never touched.
+      - name: Publish a probe build
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="probe-$(echo '${{ github.ref_name }}' | tr '/' '-')"
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$REPO" --prerelease --title "Clio 试签包（${{ github.ref_name }}）" --notes "只用来试签，不是正式版。"
+          cp Clio-unsigned.ipa Clio-probe.ipa
+          gh release upload "$TAG" Clio-probe.ipa --repo "$REPO" --clobber
+          gh release edit "$TAG" --repo "$REPO" --notes "试签包：分支 ${{ github.ref_name }}，构建 ${{ github.sha }}。只用来试签，不是正式版。"
 
       - uses: actions/upload-artifact@v4
         if: failure()
