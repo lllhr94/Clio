@@ -86,12 +86,13 @@ struct RoamThumb: View {
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, 6)
                 .frame(height: 22)
-                WebHost(view: browser.view)
+                // The live page is only a picture here: a tap anywhere on it opens 远游 full screen.
+                WebHost(view: browser.view, interactive: false)
                     .frame(width: page.width, height: page.height)
                     .scaleEffect(scale, anchor: .topLeading)
                     .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
                     .clipped()
-                    .allowsHitTesting(false)
+                    .overlay(Color.white.opacity(0.001))
             }
             .background(Ink.paperRaised)
             .clipShape(.rect(cornerRadius: Ink.Radius.small))

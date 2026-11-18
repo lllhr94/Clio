@@ -543,15 +543,19 @@ struct RoamPage: View {
 /// Puts the shared web view on screen. The same view moves between places; it is never recreated.
 struct WebHost: UIViewRepresentable {
     let view: WKWebView
+    /// False for a picture of the page (the small window): touches pass through to SwiftUI instead of landing on the page.
+    var interactive = true
 
     func makeUIView(context: Context) -> UIView {
         let holder = UIView()
         holder.backgroundColor = .clear
+        holder.isUserInteractionEnabled = interactive
         attach(to: holder)
         return holder
     }
 
     func updateUIView(_ holder: UIView, context: Context) {
+        holder.isUserInteractionEnabled = interactive
         if view.superview !== holder { attach(to: holder) }
     }
 
