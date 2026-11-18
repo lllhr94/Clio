@@ -381,7 +381,7 @@ extension TeamModel {
         for approval in approvals {
             guard let other = approval.chat, other != chat, !lines.contains(where: { $0.chat == other && $0.kind == .waiting }) else { continue }
             lines.removeAll { $0.chat == other }
-            lines.insert(Happening(chat: other, kind: .waiting, at: approval.at), at: 0)
+            lines.insert(Happening(chat: other, kind: .waiting, at: approval.at ?? Now.ms), at: 0)
         }
         return Array(lines.prefix(4))
     }

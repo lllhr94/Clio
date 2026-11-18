@@ -254,19 +254,10 @@ struct ChatPage: View {
         }
     }
 
-    /// The composer, with what keeps the 用量 ring up to date and opens its sheet.
+    /// The composer, with what keeps the 用量 ring up to date and opens its sheet. In two layers, so the compiler
+    /// checks each one on its own instead of giving up on one long chain.
     private var composerBar: some View {
-        composer
-        .task {
-            // Let the page settle in before the keyboard or the microphone comes up.
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            takeShortcut()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
-        .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
-        .task { context = team.contextEstimate(chat.key) }
-        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
-        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
+        composerWatched
         .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
         .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
             UsageSheet(team: team, key: chat.key)
@@ -291,6 +282,20 @@ struct ChatPage: View {
             if !Task.isCancelled { dozing = true }
         }
         .task { away = team.whileAway(from: chat.key) }
+    }
+
+    private var composerWatched: some View {
+        composer
+        .task {
+            // Let the page settle in before the keyboard or the microphone comes up.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            takeShortcut()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
+        .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
+        .task { context = team.contextEstimate(chat.key) }
+        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
+        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
     }
 
     var body: some View {
