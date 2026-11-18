@@ -9,6 +9,9 @@ struct LeavesSheet: View {
     @State private var folding = false
     @State private var note: String?
     @State private var showDigest = false
+    @State private var editingDigest = false
+    @State private var digestDraft = ""
+    @State private var unfolding: TeamModel.Leaf?
 
     private var leaves: [TeamModel.Leaf] { team.leaves(key) }
     private var hasCurrent: Bool { team.history(key).contains { $0.note != true } }
@@ -101,10 +104,45 @@ struct LeavesSheet: View {
                                 }
                                 .buttonStyle(TapStyle())
                                 if showDigest {
-                                    ProseView(text: digest)
-                                        .padding(Ink.Space.l)
-                                        .paperCard()
-                                        .transition(.opacity)
+                                    if editingDigest {
+                                        TextEditor(text: $digestDraft)
+                                            .font(Ink.reading)
+                                            .frame(minHeight: 220)
+                                            .scrollContentBackground(.hidden)
+                                            .padding(Ink.Space.m)
+                                            .paperCard()
+                                        HStack {
+                                            Button("算了") {
+                                                withAnimation(Ink.Motion.settle) { editingDigest = false }
+                                            }
+                                            Spacer()
+                                            Button("存好") {
+                                                team.editSummary(key, digestDraft)
+                                                Haptics.thud()
+                                                withAnimation(Ink.Motion.settle) { editingDigest = false }
+                                                note = "前情提要改好了，之后的回复会照新的来。"
+                                            }
+                                            .fontWeight(.semibold)
+                                        }
+                                        .font(.system(size: 15))
+                                    } else {
+                                        ProseView(text: digest)
+                                            .padding(Ink.Space.l)
+                                            .paperCard()
+                                            .transition(.opacity)
+                                        HStack(spacing: Ink.Space.l) {
+                                            Button("改一改", systemImage: "pencil") {
+                                                digestDraft = digest
+                                                withAnimation(Ink.Motion.settle) { editingDigest = true }
+                                            }
+                                            if let fold = team.undoableFold(key) {
+                                                Button("拆开此叶，撤销压缩", systemImage: "arrow.uturn.backward") { unfolding = fold }
+                                            }
+                                        }
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Ink.accent)
+                                        .buttonStyle(TapStyle())
+                                    }
                                 }
                             }
                             .padding(.horizontal, Ink.Space.xs)
@@ -157,6 +195,19 @@ struct LeavesSheet: View {
             }
             .navigationTitle("絮语页")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("拆开压缩？", isPresented: Binding(get: { unfolding != nil }, set: { if !$0 { unfolding = nil } }), titleVisibility: .visible) {
+                Button("拆开，原文放回来") {
+                    if let fold = unfolding {
+                        withAnimation(Ink.Motion.unfold) { team.unfold(key, fold) }
+                        Haptics.thud()
+                        note = "拆开了：压缩前的原文放回了絮语里，前情提要退回压缩前的样子。"
+                    }
+                    unfolding = nil
+                }
+                Button("算了", role: .cancel) { unfolding = nil }
+            } message: {
+                Text("压缩前的整段原文会放回絮语里，压缩之后说的话都还在。前情提要退回压缩之前的样子。")
+            }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }
     }

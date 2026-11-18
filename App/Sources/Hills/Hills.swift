@@ -26,8 +26,9 @@ final class Hills: ObservableObject {
         var name: String
         var url: String
         var enabled = true
-        /// SHA-256 of the server's own certificate, for a self-signed https server set up by Clio. Only that certificate is trusted.
-        var pin: String?
+        /// A 远山 host (its id) to reach the service through: `url` is then the address on that computer
+        /// (http://127.0.0.1:8931/mcp), carried over an SSH tunnel, so nothing is open to the internet.
+        var tunnelHost: String?
     }
 
     /// What an MCP server said it can do, kept so tools can be listed without a network call.
@@ -202,37 +203,21 @@ final class Hills: ObservableObject {
 
     // MARK: A browser on the far computer
 
-    /// Port the token gate listens on (https, with a certificate of its own); Playwright's MCP stays on 127.0.0.1:8931 behind it.
-    nonisolated static let browserPort = 8930
+    /// Where Playwright's MCP listens on the far computer: its own loopback only, reached through an SSH tunnel.
+    nonisolated static let browserAddress = "http://127.0.0.1:8931/mcp"
 
-    /// Installs Playwright's MCP server and a small token gate on a Linux host, and starts both. Runs as a background job.
-    /// The gate speaks https with a self-signed certificate; the app trusts only that certificate (see `PinnedSessions`).
-    nonisolated static func browserInstallScript(token: String) -> String {
-        let proxy = """
-        const http = require('http');
-        const https = require('https');
-        const fs = require('fs');
-        const token = fs.readFileSync(__dirname + '/token', 'utf8').trim();
-        const tls = { key: fs.readFileSync(__dirname + '/key.pem'), cert: fs.readFileSync(__dirname + '/cert.pem') };
-        https.createServer(tls, (req, res) => {
-          if ((req.headers['authorization'] || '') !== 'Bearer ' + token) { res.writeHead(401); res.end('unauthorized'); return; }
-          const headers = Object.assign({}, req.headers);
-          delete headers['authorization'];
-          headers.host = '127.0.0.1:8931';
-          delete headers['origin'];
-          const up = http.request({ host: '127.0.0.1', port: 8931, path: req.url, method: req.method, headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
-          up.on('error', (e) => { res.writeHead(502); res.end(String(e)); });
-          req.pipe(up);
-        }).listen(\(browserPort), '0.0.0.0');
-        """
+    /// The command a person can paste on their server to start the same browser by hand.
+    nonisolated static let browserCommand = "npx @playwright/mcp@latest --headless --host 127.0.0.1 --port 8931"
+
+    /// Installs Playwright's MCP server on a Linux host and starts it on 127.0.0.1:8931, again after every reboot.
+    /// Nothing listens on a public address. Runs as a background job.
+    nonisolated static func browserInstallScript() -> String {
         let start = """
         cd ~/.clio/browser
         [ -f mcp.pid ] && kill $(cat mcp.pid) 2>/dev/null
-        [ -f gate.pid ] && kill $(cat gate.pid) 2>/dev/null
-        nohup ./node_modules/.bin/mcp-server-playwright --headless --isolated --port 8931 --host 127.0.0.1 > mcp.log 2>&1 < /dev/null &
+        [ -f gate.pid ] && kill $(cat gate.pid) 2>/dev/null && rm -f gate.pid proxy.js token key.pem cert.pem
+        nohup ./node_modules/.bin/mcp-server-playwright --headless --isolated --host 127.0.0.1 --port 8931 > mcp.log 2>&1 < /dev/null &
         echo $! > mcp.pid
-        nohup node proxy.js > gate.log 2>&1 < /dev/null &
-        echo $! > gate.pid
         exit 0
         """
         return """
@@ -263,21 +248,6 @@ final class Hills: ObservableObject {
         npm install --no-audit --no-fund @playwright/mcp@latest
         echo "== 装 Chromium（要几分钟）"
         npx -y playwright install --with-deps chromium || npx -y playwright install chromium
-        printf '%s' \(quote(token)) > token
-        chmod 600 token
-        echo "== 做一张自己的证书（连接加密，手机只认这一张）"
-        if ! command -v openssl >/dev/null 2>&1; then
-          if command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y openssl
-          elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y openssl
-          elif command -v yum >/dev/null 2>&1; then $SUDO yum install -y openssl
-          elif command -v apk >/dev/null 2>&1; then $SUDO apk add openssl
-          fi
-        fi
-        [ -f cert.pem ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 3650 -subj "/CN=clio-browser" >/dev/null 2>&1
-        chmod 600 key.pem
-        cat > proxy.js <<'CLIO_EOF'
-        \(proxy)
-        CLIO_EOF
         cat > start.sh <<'CLIO_EOF'
         \(start)
         CLIO_EOF
@@ -286,17 +256,8 @@ final class Hills: ObservableObject {
           (crontab -l 2>/dev/null | grep -v 'clio-browser'; echo "@reboot sh $HOME/.clio/browser/start.sh # clio-browser") | crontab - || true
         fi
         sleep 3
-        echo "== 好了，令牌门在 \(browserPort) 端口（https）"
-        openssl x509 -in cert.pem -noout -fingerprint -sha256
+        echo "== 好了，浏览器在这台机器的 127.0.0.1:8931，只有经 SSH 才连得上"
         """
-    }
-
-    /// The fingerprint of the browser gate's certificate, read over SSH.
-    nonisolated static func browserPin(on host: Host) async throws -> String {
-        let result = try await run("openssl x509 -in ~/.clio/browser/cert.pem -noout -fingerprint -sha256", on: host, timeout: 20)
-        let pin = PinnedSessions.normalize(result.output.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard pin.count == 64 else { throw ProviderError("读不到证书指纹：\(result.output.prefix(200))") }
-        return pin
     }
 
     // MARK: MCP servers
@@ -318,7 +279,8 @@ final class Hills: ObservableObject {
     @discardableResult
     func refresh(_ server: Server) async -> Int {
         do {
-            let client = MCPClient(url: server.url, token: Vault.load(String.self, key: "mcp.\(server.id)"), pin: server.pin)
+            let address = try await Self.address(server.url, through: server.tunnelHost.flatMap { id in hosts.first { $0.id == id } })
+            let client = MCPClient(url: address, token: Vault.load(String.self, key: "mcp.\(server.id)"))
             let tools = try await client.listTools()
             borrowed.removeAll { $0.server == server.id }
             borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema) }
@@ -393,14 +355,15 @@ final class Hills: ObservableObject {
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
             let named = Self.slug(server.name)
             let slug = named.contains(where: { $0.isASCII && ($0.isLetter || $0.isNumber) }) ? named : "s" + String(server.id.prefix(6)).lowercased()
+            let tunnel = server.tunnelHost.flatMap { id in hosts.first { $0.id == id } }
             for tool in borrowed where tool.server == server.id {
                 let url = server.url
-                let pin = server.pin
                 let remote = tool.name
                 let title = server.name
                 tools.append(DeskTool(name: String("mcp_\(slug)__\(Self.slug(remote))".prefix(64)), description: "（来自远山 MCP「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in "远山：\(title) · \(remote)" }) { arguments in
                     do {
-                        return try await MCPClient(url: url, token: token, pin: pin).call(remote, arguments: arguments)
+                        let address = try await Hills.address(url, through: tunnel)
+                        return try await MCPClient(url: address, token: token).call(remote, arguments: arguments)
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
                     }
@@ -408,6 +371,12 @@ final class Hills: ObservableObject {
             }
         }
         return tools
+    }
+
+    /// Where to send a service's requests: its own address, or the phone's end of an SSH tunnel to it.
+    nonisolated static func address(_ url: String, through host: Host?) async throws -> String {
+        guard let host else { return url }
+        return try await Tunnels.shared.url(for: url, through: host)
     }
 
     nonisolated static func slug(_ text: String) -> String {
@@ -421,9 +390,8 @@ final class Hills: ObservableObject {
 struct MCPClient: Sendable {
     let url: String
     let token: String?
-    var pin: String?
 
-    private var session: URLSession { pin.map(PinnedSessions.session) ?? .shared }
+    private var session: URLSession { .shared }
 
     struct Tool: Sendable {
         var name: String
@@ -634,43 +602,4 @@ actor HillPool {
     }
 
     var count: Int { open.count }
-}
-
-/// Sessions that trust exactly one certificate, by its SHA-256: for the browser Clio set up on a 远山 computer with a certificate of its own.
-/// The fingerprint was read over SSH, which already proved who the computer is.
-enum PinnedSessions {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var made: [String: URLSession] = [:]
-
-    static func session(_ pin: String) -> URLSession {
-        lock.lock()
-        defer { lock.unlock() }
-        if let kept = made[pin] { return kept }
-        let session = URLSession(configuration: .ephemeral, delegate: Pinning(pin: pin), delegateQueue: nil)
-        made[pin] = session
-        return session
-    }
-
-    /// "AB:CD:…" or "abcd…" → "abcd…".
-    static func normalize(_ fingerprint: String) -> String {
-        let tail = fingerprint.split(separator: "=").last.map(String.init) ?? fingerprint
-        return tail.lowercased().filter { $0.isHexDigit }
-    }
-
-    private final class Pinning: NSObject, URLSessionDelegate, @unchecked Sendable {
-        let pin: String
-        init(pin: String) { self.pin = PinnedSessions.normalize(pin) }
-
-        func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-                  let trust = challenge.protectionSpace.serverTrust,
-                  let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-                  let leaf = chain.first else {
-                return (.performDefaultHandling, nil)
-            }
-            let digest = SHA256.hash(data: SecCertificateCopyData(leaf) as Data)
-            let seen = digest.map { String(format: "%02x", $0) }.joined()
-            return seen == pin ? (.useCredential, URLCredential(trust: trust)) : (.cancelAuthenticationChallenge, nil)
-        }
-    }
 }

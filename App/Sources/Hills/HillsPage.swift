@@ -84,7 +84,7 @@ struct HillsPage: View {
                 Button("开始装") { if let host = browserAsk { installBrowser(host) } }
                 Button("算了", role: .cancel) {}
             } message: {
-                Text("会装上 Node.js、Playwright 的 MCP 服务和 Chromium（大约 400 MB，要几分钟），再在 \(Hills.browserPort) 端口开一个要令牌才能进的门，最后自动接进下面的 MCP 服务。\n\n门走 https，用那台电脑自己做的证书；手机经 SSH 读到证书指纹，只认这一张，别人冒充不了。\n\n需要 root 或免密 sudo。云服务器记得在安全组里放行 \(Hills.browserPort) 端口。")
+                Text("会装上 Node.js、Playwright 的 MCP 服务和 Chromium（大约 400 MB，要几分钟），让它只在那台电脑自己的 127.0.0.1:8931 上听，开机自启。手机经 SSH 隧道连过去，所以不用在安全组放行任何端口，网上也没人能直接连。\n\n需要 root 或免密 sudo。")
             }
             .task { resumeInstalls() }
         }
@@ -213,12 +213,10 @@ struct HillsPage: View {
     private static func installKey(_ host: Hills.Host) -> String { "hill.browserJob.\(host.id)" }
 
     private func installBrowser(_ host: Hills.Host) {
-        let token = (0..<4).map { _ in UUID().uuidString.replacingOccurrences(of: "-", with: "") }.joined().lowercased().prefix(48)
         installing[host.id] = "开始…"
         Task {
             do {
-                let job = try await Hills.startJob(Hills.browserInstallScript(token: String(token)), on: host)
-                Vault.save(String(token), as: "hill.browserToken.\(host.id)")
+                let job = try await Hills.startJob(Hills.browserInstallScript(), on: host)
                 UserDefaults.standard.set(job, forKey: Self.installKey(host))
                 await follow(job, on: host)
             } catch {
@@ -255,22 +253,15 @@ struct HillsPage: View {
                     Haptics.lock()
                     return
                 }
-                let token = Vault.load(String.self, key: "hill.browserToken.\(host.id)")
-                guard let pin = try? await Hills.browserPin(on: host) else {
-                    tested[host.id] = "装好了，但读不到证书指纹（~/.clio/browser/cert.pem）。在笔砚里看看 openssl 在不在。"
-                    Haptics.lock()
-                    return
-                }
-                let url = "https://\(host.address):\(Hills.browserPort)/mcp"
-                var server = hills.servers.first { $0.url == url || $0.url == "http://\(host.address):\(Hills.browserPort)/mcp" } ?? Hills.Server(name: "\(host.name) 的浏览器", url: url)
-                server.url = url
-                server.pin = pin
+                // Through an SSH tunnel to the far computer's own loopback: nothing is open to the internet.
+                var server = hills.servers.first { $0.tunnelHost == host.id && $0.url == Hills.browserAddress } ?? Hills.Server(name: "\(host.name) 的浏览器", url: Hills.browserAddress)
+                server.tunnelHost = host.id
                 server.enabled = true
-                hills.save(server, token: token)
+                hills.save(server, token: nil)
                 let count = await hills.refresh(server)
                 tested[host.id] = count > 0
-                    ? "浏览器装好了，借来 \(count) 件工具，已经接进 MCP 服务。"
-                    : "装好了，但连不上 \(url)。多半是安全组或防火墙没放行 \(Hills.browserPort) 端口。放行后在下面点「连接」。"
+                    ? "浏览器装好了，借来 \(count) 件工具，已经接进 MCP 服务（经 SSH 隧道）。"
+                    : "装好了，但经隧道还连不上：\(hills.lastError[server.id] ?? "原因不明")。过一会儿在下面点「连接」再试。"
                 Haptics.thud()
                 return
             } catch {
@@ -359,10 +350,42 @@ private struct ServerEditor: View {
                 PaperRows {
                 Section("称呼") { TextField("比如：VPS 浏览器", text: $server.name) }
                 Section {
-                    TextField("https://…/mcp", text: $server.url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    Toggle("经远山 SSH 隧道连", isOn: Binding(
+                        get: { server.tunnelHost != nil },
+                        set: { on in
+                            server.tunnelHost = on ? (server.tunnelHost ?? Hills.shared.hosts.first?.id) : nil
+                            if on, server.url.isEmpty || server.url == "https://" { server.url = Hills.browserAddress }
+                        }
+                    ))
+                    .disabled(Hills.shared.hosts.isEmpty)
+                    if server.tunnelHost != nil {
+                        Picker("哪台电脑", selection: Binding(get: { server.tunnelHost ?? "" }, set: { server.tunnelHost = $0 })) {
+                            ForEach(Hills.shared.hosts) { host in Text(host.name).tag(host.id) }
+                        }
+                    }
+                } footer: {
+                    Text(Hills.shared.hosts.isEmpty
+                         ? "先在上面添一台远山主机，才能经它的 SSH 连过去。"
+                         : "打开后，地址填那台电脑自己看到的地址（比如 \(Hills.browserAddress)）。手机会先连上 SSH，再把请求送过去，服务不用对外开端口。")
+                }
+                Section {
+                    TextField(server.tunnelHost == nil ? "https://…/mcp" : Hills.browserAddress, text: $server.url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     SecureField(Vault.load(String.self, key: "mcp.\(server.id)") == nil ? "令牌（可不填）" : "令牌（已存，不改就留空）", text: $token)
-                } header: { Text("地址") } footer: {
+                } header: { Text(server.tunnelHost == nil ? "地址" : "在那台电脑上的地址") } footer: {
                     Text("支持 Streamable HTTP 的 MCP 服务。令牌会作为 Authorization: Bearer 发送。")
+                }
+                if server.tunnelHost != nil {
+                    Section {
+                        Text(Hills.browserCommand)
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                        Button("复制这条命令", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = Hills.browserCommand
+                            Haptics.tick(0.5)
+                        }
+                    } header: { Text("在 VPS 上手动启动浏览器") } footer: {
+                        Text("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。")
+                    }
                 }
                 Section { Toggle("借给旅伴用", isOn: $server.enabled) }
             }

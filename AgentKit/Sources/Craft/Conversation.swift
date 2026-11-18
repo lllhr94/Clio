@@ -50,3 +50,20 @@ public enum Conversation {
         return out
     }
 }
+
+/// 雅集: who a companion handed the word to.
+public enum Relay {
+    /// The member named by a trailing 「@名字」 in a reply (the last line, or the very end of it), never the speaker itself.
+    public static func next(after text: String, from speaker: String?, among members: [(id: String, name: String)]) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastLine = trimmed.split(separator: "\n").last else { return nil }
+        let tail = String(lastLine.suffix(40))
+        guard let at = tail.lastIndex(where: { $0 == "@" || $0 == "＠" }) else { return nil }
+        let named = tail[tail.index(after: at)...].trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        // Longest name first, so 「小团子」 is not taken for 「团子」.
+        for member in members.sorted(by: { $0.name.count > $1.name.count }) where member.id != speaker {
+            if named.hasPrefix(member.name) { return member.id }
+        }
+        return nil
+    }
+}

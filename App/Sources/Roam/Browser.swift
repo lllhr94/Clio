@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import SwiftUI
 import WebKit
 
@@ -62,16 +63,17 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     /// The page as it looks now, small enough to send to a model.
+    /// What the page shows right now, as a JPEG at most 1280 pixels on its long side.
     func screenshot() async throws -> Data {
         let configuration = WKSnapshotConfiguration()
-        configuration.snapshotWidth = NSNumber(value: 720)
+        configuration.afterScreenUpdates = true
         let image: UIImage = try await withCheckedThrowingContinuation { continuation in
             view.takeSnapshot(with: configuration) { image, error in
                 if let image { continuation.resume(returning: image) } else { continuation.resume(throwing: error ?? ProviderError("截不了图")) }
             }
         }
-        guard let data = image.jpegData(compressionQuality: 0.6) else { throw ProviderError("截图没存下来") }
-        return data
+        guard let full = image.jpegData(compressionQuality: 0.9), let shot = Picture.shrink(full, longest: 1280) else { throw ProviderError("截图没存下来") }
+        return shot.data
     }
 
     func back() async {
@@ -295,14 +297,14 @@ extension BrowserSession: WKDownloadDelegate {
         let host = response.url?.host() ?? "网页"
         let form = Asker.Form(
             title: "要下载这个文件吗？",
-            reason: "\(host) 想给你一个文件：「\(suggestedFilename)」（\(size)）。存下来会放进 书案/下载。",
+            reason: "\(host) 想给你一个文件：「\(suggestedFilename)」（\(size)）。存下来会放进 书案/收件；不要就不会落到手机上。",
             from: "远游",
             fields: [Asker.Field(key: "keep", label: "怎么处理", value: "存进书案", choices: ["存进书案", "不要"])],
             kind: .note
         )
         let answer = await Asker.shared.ask(form)
         guard answer?["keep"] == "存进书案" else { return nil }
-        let folder = Workspace.root.appendingPathComponent("下载", isDirectory: true)
+        let folder = Workspace.root.appendingPathComponent("收件", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var target = folder.appendingPathComponent(suggestedFilename)
         var number = 2
@@ -449,20 +451,31 @@ struct RoamPage: View {
                 .glassBacking(in: Capsule())
                 .contentShape(Capsule())
                 .onTapGesture { editing = true }
-                Menu {
-                    Button(browser.desktop ? "换回手机版网页" : "要电脑版网页", systemImage: browser.desktop ? "iphone" : "desktopcomputer") {
-                        Task { await browser.setDesktop(!browser.desktop) }
-                    }
-                    if !browser.downloads.isEmpty {
-                        Section("这次下载到书案的") {
+                // 手机版 / 电脑版: switches what the page is told this browser is (iPhone Safari or Mac Safari) and reloads.
+                Button {
+                    Haptics.tick(0.5)
+                    Task { await browser.setDesktop(!browser.desktop) }
+                } label: {
+                    Image(systemName: browser.desktop ? "desktopcomputer" : "iphone")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(browser.desktop ? Ink.accent : Ink.ink)
+                        .frame(width: 32, height: 36)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(TapStyle())
+                .accessibilityLabel(browser.desktop ? "现在是电脑版网页，点一下换回手机版" : "现在是手机版网页，点一下换成电脑版")
+                if !browser.downloads.isEmpty {
+                    Menu {
+                        Section("这次下载到书案/收件的") {
                             ForEach(browser.downloads.suffix(5), id: \.self) { path in Text(path) }
                         }
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Ink.ink)
+                            .frame(width: 32, height: 36)
                     }
-                } label: {
-                    Image(systemName: browser.desktop ? "desktopcomputer" : "ellipsis")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 32, height: 36)
+                    .accessibilityLabel("下载过的文件")
                 }
                 Button { Task { await browser.back() } } label: {
                     Image(systemName: "chevron.left")

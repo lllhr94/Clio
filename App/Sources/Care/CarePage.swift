@@ -33,6 +33,31 @@ struct CarePage: View {
                 }
 
                 Section {
+                    if team.archived.isEmpty {
+                        Text("没有归档的絮语。在案头把一段絮语往左滑，就能归档。").foregroundStyle(Ink.inkSoft)
+                    } else {
+                        ForEach(team.archived.sorted(), id: \.self) { key in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(team.chatName(key)).foregroundStyle(Ink.ink)
+                                    if let title = team.title(of: key) {
+                                        Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                    }
+                                }
+                                Spacer()
+                                Button("拿回来") {
+                                    withAnimation(Ink.Motion.settle) { team.archive(key, false) }
+                                    Haptics.tick(0.6)
+                                }
+                                .fontWeight(.medium)
+                            }
+                        }
+                    }
+                } header: { Text("已归档的絮语") } footer: {
+                    Text("拿回来的絮语回到案头的「近来」里。")
+                }
+
+                Section {
                     row("版本", "Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")（\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")）")
                     row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
                     row("旅伴 / 雅集", "\(team.bots.count) / \(team.rooms.count)")

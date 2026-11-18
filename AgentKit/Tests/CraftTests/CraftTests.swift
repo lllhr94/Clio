@@ -463,3 +463,65 @@ final class ShellTests: XCTestCase {
         XCTAssertEqual(masked, "key=\(Shell.hidden) short=abc again \(Shell.hidden)")
     }
 }
+
+/// A tool that does nothing, asks nothing, and remembers being run.
+private struct Quiet: AgentTool {
+    let spec: ToolSpec
+    init(_ name: String) { spec = ToolSpec(name: name, description: "", parameters: ["type": "object"]) }
+    func label(for arguments: JSONValue) -> String { spec.name }
+    func run(_ arguments: JSONValue) async throws -> ToolOutput { ToolOutput("好") }
+}
+
+final class TaintTests: XCTestCase {
+    private let inside: @Sendable (String) -> Bool = { WorkspacePath.isInside($0, root: "/root/desk") }
+
+    func testWhatReadsTheWeb() {
+        XCTAssertTrue(Taint.reads("browser_read"))
+        XCTAssertTrue(Taint.reads("web_read"))
+        XCTAssertTrue(Taint.reads("mcp_vps__browser_snapshot"))
+        XCTAssertFalse(Taint.reads("read_file"))
+        XCTAssertFalse(Taint.reads("shell"))
+    }
+
+    func testWhatNeedsASealAfterReading() {
+        XCTAssertTrue(Taint.needsSeal(tool: "shell", arguments: ["command": "ls"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "browser_fill_secret", arguments: [:], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "ssh_run", arguments: [:], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "write_file", arguments: ["path": "/etc/hosts"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "edit_file", arguments: ["path": "../../x"], isInside: inside))
+        XCTAssertFalse(Taint.needsSeal(tool: "write_file", arguments: ["path": "notes/a.md"], isInside: inside))
+        XCTAssertFalse(Taint.needsSeal(tool: "read_file", arguments: ["path": "/etc/hosts"], isInside: inside))
+    }
+
+    func testGuardForcesAskingOnlyAfterTheTurnReadTheWeb() async throws {
+        let book = TaintBook()
+        let shell = TaintGuard(Quiet("shell"), key: "bot-a", book: book, isInside: inside)
+        let reader = TaintGuard(Quiet("browser_read"), key: "bot-a", book: book, isInside: inside)
+        let otherChat = TaintGuard(Quiet("shell"), key: "bot-b", book: book, isInside: inside)
+        XCTAssertNil(shell.approval(for: ["command": "ls"]), "before any web reading, standing permission applies")
+        _ = try await reader.run([:])
+        let ask = shell.approval(for: ["command": "ls"])
+        XCTAssertEqual(ask?.forced, true)
+        XCTAssertTrue(ask?.detail?.contains("外部网页") == true)
+        XCTAssertNil(otherChat.approval(for: ["command": "ls"]), "only the chat that read the web is marked")
+        book.clear("bot-a")
+        XCTAssertNil(shell.approval(for: ["command": "ls"]), "a new turn starts clean")
+    }
+}
+
+final class RelayTests: XCTestCase {
+    private let members = [(id: "1", name: "团子"), (id: "2", name: "小团子"), (id: "3", name: "阿青")]
+
+    func testTrailingMentionHandsOn() {
+        XCTAssertEqual(Relay.next(after: "我说完了。\n@阿青", from: "1", among: members), "3")
+        XCTAssertEqual(Relay.next(after: "这个问题请 @小团子 来答", from: "1", among: members), "2")
+        XCTAssertEqual(Relay.next(after: "交给＠团子。", from: "3", among: members), "1")
+    }
+
+    func testNoMentionOrSelfOrStranger() {
+        XCTAssertNil(Relay.next(after: "就这样吧。", from: "1", among: members))
+        XCTAssertNil(Relay.next(after: "@团子", from: "1", among: members), "nobody hands the word to itself")
+        XCTAssertNil(Relay.next(after: "@路人甲", from: "1", among: members))
+        XCTAssertNil(Relay.next(after: "@阿青 你看\n然后我们继续聊", from: "1", among: members), "only the last line counts")
+    }
+}

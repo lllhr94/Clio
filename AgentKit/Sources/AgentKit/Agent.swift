@@ -7,11 +7,15 @@ public struct ApprovalAsk: Equatable, Sendable {
     /// Why, or the thing itself: 「明天 15:00 牙医」.
     public var reason: String
     public var detail: String?
+    /// Must be asked even where the person said 「以后都允许」 or 「这段絮语都放行」: the turn read text from the web,
+    /// which may carry instructions aimed at the model.
+    public var forced: Bool
 
-    public init(title: String, reason: String, detail: String? = nil) {
+    public init(title: String, reason: String, detail: String? = nil, forced: Bool = false) {
         self.title = title
         self.reason = reason
         self.detail = detail
+        self.forced = forced
     }
 }
 

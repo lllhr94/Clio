@@ -150,9 +150,16 @@ struct ApproveView: View {
             VStack(spacing: 6) {
                 SlideTrack(progress: $slide, onTick: tick) { answer(allow: true) }
                     .disabled(busy)
-                HStack(spacing: Ink.Space.s) {
-                    choice("以后都允许", on: $always)
-                    choice("这段絮语都放行", on: $trustChat)
+                if current.forced == true {
+                    // Standing permission would not cover this step anyway: say why instead of offering it.
+                    Label("这一轮读过网页，这一步每次都要你点头", systemImage: "exclamationmark.shield")
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.warn)
+                } else {
+                    HStack(spacing: Ink.Space.s) {
+                        choice("以后都允许", on: $always)
+                        choice("这段絮语都放行", on: $trustChat)
+                    }
                 }
                 Button {
                     Haptics.light()

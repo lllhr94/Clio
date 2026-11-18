@@ -73,6 +73,12 @@ struct ChatPage: View {
         return doing == "正在回复" ? "pencil.line" : "sparkles"
     }
 
+    /// Under the name: what it is doing while it works; otherwise this conversation's title, once one is written.
+    private var headerLine: String {
+        if working || waiting != nil { return status }
+        return team.title(of: chat.key) ?? status
+    }
+
     /// The companion's state in the glossary's words.
     private var status: String {
         if waiting != nil { return "候印" }
@@ -332,13 +338,13 @@ struct ChatPage: View {
                     Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
                         Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
-                        Text(status)
+                        Text(headerLine)
                             .font(Ink.footnote)
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(1)
                             .contentTransition(.opacity)
                     }
-                    .animation(Ink.Motion.settle, value: status)
+                    .animation(.easeInOut(duration: 0.5), value: headerLine)
                 }
             }
             .padding(.leading, -Ink.Space.xs)
@@ -555,6 +561,26 @@ struct ChatPage: View {
         } else {
             say("剪贴板是空的。")
         }
+    }
+
+    /// More than 2500 characters arriving at once (a paste) would make the box crawl: they go into 书案/收件 as a file,
+    /// shown as an attachment under the box, and the box keeps what was there before.
+    private func keepLongPaste(_ old: String, _ new: String) {
+        guard new.count - old.count > 2500 else { return }
+        let start = zip(old, new).prefix { $0 == $1 }.count
+        let tail = zip(old.reversed(), new.reversed()).prefix { $0 == $1 }.count
+        let end = max(start, min(new.count - tail, new.count))
+        let pasted = String(new.dropFirst(start).prefix(end - start))
+        guard pasted.count > 2500 else { return }
+        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let file = inbox.appendingPathComponent("粘贴片段-\(formatter.string(from: Date())).txt")
+        guard (try? Data(pasted.utf8).write(to: file)) != nil else { return }
+        draft = old
+        withAnimation(Ink.Motion.settle) { files.append(Workspace.relative(file)) }
+        say("粘进来的字太长（\(pasted.count) 字），存成文件带上了：书案/\(Workspace.relative(file))")
     }
 
     /// Where the user is, in words, added to the draft.
@@ -1025,6 +1051,7 @@ struct ChatPage: View {
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1...6)
                     .focused($typing)
+                    .onChange(of: draft) { old, new in keepLongPaste(old, new) }
                     .padding(.top, Ink.Space.xs)
                 HStack(spacing: Ink.Space.s) {
                     Button {
