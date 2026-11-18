@@ -124,7 +124,7 @@ private struct SecretEditor: View {
                         }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        Button { showing.toggle() } label: { Image(systemName: showing ? "eye.slash" : "eye") }.buttonStyle(.plain)
+                        Button { showing.toggle() } label: { Image(systemName: showing ? "eye.slash" : "eye") }.buttonStyle(TapStyle(grow: 8))
                     }
                 }
                 Section("备注") { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }

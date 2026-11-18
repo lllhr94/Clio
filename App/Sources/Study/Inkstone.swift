@@ -30,7 +30,7 @@ struct InkstonePage: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
-                        .glassEffect(.regular, in: .circle)
+                        .glassFace(in: Circle())
                 }
                 .buttonStyle(PressStyle())
                 Menu {

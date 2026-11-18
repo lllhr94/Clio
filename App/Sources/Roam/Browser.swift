@@ -429,7 +429,7 @@ struct RoamPage: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
-                        .glassEffect(.regular, in: .circle)
+                        .glassFace(in: Circle())
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel("收起远游")
@@ -446,7 +446,9 @@ struct RoamPage: View {
                 }
                 .padding(.horizontal, Ink.Space.m)
                 .frame(height: 38)
-                .glassEffect(.regular, in: .capsule)
+                .glassBacking(in: Capsule())
+                .contentShape(Capsule())
+                .onTapGesture { editing = true }
                 Menu {
                     Button(browser.desktop ? "换回手机版网页" : "要电脑版网页", systemImage: browser.desktop ? "iphone" : "desktopcomputer") {
                         Task { await browser.setDesktop(!browser.desktop) }

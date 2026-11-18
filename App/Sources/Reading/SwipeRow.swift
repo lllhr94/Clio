@@ -40,7 +40,7 @@ struct SwipeRow<Content: View>: View {
                         .frame(maxHeight: .infinity)
                         .background(action.tint)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TapStyle())
                 }
             }
             .clipShape(.rect(cornerRadius: Ink.Radius.small))

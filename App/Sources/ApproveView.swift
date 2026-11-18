@@ -165,7 +165,7 @@ struct ApproveView: View {
                         .padding(.horizontal, 24)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TapStyle())
                 .disabled(busy)
                 .opacity(busy ? 0.4 : 1)
             }
@@ -278,7 +278,7 @@ struct ApproveView: View {
             .background(on.wrappedValue ? Ink.accentWash : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : Ink.rule))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TapStyle())
         .disabled(busy)
     }
 
@@ -418,7 +418,7 @@ private struct SlideTrack: View {
                     .accessibilityAction { onDone() }
             }
             .frame(height: height)
-            .glassEffect(.regular, in: .capsule)
+            .glassBacking(in: Capsule())
         }
         .frame(height: height)
     }

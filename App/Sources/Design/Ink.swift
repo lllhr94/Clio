@@ -122,6 +122,8 @@ struct PressStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            // The whole frame takes the tap, not just the drawn strokes and glyphs.
+            .contentShape(Rectangle())
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(Ink.Motion.press, value: configuration.isPressed)
@@ -143,7 +145,35 @@ extension View {
     func glassChip() -> some View {
         padding(.horizontal, Ink.Space.m)
             .frame(height: 38)
-            .glassEffect(.regular, in: .capsule)
+            .glassFace(in: Capsule())
+    }
+
+    /// Liquid Glass for a control with nothing tappable inside (an icon button, a chip).
+    /// The system draws the glass itself and takes any touch that lands on it, so taps on the glass around an icon
+    /// never reached the button. A nearly clear layer over the glass catches them for SwiftUI.
+    func glassFace<S: Shape>(in shape: S) -> some View {
+        glassEffect(.regular, in: shape)
+            .overlay { shape.fill(Color.white.opacity(0.001)) }
+            .contentShape(shape)
+    }
+
+    /// Liquid Glass behind a bar that holds its own controls (the composer, an address bar). The clear layer sits
+    /// between the glass and the controls: taps between them land on it instead of on the glass.
+    func glassBacking<S: Shape>(in shape: S) -> some View {
+        background { shape.fill(Color.white.opacity(0.001)) }
+            .glassEffect(.regular, in: shape)
+    }
+}
+
+/// A plain button whose whole frame takes the tap (not only its glyphs), dimming while pressed.
+/// `grow` widens the tap area past the frame, for tiny icons such as a close mark.
+struct TapStyle: ButtonStyle {
+    var grow: CGFloat = 0
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle().inset(by: -grow))
+            .opacity(configuration.isPressed ? 0.55 : 1)
     }
 }
 

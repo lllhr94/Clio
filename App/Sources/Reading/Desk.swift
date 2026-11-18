@@ -218,7 +218,7 @@ struct Desk: View {
                             .padding(.vertical, Ink.Space.l)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TapStyle())
                         .padding(.top, Ink.Space.l)
                         if showArchived {
                             ForEach(archivedThreads, id: \.id) { item in

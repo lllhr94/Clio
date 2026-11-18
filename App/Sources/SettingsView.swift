@@ -163,7 +163,7 @@ struct SettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TapStyle())
 
             if let note = notes[endpoint.id] {
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)

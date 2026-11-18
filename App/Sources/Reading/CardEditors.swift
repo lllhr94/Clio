@@ -169,7 +169,7 @@ struct BotEditor: View {
                                             .overlay(Circle().strokeBorder(tint == item.key ? Ink.accent : Ink.rule, lineWidth: tint == item.key ? 2 : 1))
                                             .scaleEffect(tint == item.key ? 1.08 : 1)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(TapStyle())
                                     .accessibilityLabel(item.title)
                                 }
                             }

@@ -28,12 +28,12 @@ struct Mascot: View {
 
     var body: some View {
         if shown, bounds.width > 0 {
+            // Gestures and the menu belong to the whale itself, then it is placed: attached after `.position`,
+            // they would cover the whole page and could take taps meant for the page's buttons.
             Whale(size: size, pose: pose)
                 .shadow(color: .black.opacity(drag == .zero ? 0.06 : 0.16), radius: drag == .zero ? 4 : 12, y: drag == .zero ? 2 : 8)
                 .scaleEffect(drag == .zero ? (hop ? 1.12 : 1) : 1.1)
-                .position(x: rest.x + drag.width, y: rest.y + drag.height)
-                .animation(Ink.Motion.unfold, value: rest)
-                .animation(Ink.Motion.press, value: drag == .zero)
+                .contentShape(Circle())
                 .gesture(
                     DragGesture(minimumDistance: 3)
                         .updating($drag) { value, state, _ in state = value.translation }
@@ -60,6 +60,9 @@ struct Mascot: View {
                         withAnimation(Ink.Motion.settle) { shown = false }
                     }
                 }
+                .position(x: rest.x + drag.width, y: rest.y + drag.height)
+                .animation(Ink.Motion.unfold, value: rest)
+                .animation(Ink.Motion.press, value: drag == .zero)
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
                 .accessibilityLabel("鲸鱼，拖动可以换位置，长按可以收起")
         }

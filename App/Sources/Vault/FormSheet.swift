@@ -119,7 +119,7 @@ struct FormSheet: View {
                         } label: {
                             Image(systemName: shown.contains(field.key) ? "eye.slash" : "eye").foregroundStyle(Ink.inkFaint)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TapStyle(grow: 8))
                     }
                     .frame(height: 30)
                 }

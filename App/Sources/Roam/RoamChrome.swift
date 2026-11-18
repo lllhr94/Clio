@@ -17,7 +17,7 @@ struct RoamButton: View {
                         .foregroundStyle(Ink.ink)
                         .symbolEffect(.pulse, isActive: browser.loading)
                         .frame(width: 38, height: 38)
-                        .glassEffect(.regular, in: .circle)
+                        .glassFace(in: Circle())
                     if browser.handoff != nil {
                         Circle().fill(Ink.warn).frame(width: 9, height: 9).offset(x: -2, y: 2)
                     }
@@ -80,7 +80,7 @@ struct RoamThumb: View {
                     } label: {
                         Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 18, height: 18)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TapStyle(grow: 8))
                     .accessibilityLabel("收起小窗")
                 }
                 .foregroundStyle(Ink.inkSoft)

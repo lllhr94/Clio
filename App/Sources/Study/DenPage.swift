@@ -62,7 +62,7 @@ struct DenPage: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
-                    .glassEffect(.regular, in: .circle)
+                    .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
             VStack(alignment: .leading, spacing: 0) {
@@ -89,7 +89,7 @@ struct DenPage: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
-                    .glassEffect(.regular, in: .circle)
+                    .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
             .accessibilityLabel("笔砚")
@@ -102,7 +102,7 @@ struct DenPage: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
-                    .glassEffect(.regular, in: .circle)
+                    .glassFace(in: Circle())
             }
         }
         .padding(.horizontal, Ink.Space.l)
@@ -186,7 +186,7 @@ struct DenPage: View {
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s)
-        .glassEffect(.regular, in: .capsule)
+        .glassBacking(in: Capsule())
         .padding(.horizontal, Ink.Space.m)
         .padding(.vertical, Ink.Space.s)
     }

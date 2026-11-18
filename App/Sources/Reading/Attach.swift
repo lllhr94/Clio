@@ -130,7 +130,7 @@ struct DeskPicker: View {
                                     .padding(.vertical, Ink.Space.m)
                                     .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(TapStyle())
                                 Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 48)
                             }
                         }

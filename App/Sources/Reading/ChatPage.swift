@@ -319,7 +319,7 @@ struct ChatPage: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 38, height: 38)
-                    .glassEffect(.regular, in: .circle)
+                    .glassFace(in: Circle())
                     .padding(4)
                     .contentShape(Rectangle())
             }
@@ -371,7 +371,7 @@ struct ChatPage: View {
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 38, height: 38)
-                    .glassEffect(.regular, in: .circle)
+                    .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
             .accessibilityLabel("絮语页")
@@ -927,7 +927,7 @@ struct ChatPage: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
-                        .glassEffect(.regular, in: .circle)
+                        .glassFace(in: Circle())
                 }
                 .buttonStyle(PressStyle())
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
@@ -948,7 +948,7 @@ struct ChatPage: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill").font(.system(size: 15)).foregroundStyle(Ink.inkFaint)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TapStyle(grow: 8))
                         .accessibilityLabel("不引用了")
                     }
                     .fixedSize(horizontal: false, vertical: true)
@@ -1008,7 +1008,7 @@ struct ChatPage: View {
                                     } label: {
                                         Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(TapStyle(grow: 8))
                                 }
                                 .foregroundStyle(Ink.ink)
                                 .padding(.horizontal, Ink.Space.m)
@@ -1055,7 +1055,7 @@ struct ChatPage: View {
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
-            .glassEffect(.regular, in: .rect(cornerRadius: Ink.Radius.sheet))
+            .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet))
             if let hint {
                 Text(hint)
                     .font(Ink.footnote)

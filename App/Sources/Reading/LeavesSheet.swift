@@ -99,7 +99,7 @@ struct LeavesSheet: View {
                                             .rotationEffect(.degrees(showDigest ? -180 : 0))
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(TapStyle())
                                 if showDigest {
                                     ProseView(text: digest)
                                         .padding(Ink.Space.l)
