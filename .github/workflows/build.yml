@@ -88,11 +88,16 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$APP/Info.plist"
           test -f "$APP/alpine/meta.db" || { echo "::error::斗室的 Linux 没有打进包里"; exit 1; }
           du -sh "$APP" "$APP/alpine"
-          # A probe branch can carry entitlements (App/Clio.entitlements); sign ad hoc so they travel inside the binary.
+          # A probe branch can carry entitlements (App/Clio.entitlements, App/ClioWidget.entitlements); sign ad hoc so they
+          # travel inside the binaries. Extensions first, each with its own, then the app around them.
+          if [ -f ClioWidget.entitlements ] && [ -d "$APP/PlugIns/ClioWidget.appex" ]; then
+            codesign --force --sign - --entitlements ClioWidget.entitlements --timestamp=none "$APP/PlugIns/ClioWidget.appex"
+          fi
           if [ -f Clio.entitlements ]; then
-            codesign --force --deep --sign - --entitlements Clio.entitlements --timestamp=none "$APP"
+            codesign --force --sign - --entitlements Clio.entitlements --timestamp=none "$APP"
             codesign -d --entitlements - "$APP" || true
           fi
+          ls "$APP/PlugIns" 2>/dev/null || true
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry Clio-unsigned.ipa Payload
