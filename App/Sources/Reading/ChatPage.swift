@@ -128,6 +128,10 @@ struct ChatPage: View {
                                 .foregroundStyle(Ink.stop)
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
+                        ForEach(team.queued[chat.key] ?? []) { item in
+                            queuedRow(item)
+                                .transition(.opacity.combined(with: .offset(y: 8)))
+                        }
                     }
                     // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
                     Color.clear.frame(height: 1).id(Self.end)
@@ -174,9 +178,48 @@ struct ChatPage: View {
         }
     }
 
+    /// A message written while the companion works: it waits for the turn to finish, or goes now, or comes back to the composer.
+    private func queuedRow(_ item: TeamModel.Queued) -> some View {
+        VStack(alignment: .trailing, spacing: Ink.Space.xs) {
+            VStack(alignment: .trailing, spacing: 4) {
+                if !item.photos.isEmpty {
+                    Label("\(item.photos.count) 张照片", systemImage: "photo").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                }
+                if !item.text.isEmpty {
+                    Text(item.text).font(Ink.label).foregroundStyle(Ink.ink).lineLimit(4).lineSpacing(4)
+                }
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            HStack(spacing: Ink.Space.m) {
+                Text(working ? "排队中，这轮做完就发" : "还没发出").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                Button("撤回", systemImage: "arrow.uturn.backward") {
+                    if let back = team.unqueue(chat.key, item.id) {
+                        draft = draft.isEmpty ? back.text : draft + "\n" + back.text
+                        typing = true
+                    }
+                }
+                Button("立即发送", systemImage: "paperplane.fill") {
+                    Haptics.thud()
+                    following = true
+                    team.sendQueueNow(chat.key)
+                }
+                .fontWeight(.semibold)
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(Ink.accent)
+            .buttonStyle(TapStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.leading, Ink.Space.huge)
+    }
+
     /// The composer, with what keeps the 用量 ring up to date and opens its sheet.
     private var composerBar: some View {
         composer
+        .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
         .task { context = team.contextEstimate(chat.key) }
         .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
         .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
@@ -1103,7 +1146,7 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
-                    TextField(dictation.listening ? "正在听，说完点右边" : "同\(bot.name)说点什么…", text: $draft, axis: .vertical)
+                    TextField(dictation.listening ? "正在听，说完点右边" : (working ? "接着写，这轮做完就发…" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
                         .font(Ink.label)
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1...6)

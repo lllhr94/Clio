@@ -256,3 +256,23 @@ final class CachedUsageTests: XCTestCase {
         XCTAssertEqual(try AnthropicProvider.decode(#"{"type":"message_start","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":10,"output_tokens":1}}}"#), [.usage(input: 330, output: 0, cached: 300)])
     }
 }
+
+final class LocalAddressTests: XCTestCase {
+    private func local(_ address: String) -> Bool { LocalAddress.isLocal(URL(string: address)!) }
+
+    func testLocalAndPrivateAddressesAreRefused() {
+        for address in ["http://localhost:8080", "http://127.0.0.1", "http://10.0.0.5/admin", "http://192.168.1.1", "http://172.20.3.4",
+                        "http://169.254.169.254/latest", "http://100.100.1.1", "http://0.0.0.0", "http://[::1]:3000", "http://[fe80::1]",
+                        "http://[fd12::3]", "http://printer.local", "http://router.lan", "http://nas", "http://2130706433", "http://0x7f.1",
+                        "http://[::ffff:192.168.0.1]"] {
+            XCTAssertTrue(local(address), address)
+        }
+    }
+
+    func testPublicAddressesPass() {
+        for address in ["https://example.com", "https://www.deepseek.com/a?b=1", "http://8.8.8.8", "http://172.32.0.1", "http://100.128.0.1",
+                        "https://[2606:4700::1111]", "https://bbs.nga.cn", "https://cafe.example"] {
+            XCTAssertFalse(local(address), address)
+        }
+    }
+}

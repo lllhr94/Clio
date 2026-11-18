@@ -223,6 +223,52 @@ public struct WebSearchTool: AgentTool {
     }
 }
 
+/// Addresses on this phone or its local network. Tools the model drives do not go there: a page could use them
+/// to reach the router, a printer, or a service on the phone. Only the address as written is checked, not what a name resolves to.
+public enum LocalAddress {
+    public static let refusal = "这是本机或局域网里的地址，网页工具不去这种地方，只开公网网址。真要看，请用户自己在远游的地址栏里打开。"
+
+    public static func isLocal(_ url: URL) -> Bool {
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+        if host.hasSuffix(".") { host.removeLast() }
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") || host.hasSuffix(".lan")
+            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || !host.contains(".") && !host.contains(":") {
+            return true
+        }
+        if host.contains(":") { return isLocalV6(host) }
+        // Numbers only (1.2.3.4, but also 2130706433 or 0x7f.1, which browsers read as addresses too).
+        let lastIsNumber = host.split(separator: ".").last?.allSatisfy(\.isNumber) == true
+        let numeric = lastIsNumber && host.first?.isNumber == true
+            && host.allSatisfy { $0.isNumber || $0 == "." || $0 == "x" || ("a"..."f").contains($0) }
+        guard numeric else { return false }
+        let bytes = host.split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
+        guard bytes.count == 4, host.split(separator: ".", omittingEmptySubsequences: false).count == 4 else { return true }
+        return isLocalV4(bytes)
+    }
+
+    static func isLocalV4(_ b: [UInt8]) -> Bool {
+        switch (b[0], b[1]) {
+        case (0, _), (10, _), (127, _): return true
+        case (169, 254), (192, 168): return true
+        case (172, 16...31): return true
+        case (100, 64...127): return true
+        default: return false
+        }
+    }
+
+    static func isLocalV6(_ host: String) -> Bool {
+        if host == "::1" || host == "::" { return true }
+        if host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") { return true }
+        if host.hasPrefix("::ffff:") {
+            let tail = host.dropFirst("::ffff:".count)
+            let bytes = tail.split(separator: ".").compactMap { UInt8($0) }
+            return bytes.count != 4 || isLocalV4(bytes)
+        }
+        return false
+    }
+}
+
 /// Reads one page as text.
 public struct WebReadTool: AgentTool {
     public var limit: Int
@@ -252,7 +298,10 @@ public struct WebReadTool: AgentTool {
         guard let url = URL(string: address), url.scheme?.hasPrefix("http") == true else {
             return ToolOutput("网址不对：\(address)", isError: true)
         }
+        if LocalAddress.isLocal(url) { return ToolOutput(LocalAddress.refusal, isError: true) }
         let page = try await WebFetch.get(url)
+        // A public address can send us on to a local one; what came back from there is not handed over.
+        if LocalAddress.isLocal(page.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
         let type = page.type ?? ""
         if type.contains("pdf") { return ToolOutput("这是 PDF，暂时读不了。", isError: true) }
         if type.hasPrefix("image/") || type.hasPrefix("video/") || type.hasPrefix("audio/") {

@@ -313,10 +313,7 @@ final class ChatModel: ObservableObject {
         guard !trimmed.isEmpty || !photos.isEmpty else { return }
         withAnimation(.smooth) { error = nil }
         if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return }
-        if team.isWorking(key), !target.isEmpty {
-            target = ""
-            streaming = ""
-        }
+        // While the companion works, the message queues and waits; the reply being written is left alone.
         team.send(trimmed, photos: photos, to: key)
     }
 

@@ -310,6 +310,10 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     const el = document.querySelector('[data-clio-ref="' + ref + '"]');
     if (!el) return '找不到编号 ' + ref + '，页面可能变了，请先 browser_read。';
     if ((el.getAttribute('type') || '').toLowerCase() === 'password') return '密码框不能直接填。用信匣：browser_fill_secret（没存过就先 ask_user 请用户填进信匣），或用 browser_handoff 请用户接手。';
+    const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
+    const about = [el.getAttribute('name'), el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label')].join(' ').toLowerCase();
+    if (auto.startsWith('cc-') || /card.?num|cardno|cvv|cvc|csc|security.?code|卡号|安全码|有效期|银行卡/.test(about)) return '这是填银行卡号、安全码一类的地方，付款信息不由旅伴填。用 browser_handoff 请用户亲手填。';
+    if (auto === 'one-time-code' || /otp|verif.?code|sms.?code|验证码|校验码|动态码/.test(about)) return '这是填验证码的地方，验证码不由旅伴填。用 browser_handoff 请用户亲手填。';
     el.scrollIntoView({block: 'center', behavior: 'instant'});
     el.focus();
     if (el.isContentEditable) {
@@ -376,14 +380,29 @@ enum RoamTools {
     /// The browser the secret-filling tool reaches for.
     @MainActor static weak var browser: BrowserSession?
 
+    /// A web address as the model wrote it, and the site it belongs to (without www.).
+    static func site(_ written: String?) -> (url: URL, host: String)? {
+        var address = written?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !address.isEmpty, !address.contains("://") { address = "https://" + address }
+        guard let url = URL(string: address), url.scheme?.hasPrefix("http") == true, var host = url.host?.lowercased() else { return nil }
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        return (url, host)
+    }
+
     @MainActor
     static func all(_ browser: BrowserSession, canSee: Bool) -> [AgentTool] {
         Self.browser = browser
         var tools: [AgentTool] = [
-            RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。desktop 为 true 时要电脑版网页（手机版缺功能时用），false 换回手机版。", parameters: ["type": "object", "properties": ["url": ["type": "string"], "desktop": ["type": "boolean"]], "required": ["url"]], label: { "远游：\($0["url"]?.string ?? "")" }) { arguments in
-                var address = arguments["url"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !address.isEmpty, !address.contains("://") { address = "https://" + address }
-                guard let url = URL(string: address), url.scheme?.hasPrefix("http") == true else { return ToolOutput("网址不对：\(address)", isError: true) }
+            RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。desktop 为 true 时要电脑版网页（手机版缺功能时用），false 换回手机版。每一轮里头一次去某个网站，会先问用户。本机和局域网地址打不开。", parameters: ["type": "object", "properties": ["url": ["type": "string"], "desktop": ["type": "boolean"]], "required": ["url"]], label: { "远游：\($0["url"]?.string ?? "")" }, approval: { arguments in
+                // The first visit to each site in a turn asks; after that the companion may look around there.
+                guard let site = Self.site(arguments["url"]?.string), !LocalAddress.isLocal(site.url), !SiteBook.shared.allows(site.host) else { return nil }
+                return ApprovalAsk(title: "让旅伴去 \(site.host)", reason: "这一轮头一次打开这个网站。同意后，这一轮里它可以在这个网站上看页面、点按钮；填字和登录照旧另外问你。")
+            }) { arguments in
+                guard let site = Self.site(arguments["url"]?.string) else { return ToolOutput("网址不对：\(arguments["url"]?.string ?? "")", isError: true) }
+                if LocalAddress.isLocal(site.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+                SiteBook.shared.allow(site.host)
+                let url = site.url
+                let address = url.absoluteString
                 if let desktop = arguments["desktop"]?.bool { await browser.setDesktop(desktop) }
                 await browser.open(url)
                 return ToolOutput("打开了：\(browser.title)\n\(browser.url?.absoluteString ?? address)\n接着用 browser_read 读页面。")
@@ -429,6 +448,17 @@ enum RoamTools {
 }
 
 /// One browser tool: its spec, how it shows, and what it does on the main thread.
+/// Sites the companion may use in this turn. The first visit to each asks the user; a new turn starts the list again.
+final class SiteBook: @unchecked Sendable {
+    static let shared = SiteBook()
+    private let lock = NSLock()
+    private var allowed: Set<String> = []
+
+    func allows(_ host: String) -> Bool { lock.withLock { allowed.contains(host) } }
+    func allow(_ host: String) { lock.withLock { _ = allowed.insert(host) } }
+    func clear() { lock.withLock { allowed.removeAll() } }
+}
+
 struct RoamTool: AgentTool {
     let name: String
     let description: String

@@ -708,6 +708,7 @@ final class TeamModel: ObservableObject {
 
     /// Empties a conversation for good: what is on the page now, every leaf put aside and their summaries. The companion stays.
     func clearChat(_ key: String) {
+        queued[key] = nil
         stop(key)
         if keeping {
             for leaf in leaves(key) {
@@ -833,13 +834,57 @@ final class TeamModel: ObservableObject {
         }
     }
 
+    /// A message written while the companion is still at work: it waits its turn instead of cutting the work short.
+    struct Queued: Identifiable, Equatable {
+        let id = UUID()
+        var text: String
+        var photos: [Data]
+    }
+
+    /// Messages waiting for the turn in progress to finish, by chat.
+    @Published private(set) var queued: [String: [Queued]] = [:]
+    /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
+    private var sendQueuedNow: Set<String> = []
+
     func send(_ text: String, photos: [Data], to key: String) {
         if archived.contains(key) { archive(key, false) }
         guard phase != .demo else { return }
+        if runs[key] != nil {
+            withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos)) }
+            return
+        }
         let names = keeping ? photos.map(Disk.keepPhoto) : []
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
         touch(key, preview: nil)
         start(key)
+    }
+
+    /// 「立即发送」: stop the turn in progress and send what is queued now.
+    func sendQueueNow(_ key: String) {
+        guard queued[key]?.isEmpty == false else { return }
+        if runs[key] != nil {
+            sendQueuedNow.insert(key)
+            stop(key)
+        } else {
+            flushQueue(key)
+        }
+    }
+
+    /// 「撤回」: a queued message comes back out of the queue, for the composer.
+    func unqueue(_ key: String, _ id: UUID) -> Queued? {
+        guard let index = queued[key]?.firstIndex(where: { $0.id == id }) else { return nil }
+        var list = queued[key] ?? []
+        let item = list.remove(at: index)
+        withAnimation(.smooth) { queued[key] = list.isEmpty ? nil : list }
+        return item
+    }
+
+    /// Everything queued goes out as one message, as if written at once.
+    private func flushQueue(_ key: String) {
+        guard let waiting = queued[key], !waiting.isEmpty else { return }
+        withAnimation(.smooth) { queued[key] = nil }
+        let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        send(text, photos: waiting.flatMap(\.photos), to: key)
     }
 
     func stop(_ key: String) {
@@ -857,6 +902,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
+        SiteBook.shared.clear()
         streamed[key] = nil
         var counted = options(key)
         var spend = counted.spend ?? Spend()
@@ -965,6 +1011,7 @@ final class TeamModel: ObservableObject {
             doing[key] = "正在压缩前文"
             _ = try? await compress(key)
         }
+        var ok = true
         if key.hasPrefix("room-") {
             if let room = rooms.first(where: { Self.key(room: $0.id) == key }) {
                 let members = (room.members ?? []).compactMap({ id in bots.first { $0.id == id } })
@@ -988,10 +1035,12 @@ final class TeamModel: ObservableObject {
                     going = await turn(member, in: key, room: room)
                     busyBots.remove(member.id)
                 }
+                ok = going
             }
         } else if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) {
-            await turn(bot, in: key, room: nil)
+            ok = await turn(bot, in: key, room: nil)
         }
+        let cancelled = Task.isCancelled
         settleUsage(key)
         if runs[key]?.token == token {
             runs[key] = nil
@@ -1002,6 +1051,10 @@ final class TeamModel: ObservableObject {
         nameChatIfNew(key)
         watchBalance(key)
         endGrace(token)
+        // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
+        // A turn that failed or was stopped leaves the queue for the user to send or take back.
+        let now = sendQueuedNow.remove(key) != nil
+        if runs[key] == nil, (ok && !cancelled) || now { flushQueue(key) }
     }
 
     /// One Bot speaks once. False when the group should not go on.
