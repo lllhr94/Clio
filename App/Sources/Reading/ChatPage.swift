@@ -1,8 +1,10 @@
-import AgentKit
-import UniformTypeIdentifiers
 import AVFoundation
+import AgentKit
+import CoreLocation
+import Craft
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 絮语: a conversation with one companion, set as a page.
 struct ChatPage: View {
@@ -97,9 +99,12 @@ struct ChatPage: View {
                             .id("streaming")
                     }
                     if let words = liveWords, showsLive {
-                        LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                            .id("live")
-                            .transition(.opacity.combined(with: .offset(y: 8)))
+                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                            LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
+                            if (team.doing[chat.key] ?? "").hasPrefix("斗室：") { DenTail() }
+                        }
+                        .id("live")
+                        .transition(.opacity.combined(with: .offset(y: 8)))
                     }
                     if let error = chat.error {
                         Text(error)
@@ -181,6 +186,54 @@ struct ChatPage: View {
         .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
+        .sheet(isPresented: $attaching, onDismiss: {
+            // The panel is out of the way; now open what was picked.
+            if let kind = attachPicked {
+                attachPicked = nil
+                bring(kind)
+            }
+        }) {
+            AttachSheet { attachPicked = $0 }
+                .presentationDetents([.height(320)])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $deskPicking) {
+            DeskPicker { picked in
+                deskPicking = false
+                if !picked.isEmpty {
+                    withAnimation(Ink.Motion.settle) { files += picked.filter { !files.contains($0) } }
+                    say("带上了书案里的 \(picked.count) 个文件。")
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $scanning) {
+            ScannerView { pages in
+                scanning = false
+                guard !pages.isEmpty else { return }
+                say("正在识别扫描里的文字…")
+                Task {
+                    if let kept = await Scan.keep(pages) {
+                        withAnimation(Ink.Motion.settle) { files.append(kept.text) }
+                        say("扫了 \(pages.count) 页，认出 \(kept.count) 个字，图和文字都放进了书案。")
+                    }
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .alert("请旅伴读一个网页", isPresented: $linkAsking) {
+            TextField("https://…", text: $linkDraft)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+            Button("带上") {
+                let link = linkDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !link.isEmpty { draft += (draft.isEmpty ? "" : "\n") + "请读一下这个网页：\(link)" }
+                linkDraft = ""
+                typing = true
+            }
+            Button("算了", role: .cancel) { linkDraft = "" }
+        } message: {
+            Text("旅伴会去读，读不出来时会用远游打开。")
+        }
         .sheet(isPresented: $abilities) {
             AbilitiesSheet(team: team, key: chat.key, name: bot.name)
                 .presentationDetents([.medium, .large])
@@ -404,7 +457,113 @@ struct ChatPage: View {
         .accessibilityLabel("模型：\(shortName(current))")
     }
 
+    /// Where this conversation works: 书案, 斗室 or a 远山 host.
+    private var placeChip: some View {
+        let current = team.place(of: chat.key)
+        return Menu {
+            Section("这段絮语在哪里干活") {
+                placeButton(.desk, line: "手机里的文件夹，读写文件、算数")
+                placeButton(.den, line: "手机里的 Linux，能跑命令、装软件")
+                ForEach(Hills.shared.hosts) { host in
+                    placeButton(.hill(host.id), line: "\(host.user)@\(host.address)")
+                }
+            }
+            if Hills.shared.hosts.isEmpty {
+                Section { Text("在设置 › 远山 添一台主机，这里就能选它。") }
+            }
+        } label: {
+            chip(current.symbol, current == .desk ? "书案" : current.title, lit: current != .desk)
+        }
+        .accessibilityLabel("工作地点：\(current.title)")
+    }
+
+    private func placeButton(_ place: WorkPlace, line: String) -> some View {
+        let current = team.place(of: chat.key)
+        return Button {
+            Haptics.tick(0.5)
+            team.setPlace(place, in: chat.key)
+            switch place {
+            case .desk: say("回到书案：文件放在手机的书案里，不跑命令。")
+            case .den: say("在斗室干活：旅伴会在手机里的 Linux 跑命令，文件放在 /root/desk。")
+            case .hill: say("在\(place.title)干活：命令和文件都在那台电脑上。")
+            }
+        } label: {
+            if current == place {
+                Label(place.title, systemImage: "checkmark")
+            } else {
+                Text(place.title)
+            }
+            Text(line)
+        }
+    }
+
     // MARK: Attachments
+
+    private func bring(_ kind: AttachKind) {
+        switch kind {
+        case .photos: pickerShown = true
+        case .camera: takingPhoto = true
+        case .files: importingFile = true
+        case .desk: deskPicking = true
+        case .scan: scanning = true
+        case .link:
+            linkDraft = UIPasteboard.general.hasURLs ? (UIPasteboard.general.url?.absoluteString ?? "") : ""
+            linkAsking = true
+        case .clipboard: pasteClipboard()
+        case .place: attachPlace()
+        }
+    }
+
+    /// Whatever was copied last: a picture joins the photos, a link or short words join the draft, long words become a file.
+    private func pasteClipboard() {
+        let board = UIPasteboard.general
+        if board.hasImages, let image = board.image, let data = image.jpegData(compressionQuality: 0.9), let small = Self.shrink(data) {
+            guard photos.count < 4 else { return say("最多带四张图。") }
+            withAnimation(Ink.Motion.settle) { photos.append(small) }
+            say("带上了剪贴板里的图片。")
+        } else if board.hasURLs, let url = board.url {
+            draft += (draft.isEmpty ? "" : "\n") + url.absoluteString
+            typing = true
+        } else if let text = board.string, !text.isEmpty {
+            if text.count > 400 {
+                let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+                try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMdd-HHmmss"
+                let file = inbox.appendingPathComponent("剪贴板 \(formatter.string(from: Date())).txt")
+                try? Data(text.utf8).write(to: file)
+                withAnimation(Ink.Motion.settle) { files.append(Workspace.relative(file)) }
+                say("剪贴板里的字有点长（\(text.count) 字），存成文件带上了。")
+            } else {
+                draft += (draft.isEmpty ? "" : "\n") + text
+                typing = true
+            }
+        } else {
+            say("剪贴板是空的。")
+        }
+    }
+
+    /// Where the user is, in words, added to the draft.
+    private func attachPlace() {
+        say("正在定位…")
+        Task {
+            do {
+                let location = try await Spot.shared.locate()
+                var words = String(format: "%.5f, %.5f", location.coordinate.latitude, location.coordinate.longitude)
+                if let place = try? await CLGeocoder().reverseGeocodeLocation(location).first {
+                    let parts = [place.administrativeArea, place.locality, place.subLocality, place.thoroughfare, place.name].compactMap { $0 }
+                    var seen: [String] = []
+                    for part in parts where !seen.contains(part) { seen.append(part) }
+                    words = seen.joined(separator: " ") + "（\(words)）"
+                }
+                draft += (draft.isEmpty ? "" : "\n") + "［我现在在：\(words)］"
+                typing = true
+                say("位置带上了。")
+            } catch {
+                say("没定到位：\(error.localizedDescription)")
+            }
+        }
+    }
 
     /// Files picked from the Files app land in 书案/收件, and the companion is told where.
     private func receive(_ urls: [URL]) {
@@ -832,14 +991,15 @@ struct ChatPage: View {
                     .focused($typing)
                     .padding(.top, Ink.Space.xs)
                 HStack(spacing: Ink.Space.s) {
-                    Menu {
-                        Button("照片", systemImage: "photo.on.rectangle") { pickerShown = true }
-                        Button("拍照", systemImage: "camera") { takingPhoto = true }
-                        Button("文件", systemImage: "folder") { importingFile = true }
+                    Button {
+                        Haptics.light()
+                        typing = false
+                        attaching = true
                     } label: {
-                        chip("plus", nil)
+                        chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
                     }
-                    .accessibilityLabel("加照片或文件")
+                    .buttonStyle(PressStyle(haptic: false))
+                    .accessibilityLabel("带照片、文件、扫描、链接或位置进来")
                     .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
@@ -847,6 +1007,7 @@ struct ChatPage: View {
                     ScrollView(.horizontal) {
                         HStack(spacing: Ink.Space.s) {
                             webChip
+                            placeChip
                             abilitiesChip
                             if !isRoom { modelChip }
                         }
@@ -879,6 +1040,12 @@ struct ChatPage: View {
     @State private var files: [String] = []
     @State private var hint: String?
     @State private var abilities = false
+    @State private var attaching = false
+    @State private var attachPicked: AttachKind?
+    @State private var deskPicking = false
+    @State private var scanning = false
+    @State private var linkAsking = false
+    @State private var linkDraft = ""
     /// When the companion started on the current turn, for the seconds under the conversation.
     @State private var workingSince: Date?
     @State private var cardOpen = false
@@ -965,7 +1132,7 @@ private struct Trace: View {
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
     private struct Keepsake: Identifiable {
-        enum Kind { case event, reminder, file, command }
+        enum Kind { case event, reminder, file, remoteFile, command }
         let id: Int
         let kind: Kind
         let title: String
@@ -983,12 +1150,26 @@ private struct Trace: View {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
             } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
                 let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-                if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path), !out.contains(where: { $0.url == file }) {
-                    out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file), url: file))
+                if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
+                    let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
+                    if let kept = out.firstIndex(where: { $0.url == file }) {
+                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + " · 改了几次", url: file)
+                    } else {
+                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + change, url: file))
+                    }
                 }
-            } else if tool.hasPrefix("斗室：") {
+            } else if tool.hasPrefix("斗室：") || tool.hasPrefix("远山 · ") {
+                let rest = tool.split(separator: "：", maxSplits: 1).last.map(String.init) ?? tool
+                if rest.hasPrefix("读 ") || rest.hasPrefix("找 ") || rest.hasPrefix("看后台任务") { continue }
+                if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
+                    let where_ = tool.split(separator: "：", maxSplits: 1).first.map(String.init) ?? ""
+                    let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
+                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: where_ + " · " + String(rest.dropFirst(2)) + change))
+                    continue
+                }
+                guard tool.hasPrefix("斗室：") else { continue }
                 let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
-                out.append(Keepsake(id: index, kind: .command, title: String(tool.dropFirst(3)), detail: tail.isEmpty ? "（没有输出）" : tail))
+                out.append(Keepsake(id: index, kind: .command, title: rest, detail: tail.isEmpty ? "（没有输出）" : tail))
             }
         }
         return out
@@ -1052,7 +1233,7 @@ private struct Trace: View {
                     switch item.kind {
                     case .file: if let url = item.url { openFile(url) }
                     case .event, .reminder: if let url = item.url { UIApplication.shared.open(url) }
-                    case .command: break
+                    case .command, .remoteFile: break
                     }
                 } label: {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
@@ -1066,7 +1247,7 @@ private struct Trace: View {
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
                         }
                         Spacer(minLength: 0)
-                        if item.kind != .command {
+                        if item.kind != .command, item.kind != .remoteFile {
                             Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                     }
@@ -1140,8 +1321,21 @@ private struct Trace: View {
                             Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                             Text(Self.tidy(more.input)).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(12)
                         }
+                        if let name = more.photo, let data = Disk.photo(name), let image = UIImage(data: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 260)
+                                .clipShape(.rect(cornerRadius: Ink.Radius.small))
+                                .padding(.top, 2)
+                        }
                         Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
-                        Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                        if let hunk = Diff.hunk(in: more.output) {
+                            Text(more.output.components(separatedBy: "\n").first ?? "").font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft)
+                            DiffText(hunk: hunk)
+                        } else {
+                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                        }
                     }
                     .textSelection(.enabled)
                     .padding(Ink.Space.s)
@@ -1169,6 +1363,7 @@ private struct Trace: View {
         case .event: "calendar.badge.checkmark"
         case .reminder: "checklist"
         case .file: "doc.text"
+        case .remoteFile: "doc.badge.gearshape"
         case .command: "terminal"
         }
     }
@@ -1268,6 +1463,31 @@ private struct LiveStatus: View {
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { breathe = true }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// What 斗室's command is printing right now: the last few lines, as they arrive.
+private struct DenTail: View {
+    @ObservedObject private var den = Den.shared
+
+    var body: some View {
+        let lines = Array(den.log.suffix(5).filter { $0.kind != .command })
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(lines) { line in
+                    Text(line.text)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(line.kind == .error ? Ink.stop : Ink.inkSoft)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .padding(Ink.Space.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small))
+            .animation(.easeOut(duration: 0.15), value: den.log.count)
+            .accessibilityLabel("斗室正在输出：" + (lines.last?.text ?? ""))
+        }
     }
 }
 

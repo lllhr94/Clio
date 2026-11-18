@@ -52,6 +52,12 @@ enum Pref {
     // MARK: 晨信
 
     static var morningOn: Bool { bool("morning.on", false) }
+    /// A notification when a companion finishes, or stops halfway, while the app is away.
+    static var notifyDone: Bool { bool("notify.done", true) }
+    /// Ask iOS for continued processing when a turn runs long, so it can finish after the user leaves.
+    static var keepGoing: Bool { bool("notify.keepGoing", true) }
+    /// The frame-rate meter in the corner, for checking smoothness.
+    static var fpsMeter: Bool { bool("look.fps", false) }
     static var morningHour: Int { int("morning.hour", 7) }
 }
 

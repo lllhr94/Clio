@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import SwiftUI
 
 /// 调弦: the model services and the default model, what the companions remember, and the way to everything else.

@@ -19,6 +19,7 @@ struct ClioRoot: View {
     @StateObject private var team = TeamModel()
     @ObservedObject private var asker = Asker.shared
     @AppStorage("look.scheme") private var scheme = "system"
+    @AppStorage("look.fps") private var fps = false
     @Environment(\.scenePhase) private var scenePhase
     /// Keeps the first-launch setup on screen through its last page, after the service is already connected.
     @State private var holdingSetup = false
@@ -35,6 +36,7 @@ struct ClioRoot: View {
                     .transition(.blurReplace)
             }
         }
+        .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
         .animation(Ink.Motion.settle, value: team.phase)
         .animation(Ink.Motion.settle, value: holdingSetup)
         .tint(Ink.accent)
@@ -77,7 +79,10 @@ struct Desk: View {
     @State private var looking = false
     @State private var roomEditing: RoomInfo?
     @State private var searching = false
+    @State private var showArchived = false
     @State private var query = ""
+    /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
+    @State private var clearing: Opened?
 
     private struct EditTarget: Identifiable {
         let id: String
@@ -104,6 +109,15 @@ struct Desk: View {
             (Opened.gathering(room.id), room.name, room.preview ?? "还没有人说话", room.lastAt ?? 0, BotInfo?.none)
         }
         return (bots + rooms).sorted { $0.3 > $1.3 }.map { (id: $0.0, name: $0.1, preview: $0.2, at: $0.3, bot: $0.4) }
+    }
+
+    /// The conversations on the desk, without the ones put away.
+    private var shownThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
+        recent.filter { !team.archived.contains($0.id.id) }
+    }
+
+    private var archivedThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
+        recent.filter { team.archived.contains($0.id.id) }
     }
 
     var body: some View {
@@ -176,16 +190,42 @@ struct Desk: View {
                             Rectangle().fill(Ink.rule).frame(height: 1)
                         }
                     } else {
-                    if recent.isEmpty {
-                        Text("还没有聊过。点上面的旅伴，说第一句话吧。")
+                    if shownThreads.isEmpty {
+                        Text(recent.isEmpty ? "还没有聊过。点上面的旅伴，说第一句话吧。" : "都归档了。下面能翻出来。")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                             .padding(.vertical, Ink.Space.l)
                     }
-                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(shownThreads.enumerated()), id: \.element.id) { index, item in
                         thread(item)
-                        if index != recent.count - 1 {
+                        if index != shownThreads.count - 1 {
                             Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                        }
+                    }
+                    if !archivedThreads.isEmpty {
+                        Button {
+                            Haptics.light()
+                            withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
+                        } label: {
+                            HStack(spacing: Ink.Space.s) {
+                                Image(systemName: "archivebox").font(.system(size: 13))
+                                Text("已归档 \(archivedThreads.count) 段").font(.system(size: 14, weight: .medium))
+                                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                                    .rotationEffect(.degrees(showArchived ? 180 : 0))
+                                Spacer()
+                            }
+                            .foregroundStyle(Ink.inkSoft)
+                            .padding(.vertical, Ink.Space.l)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, Ink.Space.l)
+                        if showArchived {
+                            ForEach(archivedThreads, id: \.id) { item in
+                                thread(item)
+                                    .opacity(0.75)
+                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                            }
                         }
                     }
                     }
@@ -257,6 +297,34 @@ struct Desk: View {
         .fullScreenCover(isPresented: $tuning) {
             SettingsView(team: team) {}
         }
+        .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
+            Button(clearingIsRoom ? "散了" : "清空", role: .destructive) {
+                guard let target = clearing else { return }
+                switch target {
+                case .gathering(let id): team.deleteRoom(id)
+                case .companion: team.clearChat(target.id)
+                }
+                Haptics.thud()
+                clearing = nil
+            }
+            Button("算了", role: .cancel) { clearing = nil }
+        } message: {
+            Text(clearingIsRoom ? "雅集和里面的话都会删掉，旅伴们还在。" : "这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
+            guard let chat = note.object as? String else { return }
+            if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else if chat.hasPrefix("bot-") { opened = .companion(String(chat.dropFirst(4))) }
+        }
+    }
+
+    private var clearingIsRoom: Bool {
+        if case .gathering = clearing { return true }
+        return false
+    }
+
+    private var clearingTitle: String {
+        guard let target = clearing else { return "" }
+        return clearingIsRoom ? "散了这个雅集？" : "清空和\(recent.first { $0.id == target }?.name ?? "旅伴")的絮语？"
     }
 
     private func open(_ item: DrawerItem) {
@@ -406,7 +474,21 @@ struct Desk: View {
         .padding(.top, Ink.Space.xl)
     }
 
+    private func swipes(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> [SwipeAction] {
+        let key = item.id.id
+        let archived = team.archived.contains(key)
+        return [
+            SwipeAction(title: archived ? "拿回来" : "归档", symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.accent) {
+                withAnimation(Ink.Motion.settle) { team.archive(key, !archived) }
+            },
+            SwipeAction(title: item.bot == nil ? "散了" : "清空", symbol: "trash", tint: Ink.stop) {
+                clearing = item.id
+            },
+        ]
+    }
+
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
+        SwipeRow(actions: swipes(item)) {
         Button {
             Haptics.tick(0.5)
             opened = item.id
@@ -448,12 +530,22 @@ struct Desk: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .contextMenu {
+            if team.archived.contains(item.id.id) {
+                Button("从归档里拿回来", systemImage: "tray.and.arrow.up") { withAnimation(Ink.Motion.settle) { team.archive(item.id.id, false) } }
+            } else {
+                Button("归档", systemImage: "archivebox") {
+                    withAnimation(Ink.Motion.settle) { team.archive(item.id.id, true) }
+                    Haptics.tick(0.5)
+                }
+            }
             if case .gathering(let id) = item.id, let room = team.rooms.first(where: { $0.id == id }) {
                 Button("改雅集", systemImage: "pencil") { roomEditing = room }
                 Button("散了这个雅集", systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
             } else if let bot = item.bot {
                 Button("看名帖", systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
+                Button("清空这段絮语", systemImage: "trash", role: .destructive) { clearing = item.id }
             }
+        }
         }
     }
 

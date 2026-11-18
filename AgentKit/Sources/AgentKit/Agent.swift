@@ -18,10 +18,13 @@ public struct ApprovalAsk: Equatable, Sendable {
 public struct ToolOutput: Equatable, Sendable {
     public var text: String
     public var isError: Bool
+    /// Pictures the tool brings back, for models that can see: a page's screenshot, a photo from the desk.
+    public var images: [ImagePart]
 
-    public init(_ text: String, isError: Bool = false) {
+    public init(_ text: String, isError: Bool = false, images: [ImagePart] = []) {
         self.text = text
         self.isError = isError
+        self.images = images
     }
 }
 
@@ -159,7 +162,9 @@ public struct Agent: Sendable {
         do {
             let output = try await tool.run(arguments)
             await emit(.toolFinished(id: call.id, ok: !output.isError))
-            return .toolResult(output.text, for: call, isError: output.isError)
+            var result = Message.toolResult(output.text, for: call, isError: output.isError)
+            result.images = output.images
+            return result
         } catch {
             await emit(.toolFinished(id: call.id, ok: false))
             return .toolResult("出错了：\(error.localizedDescription)", for: call, isError: true)

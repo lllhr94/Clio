@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 /// 书案: the folder the companions work in. Browse it, read what they wrote, share or throw away.
@@ -36,6 +37,9 @@ struct StudyFolder: View {
     var close: (() -> Void)?
     @State private var items: [StudyPage.Item] = []
     @State private var deleting: StudyPage.Item?
+    @State private var importing = false
+    @State private var naming = false
+    @State private var newFolder = ""
 
     var body: some View {
         ZStack {
@@ -84,6 +88,43 @@ struct StudyFolder: View {
                     Button("好了") { close() }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("从「文件」导入", systemImage: "square.and.arrow.down") { importing = true }
+                    Button("新建文件夹", systemImage: "folder.badge.plus") { newFolder = ""; naming = true }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("导入文件或新建文件夹")
+            }
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            for source in urls {
+                let reach = source.startAccessingSecurityScopedResource()
+                defer { if reach { source.stopAccessingSecurityScopedResource() } }
+                var target = folder.appendingPathComponent(source.lastPathComponent)
+                var number = 2
+                while FileManager.default.fileExists(atPath: target.path) {
+                    let base = source.deletingPathExtension().lastPathComponent
+                    let ext = source.pathExtension
+                    target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                    number += 1
+                }
+                try? FileManager.default.copyItem(at: source, to: target)
+            }
+            Haptics.thud()
+            withAnimation(Ink.Motion.settle) { load() }
+        }
+        .alert("新建文件夹", isPresented: $naming) {
+            TextField("名字", text: $newFolder)
+            Button("建") {
+                let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
+                guard !name.isEmpty else { return }
+                try? FileManager.default.createDirectory(at: folder.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
+                withAnimation(Ink.Motion.settle) { load() }
+            }
+            Button("算了", role: .cancel) {}
         }
         .onAppear(perform: load)
         .refreshable { load() }
@@ -123,7 +164,8 @@ struct StudyFolder: View {
     static func icon(_ url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "md", "txt": "doc.text"
-        case "json", "js", "py", "sh", "swift", "html", "css", "csv": "chevron.left.forwardslash.chevron.right"
+        case "json", "js", "py", "sh", "swift", "html", "css": "chevron.left.forwardslash.chevron.right"
+        case "csv", "tsv", "xlsx", "numbers": "tablecells"
         case "png", "jpg", "jpeg", "heic", "gif": "photo"
         case "pdf": "doc.richtext"
         default: "doc"
@@ -141,20 +183,34 @@ struct StudyFolder: View {
     }
 }
 
-/// One file: Markdown read as prose, other text in a code face, anything else offered to share.
+/// One file: Markdown read as prose, other text in a code face, pictures to look at, tables as a grid,
+/// and everything else (PDF, Word, Excel, Keynote…) through the system's own viewer.
 struct StudyFile: View {
     let url: URL
     @State private var text: String?
     @State private var plain = false
+    @State private var picture: UIImage?
+    @State private var loaded = false
 
-    private var markdown: Bool { ["md", "markdown", "txt"].contains(url.pathExtension.lowercased()) }
+    private var ext: String { url.pathExtension.lowercased() }
+    private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
+    private var table: Bool { ["csv", "tsv"].contains(ext) }
 
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            ScrollView {
-                Group {
-                    if let text {
+            if let picture {
+                ScrollView([.horizontal, .vertical]) {
+                    Image(uiImage: picture)
+                        .resizable()
+                        .scaledToFit()
+                        .containerRelativeFrame(.horizontal)
+                }
+            } else if let text, table, !plain {
+                TableGrid(rows: CSV.rows(text, separator: ext == "tsv" ? "\t" : ","))
+            } else if let text {
+                ScrollView {
+                    Group {
                         if markdown && !plain {
                             ProseView(text: text, streaming: false)
                         } else {
@@ -164,28 +220,126 @@ struct StudyFile: View {
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else {
-                        Text("这个文件不是文字，可以分享出去用别的 app 打开。")
-                            .font(Ink.secondary)
-                            .foregroundStyle(Ink.inkSoft)
                     }
+                    .padding(.horizontal, Ink.Space.page)
+                    .padding(.vertical, Ink.Space.l)
                 }
-                .padding(.horizontal, Ink.Space.page)
-                .padding(.vertical, Ink.Space.l)
+            } else if loaded {
+                if QLPreviewController.canPreview(url as NSURL) {
+                    QuickPreview(url: url).ignoresSafeArea(edges: .bottom)
+                } else {
+                    Text("这个文件打不开预览，可以分享出去用别的 app 打开。")
+                        .font(Ink.secondary)
+                        .foregroundStyle(Ink.inkSoft)
+                        .padding(Ink.Space.page)
+                }
             }
         }
         .navigationTitle(url.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if markdown && text != nil {
-                    Button(plain ? "排版" : "原文") { plain.toggle() }
+                if (markdown || table) && text != nil {
+                    Button(plain ? (table ? "表格" : "排版") : "原文") { plain.toggle() }
                 }
                 ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
             }
         }
         .onAppear {
+            defer { loaded = true }
+            if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(ext), let image = UIImage(contentsOfFile: url.path) {
+                picture = image
+                return
+            }
             if let data = try? Data(contentsOf: url), data.count < 2_000_000 { text = String(data: data, encoding: .utf8) }
         }
+    }
+}
+
+/// Comma- or tab-separated text as rows of cells. Quotes may hold separators, line breaks and doubled quotes.
+enum CSV {
+    static func rows(_ text: String, separator: Character) -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var cell = ""
+        var quoted = false
+        var chars = Array(text)
+        if chars.first == "\u{FEFF}" { chars.removeFirst() }
+        var index = 0
+        while index < chars.count {
+            let char = chars[index]
+            if quoted {
+                if char == "\"" {
+                    if index + 1 < chars.count, chars[index + 1] == "\"" { cell.append("\""); index += 1 } else { quoted = false }
+                } else {
+                    cell.append(char)
+                }
+            } else if char == "\"" && cell.isEmpty {
+                quoted = true
+            } else if char == separator {
+                row.append(cell); cell = ""
+            } else if char == "\n" || char == "\r\n" || char == "\r" {
+                row.append(cell); cell = ""
+                rows.append(row); row = []
+            } else {
+                cell.append(char)
+            }
+            index += 1
+            if rows.count >= 2000 { break }
+        }
+        if !cell.isEmpty || !row.isEmpty { row.append(cell); rows.append(row) }
+        return rows
+    }
+}
+
+/// A grid that scrolls both ways, the first row as its header.
+private struct TableGrid: View {
+    let rows: [[String]]
+
+    var body: some View {
+        let columns = rows.map(\.count).max() ?? 0
+        ScrollView([.horizontal, .vertical]) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    GridRow {
+                        ForEach(0..<columns, id: \.self) { column in
+                            Text(column < row.count ? row[column] : "")
+                                .font(index == 0 ? .system(size: 13, weight: .semibold) : .system(size: 13))
+                                .foregroundStyle(Ink.ink)
+                                .lineLimit(3)
+                                .frame(minWidth: 60, maxWidth: 220, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
+                                .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
+                        }
+                    }
+                }
+            }
+            .padding(Ink.Space.l)
+            .textSelection(.enabled)
+        }
+    }
+}
+
+/// The system viewer, for PDFs, Office files, and anything else it knows.
+private struct QuickPreview: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Source { Source(url: url) }
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
+
+    final class Source: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+        init(url: URL) { self.url = url }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewItem(at index: Int, controller: QLPreviewController) -> QLPreviewItem { url as NSURL }
     }
 }

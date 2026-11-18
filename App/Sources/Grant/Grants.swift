@@ -10,7 +10,7 @@ import UserNotifications
 
 /// 应许: what companions may do, one ability at a time. Each is off, asks every time, or goes ahead.
 enum Grant: String, CaseIterable, Identifiable, Sendable {
-    case web, browser, desk, den, hills, mcp, vault, memory, letters, calendar, reminders, location, contacts, photos, motion, clipboard, links, device
+    case web, browser, desk, den, hills, mcp, vault, memory, letters, calendar, reminders, location, contacts, photos, motion, health, clipboard, links, device
 
     var id: String { rawValue }
 
@@ -42,6 +42,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .contacts: "通讯录"
         case .photos: "相册"
         case .motion: "步数"
+        case .health: "健康"
         case .clipboard: "剪贴板"
         case .links: "打开链接与 app"
         case .device: "手机状态"
@@ -65,6 +66,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .contacts: "按名字查通讯录里的人"
         case .photos: "看相册里最近的照片（时间、地点）"
         case .motion: "读手机记的步数和走过的距离"
+        case .health: "读「健康」里的步数、睡眠、心率、活动能量和体重（只读，不写）"
         case .clipboard: "读或写剪贴板"
         case .links: "替你打开网址、地图、电话或其他 app"
         case .device: "电量、存储空间、系统版本"
@@ -88,6 +90,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .contacts: "person.crop.circle"
         case .photos: "photo.on.rectangle"
         case .motion: "figure.walk"
+        case .health: "heart"
         case .clipboard: "doc.on.clipboard"
         case .links: "arrow.up.forward.app"
         case .device: "iphone"
@@ -97,7 +100,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Sensitive things ask first until the user says otherwise.
     var standard: Policy {
         switch self {
-        case .location, .contacts, .photos, .clipboard, .links, .hills: .ask
+        case .location, .contacts, .photos, .clipboard, .links, .hills, .health: .ask
         default: .allow
         }
     }
@@ -127,7 +130,10 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         default:
             if name.hasPrefix("browser_") { .browser }
             else if name.hasPrefix("mcp_") { .mcp }
-            else if name.hasPrefix("desk_") || name == "run_js" { .desk }
+            else if name.hasPrefix("desk_") || name == "run_js" || name == "view_image" { .desk }
+            else if name.hasPrefix("den_") { .den }
+            else if name.hasPrefix("ssh_") || name.hasPrefix("hill_") { .hills }
+            else if name.hasPrefix("health_") { .health }
             else { nil }
         }
     }
@@ -189,6 +195,10 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             case .fullAccess: return .granted
             default: return .denied
             }
+        case .health:
+            // iOS never tells an app whether reading was allowed; only whether it has asked.
+            guard Health.available else { return .denied }
+            return Health.asked ? .granted : .notAsked
         default:
             return .none
         }
@@ -205,6 +215,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .calendar: _ = try? await EKEventStore().requestFullAccessToEvents()
         case .reminders: _ = try? await EKEventStore().requestFullAccessToReminders()
         case .letters: _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        case .health: _ = await Health.authorize()
         default: break
         }
     }

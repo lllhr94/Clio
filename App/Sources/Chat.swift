@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import SwiftUI
 
 /// One step of a trace, opened up.
@@ -6,6 +7,8 @@ struct StepDetail: Equatable {
     var input: String
     var output: String
     var seconds: Int?
+    /// A picture the step brought back, such as a page's screenshot (a kept photo's name).
+    var photo: String?
 }
 
 /// One row of a chat.
@@ -216,7 +219,7 @@ final class ChatModel: ObservableObject {
                     stepAt = entry.at
                 }
                 let input = message.toolCallId.flatMap { calls[$0] } ?? ""
-                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil))
+                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first))
                 stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)

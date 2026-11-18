@@ -14,7 +14,7 @@ struct GrantsPage: View {
         ("远山与信匣", [.hills, .mcp, .vault]),
         ("案头与小屋", [.desk, .den, .memory, .letters]),
         ("手机里的事", [.calendar, .reminders, .contacts, .photos, .clipboard]),
-        ("身边与身体", [.location, .motion, .device]),
+        ("身边与身体", [.location, .motion, .health, .device]),
     ]
 
     var body: some View {
@@ -110,7 +110,7 @@ struct GrantsPage: View {
                 try? await Task.sleep(nanoseconds: 350_000_000)
             }
             await Grant.letters.requestSystem()
-            for grant in [Grant.location, .photos, .motion, .device, .calendar, .reminders, .contacts] where grant.policy == .ask || grant.policy == .off {
+            for grant in [Grant.location, .photos, .motion, .health, .device, .calendar, .reminders, .contacts] where grant.policy == .ask || grant.policy == .off {
                 if grant.system == .granted || grant.system == .limited || grant.system == .none { grant.policy = .allow }
             }
             load()

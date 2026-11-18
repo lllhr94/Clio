@@ -64,6 +64,13 @@ public struct AnthropicProvider: ModelProvider {
                 add("assistant", blocks)
             case .tool:
                 var block: [String: Any] = ["type": "tool_result", "tool_use_id": message.toolCallId ?? "", "content": message.text.isEmpty ? "（空）" : message.text]
+                if !message.images.isEmpty {
+                    var content: [[String: Any]] = [["type": "text", "text": message.text.isEmpty ? "（图片）" : message.text]]
+                    content += message.images.map { image in
+                        ["type": "image", "source": ["type": "base64", "media_type": image.mediaType, "data": image.data.base64EncodedString()]]
+                    }
+                    block["content"] = content
+                }
                 if message.isError { block["is_error"] = true }
                 add("user", [block])
             }

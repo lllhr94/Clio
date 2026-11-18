@@ -10,6 +10,10 @@ struct HillsPage: View {
     @State private var tested: [String: String] = [:]
     @State private var refreshing: String?
     @State private var copied = false
+    @State private var terminalHost: Hills.Host?
+    @State private var browserAsk: Hills.Host?
+    /// Host id → what the browser installation is doing now.
+    @State private var installing: [String: String] = [:]
 
     var body: some View {
         NavigationStack {
@@ -75,6 +79,14 @@ struct HillsPage: View {
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } } }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
             .sheet(item: $editingServer) { server in ServerEditor(server: server) }
+            .fullScreenCover(item: $terminalHost) { host in InkstonePage(hill: host) }
+            .alert("在\(browserAsk?.name ?? "")上装一个浏览器？", isPresented: Binding(get: { browserAsk != nil }, set: { if !$0 { browserAsk = nil } })) {
+                Button("开始装") { if let host = browserAsk { installBrowser(host) } }
+                Button("算了", role: .cancel) {}
+            } message: {
+                Text("会装上 Node.js、Playwright 的 MCP 服务和 Chromium（大约 400 MB，要几分钟），再在 \(Hills.browserPort) 端口开一个要令牌才能进的门，最后自动接进下面的 MCP 服务。\n\n门走 https，用那台电脑自己做的证书；手机经 SSH 读到证书指纹，只认这一张，别人冒充不了。\n\n需要 root 或免密 sudo。云服务器记得在安全组里放行 \(Hills.browserPort) 端口。")
+            }
+            .task { resumeInstalls() }
         }
     }
 
@@ -127,6 +139,34 @@ struct HillsPage: View {
             if let result = tested[host.id] {
                 Text(result).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
             }
+            HStack(spacing: Ink.Space.s) {
+                Button {
+                    Haptics.light()
+                    terminalHost = host
+                } label: {
+                    Label("笔砚", systemImage: "terminal").font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .tint(Ink.accent)
+                Button {
+                    Haptics.light()
+                    browserAsk = host
+                } label: {
+                    Label(installing[host.id] == nil ? "装浏览器" : "在装…", systemImage: "safari").font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .tint(Ink.accent)
+                .disabled(installing[host.id] != nil)
+            }
+            .padding(.leading, 32)
+            .padding(.top, 2)
+            if let status = installing[host.id] {
+                HStack(alignment: .top, spacing: Ink.Space.s) {
+                    ProgressView().controlSize(.mini)
+                    Text(status).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                }
+                .padding(.leading, 32)
+            }
         }
         .padding(Ink.Space.l)
         .contentShape(Rectangle())
@@ -166,6 +206,78 @@ struct HillsPage: View {
         .contentShape(Rectangle())
         .onTapGesture { editingServer = server }
         .contextMenu { Button("删掉", systemImage: "trash", role: .destructive) { hills.remove(server) } }
+    }
+
+    // MARK: A browser on the far computer
+
+    private static func installKey(_ host: Hills.Host) -> String { "hill.browserJob.\(host.id)" }
+
+    private func installBrowser(_ host: Hills.Host) {
+        let token = (0..<4).map { _ in UUID().uuidString.replacingOccurrences(of: "-", with: "") }.joined().lowercased().prefix(48)
+        installing[host.id] = "开始…"
+        Task {
+            do {
+                let job = try await Hills.startJob(Hills.browserInstallScript(token: String(token)), on: host)
+                Vault.save(String(token), as: "hill.browserToken.\(host.id)")
+                UserDefaults.standard.set(job, forKey: Self.installKey(host))
+                await follow(job, on: host)
+            } catch {
+                installing[host.id] = nil
+                tested[host.id] = "没能开始装：\(error.localizedDescription)"
+                Haptics.lock()
+            }
+        }
+    }
+
+    /// Picks up installs that were still going when the page was closed.
+    private func resumeInstalls() {
+        for host in hills.hosts {
+            guard installing[host.id] == nil, let job = UserDefaults.standard.string(forKey: Self.installKey(host)) else { continue }
+            installing[host.id] = "接着看安装进度…"
+            Task { await follow(job, on: host) }
+        }
+    }
+
+    private func follow(_ job: String, on host: Hills.Host) async {
+        while !Task.isCancelled {
+            do {
+                let state = try await Hills.checkJob(job, on: host, lines: 6)
+                let last = state.tail.split(separator: "\n").last.map(String.init) ?? ""
+                if state.running {
+                    installing[host.id] = last.isEmpty ? "在装…" : last
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    continue
+                }
+                UserDefaults.standard.removeObject(forKey: Self.installKey(host))
+                installing[host.id] = nil
+                guard state.exit == 0 else {
+                    tested[host.id] = "没装成（退出码 \(state.exit.map(String.init) ?? "不明")）：\n" + state.tail.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    Haptics.lock()
+                    return
+                }
+                let token = Vault.load(String.self, key: "hill.browserToken.\(host.id)")
+                guard let pin = try? await Hills.browserPin(on: host) else {
+                    tested[host.id] = "装好了，但读不到证书指纹（~/.clio/browser/cert.pem）。在笔砚里看看 openssl 在不在。"
+                    Haptics.lock()
+                    return
+                }
+                let url = "https://\(host.address):\(Hills.browserPort)/mcp"
+                var server = hills.servers.first { $0.url == url || $0.url == "http://\(host.address):\(Hills.browserPort)/mcp" } ?? Hills.Server(name: "\(host.name) 的浏览器", url: url)
+                server.url = url
+                server.pin = pin
+                server.enabled = true
+                hills.save(server, token: token)
+                let count = await hills.refresh(server)
+                tested[host.id] = count > 0
+                    ? "浏览器装好了，借来 \(count) 件工具，已经接进 MCP 服务。"
+                    : "装好了，但连不上 \(url)。多半是安全组或防火墙没放行 \(Hills.browserPort) 端口。放行后在下面点「连接」。"
+                Haptics.thud()
+                return
+            } catch {
+                installing[host.id] = "暂时看不到进度：\(error.localizedDescription)"
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+            }
+        }
     }
 
     private func test(_ host: Hills.Host) {

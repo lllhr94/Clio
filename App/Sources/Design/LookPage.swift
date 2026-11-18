@@ -23,6 +23,9 @@ struct LookPage: View {
     @AppStorage("chat.maxOutput") private var maxOutput = 0
     @AppStorage("morning.on") private var morningOn = false
     @AppStorage("morning.hour") private var morningHour = 7
+    @AppStorage("notify.done") private var notifyDone = true
+    @AppStorage("notify.keepGoing") private var keepGoing = true
+    @AppStorage("look.fps") private var fps = false
 
     private let sample = """
     ## 小样
@@ -65,6 +68,7 @@ struct LookPage: View {
                     Toggle("回复下显示耗时和用量", isOn: $stats)
                     Toggle("行迹默认展开", isOn: $traceOpen)
                     Toggle("聊天页的鲸鱼", isOn: $mascot)
+                    Toggle("角落显示帧率", isOn: $fps)
                 }
 
                 Section {
@@ -108,6 +112,13 @@ struct LookPage: View {
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
+                    Toggle("干得久时向系统要时间", isOn: $keepGoing)
+                    Toggle("离开时干完活通知我", isOn: $notifyDone)
+                } header: { Text("在后台") } footer: {
+                    Text("一轮活干了几秒还没完，Clio 会向 iOS 申请「继续处理」：你切走以后锁屏上有一条进度，旅伴接着干。iOS 不肯给或时间用完时，会发通知告诉你停在哪，回到 Clio 就自动接着做。点通知直接回到那段絮语。")
+                }
+
+                Section {
                     Button("全部恢复默认", role: .destructive) { reset() }
                 }
             }
@@ -121,11 +132,11 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "notify.keepGoing",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
-        scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false
+        scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true; keepGoing = true
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
         Haptics.thud()
     }

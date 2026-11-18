@@ -35,7 +35,19 @@ public struct OpenAIProvider: ModelProvider {
         if !request.system.isEmpty { messages.append(["role": "system", "content": request.system]) }
         // A thinking model needs its thoughts back only inside the turn still running.
         let turnStart = request.messages.lastIndex { $0.role == .user } ?? 0
+        // Tool messages carry text only here; pictures a tool brought back follow as a user message after them.
+        var held: [ImagePart] = []
+        func release() {
+            guard !held.isEmpty else { return }
+            var parts: [[String: Any]] = held.map { image in
+                ["type": "image_url", "image_url": ["url": "data:\(image.mediaType);base64,\(image.data.base64EncodedString())"]]
+            }
+            parts.append(["type": "text", "text": "（上面是工具带回来的图片。）"])
+            messages.append(["role": "user", "content": parts])
+            held = []
+        }
         for (index, message) in request.messages.enumerated() {
+            if message.role != .tool { release() }
             switch message.role {
             case .user:
                 if message.images.isEmpty {
@@ -60,8 +72,10 @@ public struct OpenAIProvider: ModelProvider {
                 messages.append(item)
             case .tool:
                 messages.append(["role": "tool", "tool_call_id": message.toolCallId ?? "", "content": message.text])
+                held += message.images
             }
         }
+        release()
         var body: [String: Any] = [
             "model": request.model,
             "messages": messages,

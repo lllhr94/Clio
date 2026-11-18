@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import Foundation
 import SwiftUI
 
@@ -173,7 +174,7 @@ final class Den: ObservableObject {
                 let result = await Den.shared.run(command, timeout: timeout)
                 var text = result.output
                 if !result.errorOutput.isEmpty { text += (text.isEmpty ? "" : "\n") + result.errorOutput }
-                if text.count > 12000 { text = String(text.prefix(4000)) + "\n……（中间省略 \(text.count - 8000) 字）……\n" + String(text.suffix(4000)) }
+                text = Shell.clip(text)
                 if result.timedOut { return ToolOutput((text.isEmpty ? "" : text + "\n") + "（超过 \(Int(timeout)) 秒没跑完，已经停掉。）", isError: true) }
                 let tail = result.code == 0 ? "" : "\n（退出码 \(result.code)）"
                 return ToolOutput((text.isEmpty ? "（没有输出）" : text) + tail, isError: result.code != 0)

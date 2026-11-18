@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import SwiftUI
 
 /// Connects a model service. On first launch it begins with a short welcome; from 调弦 it goes straight to the service.

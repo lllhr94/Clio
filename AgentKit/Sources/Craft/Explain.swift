@@ -2,8 +2,8 @@ import AgentKit
 import Foundation
 
 /// When something fails: what happened in plain words, and the one thing to do next.
-enum Explain {
-    enum Next: String, Codable {
+public enum Explain {
+    public enum Next: String, Codable, Sendable {
         /// Open 调弦 to fix a key, a model or a service.
         case tuning
         /// Send the same message again.
@@ -14,12 +14,18 @@ enum Explain {
         case care
     }
 
-    struct Advice {
-        var title: String
-        var detail: String
-        var next: Next?
+    public struct Advice: Equatable, Sendable {
+        public var title: String
+        public var detail: String
+        public var next: Next?
 
-        var button: String? {
+        public init(title: String, detail: String, next: Next?) {
+            self.title = title
+            self.detail = detail
+            self.next = next
+        }
+
+        public var button: String? {
             switch next {
             case .tuning: "去调弦"
             case .retry: "再试一次"
@@ -31,7 +37,7 @@ enum Explain {
     }
 
     /// A model call that failed.
-    static func model(_ error: Error, service: String) -> Advice {
+    public static func model(_ error: Error, service: String) -> Advice {
         if let failure = error as? ProviderError {
             let words = failure.message.lowercased()
             if words.contains("context") && (words.contains("length") || words.contains("long") || words.contains("maximum")) || words.contains("too many tokens") {

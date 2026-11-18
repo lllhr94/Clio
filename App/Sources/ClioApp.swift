@@ -11,6 +11,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound, .list]
     }
+
+    /// Tapping a companion's notification opens that conversation.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let chat = response.notification.request.content.userInfo["chat"] as? String else { return }
+        await MainActor.run {
+            NotificationCenter.default.post(name: .clioOpenChat, object: chat)
+        }
+    }
+}
+
+extension Notification.Name {
+    /// Object: a chat key, `bot-…` or `room-…`.
+    static let clioOpenChat = Notification.Name("clio.openChat")
 }
 
 @main
