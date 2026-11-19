@@ -399,6 +399,13 @@ final class TeamModel: ObservableObject {
         return "\(found.model) · \(found.endpoint.name)"
     }
 
+    /// Just the model, without a relay's routing prefix ("auto/deepseek-v4.1-flash" reads as "deepseek-v4.1-flash"),
+    /// for places too narrow for the whole name.
+    func modelShort(_ ref: String?) -> String {
+        guard let found = resolve(ref) else { return "没有设置" }
+        return found.model.split(separator: "/").last.map(String.init) ?? found.model
+    }
+
     // MARK: Bots and groups
 
     private func ensureMainBot() {

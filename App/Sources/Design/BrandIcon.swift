@@ -57,24 +57,67 @@ actor BrandIcons {
             memory[domain] = image
             return image
         }
-        // The service's own touch icon first (sharp, and reachable wherever the service is), then a favicon service.
-        let sources = [
+        // The service's own icons first: what its home page links to, then the usual places. Then favicon services,
+        // the ones reachable from China before the ones that are not.
+        var sources = await linked(on: domain)
+        sources += [
             "https://\(domain)/apple-touch-icon.png",
+            "https://\(domain)/apple-touch-icon-precomposed.png",
+            "https://\(domain)/favicon.ico",
+            "https://favicon.im/\(domain)?larger=true",
+            "https://api.iowen.cn/favicon/\(domain).png",
             "https://www.google.com/s2/favicons?domain=\(domain)&sz=128",
             "https://icons.duckduckgo.com/ip3/\(domain).ico",
         ]
         for source in sources {
-            guard let url = URL(string: source) else { continue }
-            var request = URLRequest(url: url, timeoutInterval: 8)
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  let image = UIImage(data: data), image.size.width >= 32 else { continue }
+            guard let url = URL(string: source), let image = await fetch(url) else { continue }
             try? image.pngData()?.write(to: file, options: .atomic)
             memory[domain] = image
             return image
         }
         misses.insert(domain)
+        return nil
+    }
+
+    private func fetch(_ url: URL) async -> UIImage? {
+        var request = URLRequest(url: url, timeoutInterval: 6)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let image = UIImage(data: data), image.size.width >= 32 else { return nil }
+        return image
+    }
+
+    /// The icons a site's home page points to (`apple-touch-icon`, `icon`), largest first.
+    private func linked(on domain: String) async -> [String] {
+        guard let home = URL(string: "https://\(domain)/") else { return [] }
+        var request = URLRequest(url: home, timeoutInterval: 6)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let html = String(data: data.prefix(200_000), encoding: .utf8) ?? String(data: data.prefix(200_000), encoding: .ascii) else { return [] }
+        let base = response.url ?? home
+        var found: [(String, Int)] = []
+        let tags = html.components(separatedBy: "<link").dropFirst().map { piece in piece.prefix { char in char != ">" } }
+        for tag in tags {
+            let lower = tag.lowercased()
+            guard let rel = Self.attribute("rel", in: tag)?.lowercased(), rel.contains("icon"), !rel.contains("mask"),
+                  let href = Self.attribute("href", in: tag), !href.hasPrefix("data:"),
+                  let url = URL(string: href, relativeTo: base)?.absoluteURL else { continue }
+            if lower.contains(".svg") { continue }
+            let size = Self.attribute("sizes", in: tag).flatMap { Int($0.split(separator: "x").first ?? "") } ?? (rel.contains("apple") ? 180 : 32)
+            found.append((url.absoluteString, size))
+        }
+        return found.sorted { $0.1 > $1.1 }.map(\.0)
+    }
+
+    private static func attribute(_ name: String, in tag: Substring) -> String? {
+        for quote in ["\"", "'"] {
+            let key = name + "=" + quote
+            guard let start = tag.range(of: key, options: .caseInsensitive) else { continue }
+            let rest = tag[start.upperBound...]
+            guard let end = rest.firstIndex(of: Character(quote)) else { continue }
+            return String(rest[..<end])
+        }
         return nil
     }
 }

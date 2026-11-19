@@ -424,7 +424,7 @@ struct SettingsView: View {
 
     private var aiGroup: some View {
         group("AI") {
-            pushRow("sparkles", Tint.ai, "模型", team.settings.endpoints.isEmpty ? "还没接" : team.modelTitle(team.settings.defaultModel), warn: team.settings.endpoints.isEmpty) {
+            pushRow("sparkles", Tint.ai, "模型", team.settings.endpoints.isEmpty ? "还没接" : team.modelShort(team.settings.defaultModel), warn: team.settings.endpoints.isEmpty) {
                 subpage("模型") {
                     services
                     defaultModel
@@ -458,7 +458,7 @@ struct SettingsView: View {
             row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
             divider
             HStack(spacing: Ink.Space.m) {
-                badge("textformat", Tint.looks)
+                badge("quote.bubble", Tint.looks)
                 Text("叫法").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Spacer(minLength: Ink.Space.s)
                 Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { Haptics.tick(0.5); Theme.shared.setPlain($0) })) {
@@ -525,7 +525,7 @@ struct SettingsView: View {
         VStack(spacing: Ink.Space.xs) {
             Text("Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                 .font(Ink.serif(14, bold: true)).foregroundStyle(Ink.inkSoft)
-            Text(Words.t("开源，GPL-3.0 · 斗室用 iSH，终端用 SwiftTerm，SSH 用 Citadel"))
+            Text("开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel")
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).multilineTextAlignment(.center)
             Button("github.com/lllhr94/Clio") {
                 if let url = URL(string: "https://github.com/lllhr94/Clio") { openURL(url) }

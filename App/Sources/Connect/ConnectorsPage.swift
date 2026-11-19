@@ -57,7 +57,7 @@ struct ConnectorsPage: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .searchable(text: $query, prompt: "找连接器")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找连接器")
             .navigationTitle("连接器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
