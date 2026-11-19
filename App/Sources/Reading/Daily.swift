@@ -77,7 +77,7 @@ struct TideChip: View {
                     HStack(spacing: Ink.Space.m) {
                         Image(systemName: newest.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(book.waiting.count > 1 ? Words.t("潮水带来了 \(book.waiting.count) 样东西") : Words.t("今天潮水带来了一样东西"))
+                            Text(book.waiting.count > 1 ? "漂来了 \(book.waiting.count) 样东西" : "今天漂来了一样东西")
                                 .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                             Text("点开，\(keeper)游过去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
@@ -125,7 +125,7 @@ struct TideSheet: View {
                     if let shown {
                         reveal(shown)
                     } else if !book.waiting.isEmpty {
-                        Text(Words.t("潮水带来的，点一下，\(keeper)游过去捡起来。"))
+                        Text("水上漂来的，点一下，\(keeper)游过去捡起来。")
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: Ink.Space.m)], spacing: Ink.Space.m) {
                             ForEach(book.waiting) { find in
@@ -144,7 +144,7 @@ struct TideSheet: View {
                                     .paperCard()
                                 }
                                 .buttonStyle(PressStyle())
-                                .accessibilityLabel(Words.t("\(Self.when(find.day))潮水带来的东西，点一下捡起来"))
+                                .accessibilityLabel("\(Self.when(find.day))漂来的东西，点一下捡起来")
                             }
                         }
                     }

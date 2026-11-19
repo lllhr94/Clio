@@ -318,41 +318,54 @@ struct ScrollWhale: View {
     var size: CGFloat
     var pose: WhalePose
     var writing: Bool
+    @AppStorage("persona") private var stored = Data()
+
+    private var bare: Persona {
+        var persona = (try? JSONDecoder().decode(Persona.self, from: stored)) ?? Persona()
+        persona.frame = .bare
+        return persona
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            Whale(size: size, pose: pose)
-            ScrollProp(open: writing, size: size * 0.42)
-                .offset(x: size * 0.08, y: -size * 0.04)
+            // Standing on the bar, not framed like a portrait: the whale without its disc.
+            Whale(size: size, pose: pose, persona: bare)
+            ScrollProp(open: writing, size: size * 0.5)
+                .offset(x: size * 0.1, y: -size * 0.02)
         }
         .frame(width: size * 1.15, height: size, alignment: .bottom)
         .animation(Ink.Motion.settle, value: writing)
     }
 }
 
+/// A little scroll: rolled up into one tube while idle, opened out between its two rods while writing.
 private struct ScrollProp: View {
     var open: Bool
     var size: CGFloat
 
     var body: some View {
-        let rod = size * 0.16
+        let rodW = size * 0.13, rodH = size * 0.5
         HStack(spacing: 0) {
-            Capsule().fill(Ink.inkSoft).frame(width: rod, height: size * 0.62)
-            Rectangle()
-                .fill(Ink.paperRaised)
-                .overlay {
-                    VStack(spacing: size * 0.07) {
-                        ForEach(0..<3, id: \.self) { _ in Capsule().fill(Ink.inkFaint.opacity(0.6)).frame(height: max(1, size * 0.03)) }
-                    }
-                    .padding(.horizontal, size * 0.08)
-                    .opacity(open ? 1 : 0)
+            rod(rodW, rodH)
+            ZStack {
+                Rectangle().fill(Ink.paperRaised)
+                VStack(spacing: size * 0.07) {
+                    ForEach(0..<3, id: \.self) { _ in Capsule().fill(Ink.inkFaint.opacity(0.7)).frame(height: max(1, size * 0.035)) }
                 }
-                .frame(width: open ? size * 0.7 : size * 0.12, height: size * 0.5)
-                .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
-            Capsule().fill(Ink.inkSoft).frame(width: rod, height: size * 0.62)
+                .padding(.horizontal, size * 0.08)
+                .opacity(open ? 1 : 0)
+            }
+            .frame(width: open ? size * 0.72 : size * 0.42, height: open ? rodH * 0.84 : rodW * 1.25)
+            .overlay(Rectangle().strokeBorder(Ink.inkSoft.opacity(0.5), lineWidth: 0.5))
+            rod(rodW, rodH)
         }
-        .rotationEffect(.degrees(-12))
+        .rotationEffect(.degrees(open ? -8 : -24))
         .accessibilityHidden(true)
+    }
+
+    /// When rolled up, the rods are only the round ends of the tube.
+    private func rod(_ width: CGFloat, _ height: CGFloat) -> some View {
+        Capsule().fill(Ink.accent.opacity(0.85)).frame(width: width, height: open ? height : width * 1.5)
     }
 }
 
