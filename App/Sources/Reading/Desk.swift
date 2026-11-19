@@ -63,6 +63,8 @@ struct ClioRoot: View {
         }
         .onChange(of: scenePhase) { _, now in
             if now == .active { team.wake() }
+            // Still on screen for a moment: the last chance to ask for time in the background.
+            if now == .inactive { team.keepGoingInBackground() }
             if now == .background {
                 team.leaving()
                 Hitches.shared.save()

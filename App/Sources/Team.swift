@@ -125,6 +125,11 @@ final class TeamModel: ObservableObject {
         return "\n\n【连接器】用户还没连上的有：" + open.joined(separator: "、") + "。如果用户要做的事用其中一个会好办很多（比如查 Notion 页面、看 GitHub 仓库、规划国内路线用高德），可以一句话建议他去「" + Words.t("调弦") + " → 连接器」连上；别反复提，用户没兴趣就算了。"
     }
 
+    /// Clio is about to leave the screen: turns still running ask iOS to let them finish in the background.
+    func keepGoingInBackground() {
+        for key in runs.keys { BackgroundTurn.begin(chat: key, name: chatName(key)) }
+    }
+
     func setPlan(_ key: String, _ steps: [PlanStep]) {
         withAnimation(.smooth) { plans[key] = steps.isEmpty ? nil : steps }
     }
@@ -1154,6 +1159,7 @@ final class TeamModel: ObservableObject {
         taint.clear(key)
         SiteBook.shared.clear()
         streamed[key] = nil
+        pulseSplitters[key] = nil
         var counted = options(key)
         var spend = counted.spend ?? Spend()
         spend.turns += 1
@@ -1165,7 +1171,6 @@ final class TeamModel: ObservableObject {
         doing[key] = "正在想"
         toolCount[key] = 0
         LiveTurns.begin(chat: key, name: chatName(key))
-        if UIApplication.shared.applicationState == .active { BackgroundTurn.begin(chat: key, name: chatName(key)) }
         let task = Task { [weak self] in
             await previous?.value
             await self?.run(key, token: token)
@@ -1349,6 +1354,7 @@ final class TeamModel: ObservableObject {
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto
         agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
+        pulseSplitters[key] = nil
         doing[key] = room == nil ? "已递出，等它开口" : "\(bot.name)：已递出，等它开口"
         heard[key] = Date()
         // Before the first word nothing comes back: say so, and say it again when the wait grows long.

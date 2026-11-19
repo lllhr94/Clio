@@ -8,6 +8,8 @@ struct AppLock: ViewModifier {
     @AppStorage("lock.faceid") private var on = false
     @State private var locked = UserDefaults.standard.bool(forKey: "lock.faceid")
     @State private var asking = false
+    /// Only coming back from the background asks by itself; dismissing the Face ID sheet does not ask again.
+    @State private var wasAway = false
 
     func body(content: Content) -> some View {
         content
@@ -18,8 +20,11 @@ struct AppLock: ViewModifier {
             }
             .animation(.easeOut(duration: 0.2), value: locked)
             .onChange(of: phase) { _, now in
-                if now == .background, on { locked = true }
-                if now == .active, on, locked { unlock() }
+                if now == .background, on { locked = true; wasAway = true }
+                if now == .active, on, locked, wasAway {
+                    wasAway = false
+                    unlock()
+                }
             }
             .task { if on, locked { unlock() } }
     }

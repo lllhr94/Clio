@@ -15,7 +15,8 @@ enum BackgroundTurn {
     static var on: Bool { UserDefaults.standard.object(forKey: "bg.continue") == nil ? true : UserDefaults.standard.bool(forKey: "bg.continue") }
 
     static func begin(chat: String, name: String) {
-        guard on, tasks[chat] == nil else { return }
+        // Asked once per turn: a request already in (steps set) or a task already running is left alone.
+        guard on, tasks[chat] == nil, steps[chat] == nil else { return }
         // A fresh name each time: a name can be registered only once per launch.
         let id = prefix + UUID().uuidString.prefix(8).lowercased()
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: .main) { task in
@@ -48,6 +49,8 @@ enum BackgroundTurn {
 
     /// A step was taken: the system wants to see progress, or it ends the task.
     static func step(chat: String, doing: String?) {
+        // Counted only once the request is in; before that there is nothing to report to.
+        guard steps[chat] != nil else { return }
         steps[chat, default: 0] += 1
         guard let task = tasks[chat] else { return }
         task.progress.completedUnitCount = min(95, (steps[chat] ?? 0) * 8 + 4)
