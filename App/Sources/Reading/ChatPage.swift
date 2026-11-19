@@ -408,7 +408,9 @@ struct ChatPage: View {
                 guard photos.count < 4 else { return say("最多带四张图。") }
                 if let small = Self.shrink(data) { withAnimation(Ink.Motion.settle) { photos.append(small) } }
             }, pick: { attachPicked = $0 })
-            .presentationDetents([.large])
+            // Half open: photos, camera and files at hand; pull up for the rest.
+            .presentationDetents([.medium, .large])
+            .presentationBackgroundInteraction(.disabled)
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $deskPicking) {
