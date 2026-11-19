@@ -39,6 +39,8 @@ final class Hills: ObservableObject {
         var name: String
         var description: String
         var schema: JSONValue
+        /// The service says this tool only reads (MCP `readOnlyHint`).
+        var readOnly: Bool?
     }
 
     @Published private(set) var hosts: [Host] = []
@@ -271,6 +273,8 @@ final class Hills: ObservableObject {
     }
 
     func remove(_ server: Server) {
+        MCPAuth.forget(server.id)
+        Vault.remove("mcp.\(server.id)")
         servers.removeAll { $0.id == server.id }
         borrowed.removeAll { $0.server == server.id }
         Disk.save(servers, "mcp.json")
@@ -282,10 +286,11 @@ final class Hills: ObservableObject {
     func refresh(_ server: Server) async -> Int {
         do {
             let address = try await Self.address(server.url, through: server.tunnelHost.flatMap { id in hosts.first { $0.id == id } })
-            let client = MCPClient(url: address, token: Vault.load(String.self, key: "mcp.\(server.id)"))
-            let tools = try await client.listTools()
+            let tools = try await Self.withCredential(server.id) { token in
+                try await MCPClient(url: address, token: token).listTools()
+            }
             borrowed.removeAll { $0.server == server.id }
-            borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema) }
+            borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema, readOnly: $0.readOnly) }
             Disk.save(borrowed, "mcp-tools.json")
             lastError[server.id] = nil
             return tools.count
@@ -353,7 +358,7 @@ final class Hills: ObservableObject {
             })
         }
         for server in servers where server.enabled {
-            let token = Vault.load(String.self, key: "mcp.\(server.id)")
+            let serverId = server.id
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
             let named = Self.slug(server.name)
             let slug = named.contains(where: { $0.isASCII && ($0.isLetter || $0.isNumber) }) ? named : "s" + String(server.id.prefix(6)).lowercased()
@@ -363,10 +368,17 @@ final class Hills: ObservableObject {
                 let remote = tool.name
                 let title = server.name
                 let shown = server.connector == nil ? "远山：\(title) · \(remote)" : "\(title)：\(remote)"
-                tools.append(DeskTool(name: String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64)), description: "（来自\(server.connector == nil ? "远山 MCP" : "连接器")「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }) { arguments in
+                // A connector reaches the person's own account: anything not marked read-only asks first.
+                let asks = server.connector != nil && tool.readOnly != true
+                let what = String(tool.description.prefix(80))
+                tools.append(DeskTool(name: String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64)), description: "（来自\(server.connector == nil ? "远山 MCP" : "连接器")「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: asks ? { arguments in
+                    ApprovalAsk(title: "\(title)：\(remote)", reason: what.isEmpty ? "可能会改动你在\(title)里的东西" : what, detail: arguments.compact)
+                } : nil) { arguments in
                     do {
                         let address = try await Hills.address(url, through: tunnel)
-                        return try await MCPClient(url: address, token: token).call(remote, arguments: arguments)
+                        return try await Hills.withCredential(serverId) { token in
+                            try await MCPClient(url: address, token: token).call(remote, arguments: arguments)
+                        }
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
                     }
@@ -374,6 +386,19 @@ final class Hills: ObservableObject {
             }
         }
         return tools
+    }
+
+    /// Runs a request with the service's credential: the token from its sign-in (renewed and tried once more
+    /// after a 401), or the key or token pasted for it.
+    nonisolated static func withCredential<T: Sendable>(_ id: String, _ work: @Sendable (String?) async throws -> T) async throws -> T {
+        if let bearer = try await MCPAuth.bearer(id) {
+            do {
+                return try await work(bearer)
+            } catch MCPClient.MCPError.http(let code, _) where code == 401 {
+                return try await work(try await MCPAuth.bearer(id, stale: true))
+            }
+        }
+        return try await work(Vault.load(String.self, key: "mcp.\(id)"))
     }
 
     /// Where to send a service's requests: its own address, or the phone's end of an SSH tunnel to it.
@@ -400,6 +425,7 @@ struct MCPClient: Sendable {
         var name: String
         var description: String
         var schema: JSONValue
+        var readOnly: Bool?
     }
 
     private static let sessions = SessionBook()
@@ -420,7 +446,8 @@ struct MCPClient: Sendable {
             let result = try await send("tools/list", params)
             for item in result["tools"]?.array ?? [] {
                 guard let name = item["name"]?.string else { continue }
-                tools.append(Tool(name: name, description: item["description"]?.string ?? "", schema: item["inputSchema"] ?? ["type": "object", "properties": [:]]))
+                tools.append(Tool(name: name, description: item["description"]?.string ?? "", schema: item["inputSchema"] ?? ["type": "object", "properties": [:]],
+                                  readOnly: item["annotations"]?["readOnlyHint"]?.bool))
             }
             cursor = result["nextCursor"]?.string
         } while cursor != nil && tools.count < 300

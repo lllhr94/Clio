@@ -108,7 +108,7 @@ struct SettingsView: View {
         Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look"),
         Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look"),
         Spot(title: "能做的事和要不要先问", words: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室", page: "grants"),
-        Spot(title: "连接器：谷歌邮件与云盘、高德地图、GitHub", words: "连接器 连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github mcp", page: "connectors"),
+        Spot(title: "连接器：谷歌、Notion、高德地图等", words: "连接器 连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp", page: "connectors"),
         Spot(title: "定时任务", words: "定时 每天 每周 到点 任务", page: "timing"),
         Spot(title: "技能", words: "技能 skill 本事", page: "skills"),
         Spot(title: "养护：备份、日志、诊断", words: "养护 备份 恢复 日志 诊断 掉帧 清理", page: "care"),
@@ -391,7 +391,7 @@ struct SettingsView: View {
 
     private var connectorsLine: String {
         let count = (Google.shared.connected ? 1 : 0) + Hills.shared.servers.filter { $0.connector != nil }.count
-        return count == 0 ? "谷歌、高德、GitHub…" : "连了 \(count) 个"
+        return count == 0 ? "谷歌、Notion、高德…" : "连了 \(count) 个"
     }
 
     private var more: some View {
