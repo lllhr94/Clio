@@ -26,7 +26,7 @@ struct ProseView: View {
     // Read so a change in 纸墨 redraws the text.
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 10.0
+    @AppStorage("look.leading") private var leading = 11.0
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -58,18 +58,22 @@ private struct BlockView: View {
         switch block {
         case .heading(let level, let text):
             // Headings in the reading face, a step or two larger: never a different family from the text under them.
-            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 4, bold: true) : (level == 2 ? Ink.body(Pref.size + 2, bold: true) : Ink.readingBold), fading: fading)
-                .padding(.top, level <= 2 ? Ink.Space.s : 0)
+            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 4, bold: true) : (level == 2 ? Ink.body(Pref.size + 2, bold: true) : Ink.readingBold), fading: fading, tight: true)
+                // More air above a heading than below it, so it belongs to what follows.
+                .padding(.top, level <= 2 ? Ink.Space.m : Ink.Space.xs)
+                .padding(.bottom, -Ink.Space.xs)
         case .paragraph(let text):
             Inline(text: text, font: Ink.reading, fading: fading)
         case .list(let items):
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                    // A hanging indent: the marker in its own column, wrapped lines start under the text.
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         marker(item)
+                            .frame(width: item.number != nil ? 24 : 16, alignment: item.number != nil ? .trailing : .center)
                         Inline(text: item.text, font: Ink.reading, fading: fading && index == items.count - 1)
                     }
-                    .padding(.leading, CGFloat(item.depth) * 20)
+                    .padding(.leading, 2 + CGFloat(item.depth) * 22)
                 }
             }
         case .quote(let blocks):
@@ -103,11 +107,11 @@ private struct BlockView: View {
         } else if let number = item.number {
             Text("\(number).")
                 .font(Ink.reading.monospacedDigit())
-                .foregroundStyle(Ink.inkSoft)
+                .foregroundStyle(Ink.ink.opacity(0.75))
         } else {
             Text(item.depth == 0 ? "•" : "◦")
-                .font(Ink.reading)
-                .foregroundStyle(Ink.inkSoft)
+                .font(.system(size: Pref.size * 1.05, weight: .bold))
+                .foregroundStyle(Ink.ink.opacity(0.75))
         }
     }
 }
@@ -117,6 +121,8 @@ private struct Inline: View {
     let text: String
     let font: Font
     let fading: Bool
+    /// Headings: closer lines.
+    var tight = false
     @Environment(\.noteInk) private var noteInk
 
     private var styled: AttributedString {
@@ -141,7 +147,7 @@ private struct Inline: View {
     var body: some View {
         Text(styled)
             .font(font)
-            .lineSpacing(Ink.leading)
+            .lineSpacing(tight ? Ink.leading * 0.5 : Ink.leading)
             .foregroundStyle(noteInk ?? Ink.ink)
             .textRenderer(TailFade(on: fading))
             .fixedSize(horizontal: false, vertical: true)

@@ -2413,33 +2413,47 @@ private struct Dots: View {
 struct SourcesRow: View {
     let urls: [URL]
     let open: (URL) -> Void
+    @State private var listing = false
+
+    /// One per site, in the order they were read.
+    private var sites: [URL] {
+        var seen: Set<String> = []
+        return urls.filter { seen.insert(Self.site($0)).inserted }
+    }
 
     var body: some View {
-        ScrollView(.horizontal) {
+        // Folded like other agents do it: the sites' icons overlapping, and how many; the list opens on a tap.
+        Button {
+            Haptics.light()
+            listing = true
+        } label: {
             HStack(spacing: Ink.Space.s) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                    Button {
-                        Haptics.light()
-                        open(url)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("\(index + 1)")
-                                .font(.system(size: 10, weight: .bold).monospacedDigit())
-                                .foregroundStyle(Ink.paper)
-                                .frame(width: 16, height: 16)
-                                .background(Ink.inkSoft, in: .circle)
-                            Text(Self.site(url)).font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(Ink.mine, in: .capsule)
+                HStack(spacing: -7) {
+                    ForEach(Array(sites.prefix(4).enumerated()), id: \.offset) { index, url in
+                        BrandIcon(domain: Self.site(url), mark: String(Self.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 20)
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Ink.paper, lineWidth: 1.5))
+                            .zIndex(Double(10 - index))
                     }
-                    .buttonStyle(PressStyle(haptic: false))
-                    .accessibilityLabel("出处 \(index + 1)：\(Self.site(url))")
                 }
+                Text("\(urls.count) 个来源")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
             }
+            .padding(.leading, 6)
+            .padding(.trailing, 12)
+            .frame(height: 32)
+            .background(Ink.mine, in: .capsule)
         }
-        .scrollIndicators(.hidden)
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("\(urls.count) 个来源，点开看")
+        .sheet(isPresented: $listing) {
+            SourcesSheet(urls: urls) { url in
+                listing = false
+                open(url)
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     /// 「zhihu.com」 from 「https://www.zhihu.com/question/…」.
@@ -2448,5 +2462,60 @@ struct SourcesRow: View {
         if host.hasPrefix("www.") { host.removeFirst(4) }
         if host.hasPrefix("m.") { host.removeFirst(2) }
         return host
+    }
+}
+
+
+/// The sources of a reply, one per row: the site's icon, the page's address, and where it leads.
+private struct SourcesSheet: View {
+    let urls: [URL]
+    let open: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                        if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.leading, 60) }
+                        Button {
+                            Haptics.light()
+                            open(url)
+                        } label: {
+                            HStack(spacing: Ink.Space.m) {
+                                BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 32)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(SourcesRow.site(url)).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(Self.path(url)).font(.system(size: 12)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                            }
+                            .padding(.horizontal, Ink.Space.l)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(PressStyle(haptic: false))
+                        .contextMenu {
+                            Button("复制链接", systemImage: "doc.on.doc") { UIPasteboard.general.string = url.absoluteString }
+                            ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
+                        }
+                    }
+                }
+                .paperCard()
+                .padding(Ink.Space.page)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle("\(urls.count) 个来源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+        }
+    }
+
+    /// What comes after the site, readable: 「/question/12345」 → 「question/12345」.
+    static func path(_ url: URL) -> String {
+        let rest = url.path().removingPercentEncoding ?? url.path()
+        let trimmed = rest.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.isEmpty ? url.absoluteString : trimmed
     }
 }
