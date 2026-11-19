@@ -396,6 +396,7 @@ struct ChatPage: View {
         .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
+        .sheet(isPresented: $filesOpen) { StudyPage() }
         .sheet(isPresented: $deskPicking) {
             DeskPicker { picked in
                 deskPicking = false
@@ -558,6 +559,20 @@ struct ChatPage: View {
                 typing = false
                 roaming = open
             }
+            // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
+            Button {
+                Haptics.light()
+                typing = false
+                filesOpen = true
+            } label: {
+                Image(systemName: "folder")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Ink.ink)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                    .glassFace(in: Circle())
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("书案里的文件")
             Button {
                 Haptics.light()
                 typing = false
@@ -1438,6 +1453,7 @@ struct ChatPage: View {
     @State private var hint: String?
     @State private var abilities = false
     @State private var attaching = false
+    @State private var filesOpen = false
     @State private var attachPicked: AttachKind?
     @State private var deskPicking = false
     @State private var scanning = false
