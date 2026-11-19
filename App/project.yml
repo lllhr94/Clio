@@ -76,6 +76,7 @@ targets:
         NSContactsUsageDescription: 你允许时，旅伴可以按名字查通讯录里的人。
         NSFaceIDUsageDescription: 打开 Clio、看或复制信匣里的密码前，先确认是你本人。
         BGTaskSchedulerPermittedIdentifiers: [io.github.lllhr94.clio.turn.*]
+        NSLocalNetworkUsageDescription: 连你电脑上的模型（Ollama、LM Studio）时，要在同一个 Wi-Fi 里找到它。
         NSMotionUsageDescription: 你允许时，旅伴可以读手机记的步数。
         NSHealthShareUsageDescription: 你允许时，旅伴可以读「健康」里的步数、睡眠、心率、活动能量和体重。Clio 只读不写。
         NSHealthUpdateUsageDescription: Clio 不会往「健康」里写任何东西。

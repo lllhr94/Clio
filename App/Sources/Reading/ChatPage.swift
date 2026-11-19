@@ -1005,6 +1005,8 @@ struct ChatPage: View {
                 roaming = true
             }, openFile: { url in
                 reading = ReadingFile(url: url)
+            }, unremember: { fact in
+                team.unremember(fact)
             })
         case .note:
             if let next = line.next {
@@ -1692,6 +1694,17 @@ private struct Trace: View {
     let line: ChatLine
     var visit: (URL) -> Void = { _ in }
     var openFile: (URL) -> Void = { _ in }
+    /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
+    var unremember: ((String) -> Bool)?
+    @State private var undone: Set<String> = []
+
+    /// What these steps wrote into 拾遗, as the model wrote it.
+    private var remembered: [String] {
+        line.tools.enumerated().compactMap { index, tool in
+            guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count else { return nil }
+            return JSONValue.parse(line.details[index].input)?["fact"]?.string
+        }
+    }
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
     private struct Keepsake: Identifiable {
@@ -1843,6 +1856,35 @@ private struct Trace: View {
                     .paperCard()
                 }
                 .buttonStyle(PressStyle())
+                .padding(.top, Ink.Space.s)
+            }
+        }
+        if !line.live, let unremember {
+            ForEach(remembered, id: \.self) { fact in
+                HStack(alignment: .top, spacing: Ink.Space.m) {
+                    Image(systemName: "bookmark").font(.system(size: 15)).foregroundStyle(Ink.accent).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(fact).font(.system(size: 14, weight: .medium)).foregroundStyle(undone.contains(fact) ? Ink.inkFaint : Ink.ink)
+                            .strikethrough(undone.contains(fact))
+                            .lineLimit(3)
+                        Text(undone.contains(fact) ? "已从\(Words.t("拾遗"))撤回" : "记进了\(Words.t("拾遗"))，以后每次聊天都会看到")
+                            .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                    }
+                    Spacer(minLength: 0)
+                    if !undone.contains(fact) {
+                        Button("撤回") {
+                            Haptics.light()
+                            _ = unremember(fact)
+                            withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(Ink.Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .paperCard()
                 .padding(.top, Ink.Space.s)
             }
         }

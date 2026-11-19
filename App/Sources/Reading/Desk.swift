@@ -367,9 +367,15 @@ struct Desk: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
         .onOpenURL { url in
-            // The home-screen widget: clio://chat/bot-….
-            guard url.scheme == "clio", url.host == "chat" else { return }
-            NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)
+            // The home-screen widget: clio://chat/bot-…. Control Center and the Action Button: clio://ask, clio://dictate.
+            guard url.scheme == "clio" else { return }
+            switch url.host {
+            case "chat": NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)
+            case "ask": ShortcutDoor.knock(.ask(""))
+            case "dictate": ShortcutDoor.knock(.dictate)
+            case "new": ShortcutDoor.knock(.fresh)
+            default: break
+            }
         }
         .task { answerShortcut() }
     }

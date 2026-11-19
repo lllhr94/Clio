@@ -469,6 +469,16 @@ final class TeamModel: ObservableObject {
         return gone.map(\.text)
     }
 
+    /// Takes back one thing a companion wrote into 拾遗 (from its step in the trace).
+    @discardableResult
+    func unremember(_ fact: String) -> Bool {
+        let words = fact.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = memories.lastIndex(where: { $0.text == words }) else { return false }
+        memories.remove(at: index)
+        saveMemory()
+        return true
+    }
+
     func deleteMemory(_ id: String) {
         memories.removeAll { $0.id == id }
         saveMemory()
@@ -1253,7 +1263,7 @@ final class TeamModel: ObservableObject {
         var agent = Agent(
             provider: endpoint.provider(key: apiKey),
             model: found.model,
-            system: system(for: bot, room: room) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine,
+            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine,
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
@@ -1484,7 +1494,7 @@ final class TeamModel: ObservableObject {
     /// Every tool call gets its answer, even one cut off when a turn was stopped.
     static func paired(_ messages: [Message]) -> [Message] { Conversation.paired(messages) }
 
-    private func system(for bot: BotInfo, room: RoomInfo?) -> String {
+    private func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
         var parts: [String] = []
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
         parts.append("你是「\(bot.name)」\(role)。你住在用户的 iPhone 里，是用户的旅伴之一。")
@@ -1504,11 +1514,12 @@ final class TeamModel: ObservableObject {
         if let names = Words.promptLine { parts.append(names) }
         let skills = SkillShelf.promptBlock
         if !skills.isEmpty { parts.append(skills.trimmingCharacters(in: .newlines)) }
-        let surface = surfaceMemories
+        // 这段不带拾遗: with memory off in this conversation, nothing remembered comes along.
+        let surface = memory ? surfaceMemories : []
         if !surface.isEmpty {
             parts.append("你记得的关于用户的事：\n" + surface.map { "- \($0.text)" }.joined(separator: "\n"))
         }
-        let deepCount = deepMemories.count
+        let deepCount = memory ? deepMemories.count : 0
         if deepCount > 0 {
             parts.append("另有 \(deepCount) 件较早的旧事收在拾遗深处，不在上面。用户提到过去的人和事、而上面没有时，先用 recall 翻一翻。")
         }

@@ -32,6 +32,8 @@ struct Service: Identifiable, Equatable {
     var custom = false
     /// Several models at once, from many makers.
     var many = false
+    /// Runs on the person's own computer: no key needed.
+    var keyless = false
 
     var baseURL: String { addresses.first?.url ?? "" }
 
@@ -84,6 +86,9 @@ struct Service: Identifiable, Equatable {
                 addresses: [Address(label: "官方", url: "https://openrouter.ai/api/v1")],
                 keyPage: "https://openrouter.ai/settings/keys", style: .openrouter,
                 suggested: ["deepseek/deepseek-v4.1-flash", "anthropic/claude-sonnet-4.6", "google/gemini-3-flash"], many: true),
+        Service(id: "local", name: "自己电脑上的模型", note: "Ollama、LM Studio；手机和电脑连同一个 Wi-Fi", kind: .openai,
+                addresses: [Address(label: "", url: "")], keyPage: nil, style: .effort,
+                suggested: [], custom: true, keyless: true),
         Service(id: "custom", name: "自定义", note: "别的 OpenAI 兼容服务、中转站、自己搭的", kind: .openai,
                 addresses: [Address(label: "", url: "")], keyPage: nil, style: .effort,
                 suggested: [], custom: true),

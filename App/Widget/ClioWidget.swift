@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -33,6 +34,34 @@ struct CompanionWidgetView: View {
     private let accent = Color(red: 0.27, green: 0.38, blue: 0.56)
 
     var body: some View {
+        switch family {
+        case .accessoryCircular:
+            ZStack {
+                AccessoryWidgetBackground()
+                Image(systemName: entry.snapshot?.status == "闲坐" || entry.snapshot == nil ? "water.waves" : "ellipsis")
+                    .font(.system(size: 20, weight: .semibold))
+            }
+            .widgetURL(URL(string: "clio://ask"))
+            .containerBackground(.clear, for: .widget)
+        case .accessoryInline:
+            Text(entry.snapshot.map { "\($0.name) · \($0.status)" } ?? "Clio")
+                .widgetURL(URL(string: "clio://ask"))
+                .containerBackground(.clear, for: .widget)
+        case .accessoryRectangular:
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.snapshot.map { "\($0.name) · \($0.status)" } ?? "Clio").font(.system(size: 13, weight: .semibold))
+                Text(entry.snapshot?.line.isEmpty == false ? entry.snapshot!.line : "点一下问点什么")
+                    .font(.system(size: 13)).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .widgetURL(URL(string: entry.snapshot.map { "clio://chat/\($0.chat)" } ?? "clio://ask"))
+            .containerBackground(.clear, for: .widget)
+        default:
+            home
+        }
+    }
+
+    private var home: some View {
         Group {
             if let snapshot = entry.snapshot {
                 VStack(alignment: .leading, spacing: 6) {
@@ -73,7 +102,7 @@ struct CompanionWidget: Widget {
         }
         .configurationDisplayName("旅伴")
         .description("旅伴在做什么，最后说了一句什么。点一下回到那段絮语。")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -82,6 +111,34 @@ struct ClioWidgets: WidgetBundle {
     var body: some Widget {
         CompanionWidget()
         TurnActivityWidget()
+        AskControl()
+        DictateControl()
+    }
+}
+
+/// Control Center, the lock screen and the Action Button: open Clio at the composer.
+struct AskControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "io.github.lllhr94.clio.ask") {
+            ControlWidgetButton(action: OpenURLIntent(URL(string: "clio://ask")!)) {
+                Label("问 Clio", systemImage: "bubble.left.and.text.bubble.right")
+            }
+        }
+        .displayName("问 Clio")
+        .description("打开 Clio，停在最近那段对话的输入框。")
+    }
+}
+
+/// The same, listening right away.
+struct DictateControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "io.github.lllhr94.clio.dictate") {
+            ControlWidgetButton(action: OpenURLIntent(URL(string: "clio://dictate")!)) {
+                Label("对 Clio 说话", systemImage: "mic")
+            }
+        }
+        .displayName("对 Clio 说话")
+        .description("打开 Clio 就开始听写，说完你自己点发送。")
     }
 }
 

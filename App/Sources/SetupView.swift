@@ -31,6 +31,11 @@ struct SetupView: View {
     @FocusState private var keyFocused: Bool
 
     private var custom: Bool { choice.custom }
+    /// The key as typed; a local model that needs none gets a stand-in, since the OpenAI way always sends one.
+    private var secret: String {
+        let typed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty && choice.keyless ? "local" : typed
+    }
 
     var body: some View {
         ZStack {
@@ -174,9 +179,9 @@ struct SetupView: View {
 
         if custom {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: "服务的地址", note: choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1")
-                TextField("称呼，比如 我的中转站", text: $name).paperField()
-                TextField("https://…", text: $baseURL)
+                FieldTitle(text: "服务的地址", note: choice.keyless ? "电脑的局域网地址加端口：Ollama 是 http://电脑IP:11434/v1，LM Studio 是 http://电脑IP:1234/v1。Ollama 要先设 OLLAMA_HOST=0.0.0.0 才让手机连" : (choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1"))
+                TextField(choice.keyless ? "称呼，比如 我的 4090" : "称呼，比如 我的中转站", text: $name).paperField()
+                TextField(choice.keyless ? "http://192.168.1.10:11434/v1" : "https://…", text: $baseURL)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     .paperField()
                 if baseURL.hasPrefix("http") {
@@ -204,7 +209,7 @@ struct SetupView: View {
     private var keyField: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack {
-                FieldTitle(text: "密钥（API Key）", note: "只存在这台手机的钥匙串里")
+                FieldTitle(text: "密钥（API Key）", note: choice.keyless ? "本地的一般不用，空着就行" : "只存在这台手机的钥匙串里")
                 Spacer()
                 if let help = helpURL {
                     Button("去哪拿？") { openURL(help) }
@@ -253,8 +258,8 @@ struct SetupView: View {
     private var fetchKey: String { "\(choice.id)|\(address)|\(key.trimmingCharacters(in: .whitespacesAndNewlines))" }
 
     private func fetchModels() async {
-        let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard secret.count >= 8, address.hasPrefix("http") else { fetched = nil; fetchNote = nil; return }
+        let secret = self.secret
+        guard secret.count >= 8 || choice.keyless, address.hasPrefix("http") else { fetched = nil; fetchNote = nil; return }
         try? await Task.sleep(nanoseconds: 700_000_000)
         guard !Task.isCancelled else { return }
         fetching = true
@@ -345,7 +350,7 @@ struct SetupView: View {
     }
 
     private var canConnect: Bool {
-        guard !busy, !key.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        guard !busy, !secret.isEmpty else { return false }
         if custom, !baseURL.hasPrefix("http") { return false }
         if let fetched, !fetched.isEmpty { return !picked.isEmpty }
         if choice.asksModel, modelName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
@@ -434,7 +439,7 @@ struct SetupView: View {
     // MARK: Connecting
 
     private func connect() {
-        let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = self.secret
         let typed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let taken = Set(team.settings.endpoints.map(\.id))
