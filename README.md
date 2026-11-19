@@ -13,3 +13,7 @@ There is no local build setup. GitHub Actions (`.github/workflows/build.yml`) te
 ## License
 
 GPL-3.0. See `LICENSE`.
+
+## Credits
+
+- 心绪 (`App/Sources/Pulse.swift`) adapts the PULSE block idea and prompt from [HanaAgent / openhanako](https://github.com/liliMozi/openhanako) (Apache-2.0).

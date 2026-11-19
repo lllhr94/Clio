@@ -59,6 +59,8 @@ enum TurnEvent {
     case tool(String)
     /// More of what the model thinks before it answers.
     case thinking(String)
+    /// More of the companion's 心绪 before it speaks.
+    case pulse(String)
     case finished
     case failed(String)
 }
@@ -103,6 +105,7 @@ final class TeamModel: ObservableObject {
     @Published private var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
     private var heard: [String: Date] = [:]
+    private var pulseSplitters: [String: PulseSplitter] = [:]
     /// Tools used in the turn running now, per conversation (for the bar above the composer).
     @Published var toolCount: [String: Int] = [:]
     /// 定时: what companions do again and again at set times.
@@ -1263,7 +1266,7 @@ final class TeamModel: ObservableObject {
         var agent = Agent(
             provider: endpoint.provider(key: apiKey),
             model: found.model,
-            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine,
+            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine + (Pulse.on ? Pulse.prompt : ""),
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
@@ -1329,10 +1332,21 @@ final class TeamModel: ObservableObject {
     private func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
         heard[key] = Date()
         switch event {
-        case .text(let piece):
-            if doing[key] != "正在回复" { doing[key] = "正在回复" }
-            streamed[key, default: (speaker: speaker, text: "")].text += piece
-            notify(key, .text(piece))
+        case .text(let raw):
+            var splitter = pulseSplitters[key] ?? PulseSplitter()
+            let pieces = splitter.feed(raw)
+            pulseSplitters[key] = splitter
+            for part in pieces {
+                switch part {
+                case .pulse(let felt):
+                    if doing[key] != "心里起了念头" { doing[key] = "心里起了念头" }
+                    notify(key, .pulse(felt))
+                case .text(let piece):
+                    if doing[key] != "正在回复" { doing[key] = "正在回复" }
+                    streamed[key, default: (speaker: speaker, text: "")].text += piece
+                    notify(key, .text(piece))
+                }
+            }
         case .reasoning(let piece):
             if doing[key] != "正在想" { doing[key] = "正在想" }
             notify(key, .thinking(piece))
@@ -1359,7 +1373,15 @@ final class TeamModel: ObservableObject {
             doing[key] = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
         case .toolFinished:
             break
-        case .message(let message):
+        case .message(var message):
+            pulseSplitters[key] = nil
+            // 心绪 is kept beside the reply for the person, and not sent to the model again.
+            var felt: String?
+            if message.role == .assistant {
+                let split = Pulse.split(message.text)
+                felt = split.pulse
+                message.text = split.rest
+            }
             if message.role == .assistant {
                 streamed[key] = nil
                 // The partial reply a paused turn hands back on its way out was kept already.
@@ -1375,7 +1397,9 @@ final class TeamModel: ObservableObject {
             // Pictures a tool brought back are kept as photos for the trace, not inside the saved message.
             let shots = keeping ? kept.images.map { Disk.keepPhoto($0.data) } : []
             kept.images = []
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: message.role == .user ? nil : speaker, photos: shots, label: label), to: key)
+            var entry = Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: message.role == .user ? nil : speaker, photos: shots, label: label)
+            entry.pulse = felt
+            append(entry, to: key)
             if message.role == .user { doing[key] = "收到插话，接着做" }
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
         case .usage(let input, let output, let cached):

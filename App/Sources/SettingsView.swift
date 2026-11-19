@@ -101,7 +101,7 @@ struct SettingsView: View {
         Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look"),
         Spot(title: "叫法：诗意或普通", words: "叫法 名字 诗意 普通 称呼", page: "look"),
         Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look"),
-        Spot(title: "思考过程、逐字淡入、触感", words: "思考 淡入 触感 震动 耗时 用量 行迹 形象", page: "look"),
+        Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look"),
         Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look"),
         Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look"),
         Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look"),

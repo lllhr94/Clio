@@ -158,6 +158,11 @@ struct ChatPage: View {
                         .id(line.id)
                         .transition(.opacity.combined(with: .offset(y: 12)))
                 }
+                if !chat.pulse.isEmpty {
+                    PulseBox(text: chat.pulse, live: chat.streaming.isEmpty)
+                        .id("pulse")
+                        .transition(.opacity)
+                }
                 if !chat.thinking.isEmpty && chat.streaming.isEmpty {
                     ThinkingBox(text: chat.thinking, live: true)
                         .id("thinking")
@@ -997,6 +1002,9 @@ struct ChatPage: View {
                 }
                 if let reasoning = line.reasoning, Pref.showThinking {
                     ThinkingBox(text: reasoning)
+                }
+                if let felt = line.pulse {
+                    PulseBox(text: felt)
                 }
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)

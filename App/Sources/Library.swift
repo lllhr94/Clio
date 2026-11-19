@@ -48,6 +48,8 @@ struct Entry: Codable, Identifiable, Equatable {
     var tokens: Int?
     /// On a note about a failure: what to do next (`Explain.Next`).
     var next: String?
+    /// On a reply: the companion's 心绪 before it spoke (see `Pulse`).
+    var pulse: String?
 }
 
 /// Something the user told a Bot to remember about them.

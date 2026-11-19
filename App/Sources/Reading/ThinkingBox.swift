@@ -67,3 +67,55 @@ struct ThinkingBox: View {
         return cut.split(separator: "\n", omittingEmptySubsequences: true).suffix(3).joined(separator: "\n")
     }
 }
+
+/// The companion's 心绪 before it spoke (see `Pulse`): folded to one line with how it feels,
+/// opened to the four pools. While it is being written, the newest lines show.
+struct PulseBox: View {
+    let text: String
+    var live = false
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Button {
+                guard !live else { return }
+                withAnimation(Ink.Motion.settle) { open.toggle() }
+                Haptics.tick(0.4)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("✿").font(.system(size: 12))
+                    Text(live ? "心绪" : (Pulse.vibe(text).map { "心绪 · \($0)" } ?? "心绪"))
+                        .font(Ink.footnote)
+                        .lineLimit(1)
+                    if !live {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Ink.accent.opacity(0.85))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(live ? "正在写心绪" : "心绪，点开看")
+
+            if live || open {
+                Text(live ? tail : text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Ink.inkSoft)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
+                    .background(Ink.accentWash, in: .rect(cornerRadius: 10))
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private var tail: String {
+        text.split(separator: "\n", omittingEmptySubsequences: true).suffix(4).joined(separator: "\n")
+    }
+}

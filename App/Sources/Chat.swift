@@ -42,6 +42,8 @@ struct ChatLine: Identifiable, Equatable {
     var tokens: Int?
     /// A reply: what the model thought on the way to it, in this turn.
     var reasoning: String?
+    /// A reply: the companion's 心绪 before it spoke.
+    var pulse: String?
     /// A note about a failure: what to do next.
     var next: Explain.Next?
 }
@@ -55,6 +57,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var streaming = ""
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
     @Published private(set) var thinking = ""
+    /// The 心绪 being written before the reply in progress.
+    @Published private(set) var pulse = ""
     /// The reply that just finished: the row that took over from the streaming one.
     @Published private(set) var fresh: Fresh?
 
@@ -186,6 +190,7 @@ final class ChatModel: ObservableObject {
         var turnAt: Double?
         var calls: [String: String] = [:]
         var thought = ""
+        var feltThisTurn: String?
         for entry in all.suffix(limit) {
             let message = entry.message
             if entry.note == true {
@@ -204,7 +209,10 @@ final class ChatModel: ObservableObject {
                 open = nil
                 turnAt = entry.at
                 thought = ""
+                feltThisTurn = nil
             case .assistant:
+                // 心绪 written before a step with tools belongs to the reply that ends the turn.
+                if let felt = entry.pulse, feltThisTurn == nil { feltThisTurn = felt }
                 if let reasoning = message.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !reasoning.isEmpty {
                     thought += (thought.isEmpty ? "" : "\n\n") + reasoning
                 }
@@ -213,6 +221,8 @@ final class ChatModel: ObservableObject {
                     if let turnAt { line.seconds = max(1, Int((entry.at - turnAt) / 1000)) }
                     line.tokens = entry.tokens
                     line.reasoning = thought.isEmpty ? nil : thought
+                    line.pulse = feltThisTurn ?? entry.pulse
+                    feltThisTurn = nil
                     thought = ""
                     out.append(line)
                     open = nil
@@ -270,6 +280,8 @@ final class ChatModel: ObservableObject {
 
     private func hear(_ event: TurnEvent) {
         switch event {
+        case .pulse(let piece):
+            pulse += piece
         case .thinking(let piece):
             thinking += piece
             if thinking.count > 6000 { thinking = String(thinking.suffix(4000)) }
@@ -294,6 +306,7 @@ final class ChatModel: ObservableObject {
                 fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
                 target = ""
                 streaming = ""
+                pulse = ""
                 lines = next
                 if fresh?.shown != nil { type() }
                 Haptics.tick(0.6)
@@ -307,6 +320,7 @@ final class ChatModel: ObservableObject {
         case .finished:
             running = nil
             thinking = ""
+            pulse = ""
             if !target.isEmpty {
                 target = ""
                 streaming = ""
@@ -314,6 +328,7 @@ final class ChatModel: ObservableObject {
             apply(build(team.history(key)))
         case .failed(let message):
             thinking = ""
+            pulse = ""
             withAnimation(.smooth) { error = message }
             Haptics.lock()
         }
