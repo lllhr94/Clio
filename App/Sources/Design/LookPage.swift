@@ -73,8 +73,23 @@ struct LookPage: View {
                         ForEach(Self.sizes.indices, id: \.self) { step in Text(Self.sizes[step].title).tag(step) }
                     }
                     .pickerStyle(.segmented)
-                } header: { Text("对话字号") }
+                } header: { Text("对话字号") } footer: { Text("对话里正文的大小，上面的小样跟着变。") }
                 .spot("size", lit)
+
+                Section {
+                    // The whole interface, not only the words: spacing, icons, rows and corners grow or shrink together.
+                    Picker("界面大小", selection: Binding(get: { UIScale.levels.firstIndex { abs($0.factor - UIScale.shared.value) < 0.01 } ?? 2 }, set: { step in
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { UIScale.shared.value = UIScale.levels[step].factor }
+                    })) {
+                        ForEach(UIScale.levels.indices, id: \.self) { step in Text(UIScale.levels[step].title).tag(step) }
+                    }
+                    .pickerStyle(.segmented)
+                    RowLabel("textformat.size", title: "设置里的一行", line: "换一档看看，整个界面一起变", end: .valueChevron("示例"))
+                        .padding(.horizontal, -Ink.Space.l)
+                        .allowsHitTesting(false)
+                } header: { Text("界面大小") } footer: { Text("按钮、图标、列表和间距一起放大缩小，对话字号另外调。") }
+                .spot("ui", lit)
 
                 Section(Words.t("纸墨")) {
                     Picker("明暗", selection: $scheme) {
@@ -228,13 +243,14 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
+        for key in ["look.scheme", "look.face", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
         liveOn = true
+        UIScale.shared.value = 1.0
         Theme.shared.pick("dai")
         Theme.shared.setPlain(false)
         Theme.shared.setOled(false)

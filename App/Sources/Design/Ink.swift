@@ -151,8 +151,8 @@ enum Ink {
         return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
     }
 
-    static let display = serif(30, bold: true, relativeTo: .largeTitle)
-    static let title = serif(22, bold: true, relativeTo: .title2)
+    static var display: Font { serif((30 * UIScale.factor).rounded(), bold: true, relativeTo: .largeTitle) }
+    static var title: Font { serif((22 * UIScale.factor).rounded(), bold: true, relativeTo: .title2) }
     /// Reading text, in the face and size the user picked in 纸墨.
     static var reading: Font { body(Pref.size, bold: false) }
     static var readingBold: Font { body(Pref.size, bold: true) }
@@ -167,15 +167,15 @@ enum Ink {
     }
     /// The five sizes everything outside the reading text is set in (Apple's caption 2, footnote, subheadline, body, title 3).
     enum Size {
-        static let micro: CGFloat = 11
-        static let small: CGFloat = 13
-        static let sub: CGFloat = 15
-        static let body: CGFloat = 17
-        static let title: CGFloat = 20
+        static var micro: CGFloat { (11 * UIScale.factor).rounded() }
+        static var small: CGFloat { (13 * UIScale.factor).rounded() }
+        static var sub: CGFloat { (15 * UIScale.factor).rounded() }
+        static var body: CGFloat { (17 * UIScale.factor).rounded() }
+        static var title: CGFloat { (20 * UIScale.factor).rounded() }
     }
-    static let label = Font.system(size: Ink.Size.body, weight: .medium)
-    static let secondary = Font.system(size: Ink.Size.sub)
-    static let footnote = Font.system(size: Ink.Size.small)
+    static var label: Font { .system(size: Ink.Size.body, weight: .medium) }
+    static var secondary: Font { .system(size: Ink.Size.sub) }
+    static var footnote: Font { .system(size: Ink.Size.small) }
     /// Code, three points under the reading size, so it sits with the text around it at every size.
     static var code: Font { .system(size: max(12, Pref.size - 3), design: .monospaced) }
 
@@ -185,31 +185,34 @@ enum Ink {
     // MARK: Space and corners
 
     enum Space {
-        static let xs: CGFloat = 4
-        static let s: CGFloat = 8
-        static let m: CGFloat = 12
-        static let l: CGFloat = 16
-        static let xl: CGFloat = 24
-        static let xxl: CGFloat = 32
-        static let huge: CGFloat = 48
+        static var xs: CGFloat { 4 * UIScale.factor }
+        static var s: CGFloat { 8 * UIScale.factor }
+        static var m: CGFloat { 12 * UIScale.factor }
+        static var l: CGFloat { 16 * UIScale.factor }
+        static var xl: CGFloat { 24 * UIScale.factor }
+        static var xxl: CGFloat { 32 * UIScale.factor }
+        static var huge: CGFloat { 48 * UIScale.factor }
         /// The page's side margin.
-        static let page: CGFloat = 20
+        static var page: CGFloat { 20 * UIScale.factor }
     }
 
     /// Floating controls over a page (the top bar, the composer, chips): one height, one distance from the edges,
     /// so what sits side by side lines up and both sides mirror each other.
     enum Bar {
-        static let height: CGFloat = 44
-        static let edge: CGFloat = 12
+        static var height: CGFloat { 44 * UIScale.factor }
+        static var edge: CGFloat { 12 * UIScale.factor }
     }
 
     /// Corners follow the iPhone's own: continuous curves, large on cards (like grouped lists in iOS 26),
     /// smaller inside them so inner corners sit concentric with the outer ones.
     enum Radius {
-        static let small: CGFloat = 12
-        static let field: CGFloat = 18
-        static let card: CGFloat = 26
-        static let sheet: CGFloat = 34
+        /// Three corners, nothing else: cards and anything that holds things, things inside a card
+        /// (pictures, code, a step's details), and capsules for every control (buttons, chips, fields on one line).
+        /// Icons are squircles with their own fixed proportion (`Kit.iconCorner`).
+        static var small: CGFloat { 14 * UIScale.factor }
+        static var field: CGFloat { 28 * UIScale.factor }
+        static var card: CGFloat { 28 * UIScale.factor }
+        static var sheet: CGFloat { 34 * UIScale.factor }
     }
 
     // MARK: Motion

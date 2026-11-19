@@ -419,8 +419,8 @@ struct RoomEditor: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, Ink.Space.m)
-            .background(order == nil ? Ink.paper : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(order == nil ? Ink.rule : Ink.accent.opacity(0.6), lineWidth: order == nil ? 1 : 1.5))
+            .background(order == nil ? Ink.paper : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(order == nil ? Ink.rule : Ink.accent.opacity(0.6), lineWidth: order == nil ? 1 : 1.5))
         }
         .buttonStyle(PressStyle(haptic: false))
     }

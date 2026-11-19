@@ -280,8 +280,8 @@ struct ChatPage: View {
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
-            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
             HStack(spacing: Ink.Space.m) {
                 Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                 Button("撤回", systemImage: "arrow.uturn.backward") {
@@ -976,7 +976,7 @@ struct ChatPage: View {
                             Button { viewing = ref } label: {
                                 RemotePhoto(chat: chat, attachmentId: ref)
                                     .frame(width: 72, height: 72)
-                                    .clipShape(.rect(cornerRadius: Ink.Radius.small))
+                                    .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
                             }
                             .buttonStyle(PressStyle())
                         }
@@ -989,8 +989,8 @@ struct ChatPage: View {
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, Ink.Space.m)
-                        .background(editing == line.id ? Ink.accentWash : Ink.mine, in: .rect(cornerRadius: 22, style: .continuous))
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 22, style: .continuous))
+                        .background(editing == line.id ? Ink.accentWash : Ink.mine, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
                             Button("改了重发", systemImage: "pencil") {
@@ -1023,7 +1023,7 @@ struct ChatPage: View {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)
                 } else {
                     ProseView(text: line.text)
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 14, style: .continuous))
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                         .contextMenu { replyMenu(line) }
                 }
                 let found = sources(for: line)
@@ -1092,7 +1092,7 @@ struct ChatPage: View {
         }
         .padding(Ink.Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(next == .resume ? Ink.paperRaised.opacity(0.7) : Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card))
+        .background(next == .resume ? Ink.paperRaised.opacity(0.7) : Ink.stop.opacity(0.07), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
     }
 
     struct UndoAsk: Identifiable {
@@ -1268,7 +1268,7 @@ struct ChatPage: View {
         }
         .padding(.horizontal, Ink.Space.m)
         .padding(.vertical, Ink.Space.s)
-        .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card))
+        .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
@@ -1327,9 +1327,9 @@ struct ChatPage: View {
         } else {
             ZStack(alignment: .top) {
                 ForEach(Array(cards.dropFirst().prefix(2).enumerated()), id: \.offset) { index, _ in
-                    RoundedRectangle(cornerRadius: Ink.Radius.card)
+                    RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
                         .fill(Ink.paperRaised)
-                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(Ink.rule))
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule))
                         .frame(height: 40)
                         .scaleEffect(x: 1 - 0.05 * CGFloat(index + 1), y: 1, anchor: .top)
                         .opacity(1 - 0.25 * Double(index + 1))
@@ -1462,7 +1462,7 @@ struct ChatPage: View {
                                     if let image = UIImage(data: data) {
                                         Image(uiImage: image).resizable().scaledToFill()
                                             .frame(width: 56, height: 56)
-                                            .clipShape(.rect(cornerRadius: Ink.Radius.small))
+                                            .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
                                     }
                                     Button {
                                         withAnimation(Ink.Motion.settle) { _ = photos.remove(at: index) }
@@ -1553,7 +1553,7 @@ struct ChatPage: View {
             .animation(Ink.Motion.settle, value: composing)
             .padding(.horizontal, Ink.Space.s)
             .padding(.vertical, Ink.Space.s)
-            .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet))
+            .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
             if let hint {
                 Text(hint)
                     .font(Ink.footnote)
@@ -2224,7 +2224,7 @@ private struct Trace: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(maxHeight: 260)
-                                .clipShape(.rect(cornerRadius: Ink.Radius.small))
+                                .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
                                 .padding(.top, 2)
                         }
                         Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
@@ -2238,7 +2238,7 @@ private struct Trace: View {
                     .textSelection(.enabled)
                     .padding(Ink.Space.s)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small))
+                    .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                     .padding(.top, Ink.Space.xs)
                     .transition(.opacity)
                 }

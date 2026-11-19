@@ -31,8 +31,8 @@ struct DiffText: View {
                 Text("……还有 \(lines.count - limit) 行").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(6)
             }
         }
-        .clipShape(.rect(cornerRadius: Ink.Radius.small))
-        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small).strokeBorder(Ink.rule))
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule))
     }
 
     private func color(_ line: String) -> Color {

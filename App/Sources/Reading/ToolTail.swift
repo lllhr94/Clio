@@ -56,7 +56,7 @@ struct ToolTailView: View {
             }
             .padding(Ink.Space.s)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small))
+            .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .animation(.easeOut(duration: 0.15), value: tail.lines)
             .accessibilityLabel("正在输出：" + (tail.lines.last?.text ?? ""))
         }

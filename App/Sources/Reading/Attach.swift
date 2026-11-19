@@ -313,7 +313,7 @@ struct PlusSheet: View {
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkSoft)
                     .frame(maxWidth: .infinity, minHeight: 64)
-                    .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
+                    .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
             }
             .buttonStyle(.plain)
         }

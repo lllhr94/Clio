@@ -26,12 +26,6 @@ struct ConnectorsPage: View {
                         categories
                     }
                     if !mine.isEmpty && kind == "全部" { section("已连接", mine) }
-                    if kind == "全部" && (query.isEmpty || "谷歌 google gmail 邮件 云盘".contains(query.lowercased())) {
-                        VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            heading("谷歌")
-                            VStack(spacing: 0) { googleRow }.paperCard()
-                        }
-                    }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
                         let items = Connector.catalog.filter { $0.group == group && matches($0) && work.server(of: $0) == nil }
                         if !items.isEmpty { section(group, items) }
@@ -180,6 +174,11 @@ struct ConnectorsPage: View {
                     if index > 0 { Kit.divider }
                     NavigationLink(value: item) { row(item) }.buttonStyle(PressStyle(haptic: false))
                 }
+                // One Google, not two: the older way in (your own Client ID) is the last row of the same group.
+                if title == "谷歌" {
+                    Kit.divider
+                    googleRow
+                }
             }
             .paperCard()
         }
@@ -197,7 +196,7 @@ struct ConnectorsPage: View {
             Haptics.light()
             googleOpen = true
         } label: {
-            RowLabel(title: "Gmail 与云端硬盘", line: google.account ?? "用你自己的 Client ID 登录，不经过别人", end: google.connected ? .valueChevron("已连接", Ink.ok) : .chevron) {
+            RowLabel(title: "用自己的 Client ID 连", line: google.account ?? "备用：上面连不上时，用你自己的谷歌项目连 Gmail 和云盘", end: google.connected ? .valueChevron("已连接", Ink.ok) : .chevron) {
                 ConnectorIcon(mark: "G", tint: Color(red: 0.30, green: 0.55, blue: 0.85), domain: "mail.google.com")
             }
         }
@@ -594,15 +593,15 @@ struct Connector: Identifiable, Hashable {
         return colors[sum % colors.count]
     }
 
-    static let groups = ["谷歌（官方）", "开发", "文档与资料", "协作办公", "设计", "地图与出行", "搜索与查资料", "一个账号连一堆"]
+    static let groups = ["谷歌", "开发", "文档与资料", "协作办公", "设计", "地图与出行", "搜索与查资料", "一个账号连一堆"]
 
     static let catalog: [Connector] = [
-        Connector(id: "g-gmail", name: "Gmail", icon: "envelope", line: "找信、读整串邮件、写草稿", url: "https://gmailmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
-        Connector(id: "g-drive", name: "Google 云端硬盘", icon: "externaldrive", line: "找文件、读文件内容", url: "https://drivemcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
-        Connector(id: "g-calendar", name: "Google 日历", icon: "calendar", line: "查日程、空闲时间，建活动", url: "https://calendarmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
-        Connector(id: "g-docs", name: "Google 文档", icon: "doc.text", line: "读写文档", url: "https://docsmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
-        Connector(id: "g-sheets", name: "Google 表格", icon: "tablecells", line: "读写表格", url: "https://sheetsmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
-        Connector(id: "g-slides", name: "Google 幻灯片", icon: "rectangle.on.rectangle", line: "读写演示文稿", url: "https://slidesmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌（官方）"),
+        Connector(id: "g-gmail", name: "Gmail", icon: "envelope", line: "找信、读整串邮件、写草稿", url: "https://gmailmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
+        Connector(id: "g-drive", name: "Google 云端硬盘", icon: "externaldrive", line: "找文件、读文件内容", url: "https://drivemcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
+        Connector(id: "g-calendar", name: "Google 日历", icon: "calendar", line: "查日程、空闲时间，建活动", url: "https://calendarmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
+        Connector(id: "g-docs", name: "Google 文档", icon: "doc.text", line: "读写文档", url: "https://docsmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
+        Connector(id: "g-sheets", name: "Google 表格", icon: "tablecells", line: "读写表格", url: "https://sheetsmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
+        Connector(id: "g-slides", name: "Google 幻灯片", icon: "rectangle.on.rectangle", line: "读写演示文稿", url: "https://slidesmcp.googleapis.com/mcp/v1", auth: .google, group: "谷歌"),
         Connector(id: "amap", name: "高德地图", icon: "map", line: "查地点、路线、天气、周边，算距离和到达时间", url: "https://mcp.amap.com/mcp",
                   auth: .key(title: "Web 服务 Key", page: "https://console.amap.com/dev/key/app", query: "key",
                              steps: ["登录高德开放平台控制台，进「应用管理 → 我的应用」，新建一个应用。",

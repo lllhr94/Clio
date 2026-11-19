@@ -142,8 +142,8 @@ struct GrantsPage: View {
                         .foregroundStyle(current == preset ? Ink.accent : Ink.inkSoft)
                         .frame(maxWidth: .infinity, minHeight: 64)
                         .padding(.horizontal, 4)
-                        .background(current == preset ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
-                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(current == preset ? Color.clear : Ink.rule))
+                        .background(current == preset ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(current == preset ? Color.clear : Ink.rule))
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     .accessibilityAddTraits(current == preset ? .isSelected : [])

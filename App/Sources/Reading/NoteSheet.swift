@@ -52,7 +52,7 @@ struct NoteSheet: View {
             ScrollView {
                 VStack(spacing: Ink.Space.xl) {
                     sheet
-                        .clipShape(.rect(cornerRadius: Ink.Radius.card))
+                        .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .shadow(color: .black.opacity(0.10), radius: 18, y: 10)
                     HStack(spacing: Ink.Space.s) {
                         ForEach(Theme.allCases, id: \.self) { item in

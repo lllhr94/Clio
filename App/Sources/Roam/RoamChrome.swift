@@ -109,8 +109,8 @@ struct RoamThumb: View {
                 .overlay(Color.white.opacity(0.001))
             }
             .background(Ink.paperRaised)
-            .clipShape(.rect(cornerRadius: Ink.Radius.small))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small).strokeBorder(browser.handoff != nil ? Ink.warn : Ink.rule, lineWidth: browser.handoff != nil ? 2 : 1))
+            .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(browser.handoff != nil ? Ink.warn : Ink.rule, lineWidth: browser.handoff != nil ? 2 : 1))
             .shadow(color: Ink.ink.opacity(0.12), radius: 10, y: 4)
             .contentShape(.rect)
             .onTapGesture {

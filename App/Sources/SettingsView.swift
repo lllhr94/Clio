@@ -108,6 +108,7 @@ struct SettingsView: View {
         Spot(title: "默认模型", words: "模型 默认 换模型", page: "model"),
         Spot(title: "备用模型", words: "备用 出错 失败 换模型 兜底", page: "model"),
         Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look#size"),
+        Spot(title: "界面大小：整个界面放大缩小", words: "界面 缩放 大小 太大 太小 紧凑 放大 缩小 ui", page: "look#ui"),
         Spot(title: "叫法：诗意或普通", words: "叫法 名字 诗意 普通 称呼", page: "look"),
         Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look#lock"),
         Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look#motion"),

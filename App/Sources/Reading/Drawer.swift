@@ -127,7 +127,7 @@ struct DrawerSheet: View {
                     .font(.system(size: Ink.Size.body, weight: .medium))
                     .foregroundStyle(Ink.accent)
                     .frame(width: 34, height: 34)
-                    .background(Ink.accentWash, in: .rect(cornerRadius: Ink.Radius.small))
+                    .background(Ink.accentWash, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                 Text(item.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                 Text(item.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)

@@ -252,7 +252,7 @@ struct SetupView: View {
             }
             .padding(Ink.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.stop.opacity(0.08), in: .rect(cornerRadius: Ink.Radius.card))
+            .background(Ink.stop.opacity(0.08), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
             .transition(.opacity)
         }
     }

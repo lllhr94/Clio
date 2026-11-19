@@ -68,7 +68,7 @@ struct FrameMeter: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 6))
+        .background(.ultraThinMaterial, in: .rect(cornerRadius: 6, style: .continuous))
         .allowsHitTesting(false)
         .onAppear { clock.start() }
         .onDisappear { clock.stop() }

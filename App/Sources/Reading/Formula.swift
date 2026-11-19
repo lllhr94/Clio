@@ -40,7 +40,7 @@ struct FormulaBlock: View {
                 .id(scheme)
             }
         }
-        .background(Ink.accentWash.opacity(0.4), in: .rect(cornerRadius: Ink.Radius.small))
+        .background(Ink.accentWash.opacity(0.4), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
         .onGeometryChange(for: Bool.self) { proxy in
             // Within about a screen of the visible area.
             let frame = proxy.frame(in: .global)

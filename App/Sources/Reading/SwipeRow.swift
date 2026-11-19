@@ -43,7 +43,7 @@ struct SwipeRow<Content: View>: View {
                     .buttonStyle(TapStyle())
                 }
             }
-            .clipShape(.rect(cornerRadius: Ink.Radius.small))
+            .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .opacity(offset < -2 ? 1 : 0)
 
             content()

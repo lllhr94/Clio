@@ -32,7 +32,7 @@ struct DenPage: View {
                         .padding(.vertical, Ink.Space.m)
                     }
                     .background(Ink.paperRaised)
-                    .clipShape(.rect(cornerRadius: Ink.Radius.card))
+                    .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                     .padding(.horizontal, Ink.Space.m)
                     .onChange(of: den.log.count) { _, _ in
                         withAnimation(.linear(duration: 0.12)) { proxy.scrollTo("end", anchor: .bottom) }

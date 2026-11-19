@@ -137,8 +137,8 @@ struct PortraitPage: View {
             }
             .padding(Ink.Space.s)
             .frame(minWidth: 76)
-            .background(picked ? Ink.paperRaised : .clear, in: .rect(cornerRadius: Ink.Radius.card))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(picked ? Ink.accent.opacity(0.55) : Ink.rule, lineWidth: picked ? 1.5 : 1))
+            .background(picked ? Ink.paperRaised : .clear, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(picked ? Ink.accent.opacity(0.55) : Ink.rule, lineWidth: picked ? 1.5 : 1))
         }
         .buttonStyle(PressStyle())
     }
@@ -160,9 +160,9 @@ struct PortraitPage: View {
 
     private func color(_ name: String, _ color: Color) -> some View {
         VStack(spacing: Ink.Space.xs) {
-            RoundedRectangle(cornerRadius: Ink.Radius.small)
+            RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
                 .fill(color)
-                .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small).strokeBorder(Ink.rule, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
                 .frame(height: 44)
             Text(name).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
         }
@@ -179,12 +179,12 @@ private struct PictureSlot: View {
         VStack(spacing: Ink.Space.xs) {
             PhotosPicker(selection: $item, matching: .images) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: Ink.Radius.card)
+                    RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
                         .fill(Ink.paperRaised)
-                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: persona.pictures[pose.rawValue] == nil ? [4, 3] : [])))
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: persona.pictures[pose.rawValue] == nil ? [4, 3] : [])))
                     if let name = persona.pictures[pose.rawValue], let image = Pictures.image(name) {
                         Image(uiImage: image).resizable().scaledToFill()
-                            .clipShape(.rect(cornerRadius: Ink.Radius.card))
+                            .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                     } else {
                         Image(systemName: "plus").foregroundStyle(Ink.inkFaint)
                     }

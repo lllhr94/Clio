@@ -9,7 +9,7 @@ struct IconBadge: View {
     var size: CGFloat = Kit.badge
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+        RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
             .fill(tint.opacity(0.15))
             .frame(width: size, height: size)
             .overlay {
@@ -23,11 +23,13 @@ struct IconBadge: View {
 
 enum Kit {
     /// The side of a row's leading badge or brand icon.
-    static let badge: CGFloat = 30
+    static var badge: CGFloat { 30 * UIScale.factor }
     /// Where a row's text starts, so dividers can begin there.
-    static let textInset: CGFloat = Ink.Space.l + badge + Ink.Space.m
+    static var textInset: CGFloat { Ink.Space.l + badge + Ink.Space.m }
     /// A row's height, at the least.
-    static let rowHeight: CGFloat = 52
+    static var rowHeight: CGFloat { 52 * UIScale.factor }
+    /// Every icon tile, whatever its size, has the same proportion of corner: badges, brand icons, service icons.
+    static func iconCorner(_ size: CGFloat) -> CGFloat { size * 0.26 }
 }
 
 /// What trails a row.
@@ -153,12 +155,28 @@ struct WideButtonStyle: ButtonStyle {
             .font(.system(size: Ink.Size.body, weight: .semibold))
             .foregroundStyle(filled ? Color.white : tint)
             .frame(maxWidth: .infinity, minHeight: 50)
-            .background(
-                RoundedRectangle(cornerRadius: Ink.Radius.small + 2, style: .continuous)
-                    .fill(filled ? tint : tint.opacity(0.12))
-            )
+            .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(Ink.Motion.press, value: configuration.isPressed)
     }
+}
+
+
+/// 界面大小: one number every size in Clio is multiplied by (text outside the reading text, spacing, icons, rows,
+/// corners). Observable, so every page that read a size is drawn again the moment it changes.
+@Observable
+final class UIScale {
+    static let shared = UIScale()
+    static let key = "look.ui"
+    static let levels: [(title: String, factor: Double)] = [("紧凑", 0.88), ("偏小", 0.94), ("标准", 1.0), ("偏大", 1.08)]
+
+    var value: Double = {
+        let stored = UserDefaults.standard.double(forKey: UIScale.key)
+        return stored > 0 ? stored : 1.0
+    }() {
+        didSet { UserDefaults.standard.set(value, forKey: Self.key) }
+    }
+
+    static var factor: CGFloat { CGFloat(shared.value) }
 }

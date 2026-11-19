@@ -350,7 +350,7 @@ struct Desk: View {
             }
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, 9)
-            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: 14, style: .continuous))
+            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))

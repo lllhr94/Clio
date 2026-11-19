@@ -78,7 +78,7 @@ private struct BlockView: View {
             }
         case .quote(let blocks):
             HStack(alignment: .top, spacing: Ink.Space.m) {
-                RoundedRectangle(cornerRadius: 1.5).fill(Ink.rule).frame(width: 3)
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(Ink.rule).frame(width: 3)
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
                         BlockView(block: inner, fading: fading && index == blocks.count - 1)

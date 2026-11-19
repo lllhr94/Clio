@@ -15,7 +15,7 @@ struct BrandIcon: View {
     var body: some View {
         ZStack {
             if let image {
-                RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
                     .fill(Color.white)
                 Image(uiImage: image)
                     .resizable()
@@ -23,13 +23,13 @@ struct BrandIcon: View {
                     .scaledToFit()
                     .padding(size * 0.16)
             } else {
-                RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
                     .fill(tint.gradient)
                 Text(mark).font(.system(size: size * 0.44, weight: .bold, design: .rounded)).foregroundStyle(.white)
             }
         }
         .frame(width: size, height: size)
-        .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous).strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5))
         .task(id: domain) {
             guard let domain else { return }
             image = await BrandIcons.shared.icon(for: domain)
@@ -129,7 +129,7 @@ struct ServiceIcon: View {
 
     var body: some View {
         if let symbol = service?.symbol {
-            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+            RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
                 .fill(Ink.mine)
                 .frame(width: size, height: size)
                 .overlay { Image(systemName: symbol).font(.system(size: size * 0.44, weight: .medium)).foregroundStyle(Ink.inkSoft) }
