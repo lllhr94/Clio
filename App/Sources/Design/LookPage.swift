@@ -106,14 +106,18 @@ struct LookPage: View {
                     .pickerStyle(.segmented)
                     palettes
                     Toggle("深色时用纯黑", isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
-                    Picker(Words.t("叫法"), selection: Binding(get: { Theme.shared.plain }, set: { value in
-                        Haptics.tick(0.5)
-                        Theme.shared.setPlain(value)
-                    })) {
-                        Text("诗意").tag(false)
-                        Text("普通").tag(true)
-                    }
                 }
+
+                Section {
+                    ToneCards()
+                        .listRowInsets(EdgeInsets(top: Ink.Space.m, leading: Ink.Space.m, bottom: Ink.Space.m, trailing: Ink.Space.m))
+                    if !Theme.shared.plain {
+                        Toggle(L.t("styleSwitcher.dailyHintToggle"), isOn: Binding(get: { Theme.shared.hint }, set: { Theme.shared.setHint($0) }))
+                    }
+                } header: { Text(L.t("styleSwitcher.title")) } footer: {
+                    Text(Theme.shared.plain ? L.t("styleSwitcher.subtitle") : L.t("styleSwitcher.dailyHintDesc"))
+                }
+                .spot("tone", lit)
 
                 Section("动静") {
                     Toggle("触感反馈", isOn: $haptics)
@@ -243,7 +247,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
+        for key in ["look.scheme", "look.face", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -254,6 +258,7 @@ struct LookPage: View {
         Theme.shared.pick("dai")
         Theme.shared.setPlain(false)
         Theme.shared.setOled(false)
+        Theme.shared.setHint(true)
         Haptics.thud()
     }
 }

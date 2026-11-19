@@ -1,0 +1,192 @@
+{
+  "nav": {
+    "home": "首页",
+    "files": "文件",
+    "terminal": "终端",
+    "remoteHost": "远程主机",
+    "browser": "浏览器",
+    "groupChat": "群聊",
+    "memory": "记忆",
+    "assistant": "助手",
+    "pet": "宠物",
+    "diary": "日记",
+    "favorites": "收藏册",
+    "tasks": "计划清单",
+    "dailyDiscover": "每日拾物",
+    "settings": "设置",
+    "filesAndTerminal": "文件与终端"
+  },
+  "chat": {
+    "conversation": "对话",
+    "newConversation": "新对话",
+    "conversationHistory": "对话记录",
+    "oldConversation": "旧对话",
+    "page": "一页",
+    "thinking": "思考",
+    "replying": "回复",
+    "idle": "空闲",
+    "thoughtProcess": "思考过程",
+    "context": "上下文",
+    "compactContext": "压缩前文",
+    "attachment": "附件",
+    "source": "来源",
+    "pleaseFill": "请你填写"
+  },
+  "approval": {
+    "pending": "待批准",
+    "approve": "批准",
+    "reject": "拒绝",
+    "approvalSheet": "批准单"
+  },
+  "agent": {
+    "capabilities": "能力",
+    "skills": "技能",
+    "connectors": "连接器",
+    "scheduledJobs": "定时任务",
+    "search": "搜索",
+    "steps": "步骤",
+    "morningBrief": "早报",
+    "reminder": "提醒",
+    "notification": "通知",
+    "demo": "演示",
+    "location": "位置"
+  },
+  "organize": {
+    "profileCard": "资料卡",
+    "pin": "置顶",
+    "archive": "归档",
+    "unread": "未读",
+    "frequent": "常用",
+    "earlier": "较早",
+    "pinMemory": "设为常用",
+    "toEarlier": "移到较早"
+  },
+  "settings": {
+    "permissions": "权限",
+    "vault": "密码箱",
+    "faceLock": "面容锁",
+    "modelService": "模型服务",
+    "usage": "用量",
+    "diagnostics": "诊断",
+    "appearance": "外观",
+    "appearanceAndChat": "外观与对话",
+    "accentColor": "主色",
+    "uiDensity": "界面大小",
+    "tone": "称谓"
+  },
+  "styleSwitcher": {
+    "title": "称谓",
+    "subtitle": "功能名和提示怎么说",
+    "dailyLabel": "日常",
+    "dailyDesc": "直白清楚，一看就懂",
+    "literaryLabel": "书卷",
+    "literaryDesc": "纸墨尺牍的叫法，多一点陪伴感",
+    "dailyHintToggle": "日常旁注",
+    "dailyHintDesc": "书卷名字旁边用浅灰小字标出日常意思，熟悉后可以关掉"
+  },
+  "actions": {
+    "confirm": "确定",
+    "save": "保存",
+    "cancel": "取消",
+    "done": "好了",
+    "copy": "复制",
+    "copied": "已复制",
+    "paste": "粘贴",
+    "retry": "再试",
+    "delete": "删除",
+    "purge": "彻底清除",
+    "send": "发送",
+    "stop": "停止",
+    "edit": "编辑",
+    "expand": "展开",
+    "collapse": "收起",
+    "skip": "跳过",
+    "export": "导出",
+    "refresh": "刷新",
+    "clear": "清空",
+    "test": "试连",
+    "refreshModels": "刷新模型列表"
+  },
+  "pet": {
+    "done": "做完了",
+    "failed": "出错了",
+    "needsApproval": "等你确认",
+    "needsAnswer": "等你回答",
+    "hideHour": "藏起来 1 小时",
+    "change": "换宠物",
+    "settings": "宠物设置"
+  },
+  "empty": {
+    "home": "随时可以开始新对话。",
+    "conversationHistory": "还没有对话，说第一句吧。",
+    "memory": "记忆还是空的，聊得多了会慢慢记下。",
+    "files": "文件还空着，助手写下的东西会放在这里。",
+    "pendingApprovals": "眼下没有要你批准的事。",
+    "searchNoResult": "没找到，换个说法试试。",
+    "tasks": "今天没有计划。",
+    "scheduledJobs": "还没有定时任务。",
+    "favorites": "收藏册还是空的，喜欢的东西随手收下。",
+    "remoteHosts": "还没有远程主机，添一台就能用。",
+    "connectors": "还没连接器，连上常用的服务，助手就能替你用。",
+    "diary": "还没有日记。"
+  },
+  "loading": {
+    "generic": "正在加载…",
+    "connectingModel": "正在连接模型服务…",
+    "thinking": "思考中…",
+    "replying": "正在回复…",
+    "searching": "正在搜索…",
+    "browsing": "正在看网页…",
+    "readingAttachment": "正在读附件…",
+    "runningSkill": "正在用技能…",
+    "callingConnector": "正在调用连接器…",
+    "runningTerminal": "终端里在跑…",
+    "connectingRemoteHost": "正在连远程主机…",
+    "compactingContext": "正在压缩前文…",
+    "listeningVoice": "正在听…",
+    "viewingImage": "正在看图…"
+  },
+  "errors": {
+    "offline": "网络断了，检查一下再试。",
+    "timeout": "等太久没有回音，再试一次。",
+    "serverError": "模型服务暂时没回应，稍后再试，或换一家。",
+    "insufficientQuota": "模型服务的额度用完了，充值或换一家再试。",
+    "invalidApiKey": "模型服务的密钥无效或已过期，核对一下再试。",
+    "rateLimited": "请求太快了，稍等一下再试。",
+    "contextOverflow": "前文太长了，先压缩前文，或开个新对话。",
+    "permissionDenied": "还没开这项权限，先到设置里打开。",
+    "skillFailed": "技能没能完成，已经停下。",
+    "connectorDisconnected": "连接器断开了，连不上外面的服务。",
+    "remoteHostUnreachable": "连不上远程主机，检查主机和网络。",
+    "attachmentUnsupported": "这个附件太大，或格式还不支持。",
+    "unknown": "出了点意外，展开看详情。",
+    "cannotUndo": "删除后无法恢复。"
+  },
+  "onboarding": {
+    "page1": {
+      "title": "不只是聊天，还能替你动手",
+      "subtitle": "连上文件、终端和远程主机，把想法变成结果。",
+      "cta": "继续"
+    },
+    "page2": {
+      "title": "放心交给它，要紧的事你拍板",
+      "subtitle": "动到权限和敏感操作前，会先递一张批准单，你点了才做。",
+      "cta": "继续"
+    },
+    "page3": {
+      "title": "挑一种顺眼的称谓",
+      "subtitle": "随时能在设置里换，不影响任何记录。",
+      "dailyOptionTitle": "日常",
+      "dailyOptionDesc": "直白清楚，用熟悉的叫法",
+      "literaryOptionTitle": "书卷",
+      "literaryOptionDesc": "纸墨尺牍，手机里的随身书斋",
+      "cta": "就这样"
+    },
+    "page4": {
+      "title": "接上模型就能开始",
+      "subtitle": "填好模型服务就能用，也可以先看演示。",
+      "primaryCta": "接模型服务",
+      "secondaryCta": "先看演示"
+    }
+  }
+}

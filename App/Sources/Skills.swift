@@ -234,7 +234,7 @@ struct SkillsPage: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("技能")
+            .navigationTitle(L.t("agent.skills"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }

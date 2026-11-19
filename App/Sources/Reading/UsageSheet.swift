@@ -35,7 +35,7 @@ struct UsageSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("用量")
+            .navigationTitle(L.t("settings.usage"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }

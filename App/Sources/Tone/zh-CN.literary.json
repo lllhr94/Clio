@@ -1,0 +1,192 @@
+{
+  "nav": {
+    "home": "窗前",
+    "files": "书案",
+    "terminal": "斗室",
+    "remoteHost": "远山",
+    "browser": "远游",
+    "groupChat": "雅集",
+    "memory": "拾遗",
+    "assistant": "旅伴",
+    "pet": "伴读",
+    "diary": "手札",
+    "favorites": "集珍",
+    "tasks": "日课",
+    "dailyDiscover": "偶得",
+    "settings": "调弦",
+    "filesAndTerminal": "书案与斗室"
+  },
+  "chat": {
+    "conversation": "絮语",
+    "newConversation": "另起一叶",
+    "conversationHistory": "絮语录",
+    "oldConversation": "收起的一叶",
+    "page": "一叶",
+    "thinking": "沉吟",
+    "replying": "落笔",
+    "idle": "闲坐",
+    "thoughtProcess": "思绪",
+    "context": "文脉",
+    "compactContext": "收卷",
+    "attachment": "夹页",
+    "source": "出处",
+    "pleaseFill": "回笺"
+  },
+  "approval": {
+    "pending": "候印",
+    "approve": "落印",
+    "reject": "退回",
+    "approvalSheet": "落印笺"
+  },
+  "agent": {
+    "capabilities": "诸艺",
+    "skills": "锦囊",
+    "connectors": "渡口",
+    "scheduledJobs": "更漏",
+    "search": "寻访",
+    "steps": "行迹",
+    "morningBrief": "晨信",
+    "reminder": "来信",
+    "notification": "音信",
+    "demo": "样张",
+    "location": "所在"
+  },
+  "organize": {
+    "profileCard": "名帖",
+    "pin": "镇纸",
+    "archive": "入藏",
+    "unread": "未阅",
+    "frequent": "常记",
+    "earlier": "旧事",
+    "pinMemory": "常记在心",
+    "toEarlier": "收进旧事"
+  },
+  "settings": {
+    "permissions": "应许",
+    "vault": "密匣",
+    "faceLock": "封缄",
+    "modelService": "墨坊",
+    "usage": "墨量",
+    "diagnostics": "校音",
+    "appearance": "纸墨",
+    "appearanceAndChat": "纸墨与絮语",
+    "accentColor": "设色",
+    "uiDensity": "疏密",
+    "tone": "称谓"
+  },
+  "styleSwitcher": {
+    "title": "称谓",
+    "subtitle": "器物名目与行文气质",
+    "dailyLabel": "日常",
+    "dailyDesc": "直白明快，无须细辨",
+    "literaryLabel": "书卷",
+    "literaryDesc": "纸墨尺牍，清雅自适",
+    "dailyHintToggle": "日常旁注",
+    "dailyHintDesc": "书卷名字旁边用浅灰小字标出日常意思，熟悉后可以关掉"
+  },
+  "actions": {
+    "confirm": "确定",
+    "save": "保存",
+    "cancel": "取消",
+    "done": "好了",
+    "copy": "复制",
+    "copied": "已复制",
+    "paste": "粘贴",
+    "retry": "再试",
+    "delete": "删除",
+    "purge": "彻底清除",
+    "send": "发送",
+    "stop": "停笔",
+    "edit": "编辑",
+    "expand": "展开",
+    "collapse": "收起",
+    "skip": "跳过",
+    "export": "导出",
+    "refresh": "刷新",
+    "clear": "清空",
+    "test": "试连",
+    "refreshModels": "刷新模型列表"
+  },
+  "pet": {
+    "done": "写好了",
+    "failed": "出了岔子",
+    "needsApproval": "等你落印",
+    "needsAnswer": "等你回话",
+    "hideHour": "藏起来 1 小时",
+    "change": "换一只伴读",
+    "settings": "伴读设置"
+  },
+  "empty": {
+    "home": "窗前清净，新纸已铺，随时落笔。",
+    "conversationHistory": "暂无往语，待你起第一句。",
+    "memory": "尚未拾遗，相处久了自然留痕。",
+    "files": "书案还空着，旅伴写下的东西会放在这里。",
+    "pendingApprovals": "眼下没有要你落印的事。",
+    "searchNoResult": "寻访无果，不妨换个词再探。",
+    "tasks": "今日无课，难得清闲。",
+    "scheduledJobs": "尚未设漏，暂无定时差遣。",
+    "favorites": "尚未集珍，合心意的随手收下。",
+    "remoteHosts": "远山未连，添一台主机便可遥望。",
+    "connectors": "渡口空泊，接上常用的服务便可通航。",
+    "diary": "尚无新篇。"
+  },
+  "loading": {
+    "generic": "正在展卷…",
+    "connectingModel": "正在研墨…",
+    "thinking": "沉吟片刻…",
+    "replying": "正在落笔…",
+    "searching": "正在四处寻访…",
+    "browsing": "正在远游细阅…",
+    "readingAttachment": "正在翻检夹页…",
+    "runningSkill": "正取锦囊一用…",
+    "callingConnector": "正在渡口通联…",
+    "runningTerminal": "斗室里正忙…",
+    "connectingRemoteHost": "正在遥连远山…",
+    "compactingContext": "正在收卷…",
+    "listeningVoice": "正在细听…",
+    "viewingImage": "正在端详来图…"
+  },
+  "errors": {
+    "offline": "网路不通，查一下网络再试。",
+    "timeout": "久候未复，不妨再试一回。",
+    "serverError": "墨坊暂歇，未能应答，稍后再试或另择一坊。",
+    "insufficientQuota": "墨坊的额度用尽了，添墨后再续。",
+    "invalidApiKey": "墨坊的凭证似有差池，核对后再试。",
+    "rateLimited": "落笔过急，稍候再试。",
+    "contextOverflow": "文脉过长，请先收卷，或另起一叶。",
+    "permissionDenied": "尚未获此应许，先到调弦里放行。",
+    "skillFailed": "此番锦囊未能奏效，已停手待命。",
+    "connectorDisconnected": "渡口暂阻，外面的服务未能通联。",
+    "remoteHostUnreachable": "与远山失联，检查主机和网络。",
+    "attachmentUnsupported": "这份夹页过厚，或格式还认不得。",
+    "unknown": "偶遇阻滞，展开可察详因。",
+    "cannotUndo": "删除后无法恢复。"
+  },
+  "onboarding": {
+    "page1": {
+      "title": "不止对谈，亦是案头旅伴",
+      "subtitle": "理顺书案，遥连远山，替你分担琐务与长卷。",
+      "cta": "展卷"
+    },
+    "page2": {
+      "title": "诸事尽可托付，要紧处必先候印",
+      "subtitle": "凡涉应许与要务，皆先递上落印笺，待你落印方才动手。",
+      "cta": "明了"
+    },
+    "page3": {
+      "title": "择一称心称谓",
+      "subtitle": "日后随时可在调弦里切换，不损分毫旧录。",
+      "dailyOptionTitle": "日常",
+      "dailyOptionDesc": "直白明快，所见即所得",
+      "literaryOptionTitle": "书卷",
+      "literaryOptionDesc": "纸墨尺牍，一室清雅相伴",
+      "cta": "定下"
+    },
+    "page4": {
+      "title": "择坊研墨，便可开卷",
+      "subtitle": "填妥墨坊凭证即可启程，也可先览样张。",
+      "primaryCta": "前往墨坊",
+      "secondaryCta": "先览样张"
+    }
+  }
+}

@@ -27,7 +27,7 @@ struct HillsPage: View {
 
                         section("主机", add: { editingHost = Hills.Host(name: "", address: "", user: "root") }) {
                             if hills.hosts.isEmpty {
-                                empty("还没有主机。加一台 VPS 或家里的电脑。")
+                                empty(L.t("empty.remoteHosts"))
                             }
                             ForEach(hills.hosts) { host in
                                 hostRow(host)

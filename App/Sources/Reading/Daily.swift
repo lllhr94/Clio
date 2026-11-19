@@ -150,7 +150,7 @@ struct TideSheet: View {
                     }
                     Text("收藏册").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.top, Ink.Space.m)
                     if book.collected.isEmpty {
-                        EmptyNote(symbol: "water.waves", words: Words.t("还没有收着的东西。每天潮水会带来一样，隔几天来也不会错过。"))
+                        EmptyNote(symbol: "water.waves", words: L.t("empty.favorites"))
                     } else {
                         VStack(spacing: 0) {
                             ForEach(book.collected) { find in
@@ -317,7 +317,7 @@ struct DiarySheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("\(bot.name)的日记")
+            .navigationTitle("\(bot.name)的" + L.t("nav.diary"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

@@ -56,7 +56,7 @@ struct SettingsView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
             .hitchPage("调弦")
-            .navigationTitle(Words.t("调弦"))
+            .navigationTitle(L.t("nav.settings"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -109,7 +109,7 @@ struct SettingsView: View {
         Spot(title: "备用模型", words: "备用 出错 失败 换模型 兜底", page: "model"),
         Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look#size"),
         Spot(title: "界面大小：整个界面放大缩小", words: "界面 缩放 大小 太大 太小 紧凑 放大 缩小 ui", page: "look#ui"),
-        Spot(title: "叫法：诗意或普通", words: "叫法 名字 诗意 普通 称呼", page: "look"),
+        Spot(title: "称谓：日常或书卷", words: "称谓 叫法 名字 诗意 普通 书卷 日常 称呼 旁注", page: "look#tone"),
         Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look#lock"),
         Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look#motion"),
         Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look#context"),
@@ -334,7 +334,7 @@ struct SettingsView: View {
                 }
             }
             .paperCard()
-            Text(team.memories.isEmpty ? Words.t("聊天时说起你自己的事，旅伴会记下来。也可以在上面自己记。") : "点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。")
+            Text(team.memories.isEmpty ? Words.t("聊天时说起你自己的事，旅伴会记下来。也可以在上面自己记。") : Words.t("点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。"))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
         }
     }
@@ -389,8 +389,11 @@ struct SettingsView: View {
 
     private func badge(_ icon: String, _ tint: Color) -> some View { IconBadge(symbol: icon, tint: tint) }
 
+    /// `title` is a dictionary key ("nav.memory") or plain words; a key also brings its 日常旁注.
     private func rowLabel(_ icon: String, _ tint: Color, _ title: String, _ value: String?, warn: Bool = false) -> some View {
-        RowLabel(icon, tint: tint, title: title, end: value.map { RowEnd.valueChevron($0, warn ? Ink.warn : Ink.inkSoft) } ?? RowEnd.chevron)
+        let keyed = L.daily[title] != nil
+        return RowLabel(icon, tint: tint, title: keyed ? L.t(title) : title, hint: keyed ? L.hint(title) : nil,
+                        end: value.map { RowEnd.valueChevron($0, warn ? Ink.warn : Ink.inkSoft) } ?? RowEnd.chevron)
     }
 
     /// A row that opens a sheet.
@@ -433,24 +436,24 @@ struct SettingsView: View {
             }
             if team.phase != .demo {
                 divider
-                pushRow("brain", Tint.ai, Words.t("拾遗"), team.memories.isEmpty ? "还没有" : "\(team.memories.count) 条") {
-                    subpage(Words.t("拾遗")) { memory }
+                pushRow("brain", Tint.ai, "nav.memory", team.memories.isEmpty ? "还没有" : "\(team.memories.count) 条") {
+                    subpage(L.t("nav.memory")) { memory }
                 }
             }
             divider
-            row("books.vertical", Tint.ai, "技能", "\(SkillShelf.enabled.count) 个") { skilling = true }
+            row("books.vertical", Tint.ai, "agent.skills", "\(SkillShelf.enabled.count) 个") { skilling = true }
         }
     }
 
     private var abilityGroup: some View {
-        group(Words.t("本事")) {
-            row("checkmark.shield", Tint.ability, Words.t("应许"), Grant.Preset.current?.title ?? "自定义") { granting = true }
+        group(L.t("agent.capabilities")) {
+            row("checkmark.shield", Tint.ability, "settings.permissions", Grant.Preset.current?.title ?? "自定义") { granting = true }
             divider
-            row("powerplug", Tint.ability, "连接器", connectorsLine) { connecting = true }
+            row("powerplug", Tint.ability, "agent.connectors", connectorsLine) { connecting = true }
             divider
-            row("alarm", Tint.ability, "定时任务", team.routines.isEmpty ? "没有" : "\(team.routines.filter(\.on).count) 件") { timing = true }
+            row("alarm", Tint.ability, "agent.scheduledJobs", team.routines.isEmpty ? "没有" : "\(team.routines.filter(\.on).count) 件") { timing = true }
             divider
-            row("server.rack", Tint.ability, Words.t("远山"), Hills.shared.hosts.isEmpty ? "没有" : "\(Hills.shared.hosts.count) 台") { hilling = true }
+            row("server.rack", Tint.ability, "nav.remoteHost", Hills.shared.hosts.isEmpty ? "没有" : "\(Hills.shared.hosts.count) 台") { hilling = true }
         }
     }
 
@@ -460,11 +463,11 @@ struct SettingsView: View {
             divider
             HStack(spacing: Ink.Space.m) {
                 badge("quote.bubble", Tint.looks)
-                Text("叫法").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                Text(L.t("settings.tone")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Spacer(minLength: Ink.Space.s)
-                Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { Haptics.tick(0.5); Theme.shared.setPlain($0) })) {
-                    Text("普通").tag(true)
-                    Text("诗意").tag(false)
+                Picker(L.t("settings.tone"), selection: Binding(get: { Theme.shared.plain }, set: { Haptics.tick(0.5); Theme.shared.setPlain($0) })) {
+                    Text(L.t("styleSwitcher.dailyLabel")).tag(true)
+                    Text(L.t("styleSwitcher.literaryLabel")).tag(false)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 140)
@@ -486,10 +489,10 @@ struct SettingsView: View {
     }
 
     private var companionGroup: some View {
-        group(Words.t("旅伴")) {
+        group(L.t("nav.assistant")) {
             row("person.badge.plus", Tint2.people, Words.t("新旅伴"), "\(team.bots.count) 位") { elsewhere(.newCompanion) }
             divider
-            row("person.3", Tint2.people, Words.t("雅集"), team.rooms.isEmpty ? "没有" : "\(team.rooms.count) 个") { elsewhere(.gathering) }
+            row("person.3", Tint2.people, "nav.groupChat", team.rooms.isEmpty ? "没有" : "\(team.rooms.count) 个") { elsewhere(.gathering) }
             divider
             row("square.and.arrow.down", Tint2.people, Words.t("收名帖"), nil) { elsewhere(.importCard) }
             divider
@@ -499,11 +502,11 @@ struct SettingsView: View {
 
     private var toolGroup: some View {
         group("工具") {
-            row("books.vertical", Tint2.tools, Words.t("书案"), "旅伴写的文件") { elsewhere(.study) }
+            row("books.vertical", Tint2.tools, "nav.files", "旅伴写的文件") { elsewhere(.study) }
             divider
-            row("terminal", Tint2.tools, Words.t("斗室"), "手机里的 Linux") { elsewhere(.den) }
+            row("terminal", Tint2.tools, "nav.terminal", "手机里的 Linux") { elsewhere(.den) }
             divider
-            row("lock.rectangle.stack", Tint2.tools, Words.t("信匣"), "账号密码") { elsewhere(.vault) }
+            row("lock.rectangle.stack", Tint2.tools, "settings.vault", "账号密码") { elsewhere(.vault) }
         }
     }
 
@@ -511,9 +514,9 @@ struct SettingsView: View {
         group("通用") {
             row("bell", Tint.general, "通知、锁屏与后台", nil) { lookFocus = "notify"; looking = true }
             divider
-            row("lock", Tint.general, "面容锁", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { lookFocus = "lock"; looking = true }
+            row("lock", Tint.general, "settings.faceLock", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { lookFocus = "lock"; looking = true }
             divider
-            row("stethoscope", Tint.general, Words.t("养护"), "备份与诊断") { caring = true }
+            row("stethoscope", Tint.general, "settings.diagnostics", "备份与诊断") { caring = true }
         }
     }
 

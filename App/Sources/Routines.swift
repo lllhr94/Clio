@@ -144,7 +144,7 @@ struct RoutinesPage: View {
                     Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if team.routines.isEmpty {
-                        EmptyNote(symbol: "alarm", words: "还没有定时任务。点右上角的 ＋ 设一个。")
+                        EmptyNote(symbol: "alarm", words: L.t("empty.scheduledJobs") + "点右上角的 ＋ 设一个。")
                     } else {
                         VStack(spacing: 0) {
                             ForEach(team.routines) { routine in
@@ -159,7 +159,7 @@ struct RoutinesPage: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("定时")
+            .navigationTitle(L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
@@ -275,7 +275,7 @@ struct RoutineEditor: View {
             }
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(isNew ? "新的定时任务" : "定时任务")
+            .navigationTitle(isNew ? "新的" + L.t("agent.scheduledJobs") : L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }

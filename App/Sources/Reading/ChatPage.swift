@@ -2526,7 +2526,7 @@ private struct SourcesSheet: View {
                 .padding(Ink.Space.page)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("\(urls.count) 个来源")
+            .navigationTitle("\(urls.count) 个" + L.t("chat.source"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }

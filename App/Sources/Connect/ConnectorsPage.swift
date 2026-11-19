@@ -52,7 +52,7 @@ struct ConnectorsPage: View {
             }
             .background(Ink.paper.ignoresSafeArea())
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找连接器")
-            .navigationTitle("连接器")
+            .navigationTitle(L.t("agent.connectors"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
             .navigationDestination(for: Connector.self) { ConnectorDetail(connector: $0) }

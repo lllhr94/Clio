@@ -43,6 +43,8 @@ enum RowEnd {
 /// One list row: something leading, a title, an optional line under it, and what trails.
 struct RowLabel<Leading: View>: View {
     var title: String
+    /// 日常旁注: the everyday words, small and gray after the title.
+    var hint: String? = nil
     var line: String? = nil
     var end: RowEnd = .chevron
     @ViewBuilder var leading: Leading
@@ -51,7 +53,11 @@ struct RowLabel<Leading: View>: View {
         HStack(spacing: Ink.Space.m) {
             leading
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                    Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                    if let hint { Text(hint).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint) }
+                }
+                .lineLimit(1)
                 if let line, !line.isEmpty {
                     Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
@@ -81,8 +87,8 @@ struct RowLabel<Leading: View>: View {
 }
 
 extension RowLabel where Leading == IconBadge {
-    init(_ symbol: String, tint: Color = Ink.accent, title: String, line: String? = nil, end: RowEnd = .chevron) {
-        self.init(title: title, line: line, end: end) { IconBadge(symbol: symbol, tint: tint) }
+    init(_ symbol: String, tint: Color = Ink.accent, title: String, hint: String? = nil, line: String? = nil, end: RowEnd = .chevron) {
+        self.init(title: title, hint: hint, line: line, end: end) { IconBadge(symbol: symbol, tint: tint) }
     }
 }
 

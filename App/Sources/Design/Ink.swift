@@ -12,6 +12,14 @@ final class Theme {
     /// Plain names instead of the poetic ones (`Words`).
     private(set) var plain: Bool = UserDefaults.standard.bool(forKey: "look.plainNames")
 
+    /// 日常旁注: in 书卷, the everyday words in small gray beside a name.
+    private(set) var hint: Bool = UserDefaults.standard.object(forKey: "look.toneHint") as? Bool ?? true
+
+    func setHint(_ value: Bool) {
+        hint = value
+        UserDefaults.standard.set(value, forKey: "look.toneHint")
+    }
+
     /// Dark mode on pure black, for OLED screens.
     private(set) var oled: Bool = UserDefaults.standard.bool(forKey: "look.oled")
 

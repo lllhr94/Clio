@@ -66,23 +66,16 @@ struct SetupView: View {
                 point("checkmark.seal", "大事都先问你", Words.t("加日程、填网页、连服务器这类事，旅伴会递一张笺等你落印。"))
             }
             Spacer(minLength: 0)
-            // 叫法, asked once: the same choice lives in 纸墨与絮语 afterwards.
+            // 称谓, asked once and taking effect at once: this page and the next already speak in it.
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("界面怎么称呼").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
-                Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { value in
-                    Haptics.tick(0.5)
-                    withAnimation(Ink.Motion.settle) { Theme.shared.setPlain(value) }
-                })) {
-                    Text("诗意 · 絮语").tag(false)
-                    Text("普通 · 对话").tag(true)
-                }
-                .pickerStyle(.segmented)
+                Text(L.t("onboarding.page3.title")).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                ToneCards()
             }
             Button {
                 Haptics.light()
                 step = .service
             } label: {
-                Text("开始：接上一个模型")
+                Text(L.t("onboarding.page4.primaryCta"))
                     .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(maxWidth: .infinity)
