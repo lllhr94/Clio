@@ -108,10 +108,10 @@ enum WhalePose: String, CaseIterable {
 
     var word: String {
         switch self {
-        case .idle: "闲坐"
-        case .thinking: "沉吟"
-        case .writing: "落笔"
-        case .waiting: "候印"
+        case .idle: Words.t("闲坐")
+        case .thinking: Words.t("沉吟")
+        case .writing: Words.t("落笔")
+        case .waiting: Words.t("候印")
         case .cheering: "欢喜"
         case .sleeping: "打盹"
         }

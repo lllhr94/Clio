@@ -56,6 +56,11 @@ struct ChatDetail: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    ShareLink(item: exportFile(), preview: SharePreview("\(title).md")) {
+                        Label("导出", systemImage: "square.and.arrow.up")
+                    }
+                }
             }
         }
         .sheet(isPresented: $usage) {
@@ -117,7 +122,7 @@ struct ChatDetail: View {
                         Text("\(index + 1)").font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkFaint).frame(width: 24, alignment: .trailing)
                         Text(step.label).font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(2)
                         Spacer(minLength: 0)
-                        if let seconds = step.seconds { Text("\(seconds) 秒").font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
+                        if let seconds = step.seconds { Text(Clock.said(seconds)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     }
                     .padding(.horizontal, Ink.Space.l)
                     .padding(.vertical, Ink.Space.s + 2)
@@ -164,5 +169,40 @@ struct ChatDetail: View {
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s + 2)
         .contentShape(Rectangle())
+    }
+}
+
+extension ChatDetail {
+    /// The conversation as a Markdown file in the temporary folder: what was said, what was done; notes and
+    /// tool output stay out. Never the vault.
+    func exportFile() -> URL {
+        let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
+        try? team.markdown(chat.key, title: title).write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+}
+
+extension TeamModel {
+    func markdown(_ key: String, title: String) -> String {
+        let when = DateFormatter()
+        when.dateFormat = "yyyy-MM-dd HH:mm"
+        var out = "# \(title)\n\n"
+        for entry in history(key) where entry.note != true {
+            let message = entry.message
+            let time = when.string(from: Date(timeIntervalSince1970: entry.at / 1000))
+            switch message.role {
+            case .user:
+                guard !message.text.isEmpty else { continue }
+                out += "## 我 · \(time)\n\n\(message.text)\n\n"
+            case .assistant:
+                let who = entry.speaker.flatMap { id in bots.first(where: { $0.id == id })?.name } ?? "旅伴"
+                if !message.text.isEmpty { out += "## \(Words.t(who)) · \(time)\n\n\(message.text)\n\n" }
+                for call in message.toolCalls { out += "> 做了：\(entry.label ?? call.name)\n\n" }
+            default:
+                continue
+            }
+        }
+        return out
     }
 }

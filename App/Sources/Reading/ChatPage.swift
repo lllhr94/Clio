@@ -135,11 +135,11 @@ struct ChatPage: View {
     /// The companion's state in the glossary's words.
     private var status: String {
         if waiting != nil { return Words.t("候印") }
-        guard let doing else { return "闲坐" }
+        guard let doing else { return Words.t("闲坐") }
         switch doing {
-        case "正在回复": return "落笔"
-        case "正在想", "等你批准": return "沉吟"
-        default: return doing
+        case "正在回复": return Words.t("落笔")
+        case "正在想", "等你批准": return Words.t("沉吟")
+        default: return Words.t(doing)
         }
     }
 
@@ -641,31 +641,7 @@ struct ChatPage: View {
         }
     }
 
-    private var webChip: some View {
-        let on = options.web
-        return Button {
-            Haptics.tick(0.6)
-            team.setWeb(!on, in: chat.key)
-            say(on ? Words.t("联网关了：这段絮语里，旅伴不会搜索、读网页，也不会用远游。") : Words.t("联网开了：旅伴需要时会去搜索、读网页，或用远游打开网站。"))
-        } label: {
-            chip(on ? "globe" : "network.slash", "联网", lit: on)
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(on ? "联网：开着，点一下关掉" : "联网：关着，点一下打开")
-    }
 
-    private var abilitiesChip: some View {
-        let off = options.off.count
-        return Button {
-            Haptics.light()
-            typing = false
-            abilities = true
-        } label: {
-            chip("wand.and.stars", off == 0 ? "本事" : "本事 · 关了 \(off)", lit: false)
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(Words.t("这段絮语里旅伴能用的本事"))
-    }
 
     private func shortName(_ ref: String?) -> String {
         guard let found = team.resolve(ref) else { return "选模型" }
@@ -798,34 +774,6 @@ struct ChatPage: View {
         }
     }
 
-    /// Whatever was copied last: a picture joins the photos, a link or short words join the draft, long words become a file.
-    private func pasteClipboard() {
-        let board = UIPasteboard.general
-        if board.hasImages, let image = board.image, let data = image.jpegData(compressionQuality: 0.9), let small = Self.shrink(data) {
-            guard photos.count < 4 else { return say("最多带四张图。") }
-            withAnimation(Ink.Motion.settle) { photos.append(small) }
-            say("带上了剪贴板里的图片。")
-        } else if board.hasURLs, let url = board.url {
-            draft += (draft.isEmpty ? "" : "\n") + url.absoluteString
-            typing = true
-        } else if let text = board.string, !text.isEmpty {
-            if text.count > 400 {
-                let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
-                try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyyMMdd-HHmmss"
-                let file = inbox.appendingPathComponent("剪贴板 \(formatter.string(from: Date())).txt")
-                try? Data(text.utf8).write(to: file)
-                withAnimation(Ink.Motion.settle) { files.append(Workspace.relative(file)) }
-                say("剪贴板里的字有点长（\(text.count) 字），存成文件带上了。")
-            } else {
-                draft += (draft.isEmpty ? "" : "\n") + text
-                typing = true
-            }
-        } else {
-            say("剪贴板是空的。")
-        }
-    }
 
     /// More than 2500 characters arriving at once (a paste) would make the box crawl: they go into 书案/收件 as a file,
     /// shown as an attachment under the box, and the box keeps what was there before.
@@ -847,27 +795,6 @@ struct ChatPage: View {
         say(Words.t("粘进来的字太长（\(pasted.count) 字），存成文件带上了：书案/\(Workspace.relative(file))"))
     }
 
-    /// Where the user is, in words, added to the draft.
-    private func attachPlace() {
-        say("正在定位…")
-        Task {
-            do {
-                let location = try await Spot.shared.locate()
-                var words = String(format: "%.5f, %.5f", location.coordinate.latitude, location.coordinate.longitude)
-                if let place = try? await CLGeocoder().reverseGeocodeLocation(location).first {
-                    let parts = [place.administrativeArea, place.locality, place.subLocality, place.thoroughfare, place.name].compactMap { $0 }
-                    var seen: [String] = []
-                    for part in parts where !seen.contains(part) { seen.append(part) }
-                    words = seen.joined(separator: " ") + "（\(words)）"
-                }
-                draft += (draft.isEmpty ? "" : "\n") + "［我现在在：\(words)］"
-                typing = true
-                say("位置带上了。")
-            } catch {
-                say("没定到位：\(error.localizedDescription)")
-            }
-        }
-    }
 
     /// Files picked from the Files app land in 书案/收件, and the companion is told where.
     private func receive(_ urls: [URL]) {
@@ -938,12 +865,45 @@ struct ChatPage: View {
                 }
             }
             .padding(.top, Ink.Space.m)
-            Text("点一张填进输入框，改一改再发。")
+            Text(Words.t(reach))
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 72)
+    }
+
+    /// The pages the steps right before this reply read or found, for a row of sources under it.
+    private func sources(for line: ChatLine) -> [URL] {
+        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
+        var urls: [URL] = []
+        var cursor = index - 1
+        while cursor >= 0, chat.lines[cursor].kind == .steps {
+            let step = chat.lines[cursor]
+            for (position, label) in step.tools.enumerated() where label.hasPrefix("读网页") || label.hasPrefix("搜索") || label.hasPrefix("远游") {
+                guard position < step.details.count else { continue }
+                // Pages it read count first; then what a search brought back.
+                let text = label.hasPrefix("搜索") ? step.details[position].output : step.details[position].input
+                for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
+                    if let url = URL(string: String(match.output)), url.host != nil, !urls.contains(url) { urls.append(url) }
+                }
+            }
+            cursor -= 1
+        }
+        return Array(urls.prefix(5))
+    }
+
+    /// What this conversation can reach, in one line: 「在书案干活 · 能联网 · 远山 jp-1」.
+    private var reach: String {
+        let off = Set(options.off)
+        func on(_ grant: Grant) -> Bool { grant.policy != .off && !off.contains(grant.rawValue) }
+        var parts = ["在\(team.place(of: chat.key).title)干活"]
+        if on(.web) { parts.append("能联网") }
+        if on(.browser) { parts.append("能用远游") }
+        if !Hills.shared.hosts.isEmpty, on(.hills) { parts.append("连得上 \(Hills.shared.hosts.count) 台远山") }
+        if on(.memory) { parts.append("记得你说过的事") }
+        return parts.joined(separator: " · ")
     }
 
     /// Ways to begin, only for abilities this conversation has.
@@ -952,7 +912,7 @@ struct ChatPage: View {
         var out: [(String, String, String)] = []
         func on(_ grant: Grant) -> Bool { grant.policy != .off && !off.contains(grant.rawValue) }
         if on(.calendar) { out.append(("看看日程", "我今天和明天有什么安排？", "calendar")) }
-        if on(.web) { out.append(("查点东西", "帮我查一下最近重庆有什么值得去的展览", "magnifyingglass")) }
+        if on(.web) { out.append(("查点东西", "帮我查一下最近附近有什么值得去的展览", "magnifyingglass")) }
         if on(.location) { out.append(("看看附近", "我现在在哪？附近有什么好吃的", "location")) }
         if on(.den) { out.append(("在斗室算一算", "在斗室里用 Python 算一下：每月存 2000，年化 3%，十年后有多少", "terminal")) }
         if on(.desk) { out.append(("记到书案", "帮我在书案里建一份本周待办清单", "books.vertical")) }
@@ -1013,6 +973,16 @@ struct ChatPage: View {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)
                 } else {
                     ProseView(text: line.text)
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 12))
+                        .contextMenu { replyMenu(line) }
+                }
+                let found = sources(for: line)
+                if !found.isEmpty, !(chat.fresh?.id == line.id) {
+                    SourcesRow(urls: found) { url in
+                        typing = false
+                        Task { await team.browser.open(url) }
+                        roaming = true
+                    }
                 }
                 if line.id == chat.lines.last(where: { $0.kind == .bot })?.id, !working {
                     footer(line)
@@ -1118,6 +1088,27 @@ struct ChatPage: View {
         }
     }
 
+    private func fork(at line: ChatLine) {
+        Haptics.thud()
+        team.fork(chat.key, at: line.id)
+    }
+
+    /// The same actions on every reply, by a long press: the footer only sits under the last one.
+    @ViewBuilder
+    private func replyMenu(_ line: ChatLine) -> some View {
+        Button("复制", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = line.text
+            Haptics.tick(0.5)
+        }
+        Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
+        Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
+        Button(Words.t("做成笺"), systemImage: "scroll") { noting = Noting(id: line.id, text: line.text) }
+        ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
+        if !isRoom {
+            Button(Words.t("从这里另起一叶"), systemImage: "arrow.triangle.branch") { fork(at: line) }
+        }
+    }
+
     private func footer(_ line: ChatLine) -> some View {
         HStack(spacing: Ink.Space.s) {
             icon("doc.on.doc", "复制") {
@@ -1154,7 +1145,7 @@ struct ChatPage: View {
     /// 「2分31秒 · 6.4k tokens」: how long the turn took and how much was written, short enough for one line.
     static func numbers(_ line: ChatLine) -> String {
         var parts: [String] = []
-        if let seconds = line.seconds { parts.append(seconds >= 60 ? "\(seconds / 60)分\(seconds % 60)秒" : "\(seconds)秒") }
+        if let seconds = line.seconds { parts.append(Clock.said(seconds)) }
         if let tokens = line.tokens {
             parts.append(tokens >= 1000 ? String(format: "%.1fk tokens", Double(tokens) / 1000) : "\(tokens) tokens")
         } else {
@@ -1735,7 +1726,7 @@ private struct Trace: View {
                     } else {
                         Image(systemName: "checkmark.circle").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ok)
                     }
-                    Text(line.live ? (line.tools.last ?? "沉吟") : "行迹 · \(line.tools.count) 步" + (line.seconds.map { " · \($0) 秒" } ?? ""))
+                    Text(Words.t(line.live ? (line.tools.last ?? "沉吟") : "行迹 · \(line.tools.count) 步" + (line.seconds.map { " · " + Clock.said($0) } ?? "")))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
@@ -1863,8 +1854,8 @@ private struct Trace: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Ink.Space.s) {
-                    Text(Self.word(for: name)).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                    if let seconds = more?.seconds { Text("\(max(seconds, 0)) 秒").font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkFaint) }
+                    Text(Words.t(Self.word(for: name))).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                    if let seconds = more?.seconds { Text(Clock.said(seconds)).font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     Spacer(minLength: 0)
                     if more != nil {
                         Image(systemName: shown ? "chevron.up" : "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
@@ -1984,15 +1975,23 @@ private struct WorkingBar: View {
     var free = false
     let tap: () -> Void
 
-    /// A word of encouragement that grows with the work.
-    private var mood: String {
-        switch tools {
-        case 0: return ""
-        case 1...2: return "上手了"
-        case 3...6: return "手感来了"
-        case 7...14: return "越做越顺"
-        default: return "大活，慢慢来"
+    /// A word that grows with the work. The same few minutes always get the same word, so it does not flicker.
+    private func mood(at now: Date) -> String {
+        let minutes = Int(now.timeIntervalSince(since) / 60)
+        let hour = Calendar.current.component(.hour, from: now)
+        let pools: [String]
+        switch (tools, minutes, hour) {
+        case (_, _, 0..<5): pools = ["夜深了，还在做", "陪你熬一会儿", "轻手轻脚地做"]
+        case (0, 1..., _): pools = ["想得有点久", "在琢磨", "这题不简单"]
+        case (0, _, _): return ""
+        case (1...2, _, _): pools = ["上手了", "开个头"]
+        case (3...6, _, _): pools = ["手感来了", "顺着往下做"]
+        case (7...14, _, _): pools = ["越做越顺", "快理清了"]
+        default: pools = ["大活，慢慢来", "一步步啃"]
         }
+        // A new word only every two minutes or with the next stage.
+        let slot = minutes / 2 + tools / 3
+        return pools[slot % pools.count]
     }
 
     var body: some View {
@@ -2009,13 +2008,17 @@ private struct WorkingBar: View {
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1)
                     .contentTransition(.opacity)
-                if tools > 0 {
-                    Text("工具 ×\(tools)" + (mood.isEmpty ? "" : "，\(mood)"))
-                        .font(.system(size: 13))
-                        .foregroundStyle(Ink.inkSoft)
-                        .lineLimit(1)
-                        .layoutPriority(-1)
+                TimelineView(.periodic(from: since, by: 30)) { context in
+                    let word = mood(at: context.date)
+                    let parts = [tools > 0 ? "工具 ×\(tools)" : "", word].filter { !$0.isEmpty }
+                    if !parts.isEmpty {
+                        Text(parts.joined(separator: "，"))
+                            .font(.system(size: 13))
+                            .foregroundStyle(Ink.inkSoft)
+                            .lineLimit(1)
+                    }
                 }
+                .layoutPriority(-1)
                 Spacer(minLength: Ink.Space.s)
                 if free {
                     Text("放手").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.warn)
@@ -2024,7 +2027,7 @@ private struct WorkingBar: View {
                 }
                 TimelineView(.periodic(from: since, by: 1)) { context in
                     let seconds = max(0, Int(context.date.timeIntervalSince(since)))
-                    Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
+                    Text(Clock.running(seconds))
                         .font(.system(size: 13).monospacedDigit())
                         .foregroundStyle(Ink.inkSoft)
                         .contentTransition(.numericText())
@@ -2041,53 +2044,6 @@ private struct WorkingBar: View {
     }
 }
 
-private struct LiveStatus: View {
-    let words: String
-    let icon: String
-    let since: Date
-    var waiting = false
-    @State private var breathe = false
-
-    var body: some View {
-        HStack(alignment: .center, spacing: Ink.Space.m) {
-            ZStack {
-                Circle()
-                    .fill(waiting ? Ink.warn.opacity(0.16) : Ink.accentWash)
-                    .scaleEffect(breathe ? 1.18 : 0.92)
-                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathe)
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(waiting ? Ink.warn : Ink.accent)
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 2) {
-                    Text(words)
-                        .font(Ink.secondary)
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(2)
-                        .contentTransition(.opacity)
-                    if !waiting { Dots() }
-                }
-                TimelineView(.periodic(from: since, by: 1)) { context in
-                    let seconds = max(0, Int(context.date.timeIntervalSince(since)))
-                    Text(seconds < 2 ? "刚刚收到" : "已经 \(seconds) 秒")
-                        .font(Ink.footnote.monospacedDigit())
-                        .foregroundStyle(Ink.inkFaint)
-                        .contentTransition(.numericText())
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Ink.Space.m)
-        .padding(.vertical, Ink.Space.s)
-        .background(Ink.paperRaised.opacity(0.7), in: .rect(cornerRadius: Ink.Radius.card))
-        .animation(Ink.Motion.settle, value: words)
-        .onAppear { breathe = true }
-        .accessibilityElement(children: .combine)
-    }
-}
 
 /// Three dots that rise in turn.
 private struct Dots: View {
@@ -2105,5 +2061,48 @@ private struct Dots: View {
             .padding(.leading, 2)
         }
         .frame(height: 10)
+    }
+}
+
+
+/// 出处: the pages behind an answer, as small cards with the site's name; a tap opens the page in 远游.
+struct SourcesRow: View {
+    let urls: [URL]
+    let open: (URL) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Ink.Space.s) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                    Button {
+                        Haptics.light()
+                        open(url)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                .foregroundStyle(Ink.paper)
+                                .frame(width: 16, height: 16)
+                                .background(Ink.inkSoft, in: .circle)
+                            Text(Self.site(url)).font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Ink.mine, in: .capsule)
+                    }
+                    .buttonStyle(PressStyle(haptic: false))
+                    .accessibilityLabel("出处 \(index + 1)：\(Self.site(url))")
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// 「zhihu.com」 from 「https://www.zhihu.com/question/…」.
+    static func site(_ url: URL) -> String {
+        var host = url.host() ?? url.absoluteString
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        if host.hasPrefix("m.") { host.removeFirst(2) }
+        return host
     }
 }

@@ -43,7 +43,7 @@ struct ClioApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ClioRoot()
+            ClioRoot().appLock()
         }
     }
 }

@@ -480,3 +480,17 @@ private actor Heard {
     var events: [AgentEvent] = []
     func add(_ event: AgentEvent) { events.append(event) }
 }
+
+final class StepTitleTests: XCTestCase {
+    func testEveryToolTakesATitleThatIsTakenAwayBeforeRunning() {
+        let spec = Agent.titled(ToolSpec(name: "web_search", description: "", parameters: ["type": "object", "properties": ["query": ["type": "string"]]]))
+        XCTAssertNotNil(spec.parameters["properties"]?[Agent.titleKey])
+        XCTAssertNotNil(spec.parameters["properties"]?["query"])
+        let (arguments, title) = Agent.untitled(["query": "天气", "step_title": "查明天重庆的天气"])
+        XCTAssertEqual(title, "查明天重庆的天气")
+        XCTAssertNil(arguments["step_title"])
+        XCTAssertEqual(arguments["query"]?.string, "天气")
+        XCTAssertEqual(Agent.label("搜索：天气", title: "查明天重庆的天气"), "搜索：查明天重庆的天气")
+        XCTAssertEqual(Agent.label("搜索：天气", title: nil), "搜索：天气")
+    }
+}

@@ -12,6 +12,14 @@ final class Theme {
     /// Plain names instead of the poetic ones (`Words`).
     private(set) var plain: Bool = UserDefaults.standard.bool(forKey: "look.plainNames")
 
+    /// Dark mode on pure black, for OLED screens.
+    private(set) var oled: Bool = UserDefaults.standard.bool(forKey: "look.oled")
+
+    func setOled(_ value: Bool) {
+        oled = value
+        UserDefaults.standard.set(value, forKey: "look.oled")
+    }
+
     func setPlain(_ value: Bool) {
         plain = value
         UserDefaults.standard.set(value, forKey: "look.plainNames")
@@ -42,8 +50,8 @@ enum Ink {
     // MARK: Colors
 
     /// Paper and its raised sheets take a breath of the accent's hue, so a whole page leans the same way (黛 keeps the plain paper).
-    static var paper: Color { Theme.shared.palette.paper }
-    static var paperRaised: Color { Theme.shared.palette.raised }
+    static var paper: Color { Theme.shared.oled ? pair(Theme.shared.palette.paperLight, 0x000000) : Theme.shared.palette.paper }
+    static var paperRaised: Color { Theme.shared.oled ? pair(Theme.shared.palette.raisedLight, 0x121212) : Theme.shared.palette.raised }
     static let ink = pair(0x2B2A27, 0xECE6DA)
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
     static let inkFaint = pair(0xA8A294, 0x6E685D)
@@ -61,6 +69,9 @@ enum Ink {
         var raised: Color
         var rule: Color
         var mine: Color
+        /// The light-mode paper, for the pure-black dark mode that keeps the light one as it is.
+        var paperLight: UInt32
+        var raisedLight: UInt32
         var id: String { key }
 
         /// `light` and `dark` are the accent in both modes; `tint` is how much of it the neutrals take (0 for none).
@@ -74,6 +85,8 @@ enum Ink {
             }
             paper = mixed(0xF6F1E7, 0x1C1A17, 0.05)
             raised = mixed(0xFBF8F1, 0x26231F, 0.035)
+            paperLight = Ink.mix(0xF6F1E7, light, 0.05 * tint)
+            raisedLight = Ink.mix(0xFBF8F1, light, 0.035 * tint)
             rule = mixed(0xE4DCCB, 0x37332D, 0.08)
             mine = mixed(0xECE4D3, 0x322E28, 0.07)
         }

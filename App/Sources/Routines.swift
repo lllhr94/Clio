@@ -34,7 +34,9 @@ enum RoutineTools {
             let days = Routine.days(from: arguments["days"]?.string)
             let clock = Routine.clock(arguments["time"]?.string)
             let routine = Routine(botId: botId, title: "", prompt: "", hour: clock?.hour ?? 0, minute: clock?.minute ?? 0, days: days)
-            return ApprovalAsk(title: "新建定时任务", reason: "\(routine.when)  \(arguments["title"]?.string ?? "")", detail: arguments["prompt"]?.string)
+            // Something that will run again and again on its own: always asked, whatever the presets say.
+            let next = routine.next(after: Date()).map { "，下一次 \(When.show($0))" } ?? ""
+            return ApprovalAsk(title: "新建定时任务", reason: "\(routine.when)  \(arguments["title"]?.string ?? "")\(next)", detail: arguments["prompt"]?.string, forced: true)
         }
 
         func run(_ arguments: JSONValue) async throws -> ToolOutput {
@@ -185,7 +187,7 @@ struct RoutinesPage: View {
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(routine.title).font(.system(size: 16, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
-                Text("\(routine.when) · \(who)").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text("\(routine.when) · \(who)" + (routine.on ? (routine.next(after: Date()).map { " · 下次 \(When.show($0))" } ?? "") : "")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text(routine.prompt).font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(2)
                 if let last = routine.lastRun {
                     Text("上次：\(When.show(Date(timeIntervalSince1970: last)))").font(.system(size: 11)).foregroundStyle(Ink.inkFaint)

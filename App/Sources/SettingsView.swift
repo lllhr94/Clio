@@ -164,6 +164,34 @@ struct SettingsView: View {
                     }
                     .paperField()
                 }
+                Menu {
+                    Button {
+                        Haptics.tick(0.6)
+                        team.setBackupModel(nil)
+                    } label: {
+                        if team.settings.backupModel == nil { Label("不用备用", systemImage: "checkmark") } else { Text("不用备用") }
+                    }
+                    ModelChoices(team: team, current: team.settings.backupModel) { ref in
+                        Haptics.tick(0.6)
+                        team.setBackupModel(ref)
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(team.settings.backupModel == nil ? "备用模型：没设" : "备用模型：\(team.modelTitle(team.settings.backupModel))")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(Ink.ink)
+                                .lineLimit(1)
+                            Text("主模型出错时换它接着答，会在对话里说一声。")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Ink.inkFaint)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                    }
+                    .paperField()
+                }
             }
         }
     }

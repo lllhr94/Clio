@@ -25,6 +25,7 @@ struct UsageSheet: View {
                     contextCard
                     heading("本对话").padding(.top, Ink.Space.m)
                     spendCard
+                    allCard
                     if let endpoint, let source = Balance.source(baseURL: endpoint.baseURL) {
                         heading("\(endpoint.name) 余额").padding(.top, Ink.Space.m)
                         balanceCard(endpoint, source: source)
@@ -140,6 +141,32 @@ struct UsageSheet: View {
             Text(label).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Every conversation's tokens side by side, to see where they go.
+    @ViewBuilder
+    private var allCard: some View {
+        let all = team.allSpend()
+        if all.count > 1 {
+            let total = all.reduce(0) { $0 + $1.spend.input + $1.spend.output }
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                Text("全部对话 · 共 \(Tokens.short(total))").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                ForEach(Array(all.prefix(8).enumerated()), id: \.offset) { _, item in
+                    let used = item.spend.input + item.spend.output
+                    HStack(spacing: Ink.Space.s) {
+                        Text(item.name).font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(1).frame(width: 72, alignment: .leading)
+                        GeometryReader { box in
+                            Capsule().fill(Ink.accent.opacity(0.7))
+                                .frame(width: max(4, box.size.width * CGFloat(used) / CGFloat(max(total, 1))))
+                        }
+                        .frame(height: 8)
+                        Text(Tokens.short(used)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkSoft).frame(width: 52, alignment: .trailing)
+                    }
+                }
+            }
+            .padding(Ink.Space.l)
+            .paperCard()
+        }
     }
 
     // MARK: 余额

@@ -26,17 +26,28 @@ enum Words {
         ("本事", "能力"),
         ("潮水", "每日拾物"),
         ("旅伴", "助手"),
+        ("沉吟", "思考"),
+        ("落笔", "回复"),
+        ("闲坐", "空闲"),
+        ("寻访", "搜索"),
+        ("来信", "提醒"),
+        ("所在", "位置"),
+        ("行迹", "步骤"),
+        ("递笺", "请你填写"),
+        ("落印笺", "批准单"),
         ("絮语", "对话"),
         ("一叶", "一页"),
     ]
 
     static var plain: Bool { Theme.shared.plain }
 
+    private static let sorted = table.sorted { $0.0.count > $1.0.count }
+
     /// The words as the user wants them named.
     static func t(_ text: String) -> String {
         guard plain else { return text }
         var out = text
-        for (poetic, everyday) in table where out.contains(poetic) {
+        for (poetic, everyday) in sorted where out.contains(poetic) {
             out = out.replacingOccurrences(of: poetic, with: everyday)
         }
         return out

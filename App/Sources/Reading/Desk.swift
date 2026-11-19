@@ -88,6 +88,7 @@ struct Desk: View {
     @State private var roomEditing: RoomInfo?
     @State private var searching = false
     @State private var showArchived = false
+    @State private var listFilter = 0
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
@@ -121,7 +122,40 @@ struct Desk: View {
 
     /// The conversations on the desk, without the ones put away.
     private var shownThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
-        recent.filter { !team.archived.contains($0.id.id) }
+        recent.filter { item in
+            guard !team.archived.contains(item.id.id) else { return false }
+            switch listFilter {
+            case 1: return team.isWorking(item.id.id)
+            case 2: return team.approvals.contains { $0.chat == item.id.id }
+            default: return true
+            }
+        }
+    }
+
+    /// 全部 / 在做 / 等批准, shown once there is something to filter.
+    @ViewBuilder
+    private var filterChips: some View {
+        let working = recent.filter { team.isWorking($0.id.id) }.count
+        let waiting = recent.filter { item in team.approvals.contains { $0.chat == item.id.id } }.count
+        if working + waiting > 0 || listFilter != 0 {
+            HStack(spacing: Ink.Space.s) {
+                ForEach([(0, "全部"), (1, "在做 \(working)"), (2, "等批准 \(waiting)")], id: \.0) { item in
+                    Button {
+                        Haptics.tick(0.4)
+                        withAnimation(Ink.Motion.settle) { listFilter = item.0 }
+                    } label: {
+                        Text(item.1)
+                            .font(.system(size: 13, weight: listFilter == item.0 ? .semibold : .regular))
+                            .foregroundStyle(listFilter == item.0 ? Ink.accent : Ink.inkSoft)
+                            .padding(.horizontal, Ink.Space.m)
+                            .frame(height: 28)
+                            .background(listFilter == item.0 ? Ink.accentWash : Ink.mine, in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+        }
     }
 
     private var archivedThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
@@ -199,6 +233,7 @@ struct Desk: View {
                         }
                     } else {
                     TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? "旅伴")
+                    filterChips
                     if shownThreads.isEmpty {
                         EmptyNote(
                             symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",

@@ -5,7 +5,7 @@ enum Live {
     /// Tool labels' first word, in the glossary's terms.
     static func word(_ label: String) -> String {
         switch label {
-        case "搜索": "寻访"
+        case "搜索": Words.t("寻访")
         case "读网页": Words.t("远游")
         case "记住": Words.t("拾遗")
         case "忘掉": Words.t("删去拾遗")
@@ -27,7 +27,7 @@ enum Live {
             if doing.hasSuffix("在想") { return "收到了，\(doing)" }
             let parts = doing.split(separator: "：", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { return doing }
-            return "正在\(word(parts[0]))：\(parts[1])"
+            return "正在\(word(parts[0]))：\(Words.t(parts[1]))"
         }
     }
 
@@ -41,7 +41,7 @@ enum Live {
         case "正在压缩前文": return "正在压缩前文…"
         default:
             let parts = doing.split(separator: "：", maxSplits: 1).map(String.init)
-            return parts.count == 2 ? "正在\(word(parts[0]))…" : doing
+            return parts.count == 2 ? "正在\(word(parts[0]))…" : Words.t(doing)
         }
     }
 }

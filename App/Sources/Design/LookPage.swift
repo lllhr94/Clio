@@ -28,6 +28,7 @@ struct LookPage: View {
     @AppStorage("notify.done") private var notifyDone = true
     @AppStorage("live.on") private var liveOn = true
     @AppStorage("look.fps") private var fps = false
+    @AppStorage("lock.faceid") private var faceLock = false
 
     private let sample = """
     ## 小样
@@ -63,6 +64,7 @@ struct LookPage: View {
                     LabeledSlider(title: "字号", value: $size, range: 14...23, step: 1) { "\(Int($0))" }
                     LabeledSlider(title: "行距", value: $leading, range: 2...16, step: 1) { "\(Int($0))" }
                     palettes
+                    Toggle("深色时用纯黑", isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
                     Picker(Words.t("叫法"), selection: Binding(get: { Theme.shared.plain }, set: { value in
                         Haptics.tick(0.5)
                         Theme.shared.setPlain(value)
@@ -79,6 +81,12 @@ struct LookPage: View {
                     Toggle("行迹默认展开", isOn: $traceOpen)
                     Toggle("聊天页的形象", isOn: $mascot)
                     Toggle("角落显示帧率", isOn: $fps)
+                }
+
+                Section {
+                    Toggle("用面容锁住 Clio", isOn: $faceLock)
+                } header: { Text("上锁") } footer: {
+                    Text("切到后台再回来时要先过面容（或密码）。手机没设密码时不会锁。")
                 }
 
                 Section {
@@ -176,7 +184,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -185,6 +193,7 @@ struct LookPage: View {
         liveOn = true
         Theme.shared.pick("dai")
         Theme.shared.setPlain(false)
+        Theme.shared.setOled(false)
         Haptics.thud()
     }
 }

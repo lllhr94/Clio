@@ -28,7 +28,7 @@ struct ApproveView: View {
     }
 
     private var bot: BotInfo? { team.bots.first { $0.id == current.botId } }
-    private var name: String { bot?.name ?? "Bot" }
+    private var name: String { bot?.name ?? "旅伴" }
     private var answerable: Bool { current.answerable != false }
     private var waiting: Int { team.approvals.filter { $0.id != current.id && !handled.contains($0.id) }.count }
 

@@ -121,7 +121,7 @@ public struct Agent: Sendable {
 
     public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
         var messages = history
-        let specs = tools.map(\.spec)
+        let specs = tools.map { Self.titled($0.spec) }
         var thinking = self.thinking
         for _ in 0..<maxSteps {
             try Task.checkCancellation()
@@ -216,15 +216,44 @@ public struct Agent: Sendable {
         await emit(.message(.assistant("（这件事步骤太多，我先停在这里。要我接着做就说一声。）")))
     }
 
+    /// Every tool takes one more, optional argument: a short line in the model's words for what this step does.
+    static let titleKey = "step_title"
+
+    static func titled(_ spec: ToolSpec) -> ToolSpec {
+        guard case .object(var schema) = spec.parameters else { return spec }
+        var properties: [String: JSONValue] = [:]
+        if case .object(let existing)? = schema["properties"] { properties = existing }
+        properties[titleKey] = .object(["type": .string("string"), "description": .string("一句话告诉用户这一步在做什么，十几个字，比如：查明天重庆的天气")])
+        schema["properties"] = .object(properties)
+        var titled = spec
+        titled.parameters = .object(schema)
+        return titled
+    }
+
+    static func untitled(_ arguments: JSONValue) -> (JSONValue, String?) {
+        guard case .object(var fields) = arguments else { return (arguments, nil) }
+        let title = fields.removeValue(forKey: titleKey)?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (.object(fields), title?.isEmpty == false ? String(title!.prefix(40)) : nil)
+    }
+
+    /// 「搜索：重庆天气」 with the model's title in place of the words after the colon.
+    static func label(_ label: String, title: String?) -> String {
+        guard let title else { return label }
+        guard let colon = label.firstIndex(of: "：") else { return label.isEmpty ? title : "\(label)：\(title)" }
+        return "\(label[..<colon])：\(title)"
+    }
+
     private func perform(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
         guard let tool = tools.first(where: { $0.spec.name == call.name }) else {
             return .toolResult("没有叫 \(call.name) 的工具。", for: call, isError: true)
         }
         let source = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let arguments = JSONValue.parse(source.isEmpty ? "{}" : source) else {
+        guard let given = JSONValue.parse(source.isEmpty ? "{}" : source) else {
             return .toolResult("参数不是合法的 JSON：\(call.arguments.prefix(200))", for: call, isError: true)
         }
-        await emit(.toolStarted(id: call.id, name: call.name, label: tool.label(for: arguments)))
+        // The model's own words for this step, for the person; the tool never sees them.
+        let (arguments, title) = Self.untitled(given)
+        await emit(.toolStarted(id: call.id, name: call.name, label: Self.label(tool.label(for: arguments), title: title)))
         if let ask = tool.approval(for: arguments) {
             guard await approve(ask, call.name) else {
                 await emit(.toolFinished(id: call.id, ok: false))

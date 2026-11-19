@@ -127,6 +127,8 @@ struct TeamSettings: Codable, Equatable {
     var endpoints: [Endpoint] = []
     /// `endpointId/modelId`.
     var defaultModel: String?
+    /// Tried once when the chosen model fails before a turn is done. `endpointId/modelId`.
+    var backupModel: String?
     var mainBotId: String?
 }
 
