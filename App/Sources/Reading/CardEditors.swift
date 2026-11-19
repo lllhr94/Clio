@@ -23,7 +23,7 @@ extension View {
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, height == nil ? Ink.Space.m : 0)
             .frame(minHeight: height)
-            .paperCard()
+            .paperCard(radius: Ink.Radius.field)
     }
 }
 

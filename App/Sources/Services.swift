@@ -37,6 +37,25 @@ struct Service: Identifiable, Equatable {
 
     var baseURL: String { addresses.first?.url ?? "" }
 
+    /// The maker's site, for its icon (see `BrandIcon`).
+    var domain: String? {
+        let known = [
+            "deepseek": "deepseek.com", "kimi": "kimi.com", "qwen": "tongyi.aliyun.com", "glm": "bigmodel.cn",
+            "doubao": "doubao.com", "siliconflow": "siliconflow.cn", "minimax": "minimaxi.com", "openai": "openai.com",
+            "claude": "claude.ai", "gemini": "gemini.google.com", "grok": "grok.com", "openrouter": "openrouter.ai",
+        ]
+        return known[id]
+    }
+
+    /// The tile behind a maker with no icon (自定义, the local one), or until the icon arrives.
+    var symbol: String? {
+        switch id {
+        case "local": "desktopcomputer"
+        case "custom", "custom-claude": "slider.horizontal.3"
+        default: nil
+        }
+    }
+
     static let catalog: [Service] = [
         Service(id: "deepseek", name: "DeepSeek", note: "国内直连，便宜。V4.1 Flash 能看图", kind: .openai,
                 addresses: [Address(label: "官方", url: "https://api.deepseek.com")],

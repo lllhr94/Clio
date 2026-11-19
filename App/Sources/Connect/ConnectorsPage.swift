@@ -221,7 +221,7 @@ struct ConnectorsPage: View {
             googleOpen = true
         } label: {
             HStack(spacing: Ink.Space.m) {
-                ConnectorIcon(mark: "G", tint: Color(red: 0.30, green: 0.55, blue: 0.85))
+                ConnectorIcon(mark: "G", tint: Color(red: 0.30, green: 0.55, blue: 0.85), domain: "mail.google.com")
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Gmail 与云端硬盘").font(.system(size: 17)).foregroundStyle(Ink.ink)
                     Text(google.account ?? "用你自己的 Client ID 登录，不经过别人").font(.system(size: 13)).foregroundStyle(Ink.inkSoft).lineLimit(1)
@@ -247,22 +247,21 @@ struct ConnectorIcon: View {
     init(connector: Connector, size: CGFloat = 44) {
         mark = connector.mark
         tint = connector.tint
+        domain = connector.domain
         self.size = size
     }
 
-    init(mark: String, tint: Color, size: CGFloat = 44) {
+    init(mark: String, tint: Color, size: CGFloat = 44, domain: String? = nil) {
         self.mark = mark
         self.tint = tint
         self.size = size
+        self.domain = domain
     }
 
+    var domain: String? = nil
+
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-            .fill(tint.gradient)
-            .frame(width: size, height: size)
-            .overlay {
-                Text(mark).font(.system(size: size * 0.46, weight: .bold, design: .rounded)).foregroundStyle(.white)
-            }
+        BrandIcon(domain: domain, mark: mark, tint: tint, size: size)
     }
 }
 
@@ -594,7 +593,24 @@ struct Connector: Identifiable, Hashable {
         self.auth = auth; self.group = group; self.serverId = serverId; self.tokenPage = tokenPage
     }
 
-    /// The letter on its tile: 「N」, 「高」. Never the company's logo.
+    /// Where its icon is fetched from (see `BrandIcon`).
+    var domain: String? {
+        let known: [String: String] = [
+            "amap": "amap.com", "rube": "rube.app", "zapier": "zapier.com", "notion": "notion.so", "linear": "linear.app",
+            "atlassian": "atlassian.com", "asana": "asana.com", "monday": "monday.com", "airtable": "airtable.com", "box": "box.com",
+            "canva": "canva.com", "figma": "figma.com", "github": "github.com", "sentry": "sentry.io", "vercel": "vercel.com",
+            "supabase": "supabase.com", "stripe": "stripe.com", "cloudflare": "cloudflare.com", "netlify": "netlify.com",
+            "neon": "neon.tech", "exa": "exa.ai", "wolfram": "wolframalpha.com", "deepwiki": "deepwiki.com",
+            "context7": "context7.com", "mslearn": "learn.microsoft.com", "cfdocs": "developers.cloudflare.com",
+            "huggingface": "huggingface.co", "g-gmail": "mail.google.com", "g-drive": "drive.google.com",
+            "g-calendar": "calendar.google.com", "g-docs": "docs.google.com", "g-sheets": "sheets.google.com",
+            "g-slides": "slides.google.com",
+        ]
+        if let found = known[id] { return found }
+        return URL(string: url)?.host
+    }
+
+    /// The letter on its tile until (or unless) its icon arrives: 「N」, 「高」.
     var mark: String {
         let first = name.first.map(String.init) ?? "?"
         return first.uppercased()

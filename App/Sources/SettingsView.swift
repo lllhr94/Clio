@@ -8,6 +8,8 @@ struct SettingsView: View {
     var onLeaveDemo: () -> Void
     /// Opened from `clio://settings/<page>`: that page comes up at once.
     var startAt: String? = nil
+    /// The companions' and tools' pages, opened by the desk once settings is closed.
+    var openElsewhere: ((DrawerItem) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var connecting = false
@@ -38,7 +40,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
                         if team.phase == .demo { demoCard } else { overview }
                         aiGroup
+                        if openElsewhere != nil { companionGroup }
                         abilityGroup
+                        if openElsewhere != nil { toolGroup }
                         looksGroup
                         generalGroup
                         about
@@ -222,6 +226,7 @@ struct SettingsView: View {
         var line = "\(host) · 在用 \(endpoint.models.count) 个"
         if !endpoint.models.isEmpty { line += seeing == 0 ? " · 都不看图" : seeing == endpoint.models.count ? " · 都能看图" : " · \(seeing) 个能看图" }
         return HStack(spacing: Ink.Space.m) {
+            ServiceIcon(service: Service.of(endpoint), size: 38)
             VStack(alignment: .leading, spacing: 2) {
                 Text(endpoint.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
                 Text(line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
@@ -352,7 +357,7 @@ struct SettingsView: View {
                 ServicePage(team: team, id: found.endpoint.id)
             } label: {
                 HStack(spacing: Ink.Space.m) {
-                    Whale(size: 44, pose: .idle, still: true)
+                    ServiceIcon(service: Service.of(found.endpoint), size: 46)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(found.model).font(.system(size: 17, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                         Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)
@@ -491,6 +496,39 @@ struct SettingsView: View {
         }
     }
 
+    private enum Tint2 {
+        static let people = Color(red: 0.86, green: 0.42, blue: 0.48)
+        static let tools = Color(red: 0.40, green: 0.47, blue: 0.56)
+    }
+
+    /// Leaves settings and opens one of the desk's own pages.
+    private func elsewhere(_ item: DrawerItem) {
+        dismiss()
+        openElsewhere?(item)
+    }
+
+    private var companionGroup: some View {
+        group(Words.t("旅伴")) {
+            row("person.badge.plus", Tint2.people, Words.t("新旅伴"), "\(team.bots.count) 位") { elsewhere(.newCompanion) }
+            divider
+            row("person.3", Tint2.people, Words.t("雅集"), team.rooms.isEmpty ? "没有" : "\(team.rooms.count) 个") { elsewhere(.gathering) }
+            divider
+            row("square.and.arrow.down", Tint2.people, Words.t("收名帖"), nil) { elsewhere(.importCard) }
+            divider
+            row("face.smiling", Tint2.people, "形象", nil) { elsewhere(.portrait) }
+        }
+    }
+
+    private var toolGroup: some View {
+        group("工具") {
+            row("books.vertical", Tint2.tools, Words.t("书案"), "旅伴写的文件") { elsewhere(.study) }
+            divider
+            row("terminal", Tint2.tools, Words.t("斗室"), "手机里的 Linux") { elsewhere(.den) }
+            divider
+            row("lock.rectangle.stack", Tint2.tools, Words.t("信匣"), "账号密码") { elsewhere(.vault) }
+        }
+    }
+
     private var generalGroup: some View {
         group("通用") {
             row("bell", Tint.general, "通知、锁屏与后台", nil) { lookFocus = "notify"; looking = true }
@@ -554,7 +592,6 @@ struct SettingsView: View {
 
     private var about: some View {
         VStack(spacing: Ink.Space.xs) {
-            Whale(size: 36, pose: .idle, still: true)
             Text("Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                 .font(Ink.serif(14, bold: true)).foregroundStyle(Ink.inkSoft)
             Text(Words.t("开源，GPL-3.0 · 斗室用 iSH，终端用 SwiftTerm，SSH 用 Citadel"))

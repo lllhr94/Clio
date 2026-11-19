@@ -278,8 +278,8 @@ struct ChatPage: View {
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
-            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
             HStack(spacing: Ink.Space.m) {
                 Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                 Button("撤回", systemImage: "arrow.uturn.backward") {
@@ -973,8 +973,8 @@ struct ChatPage: View {
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, Ink.Space.m)
-                        .background(editing == line.id ? Ink.accentWash : Ink.mine, in: .rect(cornerRadius: 18))
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 18))
+                        .background(editing == line.id ? Ink.accentWash : Ink.mine, in: .rect(cornerRadius: 22, style: .continuous))
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 22, style: .continuous))
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
                             Button("改了重发", systemImage: "pencil") {
@@ -1007,7 +1007,7 @@ struct ChatPage: View {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)
                 } else {
                     ProseView(text: line.text)
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 12))
+                        .contentShape(.contextMenuPreview, .rect(cornerRadius: 14, style: .continuous))
                         .contextMenu { replyMenu(line) }
                 }
                 let found = sources(for: line)

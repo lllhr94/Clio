@@ -286,16 +286,7 @@ struct Desk: View {
 
             HStack(spacing: Ink.Space.m) {
                 Spacer()
-                Button {
-                    Haptics.light()
-                    closeSide()
-                    drawer = true
-                } label: {
-                    Image(systemName: "square.grid.2x2").font(.system(size: 18)).foregroundStyle(Ink.ink)
-                        .frame(width: 48, height: 48).glassFace(in: Circle())
-                }
-                .buttonStyle(PressStyle(haptic: false))
-                .accessibilityLabel("更多")
+
                 Button {
                     Haptics.light()
                     closeSide()
@@ -355,7 +346,7 @@ struct Desk: View {
             }
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, 9)
-            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: 12))
+            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: 14, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
@@ -594,8 +585,15 @@ struct Desk: View {
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好", role: .cancel) { notice = nil }
         }
-        .fullScreenCover(isPresented: $tuning, onDismiss: { settingsPage = nil }) {
-            SettingsView(team: team, onLeaveDemo: {}, startAt: settingsPage)
+        .fullScreenCover(isPresented: $tuning, onDismiss: {
+            settingsPage = nil
+            // A companion or tool page picked in settings opens once settings is out of the way.
+            if let item = picked {
+                picked = nil
+                open(item)
+            }
+        }) {
+            SettingsView(team: team, onLeaveDemo: {}, startAt: settingsPage, openElsewhere: { item in picked = item })
         }
         .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
             Button(clearingIsRoom ? "散了" : "清空", role: .destructive) {
@@ -707,14 +705,32 @@ struct Desk: View {
                 Text("今天想聊点什么？").font(Ink.reading).foregroundStyle(Ink.inkSoft)
             }
             Spacer()
-            Button {
-                Haptics.light()
-                drawer = true
-            } label: {
-                Whale(size: 84, pose: team.doing.isEmpty ? .idle : .thinking)
+            HStack(spacing: Ink.Space.s) {
+                Menu {
+                    Button(Words.t("新旅伴"), systemImage: "person.badge.plus") { open(.newCompanion) }
+                    Button(Words.t("开一场雅集"), systemImage: "person.3") { open(.gathering) }
+                    Button(Words.t("收名帖"), systemImage: "square.and.arrow.down") { open(.importCard) }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                        .glassFace(in: Circle())
+                }
+                .accessibilityLabel(Words.t("添一位旅伴或开一场雅集"))
+                Button {
+                    Haptics.light()
+                    tuning = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                        .glassFace(in: Circle())
+                }
+                .buttonStyle(PressStyle(haptic: false))
+                .accessibilityLabel(Words.t("调弦"))
             }
-            .buttonStyle(PressStyle(haptic: false))
-            .accessibilityLabel("打开抽屉")
         }
         .padding(.top, Ink.Space.xxl)
     }

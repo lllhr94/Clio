@@ -49,7 +49,7 @@ struct InlineApproval: View {
                 }
                 .frame(maxHeight: 6 * 16 + 12)
                 .fixedSize(horizontal: false, vertical: true)
-                .background(Ink.mine, in: .rect(cornerRadius: 8))
+                .background(Ink.mine, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             }
             if let note {
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.stop)

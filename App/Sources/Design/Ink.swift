@@ -195,10 +195,13 @@ enum Ink {
         static let edge: CGFloat = 12
     }
 
+    /// Corners follow the iPhone's own: continuous curves, large on cards (like grouped lists in iOS 26),
+    /// smaller inside them so inner corners sit concentric with the outer ones.
     enum Radius {
-        static let small: CGFloat = 8
-        static let card: CGFloat = 14
-        static let sheet: CGFloat = 22
+        static let small: CGFloat = 12
+        static let field: CGFloat = 18
+        static let card: CGFloat = 26
+        static let sheet: CGFloat = 34
     }
 
     // MARK: Motion
@@ -230,9 +233,9 @@ struct PressStyle: ButtonStyle {
 extension View {
     /// A card that reads as paper: a raised sheet with a hairline edge.
     func paperCard(radius: CGFloat = Ink.Radius.card) -> some View {
-        background(Ink.paperRaised, in: .rect(cornerRadius: radius))
-            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(Ink.rule, lineWidth: 1))
-            .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
+        background(Ink.paperRaised, in: .rect(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Ink.rule.opacity(0.7), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
     }
 
     /// A small glass capsule: only for controls that float above content.

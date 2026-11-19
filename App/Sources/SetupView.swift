@@ -159,9 +159,14 @@ struct SetupView: View {
     private var servicePicker: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             FieldTitle(text: "选一家", note: "都能用自己的密钥直连。不在里面的，选最后的「自定义」")
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: Ink.Space.s), GridItem(.flexible(), spacing: Ink.Space.s)], spacing: Ink.Space.s) {
-                ForEach(Service.catalog) { item in tile(item) }
+            // One list, top to bottom, like every other list in Clio.
+            VStack(spacing: 0) {
+                ForEach(Array(Service.catalog.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.leading, 68) }
+                    tile(item)
+                }
             }
+            .paperCard()
         }
 
         if choice.addresses.count > 1 {
@@ -381,19 +386,24 @@ struct SetupView: View {
                 advice = nil
             }
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    Text(item.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
-                    if added { Image(systemName: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(Ink.ok) }
-                    Spacer(minLength: 0)
+            HStack(spacing: Ink.Space.m) {
+                ServiceIcon(service: item, size: 38)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(item.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                        if added { Text("已接").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.ok) }
+                    }
+                    Text(item.note).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
-                Text(item.note).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(2, reservesSpace: true)
+                Spacer(minLength: 0)
+                Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(picked ? Ink.accent : Ink.rule)
             }
-            .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, Ink.Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(picked ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(picked ? Ink.accent.opacity(0.55) : Ink.rule, lineWidth: picked ? 1.5 : 1))
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, 11)
+            .background(picked ? Ink.accentWash.opacity(0.5) : Color.clear)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("\(item.name)：\(item.note)" + (added ? "，已接过" : ""))

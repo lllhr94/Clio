@@ -44,7 +44,7 @@ struct ThinkingBox: View {
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
-                    .background(Ink.rule.opacity(0.25), in: .rect(cornerRadius: 10))
+                    .background(Ink.rule.opacity(0.25), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                     .mask(LinearGradient(colors: [.black.opacity(0.35), .black], startPoint: .top, endPoint: .center))
                     .animation(.easeOut(duration: 0.2), value: tail)
             } else if open {
@@ -109,7 +109,7 @@ struct PulseBox: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
-                    .background(Ink.accentWash, in: .rect(cornerRadius: 10))
+                    .background(Ink.accentWash, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                     .transition(.opacity)
             }
         }

@@ -225,7 +225,7 @@ struct ApproveView: View {
                     .frame(maxHeight: 88)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Ink.mine, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Ink.mine, in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
                 }
             }
 
