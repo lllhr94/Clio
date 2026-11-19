@@ -3,35 +3,20 @@ import UIKit
 import Vision
 import VisionKit
 
-/// What the ＋ can bring into a message.
+/// What the ＋ can bring into a message. Like other chat apps, only the ways to bring a picture or a file;
+/// pasting works in the text field, and the companion finds out where you are or reads a link by itself.
 enum AttachKind: String, CaseIterable, Identifiable {
-    case photos, camera, files, desk, scan, clipboard, link, place
+    case photos, camera, files, scan, desk
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .photos: "相册"
+        case .photos: "照片"
         case .camera: "拍照"
         case .files: "文件"
-        case .desk: "书案"
         case .scan: "扫描文档"
-        case .clipboard: "剪贴板"
-        case .link: "网页链接"
-        case .place: "位置"
-        }
-    }
-
-    var line: String {
-        switch self {
-        case .photos: "最多四张"
-        case .camera: "拍一张"
-        case .files: "从「文件」app 选"
-        case .desk: "旅伴写过的文件"
-        case .scan: "扫完自动识字"
-        case .clipboard: "刚复制的东西"
-        case .link: "请旅伴去读"
-        case .place: "附上你在哪"
+        case .desk: "书案里的文件"
         }
     }
 
@@ -40,55 +25,9 @@ enum AttachKind: String, CaseIterable, Identifiable {
         case .photos: "photo.on.rectangle"
         case .camera: "camera"
         case .files: "folder"
-        case .desk: "books.vertical"
         case .scan: "doc.viewfinder"
-        case .clipboard: "doc.on.clipboard"
-        case .link: "link"
-        case .place: "location"
+        case .desk: "books.vertical"
         }
-    }
-}
-
-/// The ＋ panel: eight ways to bring something in, four to a row.
-struct AttachSheet: View {
-    let pick: (AttachKind) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: Ink.Space.m), count: 4)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.l) {
-            Text("带点什么进来")
-                .font(Ink.serif(17, bold: true))
-                .foregroundStyle(Ink.ink)
-                .padding(.top, Ink.Space.l)
-            LazyVGrid(columns: columns, spacing: Ink.Space.l) {
-                ForEach(AttachKind.allCases) { kind in
-                    Button {
-                        Haptics.tick(0.5)
-                        pick(kind)
-                        dismiss()
-                    } label: {
-                        VStack(spacing: Ink.Space.xs) {
-                            Image(systemName: kind.symbol)
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundStyle(Ink.accent)
-                                .frame(width: 54, height: 54)
-                                .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
-                                .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(Ink.rule))
-                            Text(kind.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                            Text(kind.line).font(.system(size: 10)).foregroundStyle(Ink.inkFaint).lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PressStyle(haptic: false))
-                    .disabled(kind == .scan && !VNDocumentCameraViewController.isSupported)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Ink.Space.page)
-        .background(Ink.paper.ignoresSafeArea())
     }
 }
 

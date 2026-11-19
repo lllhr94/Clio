@@ -21,9 +21,10 @@ struct AbilitiesSheet: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("这段絮语里，\(name)能用下面这些本事。关掉的它就看不到，只影响这一段絮语。灰掉的是在「应许」里整个关了的，要去那里打开。")
+                        Text("这段絮语里，\(name)在哪里干活、能用哪些本事。联网默认开着，要它不上网就在「出门」里关掉。关掉的它就看不到，只影响这一段絮语。灰掉的是在「应许」里整个关了的，要去那里打开。")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
+                        workplace
                         ForEach(groups, id: \.0) { group in
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
                                 Text(group.0).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
@@ -55,6 +56,43 @@ struct AbilitiesSheet: View {
             .navigationTitle("本事")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+        }
+    }
+
+    /// Where the work happens: 书案, 斗室 or a 远山 host. Rarely changed, so it lives here rather than under the composer.
+    private var workplace: some View {
+        let current = team.place(of: key)
+        var places: [(WorkPlace, String)] = [(.desk, "手机里的文件夹，读写文件、算数"), (.den, "手机里的 Linux，能跑命令、装软件")]
+        places += Hills.shared.hosts.map { (.hill($0.id), "\($0.user)@\($0.address)") }
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text("在哪里干活").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+            VStack(spacing: 0) {
+                ForEach(Array(places.enumerated()), id: \.offset) { index, item in
+                    Button {
+                        Haptics.tick(0.5)
+                        team.setPlace(item.0, in: key)
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: item.0.symbol).font(.system(size: 17)).foregroundStyle(Ink.accent).frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.0.title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                                Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            if current == item.0 { Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.accent) }
+                        }
+                        .padding(.horizontal, Ink.Space.l)
+                        .padding(.vertical, Ink.Space.m)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(TapStyle())
+                    if index < places.count - 1 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                }
+            }
+            .paperCard()
+            if Hills.shared.hosts.isEmpty {
+                Text("在调弦 › 远山 添一台电脑或服务器，这里就能选它。").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
+            }
         }
     }
 

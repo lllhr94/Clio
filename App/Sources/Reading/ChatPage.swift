@@ -5,6 +5,7 @@ import Craft
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+import VisionKit
 
 /// 絮语: a conversation with one companion, set as a page.
 struct ChatPage: View {
@@ -395,17 +396,6 @@ struct ChatPage: View {
         .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
-        .sheet(isPresented: $attaching, onDismiss: {
-            // The panel is out of the way; now open what was picked.
-            if let kind = attachPicked {
-                attachPicked = nil
-                bring(kind)
-            }
-        }) {
-            AttachSheet { attachPicked = $0 }
-                .presentationDetents([.height(320)])
-                .presentationDragIndicator(.visible)
-        }
         .sheet(isPresented: $deskPicking) {
             DeskPicker { picked in
                 deskPicking = false
@@ -647,6 +637,7 @@ struct ChatPage: View {
 
     private var modelChip: some View {
         let own = options.model
+        let level = options.thinking ?? .auto
         let current = team.model(for: chat.key, bot: bot)
         return Menu {
             Section("这段絮语用哪个模型") {
@@ -658,6 +649,12 @@ struct ChatPage: View {
                     if own == nil { Label("跟着\(bot.name)走", systemImage: "checkmark") } else { Text("跟着\(bot.name)走") }
                 }
             }
+            Menu {
+                thinkingChoices
+            } label: {
+                Label("思考：\(level.title)", systemImage: level.symbol)
+                Text(level.line)
+            }
             ModelChoices(team: team, current: own) { ref in
                 Haptics.tick(0.5)
                 team.setModel(ref, in: chat.key)
@@ -666,43 +663,49 @@ struct ChatPage: View {
                 say("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。")
             }
         } label: {
-            chip("sparkle", shortName(current), lit: own != nil)
+            chip("sparkle", shortName(current) + (level == .auto ? "" : " · \(level.title)"), lit: own != nil || level != .auto)
         }
         .accessibilityLabel("模型：\(shortName(current))")
     }
 
-    /// How hard the model thinks in this conversation.
+    /// How hard the model thinks in this conversation: on its own in a gathering, inside the model menu otherwise.
     private var thinkChip: some View {
         let level = options.thinking ?? .auto
-        let now = isRoom ? nil : team.current(chat.key, bot: bot)
         return Menu {
-            Section("这段絮语想多深") {
-                ForEach(Thinking.allCases, id: \.self) { option in
-                    Button {
-                        Haptics.tick(0.5)
-                        team.setThinking(option, in: chat.key)
-                        say(option == .auto ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。")
-                    } label: {
-                        if option == level { Label(option.title, systemImage: "checkmark") } else { Label(option.title, systemImage: option.symbol) }
-                        Text(option.line)
-                    }
-                }
-            }
-            if let now {
-                Section {
-                    if !now.traits.thinks {
-                        Text("\(now.model) 好像不会思考，选了也许没变化。")
-                    } else if now.endpoint.kind == .openai, !now.endpoint.thinkingStyle.canStop {
-                        Text("\(now.endpoint.name) 的模型总要想一想，「不想」会按「浅想」来。")
-                    } else {
-                        Text("模型不接受某一档时，会自动改回默认，并在对话里说一声。")
-                    }
-                }
-            }
+            thinkingChoices
         } label: {
             chip(level == .auto ? "brain" : level.symbol, level == .auto ? "思考" : level.title, lit: level != .auto)
         }
         .accessibilityLabel("思考强度：\(level.title)")
+    }
+
+    @ViewBuilder
+    private var thinkingChoices: some View {
+        let level = options.thinking ?? .auto
+        let now = isRoom ? nil : team.current(chat.key, bot: bot)
+        Section("这段絮语想多深") {
+            ForEach(Thinking.allCases, id: \.self) { option in
+                Button {
+                    Haptics.tick(0.5)
+                    team.setThinking(option, in: chat.key)
+                    say(option == .auto ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。")
+                } label: {
+                    if option == level { Label(option.title, systemImage: "checkmark") } else { Label(option.title, systemImage: option.symbol) }
+                    Text(option.line)
+                }
+            }
+        }
+        if let now {
+            Section {
+                if !now.traits.thinks {
+                    Text("\(now.model) 好像不会思考，选了也许没变化。")
+                } else if now.endpoint.kind == .openai, !now.endpoint.thinkingStyle.canStop {
+                    Text("\(now.endpoint.name) 的模型总要想一想，「不想」会按「浅想」来。")
+                } else {
+                    Text("模型不接受某一档时，会自动改回默认，并在对话里说一声。")
+                }
+            }
+        }
     }
 
     /// Where this conversation works: 书案, 斗室 or a 远山 host.
@@ -754,11 +757,6 @@ struct ChatPage: View {
         case .files: importingFile = true
         case .desk: deskPicking = true
         case .scan: scanning = true
-        case .link:
-            linkDraft = UIPasteboard.general.hasURLs ? (UIPasteboard.general.url?.absoluteString ?? "") : ""
-            linkAsking = true
-        case .clipboard: pasteClipboard()
-        case .place: attachPlace()
         }
     }
 
@@ -1326,15 +1324,21 @@ struct ChatPage: View {
                 }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
-                    Button {
-                        Haptics.light()
-                        typing = false
-                        attaching = true
+                    Menu {
+                        ForEach([AttachKind.photos, .camera, .files]) { kind in
+                            Button(kind.title, systemImage: kind.symbol) { bring(kind) }
+                        }
+                        Section {
+                            if VNDocumentCameraViewController.isSupported {
+                                Button(AttachKind.scan.title, systemImage: AttachKind.scan.symbol) { bring(.scan) }
+                            }
+                            Button(AttachKind.desk.title, systemImage: AttachKind.desk.symbol) { bring(.desk) }
+                        }
                     } label: {
                         chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
                     }
-                    .buttonStyle(PressStyle(haptic: false))
-                    .accessibilityLabel("带照片、文件、扫描、链接或位置进来")
+                    .simultaneousGesture(TapGesture().onEnded { typing = false })
+                    .accessibilityLabel("加照片或文件")
                     .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
@@ -1362,11 +1366,9 @@ struct ChatPage: View {
                 if composing {
                     ScrollView(.horizontal) {
                         HStack(spacing: Ink.Space.s) {
-                            webChip
-                            placeChip
                             abilitiesChip
-                            if !isRoom { modelChip }
-                            thinkChip
+                            if team.place(of: chat.key) != .desk { placeChip }
+                            if isRoom { thinkChip } else { modelChip }
                         }
                     }
                     .scrollIndicators(.hidden)
