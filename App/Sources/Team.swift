@@ -187,6 +187,11 @@ final class TeamModel: ObservableObject {
 
     init() {
         load()
+        // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
+        if Shots.name != nil {
+            showDemo()
+            fillDemoChat()
+        }
         answering = NotificationCenter.default.addObserver(forName: .clioAnswerApproval, object: nil, queue: .main) { [weak self] note in
             guard let id = note.object as? String else { return }
             let allow = note.userInfo?["allow"] as? Bool ?? false

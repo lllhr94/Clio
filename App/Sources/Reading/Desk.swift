@@ -39,12 +39,6 @@ struct ClioRoot: View {
                     .transition(.blurReplace)
             }
         }
-        .onAppear {
-            if Shots.name != nil {
-                team.showDemo()
-                team.fillDemoChat()
-            }
-        }
         .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
         .onChange(of: hitches, initial: true) { _, on in Hitches.shared.set(on) }
         .animation(Ink.Motion.settle, value: team.phase)
