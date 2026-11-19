@@ -1021,25 +1021,6 @@ struct ChatPage: View {
                 if line.id == chat.lines.last(where: { $0.kind == .bot })?.id, !working {
                     footer(line)
                         .transition(.opacity)
-                } else if !(chat.fresh?.id == line.id) {
-                    // Earlier replies keep a quiet row too: copy and share without a long press.
-                    HStack(spacing: Ink.Space.s) {
-                        icon("doc.on.doc", "复制") {
-                            UIPasteboard.general.string = line.text
-                            Haptics.tick(0.5)
-                            say("复制好了。")
-                        }
-                        ShareLink(item: line.text) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Ink.inkFaint)
-                                .frame(width: 30, height: 30)
-                        }
-                        .accessibilityLabel("分享")
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.leading, -6)
-                    .opacity(0.8)
                 }
             }
         case .steps:
@@ -1165,7 +1146,7 @@ struct ChatPage: View {
     }
 
     private func footer(_ line: ChatLine) -> some View {
-        HStack(spacing: Ink.Space.s) {
+        HStack(spacing: 2) {
             icon("doc.on.doc", "复制") {
                 UIPasteboard.general.string = line.text
                 Haptics.tick(0.5)
@@ -1175,15 +1156,17 @@ struct ChatPage: View {
                 Haptics.light()
                 redo()
             }
-            icon(voice.isSpeaking ? "speaker.slash" : "speaker.wave.2", "朗读") { speak(line.text) }
-            icon("text.quote", "引用追问") {
-                Haptics.light()
-                quoting = Noting(id: line.id, text: line.text)
+            // The rest waits behind ⋯, so the row stays short like other apps'.
+            Menu {
+                replyMenu(line)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
-            icon("scroll", "做成笺") {
-                Haptics.light()
-                noting = Noting(id: line.id, text: line.text)
-            }
+            .accessibilityLabel("更多")
             Spacer(minLength: Ink.Space.s)
             if Pref.stats {
                 Text(Self.numbers(line))
@@ -1213,9 +1196,9 @@ struct ChatPage: View {
     private func icon(_ name: String, _ label: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
-                .font(.system(size: 14, weight: .regular))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Ink.inkSoft)
-                .frame(width: 32, height: 32)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
