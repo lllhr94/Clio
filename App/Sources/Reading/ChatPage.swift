@@ -12,6 +12,7 @@ struct ChatPage: View {
     @ObservedObject var team: TeamModel
     @StateObject private var chat: ChatModel
     @StateObject private var dictation = Dictation()
+    @ObservedObject private var asker = Asker.shared
     var back: () -> Void
 
     @State private var draft = ""
@@ -177,6 +178,11 @@ struct ChatPage: View {
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.stop)
                         .frame(maxWidth: .infinity, alignment: .center)
+                }
+                if let form = asker.current, form.inline, team.isWorking(chat.key) {
+                    InlineAsk(form: form)
+                        .id(form.id)
+                        .transition(.opacity.combined(with: .offset(y: 8)))
                 }
                 ForEach(team.queued[chat.key] ?? []) { item in
                     queuedRow(item)

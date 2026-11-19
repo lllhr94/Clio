@@ -115,16 +115,22 @@ final class Asker: ObservableObject {
         /// What the form is for, so a secret saved from it gets a sensible kind.
         var kind: Secrets.Item.Kind = .note
         var site = ""
+
+        /// A short slip with nothing secret is answered right in the conversation; the rest get the full sheet.
+        var inline: Bool { kind == .note && fields.count <= 3 && !fields.contains(where: \.secret) }
     }
 
     /// Filled values by key; nil when the user put the slip away.
     typealias Answer = [String: String]?
 
     @Published var current: Form?
+    /// A conversation page is showing the current slip inline, so no sheet is needed.
+    var inlineSeen = false
     private var waiting: CheckedContinuation<Answer, Never>?
 
     func ask(_ form: Form) async -> Answer {
         waiting?.resume(returning: nil)
+        inlineSeen = false
         Haptics.tick(0.8)
         current = form
         return await withCheckedContinuation { waiting = $0 }

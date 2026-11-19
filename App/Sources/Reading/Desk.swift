@@ -24,6 +24,8 @@ struct ClioRoot: View {
     @Environment(\.scenePhase) private var scenePhase
     /// Keeps the first-launch setup on screen through its last page, after the service is already connected.
     @State private var holdingSetup = false
+    @State private var sheetForm: Asker.Form?
+    @State private var dismissedForm: UUID?
 
     var body: some View {
         ZStack {
@@ -43,8 +45,21 @@ struct ClioRoot: View {
         .animation(Ink.Motion.settle, value: holdingSetup)
         .tint(Ink.accent)
         .clioScheme(scheme)
-        .sheet(item: $asker.current) { form in
-            FormSheet(form: form)
+        .sheet(item: $sheetForm, onDismiss: {
+            // Swiped away: the slip is put away, and the companion hears so.
+            if let shown = dismissedForm, asker.current?.id == shown { asker.cancel() }
+            dismissedForm = nil
+        }) { form in
+            FormSheet(form: form).onAppear { dismissedForm = form.id }
+        }
+        .onChange(of: asker.current?.id) { _, id in
+            guard let form = asker.current, form.id == id else { sheetForm = nil; return }
+            guard form.inline else { sheetForm = form; return }
+            // A short slip is answered in the conversation if that page is open; otherwise it comes up here.
+            Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if asker.current?.id == id, !asker.inlineSeen { sheetForm = asker.current }
+            }
         }
         .onChange(of: scenePhase) { _, now in
             if now == .active { team.wake() }
@@ -72,6 +87,7 @@ struct Desk: View {
     @State private var opened: Opened?
     @State private var editing: EditTarget?
     @State private var tuning = false
+    @State private var settingsPage: String?
     @State private var dressing = false
     @State private var gathering = false
     @State private var studying = false
@@ -344,8 +360,8 @@ struct Desk: View {
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好", role: .cancel) { notice = nil }
         }
-        .fullScreenCover(isPresented: $tuning) {
-            SettingsView(team: team) {}
+        .fullScreenCover(isPresented: $tuning, onDismiss: { settingsPage = nil }) {
+            SettingsView(team: team, onLeaveDemo: {}, startAt: settingsPage)
         }
         .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
             Button(clearingIsRoom ? "散了" : "清空", role: .destructive) {
@@ -374,6 +390,9 @@ struct Desk: View {
             case "ask": ShortcutDoor.knock(.ask(""))
             case "dictate": ShortcutDoor.knock(.dictate)
             case "new": ShortcutDoor.knock(.fresh)
+            case "settings":
+                settingsPage = url.pathComponents.dropFirst().first
+                tuning = true
             default: break
             }
         }

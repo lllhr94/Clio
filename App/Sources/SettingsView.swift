@@ -6,7 +6,10 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var team: TeamModel
     var onLeaveDemo: () -> Void
+    /// Opened from `clio://settings/<page>`: that page comes up at once.
+    var startAt: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
     @Environment(\.openURL) private var openURL
     @State private var adding = false
     @State private var looking = false
@@ -24,6 +27,11 @@ struct SettingsView: View {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
+                    if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        searchResults
+                            .padding(.horizontal, Ink.Space.page)
+                            .padding(.vertical, Ink.Space.l)
+                    } else {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
                         if team.phase == .demo {
                             demoCard
@@ -39,7 +47,9 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, Ink.Space.page)
                     .padding(.vertical, Ink.Space.l)
+                    }
                 }
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "找一项设置")
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
@@ -55,6 +65,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .task { if let startAt { go(startAt) } }
         .sheet(isPresented: $adding) { SetupView(team: team) { adding = false } }
         .sheet(isPresented: $looking) { LookPage() }
         .sheet(isPresented: $granting) { GrantsPage(team: team) }
@@ -70,6 +81,83 @@ struct SettingsView: View {
             Button("算了", role: .cancel) { editingMemory = nil }
         } message: {
             Text("改空就是忘掉。")
+        }
+    }
+
+    // MARK: Search
+
+    /// One place in the settings: what it is called, other words people use for it, and which page holds it.
+    private struct Spot: Identifiable {
+        var id: String { title }
+        let title: String
+        let words: String
+        let page: String
+    }
+
+    private static let spots: [Spot] = [
+        Spot(title: "添一家模型服务", words: "服务 密钥 key api deepseek kimi claude openai 本地 ollama lm studio 中转", page: "add"),
+        Spot(title: "默认模型", words: "模型 默认 换模型", page: "model"),
+        Spot(title: "备用模型", words: "备用 出错 失败 换模型 兜底", page: "model"),
+        Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look"),
+        Spot(title: "叫法：诗意或普通", words: "叫法 名字 诗意 普通 称呼", page: "look"),
+        Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look"),
+        Spot(title: "思考过程、逐字淡入、触感", words: "思考 淡入 触感 震动 耗时 用量 行迹 形象", page: "look"),
+        Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look"),
+        Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look"),
+        Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look"),
+        Spot(title: "能做的事和要不要先问", words: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室", page: "grants"),
+        Spot(title: "定时任务", words: "定时 每天 每周 到点 任务", page: "timing"),
+        Spot(title: "技能", words: "技能 skill 本事", page: "skills"),
+        Spot(title: "养护：备份、日志、诊断", words: "养护 备份 恢复 日志 诊断 掉帧 清理", page: "care"),
+        Spot(title: Words.t("拾遗") + "（记住的事）", words: "记忆 拾遗 记住 忘掉", page: "memory"),
+    ]
+
+    private var found: [Spot] {
+        let words = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return Self.spots.filter { spot in
+            Words.t(spot.title).lowercased().contains(words) || spot.title.lowercased().contains(words) || spot.words.lowercased().contains(words)
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        if found.isEmpty {
+            Text("没找到「\(query)」。换个说法试试，比如「密钥」「字号」「通知」。")
+                .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(found) { spot in
+                    Button {
+                        Haptics.light()
+                        go(spot.page)
+                    } label: {
+                        HStack {
+                            Text(Words.t(spot.title)).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        }
+                        .padding(Ink.Space.l)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
+                    Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                }
+            }
+            .paperCard()
+        }
+    }
+
+    /// Opens one page of the settings: from search, or from `clio://settings/<page>`.
+    private func go(_ page: String) {
+        switch page {
+        case "add": adding = true
+        case "look": looking = true
+        case "grants": granting = true
+        case "care": caring = true
+        case "timing": timing = true
+        case "skills": skilling = true
+        default: query = ""
         }
     }
 
