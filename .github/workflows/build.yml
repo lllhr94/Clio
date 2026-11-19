@@ -15,6 +15,10 @@ on:
         description: "Publish the IPA: on main it replaces latest/Clio-unsigned.ipa; on another branch it goes to a probe-<branch> release"
         type: boolean
         default: false
+      shots:
+        description: "Also build for the simulator and take screenshots of the main screens (light and dark)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,7 +27,7 @@ jobs:
   build:
     name: Clio (iOS, unsigned)
     runs-on: ${{ inputs.runner || 'macos-latest' }}
-    timeout-minutes: 75
+    timeout-minutes: 110
     defaults:
       run:
         shell: bash
@@ -108,6 +112,55 @@ jobs:
           name: Clio-unsigned-ipa
           path: App/Clio-unsigned.ipa
           if-no-files-found: error
+
+      # Pictures of the main screens, to check the look without a phone.
+      - name: Screenshots (simulator)
+        if: inputs.shots
+        run: |
+          set -o pipefail
+          ARCH="$(uname -m)"
+          xcodebuild \
+            -project Clio.xcodeproj \
+            -scheme Clio \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath simbuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            ARCHS="$ARCH" ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee simbuild.log | grep -iE "error|BUILD" | tail -n 60
+          APP="$(find simbuild/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP" || { echo "::error::没有模拟器的 .app"; exit 1; }
+          UDID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          phones = [d for runtime, ds in data.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
+          phones = phones or [d for runtime, ds in data.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone")]
+          print(phones[-1]["udid"])
+          ')"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+          mkdir -p shots
+          for mode in light dark; do
+            xcrun simctl ui "$UDID" appearance "$mode"
+            for shot in desk chat sidebar settings connectors look grants add; do
+              xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot "$shot" >/dev/null
+              sleep 7
+              xcrun simctl io "$UDID" screenshot "shots/$mode-$shot.png" >/dev/null
+            done
+          done
+          ls -la shots
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.shots
+        with:
+          name: Clio-screenshots
+          path: App/shots
+          if-no-files-found: warn
 
       # A plain download link on the Releases page, so the IPA can be fetched from a phone.
       - name: Publish the IPA to the latest release

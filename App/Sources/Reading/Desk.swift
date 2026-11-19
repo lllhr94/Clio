@@ -39,6 +39,12 @@ struct ClioRoot: View {
                     .transition(.blurReplace)
             }
         }
+        .onAppear {
+            if Shots.name != nil {
+                team.showDemo()
+                team.fillDemoChat()
+            }
+        }
         .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
         .onChange(of: hitches, initial: true) { _, on in Hitches.shared.set(on) }
         .animation(Ink.Motion.settle, value: team.phase)
@@ -636,6 +642,24 @@ struct Desk: View {
             }
         }
         .task { answerShortcut() }
+        .task {
+            // Screenshots: open the screen asked for.
+            guard let shot = Shots.name else { return }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            switch shot {
+            case "chat", "sidebar", "plan":
+                opened = .companion("chief")
+                if shot == "sidebar" {
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    openSide()
+                }
+            case "settings": tuning = true
+            case "connectors", "look", "grants", "add":
+                settingsPage = shot
+                tuning = true
+            default: break
+            }
+        }
     }
 
     /// Siri or a shortcut: the newest conversation, or a fresh leaf with the newest companion. Nothing is sent.

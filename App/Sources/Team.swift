@@ -2061,6 +2061,53 @@ final class TeamModel: ObservableObject {
         doing = [Self.key(bot: "scout"): "搜索：周末天气"]
     }
 
+    /// For screenshots: one conversation with every kind of thing a reply can hold (steps, sources, 心绪,
+    /// thinking, a heading, a list, a table, code, files written), and a checklist under way.
+    func fillDemoChat() {
+        let key = Self.key(bot: "chief")
+        guard history(key).isEmpty else { return }
+        var at = Now.ms - 300_000
+        func add(_ message: Message, label: String? = nil, pulse: String? = nil, tokens: Int? = nil) {
+            at += 4_000
+            var entry = Entry(id: UUID().uuidString, at: at, message: message, speaker: message.role == .user ? nil : "chief", photos: [], label: label)
+            entry.pulse = pulse
+            entry.tokens = tokens
+            append(entry, to: key)
+        }
+        add(.user("这周六想带朋友在重庆转一天，帮我看看天气，排个不太累的路线"))
+        let search = ToolCall(id: "c1", name: "web_search", arguments: #"{"query":"重庆 周六 天气"}"#)
+        add(.assistant("", toolCalls: [search], reasoning: "先查周六的天气，再按天气决定室内还是室外。"))
+        add(.toolResult("周六 多云转小雨 14–19°C，下午 3 点后有雨。来源：https://www.weather.com.cn/weather/101040100.shtml", for: search), label: "搜索：重庆 周六 天气")
+        let read = ToolCall(id: "c2", name: "web_read", arguments: #"{"url":"https://www.mafengwo.cn/travel-scenic-spot/mafengwo/10208.html"}"#)
+        add(.assistant("", toolCalls: [read]))
+        add(.toolResult("磁器口古镇……鹅岭二厂……重庆中国三峡博物馆…… https://www.mafengwo.cn/travel-scenic-spot/mafengwo/10208.html https://www.dianping.com/chongqing", for: read), label: "读网页：mafengwo.cn")
+        let write = ToolCall(id: "c3", name: "write_file", arguments: #"{"path":"行程/周六.md"}"#)
+        add(.assistant("", toolCalls: [write]))
+        add(.toolResult("写好了：行程/周六.md", for: write), label: "书案：写 行程/周六.md")
+        add(.assistant("""
+        ## 周六路线：上午在外面，下午躲雨
+
+        周六**多云转小雨**，下午三点后有雨，所以把要走路的放上午，下午进室内。
+
+        1. **10:00 鹅岭二厂**：拍照的地方多，人还不挤
+        2. **12:30 午饭**：附近的小面和豆花饭，吃完歇一会
+        3. **14:30 三峡博物馆**：下雨也不怕，看完大概两小时
+
+        | 时段 | 去哪 | 走路 |
+        | :-- | :-- | --: |
+        | 上午 | 鹅岭二厂 | 约 3 千步 |
+        | 下午 | 三峡博物馆 | 约 4 千步 |
+
+        记得带伞。路线我存进了 `行程/周六.md`，想改哪一段直接告诉我。
+        """), pulse: "感受：想让这一天别被雨搅了\n回响：\n  - 上午的光适合拍照\n  - 博物馆比商场更像出来玩\n  - 豆花饭是重庆的底气\n读到：\n  - 朋友可能不常来重庆\n  - 「不太累」比「去得多」重要\n  - 也许想留点时间聊天\n想要：\n  - 把雨变成去博物馆的理由\n  - 让路线有余地", tokens: 2380)
+        add(.user("再帮我把要带的东西列个清单"))
+        setPlan(key, [
+            PlanStep(text: "看一下周六下午的降雨时段", state: "done"),
+            PlanStep(text: "按路线列出要带的东西", state: "doing"),
+            PlanStep(text: "存进行程文件，加到提醒事项", state: "todo"),
+        ])
+    }
+
     func leaveDemo() {
         doing = [:]
         load()

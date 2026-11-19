@@ -104,6 +104,13 @@ targets:
           - $(SRCROOT)/Den/build/ios/libfakefs.a
           - -lsqlite3
           - -lresolv
+        # Screenshots run in the simulator, where the iSH kernel (built for iPhones) can't link: a stand-in instead.
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]":
+          - $(inherited)
+          - -lsqlite3
+          - -lresolv
+        "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": DenKernel.m
+        "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]": DenKernelStub.m
   ClioWidget:
     type: app-extension
     platform: iOS
