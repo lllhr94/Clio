@@ -52,9 +52,21 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: Ink.Space.l) {
                 point("lock", "对话只在这台手机上", "不经过任何人的服务器，旅伴直接用你自己的密钥连模型。")
                 point("globe", "会上网，也会动手", "搜索、开网页、在手机里的小 Linux 跑脚本，替你记日程。")
-                point("checkmark.seal", "大事都先问你", "加日程、填网页、连服务器这类事，旅伴会递一张笺等你落印。")
+                point("checkmark.seal", "大事都先问你", Words.t("加日程、填网页、连服务器这类事，旅伴会递一张笺等你落印。"))
             }
             Spacer(minLength: 0)
+            // 叫法, asked once: the same choice lives in 纸墨与絮语 afterwards.
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                Text("界面怎么称呼").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { value in
+                    Haptics.tick(0.5)
+                    withAnimation(Ink.Motion.settle) { Theme.shared.setPlain(value) }
+                })) {
+                    Text("诗意 · 絮语").tag(false)
+                    Text("普通 · 对话").tag(true)
+                }
+                .pickerStyle(.segmented)
+            }
             Button {
                 Haptics.light()
                 step = .service
