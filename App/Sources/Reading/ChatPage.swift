@@ -1328,9 +1328,6 @@ struct ChatPage: View {
                         ForEach([AttachKind.photos, .camera, .files]) { kind in
                             Button(kind.title, systemImage: kind.symbol) { bring(kind) }
                         }
-                        Section {
-                            Button(AttachKind.desk.title, systemImage: AttachKind.desk.symbol) { bring(.desk) }
-                        }
                     } label: {
                         chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
                     }
