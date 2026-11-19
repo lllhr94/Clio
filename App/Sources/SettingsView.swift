@@ -138,15 +138,15 @@ struct SettingsView: View {
                         go(spot.page)
                     } label: {
                         HStack {
-                            Text(Words.t(spot.title)).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
+                            Text(Words.t(spot.title)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                             Spacer()
-                            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                            Kit.chevron
                         }
                         .padding(Ink.Space.l)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(PressStyle())
-                    Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                    Kit.rule()
                 }
             }
             .paperCard()
@@ -183,7 +183,7 @@ struct SettingsView: View {
                 dismiss()
                 onLeaveDemo()
             }
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: Ink.Size.sub, weight: .semibold))
             .foregroundStyle(Ink.accent)
         }
         .padding(Ink.Space.l)
@@ -202,19 +202,15 @@ struct SettingsView: View {
                         serviceRow(endpoint)
                     }
                     .buttonStyle(PressStyle(haptic: false))
-                    Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                    Kit.divider
                 }
                 Button {
                     Haptics.light()
                     adding = true
                 } label: {
-                    Label("添一家服务", systemImage: "plus")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Ink.accent)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Ink.Space.l)
+                    RowLabel(title: "添一家服务", end: .none) { IconBadge(symbol: "plus") }
                 }
-                .buttonStyle(PressStyle())
+                .buttonStyle(PressStyle(haptic: false))
             }
             .paperCard()
         }
@@ -225,19 +221,7 @@ struct SettingsView: View {
         let host = URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL
         var line = "\(host) · 在用 \(endpoint.models.count) 个"
         if !endpoint.models.isEmpty { line += seeing == 0 ? " · 都不看图" : seeing == endpoint.models.count ? " · 都能看图" : " · \(seeing) 个能看图" }
-        return HStack(spacing: Ink.Space.m) {
-            ServiceIcon(service: Service.of(endpoint), size: 38)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(endpoint.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
-                Text(line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
-            }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Ink.inkFaint)
-        }
-        .padding(Ink.Space.l)
-        .contentShape(Rectangle())
+        return RowLabel(title: endpoint.name, line: line) { ServiceIcon(service: Service.of(endpoint), size: Kit.badge) }
     }
 
     @ViewBuilder
@@ -254,11 +238,11 @@ struct SettingsView: View {
                     HStack {
                         Image(systemName: "sparkle").foregroundStyle(Ink.accent)
                         Text(team.modelTitle(team.settings.defaultModel))
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.system(size: Ink.Size.body, weight: .medium))
                             .foregroundStyle(Ink.ink)
                             .lineLimit(1)
                         Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
                     .paperField()
                 }
@@ -278,15 +262,15 @@ struct SettingsView: View {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(team.settings.backupModel == nil ? "备用模型：没设" : "备用模型：\(team.modelTitle(team.settings.backupModel))")
-                                .font(.system(size: 15, weight: .medium))
+                                .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(1)
                             Text("主模型出错时换它接着答，会在对话里说一声。")
-                                .font(.system(size: 12))
+                                .font(.system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
                     .paperField()
                 }
@@ -300,11 +284,11 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
                     TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
-                        .font(.system(size: 15))
+                        .font(.system(size: Ink.Size.sub))
                         .submitLabel(.done)
                         .onSubmit(addMemory)
                     Button("记下", action: addMemory)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .disabled(memoryDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -313,11 +297,11 @@ struct SettingsView: View {
                 ForEach(team.surfaceMemories + team.deepMemories) { item in
                     HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
                         Text(item.text)
-                            .font(.system(size: 15))
+                            .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(item.deep == true ? Ink.inkSoft : Ink.ink)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if item.deep == true {
-                            Text(Words.t("旧事")).font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkFaint)
+                            Text(Words.t("旧事")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Ink.rule.opacity(0.6), in: .capsule)
                         }
@@ -359,7 +343,7 @@ struct SettingsView: View {
                 HStack(spacing: Ink.Space.m) {
                     ServiceIcon(service: Service.of(found.endpoint), size: 46)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(found.model).font(.system(size: 17, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text(found.model).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                         Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                         if let balance {
@@ -367,7 +351,7 @@ struct SettingsView: View {
                         }
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                    Kit.chevron
                 }
                 .padding(Ink.Space.l)
                 .paperCard()
@@ -390,29 +374,17 @@ struct SettingsView: View {
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ rows: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+            SectionTitle(title)
             VStack(spacing: 0) { rows() }.paperCard()
         }
     }
 
-    private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 60) }
+    private var divider: some View { Kit.divider }
 
-    private func badge(_ icon: String, _ tint: Color) -> some View {
-        Circle().fill(tint.opacity(0.18)).frame(width: 34, height: 34)
-            .overlay { Image(systemName: icon).font(.system(size: 15, weight: .medium)).foregroundStyle(tint) }
-    }
+    private func badge(_ icon: String, _ tint: Color) -> some View { IconBadge(symbol: icon, tint: tint) }
 
     private func rowLabel(_ icon: String, _ tint: Color, _ title: String, _ value: String?, warn: Bool = false) -> some View {
-        HStack(spacing: Ink.Space.m) {
-            badge(icon, tint)
-            Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
-            Spacer(minLength: Ink.Space.s)
-            if let value { Text(value).font(.system(size: 14)).foregroundStyle(warn ? Ink.warn : Ink.inkSoft).lineLimit(1) }
-            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-        }
-        .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, 12)
-        .contentShape(Rectangle())
+        RowLabel(icon, tint: tint, title: title, end: value.map { RowEnd.valueChevron($0, warn ? Ink.warn : Ink.inkSoft) } ?? RowEnd.chevron)
     }
 
     /// A row that opens a sheet.
@@ -482,7 +454,7 @@ struct SettingsView: View {
             divider
             HStack(spacing: Ink.Space.m) {
                 badge("textformat", Tint.looks)
-                Text("叫法").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Text("叫法").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Spacer(minLength: Ink.Space.s)
                 Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { Haptics.tick(0.5); Theme.shared.setPlain($0) })) {
                     Text("普通").tag(true)
@@ -492,7 +464,7 @@ struct SettingsView: View {
                 .frame(width: 140)
             }
             .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, 10)
+            .frame(minHeight: Kit.rowHeight)
         }
     }
 
@@ -539,55 +511,9 @@ struct SettingsView: View {
         }
     }
 
-    private var abilities: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading(Words.t("本事"))
-            VStack(spacing: 0) {
-                link("checkmark.seal", Words.t("应许"), Grant.Preset.current?.title ?? "自定义") { granting = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("books.vertical", "技能", "\(SkillShelf.enabled.count) 个") { skilling = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("alarm", "定时", team.routines.isEmpty ? "没有" : "\(team.routines.filter(\.on).count) 件") { timing = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("powerplug", "连接器", connectorsLine) { connecting = true }
-            }
-            .paperCard()
-        }
-    }
-
     private var connectorsLine: String {
         let count = (Google.shared.connected ? 1 : 0) + Hills.shared.servers.filter { $0.connector != nil }.count
         return count == 0 ? "谷歌、Notion、高德…" : "连了 \(count) 个"
-    }
-
-    private var more: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("通用")
-            VStack(spacing: 0) {
-                link("textformat.size", Words.t("纸墨与絮语"), "外观与对话") { looking = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("stethoscope", Words.t("养护"), "备份与诊断") { caring = true }
-            }
-            .paperCard()
-        }
-    }
-
-    private func link(_ icon: String, _ title: String, _ line: String, _ run: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.light()
-            run()
-        } label: {
-            HStack(spacing: Ink.Space.m) {
-                Image(systemName: icon).font(.system(size: 17)).foregroundStyle(Ink.accent).frame(width: 28)
-                Text(title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
-                Spacer()
-                Text(line).font(.system(size: 14)).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-            }
-            .padding(Ink.Space.l)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PressStyle(haptic: false))
     }
 
     private var about: some View {

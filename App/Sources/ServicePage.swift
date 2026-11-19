@@ -35,7 +35,7 @@ struct ServicePage: View {
                     connection(endpoint)
                     if Balance.source(baseURL: endpoint.baseURL) != nil { balance(endpoint) }
                     Button("删掉这家服务", role: .destructive) { removing = true }
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, Ink.Space.m)
                 }
@@ -98,7 +98,7 @@ struct ServicePage: View {
             run()
         } label: {
             Label(title, systemImage: icon)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .padding(.horizontal, Ink.Space.m)
                 .frame(height: 30)
@@ -116,17 +116,17 @@ struct ServicePage: View {
             VStack(spacing: 0) {
                 ForEach(endpoint.models, id: \.self) { model in
                     modelRow(endpoint, model)
-                    Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                    Kit.rule(inset: Ink.Space.l)
                 }
                 HStack(spacing: Ink.Space.s) {
                     TextField(service?.modelHint ?? "手动添一个模型名", text: $typed)
-                        .font(.system(size: 15, design: .monospaced))
+                        .font(.system(size: Ink.Size.sub, design: .monospaced))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .submitLabel(.done)
                         .onSubmit { addTyped(endpoint) }
                     Button("添上") { addTyped(endpoint) }
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -147,9 +147,9 @@ struct ServicePage: View {
             HStack(alignment: .center, spacing: Ink.Space.m) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(model).font(.system(size: 15, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text(model).font(.system(size: Ink.Size.sub, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
-                            Text("默认").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.accent)
+                            Text("默认").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(Ink.accentWash, in: .capsule)
                         }
@@ -160,7 +160,7 @@ struct ServicePage: View {
                     }
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                Kit.chevron
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
@@ -199,7 +199,7 @@ struct ServicePage: View {
                     HStack(spacing: Ink.Space.s) {
                         Image(systemName: "magnifyingglass").foregroundStyle(Ink.inkFaint)
                         TextField("搜模型名，比如 qwen、vl、flash", text: $search)
-                            .font(.system(size: 15))
+                            .font(.system(size: Ink.Size.sub))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
@@ -209,8 +209,8 @@ struct ServicePage: View {
                 ForEach(shown, id: \.self) { model in
                     HStack(spacing: Ink.Space.m) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(model).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
-                            Text(endpoint.traits(model).summary).font(.system(size: 12)).foregroundStyle(Ink.inkFaint)
+                            Text(model).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                            Text(endpoint.traits(model).summary).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                         }
                         Spacer(minLength: 0)
                         Button {
@@ -244,11 +244,11 @@ struct ServicePage: View {
             FieldTitle(text: "接口", note: endpoint.kind == .anthropic ? "Claude 那种接口" : "OpenAI 那种接口（大多数服务都是）")
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 labeled("称呼") {
-                    TextField("称呼", text: $name).font(.system(size: 15)).onSubmit { save(endpoint) }
+                    TextField("称呼", text: $name).font(.system(size: Ink.Size.sub)).onSubmit { save(endpoint) }
                 }
                 labeled("地址") {
                     TextField("https://…", text: $address)
-                        .font(.system(size: 14, design: .monospaced))
+                        .font(.system(size: Ink.Size.sub, design: .monospaced))
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onSubmit { save(endpoint) }
                 }
@@ -260,7 +260,7 @@ struct ServicePage: View {
                                 address = option.url
                                 save(endpoint)
                             }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(address == option.url ? Ink.accent : Ink.inkSoft)
                             .padding(.horizontal, Ink.Space.m)
                             .frame(height: 28)
@@ -269,13 +269,13 @@ struct ServicePage: View {
                     }
                 }
                 Text("实际请求：" + finalURL(endpoint))
-                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                    .font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
                 if endpoint.kind == .openai {
                     Rectangle().fill(Ink.rule).frame(height: 1)
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("思考参数怎么写").font(.system(size: 15)).foregroundStyle(Ink.ink)
+                            Text("思考参数怎么写").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                             Text("选思考强度没效果时再换").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()
@@ -295,7 +295,7 @@ struct ServicePage: View {
                                 }
                             }
                         } label: {
-                            Text(style?.title ?? "跟着服务").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.accent).lineLimit(1)
+                            Text(style?.title ?? "跟着服务").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent).lineLimit(1)
                         }
                     }
                 }
@@ -303,11 +303,11 @@ struct ServicePage: View {
                 labeled("密钥") {
                     HStack(spacing: Ink.Space.s) {
                         SecureField(maskedKey(endpoint), text: $newKey)
-                            .font(.system(size: 15, design: .monospaced))
+                            .font(.system(size: Ink.Size.sub, design: .monospaced))
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         if !newKey.isEmpty {
                             Button("换上") { replaceKey(endpoint) }
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: Ink.Size.sub, weight: .semibold))
                                 .foregroundStyle(Ink.accent)
                         }
                     }
@@ -322,7 +322,7 @@ struct ServicePage: View {
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         HStack(spacing: Ink.Space.m) {
-            Text(title).font(.system(size: 15)).foregroundStyle(Ink.inkSoft).frame(width: 40, alignment: .leading)
+            Text(title).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).frame(width: 40, alignment: .leading)
             content()
         }
     }
@@ -367,7 +367,7 @@ struct ServicePage: View {
                 }
                 Spacer()
                 if let source = Balance.source(baseURL: endpoint.baseURL) {
-                    Link("去充值", destination: source.topUp).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.accent)
+                    Link("去充值", destination: source.topUp).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent)
                 }
             }
             .padding(Ink.Space.l)
@@ -438,14 +438,14 @@ struct TraitChips: View {
             if traits.thinks { tag("思考", "brain", on: true) }
             if !traits.tools { tag("不用工具", "wrench.and.screwdriver", on: false) }
             tag(Tokens.short(traits.window).replacingOccurrences(of: ".05M", with: "M").replacingOccurrences(of: ".00M", with: "M"), "text.alignleft", on: true)
-            if corrected { Text("改过").font(.system(size: 10, weight: .medium)).foregroundStyle(Ink.inkFaint) }
+            if corrected { Text("改过").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint) }
         }
     }
 
     private func tag(_ text: String, _ icon: String, on: Bool) -> some View {
         Label(text, systemImage: icon)
             .labelStyle(.titleAndIcon)
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(on ? Ink.inkSoft : Ink.inkFaint)
             .padding(.horizontal, 6)
             .frame(height: 20)

@@ -17,7 +17,7 @@ struct InlineApproval: View {
             HStack(spacing: Ink.Space.s) {
                 Image(systemName: "seal").foregroundStyle(Ink.warn)
                 Text("\(name)想\(approval.tool ?? "做一件事")，可以吗？")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .lineLimit(2)
                 Spacer(minLength: 0)
@@ -26,7 +26,7 @@ struct InlineApproval: View {
                     more()
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.inkFaint)
                         .frame(width: 28, height: 28)
                 }
@@ -40,7 +40,7 @@ struct InlineApproval: View {
                 ScrollView([.vertical]) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(well)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.system(size: Ink.Size.small, design: .monospaced))
                             .foregroundStyle(Ink.ink)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: true, vertical: false)
@@ -57,7 +57,7 @@ struct InlineApproval: View {
             HStack(spacing: Ink.Space.s) {
                 if approval.toolName != nil {
                     Button("以后都允许") { decide(true, always: true) }
-                        .font(.system(size: 13))
+                        .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                         .buttonStyle(.plain)
                         .disabled(busy)

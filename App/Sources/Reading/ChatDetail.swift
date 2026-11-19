@@ -90,7 +90,7 @@ struct ChatDetail: View {
     private func stat(_ value: String, _ unit: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 2) {
             Text(value).font(.system(size: 22, weight: .semibold).monospacedDigit()).foregroundStyle(Ink.ink)
-            Text(unit).font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+            Text(unit).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -101,7 +101,7 @@ struct ChatDetail: View {
             run()
         } label: {
             Label(title, systemImage: icon)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .padding(.horizontal, Ink.Space.m)
                 .frame(height: 30)
@@ -119,10 +119,10 @@ struct ChatDetail: View {
             VStack(spacing: 0) {
                 ForEach(Array(all.enumerated()), id: \.offset) { index, step in
                     HStack(spacing: Ink.Space.m) {
-                        Text("\(index + 1)").font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkFaint).frame(width: 24, alignment: .trailing)
-                        Text(step.label).font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(2)
+                        Text("\(index + 1)").font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint).frame(width: 24, alignment: .trailing)
+                        Text(step.label).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(2)
                         Spacer(minLength: 0)
-                        if let seconds = step.seconds { Text(Clock.said(seconds)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
+                        if let seconds = step.seconds { Text(Clock.said(seconds)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     }
                     .padding(.horizontal, Ink.Space.l)
                     .padding(.vertical, Ink.Space.s + 2)
@@ -160,11 +160,11 @@ struct ChatDetail: View {
         HStack(spacing: Ink.Space.m) {
             Image(systemName: isNew ? "doc.badge.plus" : "doc.text").foregroundStyle(Ink.accent).frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                Text((file.path as NSString).lastPathComponent).font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                Text("\(place.title) · \(file.path)").font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                Text((file.path as NSString).lastPathComponent).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                Text("\(place.title) · \(file.path)").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
             }
             Spacer(minLength: 0)
-            Text(isNew ? "新建" : "改过").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkSoft)
+            Text(isNew ? "新建" : "改过").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkSoft)
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s + 2)

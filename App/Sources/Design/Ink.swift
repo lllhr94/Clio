@@ -165,9 +165,9 @@ enum Ink {
         case .serif: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
         }
     }
-    static let label = Font.system(size: 16, weight: .medium)
-    static let secondary = Font.system(size: 14)
-    static let footnote = Font.system(size: 12)
+    static let label = Font.system(size: Ink.Size.body, weight: .medium)
+    static let secondary = Font.system(size: Ink.Size.sub)
+    static let footnote = Font.system(size: Ink.Size.small)
     /// Code, three points under the reading size, so it sits with the text around it at every size.
     static var code: Font { .system(size: max(12, Pref.size - 3), design: .monospaced) }
 

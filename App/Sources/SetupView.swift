@@ -68,7 +68,7 @@ struct SetupView: View {
             Spacer(minLength: 0)
             // 叫法, asked once: the same choice lives in 纸墨与絮语 afterwards.
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("界面怎么称呼").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                Text("界面怎么称呼").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
                 Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { value in
                     Haptics.tick(0.5)
                     withAnimation(Ink.Motion.settle) { Theme.shared.setPlain(value) }
@@ -83,7 +83,7 @@ struct SetupView: View {
                 step = .service
             } label: {
                 Text("开始：接上一个模型")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
@@ -98,12 +98,12 @@ struct SetupView: View {
     private func point(_ icon: String, _ title: String, _ words: String) -> some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: Ink.Size.sub, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .frame(width: 32, height: 32)
                 .background(Ink.accentWash, in: .circle)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
+                Text(title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink)
                 Text(words).font(Ink.secondary).foregroundStyle(Ink.inkSoft).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -131,7 +131,7 @@ struct SetupView: View {
                             onDone()
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: Ink.Size.sub, weight: .semibold))
                                 .foregroundStyle(Ink.inkSoft)
                                 .frame(width: 32, height: 32)
                                 .background(Ink.mine, in: .circle)
@@ -162,7 +162,7 @@ struct SetupView: View {
             // One list, top to bottom, like every other list in Clio.
             VStack(spacing: 0) {
                 ForEach(Array(Service.catalog.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.leading, 68) }
+                    if index > 0 { Kit.divider }
                     tile(item)
                 }
             }
@@ -191,7 +191,7 @@ struct SetupView: View {
                     .paperField()
                 if baseURL.hasPrefix("http") {
                     Text("实际请求：" + finalURL)
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                        .font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkFaint)
                         .padding(.leading, Ink.Space.xs)
                 }
             }
@@ -202,7 +202,7 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 FieldTitle(text: "模型名", note: choice.asksModel ? "这家要你自己填" : "可以不填，会自动去拿列表")
                 TextField(choice.modelHint ?? "比如 gpt-5、qwen-plus", text: $modelName)
-                    .font(.system(size: 15, design: .monospaced))
+                    .font(.system(size: Ink.Size.sub, design: .monospaced))
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .paperField()
             }
@@ -218,13 +218,13 @@ struct SetupView: View {
                 Spacer()
                 if let help = helpURL {
                     Button("去哪拿？") { openURL(help) }
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                 }
             }
             HStack(spacing: Ink.Space.s) {
                 SecureField("sk-…", text: $key)
-                    .font(.system(size: 16, design: .monospaced))
+                    .font(.system(size: Ink.Size.body, design: .monospaced))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($keyFocused)
@@ -234,7 +234,7 @@ struct SetupView: View {
                         Haptics.tick(0.5)
                     }
                 } label: {
-                    Text("粘贴").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                    Text("粘贴").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
             }
             .paperField()
@@ -246,7 +246,7 @@ struct SetupView: View {
         if let advice {
             VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Label(advice.title, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.stop)
                 Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
             }
@@ -318,8 +318,8 @@ struct SetupView: View {
                                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(model).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(ModelTraits.guess(model).summary).font(.system(size: 11)).foregroundStyle(Ink.inkFaint)
+                                    Text(model).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(ModelTraits.guess(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)
                             }
@@ -343,7 +343,7 @@ struct SetupView: View {
             HStack(spacing: Ink.Space.s) {
                 if busy { ProgressView().tint(Ink.paper) }
                 Text(busy ? "正在接上…" : (fetched != nil ? "接上，用这 \(picked.count) 个模型" : "连上试试"))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
             }
             .foregroundStyle(Ink.paper)
             .frame(maxWidth: .infinity)
@@ -387,21 +387,21 @@ struct SetupView: View {
             }
         } label: {
             HStack(spacing: Ink.Space.m) {
-                ServiceIcon(service: item, size: 38)
+                ServiceIcon(service: item, size: Kit.badge)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(item.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                        if added { Text("已接").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.ok) }
+                        Text(item.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                        if added { Text("已接").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.ok) }
                     }
-                    Text(item.note).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                    Text(item.note).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: picked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
+                    .font(.system(size: Ink.Size.title))
                     .foregroundStyle(picked ? Ink.accent : Ink.rule)
             }
             .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, 11)
+            .frame(minHeight: Kit.rowHeight + Ink.Space.s)
             .background(picked ? Ink.accentWash.opacity(0.5) : Color.clear)
             .contentShape(Rectangle())
         }
@@ -434,7 +434,7 @@ struct SetupView: View {
                 onDone()
             } label: {
                 Text(first ? Words.t("去案头，见见旅伴") : "好了")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)

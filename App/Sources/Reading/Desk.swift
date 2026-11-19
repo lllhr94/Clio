@@ -176,7 +176,7 @@ struct Desk: View {
                         withAnimation(Ink.Motion.settle) { listFilter = item.0 }
                     } label: {
                         Text(item.1)
-                            .font(.system(size: 13, weight: listFilter == item.0 ? .semibold : .regular))
+                            .font(.system(size: Ink.Size.small, weight: listFilter == item.0 ? .semibold : .regular))
                             .foregroundStyle(listFilter == item.0 ? Ink.accent : Ink.inkSoft)
                             .padding(.horizontal, Ink.Space.m)
                             .frame(height: 28)
@@ -236,7 +236,7 @@ struct Desk: View {
                     closeSide()
                 } label: {
                     Label("新对话", systemImage: "square.and.pencil")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.paper)
                         .padding(.horizontal, 14)
                         .frame(height: 38)
@@ -257,7 +257,7 @@ struct Desk: View {
                         .buttonStyle(.plain)
                 }
             }
-            .font(.system(size: 16))
+            .font(.system(size: Ink.Size.body))
             .padding(.horizontal, Ink.Space.m)
             .frame(height: 42)
             .background(Ink.paperRaised, in: .capsule)
@@ -272,7 +272,7 @@ struct Desk: View {
                     }
                     ForEach(Self.grouped(sideThreads, pinned: team.pinned), id: \.title) { group in
                         Text(group.title)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: Ink.Size.small, weight: .semibold))
                             .foregroundStyle(Ink.inkFaint)
                             .padding(.horizontal, Ink.Space.l)
                             .padding(.top, Ink.Space.l)
@@ -300,7 +300,7 @@ struct Desk: View {
                     closeSide()
                     tuning = true
                 } label: {
-                    Image(systemName: "gearshape").font(.system(size: 18)).foregroundStyle(Ink.ink)
+                    Image(systemName: "gearshape").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink)
                         .frame(width: 48, height: 48).glassFace(in: Circle())
                 }
                 .buttonStyle(PressStyle(haptic: false))
@@ -318,8 +318,8 @@ struct Desk: View {
             run()
         } label: {
             HStack(spacing: Ink.Space.m) {
-                Image(systemName: icon).font(.system(size: 17)).foregroundStyle(Ink.inkSoft).frame(width: 26)
-                Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Image(systemName: icon).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkSoft).frame(width: 26)
+                Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Spacer()
             }
             .padding(.horizontal, Ink.Space.m)
@@ -338,14 +338,14 @@ struct Desk: View {
         } label: {
             HStack(spacing: Ink.Space.s) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name).font(.system(size: 15, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
+                    Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
                     if !item.preview.isEmpty {
-                        Text(item.preview).font(.system(size: 12)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                        Text(item.preview).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
                 }
                 Spacer(minLength: Ink.Space.s)
                 if team.approvals.contains(where: { $0.chat == key }) {
-                    Image(systemName: "exclamationmark.circle").font(.system(size: 14)).foregroundStyle(Ink.warn)
+                    Image(systemName: "exclamationmark.circle").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.warn)
                 } else if team.isWorking(key) {
                     ProgressView().controlSize(.mini)
                 } else if team.isUnread(key, at: item.at) {
@@ -390,7 +390,7 @@ struct Desk: View {
                             }
                         } label: {
                             Image(systemName: searching ? "xmark" : "magnifyingglass")
-                                .font(.system(size: 16, weight: .medium))
+                                .font(.system(size: Ink.Size.body, weight: .medium))
                                 .foregroundStyle(Ink.inkSoft)
                                 .frame(width: 36, height: 36)
                         }
@@ -400,7 +400,7 @@ struct Desk: View {
                     .padding(.bottom, Ink.Space.s)
                     if searching {
                         TextField("找过去聊过的话", text: $query)
-                            .font(.system(size: 16))
+                            .font(.system(size: Ink.Size.body))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .submitLabel(.search)
@@ -425,8 +425,8 @@ struct Desk: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack {
-                                        Text(hit.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                                        if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: 11)).foregroundStyle(Ink.inkFaint) }
+                                        Text(hit.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
+                                        if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint) }
                                         Spacer()
                                         Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
@@ -449,13 +449,13 @@ struct Desk: View {
                     }
                     ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
                         Text(group.title)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(Ink.inkFaint)
                             .padding(.top, Ink.Space.m)
                         ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
                             thread(item)
                             if index != group.items.count - 1 {
-                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                                Kit.rule(inset: 40)
                             }
                         }
                     }
@@ -465,9 +465,9 @@ struct Desk: View {
                             withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
                         } label: {
                             HStack(spacing: Ink.Space.s) {
-                                Image(systemName: "archivebox").font(.system(size: 13))
-                                Text("已归档 \(archivedThreads.count) 段").font(.system(size: 14, weight: .medium))
-                                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                                Image(systemName: "archivebox").font(.system(size: Ink.Size.small))
+                                Text("已归档 \(archivedThreads.count) 段").font(.system(size: Ink.Size.sub, weight: .medium))
+                                Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold))
                                     .rotationEffect(.degrees(showArchived ? 180 : 0))
                                 Spacer()
                             }
@@ -481,7 +481,7 @@ struct Desk: View {
                             ForEach(archivedThreads, id: \.id) { item in
                                 thread(item)
                                     .opacity(0.75)
-                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                                Kit.rule(inset: 40)
                             }
                         }
                     }
@@ -738,7 +738,7 @@ struct Desk: View {
                     Button(Words.t("收名帖"), systemImage: "square.and.arrow.down") { open(.importCard) }
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                         .glassFace(in: Circle())
@@ -749,7 +749,7 @@ struct Desk: View {
                     tuning = true
                 } label: {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                         .glassFace(in: Circle())
@@ -792,7 +792,7 @@ struct Desk: View {
                     editing = EditTarget(id: "new", bot: nil)
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(width: 40, height: 40)
                         .overlay(Circle().strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
@@ -817,18 +817,18 @@ struct Desk: View {
             } label: {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "seal")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.warn)
                         .frame(width: 34, height: 34)
                         .background(Ink.warn.opacity(0.14), in: .circle)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(team.approvals.count > 1 ? Words.t("\(team.approvals.count) 张笺等你落印") : Words.t("\(name)等你落印"))
-                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
+                            .font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text("\(name)想\(first.tool ?? "做一件事")" + ((first.reason ?? "").isEmpty ? "" : "：\(first.reason!)"))
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                     }
                     Spacer(minLength: 0)
-                    Text("去看看").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                    Text("去看看").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
                 .padding(Ink.Space.l)
                 .paperCard()
@@ -841,7 +841,7 @@ struct Desk: View {
 
     private func letter(_ next: Later) -> some View {
         HStack(spacing: Ink.Space.s) {
-            Image(systemName: "envelope").font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.accent)
+            Image(systemName: "envelope").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent)
             VStack(alignment: .leading, spacing: 2) {
                 Text(Words.t("来信 · ") + When.show(Date(timeIntervalSince1970: next.at))).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text("\(team.bots.first { $0.id == next.botId }?.name ?? "旅伴")约好来找你：\(next.text)")
@@ -911,7 +911,7 @@ struct Desk: View {
                         Whale(size: 28, wash: Ink.wash(for: bot), still: true)
                     } else {
                         Image(systemName: "person.3")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: Ink.Size.micro, weight: .semibold))
                             .foregroundStyle(Ink.accent)
                             .frame(width: 28, height: 28)
                             .background(Ink.accentWash, in: .circle)

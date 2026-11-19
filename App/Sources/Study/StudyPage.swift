@@ -70,7 +70,7 @@ struct StudyFolder: View {
                                         if !item.folder { ShareLink(item: item.url) { Label("分享", systemImage: "square.and.arrow.up") } }
                                         Button("删掉", systemImage: "trash", role: .destructive) { deleting = item }
                                     }
-                                if item.id != items.last?.id { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                                if item.id != items.last?.id { Kit.divider }
                             }
                         }
                         .paperCard()
@@ -144,21 +144,19 @@ struct StudyFolder: View {
 
     private func row(_ item: StudyPage.Item) -> some View {
         HStack(spacing: Ink.Space.m) {
-            Image(systemName: item.folder ? "folder" : Self.icon(item.url))
-                .font(.system(size: 18))
-                .foregroundStyle(item.folder ? Ink.accent : Ink.inkSoft)
-                .frame(width: 28)
+            IconBadge(symbol: item.folder ? "folder" : Self.icon(item.url), tint: item.folder ? Ink.accent : Ink.inkSoft)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.url.lastPathComponent).font(.system(size: 16)).foregroundStyle(Ink.ink).lineLimit(1)
+                Text(item.url.lastPathComponent).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
                 Text((item.folder ? "" : Workspace.size(item.bytes) + " · ") + item.changed.formatted(.relative(presentation: .named)))
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+            Kit.chevron
         }
         .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, Ink.Space.m)
+        .frame(minHeight: Kit.rowHeight)
+        .padding(.vertical, Ink.Space.xs)
         .contentShape(Rectangle())
     }
 
@@ -305,7 +303,7 @@ private struct TableGrid: View {
                     GridRow {
                         ForEach(0..<columns, id: \.self) { column in
                             Text(column < row.count ? row[column] : "")
-                                .font(index == 0 ? .system(size: 13, weight: .semibold) : .system(size: 13))
+                                .font(index == 0 ? .system(size: Ink.Size.small, weight: .semibold) : .system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(3)
                                 .frame(minWidth: 60, maxWidth: 220, alignment: .leading)

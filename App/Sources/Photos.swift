@@ -93,7 +93,7 @@ struct PhotoViewer: View {
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: Ink.Size.body, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 40, height: 40)
                     .background(Color.white.opacity(0.2), in: .circle)

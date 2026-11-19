@@ -88,7 +88,7 @@ struct ChatPage: View {
             }
         } label: {
             Label("更早的 \(chat.lines.count - shownCount) 条", systemImage: "arrow.up")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.inkSoft)
                 .frame(maxWidth: .infinity, minHeight: 36)
         }
@@ -295,7 +295,7 @@ struct ChatPage: View {
                 }
                 .fontWeight(.semibold)
             }
-            .font(.system(size: 13))
+            .font(.system(size: Ink.Size.small))
             .foregroundStyle(Ink.accent)
             .buttonStyle(TapStyle())
         }
@@ -568,7 +568,7 @@ struct ChatPage: View {
         HStack(spacing: Ink.Space.s) {
             Button(action: leave) {
                 Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
@@ -578,7 +578,7 @@ struct ChatPage: View {
             HStack(spacing: Ink.Space.s) {
                 Whale(size: 30, pose: pose)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
+                    Text(bot.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
                         Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
                         Text(headerLine)
@@ -617,7 +617,7 @@ struct ChatPage: View {
                 filesOpen = true
             } label: {
                 Image(systemName: "folder")
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: Ink.Size.body, weight: .medium))
                     .foregroundStyle(Ink.ink)
                     .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
@@ -630,7 +630,7 @@ struct ChatPage: View {
                 leafing = true
             } label: {
                 Image(systemName: "book.pages")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: Ink.Size.body, weight: .medium))
                     .foregroundStyle(Ink.ink)
                     .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
@@ -649,8 +649,8 @@ struct ChatPage: View {
     /// A chip in the row under the text field. Lit when what it stands for is on.
     private func chip(_ icon: String, _ name: String?, lit: Bool = false) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium))
-            if let name { Text(name).font(.system(size: 13, weight: .medium)).lineLimit(1) }
+            Image(systemName: icon).font(.system(size: Ink.Size.small, weight: .medium))
+            if let name { Text(name).font(.system(size: Ink.Size.small, weight: .medium)).lineLimit(1) }
         }
         .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
         .padding(.horizontal, name == nil ? 0 : Ink.Space.m)
@@ -878,9 +878,9 @@ struct ChatPage: View {
                         typing = true
                     } label: {
                         HStack(spacing: Ink.Space.m) {
-                            Image(systemName: item.2).font(.system(size: 15)).foregroundStyle(Ink.accent).frame(width: 22)
+                            Image(systemName: item.2).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 22)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(item.0).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
+                                Text(item.0).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                                 Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                             }
                             Spacer(minLength: 0)
@@ -994,7 +994,7 @@ struct ChatPage: View {
                 if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
                     HStack(spacing: Ink.Space.s) {
                         Whale(size: 22, wash: Ink.wash(for: speaker), still: true)
-                        Text(speaker.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+                        Text(speaker.name).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                     }
                 }
                 if let reasoning = line.reasoning, Pref.showThinking {
@@ -1053,7 +1053,7 @@ struct ChatPage: View {
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             // A pause is not a failure: said in ink, not in red.
             Label(advice.title, systemImage: next == .resume ? "pause.circle" : "exclamationmark.triangle")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: Ink.Size.sub, weight: .semibold))
                 .foregroundStyle(next == .resume ? Ink.ink : Ink.stop)
             if !advice.detail.isEmpty {
                 Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
@@ -1064,7 +1064,7 @@ struct ChatPage: View {
                     act(next)
                 } label: {
                     Text(button)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .padding(.horizontal, Ink.Space.l)
                         .frame(height: 34)
@@ -1161,7 +1161,7 @@ struct ChatPage: View {
                 replyMenu(line)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
@@ -1196,7 +1196,7 @@ struct ChatPage: View {
     private func icon(_ name: String, _ label: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
-                .font(.system(size: 13, weight: .regular))
+                .font(.system(size: Ink.Size.small, weight: .regular))
                 .foregroundStyle(Ink.inkSoft)
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
@@ -1227,7 +1227,7 @@ struct ChatPage: View {
                 Button {
                     withAnimation(Ink.Motion.settle) { away = [] }
                 } label: {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint).frame(width: 28, height: 28)
+                    Image(systemName: "xmark").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint).frame(width: 28, height: 28)
                 }
                 .buttonStyle(TapStyle(grow: 8))
                 .accessibilityLabel("知道了")
@@ -1240,9 +1240,9 @@ struct ChatPage: View {
                 } label: {
                     HStack(spacing: Ink.Space.s) {
                         Image(systemName: Self.awayIcon(item.kind)).foregroundStyle(item.kind == .failed ? Ink.stop : (item.kind == .waiting ? Ink.warn : Ink.accent)).frame(width: 18)
-                        Text("\(team.chatName(item.chat))：\(Self.awayWords(item.kind))").font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text("\(team.chatName(item.chat))：\(Self.awayWords(item.kind))").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                         Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        Image(systemName: "chevron.right").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
                     .frame(minHeight: 32)
                     .contentShape(Rectangle())
@@ -1300,7 +1300,7 @@ struct ChatPage: View {
                             Haptics.light()
                             withAnimation(Ink.Motion.settle) { dockOpen = false }
                         } label: {
-                            Label("收起", systemImage: "chevron.down").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                            Label("收起", systemImage: "chevron.down").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.inkSoft)
                         }
                         .buttonStyle(TapStyle(grow: 8))
                     }
@@ -1353,13 +1353,13 @@ struct ChatPage: View {
                         HStack(spacing: Ink.Space.m) {
                             Image(systemName: "seal").foregroundStyle(Ink.warn)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                                Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                                 if let reason = waiting.reason {
                                     Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                                 }
                             }
                             Spacer(minLength: 0)
-                            Text(Words.t("去落印")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                            Text(Words.t("去落印")).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                         }
                         .padding(Ink.Space.m)
                         .paperCard()
@@ -1413,7 +1413,7 @@ struct ChatPage: View {
                         Button {
                             withAnimation(Ink.Motion.settle) { self.quote = nil }
                         } label: {
-                            Image(systemName: "xmark.circle.fill").font(.system(size: 15)).foregroundStyle(Ink.inkFaint)
+                            Image(systemName: "xmark.circle.fill").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkFaint)
                         }
                         .buttonStyle(TapStyle(grow: 8))
                         .accessibilityLabel("不引用了")
@@ -1424,7 +1424,7 @@ struct ChatPage: View {
                 }
                 if editing != nil {
                     HStack(spacing: Ink.Space.s) {
-                        Image(systemName: "pencil").font(.system(size: 12, weight: .semibold))
+                        Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold))
                         Text("改了重发：之后的对话会重新来过").font(Ink.footnote)
                         Spacer()
                         Button("算了") {
@@ -1452,7 +1452,7 @@ struct ChatPage: View {
                                         withAnimation(Ink.Motion.settle) { _ = photos.remove(at: index) }
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 16))
+                                            .font(.system(size: Ink.Size.body))
                                             .foregroundStyle(Ink.paper, Ink.ink.opacity(0.6))
                                     }
                                     .offset(x: 5, y: -5)
@@ -1468,12 +1468,12 @@ struct ChatPage: View {
                         HStack(spacing: Ink.Space.s) {
                             ForEach(files, id: \.self) { path in
                                 HStack(spacing: 4) {
-                                    Image(systemName: "doc").font(.system(size: 12))
-                                    Text((path as NSString).lastPathComponent).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                    Image(systemName: "doc").font(.system(size: Ink.Size.small))
+                                    Text((path as NSString).lastPathComponent).font(.system(size: Ink.Size.small, weight: .medium)).lineLimit(1)
                                     Button {
                                         withAnimation(Ink.Motion.settle) { files.removeAll { $0 == path } }
                                     } label: {
-                                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                                        Image(systemName: "xmark").font(.system(size: Ink.Size.micro, weight: .bold))
                                     }
                                     .buttonStyle(TapStyle(grow: 8))
                                 }
@@ -1560,7 +1560,7 @@ struct ChatPage: View {
                     toEnd(animated: true)
                 } label: {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
                         .glassFace(in: Circle())
@@ -1773,9 +1773,9 @@ struct ChatPage: View {
                     hint.run()
                 } label: {
                     HStack(spacing: Ink.Space.m) {
-                        Image(systemName: hint.icon).font(.system(size: 14)).foregroundStyle(Ink.accent).frame(width: 20)
+                        Image(systemName: hint.icon).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 20)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(hint.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                            Text(hint.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                             Text(hint.note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                         }
                         Spacer(minLength: 0)
@@ -1880,14 +1880,14 @@ private struct Trace: View {
         let removed = counts.reduce(0) { $0 + $1.removed }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Ink.Space.s) {
-                Image(systemName: "arrow.triangle.pull").font(.system(size: 15)).foregroundStyle(Ink.inkSoft)
-                Text("改动了 \(files.count) 个文件").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
+                Image(systemName: "arrow.triangle.pull").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft)
+                Text("改动了 \(files.count) 个文件").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                 Spacer()
                 tallyText(added, removed)
             }
             .padding(Ink.Space.l)
             ForEach(Array(files.enumerated()), id: \.element.id) { index, item in
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                Kit.rule(inset: Ink.Space.l)
                 Button {
                     Haptics.light()
                     if let diff = item.diff, !diff.isEmpty {
@@ -1899,13 +1899,13 @@ private struct Trace: View {
                     HStack(spacing: Ink.Space.m) {
                         let fresh = counts[index].removed == 0 && counts[index].added > 0
                         Image(systemName: fresh ? "doc.badge.plus" : "doc.text")
-                            .font(.system(size: 16)).foregroundStyle(fresh ? Ink.ok : Ink.inkSoft).frame(width: 22)
+                            .font(.system(size: Ink.Size.body)).foregroundStyle(fresh ? Ink.ok : Ink.inkSoft).frame(width: 22)
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
-                                Text(item.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                                if fresh { Text("新建").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.ok) }
+                                Text(item.title).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                if fresh { Text("新建").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.ok) }
                             }
-                            Text(item.detail).font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                            Text(item.detail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                         }
                         Spacer(minLength: Ink.Space.s)
                         tallyText(counts[index].added, counts[index].removed)
@@ -1926,7 +1926,7 @@ private struct Trace: View {
             if added > 0 { Text("+\(added)").foregroundStyle(Ink.ok) }
             if removed > 0 { Text("−\(removed)").foregroundStyle(Ink.stop) }
         }
-        .font(.system(size: 13, design: .monospaced))
+        .font(.system(size: Ink.Size.small, design: .monospaced))
     }
 
     private var keepsakes: [Keepsake] {
@@ -2001,7 +2001,7 @@ private struct Trace: View {
                     if line.live {
                         ProgressView().controlSize(.mini).tint(Ink.accent)
                     } else {
-                        Image(systemName: "checkmark.circle").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ok)
+                        Image(systemName: "checkmark.circle").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ok)
                     }
                     Text(Words.t(line.live ? (line.tools.isEmpty ? "沉吟" : "第 \(line.tools.count) 步") : summary))
                         .font(Ink.secondary)
@@ -2010,7 +2010,7 @@ private struct Trace: View {
                         .contentTransition(.opacity)
                     Spacer()
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: Ink.Size.micro, weight: .bold))
                         .foregroundStyle(Ink.inkFaint)
                         .rotationEffect(.degrees(open ? -180 : 0))
                 }
@@ -2069,13 +2069,13 @@ private struct Trace: View {
                     }
                 } label: {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
-                        Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: 16)).foregroundStyle(Ink.accent).frame(width: 22)
+                        Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.kind == .command ? "# " + item.title : item.title)
-                                .font(item.kind == .command ? .system(size: 13, weight: .medium, design: .monospaced) : .system(size: 14, weight: .medium))
+                                .font(item.kind == .command ? .system(size: Ink.Size.small, weight: .medium, design: .monospaced) : .system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink).lineLimit(2)
                             Text(item.detail)
-                                .font(item.kind == .command ? .system(size: 11, design: .monospaced) : Ink.footnote)
+                                .font(item.kind == .command ? .system(size: Ink.Size.micro, design: .monospaced) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
                             if let diff = item.diff, !diff.isEmpty {
                                 // The first few changed lines, so the card shows what changed at a glance.
@@ -2086,7 +2086,7 @@ private struct Trace: View {
                         }
                         Spacer(minLength: 0)
                         if item.kind != .command, item.kind != .remoteFile || item.diff != nil {
-                            Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                            Image(systemName: "chevron.right").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                     }
                     .padding(Ink.Space.m)
@@ -2100,9 +2100,9 @@ private struct Trace: View {
         if !line.live, let unremember {
             ForEach(remembered, id: \.self) { fact in
                 HStack(alignment: .top, spacing: Ink.Space.m) {
-                    Image(systemName: "bookmark").font(.system(size: 15)).foregroundStyle(Ink.accent).frame(width: 22)
+                    Image(systemName: "bookmark").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 22)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(fact).font(.system(size: 14, weight: .medium)).foregroundStyle(undone.contains(fact) ? Ink.inkFaint : Ink.ink)
+                        Text(fact).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(undone.contains(fact) ? Ink.inkFaint : Ink.ink)
                             .strikethrough(undone.contains(fact))
                             .lineLimit(3)
                         Text(undone.contains(fact) ? "已从\(Words.t("拾遗"))撤回" : "记进了\(Words.t("拾遗"))，以后每次聊天都会看到")
@@ -2115,7 +2115,7 @@ private struct Trace: View {
                             _ = unremember(fact)
                             withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
                         }
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .buttonStyle(.plain)
                     }
@@ -2142,10 +2142,10 @@ private struct Trace: View {
                             visit(url)
                         } label: {
                             HStack(spacing: Ink.Space.s) {
-                                Image(systemName: "safari").font(.system(size: 15)).foregroundStyle(Ink.accent)
+                                Image(systemName: "safari").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(url.host() ?? url.absoluteString).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(url.path().isEmpty || url.path() == "/" ? "首页" : url.path()).font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                    Text(url.host() ?? url.absoluteString).font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(url.path().isEmpty || url.path() == "/" ? "首页" : url.path()).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                 }
                             }
                             .padding(.horizontal, Ink.Space.m)
@@ -2173,7 +2173,7 @@ private struct Trace: View {
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(spacing: 0) {
                 Image(systemName: Self.icon(for: name))
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
                     .foregroundStyle(failed ? Ink.stop : Ink.accent)
                     .frame(width: 24, height: 24)
                     .background(failed ? Ink.stop.opacity(0.12) : Ink.accentWash, in: .circle)
@@ -2181,11 +2181,11 @@ private struct Trace: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Ink.Space.s) {
-                    Text(Words.t(Self.word(for: name))).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                    Text(Words.t(Self.word(for: name))).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                     if let seconds = more?.seconds { Text(Clock.said(seconds)).font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     Spacer(minLength: 0)
                     if more != nil {
-                        Image(systemName: shown ? "chevron.up" : "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        Image(systemName: shown ? "chevron.up" : "ellipsis").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
                 }
                 if let detail { Text(detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(shown ? nil : 2) }
@@ -2193,7 +2193,7 @@ private struct Trace: View {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         if !more.input.isEmpty, more.input != "{}" {
                             Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                            Text(Self.tidy(more.input)).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(12)
+                            Text(Self.tidy(more.input)).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(12)
                         }
                         if let name = more.photo, let data = Disk.photo(name), let image = UIImage(data: data) {
                             Image(uiImage: image)
@@ -2205,10 +2205,10 @@ private struct Trace: View {
                         }
                         Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
                         if let hunk = Diff.hunk(in: more.output) {
-                            Text(more.output.components(separatedBy: "\n").first ?? "").font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft)
+                            Text(more.output.components(separatedBy: "\n").first ?? "").font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft)
                             DiffText(hunk: hunk)
                         } else {
-                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
                         }
                     }
                     .textSelection(.enabled)
@@ -2325,13 +2325,13 @@ private struct WorkingBar: View {
         Button(action: tap) {
             HStack(spacing: Ink.Space.s) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
                     .foregroundStyle(Ink.accent)
                     .symbolEffect(.pulse)
                     .contentTransition(.symbolEffect(.replace))
                     .frame(width: 18)
                 Text(Words.t(words))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1)
                     .contentTransition(.opacity)
@@ -2340,7 +2340,7 @@ private struct WorkingBar: View {
                     let parts = [tools > 0 ? "工具 ×\(tools)" : "", word].filter { !$0.isEmpty }
                     if !parts.isEmpty {
                         Text(parts.joined(separator: "，"))
-                            .font(.system(size: 13))
+                            .font(.system(size: Ink.Size.small))
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(1)
                     }
@@ -2348,14 +2348,14 @@ private struct WorkingBar: View {
                 .layoutPriority(-1)
                 Spacer(minLength: Ink.Space.s)
                 if free {
-                    Text("放手").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.warn)
+                    Text("放手").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.warn)
                         .padding(.horizontal, 6).frame(height: 18)
                         .background(Ink.warn.opacity(0.14), in: .capsule)
                 }
                 TimelineView(.periodic(from: since, by: 1)) { context in
                     let seconds = max(0, Int(context.date.timeIntervalSince(since)))
                     Text(Clock.running(seconds))
-                        .font(.system(size: 13).monospacedDigit())
+                        .font(.system(size: Ink.Size.small).monospacedDigit())
                         .foregroundStyle(Ink.inkSoft)
                         .contentTransition(.numericText())
                 }
@@ -2420,7 +2420,7 @@ struct SourcesRow: View {
                     }
                 }
                 Text("\(urls.count) 个来源")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
             }
             .padding(.leading, 6)
@@ -2468,11 +2468,11 @@ private struct SourcesSheet: View {
                             HStack(spacing: Ink.Space.m) {
                                 BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 32)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(SourcesRow.site(url)).font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(Self.path(url)).font(.system(size: 12)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                    Text(SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(Self.path(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                 }
                                 Spacer(minLength: 0)
-                                Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                                Image(systemName: "arrow.up.right").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                             }
                             .padding(.horizontal, Ink.Space.l)
                             .padding(.vertical, 12)

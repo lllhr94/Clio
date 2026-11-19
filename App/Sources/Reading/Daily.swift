@@ -75,14 +75,14 @@ struct TideChip: View {
                     open = true
                 } label: {
                     HStack(spacing: Ink.Space.m) {
-                        Image(systemName: newest.symbol).font(.system(size: 18)).foregroundStyle(Ink.accent).frame(width: 28)
+                        Image(systemName: newest.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(book.waiting.count > 1 ? Words.t("潮水带来了 \(book.waiting.count) 样东西") : Words.t("今天潮水带来了一样东西"))
-                                .font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
+                                .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                             Text("点开，\(keeper)游过去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
                         Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        Kit.chevron
                     }
                     .padding(.horizontal, Ink.Space.l)
                     .padding(.vertical, Ink.Space.m)
@@ -96,7 +96,7 @@ struct TideChip: View {
                     open = true
                 } label: {
                     Label("收藏册 · \(book.collected.count) 样", systemImage: "water.waves")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(minHeight: 32)
                 }
@@ -155,9 +155,9 @@ struct TideSheet: View {
                         VStack(spacing: 0) {
                             ForEach(book.collected) { find in
                                 HStack(alignment: .top, spacing: Ink.Space.m) {
-                                    Image(systemName: find.symbol).font(.system(size: 18)).foregroundStyle(Ink.accent).frame(width: 28)
+                                    Image(systemName: find.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(find.name).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                                        Text(find.name).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                                         Text(find.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                         Text(Self.when(find.day) + (find.picked ? "" : Words.t(" · 潮水留下的"))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
@@ -165,7 +165,7 @@ struct TideSheet: View {
                                 }
                                 .padding(.horizontal, Ink.Space.l)
                                 .padding(.vertical, Ink.Space.m)
-                                if find.id != book.collected.last?.id { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 56) }
+                                if find.id != book.collected.last?.id { Kit.rule(inset: 56) }
                             }
                         }
                         .paperCard()
@@ -194,7 +194,7 @@ struct TideSheet: View {
             Button(book.waiting.isEmpty ? "收好了" : "再看看别的") {
                 withAnimation(Ink.Motion.settle) { shown = nil }
             }
-            .font(.system(size: 15, weight: .medium))
+            .font(.system(size: Ink.Size.sub, weight: .medium))
             .foregroundStyle(Ink.accent)
             .buttonStyle(TapStyle())
             .padding(.top, Ink.Space.s)
@@ -230,7 +230,7 @@ struct EmptyNote: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let action {
                 Button(action.title, action: action.run)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
                     .foregroundStyle(Ink.accent)
                     .buttonStyle(TapStyle())
             }

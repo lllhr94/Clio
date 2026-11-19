@@ -37,7 +37,7 @@ struct AppLock: ViewModifier {
                     .font(.system(size: 34, weight: .medium))
                     .foregroundStyle(Ink.accent)
                 Text("Clio 已上锁")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                 if locked {
                     Button("用面容解锁") { unlock() }

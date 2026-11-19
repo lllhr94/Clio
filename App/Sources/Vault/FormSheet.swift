@@ -29,7 +29,7 @@ struct FormSheet: View {
                         VStack(spacing: 0) {
                             ForEach(form.fields) { field in
                                 row(field)
-                                if field.key != form.fields.last?.key { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l) }
+                                if field.key != form.fields.last?.key { Kit.rule(inset: Ink.Space.l) }
                             }
                         }
                         .paperCard()
@@ -71,7 +71,7 @@ struct FormSheet: View {
     private func row(_ field: Asker.Field) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack {
-                Text(field.label).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                Text(field.label).font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.inkSoft)
                 Spacer()
                 if field.secret, !secrets.items.isEmpty {
                     Menu {
@@ -85,7 +85,7 @@ struct FormSheet: View {
                             Button("自己填", systemImage: "keyboard") { picked[field.key] = nil }
                         }
                     } label: {
-                        Label(Words.t("从信匣取"), systemImage: "lock.rectangle.stack").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.accent)
+                        Label(Words.t("从信匣取"), systemImage: "lock.rectangle.stack").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.accent)
                     }
                 }
             }
@@ -98,7 +98,7 @@ struct FormSheet: View {
                 if let item = picked[field.key] {
                     HStack {
                         Image(systemName: item.kind.symbol).foregroundStyle(Ink.accent)
-                        Text(Words.t("用信匣里的「\(item.title)」")).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                        Text(Words.t("用信匣里的「\(item.title)」")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                         Spacer()
                     }
                     .frame(height: 30)
@@ -111,7 +111,7 @@ struct FormSheet: View {
                                 SecureField(field.placeholder, text: binding(field.key))
                             }
                         }
-                        .font(.system(size: 16))
+                        .font(.system(size: Ink.Size.body))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         Button {
@@ -125,7 +125,7 @@ struct FormSheet: View {
                 }
             } else {
                 TextField(field.placeholder, text: binding(field.key))
-                    .font(.system(size: 16))
+                    .font(.system(size: Ink.Size.body))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .frame(height: 30)

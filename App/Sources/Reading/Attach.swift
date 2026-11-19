@@ -57,10 +57,10 @@ struct DeskPicker: View {
                                 } label: {
                                     HStack(spacing: Ink.Space.m) {
                                         Image(systemName: chosen.contains(item.path) ? "checkmark.circle.fill" : "circle")
-                                            .font(.system(size: 18))
+                                            .font(.system(size: Ink.Size.title))
                                             .foregroundStyle(chosen.contains(item.path) ? Ink.accent : Ink.inkFaint)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text((item.path as NSString).lastPathComponent).font(.system(size: 15)).foregroundStyle(Ink.ink).lineLimit(1)
+                                            Text((item.path as NSString).lastPathComponent).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                                             Text(Words.t("书案/\(item.path) · \(Workspace.size(item.size))"))
                                                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                         }
@@ -71,7 +71,7 @@ struct DeskPicker: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(TapStyle())
-                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 48)
+                                Kit.rule(inset: 48)
                             }
                         }
                         .paperCard()
@@ -288,7 +288,7 @@ struct PlusSheet: View {
                                 .clipped()
                                 if added.contains(id) {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 20))
+                                        .font(.system(size: Ink.Size.title))
                                         .foregroundStyle(.white, Ink.accent)
                                         .padding(6)
                                 }
@@ -367,7 +367,7 @@ struct PlusSheet: View {
         dismiss()
     }
 
-    private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+    private var divider: some View { Kit.rule(inset: 52) }
 
     private func group<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(spacing: 0) { content() }.paperCard()
@@ -375,11 +375,11 @@ struct PlusSheet: View {
 
     private func row(_ icon: String, _ title: String, value: String? = nil) -> some View {
         HStack(spacing: Ink.Space.m) {
-            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Ink.ink).frame(width: 28)
-            Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+            Image(systemName: icon).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink).frame(width: 28)
+            Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
             Spacer(minLength: 0)
-            if let value { Text(value).font(.system(size: 15)).foregroundStyle(Ink.inkSoft).lineLimit(1) }
-            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+            if let value { Text(value).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).lineLimit(1) }
+            Kit.chevron
         }
         .padding(.horizontal, Ink.Space.l)
         .frame(minHeight: 54)
@@ -392,9 +392,9 @@ struct PlusSheet: View {
 
     private func toggle(_ icon: String, _ title: String, note: String, isOn: Bool, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(spacing: Ink.Space.m) {
-            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Ink.ink).frame(width: 28)
+            Image(systemName: icon).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink).frame(width: 28)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)

@@ -18,7 +18,7 @@ struct DiffText: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.prefix(limit).enumerated()), id: \.offset) { _, line in
                 Text(line.isEmpty ? " " : line)
-                    .font(.system(size: 11.5, design: .monospaced))
+                    .font(.system(size: Ink.Size.micro, design: .monospaced))
                     .foregroundStyle(color(line))
                     .lineLimit(wraps ? nil : 1)
                     .truncationMode(.tail)
@@ -73,7 +73,7 @@ struct DiffSheet: View {
                         Label("删 \(counts.removed) 行", systemImage: "minus").foregroundStyle(Ink.stop)
                         Label("加 \(counts.added) 行", systemImage: "plus").foregroundStyle(Ink.ok)
                     }
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
                     DiffText(hunk: diff, limit: 4000, wraps: true)
                         .textSelection(.enabled)
                 }

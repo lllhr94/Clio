@@ -90,7 +90,7 @@ struct DrawerSheet: View {
                             dismiss()
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: Ink.Size.sub, weight: .semibold))
                                 .foregroundStyle(Ink.inkSoft)
                                 .frame(width: 32, height: 32)
                                 .background(Ink.mine, in: .circle)
@@ -124,11 +124,11 @@ struct DrawerSheet: View {
         } label: {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Image(systemName: item.symbol)
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: Ink.Size.body, weight: .medium))
                     .foregroundStyle(Ink.accent)
                     .frame(width: 34, height: 34)
                     .background(Ink.accentWash, in: .rect(cornerRadius: Ink.Radius.small))
-                Text(item.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                Text(item.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                 Text(item.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)

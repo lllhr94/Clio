@@ -28,7 +28,7 @@ struct GrantsPage: View {
                             askAll()
                         } label: {
                             HStack(spacing: Ink.Space.m) {
-                                Image(systemName: "checkmark.seal").font(.system(size: 20)).foregroundStyle(Ink.accent)
+                                Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(asking ? "正在一项项问系统…" : Words.t("一并应许")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                     Text("一次问完系统授权")
@@ -50,7 +50,7 @@ struct GrantsPage: View {
                                 VStack(spacing: 0) {
                                     ForEach(group.1) { grant in
                                         row(grant)
-                                        if grant != group.1.last { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                                        if grant != group.1.last { Kit.divider }
                                     }
                                 }
                                 .paperCard()
@@ -62,10 +62,10 @@ struct GrantsPage: View {
                                 VStack(spacing: 0) {
                                     ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
                                         HStack {
-                                            Text(tool).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink)
+                                            Text(tool).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink)
                                             Spacer()
                                             Button("收回") { withAnimation(.smooth) { team.revokeAlways(tool) } }
-                                                .font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.stop)
+                                                .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.stop)
                                         }
                                         .padding(.horizontal, Ink.Space.l)
                                         .padding(.vertical, Ink.Space.m)
@@ -78,7 +78,7 @@ struct GrantsPage: View {
                             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                         } label: {
                             Label("去系统设置里看 Clio 的权限", systemImage: "gear")
-                                .font(.system(size: 15, weight: .medium))
+                                .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.accent)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, Ink.Space.m)
@@ -136,8 +136,8 @@ struct GrantsPage: View {
                         for grant in Grant.allCases { policies[grant] = grant.policy }
                     } label: {
                         VStack(spacing: 2) {
-                            Text(preset.title).font(.system(size: 15, weight: .semibold))
-                            Text(preset.line).font(.system(size: 11)).lineLimit(2).multilineTextAlignment(.center)
+                            Text(preset.title).font(.system(size: Ink.Size.sub, weight: .semibold))
+                            Text(preset.line).font(.system(size: Ink.Size.micro)).lineLimit(2).multilineTextAlignment(.center)
                         }
                         .foregroundStyle(current == preset ? Ink.accent : Ink.inkSoft)
                         .frame(maxWidth: .infinity, minHeight: 64)
@@ -157,13 +157,10 @@ struct GrantsPage: View {
     private func row(_ grant: Grant) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(alignment: .top, spacing: Ink.Space.m) {
-                Image(systemName: grant.symbol)
-                    .font(.system(size: 17))
-                    .foregroundStyle(policies[grant] == .off ? Ink.inkFaint : Ink.accent)
-                    .frame(width: 28, height: 22)
+                IconBadge(symbol: grant.symbol, tint: policies[grant] == .off ? Ink.inkFaint : Ink.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: Ink.Space.s) {
-                        Text(grant.title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                        Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                         systemBadge(grant)
                     }
                     Text(grant.note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -184,7 +181,7 @@ struct GrantsPage: View {
                 ForEach(Grant.Policy.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
-            .padding(.leading, 40)
+            .padding(.leading, Kit.badge + Ink.Space.m)
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.m)
@@ -217,7 +214,7 @@ struct GrantsPage: View {
 
     private func badge(_ text: String, _ color: Color) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

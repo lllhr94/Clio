@@ -54,7 +54,7 @@ struct LeavesSheet: View {
                             dismiss()
                         } label: {
                             HStack(spacing: Ink.Space.m) {
-                                Image(systemName: "square.and.pencil").font(.system(size: 18)).foregroundStyle(Ink.accent)
+                                Image(systemName: "square.and.pencil").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(Words.t("另起一叶")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                     Text(hasCurrent ? Words.t("眼下这段絮语收进下面，和\(name)从头聊起") : "眼下还是空白一页")
@@ -73,7 +73,7 @@ struct LeavesSheet: View {
                         } label: {
                             HStack(spacing: Ink.Space.m) {
                                 if folding { ProgressView().frame(width: 22) } else {
-                                    Image(systemName: "rectangle.compress.vertical").font(.system(size: 18)).foregroundStyle(Ink.accent)
+                                    Image(systemName: "rectangle.compress.vertical").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(folding ? "正在写前情提要…" : "压缩前文").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
@@ -100,13 +100,13 @@ struct LeavesSheet: View {
                                 reading = companion
                             } label: {
                                 HStack(spacing: Ink.Space.m) {
-                                    Image(systemName: "book.closed").font(.system(size: 18)).foregroundStyle(Ink.accent)
+                                    Image(systemName: "book.closed").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("\(companion.name)的日记").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                         Text(Pref.diaryOn ? "晚上写一页当天的事，你可以回一句" : Words.t("还没打开：调弦 › 旅伴的日常")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     }
                                     Spacer(minLength: 0)
-                                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                                    Kit.chevron
                                 }
                                 .padding(Ink.Space.l)
                                 .paperCard()
@@ -122,7 +122,7 @@ struct LeavesSheet: View {
                                     HStack {
                                         Text("前情提要").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
                                         Spacer()
-                                        Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Ink.inkFaint)
+                                        Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .bold)).foregroundStyle(Ink.inkFaint)
                                             .rotationEffect(.degrees(showDigest ? -180 : 0))
                                     }
                                 }
@@ -148,7 +148,7 @@ struct LeavesSheet: View {
                                             }
                                             .fontWeight(.semibold)
                                         }
-                                        .font(.system(size: 15))
+                                        .font(.system(size: Ink.Size.sub))
                                     } else {
                                         ProseView(text: digest)
                                             .padding(Ink.Space.l)
@@ -163,7 +163,7 @@ struct LeavesSheet: View {
                                                 Button("拆开此叶，撤销压缩", systemImage: "arrow.uturn.backward") { unfolding = fold }
                                             }
                                         }
-                                        .font(.system(size: 14, weight: .medium))
+                                        .font(.system(size: Ink.Size.sub, weight: .medium))
                                         .foregroundStyle(Ink.accent)
                                         .buttonStyle(TapStyle())
                                     }
@@ -185,12 +185,12 @@ struct LeavesSheet: View {
                                     } label: {
                                         HStack(spacing: Ink.Space.m) {
                                             VStack(alignment: .leading, spacing: 3) {
-                                                Text(leaf.title).font(.system(size: 16)).foregroundStyle(Ink.ink).lineLimit(1)
+                                                Text(leaf.title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
                                                 Text("\(Date(timeIntervalSince1970: leaf.at / 1000).formatted(.relative(presentation: .named))) · \(leaf.count) 条")
                                                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                             }
                                             Spacer(minLength: 0)
-                                            Text("翻回").font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.accent)
+                                            Text("翻回").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.accent)
                                         }
                                         .padding(.horizontal, Ink.Space.l)
                                         .padding(.vertical, Ink.Space.m)
@@ -202,7 +202,7 @@ struct LeavesSheet: View {
                                             withAnimation(Ink.Motion.settle) { team.dropLeaf(key, leaf) }
                                         }
                                     }
-                                    if leaf.id != leaves.last?.id { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l) }
+                                    if leaf.id != leaves.last?.id { Kit.rule(inset: Ink.Space.l) }
                                 }
                             }
                             .paperCard()

@@ -27,7 +27,7 @@ struct InkstonePage: View {
                     dismiss()
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
                         .glassFace(in: Circle())
@@ -52,7 +52,7 @@ struct InkstonePage: View {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 4) {
                             Text("笔砚").font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
-                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                         Text(subtitle).font(Ink.footnote).foregroundStyle(ended ? Ink.stop : Ink.inkSoft).lineLimit(1)
                     }
@@ -65,7 +65,7 @@ struct InkstonePage: View {
                         endedWhy = nil
                         session += 1
                     }
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.accent)
                 }
             }

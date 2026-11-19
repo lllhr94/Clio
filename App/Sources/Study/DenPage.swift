@@ -60,7 +60,7 @@ struct DenPage: View {
                 dismiss()
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
                     .glassFace(in: Circle())
@@ -79,7 +79,7 @@ struct DenPage: View {
                     Haptics.lock()
                     den.stopAll()
                 }
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: Ink.Size.sub, weight: .semibold))
                 .foregroundStyle(Ink.stop)
             }
             Button {
@@ -87,7 +87,7 @@ struct DenPage: View {
                 inkstone = true
             } label: {
                 Image(systemName: "apple.terminal")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
                     .glassFace(in: Circle())
@@ -100,7 +100,7 @@ struct DenPage: View {
                 Button("清屏", systemImage: "eraser") { den.clear() }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: 36, height: 36)
                     .glassFace(in: Circle())
@@ -151,7 +151,7 @@ struct DenPage: View {
                 Text("— \(line.text)").foregroundStyle(Ink.inkFaint)
             }
         }
-        .font(.system(size: 13, design: .monospaced))
+        .font(.system(size: Ink.Size.small, design: .monospaced))
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, line.kind == .command ? Ink.Space.s : 0)
@@ -159,9 +159,9 @@ struct DenPage: View {
 
     private var composer: some View {
         HStack(spacing: Ink.Space.s) {
-            Text("#").font(.system(size: 16, weight: .semibold, design: .monospaced)).foregroundStyle(Ink.accent)
+            Text("#").font(.system(size: Ink.Size.body, weight: .semibold, design: .monospaced)).foregroundStyle(Ink.accent)
             TextField("命令", text: $command)
-                .font(.system(size: 15, design: .monospaced))
+                .font(.system(size: Ink.Size.sub, design: .monospaced))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.send)
@@ -172,13 +172,13 @@ struct DenPage: View {
                     back = min(back + 1, history.count)
                     command = history[history.count - back]
                 } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+                    Image(systemName: "arrow.up").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                 }
                 .accessibilityLabel("上一条")
             }
             Button(action: send) {
                 Image(systemName: "return")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(width: 34, height: 34)
                     .background(command.isEmpty ? Ink.inkFaint : Ink.accent, in: .circle)

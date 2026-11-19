@@ -149,7 +149,7 @@ struct RoutinesPage: View {
                         VStack(spacing: 0) {
                             ForEach(team.routines) { routine in
                                 row(routine)
-                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                                Kit.rule(inset: Ink.Space.l)
                             }
                         }
                         .paperCard()
@@ -186,11 +186,11 @@ struct RoutinesPage: View {
         let who = team.bots.first { $0.id == routine.botId }?.name ?? "?"
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(routine.title).font(.system(size: 16, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
+                Text(routine.title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
                 Text("\(routine.when) · \(who)" + (routine.on ? (routine.next(after: Date()).map { " · 下次 \(When.show($0))" } ?? "") : "")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text(routine.prompt).font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(2)
                 if let last = routine.lastRun {
-                    Text("上次：\(When.show(Date(timeIntervalSince1970: last)))").font(.system(size: 11)).foregroundStyle(Ink.inkFaint)
+                    Text("上次：\(When.show(Date(timeIntervalSince1970: last)))").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                 }
             }
             Spacer(minLength: 0)
@@ -250,7 +250,7 @@ struct RoutineEditor: View {
                         ForEach(1...7, id: \.self) { day in
                             let on = routine.days.isEmpty || routine.days.contains(day)
                             Button(Self.names[day - 1]) { toggle(day) }
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: Ink.Size.sub, weight: .semibold))
                                 .foregroundStyle(on ? Ink.paper : Ink.inkSoft)
                                 .frame(width: 34, height: 34)
                                 .background(on ? Ink.accent : Ink.mine, in: .circle)

@@ -39,7 +39,7 @@ struct ApproveView: View {
                 HStack {
                     if waiting > 0 {
                         Text("后面还有 \(waiting) 张")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
                             .padding(.horizontal, 14)
                             .frame(height: 34)
@@ -52,7 +52,7 @@ struct ApproveView: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: Ink.Size.body, weight: .semibold))
                             .frame(width: 26, height: 26)
                     }
                     .buttonStyle(.glass)
@@ -102,7 +102,7 @@ struct ApproveView: View {
                         .minimumScaleFactor(0.7)
                         .contentTransition(.opacity)
                     Text(note ?? subtitle)
-                        .font(.system(size: 17))
+                        .font(.system(size: Ink.Size.body))
                         .foregroundStyle(note == nil ? Ink.inkSoft : Ink.stop)
                         .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
@@ -166,7 +166,7 @@ struct ApproveView: View {
                     answer(allow: false)
                 } label: {
                     Text("不批准")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(height: 46)
                         .padding(.horizontal, 24)
@@ -186,11 +186,11 @@ struct ApproveView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("落 印 笺")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: Ink.Size.small, weight: .bold))
                     .tracking(2)
                 Spacer()
                 Text(Self.clock(current.at.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date(), "HH:mm"))
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: Ink.Size.small, design: .monospaced))
             }
             .foregroundStyle(Ink.inkSoft)
 
@@ -198,27 +198,27 @@ struct ApproveView: View {
                 Whale(size: 46, pose: verdict == nil ? .waiting : .idle, wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("来自").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                    Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                     Text(name).font(Ink.serif(20, bold: true)).lineLimit(1)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("想做的事").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                Text("想做的事").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
-                    Text(tool).font(.system(size: 17, weight: .semibold)).lineLimit(2)
+                    Text(tool).font(.system(size: Ink.Size.body, weight: .semibold)).lineLimit(2)
                 }
                 if let text = current.detail?.text, !text.isEmpty {
-                    Text(text).font(.system(size: 15)).lineLimit(4)
+                    Text(text).font(.system(size: Ink.Size.sub)).lineLimit(4)
                 }
                 if let reason = current.reason, !reason.isEmpty {
-                    Text(reason).font(.system(size: 14)).foregroundStyle(Ink.inkSoft).lineLimit(4)
+                    Text(reason).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).lineLimit(4)
                 }
                 if let code = current.detail?.code, !code.isEmpty {
                     // The whole command, scrolled, never cut off: what is approved must be seen in full.
                     ScrollView {
                         Text(code)
-                            .font(.system(size: 13, design: .monospaced))
+                            .font(.system(size: Ink.Size.small, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -234,8 +234,8 @@ struct ApproveView: View {
                 .frame(height: 1.5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(Words.t("落印")).font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
-                Text("你").font(.system(size: 17, weight: .semibold))
+                Text(Words.t("落印")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                Text("你").font(.system(size: Ink.Size.body, weight: .semibold))
             }
             .frame(height: 62, alignment: .bottomLeading)
         }
@@ -280,8 +280,8 @@ struct ApproveView: View {
             on.wrappedValue.toggle()
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
-                Text(title).font(.system(size: 13, weight: .medium))
+                Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: Ink.Size.small))
+                Text(title).font(.system(size: Ink.Size.small, weight: .medium))
             }
             .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
             .padding(.horizontal, 10)
@@ -364,7 +364,7 @@ private struct Stamp: View {
                     .font(.system(size: 24, weight: .black))
                     .tracking(2)
                 Text(date)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: Ink.Size.micro, weight: .bold, design: .monospaced))
             }
             .foregroundStyle(ink)
         }
@@ -388,7 +388,7 @@ private struct SlideTrack: View {
             let travel = max(1, proxy.size.width - knob - 10)
             ZStack(alignment: .leading) {
                 Text(Words.t("滑过去，落印"))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.inkSoft)
                     .frame(maxWidth: .infinity)
                     .opacity(1 - Double(progress) * 1.6)
@@ -399,7 +399,7 @@ private struct SlideTrack: View {
                     .fill(Ink.accent)
                     .overlay {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 19, weight: .bold))
+                            .font(.system(size: Ink.Size.title, weight: .bold))
                             .foregroundStyle(Ink.paper)
                     }
                     .frame(width: knob, height: knob)

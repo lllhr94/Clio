@@ -214,7 +214,7 @@ struct LookPage: View {
                             Circle().fill(palette.accent).frame(width: 28, height: 28)
                                 .padding(3)
                                 .overlay(Circle().strokeBorder(picked ? palette.accent : Color.clear, lineWidth: 2))
-                            Text(palette.title).font(.system(size: 12, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+                            Text(palette.title).font(.system(size: Ink.Size.small, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
                         }
                         .frame(maxWidth: .infinity)
                     }

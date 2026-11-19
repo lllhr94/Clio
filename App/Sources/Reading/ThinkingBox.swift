@@ -19,13 +19,13 @@ struct ThinkingBox: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "brain")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
                         .symbolEffect(.pulse, isActive: live)
                     Text(live ? Words.t("正在沉吟") + " · \(count) 字" : Words.t("沉吟") + "了 \(count) 字")
                         .font(Ink.footnote)
                     if !live {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: Ink.Size.micro, weight: .semibold))
                             .rotationEffect(.degrees(open ? 90 : 0))
                     }
                     Spacer(minLength: 0)
@@ -38,7 +38,7 @@ struct ThinkingBox: View {
 
             if live {
                 Text(tail)
-                    .font(.system(size: 13))
+                    .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
                     .lineLimit(3, reservesSpace: false)
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
@@ -49,7 +49,7 @@ struct ThinkingBox: View {
                     .animation(.easeOut(duration: 0.2), value: tail)
             } else if open {
                 Text(text)
-                    .font(.system(size: 13))
+                    .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
                     .textSelection(.enabled)
                     .padding(.leading, Ink.Space.m)
@@ -83,13 +83,13 @@ struct PulseBox: View {
                 Haptics.tick(0.4)
             } label: {
                 HStack(spacing: 6) {
-                    Text("✿").font(.system(size: 12))
+                    Text("✿").font(.system(size: Ink.Size.small))
                     Text(live ? "心绪" : (Pulse.vibe(text).map { "心绪 · \($0)" } ?? "心绪"))
                         .font(Ink.footnote)
                         .lineLimit(1)
                     if !live {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: Ink.Size.micro, weight: .semibold))
                             .rotationEffect(.degrees(open ? 90 : 0))
                     }
                     Spacer(minLength: 0)
@@ -102,7 +102,7 @@ struct PulseBox: View {
 
             if live || open {
                 Text(live ? tail : text)
-                    .font(.system(size: 13))
+                    .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
                     .lineSpacing(3)
                     .textSelection(.enabled)

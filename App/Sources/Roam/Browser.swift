@@ -506,7 +506,7 @@ struct RoamPage: View {
             HStack(spacing: Ink.Space.s) {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
                         .glassFace(in: Circle())
@@ -514,9 +514,9 @@ struct RoamPage: View {
                 .buttonStyle(PressStyle())
                 .accessibilityLabel(Words.t("收起远游"))
                 HStack(spacing: Ink.Space.s) {
-                    if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(Ink.inkSoft) }
+                    if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "globe").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft) }
                     TextField("网址或要搜的词", text: $address)
-                        .font(.system(size: 15))
+                        .font(.system(size: Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.webSearch)
@@ -535,7 +535,7 @@ struct RoamPage: View {
                     Task { await browser.setDesktop(!browser.desktop) }
                 } label: {
                     Image(systemName: browser.desktop ? "desktopcomputer" : "iphone")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(browser.desktop ? Ink.accent : Ink.ink)
                         .frame(width: 36, height: Ink.Bar.height)
                         .contentTransition(.symbolEffect(.replace))
@@ -549,7 +549,7 @@ struct RoamPage: View {
                         }
                     } label: {
                         Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
                             .frame(width: 36, height: Ink.Bar.height)
                     }
@@ -557,7 +557,7 @@ struct RoamPage: View {
                 }
                 Button { Task { await browser.back() } } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(browser.canGoBack ? Ink.ink : Ink.inkFaint)
                         .frame(width: 36, height: 36)
                 }
@@ -586,7 +586,7 @@ struct RoamPage: View {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "hand.raised").foregroundStyle(Ink.warn)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(Words.t("旅伴请你接手")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                        Text(Words.t("旅伴请你接手")).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
                     }
                     Spacer(minLength: 0)
@@ -595,7 +595,7 @@ struct RoamPage: View {
                         browser.giveBack()
                     } label: {
                         Text("做完了，交还")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.paper)
                             .padding(.horizontal, Ink.Space.l)
                             .frame(height: 36)

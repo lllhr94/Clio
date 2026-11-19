@@ -60,10 +60,10 @@ struct FrameMeter: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 0) {
             Text("\(clock.fps) fps")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: Ink.Size.micro, weight: .semibold, design: .monospaced))
                 .foregroundStyle(color)
             Text(String(format: "最长 %.0f ms", clock.worst))
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: Ink.Size.micro, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 6)

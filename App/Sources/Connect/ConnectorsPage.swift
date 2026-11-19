@@ -41,8 +41,8 @@ struct ConnectorsPage: View {
                         adding = true
                     } label: {
                         HStack(spacing: Ink.Space.m) {
-                            Image(systemName: "plus").font(.system(size: 18, weight: .medium)).foregroundStyle(Ink.ink).frame(width: 40)
-                            Text("添加自定义连接器").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                            Image(systemName: "plus").font(.system(size: Ink.Size.title, weight: .medium)).foregroundStyle(Ink.ink).frame(width: 40)
+                            Text("添加自定义连接器").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                             Spacer()
                         }
                         .padding(.horizontal, Ink.Space.l)
@@ -70,11 +70,11 @@ struct ConnectorsPage: View {
     /// Clio's own suggestions: while talking, a companion may say which connector would help.
     private var suggestCard: some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
-            Image(systemName: "square.grid.2x2").font(.system(size: 18)).foregroundStyle(Ink.inkSoft).frame(width: 28)
+            IconBadge(symbol: "square.grid.2x2", tint: Ink.inkSoft)
             VStack(alignment: .leading, spacing: 3) {
-                Text("连接器推荐").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Text("连接器推荐").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(Words.t("聊天时遇到某个连接器能帮上忙的事，旅伴会提一句，告诉你去哪里连。"))
-                    .font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                    .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
             }
             Spacer(minLength: 0)
             Toggle("连接器推荐", isOn: $suggest).labelsHidden().tint(Ink.accent)
@@ -90,7 +90,7 @@ struct ConnectorsPage: View {
             heading("此设备上")
             VStack(spacing: 0) {
                 ForEach(Array(grants.enumerated()), id: \.element) { index, grant in
-                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 72) }
+                    if index > 0 { Kit.divider }
                     Button {
                         Haptics.light()
                         Task {
@@ -99,17 +99,7 @@ struct ConnectorsPage: View {
                             asked += 1
                         }
                     } label: {
-                        HStack(spacing: Ink.Space.m) {
-                            ConnectorIcon(mark: "", tint: Color(red: 0.94, green: 0.94, blue: 0.95))
-                                .overlay { Image(systemName: grant.symbol).font(.system(size: 19, weight: .medium)).foregroundStyle(Self.deviceTint(grant)) }
-                            Text(grant.title).font(.system(size: 17)).foregroundStyle(Ink.ink)
-                            Spacer(minLength: 0)
-                            Text(deviceState(grant)).font(.system(size: 14)).foregroundStyle(Ink.inkSoft)
-                            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-                        }
-                        .padding(.horizontal, Ink.Space.l)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
+                        RowLabel(grant.symbol, tint: Self.deviceTint(grant), title: grant.title, end: .valueChevron(deviceState(grant)))
                     }
                     .buttonStyle(PressStyle(haptic: false))
                 }
@@ -150,7 +140,7 @@ struct ConnectorsPage: View {
                         withAnimation(Ink.Motion.settle) { kind = name }
                     } label: {
                         Text(name)
-                            .font(.system(size: 14, weight: kind == name ? .semibold : .regular))
+                            .font(.system(size: Ink.Size.sub, weight: kind == name ? .semibold : .regular))
                             .foregroundStyle(kind == name ? Ink.paper : Ink.ink)
                             .padding(.horizontal, 14)
                             .frame(height: 34)
@@ -179,7 +169,7 @@ struct ConnectorsPage: View {
     }
 
     private func heading(_ title: String) -> some View {
-        Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+        SectionTitle(title)
     }
 
     private func section(_ title: String, _ items: [Connector]) -> some View {
@@ -187,7 +177,7 @@ struct ConnectorsPage: View {
             heading(title)
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 72) }
+                    if index > 0 { Kit.divider }
                     NavigationLink(value: item) { row(item) }.buttonStyle(PressStyle(haptic: false))
                 }
             }
@@ -196,23 +186,10 @@ struct ConnectorsPage: View {
     }
 
     private func row(_ item: Connector) -> some View {
-        HStack(spacing: Ink.Space.m) {
+        let failed = work.server(of: item).map { hills.lastError[$0.id] != nil }
+        return RowLabel(title: item.name, line: item.line, end: failed.map { RowEnd.valueChevron($0 ? "出错了" : "已连接", $0 ? Ink.stop : Ink.ok) } ?? RowEnd.chevron) {
             ConnectorIcon(connector: item)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.name).font(.system(size: 17)).foregroundStyle(Ink.ink)
-                Text(item.line).font(.system(size: 13)).foregroundStyle(Ink.inkSoft).lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            if let server = work.server(of: item) {
-                Text(hills.lastError[server.id] != nil ? "出错了" : "已连接")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(hills.lastError[server.id] != nil ? Ink.stop : Ink.ok)
-            }
-            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkFaint)
         }
-        .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, 14)
-        .contentShape(Rectangle())
     }
 
     private var googleRow: some View {
@@ -220,19 +197,9 @@ struct ConnectorsPage: View {
             Haptics.light()
             googleOpen = true
         } label: {
-            HStack(spacing: Ink.Space.m) {
+            RowLabel(title: "Gmail 与云端硬盘", line: google.account ?? "用你自己的 Client ID 登录，不经过别人", end: google.connected ? .valueChevron("已连接", Ink.ok) : .chevron) {
                 ConnectorIcon(mark: "G", tint: Color(red: 0.30, green: 0.55, blue: 0.85), domain: "mail.google.com")
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Gmail 与云端硬盘").font(.system(size: 17)).foregroundStyle(Ink.ink)
-                    Text(google.account ?? "用你自己的 Client ID 登录，不经过别人").font(.system(size: 13)).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if google.connected { Text("已连接").font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.ok) }
-                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkFaint)
             }
-            .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, 14)
-            .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
     }
@@ -242,16 +209,16 @@ struct ConnectorsPage: View {
 struct ConnectorIcon: View {
     let mark: String
     let tint: Color
-    var size: CGFloat = 44
+    var size: CGFloat = Kit.badge
 
-    init(connector: Connector, size: CGFloat = 44) {
+    init(connector: Connector, size: CGFloat = Kit.badge) {
         mark = connector.mark
         tint = connector.tint
         domain = connector.domain
         self.size = size
     }
 
-    init(mark: String, tint: Color, size: CGFloat = 44, domain: String? = nil) {
+    init(mark: String, tint: Color, size: CGFloat = Kit.badge, domain: String? = nil) {
         self.mark = mark
         self.tint = tint
         self.size = size
@@ -334,7 +301,7 @@ private struct ConnectorDetail: View {
                     ConnectorIcon(connector: connector, size: 92)
                         .padding(.bottom, Ink.Space.s)
                     Text(connector.name).font(.system(size: 24, weight: .bold)).foregroundStyle(Ink.ink)
-                    Text(connector.line).font(.system(size: 15)).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
+                    Text(connector.line).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
                     status
                 }
                 .padding(.top, Ink.Space.xl)
@@ -361,10 +328,10 @@ private struct ConnectorDetail: View {
     /// 详情: what kind of service it is, how it lets Clio in, and its address.
     private var details: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text("详情").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+            SectionTitle("详情")
             VStack(spacing: 0) {
                 detailRow("类别", connector.group)
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                Kit.rule(inset: Ink.Space.l)
                 detailRow("登录", {
                     switch connector.auth {
                     case .oauth: return "在它的登录页登录"
@@ -373,18 +340,18 @@ private struct ConnectorDetail: View {
                     case .google: return "用谷歌登录"
                     }
                 }())
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                Kit.rule(inset: Ink.Space.l)
                 HStack(alignment: .top, spacing: Ink.Space.m) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("连接器地址").font(.system(size: 15)).foregroundStyle(Ink.ink)
-                        Text(connector.url).font(.system(size: 13, design: .monospaced)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
+                        Text("连接器地址").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
+                        Text(connector.url).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
                     }
                     Spacer(minLength: 0)
                     Button {
                         UIPasteboard.general.string = connector.url
                         Haptics.tick(0.5)
                     } label: {
-                        Image(systemName: "doc.on.doc").font(.system(size: 15)).foregroundStyle(Ink.inkSoft).frame(width: 32, height: 32)
+                        Image(systemName: "doc.on.doc").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("复制地址")
@@ -397,9 +364,9 @@ private struct ConnectorDetail: View {
 
     private func detailRow(_ title: String, _ value: String) -> some View {
         HStack {
-            Text(title).font(.system(size: 15)).foregroundStyle(Ink.ink)
+            Text(title).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
             Spacer()
-            Text(value).font(.system(size: 15)).foregroundStyle(Ink.inkSoft)
+            Text(value).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft)
         }
         .padding(Ink.Space.l)
     }
@@ -407,7 +374,7 @@ private struct ConnectorDetail: View {
     private var status: some View {
         let connected = server != nil && server.flatMap { hills.lastError[$0.id] } == nil
         return Text(server == nil ? "未连接" : (connected ? "已连接" : "出错了"))
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: Ink.Size.small, weight: .medium))
             .foregroundStyle(server == nil ? Ink.inkSoft : (connected ? Ink.ok : Ink.stop))
             .padding(.horizontal, 12)
             .frame(height: 26)
@@ -421,7 +388,7 @@ private struct ConnectorDetail: View {
             run()
         } label: {
             ZStack {
-                if busy { ProgressView().tint(Ink.paper) } else { Text(title).font(.system(size: 17, weight: .semibold)) }
+                if busy { ProgressView().tint(Ink.paper) } else { Text(title).font(.system(size: Ink.Size.body, weight: .semibold)) }
             }
             .foregroundStyle(Ink.paper)
             .frame(maxWidth: .infinity)
@@ -457,7 +424,7 @@ private struct ConnectorDetail: View {
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("谷歌这边还要做的").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+                SectionTitle("谷歌这边还要做的")
                 Text("谷歌的官方 MCP 目前在开发者预览：你的 Google Cloud 项目要加入 Workspace Developer Preview，并启用这项 API 和对应的 MCP 服务（比如 gmail.googleapis.com 和 gmailmcp.googleapis.com）。没开的话，连接时会提示具体缺哪一项。")
                     .font(Ink.secondary).foregroundStyle(Ink.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -468,12 +435,12 @@ private struct ConnectorDetail: View {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                     HStack(alignment: .top, spacing: Ink.Space.s) {
-                        Text("\(index + 1)").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 18)
-                        Text(step).font(.system(size: 14)).foregroundStyle(Ink.ink)
+                        Text("\(index + 1)").font(.system(size: Ink.Size.small, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 18)
+                        Text(step).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                     }
                 }
                 Button("去拿\(title)") { if let url = URL(string: page) { openURL(url) } }
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.accent)
+                    .font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Ink.Space.l)
@@ -485,10 +452,10 @@ private struct ConnectorDetail: View {
     private func tokenBox(title: String, placeholder: String, page: String?) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack {
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+                Text(title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                 Spacer()
                 if let page, let url = URL(string: page) {
-                    Button("去生成") { openURL(url) }.font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                    Button("去生成") { openURL(url) }.font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
             }
             .padding(.leading, 4)
@@ -496,14 +463,14 @@ private struct ConnectorDetail: View {
                 SecureField(placeholder, text: $token)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.system(size: 16))
+                    .font(.system(size: Ink.Size.body))
                     .padding(Ink.Space.l)
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                Kit.rule(inset: Ink.Space.l)
                 Button {
                     go(token: token)
                 } label: {
                     Text(connector.auth == .oauth ? "用令牌连接" : "连接")
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.system(size: Ink.Size.body, weight: .medium))
                         .foregroundStyle(token.trimmingCharacters(in: .whitespaces).isEmpty ? Ink.inkFaint : Ink.accent)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(Ink.Space.l)
@@ -521,17 +488,17 @@ private struct ConnectorDetail: View {
         if let server {
             let tools = hills.tools(of: server)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("带来的工具（\(tools.count)）").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+                SectionTitle("带来的工具（\(tools.count)）")
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(tools.enumerated()), id: \.element.name) { index, tool in
-                        if index > 0 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40) }
+                        if index > 0 { Kit.rule(inset: 40) }
                         HStack(alignment: .top, spacing: Ink.Space.m) {
                             Image(systemName: tool.readOnly == true ? "eye" : "pencil")
-                                .font(.system(size: 13)).foregroundStyle(Ink.inkFaint).frame(width: 18).padding(.top, 2)
+                                .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).frame(width: 18).padding(.top, 2)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(tool.name).font(.system(size: 14, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink)
+                                Text(tool.name).font(.system(size: Ink.Size.sub, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink)
                                 if !tool.description.isEmpty {
-                                    Text(tool.description).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(2)
+                                    Text(tool.description).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(2)
                                 }
                             }
                         }
@@ -774,10 +741,10 @@ private struct GoogleSheet: View {
                         Label(account, systemImage: "checkmark.circle.fill").foregroundStyle(Ink.ok)
                         if google.needsMoreScopes {
                             Text("Clio 现在能连更多谷歌服务（日历、文档、表格、幻灯片），要重新登录一次授权。")
-                                .font(.system(size: 13)).foregroundStyle(Ink.warn)
+                                .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.warn)
                         }
                         Text(Words.t("旅伴能找、读你的 Gmail 和云端硬盘，能存邮件草稿；真要发信，每次都会先问你。"))
-                            .font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                            .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                         Button("重新登录") { Task { await google.signIn() } }.disabled(google.busy)
                         Button("退出谷歌", role: .destructive) { google.signOut() }
                     } footer: {
@@ -798,7 +765,7 @@ private struct GoogleSheet: View {
                         TextField("xxxx.apps.googleusercontent.com", text: $client)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .font(.system(size: 14, design: .monospaced))
+                            .font(.system(size: Ink.Size.sub, design: .monospaced))
                         Button {
                             google.clientId = client
                             Task { await google.signIn() }
@@ -822,8 +789,8 @@ private struct GoogleSheet: View {
 
     private func step(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Text("\(number)").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 16)
-            Text(text).font(.system(size: 14))
+            Text("\(number)").font(.system(size: Ink.Size.small, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 16)
+            Text(text).font(.system(size: Ink.Size.sub))
         }
     }
 }

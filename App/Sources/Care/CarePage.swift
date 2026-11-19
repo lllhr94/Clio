@@ -82,7 +82,7 @@ struct CarePage: View {
                         Text("最近没有出错。").foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(Array(Diag.log.reversed().prefix(20).enumerated()), id: \.offset) { _, line in
-                            Text(line).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft)
+                            Text(line).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft)
                         }
                         Button("清空记录", role: .destructive) { Diag.clear(); notice = "清空了。" }
                     }
@@ -94,7 +94,7 @@ struct CarePage: View {
                         Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
-                            Text(hitch.line).font(.system(size: 12, design: .monospaced)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
+                            Text(hitch.line).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
                         }
                         Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
                             UIPasteboard.general.string = hitches.report
@@ -149,7 +149,7 @@ struct CarePage: View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).foregroundStyle(Ink.ink)
             Spacer()
-            Text(value).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.trailing).font(.system(size: 14))
+            Text(value).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.trailing).font(.system(size: Ink.Size.sub))
         }
     }
 

@@ -48,7 +48,7 @@ struct UsageSheet: View {
     }
 
     private func heading(_ text: String) -> some View {
-        Text(text).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+        SectionTitle(text)
     }
 
     // MARK: 上下文
@@ -61,13 +61,13 @@ struct UsageSheet: View {
                     Text(Self.percent(estimate.share)).font(Ink.serif(30, bold: true)).foregroundStyle(Ink.ink)
                     Spacer()
                     Text("\(Tokens.short(estimate.total)) / \(Tokens.short(estimate.window))")
-                        .font(.system(size: 15, weight: .medium).monospacedDigit())
+                        .font(.system(size: Ink.Size.sub, weight: .medium).monospacedDigit())
                         .foregroundStyle(Ink.inkSoft)
                 }
                 ProgressView(value: min(1, estimate.share))
                     .tint(Self.color(estimate.share))
                 Text("系统 \(Tokens.short(estimate.system)) · 工具 \(Tokens.short(estimate.tools)) · 消息 \(Tokens.short(estimate.messages))")
-                    .font(.system(size: 13).monospacedDigit())
+                    .font(.system(size: Ink.Size.small).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
                 Text(explanation(estimate))
                     .font(Ink.footnote)
@@ -75,7 +75,7 @@ struct UsageSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button(folding ? "正在写前情提要…" : "压缩前文", systemImage: "rectangle.compress.vertical") { fold() }
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(Ink.accent)
                         .buttonStyle(TapStyle())
                         .disabled(folding)
@@ -154,13 +154,13 @@ struct UsageSheet: View {
                 ForEach(Array(all.prefix(8).enumerated()), id: \.offset) { _, item in
                     let used = item.spend.input + item.spend.output
                     HStack(spacing: Ink.Space.s) {
-                        Text(item.name).font(.system(size: 14)).foregroundStyle(Ink.ink).lineLimit(1).frame(width: 72, alignment: .leading)
+                        Text(item.name).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1).frame(width: 72, alignment: .leading)
                         GeometryReader { box in
                             Capsule().fill(Ink.accent.opacity(0.7))
                                 .frame(width: max(4, box.size.width * CGFloat(used) / CGFloat(max(total, 1))))
                         }
                         .frame(height: 8)
-                        Text(Tokens.short(used)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Ink.inkSoft).frame(width: 52, alignment: .trailing)
+                        Text(Tokens.short(used)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkSoft).frame(width: 52, alignment: .trailing)
                     }
                 }
             }
@@ -183,7 +183,7 @@ struct UsageSheet: View {
                     } else {
                         Text(balanceProblem ?? "还没查").font(Ink.footnote).foregroundStyle(Ink.stop)
                         Button("再查一次") { Task { await loadBalance() } }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: Ink.Size.small, weight: .medium))
                             .buttonStyle(TapStyle())
                     }
                 }
@@ -191,7 +191,7 @@ struct UsageSheet: View {
                 Link(destination: source.topUp) {
                     Label("去充值", systemImage: "arrow.up.right")
                         .labelStyle(TrailingIcon())
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(Ink.accent)
                 }
             }
@@ -208,7 +208,7 @@ struct UsageSheet: View {
                 .pickerStyle(.menu)
                 .tint(Ink.inkSoft)
             }
-            .font(.system(size: 15))
+            .font(.system(size: Ink.Size.sub))
             Text("低于这条线就发通知，半天一次")
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)
@@ -271,7 +271,7 @@ struct ContextRing: View {
             .frame(width: 15, height: 15)
             if showsNumber {
                 Text(UsageSheet.percent(share))
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .font(.system(size: Ink.Size.small, weight: .medium).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
                     .fixedSize()
             }

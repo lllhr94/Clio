@@ -27,11 +27,11 @@ struct AbilitiesSheet: View {
                         workplace
                         ForEach(groups, id: \.0) { group in
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                Text(group.0).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                                SectionTitle(group.0)
                                 VStack(spacing: 0) {
                                     ForEach(group.1) { grant in
                                         row(grant)
-                                        if grant != group.1.last { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                                        if grant != group.1.last { Kit.divider }
                                     }
                                 }
                                 .paperCard()
@@ -44,7 +44,7 @@ struct AbilitiesSheet: View {
                                 value.off = []
                                 team.setOptions(key, value)
                             }
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
                             .foregroundStyle(Ink.accent)
                             .frame(maxWidth: .infinity)
                         }
@@ -65,7 +65,7 @@ struct AbilitiesSheet: View {
         var places: [(WorkPlace, String)] = [(.desk, "手机里的文件夹，读写文件、算数"), (.den, "手机里的 Linux，能跑命令、装软件")]
         places += Hills.shared.hosts.map { (.hill($0.id), "\($0.user)@\($0.address)") }
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text("在哪里干活").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+            SectionTitle("在哪里干活")
             VStack(spacing: 0) {
                 ForEach(Array(places.enumerated()), id: \.offset) { index, item in
                     Button {
@@ -73,20 +73,20 @@ struct AbilitiesSheet: View {
                         team.setPlace(item.0, in: key)
                     } label: {
                         HStack(spacing: Ink.Space.m) {
-                            Image(systemName: item.0.symbol).font(.system(size: 17)).foregroundStyle(Ink.accent).frame(width: 28)
+                            IconBadge(symbol: item.0.symbol)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(item.0.title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                                Text(item.0.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                                 Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                             }
                             Spacer(minLength: 0)
-                            if current == item.0 { Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.accent) }
+                            if current == item.0 { Image(systemName: "checkmark").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent) }
                         }
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, Ink.Space.m)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(TapStyle())
-                    if index < places.count - 1 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                    if index < places.count - 1 { Kit.divider }
                 }
             }
             .paperCard()
@@ -100,15 +100,12 @@ struct AbilitiesSheet: View {
         let global = grant.policy
         let on = !team.options(key).off.contains(grant.rawValue)
         return HStack(spacing: Ink.Space.m) {
-            Image(systemName: grant.symbol)
-                .font(.system(size: 17))
-                .foregroundStyle(global == .off || !on ? Ink.inkFaint : Ink.accent)
-                .frame(width: 28)
+            IconBadge(symbol: grant.symbol, tint: global == .off || !on ? Ink.inkFaint : Ink.accent)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Ink.Space.s) {
-                    Text(grant.title).font(.system(size: 16, weight: .medium)).foregroundStyle(global == .off ? Ink.inkFaint : Ink.ink)
+                    Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(global == .off ? Ink.inkFaint : Ink.ink)
                     if global == .ask {
-                        Text("用前会问你").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkFaint)
+                        Text("用前会问你").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
                     }
                 }
                 Text(global == .off ? Words.t("在「应许」里关着") : grant.note)

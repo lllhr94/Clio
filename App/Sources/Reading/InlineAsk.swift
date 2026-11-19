@@ -16,7 +16,7 @@ struct InlineAsk: View {
             HStack(spacing: Ink.Space.s) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(Ink.accent)
                 Text("\(form.from)问：\(form.title)")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
             }
             if !form.reason.isEmpty {
@@ -25,7 +25,7 @@ struct InlineAsk: View {
             ForEach(form.fields) { field in
                 VStack(alignment: .leading, spacing: 6) {
                     if form.fields.count > 1 || !field.choices.isEmpty {
-                        Text(field.label).font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                        Text(field.label).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                     }
                     if field.choices.isEmpty {
                         TextField(field.placeholder.isEmpty ? field.label : field.placeholder, text: binding(field.key), axis: .vertical)
@@ -55,7 +55,7 @@ struct InlineAsk: View {
                 .tint(Ink.accent)
                 .disabled(form.fields.allSatisfy { (values[$0.key] ?? "").trimmingCharacters(in: .whitespaces).isEmpty })
             }
-            .font(.system(size: 14, weight: .semibold))
+            .font(.system(size: Ink.Size.sub, weight: .semibold))
         }
         .padding(Ink.Space.l)
         .paperCard()
@@ -79,7 +79,7 @@ private struct FlowChips: View {
             ForEach(choices, id: \.self) { choice in
                 Button { pick(choice) } label: {
                     Text(choice)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(choice == picked ? Ink.paper : Ink.ink)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)

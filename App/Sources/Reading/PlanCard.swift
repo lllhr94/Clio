@@ -17,9 +17,9 @@ struct PlanCard: View {
                 withAnimation(Ink.Motion.unfold) { open.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
-                    Image(systemName: "checklist").font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                    Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
                     Text(headline)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
                     Spacer(minLength: Ink.Space.s)
@@ -28,7 +28,7 @@ struct PlanCard: View {
                             Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
                         }
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: Ink.Size.micro, weight: .bold))
                         .foregroundStyle(Ink.inkFaint)
                         .rotationEffect(.degrees(open ? 180 : 0))
                 }
@@ -45,7 +45,7 @@ struct PlanCard: View {
                         HStack(alignment: .firstTextBaseline, spacing: Ink.Space.m) {
                             mark(step.state)
                             Text(step.text)
-                                .font(.system(size: 14, weight: step.state == "doing" ? .semibold : .regular))
+                                .font(.system(size: Ink.Size.sub, weight: step.state == "doing" ? .semibold : .regular))
                                 .foregroundStyle(step.state == "done" ? Ink.inkFaint : Ink.ink)
                                 .strikethrough(step.state == "done", color: Ink.inkFaint)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -53,7 +53,7 @@ struct PlanCard: View {
                     }
                     if done == steps.count {
                         Button("收起清单") { close() }
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: Ink.Size.small, weight: .semibold))
                             .foregroundStyle(Ink.accent)
                             .buttonStyle(.plain)
                     }
@@ -76,12 +76,12 @@ struct PlanCard: View {
     private func mark(_ state: String) -> some View {
         switch state {
         case "done":
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 16)).foregroundStyle(Ink.ok)
+            Image(systemName: "checkmark.circle.fill").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ok)
         case "doing":
-            Image(systemName: "circle.circle").font(.system(size: 16)).foregroundStyle(Ink.accent)
+            Image(systemName: "circle.circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent)
                 .symbolEffect(.pulse)
         default:
-            Image(systemName: "circle").font(.system(size: 16)).foregroundStyle(Ink.inkFaint)
+            Image(systemName: "circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkFaint)
         }
     }
 }

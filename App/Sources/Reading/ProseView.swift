@@ -102,7 +102,7 @@ private struct BlockView: View {
     private func marker(_ item: Prose.Item) -> some View {
         if let checked = item.checked {
             Image(systemName: checked ? "checkmark.square.fill" : "square")
-                .font(.system(size: 15))
+                .font(.system(size: Ink.Size.sub))
                 .foregroundStyle(checked ? Ink.accent : Ink.inkFaint)
         } else if let number = item.number {
             Text("\(number).")
@@ -215,7 +215,7 @@ private struct CodeBlock: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation(Ink.Motion.settle) { copied = false } }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
                         .foregroundStyle(copied ? Ink.ok : Ink.inkSoft)
                         .contentTransition(.symbolEffect(.replace))
                         .frame(width: 32, height: 32)

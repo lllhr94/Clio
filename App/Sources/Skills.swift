@@ -216,14 +216,14 @@ struct SkillsPage: View {
                                 reload()
                                 Haptics.thud()
                             }
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
                         }
                     } else {
                         VStack(spacing: 0) {
                             ForEach(items) { item in
                                 row(item)
-                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                                Kit.rule(inset: Ink.Space.l)
                             }
                         }
                         .paperCard()
@@ -265,9 +265,9 @@ struct SkillsPage: View {
     private func row(_ item: SkillShelf.Item) -> some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.skill.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
+                Text(item.skill.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
                 Text(item.skill.description).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
-                Text(Words.t("书案/") + item.id).font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                Text(Words.t("书案/") + item.id).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
             Toggle("", isOn: Binding(get: { item.on }, set: { value in
@@ -313,7 +313,7 @@ struct SkillEditor: View {
                 }
                 Section {
                     TextEditor(text: $body_)
-                        .font(.system(size: 15))
+                        .font(.system(size: Ink.Size.sub))
                         .frame(minHeight: 260)
                 } header: {
                     Text("怎么做")

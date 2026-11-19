@@ -9,10 +9,11 @@ struct FieldTitle: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(text).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
-            if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkFaint) }
+            Text(text).font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                .accessibilityAddTraits(.isHeader)
+            if let note { Text(note).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint) }
         }
-        .padding(.leading, Ink.Space.xs)
+        .padding(.horizontal, Ink.Space.l)
     }
 }
 
@@ -88,7 +89,7 @@ struct BotEditor: View {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "一句话简介", note: Words.t("写在名帖上，案头和雅集里都会看到"))
                             TextField("比如：查资料、写总结", text: $role)
-                                .font(.system(size: 16))
+                                .font(.system(size: Ink.Size.body))
                                 .submitLabel(.done)
                                 .paperField()
                         }
@@ -106,7 +107,7 @@ struct BotEditor: View {
                                             }
                                         } label: {
                                             Text(sample.title)
-                                                .font(.system(size: 13, weight: .medium))
+                                                .font(.system(size: Ink.Size.small, weight: .medium))
                                                 .foregroundStyle(Ink.accent)
                                                 .padding(.horizontal, Ink.Space.m)
                                                 .frame(height: 30)
@@ -118,7 +119,7 @@ struct BotEditor: View {
                             }
                             .scrollIndicators(.hidden)
                             TextField("比如：说话温柔，爱打比方；擅长做饭，会根据冰箱里有的东西出主意。", text: $instructions, axis: .vertical)
-                                .font(.system(size: 16))
+                                .font(.system(size: Ink.Size.body))
                                 .lineLimit(4...12)
                                 .paperField(height: nil)
                         }
@@ -138,11 +139,11 @@ struct BotEditor: View {
                                 HStack {
                                     Image(systemName: "sparkle").foregroundStyle(Ink.accent)
                                     Text(model.isEmpty ? "跟全局默认走（\(team.modelTitle(team.settings.defaultModel))）" : team.modelTitle(model))
-                                        .font(.system(size: 16))
+                                        .font(.system(size: Ink.Size.body))
                                         .foregroundStyle(Ink.ink)
                                         .lineLimit(1)
                                     Spacer()
-                                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                                    Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                                 }
                                 .paperField()
                             }
@@ -181,7 +182,7 @@ struct BotEditor: View {
                             VStack(spacing: Ink.Space.m) {
                                 ShareLink(item: NameCard.file(for: bot)) {
                                     Label(Words.t("把名帖递出去"), systemImage: "square.and.arrow.up")
-                                        .font(.system(size: 15, weight: .medium))
+                                        .font(.system(size: Ink.Size.sub, weight: .medium))
                                         .foregroundStyle(Ink.accent)
                                         .frame(maxWidth: .infinity)
                                         .frame(height: 44)
@@ -189,7 +190,7 @@ struct BotEditor: View {
                                 }
                                 if !team.isMain(bot) {
                                     Button(Words.t("送别这位旅伴")) { confirmingDelete = true }
-                                        .font(.system(size: 15, weight: .medium))
+                                        .font(.system(size: Ink.Size.sub, weight: .medium))
                                         .foregroundStyle(Ink.stop)
                                         .frame(height: 40)
                                         .disabled(busy)
@@ -355,7 +356,7 @@ struct RoomEditor: View {
 
                         if room != nil {
                             Button(Words.t("散了这个雅集")) { confirmingDelete = true }
-                                .font(.system(size: 15, weight: .medium))
+                                .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.stop)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 40)
@@ -405,7 +406,7 @@ struct RoomEditor: View {
                         .opacity(order == nil ? 0.5 : 1)
                     if let order {
                         Text("\(order + 1)")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: Ink.Size.small, weight: .bold))
                             .foregroundStyle(Ink.paper)
                             .frame(width: 20, height: 20)
                             .background(Ink.accent, in: .circle)
@@ -413,8 +414,8 @@ struct RoomEditor: View {
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                Text(bot.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
-                Text(bot.role ?? "").font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                Text(bot.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                Text(bot.role ?? "").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, Ink.Space.m)

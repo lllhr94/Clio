@@ -36,12 +36,12 @@ struct HillsPage: View {
                         }
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            Text("这台手机的钥匙").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                            SectionTitle("这台手机的钥匙")
                             VStack(alignment: .leading, spacing: Ink.Space.m) {
                                 Text("用钥匙登录更安全。把下面这行加进服务器的 ~/.ssh/authorized_keys，主机里选「用钥匙」。")
                                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 Text(Hills.publicKey)
-                                    .font(.system(size: 12, design: .monospaced))
+                                    .font(.system(size: Ink.Size.small, design: .monospaced))
                                     .foregroundStyle(Ink.ink)
                                     .textSelection(.enabled)
                                     .lineLimit(3)
@@ -51,7 +51,7 @@ struct HillsPage: View {
                                     copied = true
                                 } label: {
                                     Label(copied ? "复制好了" : "复制公钥", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                        .font(.system(size: 14, weight: .medium))
+                                        .font(.system(size: Ink.Size.sub, weight: .medium))
                                         .foregroundStyle(Ink.accent)
                                 }
                                 .buttonStyle(PressStyle())
@@ -91,7 +91,7 @@ struct HillsPage: View {
         }
     }
 
-    private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l) }
+    private var divider: some View { Kit.divider }
 
     private func empty(_ text: String) -> some View {
         EmptyNote(symbol: "mountain.2", words: text)
@@ -100,9 +100,9 @@ struct HillsPage: View {
     private func section<Content: View>(_ title: String, add: @escaping () -> Void, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack {
-                Text(title).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
+                SectionTitle(title)
                 Spacer()
-                Button { Haptics.light(); add() } label: { Image(systemName: "plus").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.accent) }
+                Button { Haptics.light(); add() } label: { Image(systemName: "plus").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent) }
                     .accessibilityLabel("添加")
             }
             .padding(.horizontal, Ink.Space.xs)
@@ -112,40 +112,40 @@ struct HillsPage: View {
 
     private func hostRow(_ host: Hills.Host) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            HStack {
-                Image(systemName: "server.rack").foregroundStyle(Ink.accent).frame(width: 24)
+            HStack(spacing: Ink.Space.m) {
+                IconBadge(symbol: "server.rack")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(host.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                    Text(host.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                     Text("\(host.user)@\(host.address):\(host.port) · \(host.useKey ? "钥匙" : "密码")").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
                 Spacer()
                 Button(testing == host.id ? "在连…" : "试连") { test(host) }
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
                     .foregroundStyle(Ink.accent)
                     .disabled(testing != nil)
             }
             if let key = HostKeyKeeper.known(host.address, host.port) {
                 HStack(spacing: Ink.Space.s) {
-                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
+                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button("重新信任") {
                         HostKeyKeeper.forget(host.address, host.port)
                         tested[host.id] = "已忘掉旧指纹，下次连接时记住新的。"
                     }
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.accent)
                 }
-                .padding(.leading, 32)
+                .padding(.leading, Kit.badge + Ink.Space.m)
             }
             if let result = tested[host.id] {
-                Text(result).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
+                Text(result).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
             }
             HStack(spacing: Ink.Space.s) {
                 Button {
                     Haptics.light()
                     terminalHost = host
                 } label: {
-                    Label("笔砚", systemImage: "terminal").font(.system(size: 13, weight: .medium))
+                    Label("笔砚", systemImage: "terminal").font(.system(size: Ink.Size.small, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .tint(Ink.accent)
@@ -153,7 +153,7 @@ struct HillsPage: View {
                     Haptics.light()
                     browserAsk = host
                 } label: {
-                    Label(installing[host.id] == nil ? "装浏览器" : "在装…", systemImage: "safari").font(.system(size: 13, weight: .medium))
+                    Label(installing[host.id] == nil ? "装浏览器" : "在装…", systemImage: "safari").font(.system(size: Ink.Size.small, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .tint(Ink.accent)
@@ -164,9 +164,9 @@ struct HillsPage: View {
             if let status = installing[host.id] {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
                     ProgressView().controlSize(.mini)
-                    Text(status).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                    Text(status).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(3)
                 }
-                .padding(.leading, 32)
+                .padding(.leading, Kit.badge + Ink.Space.m)
             }
         }
         .padding(Ink.Space.l)
@@ -178,10 +178,10 @@ struct HillsPage: View {
     private func serverRow(_ server: Hills.Server) -> some View {
         let tools = hills.tools(of: server)
         return VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            HStack {
-                Image(systemName: "point.3.connected.trianglepath.dotted").foregroundStyle(Ink.accent).frame(width: 24)
+            HStack(spacing: Ink.Space.m) {
+                IconBadge(symbol: "point.3.connected.trianglepath.dotted")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(server.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
+                    Text(server.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                     Text(server.url).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
                 Spacer()
@@ -192,7 +192,7 @@ struct HillsPage: View {
                         refreshing = nil
                     }
                 }
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: Ink.Size.sub, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .disabled(refreshing != nil)
             }
@@ -378,7 +378,7 @@ private struct ServerEditor: View {
                 if server.tunnelHost != nil {
                     Section {
                         Text(Hills.browserCommand)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.system(size: Ink.Size.small, design: .monospaced))
                             .textSelection(.enabled)
                         Button("复制这条命令", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = Hills.browserCommand

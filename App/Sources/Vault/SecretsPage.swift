@@ -28,7 +28,7 @@ struct SecretsPage: View {
                             VStack(spacing: 0) {
                                 ForEach(secrets.items) { item in
                                     row(item)
-                                    if item.id != secrets.items.last?.id { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+                                    if item.id != secrets.items.last?.id { Kit.divider }
                                 }
                             }
                             .paperCard()
@@ -53,17 +53,17 @@ struct SecretsPage: View {
     private func row(_ item: Secrets.Item) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack(spacing: Ink.Space.m) {
-                Image(systemName: item.kind.symbol).font(.system(size: 17)).foregroundStyle(Ink.accent).frame(width: 28)
+                IconBadge(symbol: item.kind.symbol)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                    Text(item.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                     Text([item.user, item.site].filter { !$0.isEmpty }.joined(separator: " · ").ifEmpty(item.kind.title))
                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Text(item.id).font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                Text(item.id).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint)
             }
             if let shown = revealed[item.id] {
-                Text(shown).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, 40)
+                Text(shown).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, 40)
             }
         }
         .padding(.horizontal, Ink.Space.l)
