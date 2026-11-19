@@ -494,3 +494,54 @@ final class StepTitleTests: XCTestCase {
         XCTAssertEqual(Agent.label("搜索：天气", title: nil), "搜索：天气")
     }
 }
+
+private struct TimeoutTool: AgentTool {
+    var spec: ToolSpec { ToolSpec(name: "send", description: "", parameters: ["type": "object"]) }
+    func label(for arguments: JSONValue) -> String { "发送" }
+    func approval(for arguments: JSONValue) -> ApprovalAsk? { ApprovalAsk(title: "发送", reason: "发一封信") }
+    func run(_ arguments: JSONValue) async throws -> ToolOutput { throw URLError(.timedOut) }
+}
+
+private final class Mailbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [String]
+    init(_ waiting: [String]) { self.waiting = waiting }
+    func take() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let out = waiting
+        waiting = []
+        return out
+    }
+}
+
+final class TurnSafetyTests: XCTestCase {
+    func testUnknownOutcomeIsSaidAndNotRedone() async throws {
+        let call: [StreamEvent] = [.toolCallStart(index: 0, id: "c", name: "send"), .toolCallArguments(index: 0, delta: "{}")]
+        let again: [StreamEvent] = [.toolCallStart(index: 0, id: "d", name: "send"), .toolCallArguments(index: 0, delta: "{}")]
+        let provider = ScriptedProvider([call, again, [.text("我先查一下有没有发出去")]])
+        let recorder = Recorder()
+        let agent = Agent(provider: provider, model: "m", system: "", tools: [TimeoutTool()]) { _, _ in true }
+        try await agent.run(history: [.user("发信")]) { await recorder.add($0) }
+        let results = await recorder.events.compactMap { event -> Message? in
+            if case .message(let message) = event, message.role == .tool { return message } else { return nil }
+        }
+        XCTAssertEqual(results.count, 2)
+        XCTAssertTrue(results[0].text.hasPrefix(Agent.unknownMark))
+        XCTAssertTrue(results[1].text.contains("没有再做一次"))
+    }
+
+    func testInterjectionArrivesBetweenSteps() async throws {
+        let provider = ScriptedProvider([
+            [.toolCallStart(index: 0, id: "c1", name: "echo"), .toolCallArguments(index: 0, delta: "{\"say\":\"一\"}")],
+            [.text("好，按你说的改")],
+        ])
+        let box = Mailbox(["换成二"])
+        var agent = Agent(provider: provider, model: "m", system: "", tools: [EchoTool()])
+        agent.inbox = { box.take() }
+        let recorder = Recorder()
+        try await agent.run(history: [.user("说一")]) { await recorder.add($0) }
+        XCTAssertEqual(provider.requests.count, 2)
+        XCTAssertEqual(provider.requests[1].messages.last?.role, .user)
+        XCTAssertEqual(provider.requests[1].messages.last?.text, "换成二")
+    }
+}

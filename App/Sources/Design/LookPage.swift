@@ -27,6 +27,7 @@ struct LookPage: View {
     @AppStorage("morning.hour") private var morningHour = 7
     @AppStorage("notify.done") private var notifyDone = true
     @AppStorage("live.on") private var liveOn = true
+    @AppStorage("bg.continue") private var bgContinue = true
     @AppStorage("look.fps") private var fps = false
     @AppStorage("lock.faceid") private var faceLock = false
     @AppStorage("look.thinking") private var showThinking = true
@@ -140,8 +141,9 @@ struct LookPage: View {
                 Section {
                     Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
                     Toggle(Words.t("锁屏和灵动岛显示旅伴在做什么"), isOn: $liveOn)
+                    Toggle(Words.t("切走后让旅伴接着做一会儿"), isOn: $bgContinue)
                 } header: { Text("在后台") } footer: {
-                    Text("干活时在锁屏和灵动岛显示进度")
+                    Text("干活时在锁屏和灵动岛显示进度。切走后系统会给一张进度卡，可以在那里叫停；系统忙时可能不给。")
                 }
 
                 Section {
@@ -186,7 +188,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "lock.faceid",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "lock.faceid", "bg.continue",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }

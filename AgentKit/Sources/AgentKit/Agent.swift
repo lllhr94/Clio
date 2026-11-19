@@ -125,6 +125,7 @@ public struct Agent: Sendable {
         var messages = history
         let specs = tools.map { Self.titled($0.spec) }
         var thinking = self.thinking
+        var uncertain: Set<String> = []
         for step in 0..<maxSteps {
             try Task.checkCancellation()
             if step > 0, let inbox {
@@ -216,7 +217,14 @@ public struct Agent: Sendable {
                 return
             }
             for call in made {
-                let result = await perform(call, emit: emit)
+                let same = call.name + "\u{1}" + call.arguments
+                let result: Message
+                if uncertain.contains(same) {
+                    result = .toolResult("这一步刚才结果未知，同样的事没有再做一次。先查清现在的状态，或问用户要不要重做。", for: call, isError: true)
+                } else {
+                    result = await perform(call, emit: emit)
+                    if result.isError, result.text.hasPrefix(Self.unknownMark) { uncertain.insert(same) }
+                }
                 messages.append(result)
                 await emit(.message(result))
                 try Task.checkCancellation()
@@ -263,6 +271,7 @@ public struct Agent: Sendable {
         // The model's own words for this step, for the person; the tool never sees them.
         let (arguments, title) = Self.untitled(given)
         await emit(.toolStarted(id: call.id, name: call.name, label: Self.label(tool.label(for: arguments), title: title)))
+        let asked = tool.approval(for: arguments) != nil
         if let ask = tool.approval(for: arguments) {
             guard await approve(ask, call.name) else {
                 await emit(.toolFinished(id: call.id, ok: false))
@@ -278,7 +287,24 @@ public struct Agent: Sendable {
             return result
         } catch {
             await emit(.toolFinished(id: call.id, ok: false))
+            // A step that changes things and broke off on the way may or may not have happened.
+            if asked, Self.unsure(error) {
+                return .toolResult(Self.unknownMark + "这一步可能已经做了，也可能没做（\(error.localizedDescription)）。不要直接再做一次：先查清现在的状态，查不清就问用户。", for: call, isError: true)
+            }
             return .toolResult("出错了：\(error.localizedDescription)", for: call, isError: true)
         }
+    }
+
+    /// The start of a tool result whose outcome is not known.
+    public static let unknownMark = "结果未知："
+
+    /// Failures after which a step's outcome can't be told: it timed out, the line dropped, or it was stopped.
+    static func unsure(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .cancelled, .notConnectedToInternet].contains(url.code)
+        }
+        let words = error.localizedDescription
+        return words.contains("超时") || words.localizedCaseInsensitiveContains("timed out") || words.localizedCaseInsensitiveContains("timeout")
     }
 }

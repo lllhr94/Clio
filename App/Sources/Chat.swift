@@ -235,7 +235,7 @@ final class ChatModel: ObservableObject {
                 out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail))
                 stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
-                out[open!].tools.append(message.isError ? "\(label)（没成功）" : label)
+                out[open!].tools.append(message.isError ? (message.text.hasPrefix(Agent.unknownMark) ? "\(label)（结果未知）" : "\(label)（没成功）") : label)
                 out[open!].seconds = max(1, Int((entry.at - openedAt) / 1000))
             }
         }

@@ -1077,6 +1077,7 @@ final class TeamModel: ObservableObject {
         doing[key] = "正在想"
         toolCount[key] = 0
         LiveTurns.begin(chat: key, name: chatName(key))
+        if UIApplication.shared.applicationState == .active { BackgroundTurn.begin(chat: key, name: chatName(key)) }
         let task = Task { [weak self] in
             await previous?.value
             await self?.run(key, token: token)
@@ -1218,6 +1219,7 @@ final class TeamModel: ObservableObject {
             let reply = history(key).last { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }?.message.text
             let line = paused ? "停在半路，回到 Clio 点「接着做」" : cancelled ? "被你叫停了" : ok ? reply : history(key).last?.message.text
             LiveTurns.end(chat: key, ok: ok && !cancelled && !paused, line: line)
+            BackgroundTurn.end(chat: key, ok: ok && !cancelled)
         }
         nameChatIfNew(key)
         watchBalance(key)
@@ -1327,6 +1329,7 @@ final class TeamModel: ObservableObject {
         case .toolStarted(let id, _, let label):
             labels[id] = label
             LiveTurns.step(chat: key)
+            BackgroundTurn.step(chat: key, doing: label)
             toolCount[key, default: 0] += 1
             doing[key] = label
             ToolTail.shared.clear()
@@ -1879,6 +1882,7 @@ final class TeamModel: ObservableObject {
 
     /// Called when the app comes back to the front.
     func wake() {
+        BackgroundTurn.stop = { [weak self] key in self?.stop(key) }
         LiveTurns.sweep()
         deliverDue()
         routinesIfDue()
