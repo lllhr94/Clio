@@ -150,6 +150,7 @@ enum Workspace {
         tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 和 writeFile(path, text) 读写书案里的文件。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
             await Reckoner.run(arguments["code"]?.string ?? "")
         })
+        tools.append(DocMaker.tool())
         return tools
     }
 }

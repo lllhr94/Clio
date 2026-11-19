@@ -1462,6 +1462,7 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
+                if !hints.isEmpty { hintStrip }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
                     Button {
@@ -1667,6 +1668,99 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    // MARK: / and @
+
+    /// One suggestion over the composer: a command after 「/」, a file after 「@」.
+    struct Hint: Identifiable {
+        let id: String
+        let icon: String
+        let title: String
+        let note: String
+        let run: () -> Void
+    }
+
+    /// The word being typed after 「@」, if the draft ends in one.
+    private var mention: String? {
+        guard let at = draft.lastIndex(of: "@") else { return nil }
+        let word = draft[draft.index(after: at)...]
+        guard !word.contains(where: { $0 == " " || $0 == "\n" }) else { return nil }
+        if at > draft.startIndex, let before = draft[..<at].last, !before.isWhitespace { return nil }
+        return String(word)
+    }
+
+    private var hints: [Hint] {
+        let text = draft.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("/"), !text.contains("\n") {
+            let typed = String(text.dropFirst()).lowercased()
+            var list: [Hint] = [
+                Hint(id: "leaf", icon: "square.and.pencil", title: "/新对话", note: Words.t("另起一叶，眼下的收起来")) {
+                    draft = ""
+                    team.turnLeaf(chat.key)
+                },
+                Hint(id: "redo", icon: "arrow.clockwise", title: "/重来", note: "最后一句重新回答") {
+                    draft = ""
+                    chat.retry()
+                },
+                Hint(id: "squeeze", icon: "rectangle.compress.vertical", title: "/压缩", note: "把较早的话写成提要，省上下文") {
+                    draft = ""
+                    Task { _ = try? await team.compress(chat.key) }
+                },
+                Hint(id: "detail", icon: "square.and.arrow.up", title: "/导出", note: "看这段对话的详情，可导出成 Markdown") {
+                    draft = ""
+                    detailOpen = true
+                },
+            ]
+            for item in SkillShelf.all() where item.on {
+                list.append(Hint(id: "skill-" + item.id, icon: "wand.and.stars", title: "/" + item.skill.name, note: item.skill.description) {
+                    draft = "用技能「\(item.skill.name)」："
+                })
+            }
+            return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
+        }
+        if let word = mention?.lowercased() {
+            let all = Workspace.files(under: Workspace.root, cap: 800)
+                .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
+                .filter { word.isEmpty || $0.path.lowercased().contains(word) }
+                .sorted { $0.date > $1.date }
+                .prefix(6)
+            return all.map { file in
+                Hint(id: "file-" + file.path, icon: "doc", title: (file.path as NSString).lastPathComponent, note: Words.t("书案/") + file.path) {
+                    if let at = draft.lastIndex(of: "@") { draft = String(draft[..<at]) }
+                    if !files.contains(file.path) { withAnimation(Ink.Motion.settle) { files.append(file.path) } }
+                }
+            }
+        }
+        return []
+    }
+
+    private var hintStrip: some View {
+        VStack(spacing: 0) {
+            ForEach(hints.prefix(6)) { hint in
+                Button {
+                    Haptics.tick(0.4)
+                    hint.run()
+                } label: {
+                    HStack(spacing: Ink.Space.m) {
+                        Image(systemName: hint.icon).font(.system(size: 14)).foregroundStyle(Ink.accent).frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(hint.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                            Text(hint.note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+        .paperCard()
+        .padding(.bottom, Ink.Space.s)
+        .transition(.opacity.combined(with: .offset(y: 6)))
     }
 
     /// What the send button sends: the draft and the files picked for it.
