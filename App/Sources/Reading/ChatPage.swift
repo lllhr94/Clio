@@ -1329,9 +1329,6 @@ struct ChatPage: View {
                             Button(kind.title, systemImage: kind.symbol) { bring(kind) }
                         }
                         Section {
-                            if VNDocumentCameraViewController.isSupported {
-                                Button(AttachKind.scan.title, systemImage: AttachKind.scan.symbol) { bring(.scan) }
-                            }
                             Button(AttachKind.desk.title, systemImage: AttachKind.desk.symbol) { bring(.desk) }
                         }
                     } label: {
