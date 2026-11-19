@@ -60,7 +60,7 @@ enum DrawerItem: String, Identifiable, CaseIterable {
     }
 
     static let groups: [(String, [DrawerItem])] = [
-        ("旅伴", [.newCompanion, .gathering, .portrait, .importCard]),
+        (Words.t("旅伴"), [.newCompanion, .gathering, .portrait, .importCard]),
         ("器物", [.study, .den, .hills, .vault]),
         ("调理", [.tuning, .look, .grants, .care]),
     ]

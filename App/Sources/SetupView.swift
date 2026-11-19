@@ -61,7 +61,7 @@ struct SetupView: View {
                 Text(Words.t("几位住在你手机里的旅伴。")).font(Ink.reading).foregroundStyle(Ink.inkSoft)
             }
             VStack(alignment: .leading, spacing: Ink.Space.l) {
-                point("lock", "对话只在这台手机上", "不经过任何人的服务器，旅伴直接用你自己的密钥连模型。")
+                point("lock", "对话只在这台手机上", Words.t("不经过任何人的服务器，旅伴直接用你自己的密钥连模型。"))
                 point("globe", "会上网，也会动手", "搜索、开网页、在手机里的小 Linux 跑脚本，替你记日程。")
                 point("checkmark.seal", "大事都先问你", Words.t("加日程、填网页、连服务器这类事，旅伴会递一张笺等你落印。"))
             }

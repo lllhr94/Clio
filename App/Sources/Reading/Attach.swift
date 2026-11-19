@@ -192,14 +192,18 @@ struct PlusSheet: View {
     let key: String
     let name: String
     let isRoom: Bool
-    /// A photo tapped in the strip, as JPEG data.
-    let addPhoto: (Data) -> Void
+    /// A photo tapped in the strip, as JPEG data. Returns what was put in the composer (nil: not added).
+    let addPhoto: (Data) -> Data?
+    /// A photo tapped again: taken back out of the composer.
+    let removePhoto: (Data) -> Void
     /// Camera, files or the full photo picker: opened once the sheet is gone.
     let pick: (AttachKind) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var recent: [PHAsset] = []
     @State private var thumbs: [String: UIImage] = [:]
     @State private var added: Set<String> = []
+    /// What each picked photo became in the composer, to take it back out.
+    @State private var placed: [String: Data] = [:]
     @State private var access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var abilities = false
     @State private var skills = false
@@ -291,7 +295,7 @@ struct PlusSheet: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(added.contains(id) ? "已加上的照片" : "加上这张照片")
+                        .accessibilityLabel(added.contains(id) ? "已加上，再点一下拿掉" : "加上这张照片")
                     }
                 }
             }
@@ -337,15 +341,21 @@ struct PlusSheet: View {
 
     private func take(_ asset: PHAsset) {
         let id = asset.localIdentifier
-        guard !added.contains(id) else { return }
+        // Tapped again: put back, like ticking a photo off in the Photos picker.
+        if added.contains(id) {
+            Haptics.tick(0.4)
+            if let data = placed.removeValue(forKey: id) { removePhoto(data) }
+            _ = withAnimation(Ink.Motion.settle) { added.remove(id) }
+            return
+        }
         Haptics.tick(0.6)
         let request = PHImageRequestOptions()
         request.deliveryMode = .highQualityFormat
         request.isNetworkAccessAllowed = true
         PHImageManager.default().requestImageDataAndOrientation(for: asset, options: request) { data, _, _, _ in
-            guard let data else { return }
-            added.insert(id)
-            addPhoto(data)
+            guard let data, let kept = addPhoto(data) else { return }
+            placed[id] = kept
+            _ = withAnimation(Ink.Motion.settle) { added.insert(id) }
         }
     }
 

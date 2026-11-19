@@ -33,9 +33,19 @@ struct LookPage: View {
     @AppStorage("look.thinking") private var showThinking = true
     @AppStorage("pulse.on") private var pulseOn = true
 
+    /// The reading sizes on offer, each with the line spacing that suits it.
+    static let sizes: [(title: String, size: Double, leading: Double)] = [
+        ("超小", 14, 6), ("小", 15.5, 7), ("中", 17, 8), ("大", 19, 9),
+    ]
+
+    /// The step closest to a size kept from before (when it was a slider).
+    static func sizeStep(_ size: Double) -> Int {
+        sizes.indices.min { abs(sizes[$0].size - size) < abs(sizes[$1].size - size) } ?? 2
+    }
+
     private let sample = """
     ## 小样
-    窗外落了一阵**细雨**，案头的茶还温着。这里是正文的模样：字体、字号与行距都会照你的选择变。
+    窗外落了一阵**细雨**，案头的茶还温着。这里是正文的模样，换字号和字体时会跟着变。
 
     - 列表也随之更换
     - 行内的 `代码` 保持等宽
@@ -49,9 +59,19 @@ struct LookPage: View {
                     ProseView(text: sample)
                         .padding(.vertical, Ink.Space.s)
                         .listRowBackground(Ink.paperRaised)
-                } header: { Text("小样") }
+                        .animation(Ink.Motion.settle, value: size)
+                    // Four sizes, each with its own line spacing, so every one reads well; the sample above changes at once.
+                    Picker("字号", selection: Binding(get: { Self.sizeStep(size) }, set: { step in
+                        Haptics.tick(0.5)
+                        size = Self.sizes[step].size
+                        leading = Self.sizes[step].leading
+                    })) {
+                        ForEach(Self.sizes.indices, id: \.self) { step in Text(Self.sizes[step].title).tag(step) }
+                    }
+                    .pickerStyle(.segmented)
+                } header: { Text("对话字号") }
 
-                Section("纸墨") {
+                Section(Words.t("纸墨")) {
                     Picker("明暗", selection: $scheme) {
                         Text("跟随系统").tag("system")
                         Text("纸白").tag("light")
@@ -64,8 +84,6 @@ struct LookPage: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    LabeledSlider(title: "字号", value: $size, range: 14...23, step: 1) { "\(Int($0))" }
-                    LabeledSlider(title: "行距", value: $leading, range: 2...16, step: 1) { "\(Int($0))" }
                     palettes
                     Toggle("深色时用纯黑", isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
                     Picker(Words.t("叫法"), selection: Binding(get: { Theme.shared.plain }, set: { value in
@@ -81,7 +99,7 @@ struct LookPage: View {
                     Toggle("触感反馈", isOn: $haptics)
                     Toggle("回复逐字淡入", isOn: $fade)
                     Toggle("回复下显示耗时和用量", isOn: $stats)
-                    Toggle("行迹默认展开", isOn: $traceOpen)
+                    Toggle(Words.t("行迹默认展开"), isOn: $traceOpen)
                     Toggle("回复上留着思考过程", isOn: $showThinking)
                     Toggle("开口前先写一段心绪", isOn: $pulseOn)
                     Toggle("聊天页的形象", isOn: $mascot)
@@ -124,11 +142,11 @@ struct LookPage: View {
                 }
 
                 Section {
-                    Toggle("每天一封晨信", isOn: $morningOn)
+                    Toggle(Words.t("每天一封晨信"), isOn: $morningOn)
                     if morningOn {
                         Stepper("\(morningHour) 点以后第一次打开时写", value: $morningHour, in: 5...11)
                     }
-                } header: { Text("晨信") } footer: {
+                } header: { Text(Words.t("晨信")) } footer: {
                     Text("看看日程、提醒和天气，写一封便笺")
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }

@@ -10,7 +10,7 @@ struct AbilitiesSheet: View {
 
     private let groups: [(String, [Grant])] = [
         ("出门", [.web, .browser, .hills, .mcp, .google]),
-        ("案头与小屋", [.desk, .den, .memory, .letters, .vault]),
+        (Words.t("案头与小屋"), [.desk, .den, .memory, .letters, .vault]),
         ("手机里的事", [.calendar, .reminders, .contacts, .photos, .clipboard, .links]),
         ("身边", [.location, .motion, .device]),
     ]
@@ -111,7 +111,7 @@ struct AbilitiesSheet: View {
                         Text("用前会问你").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkFaint)
                     }
                 }
-                Text(global == .off ? "在「应许」里关着" : grant.note)
+                Text(global == .off ? Words.t("在「应许」里关着") : grant.note)
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
             }
             Spacer(minLength: 0)

@@ -28,7 +28,7 @@ struct ApproveView: View {
     }
 
     private var bot: BotInfo? { team.bots.first { $0.id == current.botId } }
-    private var name: String { bot?.name ?? "旅伴" }
+    private var name: String { bot?.name ?? Words.t("旅伴") }
     private var answerable: Bool { current.answerable != false }
     private var waiting: Int { team.approvals.filter { $0.id != current.id && !handled.contains($0.id) }.count }
 
@@ -158,7 +158,7 @@ struct ApproveView: View {
                 } else {
                     HStack(spacing: Ink.Space.s) {
                         choice("以后都允许", on: $always)
-                        choice("这段絮语都放行", on: $trustChat)
+                        choice(Words.t("这段絮语都放行"), on: $trustChat)
                     }
                 }
                 Button {

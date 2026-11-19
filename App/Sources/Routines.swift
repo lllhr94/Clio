@@ -242,7 +242,7 @@ struct RoutineEditor: View {
                 } header: {
                     Text("要做的事")
                 } footer: {
-                    Text("到点时作为你的话发给旅伴")
+                    Text(Words.t("到点时作为你的话发给旅伴"))
                 }
                 Section("什么时候") {
                     DatePicker("几点", selection: $time, displayedComponents: .hourAndMinute)
@@ -260,7 +260,7 @@ struct RoutineEditor: View {
                     Text(preview.when).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("谁来做") {
-                    Picker("旅伴", selection: $routine.botId) {
+                    Picker(Words.t("旅伴"), selection: $routine.botId) {
                         ForEach(team.bots) { bot in Text(bot.name).tag(bot.id) }
                     }
                 }

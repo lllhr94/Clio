@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var caring = false
     @State private var timing = false
     @State private var skilling = false
+    @State private var hilling = false
     @State private var memoryDraft = ""
     @State private var editingMemory: Memory?
     @State private var memoryText = ""
@@ -34,16 +35,11 @@ struct SettingsView: View {
                             .padding(.vertical, Ink.Space.l)
                     } else {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        if team.phase == .demo {
-                            demoCard
-                        } else {
-                            overview
-                            services
-                            defaultModel
-                        }
-                        abilities
-                        if team.phase != .demo { memory }
-                        more
+                        if team.phase == .demo { demoCard } else { overview }
+                        aiGroup
+                        abilityGroup
+                        looksGroup
+                        generalGroup
                         about
                     }
                     .padding(.horizontal, Ink.Space.page)
@@ -74,6 +70,7 @@ struct SettingsView: View {
         .sheet(isPresented: $caring) { CarePage(team: team) }
         .sheet(isPresented: $timing) { RoutinesPage(team: team) }
         .sheet(isPresented: $skilling) { SkillsPage() }
+        .sheet(isPresented: $hilling) { HillsPage() }
         .alert(Words.t("改这条拾遗"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
             TextField("", text: $memoryText)
             Button("存好") {
@@ -290,7 +287,7 @@ struct SettingsView: View {
 
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading(Words.t("拾遗"), "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
+            heading(Words.t("拾遗"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
                     TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
@@ -311,7 +308,7 @@ struct SettingsView: View {
                             .foregroundStyle(item.deep == true ? Ink.inkSoft : Ink.ink)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if item.deep == true {
-                            Text("旧事").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkFaint)
+                            Text(Words.t("旧事")).font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.inkFaint)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Ink.rule.opacity(0.6), in: .capsule)
                         }
@@ -329,9 +326,9 @@ struct SettingsView: View {
                             editingMemory = item
                         }
                         if item.deep == true {
-                            Button("常记在心", systemImage: "pin") { withAnimation(.smooth) { team.setDeep(item.id, false) } }
+                            Button(Words.t("常记在心"), systemImage: "pin") { withAnimation(.smooth) { team.setDeep(item.id, false) } }
                         } else {
-                            Button("收进旧事", systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(item.id, true) } }
+                            Button(Words.t("收进旧事"), systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(item.id, true) } }
                         }
                         Button("忘掉", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { team.deleteMemory(item.id) } }
                     }
@@ -370,6 +367,133 @@ struct SettingsView: View {
             .task {
                 if Balance.source(baseURL: found.endpoint.baseURL) != nil { balance = try? await team.balance(found.endpoint) }
             }
+        }
+    }
+
+    // MARK: Groups, the way settings are laid out elsewhere: a heading, rows with a coloured icon
+
+    private enum Tint {
+        static let ai = Color(red: 0.36, green: 0.55, blue: 0.86)
+        static let ability = Color(red: 0.85, green: 0.58, blue: 0.27)
+        static let looks = Color(red: 0.62, green: 0.48, blue: 0.84)
+        static let general = Color(red: 0.42, green: 0.66, blue: 0.45)
+    }
+
+    private func group<Content: View>(_ title: String, @ViewBuilder _ rows: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+            VStack(spacing: 0) { rows() }.paperCard()
+        }
+    }
+
+    private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 60) }
+
+    private func badge(_ icon: String, _ tint: Color) -> some View {
+        Circle().fill(tint.opacity(0.18)).frame(width: 34, height: 34)
+            .overlay { Image(systemName: icon).font(.system(size: 15, weight: .medium)).foregroundStyle(tint) }
+    }
+
+    private func rowLabel(_ icon: String, _ tint: Color, _ title: String, _ value: String?, warn: Bool = false) -> some View {
+        HStack(spacing: Ink.Space.m) {
+            badge(icon, tint)
+            Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+            Spacer(minLength: Ink.Space.s)
+            if let value { Text(value).font(.system(size: 14)).foregroundStyle(warn ? Ink.warn : Ink.inkSoft).lineLimit(1) }
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+
+    /// A row that opens a sheet.
+    private func row(_ icon: String, _ tint: Color, _ title: String, _ value: String?, warn: Bool = false, _ open: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            open()
+        } label: { rowLabel(icon, tint, title, value, warn: warn) }
+        .buttonStyle(PressStyle(haptic: false))
+    }
+
+    /// A row that pushes a page.
+    private func pushRow<Page: View>(_ icon: String, _ tint: Color, _ title: String, _ value: String?, warn: Bool = false, @ViewBuilder _ page: @escaping () -> Page) -> some View {
+        NavigationLink {
+            page()
+        } label: { rowLabel(icon, tint, title, value, warn: warn) }
+        .buttonStyle(PressStyle(haptic: false))
+    }
+
+    /// A page of its own, with the settings' paper and padding.
+    private func subpage<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) { content() }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var aiGroup: some View {
+        group("AI") {
+            pushRow("sparkles", Tint.ai, "模型", team.settings.endpoints.isEmpty ? "还没接" : team.modelTitle(team.settings.defaultModel), warn: team.settings.endpoints.isEmpty) {
+                subpage("模型") {
+                    services
+                    defaultModel
+                }
+            }
+            if team.phase != .demo {
+                divider
+                pushRow("brain", Tint.ai, Words.t("拾遗"), team.memories.isEmpty ? "还没有" : "\(team.memories.count) 条") {
+                    subpage(Words.t("拾遗")) { memory }
+                }
+            }
+            divider
+            row("books.vertical", Tint.ai, "技能", "\(SkillShelf.enabled.count) 个") { skilling = true }
+        }
+    }
+
+    private var abilityGroup: some View {
+        group(Words.t("本事")) {
+            row("checkmark.shield", Tint.ability, Words.t("应许"), Grant.Preset.current?.title ?? "自定义") { granting = true }
+            divider
+            row("powerplug", Tint.ability, "连接器", connectorsLine) { connecting = true }
+            divider
+            row("alarm", Tint.ability, "定时任务", team.routines.isEmpty ? "没有" : "\(team.routines.filter(\.on).count) 件") { timing = true }
+            divider
+            row("server.rack", Tint.ability, Words.t("远山"), Hills.shared.hosts.isEmpty ? "没有" : "\(Hills.shared.hosts.count) 台") { hilling = true }
+        }
+    }
+
+    private var looksGroup: some View {
+        group("外观") {
+            row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
+            divider
+            HStack(spacing: Ink.Space.m) {
+                badge("textformat", Tint.looks)
+                Text("叫法").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Spacer(minLength: Ink.Space.s)
+                Picker("叫法", selection: Binding(get: { Theme.shared.plain }, set: { Haptics.tick(0.5); Theme.shared.setPlain($0) })) {
+                    Text("普通").tag(true)
+                    Text("诗意").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 140)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private var generalGroup: some View {
+        group("通用") {
+            row("bell", Tint.general, "通知、锁屏与后台", nil) { looking = true }
+            divider
+            row("lock", Tint.general, "面容锁", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { looking = true }
+            divider
+            row("stethoscope", Tint.general, Words.t("养护"), "备份与诊断") { caring = true }
         }
     }
 

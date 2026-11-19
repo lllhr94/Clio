@@ -363,6 +363,12 @@ extension TeamModel {
     }
 
     /// The user left this conversation now.
+    /// Something new came in after the user last left this conversation.
+    func isUnread(_ chat: String, at: Double) -> Bool {
+        let seen = (UserDefaults.standard.dictionary(forKey: Self.seenKey) as? [String: Double])?[chat] ?? 0
+        return seen > 0 && at > seen + 1000
+    }
+
     func markSeen(_ chat: String) {
         var seen = UserDefaults.standard.dictionary(forKey: Self.seenKey) as? [String: Double] ?? [:]
         seen[chat] = Now.ms

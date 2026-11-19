@@ -396,13 +396,6 @@ struct ChatPage: View {
                 Mascot(pose: pose, raised: waiting != nil, bounds: proxy.size)
             }
         }
-        .simultaneousGesture(
-            // A swipe in from the left edge goes back, as it does everywhere else on iOS.
-            DragGesture(minimumDistance: 24)
-                .onEnded { value in
-                    if value.startLocation.x < 28, value.translation.width > 80, abs(value.translation.height) < 60 { leave() }
-                }
-        )
         .onAppear { chat.open() }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
@@ -444,8 +437,12 @@ struct ChatPage: View {
             }
         }) {
             PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
-                guard photos.count < 4 else { return say("最多带四张图。") }
-                if let small = Self.shrink(data) { withAnimation(Ink.Motion.settle) { photos.append(small) } }
+                guard photos.count < 4 else { say("最多带四张图。"); return nil }
+                guard let small = Self.shrink(data) else { return nil }
+                withAnimation(Ink.Motion.settle) { photos.append(small) }
+                return small
+            }, removePhoto: { data in
+                if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
             }, pick: { attachPicked = $0 })
             // Half open: photos, camera and files at hand; pull up for the rest.
             .presentationDetents([.medium, .large])
@@ -768,7 +765,7 @@ struct ChatPage: View {
                 Section { Text(Words.t("在设置 › 远山 添一台主机，这里就能选它。")) }
             }
         } label: {
-            chip(current.symbol, current == .desk ? "书案" : current.title, lit: current != .desk)
+            chip(current.symbol, current == .desk ? Words.t("书案") : current.title, lit: current != .desk)
         }
         .accessibilityLabel("工作地点：\(current.title)")
     }
@@ -931,8 +928,8 @@ struct ChatPage: View {
         func on(_ grant: Grant) -> Bool { grant.policy != .off && !off.contains(grant.rawValue) }
         var parts = ["在\(team.place(of: chat.key).title)干活"]
         if on(.web) { parts.append("能联网") }
-        if on(.browser) { parts.append("能用远游") }
-        if !Hills.shared.hosts.isEmpty, on(.hills) { parts.append("连得上 \(Hills.shared.hosts.count) 台远山") }
+        if on(.browser) { parts.append(Words.t("能用远游")) }
+        if !Hills.shared.hosts.isEmpty, on(.hills) { parts.append(Words.t("连得上 \(Hills.shared.hosts.count) 台远山")) }
         if on(.memory) { parts.append("记得你说过的事") }
         return parts.joined(separator: " · ")
     }
@@ -945,8 +942,8 @@ struct ChatPage: View {
         if on(.calendar) { out.append(("看看日程", "我今天和明天有什么安排？", "calendar")) }
         if on(.web) { out.append(("查点东西", "帮我查一下最近附近有什么值得去的展览", "magnifyingglass")) }
         if on(.location) { out.append(("看看附近", "我现在在哪？附近有什么好吃的", "location")) }
-        if on(.den) { out.append(("在斗室算一算", "在斗室里用 Python 算一下：每月存 2000，年化 3%，十年后有多少", "terminal")) }
-        if on(.desk) { out.append(("记到书案", "帮我在书案里建一份本周待办清单", "books.vertical")) }
+        if on(.den) { out.append((Words.t("在斗室算一算"), "在斗室里用 Python 算一下：每月存 2000，年化 3%，十年后有多少", "terminal")) }
+        if on(.desk) { out.append((Words.t("记到书案"), "帮我在书案里建一份本周待办清单", "books.vertical")) }
         out.append(("问问它会什么", "你能帮我做哪些事？挑几样有意思的说说", "sparkles"))
         return Array(out.prefix(5))
     }
@@ -1891,6 +1888,22 @@ private struct Trace: View {
         return out
     }
     @State private var open = Pref.traceOpen
+
+    /// Steps shown while the companion works, before 「前面还有」.
+    private static let liveRows = 4
+
+    /// Done: 「6 步 · 搜索、读网页、写文件 · 12 秒」.
+    private var summary: String {
+        var kinds: [String] = []
+        for tool in line.tools {
+            let kind = String(tool.split(whereSeparator: { $0 == "：" || $0 == "·" }).first ?? Substring(tool)).trimmingCharacters(in: .whitespaces)
+            if !kind.isEmpty, !kinds.contains(kind) { kinds.append(kind) }
+        }
+        var out = "\(line.tools.count) 步"
+        if !kinds.isEmpty { out += " · " + kinds.prefix(3).joined(separator: "、") + (kinds.count > 3 ? " 等" : "") }
+        if let seconds = line.seconds { out += " · " + Clock.said(seconds) }
+        return out
+    }
     @State private var peeking: Set<Int> = []
 
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
@@ -1913,7 +1926,7 @@ private struct Trace: View {
                     } else {
                         Image(systemName: "checkmark.circle").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ok)
                     }
-                    Text(Words.t(line.live ? (line.tools.last ?? "沉吟") : "行迹 · \(line.tools.count) 步" + (line.seconds.map { " · " + Clock.said($0) } ?? "")))
+                    Text(Words.t(line.live ? (line.tools.isEmpty ? "沉吟" : "第 \(line.tools.count) 步") : summary))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
@@ -1927,9 +1940,23 @@ private struct Trace: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
-            if open {
+            // While it works: only the newest few steps, the rest folded above them. Done: one line until opened.
+            if open || line.live {
+                let hidden = open ? 0 : max(0, line.tools.count - Self.liveRows)
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(line.tools.enumerated()), id: \.offset) { index, tool in
+                    if hidden > 0 {
+                        Button {
+                            withAnimation(Ink.Motion.unfold) { open = true }
+                        } label: {
+                            Text("前面还有 \(hidden) 步")
+                                .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                                .padding(.leading, 30).padding(.bottom, Ink.Space.s)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ForEach(Array(line.tools.enumerated()).filter { $0.offset >= hidden }, id: \.offset) { index, tool in
                         step(tool, index: index, last: index == line.tools.count - 1)
                     }
                 }
@@ -1942,6 +1969,10 @@ private struct Trace: View {
         }
         .clipped()
         .animation(Ink.Motion.settle, value: line.tools.count)
+        // Done: everything folds into the one line again.
+        .onChange(of: line.live) { _, live in
+            if !live { withAnimation(Ink.Motion.unfold) { open = Pref.traceOpen } }
+        }
         if !line.live {
             ForEach(keepsakes) { item in
                 Button {

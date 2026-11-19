@@ -105,6 +105,8 @@ struct Desk: View {
     @State private var searching = false
     @State private var showArchived = false
     @State private var listFilter = 0
+    /// How far the open conversation has been pulled to the right by a swipe from the left edge.
+    @State private var pull: CGFloat = 0
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
@@ -143,6 +145,7 @@ struct Desk: View {
             switch listFilter {
             case 1: return team.isWorking(item.id.id)
             case 2: return team.approvals.contains { $0.chat == item.id.id }
+            case 3: return team.isUnread(item.id.id, at: item.at)
             default: return true
             }
         }
@@ -153,9 +156,10 @@ struct Desk: View {
     private var filterChips: some View {
         let working = recent.filter { team.isWorking($0.id.id) }.count
         let waiting = recent.filter { item in team.approvals.contains { $0.chat == item.id.id } }.count
-        if working + waiting > 0 || listFilter != 0 {
+        let unread = recent.filter { team.isUnread($0.id.id, at: $0.at) }.count
+        if recent.count > 1 || listFilter != 0 {
             HStack(spacing: Ink.Space.s) {
-                ForEach([(0, "全部"), (1, "在做 \(working)"), (2, "等批准 \(waiting)")], id: \.0) { item in
+                ForEach([(0, "全部"), (1, working > 0 ? "在做 \(working)" : "在做"), (2, waiting > 0 ? "等批准 \(waiting)" : "等批准"), (3, unread > 0 ? "未读 \(unread)" : "未读")], id: \.0) { item in
                     Button {
                         Haptics.tick(0.4)
                         withAnimation(Ink.Motion.settle) { listFilter = item.0 }
@@ -248,7 +252,7 @@ struct Desk: View {
                             Rectangle().fill(Ink.rule).frame(height: 1)
                         }
                     } else {
-                    TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? "旅伴")
+                    TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? Words.t("旅伴"))
                     filterChips
                     if shownThreads.isEmpty {
                         EmptyNote(
@@ -300,14 +304,36 @@ struct Desk: View {
                 .padding(.bottom, Ink.Space.huge)
             }
             .scrollIndicators(.hidden)
-            .opacity(opened == nil ? 1 : 0)
-            .scaleEffect(opened == nil ? 1 : 0.96)
+            // While a conversation is pulled aside, the desk shows through underneath, like a sidebar.
+            .opacity(opened == nil ? 1 : min(1, pull / 220))
+            .scaleEffect(opened == nil ? 1 : 0.96 + 0.04 * min(1, pull / 300))
 
             if let opened {
                 page(for: opened)
                     .background(Ink.paper)
+                    .clipShape(RoundedRectangle(cornerRadius: pull > 0 ? 28 : 0, style: .continuous))
+                    .shadow(color: .black.opacity(pull > 0 ? 0.18 : 0), radius: 18, x: -4)
+                    .offset(x: pull)
                     .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing)))
                     .zIndex(1)
+                    .simultaneousGesture(
+                        // From the left edge: the conversation follows the finger, and the desk comes out from under it.
+                        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+                            .onChanged { value in
+                                guard value.startLocation.x < 32, value.translation.width > 0,
+                                      abs(value.translation.height) < max(60, value.translation.width) else { return }
+                                pull = value.translation.width
+                            }
+                            .onEnded { value in
+                                guard pull > 0 else { return }
+                                if pull > 110 || value.predictedEndTranslation.width > 260 {
+                                    Haptics.light()
+                                    withAnimation(Ink.Motion.unfold) { self.opened = nil; pull = 0 }
+                                } else {
+                                    withAnimation(Ink.Motion.settle) { pull = 0 }
+                                }
+                            }
+                    )
             }
         }
         .animation(Ink.Motion.unfold, value: opened)
@@ -347,7 +373,7 @@ struct Desk: View {
                         do {
                             try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions)
                             Haptics.thud()
-                            notice = "收下了\(name)的名帖。"
+                            notice = Words.t("收下了\(name)的名帖。")
                         } catch {
                             notice = "没收下：\(error.localizedDescription)"
                         }
@@ -430,7 +456,7 @@ struct Desk: View {
 
     private var clearingTitle: String {
         guard let target = clearing else { return "" }
-        return clearingIsRoom ? "散了这个雅集？" : "清空和\(recent.first { $0.id == target }?.name ?? "旅伴")的絮语？"
+        return Words.t(clearingIsRoom ? "散了这个雅集？" : "清空和\(recent.first { $0.id == target }?.name ?? "旅伴")的絮语？")
     }
 
     private func open(_ item: DrawerItem) {
@@ -567,7 +593,7 @@ struct Desk: View {
         HStack(spacing: Ink.Space.s) {
             Image(systemName: "envelope").font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.accent)
             VStack(alignment: .leading, spacing: 2) {
-                Text("来信 · \(When.show(Date(timeIntervalSince1970: next.at)))").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text(Words.t("来信 · ") + When.show(Date(timeIntervalSince1970: next.at))).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text("\(team.bots.first { $0.id == next.botId }?.name ?? "旅伴")约好来找你：\(next.text)")
                     .font(Ink.secondary)
                     .foregroundStyle(Ink.ink)

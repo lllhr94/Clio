@@ -42,9 +42,9 @@ enum WorkPlace: Hashable {
     @MainActor
     var title: String {
         switch self {
-        case .desk: "书案"
-        case .den: "斗室"
-        case .hill: "远山 · " + (hillHost?.name ?? "已删的主机")
+        case .desk: Words.t("书案")
+        case .den: Words.t("斗室")
+        case .hill: Words.t("远山 · ") + (hillHost?.name ?? "已删的主机")
         }
     }
 
@@ -86,8 +86,8 @@ enum WorkPlace: Hashable {
 
 /// 书案 on the phone: files read and written directly; commands run in 斗室, which sees 书案 at /root/desk.
 struct LocalDeskHost: WorkspaceHost {
-    var title: String { "书案" }
-    var shellTitle: String { "斗室" }
+    var title: String { Words.t("书案") }
+    var shellTitle: String { Words.t("斗室") }
     var root: String { "书案" }
     var canBackground: Bool { false }
 
@@ -177,8 +177,8 @@ struct LocalDeskHost: WorkspaceHost {
 
 /// 斗室: everything through its shell, starting in /root/desk.
 struct DenHost: WorkspaceHost {
-    var title: String { "斗室" }
-    var shellTitle: String { "斗室" }
+    var title: String { Words.t("斗室") }
+    var shellTitle: String { Words.t("斗室") }
     var root: String { "/root/desk" }
     var canBackground: Bool { false }
 
@@ -197,8 +197,8 @@ struct SSHHost: WorkspaceHost {
     let host: Hills.Host
     init(_ host: Hills.Host) { self.host = host }
 
-    var title: String { "远山 · \(host.name)" }
-    var shellTitle: String { "远山 · \(host.name)" }
+    var title: String { Words.t("远山 · \(host.name)") }
+    var shellTitle: String { Words.t("远山 · \(host.name)") }
     var root: String { "~" }
     var canBackground: Bool { true }
 

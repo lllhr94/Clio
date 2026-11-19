@@ -205,7 +205,7 @@ struct SkillsPage: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    Text("书案/技能 里的做事说明，对得上就照做")
+                    Text(Words.t("书案/技能 里的做事说明，对得上就照做"))
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if items.isEmpty {
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -267,7 +267,7 @@ struct SkillsPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.skill.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
                 Text(item.skill.description).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
-                Text("书案/\(item.id)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                Text(Words.t("书案/") + item.id).font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
             Toggle("", isOn: Binding(get: { item.on }, set: { value in

@@ -62,7 +62,7 @@ struct HillsPage: View {
 
                         section("MCP 服务", add: { editingServer = Hills.Server(name: "", url: "https://") }) {
                             if hills.servers.isEmpty {
-                                empty("还没有。填一个 MCP 服务地址（Streamable HTTP），它的工具就会借给旅伴用。")
+                                empty(Words.t("还没有。填一个 MCP 服务地址（Streamable HTTP），它的工具就会借给旅伴用。"))
                             }
                             ForEach(hills.servers) { server in
                                 serverRow(server)

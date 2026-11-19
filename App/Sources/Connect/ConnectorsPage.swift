@@ -1,40 +1,40 @@
 import SwiftUI
 
-/// 连接器: the person's own accounts and services the companions can use. Most are official MCP services:
-/// a tap signs in on the service's own page (MCP authorization), some take a key, some need nothing.
-/// Google has its own native connector; any other MCP service can be added by its address.
+/// 连接器, laid out the way other agent apps do it: a list where each service has a 「连接」 button right on
+/// its row (signing in goes straight to the service's own page and comes back connected), and a detail page
+/// behind the row with what it does, what it brought, and 断开.
 struct ConnectorsPage: View {
     @ObservedObject private var hills = Hills.shared
     @ObservedObject private var google = Google.shared
+    @ObservedObject private var work = ConnectorWork.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var opened: Connector?
     @State private var googleOpen = false
     @State private var adding = false
+    @State private var keyFor: Connector?
     @State private var query = ""
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    Text("连上你自己的账号和服务，旅伴就能替你查邮件、改文档、规划路线。大多数点一下就跳到那家的登录页；登录凭据只存在这台手机的钥匙串里。能做到哪一步，在「应许 → 远山 · MCP」里管。")
+                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    Text(Words.t("连上你的账号和服务，旅伴就能替你查邮件、改文档、规划路线。会改动东西的操作，旅伴会先问你。"))
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-                    if !mine.isEmpty { section("已连上", mine) }
-                    if query.isEmpty {
+                    if !mine.isEmpty { section("已连接", mine) }
+                    if query.isEmpty || "谷歌 google gmail 邮件 云盘".contains(query.lowercased()) {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            Text("谷歌（原生）").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
-                            card(icon: "envelope.open", name: "谷歌", line: "Gmail 找信、读信、存草稿、发信；云端硬盘找文件、读文件。用你自己的 Client ID 登录，不经过别人",
-                                 state: google.account.map { "已登录 · \($0)" }) { googleOpen = true }
+                            heading("谷歌")
+                            VStack(spacing: 0) { googleRow }.paperCard()
                         }
                     }
                     ForEach(Connector.groups, id: \.self) { group in
-                        let items = Connector.catalog.filter { $0.group == group && matches($0) && server(of: $0) == nil }
+                        let items = Connector.catalog.filter { $0.group == group && matches($0) && work.server(of: $0) == nil }
                         if !items.isEmpty { section(group, items) }
                     }
                     Button {
                         Haptics.light()
                         adding = true
                     } label: {
-                        Label("自己填一个 MCP 地址", systemImage: "plus")
+                        Label("用地址添加连接器", systemImage: "plus")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Ink.accent)
                             .frame(maxWidth: .infinity)
@@ -51,10 +51,14 @@ struct ConnectorsPage: View {
             .navigationTitle("连接器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .navigationDestination(for: Connector.self) { ConnectorDetail(connector: $0) }
         }
-        .sheet(item: $opened) { ConnectSheet(connector: $0) }
+        .sheet(item: $keyFor) { KeySheet(connector: $0) }
         .sheet(isPresented: $googleOpen) { GoogleSheet() }
         .sheet(isPresented: $adding) { CustomSheet() }
+        .alert("没连上", isPresented: Binding(get: { work.failure != nil }, set: { if !$0 { work.failure = nil } })) {
+            Button("好") { work.failure = nil }
+        } message: { Text(work.failure ?? "") }
     }
 
     /// Everything connected: from the catalog, and the ones added by address.
@@ -62,7 +66,7 @@ struct ConnectorsPage: View {
         hills.servers.compactMap { server in
             if let id = server.connector, let known = Connector.catalog.first(where: { $0.id == id }) { return known }
             return Connector(id: server.connector ?? server.id, name: server.name, icon: "point.3.connected.trianglepath.dotted",
-                             line: server.url, url: server.url, auth: .oauth, group: "自己加的", serverId: server.id)
+                             line: URL(string: server.url)?.host ?? server.url, url: server.url, auth: .oauth, group: "自己加的", serverId: server.id)
         }
         .filter(matches)
     }
@@ -72,44 +76,330 @@ struct ConnectorsPage: View {
         return words.isEmpty || connector.name.lowercased().contains(words) || connector.line.lowercased().contains(words) || connector.group.contains(words)
     }
 
-    private func server(of connector: Connector) -> Hills.Server? {
-        if let id = connector.serverId { return hills.servers.first { $0.id == id } }
-        return hills.servers.first { $0.connector == connector.id }
+    private func heading(_ title: String) -> some View {
+        Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
     }
 
     private func section(_ title: String, _ items: [Connector]) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
-            ForEach(items) { item in
-                let linked = server(of: item)
-                card(icon: item.icon, name: item.name, line: item.line,
-                     state: linked.map { hills.lastError[$0.id] != nil ? "出错了" : "已连上 · \(hills.tools(of: $0).count) 个工具" }) { opened = item }
+            heading(title)
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 64) }
+                    row(item)
+                }
             }
+            .paperCard()
         }
     }
 
-    private func card(icon: String, name: String, line: String, state: String?, open: @escaping () -> Void) -> some View {
+    private func row(_ item: Connector) -> some View {
+        HStack(spacing: Ink.Space.m) {
+            NavigationLink(value: item) {
+                HStack(spacing: Ink.Space.m) {
+                    ConnectorIcon(symbol: item.icon)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
+                        Text(item.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            ConnectButton(connector: item) { keyFor = item }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+    }
+
+    private var googleRow: some View {
         Button {
             Haptics.light()
-            open()
+            googleOpen = true
         } label: {
-            HStack(alignment: .top, spacing: Ink.Space.m) {
-                Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Ink.accent).frame(width: 30, height: 30)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
-                        Spacer()
-                        Text(state ?? "没连").font(Ink.footnote).foregroundStyle(state == nil ? Ink.inkFaint : (state == "出错了" ? Ink.stop : Ink.ok)).lineLimit(1)
-                    }
-                    Text(line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.leading).lineLimit(2)
+            HStack(spacing: Ink.Space.m) {
+                ConnectorIcon(symbol: "envelope.open")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Gmail 与云端硬盘").font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.ink)
+                    Text(google.account ?? "用你自己的 Client ID 登录，不经过别人").font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
+                Spacer(minLength: 0)
+                if google.connected { ConnectedMark() } else { Text("设置").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.accent) }
             }
-            .padding(Ink.Space.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .paperCard()
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
             .contentShape(Rectangle())
         }
-        .buttonStyle(PressStyle(haptic: false))
+        .buttonStyle(.plain)
+    }
+}
+
+/// The square with a service's symbol (never a company logo).
+struct ConnectorIcon: View {
+    let symbol: String
+    var size: CGFloat = 40
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+            .fill(Ink.accentWash)
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: symbol).font(.system(size: size * 0.44, weight: .medium)).foregroundStyle(Ink.accent)
+            }
+    }
+}
+
+private struct ConnectedMark: View {
+    var body: some View {
+        Label("已连接", systemImage: "checkmark.circle.fill")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Ink.ok)
+    }
+}
+
+/// The 「连接」 on a row: signs in or connects right there; a service that needs a key asks for it first.
+private struct ConnectButton: View {
+    let connector: Connector
+    var needsKey: () -> Void
+    @ObservedObject private var work = ConnectorWork.shared
+
+    var body: some View {
+        if work.busy.contains(connector.id) {
+            ProgressView().frame(width: 64)
+        } else if let server = work.server(of: connector) {
+            if Hills.shared.lastError[server.id] != nil {
+                Text("出错了").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.stop)
+            } else {
+                ConnectedMark()
+            }
+        } else {
+            Button {
+                Haptics.light()
+                if case .key = connector.auth { needsKey() } else { Task { await work.connect(connector) } }
+            } label: {
+                Text("连接")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Ink.accentWash, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("连接\(connector.name)")
+        }
+    }
+}
+
+/// Connecting and disconnecting, shared by the rows and the detail pages.
+@MainActor
+final class ConnectorWork: ObservableObject {
+    static let shared = ConnectorWork()
+    @Published private(set) var busy: Set<String> = []
+    /// Shown as an alert on the list when a connect from a row failed.
+    @Published var failure: String?
+
+    func server(of connector: Connector) -> Hills.Server? {
+        if let id = connector.serverId { return Hills.shared.servers.first { $0.id == id } }
+        return Hills.shared.servers.first { $0.connector == connector.id }
+    }
+
+    /// Returns true when it ended connected.
+    @discardableResult
+    func connect(_ connector: Connector, key: String? = nil) async -> Bool {
+        busy.insert(connector.id)
+        defer { busy.remove(connector.id) }
+        let hills = Hills.shared
+        var entry = server(of: connector) ?? Hills.Server(name: connector.name, url: connector.url)
+        if connector.serverId == nil { entry.connector = connector.id }
+        entry.enabled = true
+        var token: String?
+        if case .key(_, _, let query, _) = connector.auth, let typed = key?.trimmingCharacters(in: .whitespacesAndNewlines), !typed.isEmpty {
+            token = query.map { "?\($0)=\(typed)" } ?? typed
+        }
+        hills.save(entry, token: token)
+        let said = await Connecting.connect(entry, signIn: connector.auth == .oauth)
+        if hills.lastError[entry.id] == nil {
+            Haptics.grab()
+            return true
+        }
+        // A first connect that failed leaves nothing half-done behind.
+        if token != nil || !MCPAuth.signedIn(entry.id) {
+            if hills.tools(of: entry).isEmpty { hills.remove(entry) }
+        }
+        failure = said
+        return false
+    }
+
+    func disconnect(_ connector: Connector) {
+        guard let server = server(of: connector) else { return }
+        Haptics.light()
+        Hills.shared.remove(server)
+    }
+}
+
+/// One connector's page: what it is, 连接 or 断开, and what it brought.
+private struct ConnectorDetail: View {
+    let connector: Connector
+    @ObservedObject private var hills = Hills.shared
+    @ObservedObject private var work = ConnectorWork.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var keying = false
+    @State private var confirming = false
+
+    private var server: Hills.Server? { work.server(of: connector) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                VStack(spacing: Ink.Space.m) {
+                    ConnectorIcon(symbol: connector.icon, size: 72)
+                    Text(connector.name).font(.system(size: 22, weight: .bold)).foregroundStyle(Ink.ink)
+                    Text(URL(string: connector.url)?.host ?? connector.url).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                    primary
+                    if let server, let problem = hills.lastError[server.id] {
+                        Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop).multilineTextAlignment(.center)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, Ink.Space.l)
+
+                block("能做什么") {
+                    Text(connector.line).font(Ink.secondary).foregroundStyle(Ink.ink)
+                }
+                block("怎么连") {
+                    Text(howText).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                }
+                block("会不会先问你") {
+                    Text(Words.t("只读的工具（搜索、查看）旅伴直接用；会改动东西的（新建、修改、发送），每次先问你。可以在「应许 → 远山 · MCP」里整体调成不许或放行。"))
+                        .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                }
+                if let server {
+                    let tools = hills.tools(of: server)
+                    block("带来的工具（\(tools.count)）") {
+                        VStack(alignment: .leading, spacing: Ink.Space.m) {
+                            ForEach(tools, id: \.name) { tool in
+                                HStack(alignment: .top, spacing: Ink.Space.s) {
+                                    Image(systemName: tool.readOnly == true ? "eye" : "pencil")
+                                        .font(.system(size: 12)).foregroundStyle(Ink.inkFaint).frame(width: 16).padding(.top, 2)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(tool.name).font(.system(size: 13, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink)
+                                        if !tool.description.isEmpty {
+                                            Text(tool.description).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.bottom, Ink.Space.xxl)
+        }
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(connector.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $keying) { KeySheet(connector: connector) }
+        .confirmationDialog("断开\(connector.name)？", isPresented: $confirming, titleVisibility: .visible) {
+            Button("断开", role: .destructive) { work.disconnect(connector); dismiss() }
+        } message: { Text(Words.t("旅伴就用不了它的工具了；登录凭据也会从这台手机删掉。")) }
+    }
+
+    @ViewBuilder
+    private var primary: some View {
+        if work.busy.contains(connector.id) {
+            ProgressView().frame(height: 44)
+        } else if server != nil {
+            HStack(spacing: Ink.Space.m) {
+                Button("重新连接") {
+                    if case .key = connector.auth { keying = true } else { Task { await work.connect(connector) } }
+                }
+                .buttonStyle(.bordered)
+                .tint(Ink.accent)
+                Button("断开", role: .destructive) { confirming = true }
+                    .buttonStyle(.bordered)
+            }
+            .controlSize(.large)
+        } else {
+            Button {
+                Haptics.light()
+                if case .key = connector.auth { keying = true } else { Task { await work.connect(connector) } }
+            } label: {
+                Text("连接").font(.system(size: 16, weight: .semibold)).frame(maxWidth: 240)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Ink.accent)
+            .controlSize(.large)
+        }
+    }
+
+    private var howText: String {
+        switch connector.auth {
+        case .oauth: "点「连接」会打开\(connector.name)自己的登录页，你在那边同意后自动回到 Clio。登录凭据只存在这台手机的钥匙串里，过期了会自己续。"
+        case .key(let title, _, _, _): "要一个\(title)。点「连接」会告诉你去哪里拿，粘进来就好。"
+        case .open: "公开的服务，不用登录，点「连接」就能用。"
+        }
+    }
+
+    private func block<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Ink.Space.l)
+                .paperCard()
+        }
+    }
+}
+
+/// For a service that takes a key: where to get it, the field, and 连接.
+private struct KeySheet: View {
+    let connector: Connector
+    @ObservedObject private var work = ConnectorWork.shared
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @State private var key = ""
+
+    var body: some View {
+        if case .key(let title, let page, _, let steps) = connector.auth {
+            NavigationStack {
+                Form {
+                    Section {
+                        ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("\(index + 1)").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 16)
+                                Text(step).font(.system(size: 14))
+                            }
+                        }
+                        Button("去拿\(title)") { if let url = URL(string: page) { openURL(url) } }
+                    }
+                    Section {
+                        SecureField("粘贴\(title)", text: $key)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+                .navigationTitle("连接\(connector.name)")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if work.busy.contains(connector.id) {
+                            ProgressView()
+                        } else {
+                            Button("连接") {
+                                Task { if await work.connect(connector, key: key) { dismiss() } }
+                            }
+                            .fontWeight(.semibold)
+                            .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 }
 
@@ -176,129 +466,6 @@ struct Connector: Identifiable, Hashable {
         Connector(id: "cfdocs", name: "Cloudflare 文档", icon: "cloud", line: "查 Cloudflare 的文档", url: "https://docs.mcp.cloudflare.com/mcp", auth: .open, group: "查资料（不用登录）"),
         Connector(id: "huggingface", name: "Hugging Face", icon: "face.smiling", line: "找模型、数据集和论文", url: "https://huggingface.co/mcp", auth: .open, group: "查资料（不用登录）"),
     ]
-}
-
-/// Connecting one service: sign in, paste a key, or just connect; then what it brought.
-private struct ConnectSheet: View {
-    let connector: Connector
-    @ObservedObject private var hills = Hills.shared
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-    @State private var key = ""
-    @State private var busy = false
-    @State private var result: String?
-
-    private var server: Hills.Server? {
-        if let id = connector.serverId { return hills.servers.first { $0.id == id } }
-        return hills.servers.first { $0.connector == connector.id }
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Text(connector.line).font(.system(size: 14))
-                    Text(connector.url).font(.system(size: 12, design: .monospaced)).foregroundStyle(Ink.inkFaint).textSelection(.enabled)
-                }
-                switch connector.auth {
-                case .oauth:
-                    Section {
-                        Button {
-                            Task { await connect() }
-                        } label: {
-                            HStack {
-                                Text(server == nil ? "登录 \(connector.name)" : "重新登录")
-                                if busy { Spacer(); ProgressView() }
-                            }
-                        }
-                        .disabled(busy)
-                    } footer: { footer(note: "会打开\(connector.name)自己的登录页，你在那边同意后回到 Clio。") }
-                case .key(let title, let page, _, let steps):
-                    Section {
-                        ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text("\(index + 1)").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 16)
-                                Text(step).font(.system(size: 14))
-                            }
-                        }
-                        Button("去拿\(title)") { if let url = URL(string: page) { openURL(url) } }
-                    } header: { Text("怎么拿到\(title)") }
-                    Section {
-                        SecureField(server == nil ? "粘贴\(title)" : "已存好；要换就粘新的", text: $key)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Button {
-                            Task { await connect() }
-                        } label: {
-                            HStack {
-                                Text(server == nil ? "连上" : (key.isEmpty ? "重新取一次工具" : "换上新的并连上"))
-                                if busy { Spacer(); ProgressView() }
-                            }
-                        }
-                        .disabled(busy || (server == nil && key.trimmingCharacters(in: .whitespaces).isEmpty))
-                    } footer: { footer(note: nil) }
-                case .open:
-                    Section {
-                        Button {
-                            Task { await connect() }
-                        } label: {
-                            HStack {
-                                Text(server == nil ? "连上" : "重新取一次工具")
-                                if busy { Spacer(); ProgressView() }
-                            }
-                        }
-                        .disabled(busy)
-                    } footer: { footer(note: "不用登录，公开可用。") }
-                }
-
-                if let server {
-                    Section {
-                        ForEach(hills.tools(of: server), id: \.name) { tool in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(tool.name).font(.system(size: 14, weight: .medium, design: .monospaced))
-                                Text(tool.description).font(.system(size: 12)).foregroundStyle(Ink.inkSoft).lineLimit(2)
-                            }
-                        }
-                    } header: { Text("它带来的工具（\(hills.tools(of: server).count)）") }
-                    Section {
-                        Button("断开\(connector.name)", role: .destructive) {
-                            hills.remove(server)
-                            dismiss()
-                        }
-                    }
-                }
-            }
-            .navigationTitle(connector.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
-        }
-    }
-
-    @ViewBuilder
-    private func footer(note: String?) -> some View {
-        if let result { Text(result) }
-        else if let server, let problem = hills.lastError[server.id] { Text("上次出错：\(problem)").foregroundStyle(Ink.stop) }
-        else if let note { Text(note) }
-    }
-
-    private func connect() async {
-        busy = true
-        defer { busy = false }
-        var entry = server ?? Hills.Server(name: connector.name, url: connector.url)
-        if connector.serverId == nil { entry.connector = connector.id }
-        entry.enabled = true
-        var token: String?
-        if case .key(_, _, let query, _) = connector.auth {
-            let typed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !typed.isEmpty { token = query.map { "?\($0)=\(typed)" } ?? typed }
-        }
-        hills.save(entry, token: token)
-        result = await Connecting.connect(entry, signIn: connector.auth == .oauth)
-        if hills.lastError[entry.id] == nil {
-            key = ""
-            Haptics.grab()
-        }
-    }
 }
 
 /// Adding any MCP service by its address. Signs in by itself when the service asks for it.
@@ -374,7 +541,7 @@ enum Connecting {
                 return "没登录上：\(error.localizedDescription)"
             }
         }
-        if count >= 0 { return "连上了，带来 \(count) 个工具。旅伴现在就能用。" }
+        if count >= 0 { return Words.t("连上了，带来 \(count) 个工具。旅伴现在就能用。") }
         return "没连上：\(hills.lastError[server.id] ?? "不明原因")"
     }
 }
@@ -392,12 +559,12 @@ private struct GoogleSheet: View {
                 if let account = google.account {
                     Section {
                         Label(account, systemImage: "checkmark.circle.fill").foregroundStyle(Ink.ok)
-                        Text("旅伴能找、读你的 Gmail 和云端硬盘，能存邮件草稿；真要发信，每次都会先问你。")
+                        Text(Words.t("旅伴能找、读你的 Gmail 和云端硬盘，能存邮件草稿；真要发信，每次都会先问你。"))
                             .font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
                         Button("重新登录") { Task { await google.signIn() } }.disabled(google.busy)
                         Button("退出谷歌", role: .destructive) { google.signOut() }
                     } footer: {
-                        Text("谷歌把还在测试的应用的登录 7 天作废；到时旅伴会说登录过期，回这里点「重新登录」。")
+                        Text(Words.t("谷歌把还在测试的应用的登录 7 天作废；到时旅伴会说登录过期，回这里点「重新登录」。"))
                     }
                 } else {
                     Section {

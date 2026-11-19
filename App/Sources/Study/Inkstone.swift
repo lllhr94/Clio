@@ -38,13 +38,13 @@ struct InkstonePage: View {
                         Button {
                             switchTo(nil)
                         } label: {
-                            if hill == nil { Label("斗室 · 手机里", systemImage: "checkmark") } else { Text("斗室 · 手机里") }
+                            if hill == nil { Label(Words.t("斗室 · 手机里"), systemImage: "checkmark") } else { Text(Words.t("斗室 · 手机里")) }
                         }
                         ForEach(hills.hosts) { host in
                             Button {
                                 switchTo(host)
                             } label: {
-                                if hill?.id == host.id { Label("远山 · \(host.name)", systemImage: "checkmark") } else { Text("远山 · \(host.name)") }
+                                if hill?.id == host.id { Label(Words.t("远山 · \(host.name)"), systemImage: "checkmark") } else { Text(Words.t("远山 · \(host.name)")) }
                             }
                         }
                     }
@@ -110,9 +110,9 @@ struct InkstonePage: View {
     private var subtitle: String {
         if let hill {
             if ended { return endedWhy.map { "断开了：\($0)" } ?? "连接已经结束" }
-            return "远山 · \(hill.user)@\(hill.address)"
+            return Words.t("远山 · \(hill.user)@\(hill.address)")
         }
-        return ended ? "shell 已经结束" : "斗室 · Alpine Linux"
+        return ended ? "shell 已经结束" : Words.t("斗室 · Alpine Linux")
     }
 }
 

@@ -204,7 +204,7 @@ struct BotEditor: View {
                 .scrollDismissesKeyboard(.interactively)
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle(bot == nil ? "写一张新名帖" : "名帖")
+            .navigationTitle(Words.t(bot == nil ? "写一张新名帖" : "名帖"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -367,7 +367,7 @@ struct RoomEditor: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle(room == nil ? "开一场雅集" : "雅集")
+            .navigationTitle(Words.t(room == nil ? "开一场雅集" : "雅集"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }

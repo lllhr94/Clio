@@ -45,7 +45,7 @@ struct PortraitPage: View {
                 if persona.kind == .picture {
                     VStack(alignment: .leading, spacing: Ink.Space.m) {
                         Text("每个姿态放一张图").font(Ink.readingBold).foregroundStyle(Ink.ink)
-                        Text("只放闲坐一张也行，透明底最好")
+                        Text(Words.t("只放闲坐一张也行，透明底最好"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         HStack(spacing: Ink.Space.m) {

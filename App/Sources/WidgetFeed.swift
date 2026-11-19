@@ -8,7 +8,7 @@ enum WidgetFeed {
     static func publish(_ team: TeamModel) {
         guard let id = team.mainBotId, let bot = team.bots.first(where: { $0.id == id }) else { return }
         let key = TeamModel.key(bot: id)
-        let status = team.approvals.contains { $0.chat == key } ? "等你批准" : (team.isWorking(key) ? "在干活" : "闲坐")
+        let status = team.approvals.contains { $0.chat == key } ? "等你批准" : (team.isWorking(key) ? "在干活" : Words.t("闲坐"))
         let snapshot = WidgetSnapshot(name: bot.name, status: status, line: String((bot.preview ?? "").prefix(120)), at: (bot.lastAt ?? 0) / 1000, chat: key)
         guard snapshot != last else { return }
         last = snapshot

@@ -221,7 +221,7 @@ struct LeavesSheet: View {
                     if let fold = unfolding {
                         withAnimation(Ink.Motion.unfold) { team.unfold(key, fold) }
                         Haptics.thud()
-                        note = "拆开了：压缩前的原文放回了絮语里，前情提要退回压缩前的样子。"
+                        note = Words.t("拆开了：压缩前的原文放回了絮语里，前情提要退回压缩前的样子。")
                     }
                     unfolding = nil
                 }

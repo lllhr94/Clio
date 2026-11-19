@@ -25,7 +25,11 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var title: String {
+    /// As the user wants things named (poetic or plain).
+    var title: String { Words.t(poeticTitle) }
+    var note: String { Words.t(poeticNote) }
+
+    private var poeticTitle: String {
         switch self {
         case .web: "寻访"
         case .browser: "远游"
@@ -50,7 +54,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var note: String {
+    private var poeticNote: String {
         switch self {
         case .web: "联网搜索、读网页"
         case .browser: "在 app 里的浏览器打开、点击、填写网页"
