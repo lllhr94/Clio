@@ -99,6 +99,8 @@ final class TeamModel: ObservableObject {
     private var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     private var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published private var laters: [Later] = []
+    /// Tools used in the turn running now, per conversation (for the bar above the composer).
+    @Published var toolCount: [String: Int] = [:]
     /// 定时: what companions do again and again at set times.
     @Published private(set) var routines: [Routine] = []
     /// 远游: the one browser every companion shares with the user.
@@ -1017,6 +1019,7 @@ final class TeamModel: ObservableObject {
             Snapshots.shared.begin(key, turn: turn.id)
         }
         doing[key] = "正在想"
+        toolCount[key] = 0
         LiveTurns.begin(chat: key, name: chatName(key))
         let task = Task { [weak self] in
             await previous?.value
@@ -1242,6 +1245,7 @@ final class TeamModel: ObservableObject {
         case .toolStarted(let id, _, let label):
             labels[id] = label
             LiveTurns.step(chat: key)
+            toolCount[key, default: 0] += 1
             doing[key] = label
             ToolTail.shared.clear()
             notify(key, .tool(label))

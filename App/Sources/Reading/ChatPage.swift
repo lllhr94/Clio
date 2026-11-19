@@ -161,13 +161,11 @@ struct ChatPage: View {
                     ProseView(text: chat.streaming, streaming: true)
                         .id("streaming")
                 }
-                if let words = liveWords, showsLive {
-                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        LiveStatus(words: words, icon: liveIcon, since: workingSince ?? Date(), waiting: waiting != nil)
-                        if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") { ToolTailView() }
-                    }
-                    .id("live")
-                    .transition(.opacity.combined(with: .offset(y: 8)))
+                // What it is doing now sits in the bar above the composer; here only a running command's output.
+                if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
+                    ToolTailView()
+                        .id("live")
+                        .transition(.opacity.combined(with: .offset(y: 8)))
                 }
                 if let error = chat.error, !saidInNote(error) {
                     Text(error)
@@ -1266,6 +1264,13 @@ struct ChatPage: View {
                 .buttonStyle(PressStyle())
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            if working, waiting == nil, let words = liveWords {
+                WorkingBar(words: words, icon: liveIcon, tools: team.toolCount[chat.key] ?? 0, since: workingSince ?? Date()) {
+                    following = true
+                    toEnd()
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
                     .onTapGesture { dictation.problem = nil }
@@ -1368,7 +1373,7 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
-                    TextField(dictation.listening ? "正在听，说完点右边" : (working ? "接着写，这轮做完就发…" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
+                    TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
                         .font(Ink.label)
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1...6)
@@ -1878,6 +1883,67 @@ private struct Trace: View {
 
 
 /// The line under the conversation while the companion works: what it is doing, and for how long.
+/// Above the composer while the companion works, after DSH Go: what it is doing, how many tools so far, how long.
+/// A tap goes to the bottom of the conversation.
+private struct WorkingBar: View {
+    let words: String
+    let icon: String
+    let tools: Int
+    let since: Date
+    let tap: () -> Void
+
+    /// A word of encouragement that grows with the work.
+    private var mood: String {
+        switch tools {
+        case 0: return ""
+        case 1...2: return "上手了"
+        case 3...6: return "手感来了"
+        case 7...14: return "越做越顺"
+        default: return "大活，慢慢来"
+        }
+    }
+
+    var body: some View {
+        Button(action: tap) {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .symbolEffect(.pulse)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 18)
+                Text(words)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                if tools > 0 {
+                    Text("工具 ×\(tools)" + (mood.isEmpty ? "" : "，\(mood)"))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
+                Spacer(minLength: Ink.Space.s)
+                TimelineView(.periodic(from: since, by: 1)) { context in
+                    let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+                    Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(Ink.inkSoft)
+                        .contentTransition(.numericText())
+                }
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .frame(height: 40)
+            .glassFace(in: Capsule())
+            .animation(Ink.Motion.settle, value: words)
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("回到对话最底下")
+    }
+}
+
 private struct LiveStatus: View {
     let words: String
     let icon: String
