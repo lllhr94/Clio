@@ -143,11 +143,12 @@ enum Ink {
     static let hasSongti = UIFont(name: "STSongti-SC-Regular", size: 17) != nil
 
     /// The reading face: titles, a companion's words, notes.
+    /// Titles: the system serif for Latin and figures, PingFang for Chinese; 宋体 only when the user reads in 宋体.
     static func serif(_ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
-        if hasSongti {
+        if Pref.face == .song, hasSongti {
             return .custom(bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular", size: size, relativeTo: style)
         }
-        return .system(size: size, weight: bold ? .bold : .regular, design: .serif)
+        return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
     }
 
     static let display = serif(30, bold: true, relativeTo: .largeTitle)
@@ -158,7 +159,7 @@ enum Ink {
 
     static func body(_ size: Double, bold: Bool) -> Font {
         switch Pref.face {
-        case .song: serif(size, bold: bold, relativeTo: .body)
+        case .song: hasSongti ? .custom(bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular", size: size, relativeTo: .body) : .system(size: size, weight: bold ? .bold : .regular, design: .serif)
         case .sans: .system(size: size, weight: bold ? .semibold : .regular)
         case .rounded: .system(size: size, weight: bold ? .semibold : .regular, design: .rounded)
         case .serif: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)

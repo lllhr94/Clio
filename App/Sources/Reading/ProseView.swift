@@ -24,9 +24,9 @@ enum ParsedCache {
 /// While a reply is still arriving, only its last block changes, and that block's newest glyphs fade in.
 struct ProseView: View {
     // Read so a change in 纸墨 redraws the text.
-    @AppStorage("look.face") private var face = "song"
+    @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 8.0
+    @AppStorage("look.leading") private var leading = 10.0
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -57,12 +57,13 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            Inline(text: text, font: level <= 1 ? Ink.title : (level == 2 ? Ink.serif(19, bold: true, relativeTo: .title3) : Ink.readingBold), fading: fading)
+            // Headings in the reading face, a step or two larger: never a different family from the text under them.
+            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 4, bold: true) : (level == 2 ? Ink.body(Pref.size + 2, bold: true) : Ink.readingBold), fading: fading)
                 .padding(.top, level <= 2 ? Ink.Space.s : 0)
         case .paragraph(let text):
             Inline(text: text, font: Ink.reading, fading: fading)
         case .list(let items):
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
                         marker(item)

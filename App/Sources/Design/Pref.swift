@@ -11,21 +11,33 @@ enum Pref {
     // MARK: 纸墨 — how it looks
 
     enum Face: String, CaseIterable, Identifiable {
-        case song, sans, rounded, serif
+        // 书卷 first: Latin and figures in the system serif, Chinese in PingFang, as the best reading apps set it.
+        case serif, sans, rounded, song
         var id: String { rawValue }
         var title: String {
             switch self {
             case .song: "宋体"
             case .sans: "苹方"
             case .rounded: "圆体"
-            case .serif: "衬线"
+            case .serif: "书卷"
             }
         }
     }
 
-    static var face: Face { Face(rawValue: store.string(forKey: "look.face") ?? "") ?? .song }
+    static var face: Face { Face(rawValue: store.string(forKey: "look.face") ?? "") ?? .serif }
     static var size: Double { double("look.size", 17) }
-    static var leading: Double { double("look.leading", 8) }
+    static var leading: Double { double("look.leading", 10) }
+
+    /// Once: the new reading type replaces the old default (宋体, tight lines) for anyone who had not changed it.
+    static func settleType() {
+        guard !store.bool(forKey: "look.typeset2") else { return }
+        store.set(true, forKey: "look.typeset2")
+        if store.string(forKey: "look.face") == nil || store.string(forKey: "look.face") == "song" { store.set("serif", forKey: "look.face") }
+        let size = double("look.size", 17)
+        let step = [14.0, 15.5, 17, 19].enumerated().min { abs($0.element - size) < abs($1.element - size) }?.offset ?? 2
+        store.set([14.0, 15.5, 17, 19][step], forKey: "look.size")
+        store.set([8.0, 9, 10, 11][step], forKey: "look.leading")
+    }
     /// "system", "light" or "dark".
     static var scheme: String { store.string(forKey: "look.scheme") ?? "system" }
     static var haptics: Bool { bool("look.haptics", true) }

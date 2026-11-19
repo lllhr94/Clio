@@ -406,8 +406,14 @@ final class Hills: ObservableObject {
                 return try await work(try await MCPAuth.bearer(id, stale: true))
             }
         }
-        return try await work(Vault.load(String.self, key: "mcp.\(id)"))
+        let saved = Vault.load(String.self, key: "mcp.\(id)")
+        // Google's own MCP services: the token from the Google sign-in in 连接器.
+        if saved == Hills.googleToken { return try await work(try await Google.access()) }
+        return try await work(saved)
     }
+
+    /// Stands in, in the Vault, for "use the Google sign-in" on Google's MCP services.
+    nonisolated static let googleToken = "google:signin"
 
     /// Where to send a service's requests: its own address, or the phone's end of an SSH tunnel to it.
     nonisolated static func address(_ url: String, through host: Host?) async throws -> String {

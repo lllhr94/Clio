@@ -41,6 +41,8 @@ extension Notification.Name {
 struct ClioApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
+    init() { Pref.settleType() }
+
     var body: some Scene {
         WindowGroup {
             ClioRoot().appLock()

@@ -15,12 +15,25 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     @Published private(set) var busy = false
     @Published var problem: String?
 
+    /// What the sign-in asks for: enough for Clio's own Gmail and Drive tools and for Google's official
+    /// MCP services (Gmail, Drive, Calendar, Docs, Sheets, Slides).
     static let scopes = [
         "email",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations",
     ]
+    /// Bumped when `scopes` grows: an older sign-in has to be done again to grant the new ones.
+    static let scopesVersion = 2
+
+    /// Signed in, but before the scopes grew.
+    var needsMoreScopes: Bool { connected && UserDefaults.standard.integer(forKey: "google.scopes") < Self.scopesVersion }
 
     var clientId: String {
         get { UserDefaults.standard.string(forKey: "google.client") ?? "" }
@@ -78,6 +91,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             }
             let me = try? await Self.get("https://www.googleapis.com/oauth2/v3/userinfo")
             account = me?["email"]?.string ?? "已登录"
+            UserDefaults.standard.set(Self.scopesVersion, forKey: "google.scopes")
             UserDefaults.standard.set(account, forKey: "google.account")
             Haptics.grab()
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {

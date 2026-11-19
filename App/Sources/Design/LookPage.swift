@@ -6,9 +6,9 @@ struct LookPage: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("look.scheme") private var scheme = "system"
-    @AppStorage("look.face") private var face = "song"
+    @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 8.0
+    @AppStorage("look.leading") private var leading = 10.0
     @AppStorage("look.haptics") private var haptics = true
     @AppStorage("look.fade") private var fade = true
     @AppStorage("look.stats") private var stats = true
@@ -35,7 +35,7 @@ struct LookPage: View {
 
     /// The reading sizes on offer, each with the line spacing that suits it.
     static let sizes: [(title: String, size: Double, leading: Double)] = [
-        ("超小", 14, 6), ("小", 15.5, 7), ("中", 17, 8), ("大", 19, 9),
+        ("超小", 14, 8), ("小", 15.5, 9), ("中", 17, 10), ("大", 19, 11),
     ]
 
     /// The step closest to a size kept from before (when it was a slider).
