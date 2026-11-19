@@ -29,6 +29,7 @@ struct LookPage: View {
     @AppStorage("live.on") private var liveOn = true
     @AppStorage("look.fps") private var fps = false
     @AppStorage("lock.faceid") private var faceLock = false
+    @AppStorage("look.thinking") private var showThinking = true
 
     private let sample = """
     ## 小样
@@ -79,6 +80,7 @@ struct LookPage: View {
                     Toggle("回复逐字淡入", isOn: $fade)
                     Toggle("回复下显示耗时和用量", isOn: $stats)
                     Toggle("行迹默认展开", isOn: $traceOpen)
+                    Toggle("回复上留着思考过程", isOn: $showThinking)
                     Toggle("聊天页的形象", isOn: $mascot)
                     Toggle("角落显示帧率", isOn: $fps)
                 }
@@ -184,7 +186,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.thinking", "lock.faceid",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }

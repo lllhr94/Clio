@@ -56,6 +56,8 @@ enum Pref {
     static var diaryOn: Bool { bool("diary.on", false) }
     /// A notification when a companion finishes, fails, or stops halfway, while the app is away.
     static var notifyDone: Bool { bool("notify.done", true) }
+    /// Under a reply, a folded line with what the model thought on the way.
+    static var showThinking: Bool { bool("look.thinking", true) }
     /// The frame-rate meter in the corner, for checking smoothness.
     static var fpsMeter: Bool { bool("look.fps", false) }
     static var morningHour: Int { int("morning.hour", 7) }

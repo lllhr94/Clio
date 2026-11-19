@@ -57,6 +57,8 @@ enum TurnEvent {
     case text(String)
     /// A tool started.
     case tool(String)
+    /// More of what the model thinks before it answers.
+    case thinking(String)
     case finished
     case failed(String)
 }
@@ -981,6 +983,8 @@ final class TeamModel: ObservableObject {
         let id = UUID()
         var text: String
         var photos: [Data]
+        /// 插话: handed to the companion between its steps, not after the turn.
+        var interject = false
     }
 
     /// Messages waiting for the turn in progress to finish, by chat.
@@ -999,6 +1003,22 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
         touch(key, preview: nil)
         start(key)
+    }
+
+    /// 插话: said while the companion works. It reaches the companion after the step in progress, without
+    /// stopping it; if the turn ends first, it goes out as the next message like anything queued.
+    func interject(_ text: String, to key: String) {
+        guard runs[key] != nil else { send(text, photos: [], to: key); return }
+        withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: [], interject: true)) }
+    }
+
+    /// What was said in passing, taken out of the queue for the companion to read now.
+    func takeInbox(_ key: String) -> [String] {
+        guard let list = queued[key], list.contains(where: \.interject) else { return [] }
+        let taken = list.filter(\.interject).map(\.text)
+        let rest = list.filter { !$0.interject }
+        withAnimation(.smooth) { queued[key] = rest.isEmpty ? nil : rest }
+        return taken
     }
 
     /// 「立即发送」: stop the turn in progress and send what is queued now.
@@ -1238,6 +1258,7 @@ final class TeamModel: ObservableObject {
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto
+        agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
         doing[key] = room == nil ? "已递出，等它开口" : "\(bot.name)：已递出，等它开口"
         heard[key] = Date()
         // Before the first word nothing comes back: say so, and say it again when the wait grows long.
@@ -1300,8 +1321,9 @@ final class TeamModel: ObservableObject {
             if doing[key] != "正在回复" { doing[key] = "正在回复" }
             streamed[key, default: (speaker: speaker, text: "")].text += piece
             notify(key, .text(piece))
-        case .reasoning:
+        case .reasoning(let piece):
             if doing[key] != "正在想" { doing[key] = "正在想" }
+            notify(key, .thinking(piece))
         case .toolStarted(let id, _, let label):
             labels[id] = label
             LiveTurns.step(chat: key)
@@ -1340,7 +1362,8 @@ final class TeamModel: ObservableObject {
             // Pictures a tool brought back are kept as photos for the trace, not inside the saved message.
             let shots = keeping ? kept.images.map { Disk.keepPhoto($0.data) } : []
             kept.images = []
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: speaker, photos: shots, label: label), to: key)
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: message.role == .user ? nil : speaker, photos: shots, label: label), to: key)
+            if message.role == .user { doing[key] = "收到插话，接着做" }
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
         case .usage(let input, let output, let cached):
             written[key, default: 0] += output

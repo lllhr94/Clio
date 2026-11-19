@@ -40,6 +40,8 @@ struct ChatLine: Identifiable, Equatable {
     var seconds: Int?
     /// A reply: the tokens its turn used.
     var tokens: Int?
+    /// A reply: what the model thought on the way to it, in this turn.
+    var reasoning: String?
     /// A note about a failure: what to do next.
     var next: Explain.Next?
 }
@@ -51,6 +53,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var pending: [ChatLine] = []
     /// The part of the reply being written that is on screen so far.
     @Published private(set) var streaming = ""
+    /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
+    @Published private(set) var thinking = ""
     /// The reply that just finished: the row that took over from the streaming one.
     @Published private(set) var fresh: Fresh?
 
@@ -181,6 +185,7 @@ final class ChatModel: ObservableObject {
         var stepAt: Double = 0
         var turnAt: Double?
         var calls: [String: String] = [:]
+        var thought = ""
         for entry in all.suffix(limit) {
             let message = entry.message
             if entry.note == true {
@@ -198,11 +203,17 @@ final class ChatModel: ObservableObject {
                 out.append(line)
                 open = nil
                 turnAt = entry.at
+                thought = ""
             case .assistant:
+                if let reasoning = message.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !reasoning.isEmpty {
+                    thought += (thought.isEmpty ? "" : "\n\n") + reasoning
+                }
                 if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     var line = ChatLine(id: entry.id, kind: .bot, text: message.text, speaker: entry.speaker)
                     if let turnAt { line.seconds = max(1, Int((entry.at - turnAt) / 1000)) }
                     line.tokens = entry.tokens
+                    line.reasoning = thought.isEmpty ? nil : thought
+                    thought = ""
                     out.append(line)
                     open = nil
                 }
@@ -259,12 +270,17 @@ final class ChatModel: ObservableObject {
 
     private func hear(_ event: TurnEvent) {
         switch event {
+        case .thinking(let piece):
+            thinking += piece
+            if thinking.count > 6000 { thinking = String(thinking.suffix(4000)) }
         case .text(let piece):
+            if !thinking.isEmpty { thinking = "" }
             if fresh?.shown != nil { fresh?.shown = nil }
             if target.isEmpty { shown = 0 }
             target += piece
             type()
         case .tool(let label):
+            thinking = ""
             running = label
             apply(build(team.history(key)))
         case .changed:
@@ -290,12 +306,14 @@ final class ChatModel: ObservableObject {
             }
         case .finished:
             running = nil
+            thinking = ""
             if !target.isEmpty {
                 target = ""
                 streaming = ""
             }
             apply(build(team.history(key)))
         case .failed(let message):
+            thinking = ""
             withAnimation(.smooth) { error = message }
             Haptics.lock()
         }
@@ -315,6 +333,20 @@ final class ChatModel: ObservableObject {
         if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return }
         // While the companion works, the message queues and waits; the reply being written is left alone.
         team.send(trimmed, photos: photos, to: key)
+    }
+
+    /// 插话: reaches the companion between its steps. Photos can't go in passing; they wait for the turn to end.
+    func interject(_ text: String, photos: [Data] = []) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !photos.isEmpty else { return }
+        if demo || !photos.isEmpty { send(trimmed, photos: photos); return }
+        team.interject(trimmed, to: key)
+    }
+
+    /// 中断并发送: stop what it is doing and send this now.
+    func sendNow(_ text: String, photos: [Data] = []) {
+        send(text, photos: photos)
+        team.sendQueueNow(key)
     }
 
     func retry(_ id: String) {}

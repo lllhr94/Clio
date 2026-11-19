@@ -157,6 +157,11 @@ struct ChatPage: View {
                         .id(line.id)
                         .transition(.opacity.combined(with: .offset(y: 12)))
                 }
+                if !chat.thinking.isEmpty && chat.streaming.isEmpty {
+                    ThinkingBox(text: chat.thinking, live: true)
+                        .id("thinking")
+                        .transition(.opacity)
+                }
                 if !chat.streaming.isEmpty {
                     ProseView(text: chat.streaming, streaming: true)
                         .id("streaming")
@@ -232,6 +237,7 @@ struct ChatPage: View {
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
             .onChange(of: chat.streaming.count / 80) { followToEnd(settle: false) }
+            .onChange(of: chat.thinking.count / 120) { followToEnd(settle: false) }
             .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
         }
@@ -253,7 +259,7 @@ struct ChatPage: View {
             .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: 18))
             .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
             HStack(spacing: Ink.Space.m) {
-                Text(working ? "排队中，这轮做完就发" : "还没发出").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                 Button("撤回", systemImage: "arrow.uturn.backward") {
                     if let back = team.unqueue(chat.key, item.id) {
                         draft = draft.isEmpty ? back.text : draft + "\n" + back.text
@@ -969,6 +975,9 @@ struct ChatPage: View {
                         Text(speaker.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                     }
                 }
+                if let reasoning = line.reasoning, Pref.showThinking {
+                    ThinkingBox(text: reasoning)
+                }
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
                     ProseView(text: String(line.text.prefix(shown)), streaming: true)
                 } else {
@@ -1305,28 +1314,37 @@ struct ChatPage: View {
         switch card {
         case .waiting:
             if let waiting {
-            Button {
-                Haptics.grab()
-                typing = false
-                approving = waiting
-            } label: {
-                HStack(spacing: Ink.Space.m) {
-                    Image(systemName: "seal").foregroundStyle(Ink.warn)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                        if let reason = waiting.reason {
-                            Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                // A plain ask is answered right here; a forced one (after reading the web) gets the full slip.
+                if waiting.forced == true || waiting.answerable == false {
+                    Button {
+                        Haptics.grab()
+                        typing = false
+                        approving = waiting
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: "seal").foregroundStyle(Ink.warn)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                                if let reason = waiting.reason {
+                                    Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Text(Words.t("去落印")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
                         }
+                        .padding(Ink.Space.m)
+                        .paperCard()
                     }
-                    Spacer(minLength: 0)
-                    Text(Words.t("去落印")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                    .buttonStyle(PressStyle())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else {
+                    InlineApproval(approval: waiting, team: team, name: team.bots.first { $0.id == waiting.botId }?.name ?? bot.name) {
+                        typing = false
+                        approving = waiting
+                    }
+                    .id(waiting.id)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .padding(Ink.Space.m)
-                .paperCard()
-            }
-            .buttonStyle(PressStyle())
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-
             }
         case .roam:
             RoamSlip(browser: team.browser) {
@@ -1596,15 +1614,13 @@ struct ChatPage: View {
                     let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
                     chat.send(quoted + "\n\n" + draft + fileNote, photos: photos)
                     self.quote = nil
+                } else if working {
+                    // While it works, a plain tap is 插话: heard after the step in progress.
+                    chat.interject(outgoing, photos: photos)
                 } else {
-                    let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    chat.send((words.isEmpty && !files.isEmpty ? "看看这些文件。" : draft) + fileNote, photos: photos)
+                    chat.send(outgoing, photos: photos)
                 }
-                draft = ""
-                photos = []
-                files = []
-                following = true
-                followToEnd()
+                clearComposer()
             default:
                 listen()
             }
@@ -1625,7 +1641,38 @@ struct ChatPage: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .animation(Ink.Motion.press, value: mode)
-        .accessibilityLabel(["说完了", "让它停下", "发送", "说话"][mode])
+        .accessibilityLabel(["说完了", "让它停下", working ? "插话" : "发送", "说话"][mode])
+        .contextMenu {
+            if working && canSend && editing == nil && quote == nil {
+                Button("插话：这一步做完就递给它", systemImage: "text.bubble") {
+                    chat.interject(outgoing, photos: photos)
+                    clearComposer()
+                }
+                Button("中断并发送", systemImage: "bolt") {
+                    Haptics.thud()
+                    chat.sendNow(outgoing, photos: photos)
+                    clearComposer()
+                }
+                Button("排队：这轮做完再发", systemImage: "tray") {
+                    chat.send(outgoing, photos: photos)
+                    clearComposer()
+                }
+            }
+        }
+    }
+
+    /// What the send button sends: the draft and the files picked for it.
+    private var outgoing: String {
+        let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (words.isEmpty && !files.isEmpty ? "看看这些文件。" : draft) + fileNote
+    }
+
+    private func clearComposer() {
+        draft = ""
+        photos = []
+        files = []
+        following = true
+        followToEnd()
     }
 
     /// Smaller and as JPEG: quick to send and enough for a model to read.

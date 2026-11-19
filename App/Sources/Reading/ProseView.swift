@@ -181,11 +181,20 @@ private struct CodeBlock: View {
     let language: String
     let text: String
     @State private var copied = false
+    @State private var unfolded = false
+
+    private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
+    /// Long code shows its first lines; the rest opens on a tap.
+    private var folds: Bool { lineCount > 20 }
+    private var shown: String {
+        guard folds, !unfolded else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(language.isEmpty ? "代码" : language).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text((language.isEmpty ? "代码" : language) + " · \(lineCount) 行").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Spacer()
                 Button {
                     UIPasteboard.general.string = text
@@ -208,13 +217,28 @@ private struct CodeBlock: View {
             .frame(height: 34)
             Rectangle().fill(Ink.rule).frame(height: 1)
             ScrollView(.horizontal) {
-                Text(Highlight.code(text, language: language))
+                Text(Highlight.code(shown, language: language))
                     .font(Ink.code)
                     .lineSpacing(4)
                     .padding(Ink.Space.l)
                     .fixedSize(horizontal: true, vertical: false)
             }
             .scrollIndicators(.hidden)
+            if folds {
+                Button {
+                    Haptics.tick(0.4)
+                    withAnimation(Ink.Motion.settle) { unfolded.toggle() }
+                } label: {
+                    Label(unfolded ? "收起" : "展开全部 \(lineCount) 行", systemImage: unfolded ? "chevron.up" : "chevron.down")
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.accent)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 1) }
+            }
         }
         .paperCard()
     }

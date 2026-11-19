@@ -215,13 +215,17 @@ struct ApproveView: View {
                     Text(reason).font(.system(size: 14)).foregroundStyle(Ink.inkSoft).lineLimit(4)
                 }
                 if let code = current.detail?.code, !code.isEmpty {
-                    Text(code)
-                        .font(.system(size: 13, design: .monospaced))
-                        .lineLimit(4)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Ink.mine, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    // The whole command, scrolled, never cut off: what is approved must be seen in full.
+                    ScrollView {
+                        Text(code)
+                            .font(.system(size: 13, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 88)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Ink.mine, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
 

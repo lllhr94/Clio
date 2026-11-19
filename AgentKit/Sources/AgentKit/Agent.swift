@@ -78,6 +78,8 @@ public struct Agent: Sendable {
     public var thinking: Thinking = .auto
     /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
     public var retryDelays: [Double] = [1, 3]
+    /// What the person said while the turn was at work (插话): read between steps, before the model is asked again.
+    public var inbox: (@Sendable () async -> [String])?
 
     public init(provider: ModelProvider, model: String, system: String, tools: [AgentTool] = [], maxSteps: Int = 16, approve: @escaping @Sendable (ApprovalAsk, String) async -> Bool = { _, _ in false }) {
         self.provider = provider
@@ -123,8 +125,15 @@ public struct Agent: Sendable {
         var messages = history
         let specs = tools.map { Self.titled($0.spec) }
         var thinking = self.thinking
-        for _ in 0..<maxSteps {
+        for step in 0..<maxSteps {
             try Task.checkCancellation()
+            if step > 0, let inbox {
+                for said in await inbox() where !said.isEmpty {
+                    let heard = Message.user(said)
+                    messages.append(heard)
+                    await emit(.message(heard))
+                }
+            }
             var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
             var text = ""
             var reasoning = ""
