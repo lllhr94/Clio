@@ -116,23 +116,14 @@ jobs:
       # Pictures of the main screens, to check the look without a phone.
       - name: Screenshots (simulator)
         if: inputs.shots
+        continue-on-error: true
+        env:
+          SWIFTTERM_BUILD_BRANCH: main
+          SWIFTTERM_BUILD_TAG: "1.20.0"
+          SWIFTTERM_BUILD_COMMIT: release
+          SWIFTTERM_BUILD_DIRTY: "false"
         run: |
           set -o pipefail
-          ARCH="$(uname -m)"
-          xcodebuild \
-            -project Clio.xcodeproj \
-            -scheme Clio \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath simbuild \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            ARCHS="$ARCH" ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee simbuild.log | grep -iE "error|BUILD" | tail -n 60
-          APP="$(find simbuild/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)"
-          test -n "$APP" || { echo "::error::没有模拟器的 .app"; exit 1; }
           UDID="$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
           data = json.load(sys.stdin)["devices"]
@@ -140,6 +131,26 @@ jobs:
           phones = phones or [d for runtime, ds in data.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone")]
           print(phones[-1]["udid"])
           ')"
+          echo "simulator: $UDID"
+          status=0
+          xcodebuild \
+            -project Clio.xcodeproj \
+            -scheme Clio \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -derivedDataPath simbuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build > simbuild.log 2>&1 || status=$?
+          grep -nE "error:|warning: unable|BUILD (SUCCEEDED|FAILED)" simbuild.log | head -n 80 || true
+          if [ "$status" != 0 ]; then
+            grep -nB3 -A25 "Generate SwiftTerm build information" simbuild.log | tail -n 80 || true
+            tail -n 40 simbuild.log
+            exit "$status"
+          fi
+          APP="$(find simbuild/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$APP" || { echo "::error::没有模拟器的 .app"; exit 1; }
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "$APP"
@@ -156,7 +167,14 @@ jobs:
           ls -la shots
 
       - uses: actions/upload-artifact@v4
-        if: inputs.shots
+        if: always() && inputs.shots
+        with:
+          name: simbuild-log
+          path: App/simbuild.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.shots
         with:
           name: Clio-screenshots
           path: App/shots
