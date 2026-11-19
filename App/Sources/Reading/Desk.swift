@@ -281,27 +281,29 @@ struct Desk: View {
                     }
                 }
                 .padding(.horizontal, Ink.Space.s)
-                .padding(.bottom, 80)
+                .padding(.bottom, Ink.Space.l)
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
 
-            HStack(spacing: Ink.Space.m) {
-                Spacer()
-
-                Button {
-                    Haptics.light()
-                    closeSide()
-                    tuning = true
-                } label: {
-                    Image(systemName: "gearshape").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink)
-                        .frame(width: 48, height: 48).glassFace(in: Circle())
+            // Settings sits at the foot as a full row, like the places above it, not a lone button in a corner.
+            Kit.rule(inset: 0)
+            Button {
+                Haptics.light()
+                closeSide()
+                tuning = true
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Image(systemName: "gearshape").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkSoft).frame(width: 26)
+                    Text(Words.t("调弦")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                    Spacer()
+                    Text("\(team.bots.count) 位\(Words.t("旅伴"))").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                 }
-                .buttonStyle(PressStyle(haptic: false))
-                .accessibilityLabel(Words.t("调弦"))
+                .padding(.horizontal, Ink.Space.s + Ink.Space.m)
+                .frame(height: 52)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, Ink.Space.l)
-            .padding(.bottom, Ink.Space.m)
+            .buttonStyle(PressStyle(haptic: false))
         }
         .background(Ink.paper.ignoresSafeArea())
     }

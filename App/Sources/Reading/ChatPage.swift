@@ -150,11 +150,13 @@ struct ChatPage: View {
             // A plain stack, not a lazy one: every line is measured, so "the bottom" is always exactly where it is.
             // A lazy stack guesses the height of lines it has not drawn, and scrolling to the end could stop short.
             // To keep that cheap, only the newest lines are drawn; older ones come in on request.
-            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
                 if chat.lines.count > shownCount { earlier }
                 ForEach(chat.lines.suffix(shownCount)) { line in
                     row(line)
+                        // A turn starts with what you said: more room above it than between the parts of a reply.
+                        .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
                         .id(line.id)
                         .transition(.opacity.combined(with: .offset(y: 12)))
                 }
@@ -968,7 +970,7 @@ struct ChatPage: View {
                 }
                 if !line.text.isEmpty {
                     Text(line.text)
-                        .font(Ink.label)
+                        .font(.system(size: Ink.Size.body))
                         .foregroundStyle(Ink.ink)
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
