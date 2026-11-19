@@ -1604,6 +1604,7 @@ final class TeamModel: ObservableObject {
         all += Workspace.tools()
         all += Phone.tools()
         all += Hills.shared.tools()
+        all += GoogleTools.all()
         all += SecretTools.all(botName: bot.name)
         all += HealthTools.all()
         var grants: [String: Grant] = [:]

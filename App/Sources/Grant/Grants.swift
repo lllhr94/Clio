@@ -10,7 +10,7 @@ import UserNotifications
 
 /// 应许: what companions may do, one ability at a time. Each is off, asks every time, or goes ahead.
 enum Grant: String, CaseIterable, Identifiable, Sendable {
-    case web, browser, desk, den, hills, mcp, vault, memory, letters, calendar, reminders, location, contacts, photos, motion, health, clipboard, links, device
+    case web, browser, desk, den, hills, mcp, google, vault, memory, letters, calendar, reminders, location, contacts, photos, motion, health, clipboard, links, device
 
     var id: String { rawValue }
 
@@ -33,6 +33,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .den: "斗室"
         case .hills: "远山 · SSH"
         case .mcp: "远山 · MCP"
+        case .google: "谷歌邮件与云盘"
         case .vault: "信匣"
         case .memory: "拾遗"
         case .letters: "来信"
@@ -56,7 +57,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .desk: "在书案里读写文件、跑 JS 计算"
         case .den: "在斗室的 Linux 里跑命令、装软件"
         case .hills: "用 SSH 在你的远程主机上跑命令"
-        case .mcp: "用你接入的 MCP 服务提供的工具"
+        case .mcp: "用你接入的 MCP 服务提供的工具（含高德地图等连接器）"
+        case .google: "找、读你的 Gmail 和云端硬盘，存邮件草稿；发信总会先问你"
         case .vault: "递笺请你填写、看信匣目录、从信匣取密码填网页（取用总会先问你）"
         case .memory: "记下或忘掉关于你的事"
         case .letters: "约好时间，到点给你发消息"
@@ -81,6 +83,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .den: "terminal"
         case .hills: "server.rack"
         case .mcp: "point.3.connected.trianglepath.dotted"
+        case .google: "envelope.open"
         case .vault: "lock.rectangle.stack"
         case .memory: "bookmark"
         case .letters: "envelope"
@@ -100,7 +103,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Sensitive things ask first until the user says otherwise.
     var standard: Policy {
         switch self {
-        case .location, .contacts, .photos, .clipboard, .links, .hills, .health: .ask
+        case .location, .contacts, .photos, .clipboard, .links, .hills, .health, .google: .ask
         default: .allow
         }
     }
@@ -170,6 +173,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case "clipboard_read", "clipboard_write": .clipboard
         case "open_link": .links
         case "device_status": .device
+        case "gmail_search", "gmail_read", "gmail_draft", "gmail_send", "drive_search", "drive_read": .google
         default:
             if name.hasPrefix("browser_") { .browser }
             else if name.hasPrefix("mcp_") { .mcp }

@@ -11,7 +11,7 @@ struct GrantsPage: View {
 
     private let groups: [(String, [Grant])] = [
         ("出门寻访", [.web, .browser, .links]),
-        ("远山与信匣", [.hills, .mcp, .vault]),
+        ("远山、连接器与信匣", [.hills, .mcp, .google, .vault]),
         ("案头与小屋", [.desk, .den, .memory, .letters]),
         ("手机里的事", [.calendar, .reminders, .contacts, .photos, .clipboard]),
         ("身边与身体", [.location, .motion, .health, .device]),

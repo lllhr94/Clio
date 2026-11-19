@@ -1,0 +1,197 @@
+import AgentKit
+import AuthenticationServices
+import CryptoKit
+import Foundation
+import UIKit
+
+/// 谷歌: the person's Gmail and Google Drive, reached with their own sign-in.
+/// Clio has no Google client of its own: the person makes an iOS OAuth client in their Google Cloud project and
+/// pastes its Client ID, the same way they bring their own model key. Tokens stay in the Vault.
+@MainActor
+final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = Google()
+
+    @Published private(set) var account: String? = UserDefaults.standard.string(forKey: "google.account")
+    @Published private(set) var busy = false
+    @Published var problem: String?
+
+    static let scopes = [
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
+
+    var clientId: String {
+        get { UserDefaults.standard.string(forKey: "google.client") ?? "" }
+        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "google.client") }
+    }
+
+    var connected: Bool { account != nil }
+
+    /// `123-abc.apps.googleusercontent.com` → `com.googleusercontent.apps.123-abc`: the address Google sends the
+    /// sign-in back to for an iOS client.
+    private var scheme: String? {
+        let id = clientId
+        guard id.hasSuffix(".apps.googleusercontent.com") else { return nil }
+        return "com.googleusercontent.apps." + id.dropLast(".apps.googleusercontent.com".count)
+    }
+
+    // MARK: Signing in
+
+    func signIn() async {
+        guard let scheme else {
+            problem = "Client ID 不对：应该以 .apps.googleusercontent.com 结尾，而且要是「iOS」类型的。"
+            return
+        }
+        busy = true
+        problem = nil
+        defer { busy = false }
+        let verifier = Self.random(48)
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
+        let redirect = scheme + ":/oauth2redirect"
+        var parts = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+        parts.queryItems = [
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "redirect_uri", value: redirect),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "scope", value: Self.scopes.joined(separator: " ")),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "prompt", value: "consent"),
+        ]
+        do {
+            let back = try await authenticate(parts.url!, scheme: scheme)
+            guard let code = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "code" })?.value else {
+                let said = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "error" })?.value
+                problem = said == "access_denied" ? "你在谷歌那边没同意。" : "谷歌没给登录码（\(said ?? "不明原因")）。"
+                return
+            }
+            let tokens = try await Self.token([
+                "code": code, "client_id": clientId, "redirect_uri": redirect,
+                "grant_type": "authorization_code", "code_verifier": verifier,
+            ])
+            guard let refresh = tokens["refresh_token"]?.string else { problem = "谷歌没给长期令牌，重新登录一次试试。"; return }
+            Vault.save(refresh, as: "google.refresh")
+            if let access = tokens["access_token"]?.string {
+                Self.cache = (access, Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60))
+            }
+            let me = try? await Self.get("https://www.googleapis.com/oauth2/v3/userinfo")
+            account = me?["email"]?.string ?? "已登录"
+            UserDefaults.standard.set(account, forKey: "google.account")
+            Haptics.grab()
+        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+            return
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    func signOut() {
+        if let refresh = Vault.load(String.self, key: "google.refresh") {
+            var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/revoke?token=\(refresh)")!)
+            request.httpMethod = "POST"
+            Task { _ = try? await URLSession.shared.data(for: request) }
+        }
+        Vault.remove("google.refresh")
+        Self.cache = nil
+        account = nil
+        UserDefaults.standard.removeObject(forKey: "google.account")
+    }
+
+    private func authenticate(_ url: URL, scheme: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callback: .customScheme(scheme)) { url, error in
+                if let url { continuation.resume(returning: url) } else { continuation.resume(throwing: error ?? ProviderError("登录没完成。")) }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            if !session.start() { continuation.resume(throwing: ProviderError("打不开谷歌登录页。")) }
+        }
+    }
+
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first ?? ASPresentationAnchor()
+        }
+    }
+
+    // MARK: Talking to Google
+
+    nonisolated(unsafe) private static var cache: (token: String, until: Date)?
+
+    private static func random(_ count: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: count)
+        _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        return Data(bytes).base64URL
+    }
+
+    nonisolated private static func token(_ form: [String: String]) async throws -> JSONValue {
+        var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+/:?")
+        request.httpBody = Data(form.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0.value)" }.joined(separator: "&").utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let body = JSONValue.parse(String(decoding: data, as: UTF8.self)) ?? .null
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            let said = body["error_description"]?.string ?? body["error"]?.string ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
+            if body["error"]?.string == "invalid_grant" {
+                throw ProviderError("谷歌的登录过期了（测试模式的应用 7 天就过期），去「连接器 → 谷歌」重新登录。")
+            }
+            throw ProviderError("谷歌登录出错：\(said)")
+        }
+        return body
+    }
+
+    /// A fresh access token, renewed with the long-lived one when it has run out.
+    nonisolated static func access() async throws -> String {
+        if let cache, cache.until > Date() { return cache.token }
+        guard let refresh = Vault.load(String.self, key: "google.refresh") else { throw ProviderError("还没登录谷歌：在「调弦 → 连接器」里登录。") }
+        let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
+        let body = try await token(["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"])
+        guard let access = body["access_token"]?.string else { throw ProviderError("谷歌没给访问令牌。") }
+        cache = (access, Date().addingTimeInterval((body["expires_in"]?.number ?? 3000) - 60))
+        return access
+    }
+
+    nonisolated static func call(_ url: String, method: String = "GET", body: JSONValue? = nil) async throws -> Data {
+        guard let target = URL(string: url) else { throw ProviderError("地址不对。") }
+        var request = URLRequest(url: target, timeoutInterval: 60)
+        request.httpMethod = method
+        request.setValue("Bearer \(try await access())", forHTTPHeaderField: "Authorization")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(body.compact.utf8)
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401 { cache = nil }
+        guard (200..<300).contains(status) else {
+            let said = JSONValue.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: data.prefix(200), as: UTF8.self)
+            if status == 403, said.contains("has not been used") || said.contains("disabled") {
+                throw ProviderError("这个接口还没在你的 Google Cloud 项目里启用：\(said)")
+            }
+            throw ProviderError("谷歌回了 \(status)：\(said)")
+        }
+        return data
+    }
+
+    nonisolated static func get(_ url: String) async throws -> JSONValue {
+        let data = try await call(url)
+        return JSONValue.parse(String(decoding: data, as: UTF8.self)) ?? .null
+    }
+}
+
+extension Data {
+    var base64URL: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    init?(base64URL text: String) {
+        var plain = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while plain.count % 4 != 0 { plain += "=" }
+        self.init(base64Encoded: plain)
+    }
+}

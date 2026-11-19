@@ -9,7 +9,7 @@ struct AbilitiesSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private let groups: [(String, [Grant])] = [
-        ("出门", [.web, .browser, .hills, .mcp]),
+        ("出门", [.web, .browser, .hills, .mcp, .google]),
         ("案头与小屋", [.desk, .den, .memory, .letters, .vault]),
         ("手机里的事", [.calendar, .reminders, .contacts, .photos, .clipboard, .links]),
         ("身边", [.location, .motion, .device]),

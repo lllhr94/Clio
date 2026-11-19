@@ -29,6 +29,8 @@ final class Hills: ObservableObject {
         /// A 远山 host (its id) to reach the service through: `url` is then the address on that computer
         /// (http://127.0.0.1:8931/mcp), carried over an SSH tunnel, so nothing is open to the internet.
         var tunnelHost: String?
+        /// Set up from the 连接器 page (`amap`, `github`…): shown by its own name, not as a 远山 service.
+        var connector: String?
     }
 
     /// What an MCP server said it can do, kept so tools can be listed without a network call.
@@ -360,7 +362,8 @@ final class Hills: ObservableObject {
                 let url = server.url
                 let remote = tool.name
                 let title = server.name
-                tools.append(DeskTool(name: String("mcp_\(slug)__\(Self.slug(remote))".prefix(64)), description: "（来自远山 MCP「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in "远山：\(title) · \(remote)" }) { arguments in
+                let shown = server.connector == nil ? "远山：\(title) · \(remote)" : "\(title)：\(remote)"
+                tools.append(DeskTool(name: String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64)), description: "（来自\(server.connector == nil ? "远山 MCP" : "连接器")「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }) { arguments in
                     do {
                         let address = try await Hills.address(url, through: tunnel)
                         return try await MCPClient(url: address, token: token).call(remote, arguments: arguments)
@@ -472,13 +475,16 @@ struct MCPClient: Sendable {
     }
 
     private func request(_ body: JSONValue) throws -> URLRequest {
-        guard let target = URL(string: url) else { throw MCPError.rpc("地址不对：\(url)") }
+        // A token starting with 「?」 goes into the address (高德's `?key=…`), not into a header.
+        var address = url
+        if let token, token.hasPrefix("?") { address += (url.contains("?") ? "&" : "?") + token.dropFirst() }
+        guard let target = URL(string: address) else { throw MCPError.rpc("地址不对：\(url)") }
         var request = URLRequest(url: target, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
-        if let token, !token.isEmpty { request.setValue(token.lowercased().hasPrefix("bearer ") ? token : "Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token, !token.isEmpty, !token.hasPrefix("?") { request.setValue(token.lowercased().hasPrefix("bearer ") ? token : "Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let session = Self.sessions.get(url) { request.setValue(session, forHTTPHeaderField: "Mcp-Session-Id") }
         request.httpBody = Data(body.compact.utf8)
         return request
