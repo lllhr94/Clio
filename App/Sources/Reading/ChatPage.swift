@@ -242,12 +242,14 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
-            .onChange(of: chat.streaming.count / 80) { followToEnd(settle: false) }
-            .onChange(of: chat.thinking.count / 120) { followToEnd(settle: false) }
+            .onChange(of: growth) { followToEnd(settle: false) }
             .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
         }
     }
+
+    /// Steps of what is arriving (the reply every 80 characters, the thinking every 120): each step follows the page down.
+    private var growth: Int { chat.streaming.count / 80 + (chat.thinking.count / 120) * 1_000_000 }
 
     /// A message written while the companion works: it waits for the turn to finish, or goes now, or comes back to the composer.
     private func queuedRow(_ item: TeamModel.Queued) -> some View {

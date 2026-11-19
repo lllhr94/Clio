@@ -100,7 +100,7 @@ struct QuickAnswerIntent: AppIntent {
             throw TeamError(message: "拿不到 \(endpoint.name) 的密钥，解锁手机后再试一次。")
         }
         let agent = Agent(provider: endpoint.provider(key: key), model: model,
-                          system: "你在快捷指令里回答用户的一个问题。中文，先说结论，几句话说完，不用 Markdown 格式；不知道最新情况就直说。现在是 \(When.show(Date()))。")
+                          system: "你在快捷指令里回答用户的一个问题。中文，先说结论，几句话说完，不用 Markdown 格式；不知道最新情况就直说。现在是 \(Date().formatted(date: .complete, time: .shortened))。")
         let answer = try await agent.ask(asked)
         return .result(value: answer, dialog: IntentDialog(stringLiteral: answer))
     }
