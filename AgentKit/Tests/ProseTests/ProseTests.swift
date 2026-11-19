@@ -37,6 +37,10 @@ final class ProseTests: XCTestCase {
             .paragraph("看："),
             .code(language: "js", text: "let a = 1\nlet b", closed: false),
         ])
+        // Under a list item: the list's indent is not part of the code; the code's own indent stays.
+        XCTAssertEqual(Prose.parse("   ```sh\n   cd app\n     ls\r\n   ```"), [
+            .code(language: "sh", text: "cd app\n  ls", closed: true),
+        ])
     }
 
     func testTable() {

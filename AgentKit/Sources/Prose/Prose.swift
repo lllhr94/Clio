@@ -77,6 +77,8 @@ public enum Prose {
             if let fence = fence(trimmed) {
                 flush()
                 lines = lines.dropFirst()
+                // A fence indented under a list item: its lines carry the same indent, which is not part of the code.
+                let indent = line.prefix { $0 == " " || $0 == "\t" }.count
                 var body: [String] = []
                 var closed = false
                 while let next = lines.first {
@@ -85,7 +87,14 @@ public enum Prose {
                         closed = true
                         break
                     }
-                    body.append(next)
+                    var kept = Substring(next)
+                    var dropped = 0
+                    while dropped < indent, let first = kept.first, first == " " || first == "\t" {
+                        kept = kept.dropFirst()
+                        dropped += 1
+                    }
+                    if kept.hasSuffix("\r") { kept = kept.dropLast() }
+                    body.append(String(kept))
                 }
                 blocks.append(.code(language: fence.language, text: body.joined(separator: "\n"), closed: closed))
                 continue

@@ -242,7 +242,23 @@ struct PlusSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关上")
                 }
-                ToolbarItem(placement: .topBarTrailing) { Button("照片") { choose(.photos) } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    // Picked from the strip: the corner is where you say you're done, like any photo picker.
+                    if added.isEmpty {
+                        Button("所有照片") { choose(.photos) }
+                    } else {
+                        Button {
+                            Haptics.light()
+                            dismiss()
+                        } label: {
+                            Label("完成 · \(added.count) 张", systemImage: "checkmark")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Ink.accent)
+                        .accessibilityLabel("完成，已加上 \(added.count) 张照片")
+                    }
+                }
             }
         }
         .sheet(isPresented: $abilities) { AbilitiesSheet(team: team, key: key, name: name) }

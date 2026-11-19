@@ -1,3 +1,4 @@
+import UIKit
 import Prose
 import SwiftUI
 
@@ -197,7 +198,11 @@ private struct CodeBlock: View {
                 Text((language.isEmpty ? "代码" : language) + " · \(lineCount) 行").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Spacer()
                 Button {
+                    // As plain code: no-break and zero-width spaces some models write would break a pasted command.
                     UIPasteboard.general.string = text
+                        .replacingOccurrences(of: "\u{00A0}", with: " ")
+                        .replacingOccurrences(of: "\u{200B}", with: "")
+                        .replacingOccurrences(of: "\u{FEFF}", with: "")
                     Haptics.tick(0.5)
                     withAnimation(Ink.Motion.settle) { copied = true }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation(Ink.Motion.settle) { copied = false } }
@@ -245,33 +250,66 @@ private struct CodeBlock: View {
 }
 
 /// A table that scrolls sideways when it is wider than the page.
+/// Each column gets a width measured from its words (up to 260 points, then they wrap), and each row is as tall
+/// as its tallest cell, so a cell that wraps onto several lines pushes the line under it down instead of
+/// running over it.
 private struct TableBlock: View {
     let table: Prose.Table
 
+    private static let widest: CGFloat = 260
+    private static let gap: CGFloat = 20
+
+    private var widths: [CGFloat] {
+        let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
+        let head = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        let body = UIFont.systemFont(ofSize: 14)
+        return (0..<columns).map { column in
+            var natural = Self.measure(column < table.header.count ? table.header[column] : "", font: head)
+            for row in table.rows where column < row.count {
+                natural = max(natural, Self.measure(row[column], font: body))
+            }
+            return min(Self.widest, max(28, ceil(natural) + 4))
+        }
+    }
+
+    /// One line's width, without the Markdown marks that are not drawn.
+    private static func measure(_ cell: String, font: UIFont) -> CGFloat {
+        let plain = cell.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "~~", with: "")
+        return (plain as NSString).size(withAttributes: [.font: font]).width
+    }
+
     var body: some View {
+        let widths = self.widths
         ScrollView(.horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: Ink.Space.xl, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(table.header.enumerated()), id: \.offset) { column, cell in
-                        cellText(cell, head: true, column: column)
-                    }
-                }
-                .padding(.vertical, Ink.Space.m)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                    Divider().overlay(Ink.rule).gridCellUnsizedAxes(.horizontal)
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
-                            cellText(cell, head: false, column: column)
-                        }
-                    }
-                    .padding(.vertical, Ink.Space.m)
+            VStack(alignment: .leading, spacing: 0) {
+                row(table.header, head: true, widths: widths)
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
+                    Rectangle().fill(Ink.rule).frame(height: 1)
+                    row(cells, head: false, widths: widths)
                 }
             }
             .padding(.horizontal, Ink.Space.l)
-            .frame(minWidth: 0, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .paperCard()
+    }
+
+    private func row(_ cells: [String], head: Bool, widths: [CGFloat]) -> some View {
+        HStack(alignment: .top, spacing: Self.gap) {
+            ForEach(Array(widths.enumerated()), id: \.offset) { column, width in
+                cellText(column < cells.count ? cells[column] : "", head: head, column: column)
+                    .frame(width: width, alignment: frameAlign(column))
+            }
+        }
+        .padding(.vertical, Ink.Space.m)
+    }
+
+    private func frameAlign(_ column: Int) -> Alignment {
+        let align = column < table.aligns.count ? table.aligns[column] : .leading
+        return align == .center ? .top : (align == .trailing ? .topTrailing : .topLeading)
     }
 
     private func cellText(_ cell: String, head: Bool, column: Int) -> some View {
@@ -280,10 +318,9 @@ private struct TableBlock: View {
         return Text(styled)
             .font(head ? .system(size: 14, weight: .semibold) : Ink.secondary)
             .foregroundStyle(head ? Ink.ink : Ink.inkSoft)
-            // A column grows with its words up to 260, then wraps; a table wider than the page scrolls sideways.
-            .frame(maxWidth: 260, alignment: align == .center ? .center : (align == .trailing ? .trailing : .leading))
+            .multilineTextAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
+            .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
-            .gridColumnAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
     }
 }
 

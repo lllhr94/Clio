@@ -189,12 +189,13 @@ struct ChatPage: View {
                         .transition(.opacity.combined(with: .offset(y: 8)))
                 }
             }
-            // The foot of the page. Scrolling to it lands exactly; scrolling to the edge of a lazy stack can stop short.
+            // The foot of the page, under the breathing room at the bottom: scrolling to it shows everything,
+            // and it is exactly the end of the content, so "at the bottom" and "scrolled to the foot" agree.
+            Color.clear.frame(height: Ink.Space.xxl)
             Color.clear.frame(height: 1).id(Self.end)
         }
         .padding(.horizontal, Ink.Space.page)
         .padding(.top, Ink.Space.m)
-        .padding(.bottom, Ink.Space.xxl)
     }
 
     /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
@@ -207,13 +208,21 @@ struct ChatPage: View {
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
             // Nothing moves while the reader is up reading older lines.
+            // How far the last line is from sitting just above the composer. The composer (and the bar over it
+            // while the companion works) is an inset: without counting it, the page kept stopping one composer short.
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY > 2
+                Self.below(geometry) > 2
             } action: { _, behind in
                 if behind, following { toEnd() }
             }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height
+            } action: { _, _ in
+                // Every time what is on the page grows, keep to the bottom right away, not every 80 characters.
+                if following { toEnd() }
+            }
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY > 320
+                Self.below(geometry) > 320
             } action: { _, far in
                 withAnimation(Ink.Motion.settle) { farFromEnd = far }
             }
@@ -226,7 +235,7 @@ struct ChatPage: View {
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
                 if phase == .interacting { following = false }
                 if phase == .idle, old != .idle {
-                    following = context.geometry.contentSize.height - context.geometry.visibleRect.maxY < 80
+                    following = Self.below(context.geometry) < 80
                 }
             }
             .scrollIndicators(.hidden)
@@ -1554,6 +1563,11 @@ struct ChatPage: View {
     }
 
     private static let end = "foot-of-page"
+
+    /// Points of the page still below the visible part, counting the composer's inset at the bottom.
+    private static func below(_ geometry: ScrollGeometry) -> CGFloat {
+        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY
+    }
 
     /// Back to the newest line, if the page is following: once as soon as what arrived is laid out,
     /// and once more after the new row has settled in, since its height is only right by then.
