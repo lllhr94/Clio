@@ -249,7 +249,7 @@ struct ChatPage: View {
             .scrollDismissesKeyboard(.interactively)
             // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
             // reads through between the buttons, and the glass no longer picks up colours from the page.
-            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectStyle(.hard, for: .top)
             .safeAreaBar(edge: .top) { header }
             .onChange(of: working, initial: true) { _, now in
                 workingSince = now ? (workingSince ?? Date()) : nil
@@ -392,7 +392,21 @@ struct ChatPage: View {
                 .zIndex(3)
             }
         }
-        .safeAreaInset(edge: .bottom) { composerBar }
+        .safeAreaInset(edge: .bottom) {
+            composerBar
+                // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
+                // no longer reads through the glass.
+                .background(alignment: .bottom) {
+                    LinearGradient(stops: [
+                        .init(color: Ink.paper.opacity(0), location: 0),
+                        .init(color: Ink.paper.opacity(0.92), location: 0.35),
+                        .init(color: Ink.paper, location: 1),
+                    ], startPoint: .top, endPoint: .bottom)
+                    .padding(.top, -Ink.Space.xl)
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
+                }
+        }
         .overlay {
             GeometryReader { proxy in
                 Mascot(pose: pose, raised: waiting != nil, bounds: proxy.size)
@@ -1565,7 +1579,10 @@ struct ChatPage: View {
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .frame(width: 36, height: 36)
-                        .glassFace(in: Circle())
+                        .background(Ink.paperRaised, in: .circle)
+                        .overlay(Circle().strokeBorder(Ink.rule, lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                        .contentShape(.circle)
                 }
                 .buttonStyle(PressStyle())
                 .offset(y: -46)
@@ -2174,23 +2191,28 @@ private struct Trace: View {
         let shown = peeking.contains(index)
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(spacing: 0) {
-                Image(systemName: Self.icon(for: name))
-                    .font(.system(size: Ink.Size.small, weight: .semibold))
-                    .foregroundStyle(failed ? Ink.stop : Ink.accent)
-                    .frame(width: 24, height: 24)
-                    .background(failed ? Ink.stop.opacity(0.12) : Ink.accentWash, in: .circle)
-                if !last { Rectangle().fill(Ink.rule).frame(width: 1).frame(maxHeight: .infinity) }
+                Image(systemName: failed ? "exclamationmark" : Self.icon(for: name))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(failed ? Ink.stop : Ink.inkSoft)
+                    .frame(width: 22, height: 22)
+                if !last { Rectangle().fill(Ink.rule).frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2) }
             }
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Ink.Space.s) {
-                    Text(Words.t(Self.word(for: name))).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
-                    if let seconds = more?.seconds { Text(Clock.said(seconds)).font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkFaint) }
+                // One line per step: what kind of thing, then what exactly. Time only when it was worth waiting for.
+                HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                    (Text(Words.t(Self.word(for: name))).foregroundStyle(Ink.ink).fontWeight(.medium)
+                        + Text(detail.map { "  " + $0 } ?? "").foregroundStyle(Ink.inkSoft))
+                        .font(.system(size: Ink.Size.sub))
+                        .lineLimit(shown ? nil : 1)
                     Spacer(minLength: 0)
-                    if more != nil {
-                        Image(systemName: shown ? "chevron.up" : "ellipsis").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                    if let seconds = more?.seconds, seconds >= 2 {
+                        Text(Clock.said(seconds)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint)
+                    }
+                    if shown {
+                        Image(systemName: "chevron.up").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
                 }
-                if let detail { Text(detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(shown ? nil : 2) }
+                .frame(minHeight: 22)
                 if shown, let more {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         if !more.input.isEmpty, more.input != "{}" {
@@ -2221,7 +2243,7 @@ private struct Trace: View {
                     .transition(.opacity)
                 }
             }
-            .padding(.bottom, last ? 0 : Ink.Space.l)
+            .padding(.bottom, last ? 0 : Ink.Space.s + 2)
             .contentShape(Rectangle())
             .onTapGesture {
                 guard more != nil else { return }
@@ -2267,6 +2289,19 @@ private struct Trace: View {
     }
 
     static func icon(for label: String) -> String {
+        switch label {
+        case "搜索": return "magnifyingglass"
+        case "读网页": return "globe"
+        case "清单", "计划": return "list.bullet"
+        case "写文件", "改文件": return "doc.text"
+        case "读文件": return "doc"
+        case "命令", "终端": return "terminal"
+        default: break
+        }
+        return poeticIcon(label)
+    }
+
+    private static func poeticIcon(_ label: String) -> String {
         switch Words.poetic(label) {
         case "搜索": "magnifyingglass"
         case "读网页": "globe"
@@ -2286,7 +2321,7 @@ private struct Trace: View {
         case "记住", "忘掉": "bookmark"
         case "看日历", "新建日程": "calendar"
         case "看提醒事项", "加提醒": "checklist"
-        default: label.hasPrefix("约好") ? "envelope" : "sparkle"
+        default: label.hasPrefix("约好") ? "envelope" : "wrench.and.screwdriver"
         }
     }
 }
