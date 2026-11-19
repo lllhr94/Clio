@@ -372,9 +372,13 @@ final class Hills: ObservableObject {
                 let asks = server.connector != nil && tool.readOnly != true
                 let what = String(tool.description.prefix(80))
                 let reason = what.isEmpty ? "可能会改动你在\(title)里的东西" : what
-                let ask: (@Sendable (JSONValue) -> ApprovalAsk?)? = asks ? { arguments in
-                    ApprovalAsk(title: "\(title)：\(remote)", reason: reason, detail: arguments.compact)
-                } : nil
+                let askTitle = "\(title)：\(remote)"
+                var ask: (@Sendable (JSONValue) -> ApprovalAsk?)?
+                if asks {
+                    ask = { (arguments: JSONValue) -> ApprovalAsk? in
+                        ApprovalAsk(title: askTitle, reason: reason, detail: arguments.compact)
+                    }
+                }
                 let toolName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
                 let where_ = server.connector == nil ? "远山 MCP" : "连接器"
                 tools.append(DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
