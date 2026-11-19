@@ -52,7 +52,8 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
             URLQueryItem(name: "resource", value: url),
         ]
         if !ends.scopes.isEmpty { items.append(URLQueryItem(name: "scope", value: ends.scopes.joined(separator: " "))) }
-        parts?.queryItems = (parts?.queryItems ?? []) + items
+        let existing = parts?.queryItems ?? []
+        parts?.queryItems = existing + items
         guard let page = parts?.url else { throw ProviderError("登录地址不对。") }
         let back = try await authenticate(page)
         let answer = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems ?? []
