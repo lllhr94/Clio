@@ -2,6 +2,8 @@
 
 最后更新：2026-11-20。接手前先读 `AGENTS.md`。
 
+更早的完整规划和执行手册在主人的 claude.ai 文档里（只有主人能打开）：https://claude.ai/artifact/UnCgDX6xF2ZfHytSFLRsVi 。仓库里以本文件为准。
+
 ## 版本
 
 - 已发布：0.32（`main`，`latest`）。
