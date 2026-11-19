@@ -227,8 +227,6 @@ struct PlusSheet: View {
                         line("checkmark.shield", "本事", value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
                     }
                     group {
-                        toggle("globe", "联网", note: "搜索、读网页、远游", isOn: options.web) { team.setWeb($0, in: key) }
-                        divider
                         line("books.vertical", "技能", value: "\(SkillShelf.enabled.count) 个") { skills = true }
                         divider
                         toggle("brain", "拾遗", note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
