@@ -63,7 +63,7 @@ struct Mascot: View {
                     }
                 }
                 .contextMenu {
-                    Button("收起鲸鱼", systemImage: "eye.slash") {
+                    Button("收起形象", systemImage: "eye.slash") {
                         withAnimation(Ink.Motion.settle) { shown = false }
                     }
                 }
@@ -71,7 +71,7 @@ struct Mascot: View {
                 .animation(Ink.Motion.unfold, value: rest)
                 .animation(Ink.Motion.press, value: drag == .zero)
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
-                .accessibilityLabel("鲸鱼，拖动可以换位置，长按可以收起")
+                .accessibilityLabel("形象，拖动换位置，长按收起")
         }
     }
 

@@ -30,7 +30,7 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .newCompanion: "写一张名帖，请一位新旅伴"
         case .importCard: "导入别人递来的名帖文件"
         case .gathering: "让几位旅伴围坐着一起聊"
-        case .portrait: "换鲸鱼的样子，或用自己的画像"
+        case .portrait: "换成别的样子，或用自己的画像"
         case .study: "旅伴写下的文件都在这里"
         case .den: "手机里的 Linux，能装软件、跑脚本"
         case .hills: "你的 VPS 和 MCP 服务"

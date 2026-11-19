@@ -198,7 +198,7 @@ struct Desk: View {
                             Rectangle().fill(Ink.rule).frame(height: 1)
                         }
                     } else {
-                    TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? "鲸鱼")
+                    TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? "旅伴")
                     if shownThreads.isEmpty {
                         EmptyNote(
                             symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",

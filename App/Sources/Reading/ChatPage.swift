@@ -572,7 +572,7 @@ struct ChatPage: View {
             }
             .contextMenu {
                 if !isRoom { Button("看名帖", systemImage: "person.text.rectangle") { cardOpen = true } }
-                Button(mascotShown ? "收起浮着的鲸鱼" : "放出浮着的鲸鱼", systemImage: mascotShown ? "eye.slash" : "eye") {
+                Button(mascotShown ? "收起浮着的形象" : "放出浮着的形象", systemImage: mascotShown ? "eye.slash" : "eye") {
                     withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
                 }
             }

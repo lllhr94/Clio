@@ -28,18 +28,6 @@ struct LookPage: View {
     @AppStorage("notify.done") private var notifyDone = true
     @AppStorage("live.on") private var liveOn = true
     @AppStorage("look.fps") private var fps = false
-    @State private var icon = UIApplication.shared.alternateIconName
-    @State private var iconNote: String?
-
-    /// 桌面图标: the companion in other colors. Nil is the usual one.
-    private static let iconChoices: [(name: String?, preview: String, title: String)] = [
-        (nil, "IconPreview-Default", "晴蓝"),
-        ("AppIcon-Rose", "IconPreview-Rose", "桃粉"),
-        ("AppIcon-Mint", "IconPreview-Mint", "薄荷"),
-        ("AppIcon-Honey", "IconPreview-Honey", "蜂蜜"),
-        ("AppIcon-Lilac", "IconPreview-Lilac", "丁香"),
-        ("AppIcon-Night", "IconPreview-Night", "夜色"),
-    ]
 
     private let sample = """
     ## 小样
@@ -75,7 +63,6 @@ struct LookPage: View {
                     LabeledSlider(title: "字号", value: $size, range: 14...23, step: 1) { "\(Int($0))" }
                     LabeledSlider(title: "行距", value: $leading, range: 2...16, step: 1) { "\(Int($0))" }
                     palettes
-                    icons
                 }
 
                 Section("动静") {
@@ -83,7 +70,7 @@ struct LookPage: View {
                     Toggle("回复逐字淡入", isOn: $fade)
                     Toggle("回复下显示耗时和用量", isOn: $stats)
                     Toggle("行迹默认展开", isOn: $traceOpen)
-                    Toggle("聊天页的鲸鱼", isOn: $mascot)
+                    Toggle("聊天页的形象", isOn: $mascot)
                     Toggle("角落显示帧率", isOn: $fps)
                 }
 
@@ -177,47 +164,6 @@ struct LookPage: View {
                     .accessibilityAddTraits(picked ? .isSelected : [])
                 }
             }
-        }
-        .padding(.vertical, Ink.Space.xs)
-    }
-
-    /// 桌面图标: the app's icon on the home screen.
-    private var icons: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text("桌面图标")
-            ScrollView(.horizontal) {
-                HStack(spacing: Ink.Space.m) {
-                    ForEach(Self.iconChoices, id: \.preview) { item in
-                        let picked = icon == item.name
-                        Button {
-                            Haptics.tick(0.5)
-                            Task {
-                                do {
-                                    try await UIApplication.shared.setAlternateIconName(item.name)
-                                    icon = item.name
-                                    iconNote = nil
-                                } catch {
-                                    iconNote = "没换成：\(error.localizedDescription)"
-                                }
-                            }
-                        } label: {
-                            VStack(spacing: 4) {
-                                Image(item.preview)
-                                    .resizable()
-                                    .frame(width: 54, height: 54)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 2 : 1))
-                                Text(item.title).font(.system(size: 12, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("桌面图标：\(item.title)")
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
-            if let iconNote { Text(iconNote).font(Ink.footnote).foregroundStyle(Ink.stop) }
         }
         .padding(.vertical, Ink.Space.xs)
     }

@@ -38,7 +38,7 @@ struct PortraitPage: View {
                 .paperCard()
 
                 HStack(spacing: Ink.Space.s) {
-                    chip("鲸鱼", picked: persona.kind == .whale) { persona.kind = .whale }
+                    chip("默认", picked: persona.kind == .whale) { persona.kind = .whale }
                     chip("画像", picked: persona.kind == .picture) { persona.kind = .picture }
                 }
 
