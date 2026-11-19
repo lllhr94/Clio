@@ -296,8 +296,8 @@ struct PetStage: View {
         if let one = oneOff, one.until < now { oneOff = nil }
         guard !calm, library.shown, mood == .idle, !dragging, oneOff == nil, !asleep, news.bubble == nil, now > nextIdle else { return }
         let pack = library.pack
-        let every = pack?.idleEvery ?? (120_000, 45_000, 300_000)
-        nextIdle = now.addingTimeInterval(Double(Int.random(in: every.min...max(every.min, every.max))) / 1000 * 0.6)
+        let every: (mean: Int, min: Int, max: Int) = pack?.idleEvery ?? (mean: 120_000, min: 45_000, max: 300_000)
+        nextIdle = now.addingTimeInterval(Double(Int.random(in: every.min...Swift.max(every.min, every.max))) / 1000 * 0.6)
         if Bool.random() || pack?.idlePool.isEmpty != false {
             // Wander a little way along the edge, turning to face where it goes.
             let step = CGFloat.random(in: 24...56) * (Bool.random() ? 1 : -1)
