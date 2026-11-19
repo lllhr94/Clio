@@ -1,3 +1,4 @@
+import Photos
 import SwiftUI
 import UIKit
 import Vision
@@ -181,5 +182,247 @@ enum Scan {
                 continuation.resume(returning: lines.joined(separator: "\n"))
             }
         }
+    }
+}
+
+/// The ＋ sheet, after Claude's: recent photos on top, then camera and files; below, how this conversation works
+/// (where, what the companion may use, web, skills, memory). One place for what was a row of chips.
+struct PlusSheet: View {
+    @ObservedObject var team: TeamModel
+    let key: String
+    let name: String
+    let isRoom: Bool
+    /// A photo tapped in the strip, as JPEG data.
+    let addPhoto: (Data) -> Void
+    /// Camera, files or the full photo picker: opened once the sheet is gone.
+    let pick: (AttachKind) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var recent: [PHAsset] = []
+    @State private var thumbs: [String: UIImage] = [:]
+    @State private var added: Set<String> = []
+    @State private var access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var abilities = false
+    @State private var skills = false
+
+    private var options: TeamModel.ChatOptions { team.options(key) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: Ink.Space.l) {
+                    strip
+                    group {
+                        line("camera", "拍照") { choose(.camera) }
+                        divider
+                        line("folder", "添加文件") { choose(.files) }
+                    }
+                    group {
+                        NavigationLink {
+                            PlacePicker(team: team, key: key)
+                        } label: {
+                            row("desktopcomputer", "在哪里干活", value: team.place(of: key).title)
+                        }
+                        .buttonStyle(TapStyle())
+                        divider
+                        line("checkmark.shield", "本事", value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
+                    }
+                    group {
+                        toggle("globe", "联网", note: "搜索、读网页、远游", isOn: options.web) { team.setWeb($0, in: key) }
+                        divider
+                        line("books.vertical", "技能", value: "\(SkillShelf.enabled.count) 个") { skills = true }
+                        divider
+                        toggle("brain", "拾遗", note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
+                    }
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.bottom, Ink.Space.xl)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle("添加到絮语")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关上")
+                }
+                ToolbarItem(placement: .topBarTrailing) { Button("照片") { choose(.photos) } }
+            }
+        }
+        .sheet(isPresented: $abilities) { AbilitiesSheet(team: team, key: key, name: name) }
+        .sheet(isPresented: $skills) { SkillsPage() }
+        .task { loadRecent() }
+    }
+
+    // MARK: Recent photos
+
+    @ViewBuilder
+    private var strip: some View {
+        if access == .authorized || access == .limited {
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(recent, id: \.localIdentifier) { asset in
+                        let id = asset.localIdentifier
+                        Button { take(asset) } label: {
+                            ZStack(alignment: .topTrailing) {
+                                Group {
+                                    if let image = thumbs[id] { Image(uiImage: image).resizable().scaledToFill() } else { Ink.paperRaised }
+                                }
+                                .frame(width: 110, height: 110)
+                                .clipped()
+                                if added.contains(id) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundStyle(.white, Ink.accent)
+                                        .padding(6)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(added.contains(id) ? "已加上的照片" : "加上这张照片")
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .clipShape(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
+            .frame(height: 110)
+        } else {
+            Button {
+                Task {
+                    access = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                    loadRecent()
+                }
+            } label: {
+                Label("允许后，这里会显示最近的照片，点一下就加上", systemImage: "photo.on.rectangle")
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(maxWidth: .infinity, minHeight: 64)
+                    .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func loadRecent() {
+        guard access == .authorized || access == .limited else { return }
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.fetchLimit = 24
+        let result = PHAsset.fetchAssets(with: .image, options: options)
+        var assets: [PHAsset] = []
+        result.enumerateObjects { asset, _, _ in assets.append(asset) }
+        recent = assets
+        let manager = PHImageManager.default()
+        let request = PHImageRequestOptions()
+        request.deliveryMode = .opportunistic
+        request.isNetworkAccessAllowed = true
+        for asset in assets {
+            manager.requestImage(for: asset, targetSize: CGSize(width: 240, height: 240), contentMode: .aspectFill, options: request) { image, _ in
+                if let image { thumbs[asset.localIdentifier] = image }
+            }
+        }
+    }
+
+    private func take(_ asset: PHAsset) {
+        let id = asset.localIdentifier
+        guard !added.contains(id) else { return }
+        Haptics.tick(0.6)
+        let request = PHImageRequestOptions()
+        request.deliveryMode = .highQualityFormat
+        request.isNetworkAccessAllowed = true
+        PHImageManager.default().requestImageDataAndOrientation(for: asset, options: request) { data, _, _, _ in
+            guard let data else { return }
+            added.insert(id)
+            addPhoto(data)
+        }
+    }
+
+    // MARK: Rows
+
+    private func choose(_ kind: AttachKind) {
+        Haptics.light()
+        pick(kind)
+        dismiss()
+    }
+
+    private var divider: some View { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52) }
+
+    private func group<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) { content() }.paperCard()
+    }
+
+    private func row(_ icon: String, _ title: String, value: String? = nil) -> some View {
+        HStack(spacing: Ink.Space.m) {
+            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Ink.ink).frame(width: 28)
+            Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+            Spacer(minLength: 0)
+            if let value { Text(value).font(.system(size: 15)).foregroundStyle(Ink.inkSoft).lineLimit(1) }
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .frame(minHeight: 54)
+        .contentShape(Rectangle())
+    }
+
+    private func line(_ icon: String, _ title: String, value: String? = nil, _ run: @escaping () -> Void) -> some View {
+        Button(action: run) { row(icon, title, value: value) }.buttonStyle(TapStyle())
+    }
+
+    private func toggle(_ icon: String, _ title: String, note: String, isOn: Bool, _ set: @escaping (Bool) -> Void) -> some View {
+        HStack(spacing: Ink.Space.m) {
+            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Ink.ink).frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Text(note).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+            }
+            Spacer(minLength: 0)
+            Toggle(title, isOn: Binding(get: { isOn }, set: { value in
+                Haptics.tick(0.5)
+                set(value)
+            }))
+            .labelsHidden()
+            .tint(Ink.accent)
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .frame(minHeight: 58)
+    }
+}
+
+/// 在哪里干活, as its own small page.
+struct PlacePicker: View {
+    @ObservedObject var team: TeamModel
+    let key: String
+
+    var body: some View {
+        let current = team.place(of: key)
+        var places: [(WorkPlace, String)] = [(.desk, "手机里的文件夹，读写文件、算数"), (.den, "手机里的 Linux，能跑命令、装软件")]
+        places += Hills.shared.hosts.map { (.hill($0.id), "\($0.user)@\($0.address)") }
+        return List {
+            Section {
+                ForEach(Array(places.enumerated()), id: \.offset) { _, item in
+                    Button {
+                        Haptics.tick(0.5)
+                        team.setPlace(item.0, in: key)
+                    } label: {
+                        HStack {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.0.title).foregroundStyle(Ink.ink)
+                                    Text(item.1).font(.footnote).foregroundStyle(Ink.inkSoft)
+                                }
+                            } icon: {
+                                Image(systemName: item.0.symbol).foregroundStyle(Ink.accent)
+                            }
+                            Spacer()
+                            if current == item.0 { Image(systemName: "checkmark").foregroundStyle(Ink.accent) }
+                        }
+                    }
+                }
+            } footer: {
+                Text(Hills.shared.hosts.isEmpty ? "在调弦 › 远山 添一台电脑或服务器，这里就能选它。" : "换了地方，旅伴下一轮就在那里读写文件、跑命令。")
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle("在哪里干活")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -397,6 +397,20 @@ struct ChatPage: View {
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $filesOpen) { StudyPage() }
+        .sheet(isPresented: $attaching, onDismiss: {
+            // The sheet is out of the way; now open what was picked.
+            if let kind = attachPicked {
+                attachPicked = nil
+                bring(kind)
+            }
+        }) {
+            PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
+                guard photos.count < 4 else { return say("最多带四张图。") }
+                if let small = Self.shrink(data) { withAnimation(Ink.Motion.settle) { photos.append(small) } }
+            }, pick: { attachPicked = $0 })
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $deskPicking) {
             DeskPicker { picked in
                 deskPicking = false
@@ -1339,15 +1353,15 @@ struct ChatPage: View {
                 }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
-                    Menu {
-                        ForEach([AttachKind.photos, .camera, .files]) { kind in
-                            Button(kind.title, systemImage: kind.symbol) { bring(kind) }
-                        }
+                    Button {
+                        Haptics.light()
+                        typing = false
+                        attaching = true
                     } label: {
                         chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
                     }
-                    .simultaneousGesture(TapGesture().onEnded { typing = false })
-                    .accessibilityLabel("加照片或文件")
+                    .buttonStyle(PressStyle(haptic: false))
+                    .accessibilityLabel("加照片、文件，或改这段絮语的设置")
                     .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
@@ -1375,9 +1389,8 @@ struct ChatPage: View {
                 if composing {
                     ScrollView(.horizontal) {
                         HStack(spacing: Ink.Space.s) {
-                            abilitiesChip
-                            if team.place(of: chat.key) != .desk { placeChip }
                             if isRoom { thinkChip } else { modelChip }
+                            if team.place(of: chat.key) != .desk { placeChip }
                         }
                     }
                     .scrollIndicators(.hidden)
