@@ -3,7 +3,10 @@ import UIKit
 
 /// 纸墨与絮语: how Clio looks, how it feels in the hand, and how conversations are carried.
 struct LookPage: View {
+    /// Opened from a search in 设置: this section is scrolled to and lit up for a moment.
+    var focus: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var lit: String?
 
     @AppStorage("look.scheme") private var scheme = "system"
     @AppStorage("look.face") private var face = "serif"
@@ -53,6 +56,7 @@ struct LookPage: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { reader in
             Form {
                 PaperRows {
                 Section {
@@ -70,6 +74,7 @@ struct LookPage: View {
                     }
                     .pickerStyle(.segmented)
                 } header: { Text("对话字号") }
+                .spot("size", lit)
 
                 Section(Words.t("纸墨")) {
                     Picker("明暗", selection: $scheme) {
@@ -105,12 +110,14 @@ struct LookPage: View {
                     Toggle("聊天页的形象", isOn: $mascot)
                     Toggle("角落显示帧率", isOn: $fps)
                 }
+                .spot("motion", lit)
 
                 Section {
                     Toggle("用面容锁住 Clio", isOn: $faceLock)
                 } header: { Text("上锁") } footer: {
                     Text("切到后台再回来时要先过面容（或密码）。手机没设密码时不会锁。")
                 }
+                .spot("lock", lit)
 
                 Section {
                     Toggle("聊久了自动压缩前文", isOn: $autoCompress)
@@ -121,6 +128,7 @@ struct LookPage: View {
                 } header: { Text("压缩") } footer: {
                     Text(Words.t("较早的话写成提要，原文留在絮语页"))
                 }
+                .spot("compress", lit)
 
                 Section {
                     Stepper("每次带上最近 \(contextChars / 1000) 千字", value: $contextChars, in: 8_000...400_000, step: 8_000)
@@ -140,6 +148,7 @@ struct LookPage: View {
                 } header: { Text("交给模型的") } footer: {
                     Text("带得多记得多，也更慢更费")
                 }
+                .spot("context", lit)
 
                 Section {
                     Toggle(Words.t("每天一封晨信"), isOn: $morningOn)
@@ -150,6 +159,7 @@ struct LookPage: View {
                     Text("看看日程、提醒和天气，写一封便笺")
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
+                .spot("morning", lit)
 
                 Section {
                     Toggle("晚上写日记", isOn: $diaryOn)
@@ -165,6 +175,7 @@ struct LookPage: View {
                 } header: { Text("在后台") } footer: {
                     Text("干活时在锁屏和灵动岛显示进度。切走后系统会给一张进度卡，可以在那里叫停；系统忙时可能不给。")
                 }
+                .spot("notify", lit)
 
                 Section {
                     Button("全部恢复默认", role: .destructive) { reset() }
@@ -172,6 +183,15 @@ struct LookPage: View {
             }
             }
             .paperForm()
+            .task {
+                guard let focus else { return }
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                withAnimation(Ink.Motion.unfold) { reader.scrollTo(focus, anchor: .top) }
+                withAnimation(.easeOut(duration: 0.25)) { lit = focus }
+                try? await Task.sleep(nanoseconds: 1_600_000_000)
+                withAnimation(.easeOut(duration: 0.6)) { lit = nil }
+            }
+            }
             .navigationTitle(Words.t("纸墨与絮语"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
@@ -238,5 +258,13 @@ private struct LabeledSlider: View {
             }
             Slider(value: $value, in: range, step: step)
         }
+    }
+}
+
+
+extension View {
+    /// A section 设置 can point at: its id for scrolling, and lit up while `lit` names it.
+    func spot(_ id: String, _ lit: String?) -> some View {
+        self.id(id).listRowBackground(lit == id ? Ink.accentWash : Ink.paperRaised)
     }
 }

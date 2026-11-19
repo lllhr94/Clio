@@ -258,12 +258,14 @@ private struct TableBlock: View {
     let table: Prose.Table
 
     private static let widest: CGFloat = 260
+    /// Table text, two points under the reading size.
+    private static var cellSize: CGFloat { CGFloat(max(12, Pref.size - 2)) }
     private static let gap: CGFloat = 20
 
     private var widths: [CGFloat] {
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let head = UIFont.systemFont(ofSize: 14, weight: .semibold)
-        let body = UIFont.systemFont(ofSize: 14)
+        let head = UIFont.systemFont(ofSize: Self.cellSize, weight: .semibold)
+        let body = UIFont.systemFont(ofSize: Self.cellSize)
         return (0..<columns).map { column in
             var natural = Self.measure(column < table.header.count ? table.header[column] : "", font: head)
             for row in table.rows where column < row.count {
@@ -317,7 +319,7 @@ private struct TableBlock: View {
         let align = column < table.aligns.count ? table.aligns[column] : .leading
         let styled = (try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(cell)
         return Text(styled)
-            .font(head ? .system(size: 14, weight: .semibold) : Ink.secondary)
+            .font(.system(size: Self.cellSize, weight: head ? .semibold : .regular))
             .foregroundStyle(head ? Ink.ink : Ink.inkSoft)
             .multilineTextAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
             .lineSpacing(2)

@@ -168,7 +168,8 @@ enum Ink {
     static let label = Font.system(size: 16, weight: .medium)
     static let secondary = Font.system(size: 14)
     static let footnote = Font.system(size: 12)
-    static let code = Font.system(size: 14, design: .monospaced)
+    /// Code, three points under the reading size, so it sits with the text around it at every size.
+    static var code: Font { .system(size: max(12, Pref.size - 3), design: .monospaced) }
 
     /// The space between the lines of reading text.
     static var leading: CGFloat { Pref.leading }

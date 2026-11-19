@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var timing = false
     @State private var skilling = false
     @State private var hilling = false
+    @State private var lookFocus: String?
     @State private var memoryDraft = ""
     @State private var editingMemory: Memory?
     @State private var memoryText = ""
@@ -65,7 +66,7 @@ struct SettingsView: View {
         .task { if let startAt { go(startAt) } }
         .sheet(isPresented: $adding) { SetupView(team: team) { adding = false } }
         .sheet(isPresented: $connecting) { ConnectorsPage() }
-        .sheet(isPresented: $looking) { LookPage() }
+        .sheet(isPresented: $looking, onDismiss: { lookFocus = nil }) { LookPage(focus: lookFocus) }
         .sheet(isPresented: $granting) { GrantsPage(team: team) }
         .sheet(isPresented: $caring) { CarePage(team: team) }
         .sheet(isPresented: $timing) { RoutinesPage(team: team) }
@@ -97,13 +98,13 @@ struct SettingsView: View {
         Spot(title: "添一家模型服务", words: "服务 密钥 key api deepseek kimi claude openai 本地 ollama lm studio 中转", page: "add"),
         Spot(title: "默认模型", words: "模型 默认 换模型", page: "model"),
         Spot(title: "备用模型", words: "备用 出错 失败 换模型 兜底", page: "model"),
-        Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look"),
+        Spot(title: "外观：颜色、字体、字号、行距", words: "纸墨 主题 颜色 深色 纯黑 字体 字号 行距 外观", page: "look#size"),
         Spot(title: "叫法：诗意或普通", words: "叫法 名字 诗意 普通 称呼", page: "look"),
-        Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look"),
-        Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look"),
-        Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look"),
-        Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look"),
-        Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look"),
+        Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look#lock"),
+        Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look#motion"),
+        Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look#context"),
+        Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look#notify"),
+        Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look#morning"),
         Spot(title: "能做的事和要不要先问", words: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室", page: "grants"),
         Spot(title: "连接器：谷歌、Notion、高德地图等", words: "连接器 连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp", page: "connectors"),
         Spot(title: "定时任务", words: "定时 每天 每周 到点 任务", page: "timing"),
@@ -153,6 +154,9 @@ struct SettingsView: View {
         switch page {
         case "add": adding = true
         case "look": looking = true
+        case let page where page.hasPrefix("look#"):
+            lookFocus = String(page.dropFirst(5))
+            looking = true
         case "grants": granting = true
         case "care": caring = true
         case "timing": timing = true
@@ -489,9 +493,9 @@ struct SettingsView: View {
 
     private var generalGroup: some View {
         group("通用") {
-            row("bell", Tint.general, "通知、锁屏与后台", nil) { looking = true }
+            row("bell", Tint.general, "通知、锁屏与后台", nil) { lookFocus = "notify"; looking = true }
             divider
-            row("lock", Tint.general, "面容锁", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { looking = true }
+            row("lock", Tint.general, "面容锁", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { lookFocus = "lock"; looking = true }
             divider
             row("stethoscope", Tint.general, Words.t("养护"), "备份与诊断") { caring = true }
         }
