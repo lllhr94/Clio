@@ -23,6 +23,9 @@ packages:
   SwiftNIO:
     url: https://github.com/apple/swift-nio
     from: 2.65.0
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    exactVersion: 0.9.19
 targets:
   Clio:
     type: application
@@ -52,6 +55,7 @@ targets:
       - package: SwiftMath
       - package: SwiftNIOSSH
         product: NIOSSH
+      - package: ZIPFoundation
     info:
       path: Info.plist
       properties:

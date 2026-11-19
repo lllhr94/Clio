@@ -126,7 +126,6 @@ struct LookPage: View {
                     Toggle(Words.t("行迹默认展开"), isOn: $traceOpen)
                     Toggle("回复上留着思考过程", isOn: $showThinking)
                     Toggle("开口前先写一段心绪", isOn: $pulseOn)
-                    Toggle("聊天页的形象", isOn: $mascot)
                     Toggle("角落显示帧率", isOn: $fps)
                 }
                 .spot("motion", lit)

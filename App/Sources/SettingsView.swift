@@ -13,6 +13,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var connecting = false
+    @State private var petting = false
     @Environment(\.openURL) private var openURL
     @State private var adding = false
     @State private var looking = false
@@ -81,6 +82,7 @@ struct SettingsView: View {
         .sheet(isPresented: $timing) { RoutinesPage(team: team) }
         .sheet(isPresented: $skilling) { SkillsPage() }
         .sheet(isPresented: $hilling) { HillsPage() }
+        .sheet(isPresented: $petting) { PetPage() }
         .alert(Words.t("改这条拾遗"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
             TextField("", text: $memoryText)
             Button("存好") {
@@ -117,6 +119,7 @@ struct SettingsView: View {
         Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look#morning"),
         Spot(title: "能做的事和要不要先问", words: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室", page: "grants"),
         Spot(title: "连接器：谷歌、Notion、高德地图等", words: "连接器 连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp", page: "connectors"),
+        Spot(title: "宠物：选一只、大小、安静模式、导入", words: "宠物 伴读 鲸鱼 形象 气泡 安静 导入 宠物包", page: "pet"),
         Spot(title: "定时任务", words: "定时 每天 每周 到点 任务", page: "timing"),
         Spot(title: "技能", words: "技能 skill 本事", page: "skills"),
         Spot(title: "养护：备份、日志、诊断", words: "养护 备份 恢复 日志 诊断 掉帧 清理", page: "care"),
@@ -172,6 +175,7 @@ struct SettingsView: View {
         case "timing": timing = true
         case "skills": skilling = true
         case "connectors": connecting = true
+        case "pet": petting = true
         default: query = ""
         }
     }
@@ -460,6 +464,8 @@ struct SettingsView: View {
     private var looksGroup: some View {
         group("外观") {
             row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
+            divider
+            row("pawprint", Tint.looks, "nav.pet", PetLibrary.shared.choice == "none" ? "不显示" : (PetLibrary.shared.pack?.name ?? "鲸鱼")) { petting = true }
             divider
             HStack(spacing: Ink.Space.m) {
                 badge("quote.bubble", Tint.looks)

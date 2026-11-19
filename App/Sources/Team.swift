@@ -1386,6 +1386,7 @@ final class TeamModel: ObservableObject {
             try await agent.run(history: messages) { [weak self] event in
                 await self?.hear(event, chat: key, speaker: speaker)
             }
+            PetNews.shared.post(.done, chat: key, title: chatName(key))
             if Pref.notifyDone, UIApplication.shared.applicationState != .active,
                let last = history(key).last(where: { $0.message.role == .assistant && !$0.message.text.isEmpty }) {
                 Notify.now(bot.name, last.message.text, chat: key)
@@ -1417,6 +1418,7 @@ final class TeamModel: ObservableObject {
         Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
+        PetNews.shared.post(.failed, chat: key, title: chatName(key))
         if Pref.notifyDone, UIApplication.shared.applicationState != .active {
             Notify.now("\(chatName(key))出了点问题", text.replacingOccurrences(of: "\n", with: "。"), chat: key)
         }
@@ -1907,6 +1909,7 @@ final class TeamModel: ObservableObject {
         doing[chat] = "等你批准"
         record(.waiting, in: chat)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { approvals.append(approval) }
+        if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
         Haptics.tick(0.8)
         if UIApplication.shared.applicationState != .active {
             Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? "旅伴")

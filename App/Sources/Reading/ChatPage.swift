@@ -65,6 +65,18 @@ struct ChatPage: View {
     private var working: Bool { doing != nil || !chat.streaming.isEmpty }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
+    /// What the pet acts out for this conversation.
+    private var petMood: PetMood {
+        if waiting != nil || (asker.current != nil && working) { return .waiting }
+        if let doing, doing.contains("压缩") || doing.contains("提要") { return .sweeping }
+        if !chat.streaming.isEmpty { return .writing }
+        if working {
+            if let doing, doing.contains("沉吟") || doing.contains("思考") { return .thinking }
+            return .working(max(1, team.doing.count))
+        }
+        return .idle
+    }
+
     private var pose: WhalePose {
         if waiting != nil { return .waiting }
         if !chat.streaming.isEmpty || doing == "正在回复" { return .writing }
@@ -393,6 +405,10 @@ struct ChatPage: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+            // The pet stands on the composer's top edge (or the plan card's, when that is showing).
+            PetStage(mood: petMood) { petSettingsOpen = true }
+                .opacity(dictation.listening ? 0 : 1)
             composerBar
                 // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
                 // no longer reads through the glass.
@@ -406,15 +422,16 @@ struct ChatPage: View {
                     .ignoresSafeArea(edges: .bottom)
                     .allowsHitTesting(false)
                 }
-        }
-        .overlay {
-            GeometryReader { proxy in
-                Mascot(pose: pose, raised: waiting != nil, bounds: proxy.size)
             }
         }
-        .onAppear { chat.open() }
+        .sheet(isPresented: $petSettingsOpen) { PetPage() }
+        .onAppear {
+            chat.open()
+            PetNews.shared.focused = chat.key
+        }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
+            if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
             chat.close()
             team.markSeen(chat.key)
             if dictation.listening { dictation.stop() }
@@ -1641,6 +1658,7 @@ struct ChatPage: View {
     @State private var cardOpen = false
     @State private var tuningOpen = false
     @State private var careOpen = false
+    @State private var petSettingsOpen = false
 
     /// Writing something: the row of chips shows under the text field.
     private var composing: Bool {
