@@ -19,7 +19,7 @@ final class Theme {
 
 /// Clio's design system: every color, type size, space and corner comes from here.
 enum Ink {
-    private static func pair(_ light: UInt32, _ dark: UInt32) -> Color {
+    static func pair(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(UIColor { traits in
             let hex = traits.userInterfaceStyle == .dark ? dark : light
             return UIColor(
@@ -33,12 +33,13 @@ enum Ink {
 
     // MARK: Colors
 
-    static let paper = pair(0xF6F1E7, 0x1C1A17)
-    static let paperRaised = pair(0xFBF8F1, 0x26231F)
+    /// Paper and its raised sheets take a breath of the accent's hue, so a whole page leans the same way (黛 keeps the plain paper).
+    static var paper: Color { Theme.shared.palette.paper }
+    static var paperRaised: Color { Theme.shared.palette.raised }
     static let ink = pair(0x2B2A27, 0xECE6DA)
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
     static let inkFaint = pair(0xA8A294, 0x6E685D)
-    static let rule = pair(0xE4DCCB, 0x37332D)
+    static var rule: Color { Theme.shared.palette.rule }
     /// The accent and its pale ground, from the palette the user picked.
     static var accent: Color { Theme.shared.palette.accent }
     static var accentWash: Color { Theme.shared.palette.wash }
@@ -48,19 +49,47 @@ enum Ink {
         var title: String
         var accent: Color
         var wash: Color
+        var paper: Color
+        var raised: Color
+        var rule: Color
+        var mine: Color
         var id: String { key }
+
+        /// `light` and `dark` are the accent in both modes; `tint` is how much of it the neutrals take (0 for none).
+        init(key: String, title: String, light: UInt32, dark: UInt32, wash: Color, tint: Double) {
+            self.key = key
+            self.title = title
+            self.accent = Ink.pair(light, dark)
+            self.wash = wash
+            func mixed(_ baseLight: UInt32, _ baseDark: UInt32, _ amount: Double) -> Color {
+                Ink.pair(Ink.mix(baseLight, light, amount * tint), Ink.mix(baseDark, dark, amount * tint))
+            }
+            paper = mixed(0xF6F1E7, 0x1C1A17, 0.05)
+            raised = mixed(0xFBF8F1, 0x26231F, 0.035)
+            rule = mixed(0xE4DCCB, 0x37332D, 0.08)
+            mine = mixed(0xECE4D3, 0x322E28, 0.07)
+        }
+    }
+
+    /// `amount` of `color` into `base`, channel by channel.
+    static func mix(_ base: UInt32, _ color: UInt32, _ amount: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let a = Double((base >> shift) & 0xFF), b = Double((color >> shift) & 0xFF)
+            return UInt32((a + (b - a) * amount).rounded()) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
     }
 
     /// 主色: ink colors with old names. 黛 is the first and the default.
     static let palettes: [Palette] = [
-        Palette(key: "dai", title: "黛", accent: pair(0x4A6A8A, 0x8FB0CF), wash: pair(0xE3EAF0, 0x2A3642)),
-        Palette(key: "yan", title: "胭", accent: pair(0xA4504A, 0xD98C84), wash: pair(0xF2E1DE, 0x3D2B29)),
-        Palette(key: "zhu", title: "竹", accent: pair(0x4F7A5A, 0x8DBB97), wash: pair(0xE1ECE3, 0x283A2D)),
-        Palette(key: "xiang", title: "缃", accent: pair(0x93702F, 0xD2AA62), wash: pair(0xF3E8D2, 0x3D3322)),
-        Palette(key: "teng", title: "藤", accent: pair(0x6E5A92, 0xA996CF), wash: pair(0xE9E4F2, 0x332C42)),
-        Palette(key: "mo", title: "墨", accent: pair(0x3F3D39, 0xC9C2B5), wash: pair(0xE8E5DF, 0x35332F)),
+        Palette(key: "dai", title: "黛", light: 0x4A6A8A, dark: 0x8FB0CF, wash: pair(0xE3EAF0, 0x2A3642), tint: 0),
+        Palette(key: "yan", title: "胭", light: 0xA4504A, dark: 0xD98C84, wash: pair(0xF2E1DE, 0x3D2B29), tint: 1),
+        Palette(key: "zhu", title: "竹", light: 0x4F7A5A, dark: 0x8DBB97, wash: pair(0xE1ECE3, 0x283A2D), tint: 1),
+        Palette(key: "xiang", title: "缃", light: 0x93702F, dark: 0xD2AA62, wash: pair(0xF3E8D2, 0x3D3322), tint: 0.6),
+        Palette(key: "teng", title: "藤", light: 0x6E5A92, dark: 0xA996CF, wash: pair(0xE9E4F2, 0x332C42), tint: 1),
+        Palette(key: "mo", title: "墨", light: 0x3F3D39, dark: 0xC9C2B5, wash: pair(0xE8E5DF, 0x35332F), tint: 0.5),
     ]
-    static let mine = pair(0xECE4D3, 0x322E28)
+    static var mine: Color { Theme.shared.palette.mine }
     static let ok = pair(0x5E8C6A, 0x7FB08C)
     static let warn = pair(0xC08A3E, 0xD9A65C)
     static let stop = pair(0xB4534B, 0xD4776F)

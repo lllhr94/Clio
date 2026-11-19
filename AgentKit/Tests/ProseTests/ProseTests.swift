@@ -64,3 +64,25 @@ final class ProseTests: XCTestCase {
         ])
     }
 }
+
+final class MendTests: XCTestCase {
+    func testOpenMarksAreClosed() {
+        XCTAssertEqual(Prose.mend("这是**重"), "这是**重**")
+        XCTAssertEqual(Prose.mend("这是**重点**和*斜"), "这是**重点**和*斜*")
+        XCTAssertEqual(Prose.mend("用 `ls -l"), "用 `ls -l`")
+        XCTAssertEqual(Prose.mend("删~~掉"), "删~~掉~~")
+        XCTAssertEqual(Prose.mend("这是**"), "这是")
+        XCTAssertEqual(Prose.mend("完整的**粗体**"), "完整的**粗体**")
+    }
+
+    func testHalfThingsWait() {
+        XCTAssertEqual(Prose.mend("第一行\n#"), "第一行")
+        XCTAssertEqual(Prose.mend("第一行\n- "), "第一行")
+        XCTAssertEqual(Prose.mend("第一行\n12."), "第一行")
+        XCTAssertEqual(Prose.mend("看[官网](https://exa"), "看[官网](#)")
+        XCTAssertEqual(Prose.mend("图![示意"), "图")
+        XCTAssertEqual(Prose.mend("| 名字 | 价"), "")
+        XCTAssertEqual(Prose.mend("代码\n```sw"), "代码")
+        XCTAssertEqual(Prose.mend("```swift\nlet a = \"**\""), "```swift\nlet a = \"**\"")
+    }
+}

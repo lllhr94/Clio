@@ -395,6 +395,16 @@ struct ChatPage: View {
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $filesOpen) { StudyPage() }
+        .sheet(isPresented: $detailOpen, onDismiss: {
+            // Open what was asked for from the detail page once it is out of the way.
+            if afterDetail == "card" { cardOpen = true }
+            if afterDetail == "leaves" { leafing = true }
+            afterDetail = nil
+        }) {
+            ChatDetail(team: team, chat: chat, title: team.title(of: chat.key) ?? bot.name,
+                       openCard: isRoom ? nil : { afterDetail = "card" },
+                       openLeaves: { afterDetail = "leaves" })
+        }
         .sheet(isPresented: $attaching, onDismiss: {
             // The sheet is out of the way; now open what was picked.
             if let kind = attachPicked {
@@ -556,10 +566,9 @@ struct ChatPage: View {
             .glassChip()
             .contentShape(.capsule)
             .onTapGesture {
-                guard !isRoom else { return }
                 Haptics.light()
                 typing = false
-                cardOpen = true
+                detailOpen = true
             }
             .contextMenu {
                 if !isRoom { Button("看名帖", systemImage: "person.text.rectangle") { cardOpen = true } }
@@ -567,7 +576,7 @@ struct ChatPage: View {
                     withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
                 }
             }
-            .accessibilityHint(isRoom ? "" : "点一下看名帖")
+            .accessibilityHint("点一下看对话详情")
             Spacer(minLength: 0)
             RoamButton(browser: team.browser) { open in
                 typing = false
@@ -1234,43 +1243,121 @@ struct ChatPage: View {
         }
     }
 
-    private var composer: some View {
-        VStack(spacing: Ink.Space.s) {
-            if !away.isEmpty, waiting == nil { awayCard }
+    // MARK: Dock: the cards above the composer
+
+    /// The cards that can sit above the composer, the most pressing first.
+    private enum DockCard: Hashable { case waiting, roam, working, away }
+
+    private var dockCards: [DockCard] {
+        var cards: [DockCard] = []
+        if waiting != nil { cards.append(.waiting) }
+        if team.browser.handoff != nil { cards.append(.roam) }
+        if working, waiting == nil, liveWords != nil { cards.append(.working) }
+        if !away.isEmpty, waiting == nil { cards.append(.away) }
+        return cards
+    }
+
+    /// Two cards or more stack into one, like notifications: the first in front, the edges of the next ones
+    /// showing behind it. A tap on the edges spreads them out.
+    @ViewBuilder
+    private var dock: some View {
+        let cards = dockCards
+        if cards.count <= 1 || dockOpen {
+            VStack(spacing: Ink.Space.s) {
+                if cards.count > 1 {
+                    HStack {
+                        Spacer()
+                        Button {
+                            Haptics.light()
+                            withAnimation(Ink.Motion.settle) { dockOpen = false }
+                        } label: {
+                            Label("收起", systemImage: "chevron.down").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                        }
+                        .buttonStyle(TapStyle(grow: 8))
+                    }
+                }
+                ForEach(cards, id: \.self) { card in dockCard(card) }
+            }
+            .transition(.opacity)
+        } else {
+            ZStack(alignment: .top) {
+                ForEach(Array(cards.dropFirst().prefix(2).enumerated()), id: \.offset) { index, _ in
+                    RoundedRectangle(cornerRadius: Ink.Radius.card)
+                        .fill(Ink.paperRaised)
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(Ink.rule))
+                        .frame(height: 40)
+                        .scaleEffect(x: 1 - 0.05 * CGFloat(index + 1), y: 1, anchor: .top)
+                        .opacity(1 - 0.25 * Double(index + 1))
+                        .offset(y: -6 * CGFloat(index + 1))
+                }
+                dockCard(cards[0])
+            }
+            .padding(.top, 12)
+            .overlay(alignment: .top) {
+                // The showing edges open the stack.
+                Color.clear
+                    .frame(height: 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        Haptics.light()
+                        withAnimation(Ink.Motion.settle) { dockOpen = true }
+                    }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("展开另外 \(cards.count - 1) 条")
+            }
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func dockCard(_ card: DockCard) -> some View {
+        switch card {
+        case .waiting:
+            if let waiting {
+            Button {
+                Haptics.grab()
+                typing = false
+                approving = waiting
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Image(systemName: "seal").foregroundStyle(Ink.warn)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("候印 · \(waiting.tool ?? "要你同意")").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                        if let reason = waiting.reason {
+                            Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Text("去落印").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                }
+                .padding(Ink.Space.m)
+                .paperCard()
+            }
+            .buttonStyle(PressStyle())
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+
+            }
+        case .roam:
             RoamSlip(browser: team.browser) {
                 typing = false
                 roaming = true
             }
-            if let waiting {
-                Button {
-                    Haptics.grab()
-                    typing = false
-                    approving = waiting
-                } label: {
-                    HStack(spacing: Ink.Space.m) {
-                        Image(systemName: "seal").foregroundStyle(Ink.warn)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("候印 · \(waiting.tool ?? "要你同意")").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                            if let reason = waiting.reason {
-                                Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                        Text("去落印").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
-                    }
-                    .padding(Ink.Space.m)
-                    .paperCard()
-                }
-                .buttonStyle(PressStyle())
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-            if working, waiting == nil, let words = liveWords {
-                WorkingBar(words: words, icon: liveIcon, tools: team.toolCount[chat.key] ?? 0, since: workingSince ?? Date()) {
+        case .working:
+            if let words = liveWords {
+                WorkingBar(words: words, icon: liveIcon, tools: team.toolCount[chat.key] ?? 0, since: workingSince ?? Date(), free: Grant.Preset.current == .free) {
                     following = true
                     toEnd()
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        case .away:
+            awayCard
+        }
+    }
+
+    private var composer: some View {
+        VStack(spacing: Ink.Space.s) {
+            dock
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
                     .onTapGesture { dictation.problem = nil }
@@ -1474,6 +1561,9 @@ struct ChatPage: View {
     @State private var abilities = false
     @State private var attaching = false
     @State private var filesOpen = false
+    @State private var dockOpen = false
+    @State private var detailOpen = false
+    @State private var afterDetail: String?
     @State private var attachPicked: AttachKind?
     @State private var deskPicking = false
     @State private var scanning = false
@@ -1890,6 +1980,8 @@ private struct WorkingBar: View {
     let icon: String
     let tools: Int
     let since: Date
+    /// Everything set to 放手: said on the bar, so it is never forgotten.
+    var free = false
     let tap: () -> Void
 
     /// A word of encouragement that grows with the work.
@@ -1925,6 +2017,11 @@ private struct WorkingBar: View {
                         .layoutPriority(-1)
                 }
                 Spacer(minLength: Ink.Space.s)
+                if free {
+                    Text("放手").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.warn)
+                        .padding(.horizontal, 6).frame(height: 18)
+                        .background(Ink.warn.opacity(0.14), in: .capsule)
+                }
                 TimelineView(.periodic(from: since, by: 1)) { context in
                     let seconds = max(0, Int(context.date.timeIntervalSince(since)))
                     Text(String(format: "%d:%02d", seconds / 60, seconds % 60))

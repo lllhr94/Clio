@@ -23,9 +23,7 @@ struct GrantsPage: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("旅伴能做什么，一项一项由你定。「每次问」会在用之前请你落印；「不许」它就看不到这项本事。有些还要过手机系统那一关。")
-                            .font(Ink.secondary)
-                            .foregroundStyle(Ink.inkSoft)
+                        presets
                         Button {
                             askAll()
                         } label: {
@@ -123,6 +121,36 @@ struct GrantsPage: View {
         for grant in Grant.allCases {
             policies[grant] = grant.policy
             systems[grant] = grant.system
+        }
+    }
+
+    /// 谨慎 / 平常 / 放手: everything at once; the items below can still be set one by one.
+    private var presets: some View {
+        let current = Grant.Preset.current
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack(spacing: Ink.Space.s) {
+                ForEach(Grant.Preset.allCases) { preset in
+                    Button {
+                        Haptics.tick(0.6)
+                        preset.apply()
+                        for grant in Grant.allCases { policies[grant] = grant.policy }
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(preset.title).font(.system(size: 15, weight: .semibold))
+                            Text(preset.line).font(.system(size: 11)).lineLimit(2).multilineTextAlignment(.center)
+                        }
+                        .foregroundStyle(current == preset ? Ink.accent : Ink.inkSoft)
+                        .frame(maxWidth: .infinity, minHeight: 64)
+                        .padding(.horizontal, 4)
+                        .background(current == preset ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card))
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card).strokeBorder(current == preset ? Color.clear : Ink.rule))
+                    }
+                    .buttonStyle(PressStyle(haptic: false))
+                    .accessibilityAddTraits(current == preset ? .isSelected : [])
+                }
+            }
+            Text(current == nil ? "自定义：下面有几项是你单独改过的" : "下面每项还能单独改")
+                .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
         }
     }
 

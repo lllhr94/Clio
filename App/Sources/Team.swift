@@ -1307,6 +1307,13 @@ final class TeamModel: ObservableObject {
     /// The turns a retry (or an edit of message `id`) would undo: the last one, or every one from that message on.
     func turnsToUndo(_ key: String, from id: String? = nil) -> [String] { Turns.toUndo(history(key), from: id) }
 
+    /// Every file this conversation changed, each once.
+    func allChangedFiles(_ key: String) -> [Snapshots.Kept] {
+        guard let first = history(key).first(where: { $0.message.role == .user && $0.note != true }) else { return [] }
+        var seen = Set<String>()
+        return changedFiles(key, from: first.id).filter { seen.insert("\($0.place ?? "")|\($0.path)").inserted }
+    }
+
     /// Files those turns changed.
     func changedFiles(_ key: String, from id: String? = nil) -> [Snapshots.Kept] {
         Snapshots.shared.files(key, turns: turnsToUndo(key, from: id))

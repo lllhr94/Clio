@@ -38,7 +38,7 @@ struct ProseView: View {
 
     var body: some View {
         let _ = (face, size, leading)
-        let blocks = streaming ? Prose.parse(text) : ParsedCache.blocks(text)
+        let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         VStack(alignment: .leading, spacing: Ink.Space.l) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
@@ -256,6 +256,9 @@ private struct TableBlock: View {
         return Text(styled)
             .font(head ? .system(size: 14, weight: .semibold) : Ink.secondary)
             .foregroundStyle(head ? Ink.ink : Ink.inkSoft)
+            // A column grows with its words up to 260, then wraps; a table wider than the page scrolls sideways.
+            .frame(maxWidth: 260, alignment: align == .center ? .center : (align == .trailing ? .trailing : .leading))
+            .fixedSize(horizontal: false, vertical: true)
             .gridColumnAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
     }
 }

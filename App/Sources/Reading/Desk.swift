@@ -205,10 +205,16 @@ struct Desk: View {
                             words: recent.isEmpty ? "还没有聊过。点上面的旅伴，说第一句话吧。" : "都归档了，下面能翻出来。"
                         )
                     }
-                    ForEach(Array(shownThreads.enumerated()), id: \.element.id) { index, item in
-                        thread(item)
-                        if index != shownThreads.count - 1 {
-                            Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                    ForEach(Self.byDay(shownThreads), id: \.title) { group in
+                        Text(group.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Ink.inkFaint)
+                            .padding(.top, Ink.Space.m)
+                        ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                            thread(item)
+                            if index != group.items.count - 1 {
+                                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 40)
+                            }
                         }
                     }
                     if !archivedThreads.isEmpty {
@@ -522,6 +528,25 @@ struct Desk: View {
         ]
     }
 
+    /// 今天 / 昨天 / 本周 / 更早, newest first, empty groups left out.
+    static func byDay(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
+        let calendar = Calendar.current
+        let now = Date()
+        let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: now)) ?? now
+        func title(_ at: Double) -> String {
+            let date = Date(timeIntervalSince1970: at / 1000)
+            if calendar.isDateInToday(date) { return "今天" }
+            if calendar.isDateInYesterday(date) { return "昨天" }
+            return date >= weekAgo ? "本周" : "更早"
+        }
+        var groups: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = []
+        for item in items {
+            let name = title(item.at)
+            if let index = groups.firstIndex(where: { $0.title == name }) { groups[index].items.append(item) } else { groups.append((name, [item])) }
+        }
+        return groups
+    }
+
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
         SwipeRow(actions: swipes(item)) {
         Button {
@@ -549,7 +574,7 @@ struct Desk: View {
                     }
                     if let live = Live.brief(team.doing[item.id.id], waiting: team.approvals.contains { $0.chat == item.id.id }) {
                         HStack(spacing: Ink.Space.xs) {
-                            Circle().fill(Ink.accent).frame(width: 6, height: 6)
+                            BreathingDot()
                             Text(live).font(Ink.secondary).foregroundStyle(Ink.accent).lineLimit(1)
                         }
                     } else {
@@ -597,5 +622,21 @@ struct Desk: View {
         if let days = calendar.dateComponents([.day], from: date, to: Date()).day, days < 7 { formatter.dateFormat = "EEE"; return formatter.string(from: date) }
         formatter.dateFormat = "M月d日"
         return formatter.string(from: date)
+    }
+}
+
+
+/// A small dot that breathes while a conversation is at work.
+struct BreathingDot: View {
+    @State private var full = false
+
+    var body: some View {
+        Circle()
+            .fill(Ink.accent)
+            .frame(width: 6, height: 6)
+            .opacity(full ? 1 : 0.35)
+            .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: full)
+            .onAppear { full = true }
+            .accessibilityHidden(true)
     }
 }

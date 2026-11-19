@@ -110,6 +110,48 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         nonmutating set { UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)") }
     }
 
+    /// Three ways to set everything at once. Each item can still be changed on its own afterwards.
+    enum Preset: String, CaseIterable, Identifiable {
+        case careful, standard, free
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .careful: "谨慎"
+            case .standard: "平常"
+            case .free: "放手"
+            }
+        }
+
+        var line: String {
+            switch self {
+            case .careful: "读写、联网之外，样样先问"
+            case .standard: "敏感的先问，其余直接做"
+            case .free: "都直接做，只有信匣先问"
+            }
+        }
+
+        func policy(for grant: Grant) -> Policy {
+            switch self {
+            case .standard: return grant.standard
+            case .free: return grant == .vault ? .ask : .allow
+            case .careful:
+                switch grant {
+                case .web, .desk, .memory, .device: return .allow
+                default: return .ask
+                }
+            }
+        }
+
+        func apply() { for grant in Grant.allCases { grant.policy = policy(for: grant) } }
+
+        /// The preset everything is set to now, if any.
+        static var current: Preset? {
+            allCases.first { preset in Grant.allCases.allSatisfy { $0.policy == preset.policy(for: $0) } }
+        }
+    }
+
     static func of(tool name: String) -> Grant? {
         switch name {
         case "web_search", "web_read": .web
