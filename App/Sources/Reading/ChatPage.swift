@@ -567,14 +567,14 @@ struct ChatPage: View {
     private var header: some View {
         HStack(spacing: Ink.Space.s) {
             Button(action: leave) {
-                Image(systemName: "chevron.left")
+                Image(systemName: "line.3.horizontal")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel(Words.t("回到案头"))
+            .accessibilityLabel("打开侧边栏")
             HStack(spacing: Ink.Space.s) {
                 Whale(size: 30, pose: pose)
                 VStack(alignment: .leading, spacing: 0) {
@@ -1021,6 +1021,25 @@ struct ChatPage: View {
                 if line.id == chat.lines.last(where: { $0.kind == .bot })?.id, !working {
                     footer(line)
                         .transition(.opacity)
+                } else if !(chat.fresh?.id == line.id) {
+                    // Earlier replies keep a quiet row too: copy and share without a long press.
+                    HStack(spacing: Ink.Space.s) {
+                        icon("doc.on.doc", "复制") {
+                            UIPasteboard.general.string = line.text
+                            Haptics.tick(0.5)
+                            say("复制好了。")
+                        }
+                        ShareLink(item: line.text) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Ink.inkFaint)
+                                .frame(width: 30, height: 30)
+                        }
+                        .accessibilityLabel("分享")
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, -6)
+                    .opacity(0.8)
                 }
             }
         case .steps:
@@ -1393,6 +1412,10 @@ struct ChatPage: View {
 
     private var composer: some View {
         VStack(spacing: Ink.Space.s) {
+            if let plan = team.plans[chat.key] {
+                PlanCard(steps: plan) { team.clearPlan(chat.key) }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             dock
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
@@ -1852,6 +1875,77 @@ private struct Trace: View {
     }
     @State private var diffing: DiffShow?
 
+    /// The files these steps wrote or changed.
+    private var changedFiles: [Keepsake] { keepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
+
+    /// Lines added and taken out, read off a comparison.
+    private static func tally(_ diff: String?) -> (added: Int, removed: Int) {
+        guard let diff else { return (0, 0) }
+        var added = 0, removed = 0
+        for row in diff.split(separator: "\n", omittingEmptySubsequences: false) {
+            if row.hasPrefix("+"), !row.hasPrefix("+++") { added += 1 }
+            if row.hasPrefix("-"), !row.hasPrefix("---") { removed += 1 }
+        }
+        return (added, removed)
+    }
+
+    /// Several files changed in one go: one card, 「改动了 3 个文件 +120 −40」, a row for each, opened to its comparison.
+    private var changesCard: some View {
+        let files = changedFiles
+        let counts = files.map { Self.tally($0.diff) }
+        let added = counts.reduce(0) { $0 + $1.added }
+        let removed = counts.reduce(0) { $0 + $1.removed }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: "arrow.triangle.pull").font(.system(size: 15)).foregroundStyle(Ink.inkSoft)
+                Text("改动了 \(files.count) 个文件").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
+                Spacer()
+                tallyText(added, removed)
+            }
+            .padding(Ink.Space.l)
+            ForEach(Array(files.enumerated()), id: \.element.id) { index, item in
+                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                Button {
+                    Haptics.light()
+                    if let diff = item.diff, !diff.isEmpty {
+                        diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
+                    } else if let url = item.url {
+                        openFile(url)
+                    }
+                } label: {
+                    HStack(spacing: Ink.Space.m) {
+                        let fresh = counts[index].removed == 0 && counts[index].added > 0
+                        Image(systemName: fresh ? "doc.badge.plus" : "doc.text")
+                            .font(.system(size: 16)).foregroundStyle(fresh ? Ink.ok : Ink.inkSoft).frame(width: 22)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(item.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                if fresh { Text("新建").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.ok) }
+                            }
+                            Text(item.detail).font(.system(size: 11)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                        }
+                        Spacer(minLength: Ink.Space.s)
+                        tallyText(counts[index].added, counts[index].removed)
+                    }
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.vertical, Ink.Space.m)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .paperCard()
+        .padding(.top, Ink.Space.s)
+    }
+
+    private func tallyText(_ added: Int, _ removed: Int) -> some View {
+        HStack(spacing: 6) {
+            if added > 0 { Text("+\(added)").foregroundStyle(Ink.ok) }
+            if removed > 0 { Text("−\(removed)").foregroundStyle(Ink.stop) }
+        }
+        .font(.system(size: 13, design: .monospaced))
+    }
+
     private var keepsakes: [Keepsake] {
         var out: [Keepsake] = []
         for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
@@ -1973,8 +2067,11 @@ private struct Trace: View {
         .onChange(of: line.live) { _, live in
             if !live { withAnimation(Ink.Motion.unfold) { open = Pref.traceOpen } }
         }
+        if !line.live, changedFiles.count >= 2 {
+            changesCard
+        }
         if !line.live {
-            ForEach(keepsakes) { item in
+            ForEach(changedFiles.count >= 2 ? keepsakes.filter { $0.kind != .file && $0.kind != .remoteFile } : keepsakes) { item in
                 Button {
                     Haptics.light()
                     switch item.kind {

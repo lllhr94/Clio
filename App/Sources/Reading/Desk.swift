@@ -105,8 +105,11 @@ struct Desk: View {
     @State private var searching = false
     @State private var showArchived = false
     @State private var listFilter = 0
-    /// How far the open conversation has been pulled to the right by a swipe from the left edge.
+    /// How far a drag has moved the conversation (right to open the sidebar, left to close it).
     @State private var pull: CGFloat = 0
+    /// The sidebar is out, the conversation pushed to the right.
+    @State private var sideOpen = false
+    @State private var sideQuery = ""
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
@@ -174,6 +177,191 @@ struct Desk: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
+            }
+        }
+    }
+
+    // MARK: Sidebar
+
+    private var sideWidth: CGFloat {
+        let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen.bounds.width ?? 390
+        return min(340, screen * 0.82)
+    }
+
+    /// How far right the conversation sits.
+    private var shift: CGFloat { max(0, (sideOpen ? sideWidth : 0) + pull) }
+
+    private func openSide() {
+        Haptics.light()
+        withAnimation(Ink.Motion.unfold) { sideOpen = true; pull = 0 }
+    }
+
+    private func closeSide() {
+        withAnimation(Ink.Motion.unfold) { sideOpen = false; pull = 0 }
+    }
+
+    /// Goes to a conversation from the sidebar.
+    private func jump(_ target: Opened?) {
+        closeSide()
+        guard target != opened else { return }
+        withAnimation(Ink.Motion.unfold) { opened = target }
+    }
+
+    private var sideThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
+        let words = sideQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        return recent.filter { item in
+            !team.archived.contains(item.id.id)
+                && (words.isEmpty || item.name.lowercased().contains(words) || item.preview.lowercased().contains(words))
+        }
+    }
+
+    /// Claude- and DSH-like: search, a new conversation, the places to go, pinned and recent conversations,
+    /// and settings at the bottom. It lies under the conversation; swiping from the left edge or the ☰ brings it out.
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Ink.Space.s) {
+                Text("Clio").font(Ink.serif(28, bold: true)).foregroundStyle(Ink.ink)
+                Spacer()
+                Button {
+                    Haptics.light()
+                    if case .companion(let id) = opened { team.turnLeaf("bot-" + id) }
+                    closeSide()
+                } label: {
+                    Label("新对话", systemImage: "square.and.pencil")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Ink.paper)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Ink.ink, in: .capsule)
+                }
+                .buttonStyle(PressStyle(haptic: false))
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.top, Ink.Space.s)
+
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Ink.inkFaint)
+                TextField("搜索对话", text: $sideQuery)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !sideQuery.isEmpty {
+                    Button { sideQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Ink.inkFaint) }
+                        .buttonStyle(.plain)
+                }
+            }
+            .font(.system(size: 16))
+            .padding(.horizontal, Ink.Space.m)
+            .frame(height: 42)
+            .background(Ink.paperRaised, in: .capsule)
+            .padding(Ink.Space.l)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if sideQuery.isEmpty {
+                        sideNav("house", Words.t("案头")) { jump(nil) }
+                        sideNav("books.vertical", Words.t("书案")) { closeSide(); studying = true }
+                        sideNav("terminal", Words.t("斗室")) { closeSide(); denning = true }
+                    }
+                    ForEach(Self.grouped(sideThreads, pinned: team.pinned), id: \.title) { group in
+                        Text(group.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Ink.inkFaint)
+                            .padding(.horizontal, Ink.Space.l)
+                            .padding(.top, Ink.Space.l)
+                            .padding(.bottom, 4)
+                        ForEach(group.items, id: \.id) { item in
+                            sideThread(item)
+                        }
+                    }
+                    if sideThreads.isEmpty {
+                        Text(sideQuery.isEmpty ? "还没有对话。" : "没找到「\(sideQuery)」。")
+                            .font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(Ink.Space.l)
+                    }
+                }
+                .padding(.horizontal, Ink.Space.s)
+                .padding(.bottom, 80)
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+
+            HStack(spacing: Ink.Space.m) {
+                Spacer()
+                Button {
+                    Haptics.light()
+                    closeSide()
+                    drawer = true
+                } label: {
+                    Image(systemName: "square.grid.2x2").font(.system(size: 18)).foregroundStyle(Ink.ink)
+                        .frame(width: 48, height: 48).glassFace(in: Circle())
+                }
+                .buttonStyle(PressStyle(haptic: false))
+                .accessibilityLabel("更多")
+                Button {
+                    Haptics.light()
+                    closeSide()
+                    tuning = true
+                } label: {
+                    Image(systemName: "gearshape").font(.system(size: 18)).foregroundStyle(Ink.ink)
+                        .frame(width: 48, height: 48).glassFace(in: Circle())
+                }
+                .buttonStyle(PressStyle(haptic: false))
+                .accessibilityLabel(Words.t("调弦"))
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.bottom, Ink.Space.m)
+        }
+        .background(Ink.paper.ignoresSafeArea())
+    }
+
+    private func sideNav(_ icon: String, _ title: String, _ run: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            run()
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                Image(systemName: icon).font(.system(size: 17)).foregroundStyle(Ink.inkSoft).frame(width: 26)
+                Text(title).font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Spacer()
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+    }
+
+    private func sideThread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
+        let here = item.id == opened
+        let key = item.id.id
+        return Button {
+            Haptics.light()
+            jump(item.id)
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name).font(.system(size: 15, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
+                    if !item.preview.isEmpty {
+                        Text(item.preview).font(.system(size: 12)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: Ink.Space.s)
+                if team.approvals.contains(where: { $0.chat == key }) {
+                    Image(systemName: "exclamationmark.circle").font(.system(size: 14)).foregroundStyle(Ink.warn)
+                } else if team.isWorking(key) {
+                    ProgressView().controlSize(.mini)
+                } else if team.isUnread(key, at: item.at) {
+                    Circle().fill(Ink.accent).frame(width: 7, height: 7)
+                }
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, 9)
+            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .contextMenu {
+            Button(team.pinned.contains(key) ? "取消置顶" : "置顶", systemImage: team.pinned.contains(key) ? "pin.slash" : "pin") {
+                withAnimation(Ink.Motion.settle) { team.pin(key, !team.pinned.contains(key)) }
             }
         }
     }
@@ -260,7 +448,7 @@ struct Desk: View {
                             words: recent.isEmpty ? Words.t("还没有聊过。点上面的旅伴，说第一句话吧。") : "都归档了，下面能翻出来。"
                         )
                     }
-                    ForEach(Self.byDay(shownThreads), id: \.title) { group in
+                    ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
                         Text(group.title)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Ink.inkFaint)
@@ -304,39 +492,59 @@ struct Desk: View {
                 .padding(.bottom, Ink.Space.huge)
             }
             .scrollIndicators(.hidden)
-            // While a conversation is pulled aside, the desk shows through underneath, like a sidebar.
-            .opacity(opened == nil ? 1 : min(1, pull / 220))
-            .scaleEffect(opened == nil ? 1 : 0.96 + 0.04 * min(1, pull / 300))
+            .opacity(opened == nil ? 1 : 0)
+            .scaleEffect(opened == nil ? 1 : 0.96)
+
+            // The sidebar lies under the conversation and comes out as the conversation slides to the right.
+            if opened != nil {
+                sidebar
+                    .frame(width: sideWidth)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(min(1, shift / sideWidth * 1.3))
+            }
 
             if let opened {
                 page(for: opened)
                     .background(Ink.paper)
-                    .clipShape(RoundedRectangle(cornerRadius: pull > 0 ? 28 : 0, style: .continuous))
-                    .shadow(color: .black.opacity(pull > 0 ? 0.18 : 0), radius: 18, x: -4)
-                    .offset(x: pull)
+                    .clipShape(RoundedRectangle(cornerRadius: shift > 0 ? 28 : 0, style: .continuous))
+                    .shadow(color: .black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
+                    .overlay {
+                        // Open sidebar: a tap on the conversation's edge closes it.
+                        if sideOpen {
+                            Color.black.opacity(0.001)
+                                .onTapGesture { closeSide() }
+                        }
+                    }
+                    .offset(x: shift)
                     .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing)))
                     .zIndex(1)
                     .simultaneousGesture(
-                        // From the left edge: the conversation follows the finger, and the desk comes out from under it.
                         DragGesture(minimumDistance: 10, coordinateSpace: .global)
                             .onChanged { value in
-                                guard value.startLocation.x < 32, value.translation.width > 0,
-                                      abs(value.translation.height) < max(60, value.translation.width) else { return }
-                                pull = value.translation.width
+                                let across = value.translation.width
+                                guard abs(value.translation.height) < max(60, abs(across)) else { return }
+                                if sideOpen {
+                                    pull = min(0, across)
+                                } else if value.startLocation.x < 32, across > 0 {
+                                    pull = min(across, sideWidth)
+                                }
                             }
                             .onEnded { value in
-                                guard pull > 0 else { return }
-                                if pull > 110 || value.predictedEndTranslation.width > 260 {
-                                    Haptics.light()
-                                    withAnimation(Ink.Motion.unfold) { self.opened = nil; pull = 0 }
+                                guard pull != 0 else { return }
+                                let fling = value.predictedEndTranslation.width
+                                if sideOpen {
+                                    if -pull > sideWidth * 0.3 || fling < -180 { closeSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
                                 } else {
-                                    withAnimation(Ink.Motion.settle) { pull = 0 }
+                                    if pull > sideWidth * 0.35 || fling > 220 { openSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
                                 }
                             }
                     )
             }
         }
         .animation(Ink.Motion.unfold, value: opened)
+        .onChange(of: opened) { _, _ in
+            if sideOpen || pull != 0 { sideOpen = false; pull = 0 }
+        }
         .animation(Ink.Motion.settle, value: team.approvals.count)
         .sheet(isPresented: $drawer, onDismiss: {
             // Open what was picked once the drawer is out of the way.
@@ -481,12 +689,12 @@ struct Desk: View {
         switch target {
         case .companion(let id):
             if let bot = team.bots.first(where: { $0.id == id }) {
-                ChatPage(team: team, bot: bot) { opened = nil }
+                ChatPage(team: team, bot: bot) { openSide() }
                     .id(target.id)
             }
         case .gathering(let id):
             if let room = team.rooms.first(where: { $0.id == id }) {
-                ChatPage(team: team, room: room) { opened = nil }
+                ChatPage(team: team, room: room) { openSide() }
                     .id(target.id)
             }
         }
@@ -609,7 +817,11 @@ struct Desk: View {
     private func swipes(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> [SwipeAction] {
         let key = item.id.id
         let archived = team.archived.contains(key)
+        let pinned = team.pinned.contains(key)
         return [
+            SwipeAction(title: pinned ? "取消置顶" : "置顶", symbol: pinned ? "pin.slash" : "pin", tint: Ink.warn) {
+                withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
+            },
             SwipeAction(title: archived ? "拿回来" : "归档", symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.accent) {
                 withAnimation(Ink.Motion.settle) { team.archive(key, !archived) }
             },
@@ -620,6 +832,13 @@ struct Desk: View {
     }
 
     /// 今天 / 昨天 / 本周 / 更早, newest first, empty groups left out.
+    /// 已置顶 first (in the order pinned), then the rest by day.
+    static func grouped(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)], pinned: [String]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
+        let top = pinned.compactMap { key in items.first { $0.id.id == key } }
+        let rest = byDay(items.filter { !pinned.contains($0.id.id) })
+        return top.isEmpty ? rest : [("已置顶", top)] + rest
+    }
+
     static func byDay(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
         let calendar = Calendar.current
         let now = Date()
@@ -681,6 +900,11 @@ struct Desk: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .contextMenu {
+            if team.pinned.contains(item.id.id) {
+                Button("取消置顶", systemImage: "pin.slash") { withAnimation(Ink.Motion.settle) { team.pin(item.id.id, false) } }
+            } else {
+                Button("置顶", systemImage: "pin") { withAnimation(Ink.Motion.settle) { team.pin(item.id.id, true) } }
+            }
             if team.archived.contains(item.id.id) {
                 Button("从归档里拿回来", systemImage: "tray.and.arrow.up") { withAnimation(Ink.Motion.settle) { team.archive(item.id.id, false) } }
             } else {

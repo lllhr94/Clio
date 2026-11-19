@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 连接器, laid out the way other agent apps do it: categories along the top, one row per service, and a page
 /// per service with a big sign-in button (or a key), a token as the other way in, and what it brought once connected.
@@ -11,12 +12,19 @@ struct ConnectorsPage: View {
     @State private var adding = false
     @State private var query = ""
     @State private var kind = "全部"
+    @AppStorage("connectors.suggest") private var suggest = true
+    /// Redrawn after a system permission question was answered.
+    @State private var asked = 0
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                    if query.isEmpty { categories }
+                    if query.isEmpty {
+                        suggestCard
+                        if kind == "全部" { onDevice }
+                        categories
+                    }
                     if !mine.isEmpty && kind == "全部" { section("已连接", mine) }
                     if kind == "全部" && (query.isEmpty || "谷歌 google gmail 邮件 云盘".contains(query.lowercased())) {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
@@ -57,6 +65,80 @@ struct ConnectorsPage: View {
         }
         .sheet(isPresented: $googleOpen) { GoogleSheet() }
         .sheet(isPresented: $adding) { CustomSheet() }
+    }
+
+    /// Clio's own suggestions: while talking, a companion may say which connector would help.
+    private var suggestCard: some View {
+        HStack(alignment: .top, spacing: Ink.Space.m) {
+            Image(systemName: "square.grid.2x2").font(.system(size: 18)).foregroundStyle(Ink.inkSoft).frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("连接器推荐").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                Text(Words.t("聊天时遇到某个连接器能帮上忙的事，旅伴会提一句，告诉你去哪里连。"))
+                    .font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+            }
+            Spacer(minLength: 0)
+            Toggle("连接器推荐", isOn: $suggest).labelsHidden().tint(Ink.accent)
+        }
+        .padding(Ink.Space.l)
+        .paperCard()
+    }
+
+    /// What is on this phone itself, as connectors: the system permissions behind them, at a glance.
+    private var onDevice: some View {
+        let grants: [Grant] = [.health, .location, .calendar, .reminders, .contacts, .photos]
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            heading("此设备上")
+            VStack(spacing: 0) {
+                ForEach(Array(grants.enumerated()), id: \.element) { index, grant in
+                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 72) }
+                    Button {
+                        Haptics.light()
+                        Task {
+                            if grant.system == .notAsked { await grant.requestSystem() }
+                            else if let url = URL(string: UIApplication.openSettingsURLString) { await UIApplication.shared.open(url) }
+                            asked += 1
+                        }
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            ConnectorIcon(mark: "", tint: Color(red: 0.94, green: 0.94, blue: 0.95))
+                                .overlay { Image(systemName: grant.symbol).font(.system(size: 19, weight: .medium)).foregroundStyle(Self.deviceTint(grant)) }
+                            Text(grant.title).font(.system(size: 17)).foregroundStyle(Ink.ink)
+                            Spacer(minLength: 0)
+                            Text(deviceState(grant)).font(.system(size: 14)).foregroundStyle(Ink.inkSoft)
+                            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                        }
+                        .padding(.horizontal, Ink.Space.l)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle(haptic: false))
+                }
+            }
+            .paperCard()
+            .id(asked)
+        }
+    }
+
+    private static func deviceTint(_ grant: Grant) -> Color {
+        switch grant {
+        case .health: Color(red: 0.95, green: 0.25, blue: 0.35)
+        case .location: Color(red: 0.20, green: 0.48, blue: 0.95)
+        case .calendar: Color(red: 0.92, green: 0.30, blue: 0.25)
+        case .reminders: Color(red: 0.95, green: 0.55, blue: 0.15)
+        case .contacts: Color(red: 0.45, green: 0.45, blue: 0.50)
+        default: Color(red: 0.30, green: 0.65, blue: 0.40)
+        }
+    }
+
+    private func deviceState(_ grant: Grant) -> String {
+        if grant.policy == .off { return "在权限里关着" }
+        switch grant.system {
+        case .granted: return grant == .calendar || grant == .reminders ? "读取和写入" : "已允许"
+        case .limited: return "部分允许"
+        case .denied: return "被系统拒绝"
+        case .notAsked: return "点一下允许"
+        case .none: return "可用"
+        }
     }
 
     private var categories: some View {
@@ -259,6 +341,7 @@ private struct ConnectorDetail: View {
                 .padding(.top, Ink.Space.xl)
 
                 if server == nil { connectArea } else { connectedArea }
+                details
 
                 if let problem = problem ?? server.flatMap({ hills.lastError[$0.id] }) {
                     Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop).multilineTextAlignment(.center)
@@ -274,6 +357,52 @@ private struct ConnectorDetail: View {
         .confirmationDialog("断开\(connector.name)？", isPresented: $confirming, titleVisibility: .visible) {
             Button("断开", role: .destructive) { work.disconnect(connector); dismiss() }
         } message: { Text(Words.t("旅伴就用不了它的工具了；登录凭据也会从这台手机删掉。")) }
+    }
+
+    /// 详情: what kind of service it is, how it lets Clio in, and its address.
+    private var details: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text("详情").font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.inkSoft).padding(.leading, 4)
+            VStack(spacing: 0) {
+                detailRow("类别", connector.group)
+                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                detailRow("登录", {
+                    switch connector.auth {
+                    case .oauth: return "在它的登录页登录"
+                    case .key(let title, _, _, _): return "要一个\(title)"
+                    case .open: return "不用"
+                    case .google: return "用谷歌登录"
+                    }
+                }())
+                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, Ink.Space.l)
+                HStack(alignment: .top, spacing: Ink.Space.m) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("连接器地址").font(.system(size: 15)).foregroundStyle(Ink.ink)
+                        Text(connector.url).font(.system(size: 13, design: .monospaced)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        UIPasteboard.general.string = connector.url
+                        Haptics.tick(0.5)
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 15)).foregroundStyle(Ink.inkSoft).frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("复制地址")
+                }
+                .padding(Ink.Space.l)
+            }
+            .paperCard()
+        }
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 15)).foregroundStyle(Ink.ink)
+            Spacer()
+            Text(value).font(.system(size: 15)).foregroundStyle(Ink.inkSoft)
+        }
+        .padding(Ink.Space.l)
     }
 
     private var status: some View {
