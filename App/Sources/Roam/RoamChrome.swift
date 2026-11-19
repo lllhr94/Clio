@@ -24,7 +24,7 @@ struct RoamButton: View {
                 }
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel("打开远游")
+            .accessibilityLabel(Words.t("打开远游"))
             .transition(.scale(scale: 0.6).combined(with: .opacity))
         }
     }
@@ -44,7 +44,7 @@ struct RoamSlip: View {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "hand.raised").foregroundStyle(Ink.warn)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("远游 · 请你接手").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                        Text(Words.t("远游 · 请你接手")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -74,7 +74,7 @@ struct RoamThumb: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "safari").font(.system(size: 10, weight: .semibold)) }
-                    Text(browser.url?.host() ?? "远游").font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    Text(browser.url?.host() ?? Words.t("远游")).font(.system(size: 10, weight: .medium)).lineLimit(1)
                     Spacer(minLength: 0)
                     Button {
                         Haptics.light()
@@ -117,7 +117,7 @@ struct RoamThumb: View {
                 Haptics.light()
                 open()
             }
-            .accessibilityLabel("远游小窗，点开看全屏")
+            .accessibilityLabel(Words.t("远游小窗，点开看全屏"))
             .transition(.scale(scale: 0.7, anchor: .topTrailing).combined(with: .opacity))
         }
     }

@@ -47,7 +47,7 @@ struct SetupView: View {
             Whale(size: 120, pose: .idle)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("你好，这里是 Clio").font(Ink.display).foregroundStyle(Ink.ink)
-                Text("几位住在你手机里的旅伴。").font(Ink.reading).foregroundStyle(Ink.inkSoft)
+                Text(Words.t("几位住在你手机里的旅伴。")).font(Ink.reading).foregroundStyle(Ink.inkSoft)
             }
             VStack(alignment: .leading, spacing: Ink.Space.l) {
                 point("lock", "对话只在这台手机上", "不经过任何人的服务器，旅伴直接用你自己的密钥连模型。")
@@ -94,7 +94,7 @@ struct SetupView: View {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         Text(first ? "第一步 · 接一个模型" : "添一个模型服务").font(Ink.title).foregroundStyle(Ink.ink)
-                        Text("之后随时能在调弦里再加").font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                        Text(Words.t("之后随时能在调弦里再加")).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     }
                     Spacer()
                     if !first {
@@ -298,13 +298,13 @@ struct SetupView: View {
                 Text("接好了").font(Ink.display).foregroundStyle(Ink.ink)
                 if let connected {
                     let listed = connected.listed?.count ?? 0
-                    Text("\(connected.name) 在用 \(connected.models.count) 个模型" + (listed > connected.models.count ? "（列表里共 \(listed) 个）" : "") + "，旅伴先用 \(team.modelTitle(team.settings.defaultModel))。")
+                    Text("\(connected.name) 在用 \(connected.models.count) 个模型" + (listed > connected.models.count ? "（列表里共 \(listed) 个）" : "") + Words.t("，旅伴先用 \(team.modelTitle(team.settings.defaultModel))。"))
                         .font(Ink.reading).foregroundStyle(Ink.inkSoft)
                     if let found = team.resolve(team.settings.defaultModel) {
                         TraitChips(traits: found.endpoint.traits(found.model))
                     }
                 }
-                Text("更多模型和设置在调弦 › 模型服务")
+                Text(Words.t("更多模型和设置在调弦 › 模型服务"))
                     .font(Ink.secondary).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
@@ -312,7 +312,7 @@ struct SetupView: View {
                 Haptics.thud()
                 onDone()
             } label: {
-                Text(first ? "去案头，见见旅伴" : "好了")
+                Text(first ? Words.t("去案头，见见旅伴") : "好了")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(maxWidth: .infinity)

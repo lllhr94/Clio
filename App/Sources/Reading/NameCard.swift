@@ -35,7 +35,7 @@ struct NameCard: Codable {
         let data = try Data(contentsOf: url)
         guard let card = try? JSONDecoder().decode(NameCard.self, from: data), card.kind == "clio.namecard",
               !card.name.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw TeamError(message: "这不是一张 Clio 的名帖。")
+            throw TeamError(message: Words.t("这不是一张 Clio 的名帖。"))
         }
         return card
     }

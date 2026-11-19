@@ -32,12 +32,12 @@ struct CarePage: View {
                     }
                     Button("从备份恢复") { restoring = true }
                 } header: { Text("备份") } footer: {
-                    Text("不含信匣和远山的密码")
+                    Text(Words.t("不含信匣和远山的密码"))
                 }
 
                 Section {
                     if team.archived.isEmpty {
-                        Text("没有归档的絮语").foregroundStyle(Ink.inkSoft)
+                        Text(Words.t("没有归档的絮语")).foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(team.archived.sorted(), id: \.self) { key in
                             HStack {
@@ -56,18 +56,18 @@ struct CarePage: View {
                             }
                         }
                     }
-                } header: { Text("已归档的絮语") } footer: {
-                    Text("拿回来后回到案头")
+                } header: { Text(Words.t("已归档的絮语")) } footer: {
+                    Text(Words.t("拿回来后回到案头"))
                 }
 
                 Section {
                     row("版本", "Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")（\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")）")
                     row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-                    row("旅伴 / 雅集", "\(team.bots.count) / \(team.rooms.count)")
-                    row("拾遗", "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
+                    row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
+                    row(Words.t("拾遗"), "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
                     row("数据占用", sizeText)
-                    row("斗室", denText)
-                    row("远山", "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
+                    row(Words.t("斗室"), denText)
+                    row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
                 } header: { Text("诊断") }
 
                 Section {
@@ -121,7 +121,7 @@ struct CarePage: View {
             }
             .paperForm()
             .hitchPage("养护")
-            .navigationTitle("养护")
+            .navigationTitle(Words.t("养护"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in

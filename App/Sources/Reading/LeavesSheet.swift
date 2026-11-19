@@ -56,8 +56,8 @@ struct LeavesSheet: View {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "square.and.pencil").font(.system(size: 18)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("另起一叶").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                    Text(hasCurrent ? "眼下这段絮语收进下面，和\(name)从头聊起" : "眼下还是空白一页")
+                                    Text(Words.t("另起一叶")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text(hasCurrent ? Words.t("眼下这段絮语收进下面，和\(name)从头聊起") : "眼下还是空白一页")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
                                 Spacer(minLength: 0)
@@ -77,7 +77,7 @@ struct LeavesSheet: View {
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(folding ? "正在写前情提要…" : "压缩前文").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                    Text("较早的话写成提要，原文收进絮语页")
+                                    Text(Words.t("较早的话写成提要，原文收进絮语页"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
@@ -103,7 +103,7 @@ struct LeavesSheet: View {
                                     Image(systemName: "book.closed").font(.system(size: 18)).foregroundStyle(Ink.accent)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("\(companion.name)的日记").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                        Text(Pref.diaryOn ? "晚上写一页当天的事，你可以回一句" : "还没打开：调弦 › 旅伴的日常").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                        Text(Pref.diaryOn ? "晚上写一页当天的事，你可以回一句" : Words.t("还没打开：调弦 › 旅伴的日常")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
@@ -173,9 +173,9 @@ struct LeavesSheet: View {
                         }
 
                         if leaves.isEmpty {
-                            EmptyNote(symbol: "book.pages", words: "还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。")
+                            EmptyNote(symbol: "book.pages", words: Words.t("还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。"))
                         } else {
-                            Text("收起的絮语").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                            Text(Words.t("收起的絮语")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
                             VStack(spacing: 0) {
                                 ForEach(leaves) { leaf in
                                     Button {
@@ -198,7 +198,7 @@ struct LeavesSheet: View {
                                     }
                                     .buttonStyle(PressStyle())
                                     .contextMenu {
-                                        Button("撕掉这一叶", systemImage: "trash", role: .destructive) {
+                                        Button(Words.t("撕掉这一叶"), systemImage: "trash", role: .destructive) {
                                             withAnimation(Ink.Motion.settle) { team.dropLeaf(key, leaf) }
                                         }
                                     }
@@ -206,7 +206,7 @@ struct LeavesSheet: View {
                                 }
                             }
                             .paperCard()
-                            Text("长按一叶可以撕掉")
+                            Text(Words.t("长按一叶可以撕掉"))
                                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.horizontal, Ink.Space.xs)
                         }
                     }
@@ -214,7 +214,7 @@ struct LeavesSheet: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle("絮语页")
+            .navigationTitle(Words.t("絮语页"))
             .navigationBarTitleDisplayMode(.inline)
             .confirmationDialog("拆开压缩？", isPresented: Binding(get: { unfolding != nil }, set: { if !$0 { unfolding = nil } }), titleVisibility: .visible) {
                 Button("拆开，原文放回来") {

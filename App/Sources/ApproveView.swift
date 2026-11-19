@@ -230,7 +230,7 @@ struct ApproveView: View {
                 .frame(height: 1.5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("落印").font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
+                Text(Words.t("落印")).font(.system(size: 13)).foregroundStyle(Ink.inkSoft)
                 Text("你").font(.system(size: 17, weight: .semibold))
             }
             .frame(height: 62, alignment: .bottomLeading)
@@ -383,7 +383,7 @@ private struct SlideTrack: View {
         GeometryReader { proxy in
             let travel = max(1, proxy.size.width - knob - 10)
             ZStack(alignment: .leading) {
-                Text("滑过去，落印")
+                Text(Words.t("滑过去，落印"))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Ink.inkSoft)
                     .frame(maxWidth: .infinity)

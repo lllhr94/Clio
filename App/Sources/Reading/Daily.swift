@@ -77,7 +77,7 @@ struct TideChip: View {
                     HStack(spacing: Ink.Space.m) {
                         Image(systemName: newest.symbol).font(.system(size: 18)).foregroundStyle(Ink.accent).frame(width: 28)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(book.waiting.count > 1 ? "潮水带来了 \(book.waiting.count) 样东西" : "今天潮水带来了一样东西")
+                            Text(book.waiting.count > 1 ? Words.t("潮水带来了 \(book.waiting.count) 样东西") : Words.t("今天潮水带来了一样东西"))
                                 .font(.system(size: 15, weight: .medium)).foregroundStyle(Ink.ink)
                             Text("点开，\(keeper)游过去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
@@ -125,7 +125,7 @@ struct TideSheet: View {
                     if let shown {
                         reveal(shown)
                     } else if !book.waiting.isEmpty {
-                        Text("潮水带来的，点一下，\(keeper)游过去捡起来。")
+                        Text(Words.t("潮水带来的，点一下，\(keeper)游过去捡起来。"))
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: Ink.Space.m)], spacing: Ink.Space.m) {
                             ForEach(book.waiting) { find in
@@ -144,13 +144,13 @@ struct TideSheet: View {
                                     .paperCard()
                                 }
                                 .buttonStyle(PressStyle())
-                                .accessibilityLabel("\(Self.when(find.day))潮水带来的东西，点一下捡起来")
+                                .accessibilityLabel(Words.t("\(Self.when(find.day))潮水带来的东西，点一下捡起来"))
                             }
                         }
                     }
                     Text("收藏册").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.top, Ink.Space.m)
                     if book.collected.isEmpty {
-                        EmptyNote(symbol: "water.waves", words: "还没有收着的东西。每天潮水会带来一样，隔几天来也不会错过。")
+                        EmptyNote(symbol: "water.waves", words: Words.t("还没有收着的东西。每天潮水会带来一样，隔几天来也不会错过。"))
                     } else {
                         VStack(spacing: 0) {
                             ForEach(book.collected) { find in
@@ -159,7 +159,7 @@ struct TideSheet: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(find.name).font(.system(size: 16)).foregroundStyle(Ink.ink)
                                         Text(find.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                        Text(Self.when(find.day) + (find.picked ? "" : " · 潮水留下的")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                                        Text(Self.when(find.day) + (find.picked ? "" : Words.t(" · 潮水留下的"))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -175,7 +175,7 @@ struct TideSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("潮水")
+            .navigationTitle(Words.t("潮水"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }
@@ -280,7 +280,7 @@ struct DiarySheet: View {
                     if pages.isEmpty {
                         EmptyNote(
                             symbol: "book.closed",
-                            words: Pref.diaryOn ? "\(bot.name)还没写过日记。晚上九点以后，当天聊过的话会写成一页。" : "日记还没打开。在调弦 › 旅伴的日常里打开，\(bot.name)会在晚上写一页当天的日记。",
+                            words: Pref.diaryOn ? "\(bot.name)还没写过日记。晚上九点以后，当天聊过的话会写成一页。" : Words.t("日记还没打开。在调弦 › 旅伴的日常里打开，\(bot.name)会在晚上写一页当天的日记。"),
                             action: ("现在写今天的", { write() })
                         )
                     }

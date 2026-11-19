@@ -44,7 +44,7 @@ struct SettingsView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
             .hitchPage("调弦")
-            .navigationTitle("调弦")
+            .navigationTitle(Words.t("调弦"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -61,7 +61,7 @@ struct SettingsView: View {
         .sheet(isPresented: $caring) { CarePage(team: team) }
         .sheet(isPresented: $timing) { RoutinesPage(team: team) }
         .sheet(isPresented: $skilling) { SkillsPage() }
-        .alert("改这条拾遗", isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
+        .alert(Words.t("改这条拾遗"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
             TextField("", text: $memoryText)
             Button("存好") {
                 if let editingMemory { team.editMemory(editingMemory.id, memoryText) }
@@ -170,7 +170,7 @@ struct SettingsView: View {
 
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("拾遗", "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
+            heading(Words.t("拾遗"), "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
                     TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
@@ -218,7 +218,7 @@ struct SettingsView: View {
                 }
             }
             .paperCard()
-            Text(team.memories.isEmpty ? "聊天时说起你自己的事，旅伴会记下来。也可以在上面自己记。" : "点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。")
+            Text(team.memories.isEmpty ? Words.t("聊天时说起你自己的事，旅伴会记下来。也可以在上面自己记。") : "点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。")
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
         }
     }
@@ -255,9 +255,9 @@ struct SettingsView: View {
 
     private var abilities: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("本事")
+            heading(Words.t("本事"))
             VStack(spacing: 0) {
-                link("checkmark.seal", "应许", Grant.Preset.current?.title ?? "自定义") { granting = true }
+                link("checkmark.seal", Words.t("应许"), Grant.Preset.current?.title ?? "自定义") { granting = true }
                 Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
                 link("books.vertical", "技能", "\(SkillShelf.enabled.count) 个") { skilling = true }
                 Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
@@ -271,9 +271,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             heading("通用")
             VStack(spacing: 0) {
-                link("textformat.size", "纸墨与絮语", "外观与对话") { looking = true }
+                link("textformat.size", Words.t("纸墨与絮语"), "外观与对话") { looking = true }
                 Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("stethoscope", "养护", "备份与诊断") { caring = true }
+                link("stethoscope", Words.t("养护"), "备份与诊断") { caring = true }
             }
             .paperCard()
         }
@@ -302,7 +302,7 @@ struct SettingsView: View {
             Whale(size: 36, pose: .idle, still: true)
             Text("Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                 .font(Ink.serif(14, bold: true)).foregroundStyle(Ink.inkSoft)
-            Text("开源，GPL-3.0 · 斗室用 iSH，终端用 SwiftTerm，SSH 用 Citadel")
+            Text(Words.t("开源，GPL-3.0 · 斗室用 iSH，终端用 SwiftTerm，SSH 用 Citadel"))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).multilineTextAlignment(.center)
             Button("github.com/lllhr94/Clio") {
                 if let url = URL(string: "https://github.com/lllhr94/Clio") { openURL(url) }

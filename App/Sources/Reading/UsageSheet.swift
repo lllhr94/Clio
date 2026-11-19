@@ -125,7 +125,7 @@ struct UsageSheet: View {
                 stat("\(Int((spend.cacheShare * 100).rounded()))%", "缓存命中")
             }
             Text(spend.turns == 0 && spend.input == 0
-                 ? "从 0.27 起开始记，这段絮语之后的每一轮都会算进来。"
+                 ? Words.t("从 0.27 起开始记，这段絮语之后的每一轮都会算进来。")
                  : "共 \(spend.turns) 轮 · 输入含缓存命中的部分，命中越多越省钱")
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)

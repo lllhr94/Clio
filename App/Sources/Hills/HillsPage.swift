@@ -75,7 +75,7 @@ struct HillsPage: View {
                 }
             }
             .hitchPage("远山")
-            .navigationTitle("远山")
+            .navigationTitle(Words.t("远山"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } } }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
@@ -315,7 +315,7 @@ private struct HostEditor: View {
                         SecureField(Vault.load(String.self, key: "hill.\(host.id)") == nil ? "密码" : "密码（已存，不改就留空）", text: $password)
                     }
                 } footer: {
-                    Text(host.useKey ? "记得先把「远山」页里的公钥加到服务器上。" : "密码只存在这台手机的钥匙串里。")
+                    Text(host.useKey ? Words.t("记得先把「远山」页里的公钥加到服务器上。") : "密码只存在这台手机的钥匙串里。")
                 }
             }
             }
@@ -351,7 +351,7 @@ private struct ServerEditor: View {
                 PaperRows {
                 Section("称呼") { TextField("比如：VPS 浏览器", text: $server.name) }
                 Section {
-                    Toggle("经远山 SSH 隧道连", isOn: Binding(
+                    Toggle(Words.t("经远山 SSH 隧道连"), isOn: Binding(
                         get: { server.tunnelHost != nil },
                         set: { on in
                             server.tunnelHost = on ? (server.tunnelHost ?? Hills.shared.hosts.first?.id) : nil
@@ -366,7 +366,7 @@ private struct ServerEditor: View {
                     }
                 } footer: {
                     Text(Hills.shared.hosts.isEmpty
-                         ? "先在上面添一台远山主机，才能经它的 SSH 连过去。"
+                         ? Words.t("先在上面添一台远山主机，才能经它的 SSH 连过去。")
                          : "打开后，地址填那台电脑自己看到的地址（比如 \(Hills.browserAddress)）。手机会先连上 SSH，再把请求送过去，服务不用对外开端口。")
                 }
                 Section {
@@ -385,10 +385,10 @@ private struct ServerEditor: View {
                             Haptics.tick(0.5)
                         }
                     } header: { Text("在 VPS 上手动启动浏览器") } footer: {
-                        Text("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。")
+                        Text(Words.t("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。"))
                     }
                 }
-                Section { Toggle("借给旅伴用", isOn: $server.enabled) }
+                Section { Toggle(Words.t("借给旅伴用"), isOn: $server.enabled) }
             }
             }
             .paperForm()

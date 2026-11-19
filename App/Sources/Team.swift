@@ -1415,6 +1415,7 @@ final class TeamModel: ObservableObject {
         }
         parts.append("现在是 \(When.show(Date()))，\(TimeZone.current.identifier)。")
         if room == nil, let line = diaryLine(bot.id) { parts.append(line) }
+        if let names = Words.promptLine { parts.append(names) }
         let skills = SkillShelf.promptBlock
         if !skills.isEmpty { parts.append(skills.trimmingCharacters(in: .newlines)) }
         let surface = surfaceMemories

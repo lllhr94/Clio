@@ -34,7 +34,7 @@ struct FormSheet: View {
                         }
                         .paperCard()
                         if form.fields.contains(where: \.secret) {
-                            Label("机密的项存进信匣，旅伴只拿到编号，看不到内容。", systemImage: "lock.shield")
+                            Label(Words.t("机密的项存进信匣，旅伴只拿到编号，看不到内容。"), systemImage: "lock.shield")
                                 .font(Ink.footnote)
                                 .foregroundStyle(Ink.inkFaint)
                         }
@@ -85,7 +85,7 @@ struct FormSheet: View {
                             Button("自己填", systemImage: "keyboard") { picked[field.key] = nil }
                         }
                     } label: {
-                        Label("从信匣取", systemImage: "lock.rectangle.stack").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.accent)
+                        Label(Words.t("从信匣取"), systemImage: "lock.rectangle.stack").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.accent)
                     }
                 }
             }
@@ -98,7 +98,7 @@ struct FormSheet: View {
                 if let item = picked[field.key] {
                     HStack {
                         Image(systemName: item.kind.symbol).foregroundStyle(Ink.accent)
-                        Text("用信匣里的「\(item.title)」").font(.system(size: 16)).foregroundStyle(Ink.ink)
+                        Text(Words.t("用信匣里的「\(item.title)」")).font(.system(size: 16)).foregroundStyle(Ink.ink)
                         Spacer()
                     }
                     .frame(height: 30)

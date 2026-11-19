@@ -59,7 +59,7 @@ struct ServicePage: View {
             ModelSheet(team: team, endpointId: id, model: picked.model)
                 .presentationDetents([.large])
         }
-        .confirmationDialog("删掉 \(endpoint?.name ?? "")？用它的旅伴会改用默认模型，密钥也一起删掉。", isPresented: $removing, titleVisibility: .visible) {
+        .confirmationDialog(Words.t("删掉 \(endpoint?.name ?? "")？用它的旅伴会改用默认模型，密钥也一起删掉。"), isPresented: $removing, titleVisibility: .visible) {
             Button("删掉", role: .destructive) {
                 team.removeEndpoint(id)
                 dismiss()

@@ -17,7 +17,7 @@ enum AttachKind: String, CaseIterable, Identifiable {
         case .camera: "拍照"
         case .files: "文件"
         case .scan: "扫描文档"
-        case .desk: "书案里的文件"
+        case .desk: Words.t("书案里的文件")
         }
     }
 
@@ -44,7 +44,7 @@ struct DeskPicker: View {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 if all.isEmpty {
-                    Text("书案还空着。")
+                    Text(Words.t("书案还空着。"))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                 } else {
@@ -61,7 +61,7 @@ struct DeskPicker: View {
                                             .foregroundStyle(chosen.contains(item.path) ? Ink.accent : Ink.inkFaint)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text((item.path as NSString).lastPathComponent).font(.system(size: 15)).foregroundStyle(Ink.ink).lineLimit(1)
-                                            Text("书案/\(item.path) · \(Workspace.size(item.size))")
+                                            Text(Words.t("书案/\(item.path) · \(Workspace.size(item.size))"))
                                                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                         }
                                         Spacer(minLength: 0)
@@ -81,7 +81,7 @@ struct DeskPicker: View {
                     .searchable(text: $query, prompt: "找文件名")
                 }
             }
-            .navigationTitle("从书案挑")
+            .navigationTitle(Words.t("从书案挑"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { done([]) } }
@@ -224,7 +224,7 @@ struct PlusSheet: View {
                         }
                         .buttonStyle(TapStyle())
                         divider
-                        line("checkmark.shield", "本事", value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
+                        line("checkmark.shield", Words.t("本事"), value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
                     }
                     group {
                         line("books.vertical", "技能", value: "\(SkillShelf.enabled.count) 个") { skills = true }
@@ -236,7 +236,7 @@ struct PlusSheet: View {
                 .padding(.bottom, Ink.Space.xl)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("添加到絮语")
+            .navigationTitle(Words.t("添加到絮语"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -415,7 +415,7 @@ struct PlacePicker: View {
                     }
                 }
             } footer: {
-                Text(Hills.shared.hosts.isEmpty ? "在调弦 › 远山 添一台电脑或服务器，这里就能选它。" : "换了地方，旅伴下一轮就在那里读写文件、跑命令。")
+                Text(Hills.shared.hosts.isEmpty ? Words.t("在调弦 › 远山 添一台电脑或服务器，这里就能选它。") : Words.t("换了地方，旅伴下一轮就在那里读写文件、跑命令。"))
             }
         }
         .scrollContentBackground(.hidden)

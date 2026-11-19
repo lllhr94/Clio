@@ -137,7 +137,7 @@ struct Desk: View {
                     waitingCard
                     if let next = team.nextLetter { letter(next) }
                     HStack {
-                        Text("近来的絮语")
+                        Text(Words.t("近来的絮语"))
                             .font(Ink.title)
                             .foregroundStyle(Ink.ink)
                         Spacer()
@@ -185,7 +185,7 @@ struct Desk: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack {
                                         Text(hit.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
-                                        if hit.leaf != nil { Text("收起的一叶").font(.system(size: 11)).foregroundStyle(Ink.inkFaint) }
+                                        if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: 11)).foregroundStyle(Ink.inkFaint) }
                                         Spacer()
                                         Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
@@ -202,7 +202,7 @@ struct Desk: View {
                     if shownThreads.isEmpty {
                         EmptyNote(
                             symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
-                            words: recent.isEmpty ? "还没有聊过。点上面的旅伴，说第一句话吧。" : "都归档了，下面能翻出来。"
+                            words: recent.isEmpty ? Words.t("还没有聊过。点上面的旅伴，说第一句话吧。") : "都归档了，下面能翻出来。"
                         )
                     }
                     ForEach(Self.byDay(shownThreads), id: \.title) { group in
@@ -324,7 +324,7 @@ struct Desk: View {
             }
             Button("算了", role: .cancel) { clearing = nil }
         } message: {
-            Text(clearingIsRoom ? "雅集和里面的话都会删掉，旅伴们还在。" : "这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。")
+            Text(clearingIsRoom ? Words.t("雅集和里面的话都会删掉，旅伴们还在。") : Words.t("这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。"))
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
             guard let chat = note.object as? String else { return }
@@ -443,8 +443,8 @@ struct Desk: View {
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     .contextMenu {
-                        Button("看名帖", systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
-                        ShareLink(item: NameCard.file(for: bot)) { Label("递名帖", systemImage: "square.and.arrow.up") }
+                        Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
+                        ShareLink(item: NameCard.file(for: bot)) { Label(Words.t("递名帖"), systemImage: "square.and.arrow.up") }
                     }
                 }
                 Button {
@@ -457,7 +457,7 @@ struct Desk: View {
                         .overlay(Circle().strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                 }
                 .buttonStyle(PressStyle())
-                .accessibilityLabel("新旅伴")
+                .accessibilityLabel(Words.t("新旅伴"))
             }
         }
         .scrollIndicators(.hidden)
@@ -481,7 +481,7 @@ struct Desk: View {
                         .frame(width: 34, height: 34)
                         .background(Ink.warn.opacity(0.14), in: .circle)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(team.approvals.count > 1 ? "\(team.approvals.count) 张笺等你落印" : "\(name)等你落印")
+                        Text(team.approvals.count > 1 ? Words.t("\(team.approvals.count) 张笺等你落印") : Words.t("\(name)等你落印"))
                             .font(.system(size: 15, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text("\(name)想\(first.tool ?? "做一件事")" + ((first.reason ?? "").isEmpty ? "" : "：\(first.reason!)"))
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
@@ -599,11 +599,11 @@ struct Desk: View {
                 }
             }
             if case .gathering(let id) = item.id, let room = team.rooms.first(where: { $0.id == id }) {
-                Button("改雅集", systemImage: "pencil") { roomEditing = room }
-                Button("散了这个雅集", systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
+                Button(Words.t("改雅集"), systemImage: "pencil") { roomEditing = room }
+                Button(Words.t("散了这个雅集"), systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
             } else if let bot = item.bot {
-                Button("看名帖", systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
-                Button("清空这段絮语", systemImage: "trash", role: .destructive) { clearing = item.id }
+                Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
+                Button(Words.t("清空这段絮语"), systemImage: "trash", role: .destructive) { clearing = item.id }
             }
         }
         }

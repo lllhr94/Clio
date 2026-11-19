@@ -86,7 +86,7 @@ struct BotEditor: View {
                         }
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            FieldTitle(text: "一句话简介", note: "写在名帖上，案头和雅集里都会看到")
+                            FieldTitle(text: "一句话简介", note: Words.t("写在名帖上，案头和雅集里都会看到"))
                             TextField("比如：查资料、写总结", text: $role)
                                 .font(.system(size: 16))
                                 .submitLabel(.done)
@@ -124,7 +124,7 @@ struct BotEditor: View {
                         }
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            FieldTitle(text: "默认模型", note: "某一段絮语还能在输入框下另选")
+                            FieldTitle(text: "默认模型", note: Words.t("某一段絮语还能在输入框下另选"))
                             Menu {
                                 Button {
                                     model = ""
@@ -180,7 +180,7 @@ struct BotEditor: View {
                         if let bot {
                             VStack(spacing: Ink.Space.m) {
                                 ShareLink(item: NameCard.file(for: bot)) {
-                                    Label("把名帖递出去", systemImage: "square.and.arrow.up")
+                                    Label(Words.t("把名帖递出去"), systemImage: "square.and.arrow.up")
                                         .font(.system(size: 15, weight: .medium))
                                         .foregroundStyle(Ink.accent)
                                         .frame(maxWidth: .infinity)
@@ -188,7 +188,7 @@ struct BotEditor: View {
                                         .paperCard()
                                 }
                                 if !team.isMain(bot) {
-                                    Button("送别这位旅伴") { confirmingDelete = true }
+                                    Button(Words.t("送别这位旅伴")) { confirmingDelete = true }
                                         .font(.system(size: 15, weight: .medium))
                                         .foregroundStyle(Ink.stop)
                                         .frame(height: 40)
@@ -219,7 +219,7 @@ struct BotEditor: View {
                         .disabled(!canSave)
                 }
             }
-            .confirmationDialog("送别\(bot?.name ?? "")？它和你的絮语、收起的旧叶会一起删掉，不能恢复。", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            .confirmationDialog(Words.t("送别\(bot?.name ?? "")？它和你的絮语、收起的旧叶会一起删掉，不能恢复。"), isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("送别", role: .destructive) { if let bot { remove(bot) } }
                 Button("再想想", role: .cancel) {}
             }
@@ -252,7 +252,7 @@ struct BotEditor: View {
                     .foregroundStyle(Ink.inkFaint)
                     .lineLimit(2)
                 Spacer(minLength: Ink.Space.m)
-                Text("Clio · 名帖").font(Ink.serif(11)).foregroundStyle(Ink.inkFaint)
+                Text(Words.t("Clio · 名帖")).font(Ink.serif(11)).foregroundStyle(Ink.inkFaint)
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
@@ -322,12 +322,12 @@ struct RoomEditor: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("几位旅伴轮流接话，彼此听得见")
+                        Text(Words.t("几位旅伴轮流接话，彼此听得见"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            FieldTitle(text: "雅集的名字", note: "不填就用旅伴们的名字")
+                            FieldTitle(text: Words.t("雅集的名字"), note: Words.t("不填就用旅伴们的名字"))
                             TextField("比如：周末去哪玩", text: $name)
                                 .font(Ink.serif(18, bold: true))
                                 .paperField()
@@ -354,7 +354,7 @@ struct RoomEditor: View {
                         }
 
                         if room != nil {
-                            Button("散了这个雅集") { confirmingDelete = true }
+                            Button(Words.t("散了这个雅集")) { confirmingDelete = true }
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(Ink.stop)
                                 .frame(maxWidth: .infinity)
@@ -377,7 +377,7 @@ struct RoomEditor: View {
                         .disabled(!canSave)
                 }
             }
-            .confirmationDialog("散了「\(room?.name ?? "")」？雅集里的絮语会一起删掉。", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            .confirmationDialog(Words.t("散了「\(room?.name ?? "")」？雅集里的絮语会一起删掉。"), isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("散了", role: .destructive) {
                     if let room { team.deleteRoom(room.id) }
                     dismiss()

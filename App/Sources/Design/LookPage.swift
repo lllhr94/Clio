@@ -63,6 +63,13 @@ struct LookPage: View {
                     LabeledSlider(title: "字号", value: $size, range: 14...23, step: 1) { "\(Int($0))" }
                     LabeledSlider(title: "行距", value: $leading, range: 2...16, step: 1) { "\(Int($0))" }
                     palettes
+                    Picker(Words.t("叫法"), selection: Binding(get: { Theme.shared.plain }, set: { value in
+                        Haptics.tick(0.5)
+                        Theme.shared.setPlain(value)
+                    })) {
+                        Text("诗意").tag(false)
+                        Text("普通").tag(true)
+                    }
                 }
 
                 Section("动静") {
@@ -81,7 +88,7 @@ struct LookPage: View {
                     }
                     Stepper("压缩后留最近 \(keepRecent) 条原文", value: $keepRecent, in: 4...40, step: 2)
                 } header: { Text("压缩") } footer: {
-                    Text("较早的话写成提要，原文留在絮语页")
+                    Text(Words.t("较早的话写成提要，原文留在絮语页"))
                 }
 
                 Section {
@@ -115,14 +122,14 @@ struct LookPage: View {
 
                 Section {
                     Toggle("晚上写日记", isOn: $diaryOn)
-                } header: { Text("旅伴的日常") } footer: {
-                    Text("晚上离开时，旅伴各写一页日记")
+                } header: { Text(Words.t("旅伴的日常")) } footer: {
+                    Text(Words.t("晚上离开时，旅伴各写一页日记"))
                 }
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
                     Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
-                    Toggle("锁屏和灵动岛显示旅伴在做什么", isOn: $liveOn)
+                    Toggle(Words.t("锁屏和灵动岛显示旅伴在做什么"), isOn: $liveOn)
                 } header: { Text("在后台") } footer: {
                     Text("干活时在锁屏和灵动岛显示进度")
                 }
@@ -133,7 +140,7 @@ struct LookPage: View {
             }
             }
             .paperForm()
-            .navigationTitle("纸墨与絮语")
+            .navigationTitle(Words.t("纸墨与絮语"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }
@@ -169,7 +176,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent",
+        for key in ["look.scheme", "look.face", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -177,6 +184,7 @@ struct LookPage: View {
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
         liveOn = true
         Theme.shared.pick("dai")
+        Theme.shared.setPlain(false)
         Haptics.thud()
     }
 }

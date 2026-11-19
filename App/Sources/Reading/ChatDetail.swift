@@ -74,8 +74,8 @@ struct ChatDetail: View {
             }
             HStack(spacing: Ink.Space.s) {
                 pill("用量", "chart.pie") { usage = true }
-                if let openLeaves { pill("絮语页", "book.pages") { openLeaves(); dismiss() } }
-                if let openCard { pill("名帖", "person.text.rectangle") { openCard(); dismiss() } }
+                if let openLeaves { pill(Words.t("絮语页"), "book.pages") { openLeaves(); dismiss() } }
+                if let openCard { pill(Words.t("名帖"), "person.text.rectangle") { openCard(); dismiss() } }
             }
         }
         .padding(Ink.Space.l)

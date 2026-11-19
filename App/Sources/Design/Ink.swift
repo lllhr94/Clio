@@ -9,6 +9,14 @@ final class Theme {
 
     private(set) var key: String = UserDefaults.standard.string(forKey: "look.accent") ?? "dai"
 
+    /// Plain names instead of the poetic ones (`Words`).
+    private(set) var plain: Bool = UserDefaults.standard.bool(forKey: "look.plainNames")
+
+    func setPlain(_ value: Bool) {
+        plain = value
+        UserDefaults.standard.set(value, forKey: "look.plainNames")
+    }
+
     func pick(_ key: String) {
         self.key = key
         UserDefaults.standard.set(key, forKey: "look.accent")

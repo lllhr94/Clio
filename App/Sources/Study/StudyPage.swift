@@ -47,14 +47,14 @@ struct StudyFolder: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     if top {
-                        Text("「文件」App › 我的 iPhone › Clio › 书案")
+                        Text(Words.t("「文件」App › 我的 iPhone › Clio › 书案"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                     }
                     if items.isEmpty {
                         VStack(spacing: Ink.Space.m) {
                             Whale(size: 72, pose: .idle, still: true)
-                            Text("书案还空着")
+                            Text(Words.t("书案还空着"))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
                                 .multilineTextAlignment(.center)
@@ -81,7 +81,7 @@ struct StudyFolder: View {
             }
         }
         .hitchPage("书案")
-        .navigationTitle(top ? "书案" : folder.lastPathComponent)
+        .navigationTitle(top ? Words.t("书案") : folder.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {

@@ -30,7 +30,7 @@ struct GrantsPage: View {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "checkmark.seal").font(.system(size: 20)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(asking ? "正在一项项问系统…" : "一并应许").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text(asking ? "正在一项项问系统…" : Words.t("一并应许")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                     Text("一次问完系统授权")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
@@ -58,7 +58,7 @@ struct GrantsPage: View {
                         }
                         if !team.alwaysAllowed.isEmpty {
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                Text("落印时说过「以后都允许」的").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                                Text(Words.t("落印时说过「以后都允许」的")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
                                 VStack(spacing: 0) {
                                     ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
                                         HStack {
@@ -89,7 +89,7 @@ struct GrantsPage: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle("应许")
+            .navigationTitle(Words.t("应许"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }

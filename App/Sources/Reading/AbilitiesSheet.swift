@@ -21,7 +21,7 @@ struct AbilitiesSheet: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("只影响这段絮语")
+                        Text(Words.t("只影响这段絮语"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         workplace
@@ -38,7 +38,7 @@ struct AbilitiesSheet: View {
                             }
                         }
                         if !team.options(key).off.isEmpty {
-                            Button("这段絮语全部打开") {
+                            Button(Words.t("这段絮语全部打开")) {
                                 Haptics.thud()
                                 var value = team.options(key)
                                 value.off = []
@@ -53,7 +53,7 @@ struct AbilitiesSheet: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle("本事")
+            .navigationTitle(Words.t("本事"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }
@@ -91,7 +91,7 @@ struct AbilitiesSheet: View {
             }
             .paperCard()
             if Hills.shared.hosts.isEmpty {
-                Text("在调弦 › 远山 添一台电脑或服务器，这里就能选它。").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
+                Text(Words.t("在调弦 › 远山 添一台电脑或服务器，这里就能选它。")).font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
             }
         }
     }

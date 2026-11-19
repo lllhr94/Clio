@@ -113,7 +113,7 @@ final class Hitches: ObservableObject {
         // A frame at 60 Hz is 16.7 ms; anything past 17 ms missed at least one refresh.
         guard gap > 17 else { return }
         let now = Date()
-        let page = pages.last ?? "案头"
+        let page = pages.last ?? Words.t("案头")
         let action = actions.sorted { $0.key < $1.key }.map(\.value).joined(separator: "，")
         // Slow frames in a row are one stutter: keep its worst frame.
         if let previous = recent.last, now.timeIntervalSince(previous.at) < 0.3, previous.page == page {

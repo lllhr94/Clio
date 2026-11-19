@@ -10,34 +10,34 @@ enum DrawerItem: String, Identifiable, CaseIterable {
 
     var title: String {
         switch self {
-        case .newCompanion: "新旅伴"
-        case .importCard: "收名帖"
-        case .gathering: "雅集"
+        case .newCompanion: Words.t("新旅伴")
+        case .importCard: Words.t("收名帖")
+        case .gathering: Words.t("雅集")
         case .portrait: "形象"
-        case .study: "书案"
-        case .den: "斗室"
-        case .hills: "远山"
-        case .vault: "信匣"
-        case .tuning: "调弦"
-        case .look: "纸墨与絮语"
-        case .grants: "应许"
-        case .care: "养护"
+        case .study: Words.t("书案")
+        case .den: Words.t("斗室")
+        case .hills: Words.t("远山")
+        case .vault: Words.t("信匣")
+        case .tuning: Words.t("调弦")
+        case .look: Words.t("纸墨与絮语")
+        case .grants: Words.t("应许")
+        case .care: Words.t("养护")
         }
     }
 
     var line: String {
         switch self {
-        case .newCompanion: "写一张名帖，请一位新旅伴"
-        case .importCard: "导入别人递来的名帖文件"
-        case .gathering: "让几位旅伴围坐着一起聊"
+        case .newCompanion: Words.t("写一张名帖，请一位新旅伴")
+        case .importCard: Words.t("导入别人递来的名帖文件")
+        case .gathering: Words.t("让几位旅伴围坐着一起聊")
         case .portrait: "换成别的样子，或用自己的画像"
-        case .study: "旅伴写下的文件都在这里"
+        case .study: Words.t("旅伴写下的文件都在这里")
         case .den: "手机里的 Linux，能装软件、跑脚本"
         case .hills: "你的 VPS 和 MCP 服务"
-        case .vault: "账号密码，旅伴只拿得到编号"
-        case .tuning: "模型服务、密钥和拾遗"
+        case .vault: Words.t("账号密码，旅伴只拿得到编号")
+        case .tuning: Words.t("模型服务、密钥和拾遗")
         case .look: "字体字号、明暗、压缩与上下文"
-        case .grants: "旅伴能做什么，一项项由你定"
+        case .grants: Words.t("旅伴能做什么，一项项由你定")
         case .care: "备份、恢复、诊断"
         }
     }
@@ -82,7 +82,7 @@ struct DrawerSheet: View {
                         Whale(size: 44, pose: .idle, still: true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("抽屉").font(Ink.title).foregroundStyle(Ink.ink)
-                            Text("案头以外的东西，都收在这里。").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            Text(Words.t("案头以外的东西，都收在这里。")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
                         Spacer()
                         Button {

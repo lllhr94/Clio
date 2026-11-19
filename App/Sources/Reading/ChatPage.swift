@@ -134,7 +134,7 @@ struct ChatPage: View {
 
     /// The companion's state in the glossary's words.
     private var status: String {
-        if waiting != nil { return "候印" }
+        if waiting != nil { return Words.t("候印") }
         guard let doing else { return "闲坐" }
         switch doing {
         case "正在回复": return "落笔"
@@ -210,7 +210,7 @@ struct ChatPage: View {
                 let moving = phase != .idle
                 if moving != scrolling {
                     scrolling = moving
-                    Hitches.shared.doing(moving ? "滚动絮语" : nil, as: "scroll")
+                    Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
                 }
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
                 if phase == .interacting { following = false }
@@ -380,7 +380,7 @@ struct ChatPage: View {
             if dictation.listening { dictation.stop() }
         }
         .sheet(item: $noting) { note in
-            NoteSheet(text: note.text, from: isRoom ? "雅集 · \(bot.name)" : bot.name)
+            NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name)
         }
         .sheet(item: $quoting) { item in
             QuoteSheet(text: item.text) { picked in
@@ -426,7 +426,7 @@ struct ChatPage: View {
                 deskPicking = false
                 if !picked.isEmpty {
                     withAnimation(Ink.Motion.settle) { files += picked.filter { !files.contains($0) } }
-                    say("带上了书案里的 \(picked.count) 个文件。")
+                    say(Words.t("带上了书案里的 \(picked.count) 个文件。"))
                 }
             }
         }
@@ -438,13 +438,13 @@ struct ChatPage: View {
                 Task {
                     if let kept = await Scan.keep(pages) {
                         withAnimation(Ink.Motion.settle) { files.append(kept.text) }
-                        say("扫了 \(pages.count) 页，认出 \(kept.count) 个字，图和文字都放进了书案。")
+                        say(Words.t("扫了 \(pages.count) 页，认出 \(kept.count) 个字，图和文字都放进了书案。"))
                     }
                 }
             }
             .ignoresSafeArea()
         }
-        .alert("请旅伴读一个网页", isPresented: $linkAsking) {
+        .alert(Words.t("请旅伴读一个网页"), isPresented: $linkAsking) {
             TextField("https://…", text: $linkDraft)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
@@ -456,7 +456,7 @@ struct ChatPage: View {
             }
             Button("算了", role: .cancel) { linkDraft = "" }
         } message: {
-            Text("旅伴会去读，读不出来时会用远游打开。")
+            Text(Words.t("旅伴会去读，读不出来时会用远游打开。"))
         }
         .sheet(isPresented: $abilities) {
             AbilitiesSheet(team: team, key: chat.key, name: bot.name)
@@ -546,7 +546,7 @@ struct ChatPage: View {
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel("回到案头")
+            .accessibilityLabel(Words.t("回到案头"))
             HStack(spacing: Ink.Space.s) {
                 Whale(size: 30, pose: pose)
                 VStack(alignment: .leading, spacing: 0) {
@@ -571,7 +571,7 @@ struct ChatPage: View {
                 detailOpen = true
             }
             .contextMenu {
-                if !isRoom { Button("看名帖", systemImage: "person.text.rectangle") { cardOpen = true } }
+                if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
                 Button(mascotShown ? "收起浮着的形象" : "放出浮着的形象", systemImage: mascotShown ? "eye.slash" : "eye") {
                     withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
                 }
@@ -595,7 +595,7 @@ struct ChatPage: View {
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel("书案里的文件")
+            .accessibilityLabel(Words.t("书案里的文件"))
             Button {
                 Haptics.light()
                 typing = false
@@ -608,7 +608,7 @@ struct ChatPage: View {
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel("絮语页")
+            .accessibilityLabel(Words.t("絮语页"))
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
@@ -646,7 +646,7 @@ struct ChatPage: View {
         return Button {
             Haptics.tick(0.6)
             team.setWeb(!on, in: chat.key)
-            say(on ? "联网关了：这段絮语里，旅伴不会搜索、读网页，也不会用远游。" : "联网开了：旅伴需要时会去搜索、读网页，或用远游打开网站。")
+            say(on ? Words.t("联网关了：这段絮语里，旅伴不会搜索、读网页，也不会用远游。") : Words.t("联网开了：旅伴需要时会去搜索、读网页，或用远游打开网站。"))
         } label: {
             chip(on ? "globe" : "network.slash", "联网", lit: on)
         }
@@ -664,7 +664,7 @@ struct ChatPage: View {
             chip("wand.and.stars", off == 0 ? "本事" : "本事 · 关了 \(off)", lit: false)
         }
         .buttonStyle(PressStyle())
-        .accessibilityLabel("这段絮语里旅伴能用的本事")
+        .accessibilityLabel(Words.t("这段絮语里旅伴能用的本事"))
     }
 
     private func shortName(_ ref: String?) -> String {
@@ -678,7 +678,7 @@ struct ChatPage: View {
         let level = options.thinking ?? .auto
         let current = team.model(for: chat.key, bot: bot)
         return Menu {
-            Section("这段絮语用哪个模型") {
+            Section(Words.t("这段絮语用哪个模型")) {
                 Button {
                     Haptics.tick(0.5)
                     team.setModel(nil, in: chat.key)
@@ -698,7 +698,7 @@ struct ChatPage: View {
                 team.setModel(ref, in: chat.key)
                 let found = team.resolve(ref)
                 let sight = (found.map { $0.endpoint.traits($0.model).sees } ?? false) ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
-                say("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。")
+                say(Words.t("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。"))
             }
         } label: {
             chip("sparkle", shortName(current) + (level == .auto ? "" : " · \(level.title)"), lit: own != nil || level != .auto)
@@ -721,7 +721,7 @@ struct ChatPage: View {
     private var thinkingChoices: some View {
         let level = options.thinking ?? .auto
         let now = isRoom ? nil : team.current(chat.key, bot: bot)
-        Section("这段絮语想多深") {
+        Section(Words.t("这段絮语想多深")) {
             ForEach(Thinking.allCases, id: \.self) { option in
                 Button {
                     Haptics.tick(0.5)
@@ -750,7 +750,7 @@ struct ChatPage: View {
     private var placeChip: some View {
         let current = team.place(of: chat.key)
         return Menu {
-            Section("这段絮语在哪里干活") {
+            Section(Words.t("这段絮语在哪里干活")) {
                 placeButton(.desk, line: "手机里的文件夹，读写文件、算数")
                 placeButton(.den, line: "手机里的 Linux，能跑命令、装软件")
                 ForEach(Hills.shared.hosts) { host in
@@ -758,7 +758,7 @@ struct ChatPage: View {
                 }
             }
             if Hills.shared.hosts.isEmpty {
-                Section { Text("在设置 › 远山 添一台主机，这里就能选它。") }
+                Section { Text(Words.t("在设置 › 远山 添一台主机，这里就能选它。")) }
             }
         } label: {
             chip(current.symbol, current == .desk ? "书案" : current.title, lit: current != .desk)
@@ -772,8 +772,8 @@ struct ChatPage: View {
             Haptics.tick(0.5)
             team.setPlace(place, in: chat.key)
             switch place {
-            case .desk: say("回到书案：文件放在手机的书案里，不跑命令。")
-            case .den: say("在斗室干活：旅伴会在手机里的 Linux 跑命令，文件放在 /root/desk。")
+            case .desk: say(Words.t("回到书案：文件放在手机的书案里，不跑命令。"))
+            case .den: say(Words.t("在斗室干活：旅伴会在手机里的 Linux 跑命令，文件放在 /root/desk。"))
             case .hill: say("在\(place.title)干活：命令和文件都在那台电脑上。")
             }
         } label: {
@@ -844,7 +844,7 @@ struct ChatPage: View {
         guard (try? Data(pasted.utf8).write(to: file)) != nil else { return }
         draft = old
         withAnimation(Ink.Motion.settle) { files.append(Workspace.relative(file)) }
-        say("粘进来的字太长（\(pasted.count) 字），存成文件带上了：书案/\(Workspace.relative(file))")
+        say(Words.t("粘进来的字太长（\(pasted.count) 字），存成文件带上了：书案/\(Workspace.relative(file))"))
     }
 
     /// Where the user is, in words, added to the draft.
@@ -912,7 +912,7 @@ struct ChatPage: View {
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
             Whale(size: 96, pose: pose)
-            Text(isRoom ? "雅集里的旅伴会轮流说话" : "同\(bot.name)说点什么吧")
+            Text(isRoom ? Words.t("雅集里的旅伴会轮流说话") : "同\(bot.name)说点什么吧")
                 .font(Ink.reading)
                 .foregroundStyle(Ink.inkSoft)
             VStack(spacing: Ink.Space.s) {
@@ -1322,13 +1322,13 @@ struct ChatPage: View {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "seal").foregroundStyle(Ink.warn)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("候印 · \(waiting.tool ?? "要你同意")").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
+                        Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.ink)
                         if let reason = waiting.reason {
                             Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                         }
                     }
                     Spacer(minLength: 0)
-                    Text("去落印").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
+                    Text(Words.t("去落印")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
                 .padding(Ink.Space.m)
                 .paperCard()
@@ -1455,7 +1455,7 @@ struct ChatPage: View {
                         chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
                     }
                     .buttonStyle(PressStyle(haptic: false))
-                    .accessibilityLabel("加照片、文件，或改这段絮语的设置")
+                    .accessibilityLabel(Words.t("加照片、文件，或改这段絮语的设置"))
                     .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
@@ -1691,9 +1691,9 @@ private struct Trace: View {
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
                     if let kept = out.firstIndex(where: { $0.url == file }) {
-                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
+                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: Words.t("书案/") + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
                     } else {
-                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: "书案/" + Workspace.relative(file) + change, url: file, diff: full))
+                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: Words.t("书案/") + Workspace.relative(file) + change, url: file, diff: full))
                     }
                 }
             } else if tool.hasPrefix("斗室：") || tool.hasPrefix("远山 · ") {
@@ -1937,17 +1937,17 @@ private struct Trace: View {
     static func word(for label: String) -> String {
         switch label {
         case "搜索": "寻访"
-        case "读网页": "远游"
-        case "记住": "拾遗"
-        case "忘掉": "删去拾遗"
+        case "读网页": Words.t("远游")
+        case "记住": Words.t("拾遗")
+        case "忘掉": Words.t("删去拾遗")
         case "看日历", "看提醒事项": "翻看"
-        case "新建日程", "加提醒": "落印 · \(label)"
+        case "新建日程", "加提醒": Words.t("落印 · \(label)")
         default: label.hasPrefix("约好") ? "来信" : label
         }
     }
 
     static func icon(for label: String) -> String {
-        switch label {
+        switch Words.poetic(label) {
         case "搜索": "magnifyingglass"
         case "读网页": "globe"
         case "远游": "safari"
@@ -2004,7 +2004,7 @@ private struct WorkingBar: View {
                     .symbolEffect(.pulse)
                     .contentTransition(.symbolEffect(.replace))
                     .frame(width: 18)
-                Text(words)
+                Text(Words.t(words))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1)

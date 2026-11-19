@@ -67,7 +67,7 @@ struct DenPage: View {
             }
             .buttonStyle(PressStyle())
             VStack(alignment: .leading, spacing: 0) {
-                Text("斗室").font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
+                Text(Words.t("斗室")).font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
                     Circle().fill(dot).frame(width: 6, height: 6)
                     Text(status).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -131,7 +131,7 @@ struct DenPage: View {
     @ViewBuilder
     private var intro: some View {
         if den.log.isEmpty {
-            Text("手机里的 Alpine Linux，书案在 /root/desk")
+            Text(Words.t("手机里的 Alpine Linux，书案在 /root/desk"))
                 .font(Ink.secondary)
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.bottom, Ink.Space.m)
