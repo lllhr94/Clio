@@ -38,7 +38,7 @@ struct LookPage: View {
 
     /// The reading sizes on offer, each with the line spacing that suits it.
     static let sizes: [(title: String, size: Double, leading: Double)] = [
-        ("超小", 14, 9), ("小", 15.5, 10), ("中", 17, 11), ("大", 19, 12),
+        ("超小", 15, 7.5), ("小", 16, 8), ("中", 17, 8.5), ("大", 19, 9.5),
     ]
 
     /// The step closest to a size kept from before (when it was a slider).

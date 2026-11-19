@@ -26,12 +26,13 @@ enum Pref {
 
     static var face: Face { Face(rawValue: store.string(forKey: "look.face") ?? "") ?? .serif }
     static var size: Double { double("look.size", 17) }
-    static var leading: Double { double("look.leading", 11) }
+    /// The space added between lines: a fixed share of the size, so every size reads about 1.6 lines apart.
+    static var leading: Double { size * 0.5 }
 
     /// Once: the new reading type replaces the old default (宋体, tight lines) for anyone who had not changed it.
     static func settleType() {
-        guard !store.bool(forKey: "look.typeset3") else { return }
-        store.set(true, forKey: "look.typeset3")
+        guard !store.bool(forKey: "look.typeset4") else { return }
+        store.set(true, forKey: "look.typeset4")
         // The face is moved off 宋体 only once; someone who picked 宋体 again afterwards keeps it.
         if !store.bool(forKey: "look.typeset2"), store.string(forKey: "look.face") == nil || store.string(forKey: "look.face") == "song" {
             store.set("serif", forKey: "look.face")
@@ -39,8 +40,7 @@ enum Pref {
         store.set(true, forKey: "look.typeset2")
         let size = double("look.size", 17)
         let step = [14.0, 15.5, 17, 19].enumerated().min { abs($0.element - size) < abs($1.element - size) }?.offset ?? 2
-        store.set([14.0, 15.5, 17, 19][step], forKey: "look.size")
-        store.set([9.0, 10, 11, 12][step], forKey: "look.leading")
+        store.set([15.0, 16, 17, 19][step], forKey: "look.size")
     }
     /// "system", "light" or "dark".
     static var scheme: String { store.string(forKey: "look.scheme") ?? "system" }

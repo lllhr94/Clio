@@ -40,11 +40,14 @@ struct ProseView: View {
     var body: some View {
         let _ = (face, size, leading)
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
-        VStack(alignment: .leading, spacing: Ink.Space.l) {
+        // Paragraphs a little under one line apart, as in the reading apps that read best.
+        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
             }
         }
+        // The blocks do not read the size themselves, so they would keep the old one: a new size makes them anew.
+        .id("\(face)-\(size)")
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }
@@ -58,14 +61,14 @@ private struct BlockView: View {
         switch block {
         case .heading(let level, let text):
             // Headings in the reading face, a step or two larger: never a different family from the text under them.
-            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 4, bold: true) : (level == 2 ? Ink.body(Pref.size + 2, bold: true) : Ink.readingBold), fading: fading, tight: true)
+            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 5, bold: true) : (level == 2 ? Ink.body(Pref.size + 3, bold: true) : Ink.body(Pref.size + 1, bold: true)), fading: fading, tight: true)
                 // More air above a heading than below it, so it belongs to what follows.
-                .padding(.top, level <= 2 ? Ink.Space.m : Ink.Space.xs)
-                .padding(.bottom, -Ink.Space.xs)
+                .padding(.top, level <= 2 ? Pref.size * 0.6 : Pref.size * 0.2)
+                .padding(.bottom, -Pref.size * 0.25)
         case .paragraph(let text):
             Inline(text: text, font: Ink.reading, fading: fading)
         case .list(let items):
-            VStack(alignment: .leading, spacing: Ink.Space.m) {
+            VStack(alignment: .leading, spacing: Pref.size * 0.5) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -106,12 +109,12 @@ private struct BlockView: View {
                 .foregroundStyle(checked ? Ink.accent : Ink.inkFaint)
         } else if let number = item.number {
             Text("\(number).")
-                .font(Ink.reading.monospacedDigit())
-                .foregroundStyle(Ink.ink.opacity(0.75))
+                .font(Ink.body(Pref.size, bold: true).monospacedDigit())
+                .foregroundStyle(Ink.ink)
         } else {
             Text(item.depth == 0 ? "•" : "◦")
-                .font(.system(size: Pref.size * 1.05, weight: .bold))
-                .foregroundStyle(Ink.ink.opacity(0.75))
+                .font(.system(size: Pref.size, weight: .regular))
+                .foregroundStyle(Ink.inkSoft)
         }
     }
 }
