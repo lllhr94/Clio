@@ -1,0 +1,109 @@
+Command line invocation:
+    /Applications/Xcode_26.3.app/Contents/Developer/usr/bin/xcodebuild -project Clio.xcodeproj -scheme Clio -configuration Debug -destination id=E3312CA2-0242-435C-AF8C-49E295DEC90A -derivedDataPath simbuild -skipPackagePluginValidation -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+
+Resolve Package Graph
+
+Fetching from https://github.com/attaswift/BigInt.git (cached)
+
+Fetching from https://github.com/apple/swift-system.git (cached)
+
+Fetching from https://github.com/apple/swift-collections.git (cached)
+
+Fetching from https://github.com/apple/swift-nio (cached)
+
+Fetching from https://github.com/apple/swift-argument-parser (cached)
+
+Fetching from https://github.com/mgriebling/SwiftMath (cached)
+
+Fetching from https://github.com/Wellz26/swift-nio-ssh.git (cached)
+
+Fetching from https://github.com/apple/swift-asn1.git (cached)
+
+Fetching from https://github.com/apple/swift-atomics.git (cached)
+
+Fetching from https://github.com/orlandos-nl/Citadel (cached)
+
+Fetching from https://github.com/apple/swift-crypto.git (cached)
+
+Fetching from https://github.com/migueldeicaza/SwiftTerm (cached)
+
+Fetching from https://github.com/apple/swift-log.git (cached)
+
+Creating working copy of package ‘swift-atomics’
+
+Checking out 1.3.1 of package ‘swift-atomics’
+
+Creating working copy of package ‘swift-argument-parser’
+
+Checking out 1.8.2 of package ‘swift-argument-parser’
+
+Creating working copy of package ‘swift-asn1’
+
+Checking out 1.7.4 of package ‘swift-asn1’
+
+Creating working copy of package ‘SwiftMath’
+
+Checking out 1.7.3 of package ‘SwiftMath’
+
+Creating working copy of package ‘swift-nio’
+
+Checking out 2.105.0 of package ‘swift-nio’
+
+Creating working copy of package ‘swift-system’
+
+Checking out 1.9.0 of package ‘swift-system’
+
+Creating working copy of package ‘BigInt’
+
+Checking out 5.7.0 of package ‘BigInt’
+
+Creating working copy of package ‘swift-crypto’
+
+Checking out 3.15.1 of package ‘swift-crypto’
+
+Creating working copy of package ‘SwiftTerm’
+
+Checking out 1.20.0 of package ‘SwiftTerm’
+
+Creating working copy of package ‘swift-log’
+
+Checking out 1.17.2 of package ‘swift-log’
+
+Creating working copy of package ‘swift-nio-ssh’
+
+Checking out 0.3.7 of package ‘swift-nio-ssh’
+
+Creating working copy of package ‘swift-collections’
+
+Checking out 1.7.6 of package ‘swift-collections’
+
+Creating working copy of package ‘Citadel’
+
+Checking out 0.12.1 of package ‘Citadel’
+
+
+Resolved source packages:
+  swift-system: https://github.com/apple/swift-system.git @ 1.9.0
+  SwiftTerm: https://github.com/migueldeicaza/SwiftTerm @ 1.20.0
+  swift-nio: https://github.com/apple/swift-nio @ 2.105.0
+  Citadel: https://github.com/orlandos-nl/Citadel @ 0.12.1
+  BigInt: https://github.com/attaswift/BigInt.git @ 5.7.0
+  swift-nio-ssh: https://github.com/Wellz26/swift-nio-ssh.git @ 0.3.7
+  SwiftMath: https://github.com/mgriebling/SwiftMath @ 1.7.3
+  AgentKit: /Users/runner/work/Clio/Clio/AgentKit
+  swift-collections: https://github.com/apple/swift-collections.git @ 1.7.6
+  swift-asn1: https://github.com/apple/swift-asn1.git @ 1.7.4
+  swift-crypto: https://github.com/apple/swift-crypto.git @ 3.15.1
+  swift-argument-parser: https://github.com/apple/swift-argument-parser @ 1.8.2
+  swift-log: https://github.com/apple/swift-log.git @ 1.17.2
+  swift-atomics: https://github.com/apple/swift-atomics.git @ 1.3.1
+
+2026-11-19 17:24:25.985 xcodebuild[24033:64337] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+ComputePackagePrebuildTargetDependencyGraph
+
+Prepare packages
+
+Compile plug-in “SwiftTermBuildInfoPlugin” in package “swiftterm”
