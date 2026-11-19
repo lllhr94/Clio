@@ -22,6 +22,12 @@ struct SetupView: View {
     @State private var busy = false
     @State private var advice: Explain.Advice?
     @State private var connected: Endpoint?
+    /// The service's model list, fetched as soon as there is a key: models are picked before anything is saved.
+    @State private var fetched: [String]?
+    @State private var picked: Set<String> = []
+    @State private var fetching = false
+    @State private var fetchNote: String?
+    @State private var modelSearch = ""
     @FocusState private var keyFocused: Bool
 
     private var custom: Bool { choice.custom }
@@ -101,6 +107,11 @@ struct SetupView: View {
     // MARK: Service
 
     private var service: some View {
+        serviceBody
+            .task(id: fetchKey) { await fetchModels() }
+    }
+
+    private var serviceBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Ink.Space.xl) {
                 HStack(alignment: .center) {
@@ -126,6 +137,7 @@ struct SetupView: View {
 
                 servicePicker
                 keyField
+                modelPicker
                 adviceCard
                 connectButton
             }
@@ -235,11 +247,92 @@ struct SetupView: View {
         }
     }
 
+    // MARK: Models, before saving
+
+    /// Fetches the list once key and address are there, a moment after typing stops.
+    private var fetchKey: String { "\(choice.id)|\(address)|\(key.trimmingCharacters(in: .whitespacesAndNewlines))" }
+
+    private func fetchModels() async {
+        let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard secret.count >= 8, address.hasPrefix("http") else { fetched = nil; fetchNote = nil; return }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        guard !Task.isCancelled else { return }
+        fetching = true
+        fetchNote = nil
+        let probe = Endpoint(id: "probe", name: choice.name, kind: choice.kind, baseURL: address, models: [], service: custom ? nil : choice.id)
+        do {
+            let listed = TeamModel.keep(try await probe.provider(key: secret).models(), for: probe)
+            guard !Task.isCancelled else { return }
+            if listed.isEmpty {
+                fetched = nil
+                fetchNote = "连上了，但它没给模型列表，下面填个模型名就行"
+            } else {
+                fetched = listed
+                picked = Set(TeamModel.firstPicks(listed, service: custom ? nil : choice))
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            fetched = nil
+            let status = (error as? ProviderError)?.status
+            fetchNote = status == 401 || status == 403 ? "密钥不对，或者没开通" : "拿不到模型列表：\(Explain.model(error, service: choice.name).title)。也可以直接填模型名"
+        }
+        fetching = false
+    }
+
+    @ViewBuilder
+    private var modelPicker: some View {
+        if fetching {
+            HStack(spacing: Ink.Space.s) {
+                ProgressView()
+                Text("正在拿模型列表…").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            }
+        } else if let fetched {
+            let words = modelSearch.trimmingCharacters(in: .whitespaces).lowercased()
+            let shown = Array((words.isEmpty ? fetched : fetched.filter { $0.lowercased().contains(words) }).prefix(60))
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                FieldTitle(text: "用哪些模型", note: "共 \(fetched.count) 个，已选 \(picked.count) 个")
+                VStack(spacing: 0) {
+                    if fetched.count > 10 {
+                        TextField("搜模型名", text: $modelSearch)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .padding(Ink.Space.m)
+                        Rectangle().fill(Ink.rule).frame(height: 1)
+                    }
+                    ForEach(shown, id: \.self) { model in
+                        let on = picked.contains(model)
+                        Button {
+                            Haptics.tick(0.4)
+                            if on { picked.remove(model) } else { picked.insert(model) }
+                        } label: {
+                            HStack(spacing: Ink.Space.m) {
+                                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(model).font(.system(size: 14, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(ModelTraits.guess(model).summary).font(.system(size: 11)).foregroundStyle(Ink.inkFaint)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, Ink.Space.m)
+                            .padding(.vertical, Ink.Space.s)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .paperCard()
+            }
+            .transition(.opacity)
+        } else if let fetchNote {
+            Text(fetchNote).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+        }
+    }
+
     private var connectButton: some View {
         Button(action: connect) {
             HStack(spacing: Ink.Space.s) {
                 if busy { ProgressView().tint(Ink.paper) }
-                Text(busy ? "正在试连，顺便拿模型列表…" : "连上试试")
+                Text(busy ? "正在接上…" : (fetched != nil ? "接上，用这 \(picked.count) 个模型" : "连上试试"))
                     .font(.system(size: 17, weight: .semibold))
             }
             .foregroundStyle(Ink.paper)
@@ -254,6 +347,7 @@ struct SetupView: View {
     private var canConnect: Bool {
         guard !busy, !key.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         if custom, !baseURL.hasPrefix("http") { return false }
+        if let fetched, !fetched.isEmpty { return !picked.isEmpty }
         if choice.asksModel, modelName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         return true
     }
@@ -353,6 +447,15 @@ struct SetupView: View {
         busy = true
         advice = nil
         keyFocused = false
+        // The list is already here and models are picked: nothing more to ask the service.
+        if let fetched, !picked.isEmpty {
+            endpoint.listed = fetched
+            var models = fetched.filter(picked.contains)
+            if !typed.isEmpty, !models.contains(typed) { models.insert(typed, at: 0) }
+            endpoint.models = models
+            finish(endpoint, secret)
+            return
+        }
         Task {
             do {
                 let listed = TeamModel.keep(try await endpoint.provider(key: secret).models(), for: endpoint)
