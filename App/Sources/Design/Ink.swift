@@ -165,6 +165,14 @@ enum Ink {
         case .serif: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
         }
     }
+    /// The five sizes everything outside the reading text is set in (Apple's caption 2, footnote, subheadline, body, title 3).
+    enum Size {
+        static let micro: CGFloat = 11
+        static let small: CGFloat = 13
+        static let sub: CGFloat = 15
+        static let body: CGFloat = 17
+        static let title: CGFloat = 20
+    }
     static let label = Font.system(size: Ink.Size.body, weight: .medium)
     static let secondary = Font.system(size: Ink.Size.sub)
     static let footnote = Font.system(size: Ink.Size.small)
