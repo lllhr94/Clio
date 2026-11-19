@@ -47,14 +47,14 @@ struct StudyFolder: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     if top {
-                        Text("旅伴写下的东西都放在这里。在「文件」app 的「我的 iPhone › Clio › 书案」里也能看到。")
+                        Text("「文件」App › 我的 iPhone › Clio › 书案")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                     }
                     if items.isEmpty {
                         VStack(spacing: Ink.Space.m) {
                             Whale(size: 72, pose: .idle, still: true)
-                            Text("书案还空着。让旅伴整理点什么，比如「把今天聊的写成笔记存到书案」。")
+                            Text("书案还空着")
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
                                 .multilineTextAlignment(.center)
@@ -229,7 +229,7 @@ struct StudyFile: View {
                 if QLPreviewController.canPreview(url as NSURL) {
                     QuickPreview(url: url).ignoresSafeArea(edges: .bottom)
                 } else {
-                    Text("这个文件打不开预览，可以分享出去用别的 app 打开。")
+                    Text("预览不了，可以分享到别的 App")
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .padding(Ink.Space.page)

@@ -573,7 +573,7 @@ struct RoamPage: View {
                     if browser.url == nil {
                         VStack(spacing: Ink.Space.l) {
                             Whale(size: 96, pose: .idle)
-                            Text("这里是远游。旅伴替你上网时，页面会在这里。")
+                            Text("旅伴替你上网时，页面在这里")
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
                         }

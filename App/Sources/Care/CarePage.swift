@@ -32,12 +32,12 @@ struct CarePage: View {
                     }
                     Button("从备份恢复") { restoring = true }
                 } header: { Text("备份") } footer: {
-                    Text("包含旅伴、絮语、拾遗、形象图片和各项设置。信匣里的密码、远山的密码不在里面；斗室的 Linux 也不在，换手机后重新铺陈。带上模型密钥的备份要放在安全的地方。")
+                    Text("不含信匣和远山的密码")
                 }
 
                 Section {
                     if team.archived.isEmpty {
-                        Text("没有归档的絮语。在案头把一段絮语往左滑，就能归档。").foregroundStyle(Ink.inkSoft)
+                        Text("没有归档的絮语").foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(team.archived.sorted(), id: \.self) { key in
                             HStack {
@@ -57,7 +57,7 @@ struct CarePage: View {
                         }
                     }
                 } header: { Text("已归档的絮语") } footer: {
-                    Text("拿回来的絮语回到案头的「近来」里。")
+                    Text("拿回来后回到案头")
                 }
 
                 Section {
@@ -107,7 +107,7 @@ struct CarePage: View {
                         }
                     }
                 } header: { Text("掉帧记录") } footer: {
-                    Text("打开后记下每一次超过 16 毫秒的卡顿（120 Hz 的屏幕一帧本该 8 毫秒），连同当时在哪一页、在做什么（滚动、打字、旅伴在干活）。觉得哪里卡，复制下来贴给我。开着时屏幕一直跑满帧率，会稍微费电，查完可以关掉。")
+                    Text("记下每次卡顿和当时在做什么，开着耗电")
                 }
 
                 Section {

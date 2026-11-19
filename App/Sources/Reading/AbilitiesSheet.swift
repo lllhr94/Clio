@@ -21,7 +21,7 @@ struct AbilitiesSheet: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("这段絮语里，\(name)在哪里干活、能用哪些本事。联网默认开着，要它不上网就在「出门」里关掉。关掉的它就看不到，只影响这一段絮语。灰掉的是在「应许」里整个关了的，要去那里打开。")
+                        Text("只影响这段絮语")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         workplace

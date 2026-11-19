@@ -182,7 +182,7 @@ struct UsageSheet: View {
                 .tint(Ink.inkSoft)
             }
             .font(.system(size: 15))
-            Text("旅伴干完一轮活后顺便查一次余额（半小时最多一次），低于这条线就发通知，半天内只提醒一次。")
+            Text("低于这条线就发通知，半天一次")
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)

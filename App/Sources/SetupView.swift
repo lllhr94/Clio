@@ -94,7 +94,7 @@ struct SetupView: View {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         Text(first ? "第一步 · 接一个模型" : "添一个模型服务").font(Ink.title).foregroundStyle(Ink.ink)
-                        Text("旅伴靠它想事情、说话。之后随时能在调弦里再加。").font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                        Text("之后随时能在调弦里再加").font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     }
                     Spacer()
                     if !first {
@@ -304,7 +304,7 @@ struct SetupView: View {
                         TraitChips(traits: found.endpoint.traits(found.model))
                     }
                 }
-                Text("在调弦 › 模型服务里点开这一家，可以挑更多模型、看每个能不能看图、改它们能做什么。聊天时输入框下也能换模型、调思考强度。")
+                Text("更多模型和设置在调弦 › 模型服务")
                     .font(Ink.secondary).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)

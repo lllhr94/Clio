@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var memoryDraft = ""
     @State private var editingMemory: Memory?
     @State private var memoryText = ""
+    @State private var balance: Balance.Reading?
 
     var body: some View {
         NavigationStack {
@@ -24,17 +25,15 @@ struct SettingsView: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("旅伴靠哪个模型想事情、记得你什么，都在这里调。外观和对话习惯在「纸墨与絮语」。")
-                            .font(Ink.secondary)
-                            .foregroundStyle(Ink.inkSoft)
-
                         if team.phase == .demo {
                             demoCard
                         } else {
+                            overview
                             services
                             defaultModel
-                            memory
                         }
+                        abilities
+                        if team.phase != .demo { memory }
                         more
                         about
                     }
@@ -82,7 +81,7 @@ struct SettingsView: View {
 
     private var demoCard: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
-            Text("现在是演示数据。接上自己的模型后，旅伴才会真的回答。").font(Ink.secondary).foregroundStyle(Ink.ink)
+            Text("现在是演示数据").font(Ink.secondary).foregroundStyle(Ink.ink)
             Button("退出演示，去接模型") {
                 dismiss()
                 onLeaveDemo()
@@ -97,7 +96,7 @@ struct SettingsView: View {
 
     private var services: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("模型服务", "点开一家：管模型、看每个模型能不能看图和思考、试连、换密钥")
+            heading("模型服务")
             VStack(spacing: 0) {
                 ForEach(team.settings.endpoints) { endpoint in
                     NavigationLink {
@@ -147,7 +146,7 @@ struct SettingsView: View {
     private var defaultModel: some View {
         if !team.models.isEmpty {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                heading("默认模型", "没单独选模型的旅伴都用它")
+                heading("默认模型")
                 Menu {
                     ModelChoices(team: team, current: team.settings.defaultModel) { ref in
                         Haptics.tick(0.6)
@@ -165,17 +164,13 @@ struct SettingsView: View {
                     }
                     .paperField()
                 }
-                if let found = team.resolve(team.settings.defaultModel) {
-                    Text("\(found.model)：\(found.endpoint.traits(found.model).summary)。发图片时，不能看图的模型会改用 photo_text 读图上的字。")
-                        .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
-                }
             }
         }
     }
 
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("拾遗", "常记 \(team.surfaceMemories.count) 件，每次聊天都带着；旧事 \(team.deepMemories.count) 件，需要时翻找")
+            heading("拾遗", "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
                     TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
@@ -228,19 +223,57 @@ struct SettingsView: View {
         }
     }
 
+    /// The one card on top: the model in use and what is left on its account.
+    @ViewBuilder
+    private var overview: some View {
+        if let found = team.resolve(team.settings.defaultModel) {
+            NavigationLink {
+                ServicePage(team: team, id: found.endpoint.id)
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Whale(size: 44, pose: .idle, still: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(found.model).font(.system(size: 17, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)
+                            .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        if let balance {
+                            Text("余额 " + balance.shown).font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkSoft)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                }
+                .padding(Ink.Space.l)
+                .paperCard()
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .task {
+                if Balance.source(baseURL: found.endpoint.baseURL) != nil { balance = try? await team.balance(found.endpoint) }
+            }
+        }
+    }
+
+    private var abilities: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            heading("本事")
+            VStack(spacing: 0) {
+                link("checkmark.seal", "应许", Grant.Preset.current?.title ?? "自定义") { granting = true }
+                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
+                link("books.vertical", "技能", "\(SkillShelf.enabled.count) 个") { skilling = true }
+                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
+                link("alarm", "定时", team.routines.isEmpty ? "没有" : "\(team.routines.filter(\.on).count) 件") { timing = true }
+            }
+            .paperCard()
+        }
+    }
+
     private var more: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("别处")
+            heading("通用")
             VStack(spacing: 0) {
-                link("textformat.size", "纸墨与絮语", "字体字号、明暗、触感；压缩、上下文、温度") { looking = true }
+                link("textformat.size", "纸墨与絮语", "外观与对话") { looking = true }
                 Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("checkmark.seal", "应许", "旅伴能做什么，一项项由你定") { granting = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("books.vertical", "技能", "一页页「怎么做」，旅伴遇到对得上的事就照着做") { skilling = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("alarm", "定时", team.routines.isEmpty ? "让旅伴每天、每周到点做一件事" : "\(team.routines.filter(\.on).count) 件在走") { timing = true }
-                Rectangle().fill(Ink.rule).frame(height: 1).padding(.leading, 52)
-                link("stethoscope", "养护", "备份、恢复、诊断") { caring = true }
+                link("stethoscope", "养护", "备份与诊断") { caring = true }
             }
             .paperCard()
         }
@@ -253,11 +286,9 @@ struct SettingsView: View {
         } label: {
             HStack(spacing: Ink.Space.m) {
                 Image(systemName: icon).font(.system(size: 17)).foregroundStyle(Ink.accent).frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
-                    Text(line).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                }
+                Text(title).font(.system(size: 16, weight: .medium)).foregroundStyle(Ink.ink)
                 Spacer()
+                Text(line).font(.system(size: 14)).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.inkFaint)
             }
             .padding(Ink.Space.l)

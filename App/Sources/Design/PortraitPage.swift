@@ -20,7 +20,7 @@ struct PortraitPage: View {
                         .foregroundStyle(Ink.accent)
                 }
                 .padding(.top, Ink.Space.xl)
-                Text("每一样都能换。以后每位旅伴可以有自己的一套。")
+                Text("每一样都能换")
                     .font(Ink.secondary)
                     .foregroundStyle(Ink.inkSoft)
 
@@ -45,7 +45,7 @@ struct PortraitPage: View {
                 if persona.kind == .picture {
                     VStack(alignment: .leading, spacing: Ink.Space.m) {
                         Text("每个姿态放一张图").font(Ink.readingBold).foregroundStyle(Ink.ink)
-                        Text("只放闲坐一张也行，其他姿态会用它加上动作。透明底的图最好看。")
+                        Text("只放闲坐一张也行，透明底最好")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         HStack(spacing: Ink.Space.m) {

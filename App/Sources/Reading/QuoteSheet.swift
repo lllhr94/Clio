@@ -10,7 +10,7 @@ struct QuoteSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                Text("按住拖动，选出想追问的那几句。不选就引用整段。")
+                Text("拖选想追问的句子，不选就引整段")
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkSoft)
                     .padding(.horizontal, Ink.Space.page)

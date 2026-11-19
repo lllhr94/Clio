@@ -56,8 +56,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.28"
-        CFBundleVersion: "30"
+        CFBundleShortVersionString: "0.29"
+        CFBundleVersion: "31"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -109,8 +109,8 @@ targets:
       path: ClioWidget-Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.28"
-        CFBundleVersion: "30"
+        CFBundleShortVersionString: "0.29"
+        CFBundleVersion: "31"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

@@ -94,7 +94,7 @@ struct LookPage: View {
                     }
                     Stepper("压缩后留最近 \(keepRecent) 条原文", value: $keepRecent, in: 4...40, step: 2)
                 } header: { Text("压缩") } footer: {
-                    Text("压缩会让模型把较早的话写成一份前情提要，原文完整收进絮语页，随时能翻回去。也可以在聊天页的絮语页里手动压缩。")
+                    Text("较早的话写成提要，原文留在絮语页")
                 }
 
                 Section {
@@ -113,7 +113,7 @@ struct LookPage: View {
                         Text("3.2 万").tag(32768)
                     }
                 } header: { Text("交给模型的") } footer: {
-                    Text("带得越多，旅伴记得越多，但每次回复越慢、越费。温度高些更有想象力，低些更稳。最长回复的单位是 token。")
+                    Text("带得多记得多，也更慢更费")
                 }
 
                 Section {
@@ -122,14 +122,14 @@ struct LookPage: View {
                         Stepper("\(morningHour) 点以后第一次打开时写", value: $morningHour, in: 5...11)
                     }
                 } header: { Text("晨信") } footer: {
-                    Text("主旅伴会看看你的日程、提醒和天气，写一封短短的便笺。到点会提醒你一声，打开 Clio 就开始写。")
+                    Text("看看日程、提醒和天气，写一封便笺")
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
                     Toggle("晚上写日记", isOn: $diaryOn)
                 } header: { Text("旅伴的日常") } footer: {
-                    Text("打开后，晚上九点以后你第一次离开 Clio 时，当天聊过的旅伴各写一页日记，三五句话，收在絮语页的日记本里，你可以回一句。每位旅伴一晚一次短请求，大约一两千 token。\n不花 token 的都一直开着：案头每天有潮水带来的小东西，攒进收藏册，隔几天来也不会错过；进一段絮语时，会告诉你别的絮语在你不在时做完了、出错了还是在等你批准。几天没来，谁也不会少什么。")
+                    Text("晚上离开时，旅伴各写一页日记")
                 }
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
@@ -137,7 +137,7 @@ struct LookPage: View {
                     Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
                     Toggle("锁屏和灵动岛显示旅伴在做什么", isOn: $liveOn)
                 } header: { Text("在后台") } footer: {
-                    Text("旅伴干活时，锁屏和灵动岛上有一张小卡片：谁在做、正在做什么、做了多久，要你批准时会亮一下，做完了留几分钟再消失。\n旅伴干活时你切走，iOS 会给一小段时间（通常半分钟左右）让它接着干。这期间干完了、出错了会发通知；要你批准时总会通知。时间快用完还没干完，会先把写到一半的存下来，回到 Clio 点「接着做」就从那里继续。点通知直接回到那段絮语。")
+                    Text("干活时在锁屏和灵动岛显示进度")
                 }
 
                 Section {

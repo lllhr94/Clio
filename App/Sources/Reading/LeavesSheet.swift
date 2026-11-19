@@ -77,7 +77,7 @@ struct LeavesSheet: View {
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(folding ? "正在写前情提要…" : "压缩前文").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                    Text("较早的话写成一份前情提要，只留最近 \(Pref.keepRecent) 条原样。聊得久、回复变慢时用。原文会收进下面。")
+                                    Text("较早的话写成提要，原文收进絮语页")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
@@ -206,7 +206,7 @@ struct LeavesSheet: View {
                                 }
                             }
                             .paperCard()
-                            Text("长按一叶可以撕掉。翻回旧的一叶时，眼下的絮语会自动收起来。")
+                            Text("长按一叶可以撕掉")
                                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.horizontal, Ink.Space.xs)
                         }
                     }
@@ -227,7 +227,7 @@ struct LeavesSheet: View {
                 }
                 Button("算了", role: .cancel) { unfolding = nil }
             } message: {
-                Text("压缩前的整段原文会放回絮语里，压缩之后说的话都还在。前情提要退回压缩之前的样子。")
+                Text("原文放回，提要退回压缩前")
             }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
             .sheet(item: $reading) { bot in DiarySheet(team: team, bot: bot) }

@@ -139,7 +139,7 @@ struct RoutinesPage: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    Text("旅伴到点去做的事：每天早上整理新闻、工作日傍晚催你写日报……到点手机会弹通知，打开 Clio 就开始做（手机不让 app 自己在后台准点醒来）。也可以直接在聊天里跟旅伴说「每天 8 点帮我……」。")
+                    Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if team.routines.isEmpty {
                         EmptyNote(symbol: "alarm", words: "还没有定时任务。点右上角的 ＋ 设一个。")
@@ -240,7 +240,7 @@ struct RoutineEditor: View {
                 } header: {
                     Text("要做的事")
                 } footer: {
-                    Text("到点时，这段话会作为你的话发给旅伴。")
+                    Text("到点时作为你的话发给旅伴")
                 }
                 Section("什么时候") {
                     DatePicker("几点", selection: $time, displayedComponents: .hourAndMinute)

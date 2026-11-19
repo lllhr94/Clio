@@ -13,13 +13,13 @@ struct SecretsPage: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.l) {
-                        Text("账号、密码和密钥收在这里，密码锁在手机钥匙串里。旅伴能看到名字、地址和用户名，看不到密码；要用密码时会先请你落印。")
+                        Text("密码在钥匙串里，旅伴看不到")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         if secrets.items.isEmpty {
                             VStack(spacing: Ink.Space.m) {
                                 Image(systemName: "lock.rectangle.stack").font(.system(size: 36)).foregroundStyle(Ink.inkFaint)
-                                Text("信匣还空着。点右上角的 + 存一条，或者旅伴递笺时你填的密码会自动收进来。")
+                                Text("信匣还空着")
                                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint).multilineTextAlignment(.center)
                             }
                             .frame(maxWidth: .infinity)

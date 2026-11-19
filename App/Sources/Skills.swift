@@ -205,7 +205,7 @@ struct SkillsPage: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    Text("技能是一页页「怎么做」的说明，放在书案/技能 里。旅伴每次都知道有哪些技能，遇到对得上的事才翻开全文照着做。可以自己写，也可以从文件 App 放进 Markdown 文件。")
+                    Text("书案/技能 里的做事说明，对得上就照做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if items.isEmpty {
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -309,7 +309,7 @@ struct SkillEditor: View {
                 } header: {
                     Text("什么时候用")
                 } footer: {
-                    Text("旅伴每次都看得到这一行，靠它判断要不要翻开全文。写清楚是哪类事。")
+                    Text("写清楚是哪类事")
                 }
                 Section {
                     TextEditor(text: $body_)
@@ -318,7 +318,7 @@ struct SkillEditor: View {
                 } header: {
                     Text("怎么做")
                 } footer: {
-                    Text("Markdown。写步骤、格式、注意事项；可以提到要用的工具，比如 web_search、read_pdf、run_js。")
+                    Text("Markdown：步骤、格式、注意事项")
                 }
             }
             .scrollContentBackground(.hidden)

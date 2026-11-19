@@ -156,7 +156,7 @@ struct ServicePage: View {
                     }
                     TraitChips(traits: traits, corrected: endpoint.corrected(model))
                     if gone {
-                        Text("刷新后的列表里没有它，可能改名或下线了").font(Ink.footnote).foregroundStyle(Ink.warn)
+                        Text("列表里没有了，可能已下线").font(Ink.footnote).foregroundStyle(Ink.warn)
                     }
                 }
                 Spacer(minLength: 0)
@@ -276,7 +276,7 @@ struct ServicePage: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("思考参数怎么写").font(.system(size: 15)).foregroundStyle(Ink.ink)
-                            Text("各家写法不同。一般不用动；选思考强度没效果时再换").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                            Text("选思考强度没效果时再换").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()
                         Menu {
@@ -312,7 +312,7 @@ struct ServicePage: View {
                         }
                     }
                 }
-                Text("密钥只存在这台手机的钥匙串里，不给旅伴看，也不进备份。")
+                Text("只存在本机钥匙串，不进备份")
                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
             }
             .padding(Ink.Space.l)
@@ -495,7 +495,7 @@ struct ModelSheet: View {
                         Text(note).font(.footnote).foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("看图的测试会发一张纯红色的小图，问它是什么颜色。要花一点点钱。")
+                    Text("发一张红色小图问颜色，花一点点钱")
                 }
                 Section {
                     if team.settings.defaultModel == ref {

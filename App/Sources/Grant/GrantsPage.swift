@@ -31,7 +31,7 @@ struct GrantsPage: View {
                                 Image(systemName: "checkmark.seal").font(.system(size: 20)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(asking ? "正在一项项问系统…" : "一并应许").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                    Text("依次弹出还没回答过的系统授权；只读的本事一并设为放行，写入的仍由你逐项定。")
+                                    Text("一次问完系统授权")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
                                 Spacer(minLength: 0)

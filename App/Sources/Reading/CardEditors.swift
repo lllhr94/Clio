@@ -322,7 +322,7 @@ struct RoomEditor: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("你说一句，雅集里的旅伴按顺序一位位接话，彼此也听得见对方说了什么。适合让几位不同性子的旅伴一起出主意。")
+                        Text("几位旅伴轮流接话，彼此听得见")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
 

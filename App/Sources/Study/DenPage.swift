@@ -131,7 +131,7 @@ struct DenPage: View {
     @ViewBuilder
     private var intro: some View {
         if den.log.isEmpty {
-            Text("这是手机里的一间小屋：一个 Alpine Linux。旅伴可以在这里装软件、跑脚本、处理文件；书案在 /root/desk。你也可以自己敲命令，比如 apk add python3。")
+            Text("手机里的 Alpine Linux，书案在 /root/desk")
                 .font(Ink.secondary)
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.bottom, Ink.Space.m)

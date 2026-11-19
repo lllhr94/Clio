@@ -21,7 +21,7 @@ struct HillsPage: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        Text("远山是你在别处的电脑：用 SSH 连的主机，和提供 MCP 工具的服务（比如你 VPS 上的浏览器）。旅伴连远山前，默认会先请你落印，可以在「应许」里改。")
+                        Text("用 SSH 连的电脑和 MCP 服务")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
 
