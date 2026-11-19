@@ -10,6 +10,8 @@ enum ShortcutAsk: Equatable {
     case dictate
     /// Turn a new leaf with the newest companion and wait at the composer.
     case fresh
+    /// Files shared to Clio from another app (共享 → Clio): they go into 书案/收件 and wait in the composer.
+    case files([URL])
 }
 
 /// Hands a shortcut's request to the screens. Kept until taken, because a cold start draws the desk after the intent has run.

@@ -384,6 +384,11 @@ struct Desk: View {
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
         .onOpenURL { url in
             // The home-screen widget: clio://chat/bot-…. Control Center and the Action Button: clio://ask, clio://dictate.
+            // Shared from another app: the file waits in the newest conversation's composer.
+            if url.isFileURL {
+                ShortcutDoor.knock(.files([url]))
+                return
+            }
             guard url.scheme == "clio" else { return }
             switch url.host {
             case "chat": NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)

@@ -307,6 +307,9 @@ struct ChatPage: View {
             listen()
         case .fresh:
             typing = true
+        case .files(let urls):
+            withAnimation(Ink.Motion.settle) { receive(urls) }
+            typing = true
         }
     }
 

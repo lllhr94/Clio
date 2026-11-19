@@ -56,11 +56,15 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.29"
-        CFBundleVersion: "31"
+        CFBundleShortVersionString: "0.30"
+        CFBundleVersion: "32"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 文件
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.data, public.content, public.item]
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         NSSupportsLiveActivities: true
@@ -110,8 +114,8 @@ targets:
       path: ClioWidget-Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.29"
-        CFBundleVersion: "31"
+        CFBundleShortVersionString: "0.30"
+        CFBundleVersion: "32"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
