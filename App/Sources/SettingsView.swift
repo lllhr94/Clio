@@ -67,7 +67,12 @@ struct SettingsView: View {
                 }
             }
         }
-        .task { if let startAt { go(startAt) } }
+        .task {
+            guard let startAt else { return }
+            // A sheet asked for while this page is still sliding in is dropped; wait for it to settle.
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            go(startAt)
+        }
         .sheet(isPresented: $adding) { SetupView(team: team) { adding = false } }
         .sheet(isPresented: $connecting) { ConnectorsPage() }
         .sheet(isPresented: $looking, onDismiss: { lookFocus = nil }) { LookPage(focus: lookFocus) }

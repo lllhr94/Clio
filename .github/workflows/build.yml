@@ -168,6 +168,11 @@ jobs:
             done
           done
           ls -la shots
+          # Anything that crashed while the pictures were taken, so a blank picture can be explained.
+          mkdir -p shots/crashes
+          find ~/Library/Logs/DiagnosticReports -name 'Clio*' -newer simbuild.log -exec cp {} shots/crashes/ \; 2>/dev/null || true
+          xcrun simctl spawn "$UDID" log show --last 15m --style compact --predicate 'process == "Clio"' 2>/dev/null | grep -iE "fault|error|crash|terminat|assert|fatal" | tail -n 300 > shots/crashes/clio-log.txt || true
+          ls -la shots/crashes
 
       - name: Push the screenshots to a branch of their own
         if: always() && inputs.shots
