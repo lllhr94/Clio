@@ -120,6 +120,8 @@ struct Desk: View {
     @State private var pull: CGFloat = 0
     /// The sidebar is out, the conversation pushed to the right.
     @State private var sideOpen = Shots.name == "sidebar"
+    /// What a conversation calls to open the sidebar; one object for the desk's whole life (see `ChatPage.side`).
+    @State private var sideControl = SideControl()
     @State private var sideQuery = ""
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
@@ -516,9 +518,14 @@ struct Desk: View {
 
             if let opened {
                 page(for: opened)
-                    .background(Ink.paper)
                     .clipShape(RoundedRectangle(cornerRadius: shift > 0 ? 28 : 0, style: .continuous))
-                    .shadow(color: .black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
+                    // The shadow is cast by a plain rounded sheet of paper under the page, not by the page itself:
+                    // shadowing the page made iOS trace every word and button for each frame of the slide.
+                    .background {
+                        RoundedRectangle(cornerRadius: shift > 0 ? 28 : 0, style: .continuous)
+                            .fill(Ink.paper)
+                            .shadow(color: .black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
+                    }
                     .overlay {
                         // Open sidebar: a tap on the conversation's edge closes it.
                         if sideOpen {
@@ -553,6 +560,7 @@ struct Desk: View {
             }
         }
         .animation(Ink.Motion.unfold, value: opened)
+        .onAppear { sideControl.open = { openSide() } }
         .onChange(of: opened) { _, _ in
             if sideOpen || pull != 0 { sideOpen = false; pull = 0 }
         }
@@ -705,12 +713,12 @@ struct Desk: View {
         switch target {
         case .companion(let id):
             if let bot = team.bots.first(where: { $0.id == id }) {
-                ChatPage(team: team, bot: bot) { openSide() }
+                ChatPage(team: team, bot: bot, side: sideControl)
                     .id(target.id)
             }
         case .gathering(let id):
             if let room = team.rooms.first(where: { $0.id == id }) {
-                ChatPage(team: team, room: room) { openSide() }
+                ChatPage(team: team, room: room, side: sideControl)
                     .id(target.id)
             }
         }
@@ -988,4 +996,11 @@ struct BreathingDot: View {
             .onAppear { full = true }
             .accessibilityHidden(true)
     }
+}
+
+
+/// The sidebar's "open" for a conversation page: the same object every time the desk is drawn.
+@MainActor
+final class SideControl {
+    var open: () -> Void = {}
 }

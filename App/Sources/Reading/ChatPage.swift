@@ -13,7 +13,10 @@ struct ChatPage: View {
     @StateObject private var chat: ChatModel
     @StateObject private var dictation = Dictation()
     @ObservedObject private var asker = Asker.shared
-    var back: () -> Void
+    /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
+    /// desk made SwiftUI think the whole page had changed, and redraw all of it for every frame the sidebar slid.
+    let side: SideControl
+    private var back: () -> Void { side.open }
 
     @State private var draft = ""
     @State private var spokenBase = ""
@@ -50,15 +53,15 @@ struct ChatPage: View {
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
 
-    init(team: TeamModel, bot: BotInfo, back: @escaping () -> Void) {
+    init(team: TeamModel, bot: BotInfo, side: SideControl) {
         self.team = team
-        self.back = back
+        self.side = side
         _chat = StateObject(wrappedValue: ChatModel(bot: bot, team: team))
     }
 
-    init(team: TeamModel, room: RoomInfo, back: @escaping () -> Void) {
+    init(team: TeamModel, room: RoomInfo, side: SideControl) {
         self.team = team
-        self.back = back
+        self.side = side
         _chat = StateObject(wrappedValue: ChatModel(room: room, team: team))
     }
 
