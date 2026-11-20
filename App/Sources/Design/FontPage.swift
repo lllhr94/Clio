@@ -90,7 +90,15 @@ struct FontPage: View {
                 }
 
                 Section {
-                    Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
+                    ForEach(Pref.Code.allCases) { code in
+                        codeRow(code)
+                    }
+                } header: { Text("代码") } footer: {
+                    Text("回复里的代码、终端、步骤里的命令、模型名。中文仍用正文字体。")
+                }
+
+                Section {
+                    Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，代码字体是 Maple Mono 7.9，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                 } header: { Text("出处") }
@@ -127,6 +135,36 @@ struct FontPage: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(face.title)，\(face.note)")
+        .accessibilityAddTraits(picked ? .isSelected : [])
+    }
+
+    private func codeRow(_ code: Pref.Code) -> some View {
+        let picked = Pref.code == code
+        return Button {
+            Haptics.tick(0.5)
+            withAnimation(Ink.Motion.settle) { Theme.shared.setCode(code) }
+        } label: {
+            HStack(alignment: .center, spacing: Ink.Space.m) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    HStack(spacing: Ink.Space.s) {
+                        Text(code.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
+                        Text(code.note).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                    }
+                    Text("git log --oneline -3  # 0.33")
+                        .font(code == .maple && Ink.has("MapleMono-Regular") ? .custom("MapleMono-Regular", size: Ink.Size.sub) : .system(size: Ink.Size.sub, design: .monospaced))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Ink.Space.s)
+                if picked {
+                    Image(systemName: "checkmark").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)
+                }
+            }
+            .padding(.vertical, Ink.Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(code.title)，\(code.note)")
         .accessibilityAddTraits(picked ? .isSelected : [])
     }
 

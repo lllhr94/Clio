@@ -37,6 +37,13 @@ final class Theme {
     private(set) var face: Pref.Face = Pref.Face(rawValue: UserDefaults.standard.string(forKey: "look.face") ?? "") ?? .serif
     private(set) var mark: Pref.Face = Pref.Face(rawValue: UserDefaults.standard.string(forKey: "look.mark") ?? "") ?? .wenkai
 
+    private(set) var code: Pref.Code = Pref.Code(rawValue: UserDefaults.standard.string(forKey: "look.code") ?? "") ?? .maple
+
+    func setCode(_ value: Pref.Code) {
+        code = value
+        UserDefaults.standard.set(value.rawValue, forKey: "look.code")
+    }
+
     func setFace(_ value: Pref.Face) {
         face = value
         UserDefaults.standard.set(value.rawValue, forKey: "look.face")
@@ -188,6 +195,22 @@ enum Ink {
         }
     }
 
+    /// Code, commands, paths, the terminal, model names: Maple Mono unless 系统等宽 is picked in 字体.
+    /// Chinese inside falls back to the system's own.
+    static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        if Pref.code == .maple {
+            let name = weight == .regular || weight == .light || weight == .thin || weight == .ultraLight ? "MapleMono-Regular" : "MapleMono-SemiBold"
+            if has(name) { return .custom(name, size: size) }
+        }
+        return .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    /// The same, for UIKit views (the terminal).
+    static func uiMono(_ size: CGFloat, bold: Bool = false) -> UIFont {
+        if Pref.code == .maple, let font = UIFont(name: bold ? "MapleMono-SemiBold" : "MapleMono-Regular", size: size) { return font }
+        return .monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
+    }
+
     /// Titles and inscriptions, in the face picked for them in 字体 (文楷 unless changed): the welcome pages,
     /// what a companion hands you, the line over an empty page. Never the running text or buttons.
     static func mark(_ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
@@ -216,7 +239,7 @@ enum Ink {
     static var secondary: Font { .system(size: Ink.Size.sub) }
     static var footnote: Font { .system(size: Ink.Size.small) }
     /// Code, three points under the reading size, so it sits with the text around it at every size.
-    static var code: Font { .system(size: max(12, Pref.size - 3), design: .monospaced) }
+    static var code: Font { mono(max(12, Pref.size - 3)) }
 
     /// The space between the lines of reading text.
     static var leading: CGFloat { Pref.leading }

@@ -190,7 +190,7 @@ struct ApproveView: View {
                     .tracking(2)
                 Spacer()
                 Text(Self.clock(current.at.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date(), "HH:mm"))
-                    .font(.system(size: Ink.Size.small, design: .monospaced))
+                    .font(Ink.mono(Ink.Size.small))
             }
             .foregroundStyle(Ink.inkSoft)
 
@@ -219,7 +219,7 @@ struct ApproveView: View {
                     // The whole command, scrolled, never cut off: what is approved must be seen in full.
                     ScrollView {
                         Text(code)
-                            .font(.system(size: Ink.Size.small, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.small))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -254,7 +254,7 @@ struct ApproveView: View {
                     VStack(spacing: Ink.Space.xs) {
                         ClioSeal(size: 66, tilt: -8)
                         Text(Self.clock(stampedAt, "MM-dd HH:mm"))
-                            .font(.system(size: Ink.Size.micro, weight: .semibold, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.micro, weight: .semibold))
                             .foregroundStyle(Ink.seal)
                     }
                 }
@@ -373,7 +373,7 @@ private struct Stamp: View {
                     .font(.system(size: 24, weight: .black))
                     .tracking(2)
                 Text(date)
-                    .font(.system(size: Ink.Size.micro, weight: .bold, design: .monospaced))
+                    .font(Ink.mono(Ink.Size.micro, weight: .bold))
             }
             .foregroundStyle(ink)
         }

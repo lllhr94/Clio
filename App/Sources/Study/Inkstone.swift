@@ -127,7 +127,7 @@ private struct TerminalHost: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         view.terminalDelegate = context.coordinator
-        view.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        view.font = Ink.uiMono(13)
         paint(view)
         context.coordinator.attach(view)
         DispatchQueue.main.async { _ = view.becomeFirstResponder() }

@@ -18,7 +18,7 @@ struct DiffText: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.prefix(limit).enumerated()), id: \.offset) { _, line in
                 Text(line.isEmpty ? " " : line)
-                    .font(.system(size: Ink.Size.micro, design: .monospaced))
+                    .font(Ink.mono(Ink.Size.micro))
                     .foregroundStyle(color(line))
                     .lineLimit(wraps ? nil : 1)
                     .truncationMode(.tail)

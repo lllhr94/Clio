@@ -41,7 +41,7 @@ struct HillsPage: View {
                                 Text("用钥匙登录更安全。把下面这行加进服务器的 ~/.ssh/authorized_keys，主机里选「用钥匙」。")
                                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 Text(Hills.publicKey)
-                                    .font(.system(size: Ink.Size.small, design: .monospaced))
+                                    .font(Ink.mono(Ink.Size.small))
                                     .foregroundStyle(Ink.ink)
                                     .textSelection(.enabled)
                                     .lineLimit(3)
@@ -126,7 +126,7 @@ struct HillsPage: View {
             }
             if let key = HostKeyKeeper.known(host.address, host.port) {
                 HStack(spacing: Ink.Space.s) {
-                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
+                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button("重新信任") {
                         HostKeyKeeper.forget(host.address, host.port)
@@ -138,7 +138,7 @@ struct HillsPage: View {
                 .padding(.leading, Kit.badge + Ink.Space.m)
             }
             if let result = tested[host.id] {
-                Text(result).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
+                Text(result).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
             }
             HStack(spacing: Ink.Space.s) {
                 Button {
@@ -164,7 +164,7 @@ struct HillsPage: View {
             if let status = installing[host.id] {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
                     ProgressView().controlSize(.mini)
-                    Text(status).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                    Text(status).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(3)
                 }
                 .padding(.leading, Kit.badge + Ink.Space.m)
             }
@@ -378,7 +378,7 @@ private struct ServerEditor: View {
                 if server.tunnelHost != nil {
                     Section {
                         Text(Hills.browserCommand)
-                            .font(.system(size: Ink.Size.small, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.small))
                             .textSelection(.enabled)
                         Button("复制这条命令", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = Hills.browserCommand

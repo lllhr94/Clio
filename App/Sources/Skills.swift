@@ -267,7 +267,7 @@ struct SkillsPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.skill.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
                 Text(item.skill.description).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
-                Text(Words.t("书案/") + item.id).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                Text(Words.t("书案/") + item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
             Toggle("", isOn: Binding(get: { item.on }, set: { value in

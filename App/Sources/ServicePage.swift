@@ -120,7 +120,7 @@ struct ServicePage: View {
                 }
                 HStack(spacing: Ink.Space.s) {
                     TextField(service?.modelHint ?? "手动添一个模型名", text: $typed)
-                        .font(.system(size: Ink.Size.sub, design: .monospaced))
+                        .font(Ink.mono(Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .submitLabel(.done)
@@ -147,7 +147,7 @@ struct ServicePage: View {
             HStack(alignment: .center, spacing: Ink.Space.m) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(model).font(.system(size: Ink.Size.sub, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
                             Text("默认").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
@@ -209,7 +209,7 @@ struct ServicePage: View {
                 ForEach(shown, id: \.self) { model in
                     HStack(spacing: Ink.Space.m) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(model).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                            Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                             Text(endpoint.traits(model).summary).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                         }
                         Spacer(minLength: 0)
@@ -248,7 +248,7 @@ struct ServicePage: View {
                 }
                 labeled("地址") {
                     TextField("https://…", text: $address)
-                        .font(.system(size: Ink.Size.sub, design: .monospaced))
+                        .font(Ink.mono(Ink.Size.sub))
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onSubmit { save(endpoint) }
                 }
@@ -269,7 +269,7 @@ struct ServicePage: View {
                     }
                 }
                 Text("实际请求：" + finalURL(endpoint))
-                    .font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                    .font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
                 if endpoint.kind == .openai {
                     Rectangle().fill(Ink.rule).frame(height: 1)
@@ -303,7 +303,7 @@ struct ServicePage: View {
                 labeled("密钥") {
                     HStack(spacing: Ink.Space.s) {
                         SecureField(maskedKey(endpoint), text: $newKey)
-                            .font(.system(size: Ink.Size.sub, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.sub))
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         if !newKey.isEmpty {
                             Button("换上") { replaceKey(endpoint) }

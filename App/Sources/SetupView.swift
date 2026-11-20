@@ -228,7 +228,7 @@ struct SetupView: View {
                     .paperField()
                 if baseURL.hasPrefix("http") {
                     Text("实际请求：" + finalURL)
-                        .font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                        .font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                         .padding(.leading, Ink.Space.xs)
                 }
             }
@@ -239,7 +239,7 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 FieldTitle(text: L.t("settings.modelName"), note: choice.asksModel ? "这家要你自己填" : "可以不填，会自动去拿列表")
                 TextField(choice.modelHint ?? "比如 gpt-5、qwen-plus", text: $modelName)
-                    .font(.system(size: Ink.Size.sub, design: .monospaced))
+                    .font(Ink.mono(Ink.Size.sub))
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .paperField()
             }
@@ -261,7 +261,7 @@ struct SetupView: View {
             }
             HStack(spacing: Ink.Space.s) {
                 SecureField("sk-…", text: $key)
-                    .font(.system(size: Ink.Size.body, design: .monospaced))
+                    .font(Ink.mono(Ink.Size.body))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($keyFocused)
@@ -355,7 +355,7 @@ struct SetupView: View {
                                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(model).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                                     Text(ModelTraits.guess(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)

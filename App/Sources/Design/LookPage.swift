@@ -103,7 +103,7 @@ struct LookPage: View {
                         HStack {
                             Text("字体")
                             Spacer()
-                            Text("正文 \(Pref.face.title) · 标题 \(Pref.mark.title)")
+                            Text("\(Pref.face.title) · \(Pref.mark.title) · \(Pref.code == .maple ? "Maple" : "等宽")")
                                 .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft)
                         }
                     }
@@ -250,7 +250,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.mark", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
+        for key in ["look.scheme", "look.face", "look.mark", "look.code", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -260,6 +260,7 @@ struct LookPage: View {
         UIScale.shared.value = 1.0
         Theme.shared.setFace(.serif)
         Theme.shared.setMark(.wenkai)
+        Theme.shared.setCode(.maple)
         Theme.shared.pick("dai")
         Theme.shared.setPlain(false)
         Theme.shared.setOled(false)

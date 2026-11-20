@@ -40,7 +40,7 @@ struct InlineApproval: View {
                 ScrollView([.vertical]) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(well)
-                            .font(.system(size: Ink.Size.small, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.small))
                             .foregroundStyle(Ink.ink)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: true, vertical: false)

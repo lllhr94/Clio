@@ -343,7 +343,7 @@ private struct ConnectorDetail: View {
                 HStack(alignment: .top, spacing: Ink.Space.m) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("连接器地址").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
-                        Text(connector.url).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
+                        Text(connector.url).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
                     }
                     Spacer(minLength: 0)
                     Button {
@@ -495,7 +495,7 @@ private struct ConnectorDetail: View {
                             Image(systemName: tool.readOnly == true ? "eye" : "pencil")
                                 .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).frame(width: 18).padding(.top, 2)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(tool.name).font(.system(size: Ink.Size.sub, weight: .medium, design: .monospaced)).foregroundStyle(Ink.ink)
+                                Text(tool.name).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                                 if !tool.description.isEmpty {
                                     Text(tool.description).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(2)
                                 }
@@ -764,7 +764,7 @@ private struct GoogleSheet: View {
                         TextField("xxxx.apps.googleusercontent.com", text: $client)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .font(.system(size: Ink.Size.sub, design: .monospaced))
+                            .font(Ink.mono(Ink.Size.sub))
                         Button {
                             google.clientId = client
                             Task { await google.signIn() }

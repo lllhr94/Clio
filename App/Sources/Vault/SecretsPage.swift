@@ -60,10 +60,10 @@ struct SecretsPage: View {
                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Text(item.id).font(.system(size: Ink.Size.micro, design: .monospaced)).foregroundStyle(Ink.inkFaint)
+                Text(item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
             }
             if let shown = revealed[item.id] {
-                Text(shown).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, 40)
+                Text(shown).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, 40)
             }
         }
         .padding(.horizontal, Ink.Space.l)

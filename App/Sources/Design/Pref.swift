@@ -55,7 +55,16 @@ enum Pref {
         static let marks: [Face] = [.wenkai, .kai, .song, .serif, .sans]
     }
 
+    /// What code, commands, the terminal and model names are set in.
+    enum Code: String, CaseIterable, Identifiable {
+        case maple, system
+        var id: String { rawValue }
+        var title: String { self == .maple ? "Maple Mono" : "系统等宽" }
+        var note: String { self == .maple ? "圆头，柔和，已内置" : "SF Mono，苹果自带" }
+    }
+
     static var face: Face { Theme.shared.face }
+    static var code: Code { Theme.shared.code }
     /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
     static var mark: Face { Theme.shared.mark }
     static var size: Double { double("look.size", 17) }

@@ -1996,7 +1996,7 @@ private struct Trace: View {
             if added > 0 { Text("+\(added)").foregroundStyle(Ink.ok) }
             if removed > 0 { Text("−\(removed)").foregroundStyle(Ink.stop) }
         }
-        .font(.system(size: Ink.Size.small, design: .monospaced))
+        .font(Ink.mono(Ink.Size.small))
     }
 
     private var keepsakes: [Keepsake] {
@@ -2142,10 +2142,10 @@ private struct Trace: View {
                         Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.kind == .command ? "# " + item.title : item.title)
-                                .font(item.kind == .command ? .system(size: Ink.Size.small, weight: .medium, design: .monospaced) : .system(size: Ink.Size.sub, weight: .medium))
+                                .font(item.kind == .command ? Ink.mono(Ink.Size.small, weight: .medium) : .system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink).lineLimit(2)
                             Text(item.detail)
-                                .font(item.kind == .command ? .system(size: Ink.Size.micro, design: .monospaced) : Ink.footnote)
+                                .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
                             if let diff = item.diff, !diff.isEmpty {
                                 // The first few changed lines, so the card shows what changed at a glance.
@@ -2268,7 +2268,7 @@ private struct Trace: View {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         if !more.input.isEmpty, more.input != "{}" {
                             Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                            Text(Self.tidy(more.input)).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(12)
+                            Text(Self.tidy(more.input)).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(12)
                         }
                         if let name = more.photo, let data = Disk.photo(name), let image = UIImage(data: data) {
                             Image(uiImage: image)
@@ -2280,10 +2280,10 @@ private struct Trace: View {
                         }
                         Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
                         if let hunk = Diff.hunk(in: more.output) {
-                            Text(more.output.components(separatedBy: "\n").first ?? "").font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft)
+                            Text(more.output.components(separatedBy: "\n").first ?? "").font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                             DiffText(hunk: hunk)
                         } else {
-                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(.system(size: Ink.Size.small, design: .monospaced)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(24)
                         }
                     }
                     .textSelection(.enabled)

@@ -62,7 +62,7 @@ struct GrantsPage: View {
                                 VStack(spacing: 0) {
                                     ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
                                         HStack {
-                                            Text(tool).font(.system(size: Ink.Size.sub, design: .monospaced)).foregroundStyle(Ink.ink)
+                                            Text(tool).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
                                             Spacer()
                                             Button("收回") { withAnimation(.smooth) { team.revokeAlways(tool) } }
                                                 .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.stop)

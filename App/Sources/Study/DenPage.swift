@@ -151,7 +151,7 @@ struct DenPage: View {
                 Text("— \(line.text)").foregroundStyle(Ink.inkFaint)
             }
         }
-        .font(.system(size: Ink.Size.small, design: .monospaced))
+        .font(Ink.mono(Ink.Size.small))
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, line.kind == .command ? Ink.Space.s : 0)
@@ -159,9 +159,9 @@ struct DenPage: View {
 
     private var composer: some View {
         HStack(spacing: Ink.Space.s) {
-            Text("#").font(.system(size: Ink.Size.body, weight: .semibold, design: .monospaced)).foregroundStyle(Ink.accent)
+            Text("#").font(Ink.mono(Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.accent)
             TextField("命令", text: $command)
-                .font(.system(size: Ink.Size.sub, design: .monospaced))
+                .font(Ink.mono(Ink.Size.sub))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.send)

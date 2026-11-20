@@ -48,7 +48,7 @@ struct ToolTailView: View {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(tail.lines) { line in
                     Text(line.text)
-                        .font(.system(size: Ink.Size.micro, design: .monospaced))
+                        .font(Ink.mono(Ink.Size.micro))
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
                         .truncationMode(.tail)
