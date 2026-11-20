@@ -5,7 +5,7 @@
 
 ## 分支怎么走，免得撞车
 
-- `batch-0.33` 是本批次的集成分支，只由 Claude 合并和推送。
+- `batch-0.34` 是本批次的集成分支（0.33 已发布），只由 Claude 合并和推送。
 - Codex 每个任务从最新的 `batch-0.33` 拉一个分支：`codex/<任务名>`，做完开 PR 合进 `batch-0.33`，写清楚改了什么、怎么验证（CI 编译结果、截图）。Claude 审完合并。
 - Gemini 的产出由主人放进 `design/incoming/`（或发给 Claude / Codex），由写代码的一方接入。
 - 谁做完一项，就在本文件把它勾掉，并更新 `docs/STATUS.md`。
@@ -41,7 +41,7 @@
 
 顺序：C7（先 idle、thinking 给主人看）→ C8 小样可以同时做 → C7 定稿 → C5、C9。
 
-### 0.34（从 0.33 发布后的 `batch-0.33` 拉分支；0.33 发布后 Claude 会开 `batch-0.34`，PR 合到那里）
+### 0.34（从 `batch-0.34` 拉分支，PR 合到 `batch-0.34`）
 
 - [ ] **C10 称谓铺满第二轮**：分支 `codex/c10-tone-2`。把界面上还写死的中文名词、提示、按钮改成 `L.t("…")`（重点：设置各子页的说明文字、连接器页、斗室、书案、批准单、填表）。新键两份词典同时加；书卷说法拿不准的先和日常写成一样，在 PR 里列成表请主人定。遵守 `AGENTS.md`「称谓」一节：书卷词只当功能名，按钮用日常说法。
 - [ ] **C11 规矩自动检查**：分支 `codex/c11-lint`。写 `tools/lint.py`，在 CI 编译前跑，违反就报错并指出文件行号：两份词典键不一致；`App/Sources` 里出现 `design: .monospaced`、`.custom("`（`Ink.swift`、`Kit.swift` 除外）、`Color(red:` / `Color(hex:`（`Ink.swift`、`NoteSheet.swift`、`Photos.swift` 除外）。把它加进 `.github/workflows/build.yml`。
