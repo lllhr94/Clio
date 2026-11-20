@@ -20,7 +20,7 @@ struct FormSheet: View {
                             PetStill(size: 44, state: "notification", avatar: true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("\(form.from)递来一张笺").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                Text(form.title).font(Ink.kai(22, relativeTo: .title2)).foregroundStyle(Ink.ink)
+                                Text(form.title).font(Ink.mark(22, bold: true, relativeTo: .title2)).foregroundStyle(Ink.ink)
                             }
                         }
                         if !form.reason.isEmpty {

@@ -43,6 +43,7 @@ struct ClioApp: App {
 
     init() {
         Pref.settleType()
+        FontShelf.shared.prepare()
     }
 
     var body: some Scene {

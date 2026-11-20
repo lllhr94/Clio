@@ -10,9 +10,11 @@ enum Pref {
 
     // MARK: 纸墨 — how it looks
 
+    /// A face to read or title in. 宋体 and 楷体 are Apple's, fetched the first time they are picked (`FontShelf`);
+    /// 文楷 (Clio Kai, from 霞鹜文楷) comes with the app; the rest are the system's own.
     enum Face: String, CaseIterable, Identifiable {
         // 书卷 first: Latin and figures in the system serif, Chinese in PingFang, as the best reading apps set it.
-        case serif, sans, rounded, song
+        case serif, sans, rounded, song, kai, wenkai
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -20,11 +22,42 @@ enum Pref {
             case .sans: "苹方"
             case .rounded: "圆体"
             case .serif: "书卷"
+            case .kai: "楷体"
+            case .wenkai: "文楷"
             }
         }
+
+        var note: String {
+            switch self {
+            case .serif: "系统衬线，中文是苹方，英文数字最好看"
+            case .sans: "系统黑体，最清楚"
+            case .rounded: "圆头，柔和"
+            case .song: "苹果提供的宋体，第一次用要下载"
+            case .kai: "苹果提供的楷体，第一次用要下载"
+            case .wenkai: "霞鹜文楷，带手写感，已内置（简体常用字全收）"
+            }
+        }
+
+        /// The font's own name, regular or bold; nil for the system's faces.
+        func postScript(bold: Bool) -> String? {
+            switch self {
+            case .song: bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular"
+            case .kai: bold ? "STKaiti-SC-Bold" : "STKaiti-SC-Regular"
+            case .wenkai: bold ? "ClioKai-Medium" : "ClioKai-Regular"
+            default: nil
+            }
+        }
+
+        /// Apple's, fetched on first use.
+        var downloads: Bool { self == .song || self == .kai }
+
+        /// What titles and inscriptions can be set in.
+        static let marks: [Face] = [.wenkai, .kai, .song, .serif, .sans]
     }
 
-    static var face: Face { Face(rawValue: store.string(forKey: "look.face") ?? "") ?? .serif }
+    static var face: Face { Theme.shared.face }
+    /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
+    static var mark: Face { Theme.shared.mark }
     static var size: Double { double("look.size", 17) }
     /// The space added between lines: a fixed share of the size, so every size reads about 1.6 lines apart.
     static var leading: Double { size * 0.5 }

@@ -200,7 +200,7 @@ struct ApproveView: View {
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.kai(20, relativeTo: .title3)).lineLimit(1)
+                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3)).lineLimit(1)
                 }
             }
 

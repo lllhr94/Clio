@@ -9,7 +9,6 @@ struct LookPage: View {
     @State private var lit: String?
 
     @AppStorage("look.scheme") private var scheme = "system"
-    @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.size") private var size = 17.0
     @AppStorage("look.leading") private var leading = 11.0
     @AppStorage("look.haptics") private var haptics = true
@@ -98,12 +97,17 @@ struct LookPage: View {
                         Text("夜墨").tag("dark")
                     }
                     .pickerStyle(.segmented)
-                    Picker("正文字体", selection: $face) {
-                        ForEach(Pref.Face.allCases) { item in
-                            Text(item.title).tag(item.rawValue)
+                    NavigationLink {
+                        FontPage()
+                    } label: {
+                        HStack {
+                            Text("字体")
+                            Spacer()
+                            Text("正文 \(Pref.face.title) · 标题 \(Pref.mark.title)")
+                                .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .spot("font", lit)
                     palettes
                     Toggle("深色时用纯黑", isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
                 }
@@ -246,14 +250,16 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
+        for key in ["look.scheme", "look.face", "look.mark", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
-        scheme = "system"; face = "song"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true
+        scheme = "system"; size = 17; leading = 8; haptics = true; fade = true; stats = true; traceOpen = false; fps = false; notifyDone = true
         autoCompress = true; compressAt = 60_000; keepRecent = 12; contextChars = 48_000; contextCount = 0; temperature = -1; maxOutput = 0
         liveOn = true
         UIScale.shared.value = 1.0
+        Theme.shared.setFace(.serif)
+        Theme.shared.setMark(.wenkai)
         Theme.shared.pick("dai")
         Theme.shared.setPlain(false)
         Theme.shared.setOled(false)

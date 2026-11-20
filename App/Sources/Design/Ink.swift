@@ -33,6 +33,20 @@ final class Theme {
         UserDefaults.standard.set(value, forKey: "look.plainNames")
     }
 
+    /// The reading face, and the face of titles and inscriptions (see `Pref.Face`).
+    private(set) var face: Pref.Face = Pref.Face(rawValue: UserDefaults.standard.string(forKey: "look.face") ?? "") ?? .serif
+    private(set) var mark: Pref.Face = Pref.Face(rawValue: UserDefaults.standard.string(forKey: "look.mark") ?? "") ?? .wenkai
+
+    func setFace(_ value: Pref.Face) {
+        face = value
+        UserDefaults.standard.set(value.rawValue, forKey: "look.face")
+    }
+
+    func setMark(_ value: Pref.Face) {
+        mark = value
+        UserDefaults.standard.set(value.rawValue, forKey: "look.mark")
+    }
+
     func pick(_ key: String) {
         self.key = key
         UserDefaults.standard.set(key, forKey: "look.accent")
@@ -150,23 +164,34 @@ enum Ink {
 
     // MARK: Type
 
-    /// Whether the system's Songti is there; the serif system face stands in when it is not.
-    static let hasSongti = UIFont(name: "STSongti-SC-Regular", size: 17) != nil
+    /// Whether a font is on this phone now (Apple's 宋体 and 楷体 only once fetched).
+    static func has(_ name: String) -> Bool { UIFont(name: name, size: 12) != nil }
 
-    /// The reading face: titles, a companion's words, notes.
-    /// Titles: the system serif for Latin and figures, PingFang for Chinese; 宋体 only when the user reads in 宋体.
-    static func serif(_ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
-        if Pref.face == .song, hasSongti {
-            return .custom(bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular", size: size, relativeTo: style)
+    /// Any face at any size; a face not on the phone yet stands in as the system serif.
+    static func face(_ face: Pref.Face, _ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
+        if let name = face.postScript(bold: bold), has(name) {
+            return .custom(name, size: size, relativeTo: style)
         }
-        return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
+        switch face {
+        case .sans: return .system(size: size, weight: bold ? .semibold : .regular)
+        case .rounded: return .system(size: size, weight: bold ? .semibold : .regular, design: .rounded)
+        default: return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
+        }
     }
 
-    /// Clio Kai (霞鹜文楷, cut down to the common characters): for the few lines that are written rather than set —
-    /// inscriptions, the titles of the welcome pages and of what a companion hands you. Never the running text.
-    /// Rare characters it lacks fall back to the system font by themselves.
-    static func kai(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
-        .custom("ClioKai-Regular", size: size, relativeTo: style)
+    /// The reading face for titles, a companion's words, notes: the system serif for Latin and figures,
+    /// PingFang for Chinese; 宋体, 楷体 or 文楷 when the user reads in one of them.
+    static func serif(_ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
+        switch Pref.face {
+        case .song, .kai, .wenkai: face(Pref.face, size, bold: bold, relativeTo: style)
+        default: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
+        }
+    }
+
+    /// Titles and inscriptions, in the face picked for them in 字体 (文楷 unless changed): the welcome pages,
+    /// what a companion hands you, the line over an empty page. Never the running text or buttons.
+    static func mark(_ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
+        face(Pref.mark, size, bold: bold, relativeTo: style)
     }
 
     /// The word 「Clio」 at the head of the sidebar: Hoefler Text italic, which every iPhone has.
@@ -178,14 +203,7 @@ enum Ink {
     static var reading: Font { body(Pref.size, bold: false) }
     static var readingBold: Font { body(Pref.size, bold: true) }
 
-    static func body(_ size: Double, bold: Bool) -> Font {
-        switch Pref.face {
-        case .song: hasSongti ? .custom(bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular", size: size, relativeTo: .body) : .system(size: size, weight: bold ? .bold : .regular, design: .serif)
-        case .sans: .system(size: size, weight: bold ? .semibold : .regular)
-        case .rounded: .system(size: size, weight: bold ? .semibold : .regular, design: .rounded)
-        case .serif: .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
-        }
-    }
+    static func body(_ size: Double, bold: Bool) -> Font { face(Pref.face, CGFloat(size), bold: bold) }
     /// The five sizes everything outside the reading text is set in (Apple's caption 2, footnote, subheadline, body, title 3).
     enum Size {
         static var micro: CGFloat { (11 * UIScale.factor).rounded() }

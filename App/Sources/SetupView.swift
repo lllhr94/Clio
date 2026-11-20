@@ -93,7 +93,7 @@ struct SetupView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text(L.t("onboarding.page\(n).title"))
-                    .font(Ink.kai((28 * UIScale.factor).rounded(), relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
+                    .font(Ink.mark((28 * UIScale.factor).rounded(), bold: true, relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(L.t("onboarding.page\(n).subtitle"))
                     .font(Ink.reading).foregroundStyle(Ink.inkSoft)

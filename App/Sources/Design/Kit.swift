@@ -225,7 +225,7 @@ struct Inscription: View {
         HStack(spacing: Ink.Space.m) {
             Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
             Text(text)
-                .font(Ink.kai((17 * UIScale.factor).rounded(), relativeTo: .body))
+                .font(Ink.mark((17 * UIScale.factor).rounded()))
                 .foregroundStyle(Ink.inkSoft)
                 .multilineTextAlignment(.center)
             Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
