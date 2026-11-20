@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 笺: what a companion asked the user to fill in. Secrets go into 信匣 and only their number goes back.
 struct FormSheet: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let form: Asker.Form
     @ObservedObject private var secrets = Secrets.shared
     @State private var values: [String: String] = [:]
@@ -67,6 +68,12 @@ struct FormSheet: View {
         Binding(get: { values[key] ?? "" }, set: { values[key] = $0 })
     }
 
+    private func choices(for field: Asker.Field) -> some View {
+        Picker(field.label, selection: binding(field.key)) {
+            ForEach(field.choices, id: \.self) { Text($0).tag($0) }
+        }
+    }
+
     @ViewBuilder
     private func row(_ field: Asker.Field) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
@@ -90,10 +97,11 @@ struct FormSheet: View {
                 }
             }
             if !field.choices.isEmpty {
-                Picker(field.label, selection: binding(field.key)) {
-                    ForEach(field.choices, id: \.self) { Text($0).tag($0) }
+                if typeSize.isAccessibilitySize {
+                    choices(for: field).pickerStyle(.menu)
+                } else {
+                    choices(for: field).pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             } else if field.secret {
                 if let item = picked[field.key] {
                     HStack {
@@ -120,6 +128,7 @@ struct FormSheet: View {
                             Image(systemName: shown.contains(field.key) ? "eye.slash" : "eye").foregroundStyle(Ink.inkFaint)
                         }
                         .buttonStyle(TapStyle(grow: 8))
+                        .accessibilityLabel(shown.contains(field.key) ? "隐藏密码" : "显示密码")
                     }
                     .frame(height: 30)
                 }

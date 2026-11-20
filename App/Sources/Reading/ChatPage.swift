@@ -43,6 +43,10 @@ struct ChatPage: View {
     /// What happened in the other conversations while the user was away from this one.
     @State private var away: [Happening] = []
     @State private var farFromEnd = false
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+    private var largeText: Bool { typeSize.isAccessibilitySize }
+
     @FocusState private var typing: Bool
     @State private var voice = AVSpeechSynthesizer()
 
@@ -598,69 +602,15 @@ struct ChatPage: View {
     // MARK: Top bar
 
     private var header: some View {
-        HStack(spacing: Ink.Space.s) {
-            Button(action: leave) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: Ink.Size.body, weight: .semibold))
-                    .foregroundStyle(Ink.ink)
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                    .glassFace(in: Circle())
+        let layout = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
+            AnyLayout(HStackLayout(spacing: Ink.Space.s))
+        layout {
+            HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
+                headerBack
+                headerIdentity
             }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel("打开侧边栏")
-            HStack(spacing: Ink.Space.s) {
-                PetStill(size: 30, state: petState, avatar: true)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(bot.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
-                    HStack(spacing: 4) {
-                        Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
-                        Text(headerLine)
-                            .font(Ink.footnote)
-                            .foregroundStyle(Ink.inkSoft)
-                            .lineLimit(1)
-                            .contentTransition(.opacity)
-                    }
-                    .animation(.easeInOut(duration: 0.5), value: headerLine)
-                }
-            }
-            .padding(.leading, -Ink.Space.xs)
-            .glassChip()
-            .contentShape(.capsule)
-            .onTapGesture {
-                Haptics.light()
-                typing = false
-                detailOpen = true
-            }
-            .contextMenu {
-                if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
-                if PetLibrary.shared.shown {
-                    Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
-                        withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
-                    }
-                } else {
-                    Button("让\(L.t("nav.pet"))出来", systemImage: "eye") {
-                        withAnimation(Ink.Motion.settle) {
-                            PetLibrary.shared.hiddenUntil = nil
-                            PetLibrary.shared.visible = true
-                        }
-                    }
-                }
-            }
-            .accessibilityHint("点一下看对话详情")
-            Spacer(minLength: 0)
-            // The page's own tools share one glass, so the bar reads as three things, not five circles.
-            HStack(spacing: 0) {
-                RoamButton(browser: team.browser, bare: true) { open in
-                    typing = false
-                    roaming = open
-                }
-                // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
-                headerTool("folder", Words.t("书案里的文件")) { filesOpen = true }
-                headerTool("book.pages", Words.t("絮语页")) { leafing = true }
-            }
-            .padding(.horizontal, Ink.Space.xs)
-            .glassBacking(in: Capsule())
-            .animation(Ink.Motion.settle, value: team.browser.used)
+            if !largeText { Spacer(minLength: 0) }
+            headerControls
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
@@ -677,6 +627,80 @@ struct ChatPage: View {
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
         }
+    }
+
+    private var headerBack: some View {
+        Button(action: leave) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: Ink.Size.body, weight: .semibold))
+                .foregroundStyle(Ink.ink)
+                .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                .glassFace(in: Circle())
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel("打开侧边栏")
+    }
+
+    private var headerIdentity: some View {
+        HStack(spacing: Ink.Space.s) {
+            PetStill(size: 30, state: petState, avatar: true)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
+                HStack(spacing: 4) {
+                    Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
+                    Text(headerLine)
+                        .font(largeText ? .footnote : Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(largeText ? nil : 1)
+                        .fixedSize(horizontal: false, vertical: largeText)
+                        .contentTransition(.opacity)
+                }
+                .animation(.easeInOut(duration: 0.5), value: headerLine)
+            }
+        }
+        .padding(.leading, -Ink.Space.xs)
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, largeText ? Ink.Space.s : 0)
+        .frame(minHeight: Ink.Bar.height)
+        .glassFace(in: Capsule())
+        .contentShape(.capsule)
+        .onTapGesture {
+            Haptics.light()
+            typing = false
+            detailOpen = true
+        }
+        .contextMenu {
+            if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
+            if PetLibrary.shared.shown {
+                Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
+                    withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
+                }
+            } else {
+                Button("让\(L.t("nav.pet"))出来", systemImage: "eye") {
+                    withAnimation(Ink.Motion.settle) {
+                        PetLibrary.shared.hiddenUntil = nil
+                        PetLibrary.shared.visible = true
+                    }
+                }
+            }
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("点一下看对话详情")
+    }
+
+    private var headerControls: some View {
+        HStack(spacing: 0) {
+            RoamButton(browser: team.browser, bare: true) { open in
+                typing = false
+                roaming = open
+            }
+            // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
+            headerTool("folder", Words.t("书案里的文件")) { filesOpen = true }
+            headerTool("book.pages", Words.t("絮语页")) { leafing = true }
+        }
+        .padding(.horizontal, Ink.Space.xs)
+        .glassBacking(in: Capsule())
+        .animation(Ink.Motion.settle, value: team.browser.used)
     }
 
     private func headerTool(_ symbol: String, _ label: String, _ run: @escaping () -> Void) -> some View {
@@ -1459,6 +1483,17 @@ struct ChatPage: View {
         }
     }
 
+    private var draftField: some View {
+        TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
+            .font(largeText ? .body : Ink.label)
+            .foregroundStyle(Ink.ink)
+            .lineLimit(1...(largeText ? 3 : 6))
+            .focused($typing)
+            .onChange(of: draft) { old, new in keepLongPaste(old, new) }
+            .padding(.vertical, 6)
+            .frame(minHeight: 34)
+    }
+
     private var composer: some View {
         VStack(spacing: Ink.Space.s) {
             // The plan sits right on the composer, as one block with it, not as a second bar floating above.
@@ -1524,6 +1559,7 @@ struct ChatPage: View {
                                             .font(.system(size: Ink.Size.body))
                                             .foregroundStyle(Ink.paper, Ink.ink.opacity(0.6))
                                     }
+                                    .accessibilityLabel("移除第 \(index + 1) 张照片")
                                     .offset(x: 5, y: -5)
                                 }
                             }
@@ -1545,6 +1581,7 @@ struct ChatPage: View {
                                         Image(systemName: "xmark").font(.system(size: Ink.Size.micro, weight: .bold))
                                     }
                                     .buttonStyle(TapStyle(grow: 8))
+                                    .accessibilityLabel("移除文件：\((path as NSString).lastPathComponent)")
                                 }
                                 .foregroundStyle(Ink.ink)
                                 .padding(.horizontal, Ink.Space.m)
@@ -1557,6 +1594,7 @@ struct ChatPage: View {
                     .scrollIndicators(.hidden)
                 }
                 if !hints.isEmpty { hintStrip }
+                if largeText { draftField }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
                     Button {
@@ -1572,14 +1610,7 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
-                    TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
-                        .font(Ink.label)
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1...6)
-                        .focused($typing)
-                        .onChange(of: draft) { old, new in keepLongPaste(old, new) }
-                        .padding(.vertical, 6)
-                        .frame(minHeight: 34)
+                    if !largeText { draftField }
                     // While writing: what it goes out with, as small icons in the same row, not a row of their own.
                     if composing {
                         HStack(spacing: 2) {

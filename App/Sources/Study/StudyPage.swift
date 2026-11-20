@@ -242,6 +242,7 @@ struct StudyFile: View {
                     Button(plain ? (table ? "表格" : "排版") : "原文") { plain.toggle() }
                 }
                 ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("分享文件")
             }
         }
         .onAppear {

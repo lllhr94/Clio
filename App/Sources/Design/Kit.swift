@@ -53,25 +53,37 @@ struct RowLabel<Leading: View>: View {
     var end: RowEnd = .chevron
     @ViewBuilder var leading: Leading
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
+
+    private var large: Bool { typeSize.isAccessibilitySize }
+    private var multiplier: CGFloat { large ? scale : 1 }
+
     var body: some View {
-        HStack(spacing: Ink.Space.m) {
+        HStack(alignment: large ? .top : .center, spacing: Ink.Space.m) {
             leading
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
-                    Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
-                    if let hint { Text(hint).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint) }
+                let labels = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.xs)) :
+                    AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: Ink.Space.s))
+                labels {
+                    Text(title).font(.system(size: Ink.Size.body * multiplier)).foregroundStyle(Ink.ink)
+                    if let hint { Text(hint).font(.system(size: Ink.Size.small * multiplier)).foregroundStyle(Ink.inkFaint) }
                 }
-                .lineLimit(1)
+                .lineLimit(large ? nil : 1)
                 if let line, !line.isEmpty {
-                    Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                    Text(line).font(.system(size: Ink.Size.small * multiplier)).foregroundStyle(Ink.inkSoft).lineLimit(large ? nil : 1)
                 }
+                if large { trailing }
             }
-            Spacer(minLength: Ink.Space.s)
-            trailing
+            .frame(maxWidth: large ? .infinity : nil, alignment: .leading)
+            if !large {
+                Spacer(minLength: Ink.Space.s)
+                trailing
+            }
         }
         .padding(.horizontal, Ink.Space.l)
         .frame(minHeight: Kit.rowHeight)
-        .padding(.vertical, line == nil ? 0 : Ink.Space.xs)
+        .padding(.vertical, large || line != nil ? Ink.Space.xs : 0)
         .contentShape(Rectangle())
     }
 
@@ -80,10 +92,10 @@ struct RowLabel<Leading: View>: View {
         case .none: EmptyView()
         case .chevron: Kit.chevron
         case .value(let text, let color):
-            Text(text).font(.system(size: Ink.Size.sub)).foregroundStyle(color).lineLimit(1)
+            Text(text).font(.system(size: Ink.Size.sub * multiplier)).foregroundStyle(color).lineLimit(large ? nil : 1)
         case .valueChevron(let text, let color):
             HStack(spacing: Ink.Space.s) {
-                Text(text).font(.system(size: Ink.Size.sub)).foregroundStyle(color).lineLimit(1)
+                Text(text).font(.system(size: Ink.Size.sub * multiplier)).foregroundStyle(color).lineLimit(large ? nil : 1)
                 Kit.chevron
             }
         }

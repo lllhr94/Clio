@@ -33,6 +33,7 @@ struct InkstonePage: View {
                         .glassFace(in: Circle())
                 }
                 .buttonStyle(PressStyle())
+                .accessibilityLabel("关闭交互终端")
                 Menu {
                     Section("在哪台机器上写") {
                         Button {
