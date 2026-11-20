@@ -118,10 +118,30 @@ jobs:
           if-no-files-found: error
 
       # Pictures of the main screens, to check the look without a phone.
+      - name: Publish a probe build
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="probe-$(echo '${{ github.ref_name }}' | tr '/' '-')"
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$REPO" --prerelease --title "Clio 试签包（${{ github.ref_name }}）" --notes "只用来试签，不是正式版。"
+          cp Clio-unsigned.ipa Clio-probe.ipa
+          gh release upload "$TAG" Clio-probe.ipa --repo "$REPO" --clobber
+          gh release edit "$TAG" --repo "$REPO" --notes "试签包：分支 ${{ github.ref_name }}，构建 ${{ github.sha }}。只用来试签，不是正式版。"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: App/xcodebuild.log
+          if-no-files-found: ignore
       - name: Screenshots (simulator)
         if: inputs.shots
-        # A failed picture is reported, but must not hold back the probe build.
+        # A failed picture is reported, but must not hold back the rest.
         continue-on-error: true
+        timeout-minutes: 35
         env:
           SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
@@ -263,22 +283,3 @@ jobs:
           gh release edit latest --repo "$REPO" --notes "最新构建：Clio $VERSION（${{ github.sha }}）。下载 Clio-unsigned.ipa，用签名工具签名后安装。每个版本也单独留在 v$VERSION 里。"
 
       # A probe from another branch gets its own release, so latest is never touched.
-      - name: Publish a probe build
-        if: inputs.publish && github.ref != 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          REPO="${{ github.repository }}"
-          TAG="probe-$(echo '${{ github.ref_name }}' | tr '/' '-')"
-          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 || \
-            gh release create "$TAG" --repo "$REPO" --prerelease --title "Clio 试签包（${{ github.ref_name }}）" --notes "只用来试签，不是正式版。"
-          cp Clio-unsigned.ipa Clio-probe.ipa
-          gh release upload "$TAG" Clio-probe.ipa --repo "$REPO" --clobber
-          gh release edit "$TAG" --repo "$REPO" --notes "试签包：分支 ${{ github.ref_name }}，构建 ${{ github.sha }}。只用来试签，不是正式版。"
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: xcodebuild-log
-          path: App/xcodebuild.log
-          if-no-files-found: ignore
