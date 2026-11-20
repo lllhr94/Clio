@@ -275,7 +275,6 @@ struct SettingsView: View {
                             Text(team.settings.backupModel == nil ? L.t("settings.backupModelUnset") : L.format("settings.backupModelSummary", team.modelTitle(team.settings.backupModel)))
                                 .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink)
-                                .lineLimit(1)
                             Text(L.t("settings.backupModelNote"))
                                 .font(.system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.inkFaint)
