@@ -28,9 +28,12 @@ struct PetStage: View {
     @State private var library = PetLibrary.shared
     @State private var news = PetNews.shared
     @AppStorage("pet.x") private var restX = 0.22
+    /// How far above the composer it was left, in points: dragged up, it stays up there over the conversation.
+    @AppStorage("pet.lift") private var lift = 0.0
     @Environment(\.accessibilityReduceMotion) private var calm
 
     @State private var drag: CGFloat = 0
+    @State private var dragUp: CGFloat = 0
     @State private var dragging = false
     @State private var wander: CGFloat = 0
     @State private var facingRight = false
@@ -65,6 +68,7 @@ struct PetStage: View {
             let width = proxy.size.width
             let margin = standHeight * 0.6 + Ink.Space.page
             let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), width - margin)
+            let height = min(max(CGFloat(lift) + dragUp, 0), maxLift)
             ZStack(alignment: .bottomLeading) {
                 Color.clear
                 if library.shown, library.pack != nil {
@@ -75,13 +79,13 @@ struct PetStage: View {
                         .simultaneousGesture(dragGesture(width: width, margin: margin))
                         .contextMenu { menu }
                         .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，拖动换位置，长按有菜单")
-                        .position(x: x, y: proxy.size.height - standHeight / 2)
+                        .position(x: x, y: proxy.size.height - standHeight / 2 - height)
                         .transition(.scale(scale: 0.5, anchor: .bottom).combined(with: .opacity))
                     if let bubble = news.bubble {
                         PetBubble(bubble: bubble)
                             .frame(maxWidth: width - Ink.Space.page * 2)
                             .fixedSize()
-                            .position(x: min(max(x, 120), width - 120), y: proxy.size.height - standHeight - 26)
+                            .position(x: min(max(x, 120), width - 120), y: proxy.size.height - standHeight - 26 - height)
                             .transition(.opacity.combined(with: .offset(y: 6)))
                     }
                 }
@@ -170,24 +174,38 @@ struct PetStage: View {
         }
     }
 
+    /// The highest it can be lifted: well up the conversation, below the top bar.
+    private var maxLift: CGFloat { max(0, UIScreen.main.bounds.height * 0.62) }
+
+    /// Any direction. While the finger is down it follows with no animation at all: an animation trailing each
+    /// move is what left ghost copies behind it. Where it is let go, it stays.
     private func dragGesture(width: CGFloat, margin: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 6)
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                if !dragging {
-                    dragging = true
-                    touch()
-                    Haptics.tick(0.4)
+                var still = Transaction()
+                still.disablesAnimations = true
+                withTransaction(still) {
+                    if !dragging {
+                        dragging = true
+                        touch()
+                        Haptics.tick(0.4)
+                    }
+                    drag = value.translation.width
+                    dragUp = -value.translation.height
                 }
-                drag = value.translation.width
             }
             .onEnded { value in
                 let span = max(width - margin * 2, 1)
                 let landed = margin + span * restX + wander + value.translation.width
-                withAnimation(Ink.Motion.unfold) {
+                var still = Transaction()
+                still.disablesAnimations = true
+                withTransaction(still) {
                     restX = min(max((landed - margin) / span, 0), 1)
+                    lift = Double(min(max(CGFloat(lift) - value.translation.height, 0), maxLift))
                     wander = 0
                     wanderTarget = 0
                     drag = 0
+                    dragUp = 0
                     dragging = false
                 }
                 Haptics.tick(0.6)
@@ -201,6 +219,11 @@ struct PetStage: View {
         }
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
             withAnimation(Ink.Motion.settle) { library.hideForAnHour() }
+        }
+        if lift > 0 {
+            Button("回到输入框上", systemImage: "arrow.down.to.line") {
+                withAnimation(Ink.Motion.unfold) { lift = 0 }
+            }
         }
         Button(L.t("pet.settings"), systemImage: "gearshape") { openSettings() }
     }
