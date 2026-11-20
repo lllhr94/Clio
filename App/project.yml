@@ -40,6 +40,9 @@ targets:
       - path: Den/build/rootfs/alpine
         type: folder
         buildPhase: resources
+      - path: Pets
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: ClioWidget
       - package: AgentKit

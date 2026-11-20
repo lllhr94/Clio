@@ -3,7 +3,7 @@ import Observation
 import UIKit
 import ZIPFoundation
 
-/// The pets on this phone: your figure from 形象 (drawn, or your pictures) and the packs you imported.
+/// The pets on this phone: your figure from 形象, bundled packs, and the packs you imported.
 /// What is picked, how big, quiet or not, hidden for a while: all kept here.
 @MainActor
 @Observable
@@ -54,13 +54,25 @@ final class PetLibrary {
     }
 
     func reload() {
-        let fm = FileManager.default
-        let dirs = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        packs = dirs.filter { !$0.lastPathComponent.hasPrefix(".") }.compactMap { dir in
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent("pack.json")) else { return nil }
-            return try? PetPack.parse(data, dir: dir, id: dir.lastPathComponent)
-        }.sorted { $0.name < $1.name }
+        let bundledRoot = Bundle.main.resourceURL?.appendingPathComponent("Pets", isDirectory: true)
+        let bundled = bundledRoot.map { loadPacks(in: $0, idPrefix: "builtin-") } ?? []
+        packs = (bundled + loadPacks(in: folder)).sorted { $0.name < $1.name }
         if choice != "whale", choice != "none", pack == nil { choice = "whale" }
+    }
+
+    private func loadPacks(in root: URL, idPrefix: String = "") -> [PetPack] {
+        let fm = FileManager.default
+        let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)) ?? []
+        return dirs.compactMap { dir in
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent("pack.json")) else { return nil }
+            let id = idPrefix + dir.lastPathComponent
+            guard let pack = try? PetPack.parse(data, dir: dir, id: id) else { return nil }
+            if !idPrefix.isEmpty {
+                let sheets = Set(pack.animations.values.map(\.sheet))
+                guard sheets.allSatisfy({ fm.fileExists(atPath: dir.appendingPathComponent($0).path) }) else { return nil }
+            }
+            return pack
+        }
     }
 
     /// Puts the pet away for an hour; it comes back by itself.
@@ -73,9 +85,13 @@ final class PetLibrary {
         choice = all[(at + 1) % all.count]
     }
 
+    func canDelete(_ pack: PetPack) -> Bool {
+        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent() == folder
+    }
+
     func delete(_ id: String) {
-        guard id.hasPrefix("user-") else { return }
-        try? FileManager.default.removeItem(at: folder.appendingPathComponent(id))
+        guard let pack = packs.first(where: { $0.id == id }), canDelete(pack) else { return }
+        try? FileManager.default.removeItem(at: pack.dir)
         PetSheets.forget(id)
         if choice == id { choice = "whale" }
         reload()
