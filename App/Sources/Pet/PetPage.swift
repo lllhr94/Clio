@@ -50,7 +50,7 @@ struct PetPage: View {
                         if library.size == "custom" {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
-                                    Text("标准的")
+                                    Text(L.t("pet.sizeReference"))
                                     Spacer()
                                     Text("\(Int(library.custom * 100))%").foregroundStyle(Ink.inkSoft).monospacedDigit()
                                 }
@@ -60,8 +60,8 @@ struct PetPage: View {
                     } header: { Text(L.t("pet.size")) }
 
                     Section {
-                        Toggle("站在输入框上", isOn: $library.visible)
-                        Toggle("安静模式", isOn: $library.quiet)
+                        Toggle(L.t("pet.showOnComposer"), isOn: $library.visible)
+                        Toggle(L.t("pet.quietMode"), isOn: $library.quiet)
                         if let until = library.hiddenUntil, until > Date() {
                             Button("现在就出来（藏到 \(until.formatted(date: .omitted, time: .shortened))）") {
                                 withAnimation(Ink.Motion.settle) { library.hiddenUntil = nil }

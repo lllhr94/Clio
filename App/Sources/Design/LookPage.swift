@@ -72,7 +72,7 @@ struct LookPage: View {
                         ForEach(Self.sizes.indices, id: \.self) { step in Text(Self.sizes[step].title).tag(step) }
                     }
                     .pickerStyle(.segmented)
-                } header: { Text(L.t("settings.chatTextSize")) } footer: { Text("对话里正文的大小，上面的小样跟着变。") }
+                } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settings.chatTextSizeNote")) }
                 .spot("size", lit)
 
                 Section {
@@ -84,24 +84,24 @@ struct LookPage: View {
                         ForEach(UIScale.levels.indices, id: \.self) { step in Text(UIScale.levels[step].title).tag(step) }
                     }
                     .pickerStyle(.segmented)
-                    RowLabel("textformat.size", title: "设置里的一行", line: "换一档看看，整个界面一起变", end: .valueChevron("示例"))
+                    RowLabel("textformat.size", title: L.t("settings.densitySampleTitle"), line: L.t("settings.densitySampleLine"), end: .valueChevron(L.t("settings.sample")))
                         .padding(.horizontal, -Ink.Space.l)
                         .allowsHitTesting(false)
-                } header: { Text(L.t("settings.uiDensity")) } footer: { Text("按钮、图标、列表和间距一起放大缩小，对话字号另外调。") }
+                } header: { Text(L.t("settings.uiDensity")) } footer: { Text(L.t("settings.densityNote")) }
                 .spot("ui", lit)
 
                 Section(L.t("settings.appearance")) {
                     Picker("明暗", selection: $scheme) {
-                        Text("跟随系统").tag("system")
-                        Text("纸白").tag("light")
-                        Text("夜墨").tag("dark")
+                        Text(L.t("settings.followSystem")).tag("system")
+                        Text(L.t("settings.lightAppearance")).tag("light")
+                        Text(L.t("settings.darkAppearance")).tag("dark")
                     }
                     .pickerStyle(.segmented)
                     NavigationLink {
                         FontPage()
                     } label: {
                         HStack {
-                            Text("字体")
+                            Text(L.t("settings.fonts"))
                             Spacer()
                             Text("\(Pref.face.title) · \(Pref.mark.title) · \(Pref.code == .maple ? "Maple" : "等宽")")
                                 .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft)
@@ -109,7 +109,7 @@ struct LookPage: View {
                     }
                     .spot("font", lit)
                     palettes
-                    Toggle("深色时用纯黑", isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
+                    Toggle(L.t("settings.oled"), isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
                 }
 
                 Section {
@@ -124,43 +124,43 @@ struct LookPage: View {
                 .spot("tone", lit)
 
                 Section(L.t("settings.motion")) {
-                    Toggle("触感反馈", isOn: $haptics)
-                    Toggle("回复逐字淡入", isOn: $fade)
-                    Toggle("回复下显示耗时和用量", isOn: $stats)
-                    Toggle(Words.t("行迹默认展开"), isOn: $traceOpen)
-                    Toggle("回复上留着思考过程", isOn: $showThinking)
-                    Toggle("开口前先写一段心绪", isOn: $pulseOn)
-                    Toggle("角落显示帧率", isOn: $fps)
+                    Toggle(L.t("settings.haptics"), isOn: $haptics)
+                    Toggle(L.t("settings.fadeReply"), isOn: $fade)
+                    Toggle(L.t("settings.showReplyStats"), isOn: $stats)
+                    Toggle(L.t("settings.expandSteps"), isOn: $traceOpen)
+                    Toggle(L.t("settings.keepThinking"), isOn: $showThinking)
+                    Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
+                    Toggle(L.t("settings.showFrameRate"), isOn: $fps)
                 }
                 .spot("motion", lit)
 
                 Section {
-                    Toggle("用面容锁住 Clio", isOn: $faceLock)
+                    Toggle(L.t("settings.faceLock"), isOn: $faceLock)
                 } header: { Text(L.t("settings.appLock")) } footer: {
-                    Text("切到后台再回来时要先过面容（或密码）。手机没设密码时不会锁。")
+                    Text(L.t("settings.faceLockNote"))
                 }
                 .spot("lock", lit)
 
                 Section {
-                    Toggle("聊久了自动压缩前文", isOn: $autoCompress)
+                    Toggle(L.t("settings.autoCompress"), isOn: $autoCompress)
                     if autoCompress {
                         Stepper("超过 \(compressAt / 1000) 千字时压缩", value: $compressAt, in: 20_000...300_000, step: 10_000)
                     }
                     Stepper("压缩后留最近 \(keepRecent) 条原文", value: $keepRecent, in: 4...40, step: 2)
                 } header: { Text(L.t("settings.contextCompaction")) } footer: {
-                    Text(Words.t("较早的话写成提要，原文留在絮语页"))
+                    Text(L.t("settings.autoCompressNote"))
                 }
                 .spot("compress", lit)
 
                 Section {
                     Stepper("每次带上最近 \(contextChars / 1000) 千字", value: $contextChars, in: 8_000...400_000, step: 8_000)
                     Stepper(contextCount == 0 ? "条数不限" : "最多带 \(contextCount) 条", value: $contextCount, in: 0...200, step: 10)
-                    Toggle("自己定温度", isOn: Binding(get: { temperature >= 0 }, set: { temperature = $0 ? 0.7 : -1 }))
+                    Toggle(L.t("settings.customTemperature"), isOn: Binding(get: { temperature >= 0 }, set: { temperature = $0 ? 0.7 : -1 }))
                     if temperature >= 0 {
                         LabeledSlider(title: "温度", value: $temperature, range: 0...2, step: 0.1) { String(format: "%.1f", $0) }
                     }
                     Picker("最长回复", selection: $maxOutput) {
-                        Text("模型默认").tag(0)
+                        Text(L.t("settings.modelDefault")).tag(0)
                         Text("2 千").tag(2048)
                         Text("4 千").tag(4096)
                         Text("8 千").tag(8192)
@@ -168,39 +168,39 @@ struct LookPage: View {
                         Text("3.2 万").tag(32768)
                     }
                 } header: { Text(L.t("settings.modelContext")) } footer: {
-                    Text("带得多记得多，也更慢更费")
+                    Text(L.t("settings.contextLimitNote"))
                 }
                 .spot("context", lit)
 
                 Section {
-                    Toggle(Words.t("每天一封晨信"), isOn: $morningOn)
+                    Toggle(L.t("settings.dailyBrief"), isOn: $morningOn)
                     if morningOn {
                         Stepper("\(morningHour) 点以后第一次打开时写", value: $morningHour, in: 5...11)
                     }
                 } header: { Text(L.t("agent.morningBrief")) } footer: {
-                    Text("看看日程、提醒和天气，写一封便笺")
+                    Text(L.t("settings.dailyBriefNote"))
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
                 .spot("morning", lit)
 
                 Section {
-                    Toggle("晚上写日记", isOn: $diaryOn)
+                    Toggle(L.t("settings.eveningDiary"), isOn: $diaryOn)
                 } header: { Text(L.t("settings.companionRoutine")) } footer: {
-                    Text(Words.t("晚上离开时，旅伴各写一页日记"))
+                    Text(L.t("settings.eveningDiaryNote"))
                 }
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
 
                 Section {
-                    Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
-                    Toggle(Words.t("锁屏和灵动岛显示旅伴在做什么"), isOn: $liveOn)
-                    Toggle(Words.t("切走后让旅伴接着做一会儿"), isOn: $bgContinue)
+                    Toggle(L.t("settings.notifyBackground"), isOn: $notifyDone)
+                    Toggle(L.t("settings.liveProgress"), isOn: $liveOn)
+                    Toggle(L.t("settings.backgroundContinue"), isOn: $bgContinue)
                 } header: { Text(L.t("settings.background")) } footer: {
-                    Text("干活时在锁屏和灵动岛显示进度。切走后系统会给一张进度卡，可以在那里叫停；系统忙时可能不给。")
+                    Text(L.t("settings.backgroundProgressNote"))
                 }
                 .spot("notify", lit)
 
                 Section {
-                    Button("全部恢复默认", role: .destructive) { reset() }
+                    Button(L.t("actions.resetDefaults"), role: .destructive) { reset() }
                 }
             }
             }
@@ -224,7 +224,7 @@ struct LookPage: View {
     /// 主色: the accent everything is drawn with.
     private var palettes: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Text("主色")
+            Text(L.t("settings.accentColor"))
             HStack(spacing: 0) {
                 ForEach(Ink.palettes) { palette in
                     let picked = Theme.shared.key == palette.key

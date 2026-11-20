@@ -19,7 +19,7 @@ struct FormSheet: View {
                         HStack(spacing: Ink.Space.m) {
                             PetStill(size: 44, state: "notification", avatar: true)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("\(form.from)递来一张笺").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                Text(L.format("forms.sender", form.from)).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 Text(form.title).font(Ink.mark(22, bold: true, relativeTo: .title2)).foregroundStyle(Ink.ink)
                             }
                         }
@@ -34,7 +34,7 @@ struct FormSheet: View {
                         }
                         .paperCard()
                         if form.fields.contains(where: \.secret) {
-                            Label(Words.t("机密的项存进信匣，旅伴只拿到编号，看不到内容。"), systemImage: "lock.shield")
+                            Label(L.t("forms.secretNote"), systemImage: "lock.shield")
                                 .font(Ink.footnote)
                                 .foregroundStyle(Ink.inkFaint)
                         }
@@ -47,13 +47,13 @@ struct FormSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("不填") {
+                    Button(L.t("actions.cancel")) {
                         Haptics.light()
                         Asker.shared.cancel()
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("递回去") { send() }.fontWeight(.semibold)
+                    Button(L.t("actions.submitForm")) { send() }.fontWeight(.semibold)
                 }
             }
         }
@@ -82,10 +82,10 @@ struct FormSheet: View {
                             }
                         }
                         if picked[field.key] != nil {
-                            Button("自己填", systemImage: "keyboard") { picked[field.key] = nil }
+                            Button(L.t("actions.enterManually"), systemImage: "keyboard") { picked[field.key] = nil }
                         }
                     } label: {
-                        Label(Words.t("从信匣取"), systemImage: "lock.rectangle.stack").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.accent)
+                        Label(L.t("actions.pickSecret"), systemImage: "lock.rectangle.stack").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.accent)
                     }
                 }
             }
@@ -98,7 +98,7 @@ struct FormSheet: View {
                 if let item = picked[field.key] {
                     HStack {
                         Image(systemName: item.kind.symbol).foregroundStyle(Ink.accent)
-                        Text(Words.t("用信匣里的「\(item.title)」")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                        Text(L.format("forms.usePickedSecret", item.title)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                         Spacer()
                     }
                     .frame(height: 30)

@@ -25,19 +25,19 @@ struct CarePage: View {
             Form {
                 PaperRows {
                 Section {
-                    Toggle("连模型密钥一起备份", isOn: $withKeys)
-                    Button(making ? L.t("loading.preparingBackup") : "做一份备份") { make() }.disabled(making)
+                    Toggle(L.t("settings.backupIncludesKeys"), isOn: $withKeys)
+                    Button(making ? L.t("loading.preparingBackup") : L.t("actions.createBackup")) { make() }.disabled(making)
                     if let made {
                         ShareLink(item: made) { Label("存到「文件」或发出去", systemImage: "square.and.arrow.up") }
                     }
-                    Button("从备份恢复") { restoring = true }
+                    Button(L.t("actions.restoreBackup")) { restoring = true }
                 } header: { Text(L.t("settings.backup")) } footer: {
-                    Text(Words.t("不含信匣和远山的密码"))
+                    Text(L.t("settings.backupPrivacy"))
                 }
 
                 Section {
                     if team.archived.isEmpty {
-                        Text(Words.t("没有归档的絮语")).foregroundStyle(Ink.inkSoft)
+                        Text(L.t("empty.archivedChats")).foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(team.archived.sorted(), id: \.self) { key in
                             HStack {
@@ -48,7 +48,7 @@ struct CarePage: View {
                                     }
                                 }
                                 Spacer()
-                                Button("拿回来") {
+                                Button(L.t("actions.restore")) {
                                     withAnimation(Ink.Motion.settle) { team.archive(key, false) }
                                     Haptics.tick(0.6)
                                 }
@@ -57,7 +57,7 @@ struct CarePage: View {
                         }
                     }
                 } header: { Text(L.t("settings.archivedConversations")) } footer: {
-                    Text(Words.t("拿回来后回到案头"))
+                    Text(L.t("settings.archivedRestoreNote"))
                 }
 
                 Section {
@@ -74,22 +74,22 @@ struct CarePage: View {
                     ForEach(team.settings.endpoints) { endpoint in
                         row(endpoint.name, probes[endpoint.id] ?? "未测")
                     }
-                    Button(probing ? L.t("loading.testingModels") : "试一试模型连不连得上") { probe() }.disabled(probing || team.settings.endpoints.isEmpty)
+                    Button(probing ? L.t("loading.testingModels") : L.t("actions.testProviderConnections")) { probe() }.disabled(probing || team.settings.endpoints.isEmpty)
                 } header: { Text(L.t("settings.modelConnectivity")) }
 
                 Section {
                     if Diag.log.isEmpty {
-                        Text("最近没有出错。").foregroundStyle(Ink.inkSoft)
+                        Text(L.t("settings.noRecentErrors")).foregroundStyle(Ink.inkSoft)
                     } else {
                         ForEach(Array(Diag.log.reversed().prefix(20).enumerated()), id: \.offset) { _, line in
                             Text(line).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                         }
-                        Button("清空记录", role: .destructive) { Diag.clear(); notice = "清空了。" }
+                        Button(L.t("actions.clearLogs"), role: .destructive) { Diag.clear(); notice = "清空了。" }
                     }
                 } header: { Text(L.t("settings.recentErrors")) }
 
                 Section {
-                    Toggle("掉帧记录仪", isOn: $recordingHitches)
+                    Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
                     if hitches.recent.isEmpty {
                         Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
                     } else {
@@ -107,7 +107,7 @@ struct CarePage: View {
                         }
                     }
                 } header: { Text(L.t("settings.frameDrops")) } footer: {
-                    Text("记下每次卡顿和当时在做什么，开着耗电")
+                    Text(L.t("settings.recordHitchesNote"))
                 }
 
                 Section {
@@ -116,7 +116,7 @@ struct CarePage: View {
                         copied = true
                         Haptics.tick(0.6)
                     }
-                } footer: { Text("不包含密钥、密码和聊天内容。") }
+                } footer: { Text(L.t("settings.diagnosticsPrivacy")) }
             }
             }
             .paperForm()
@@ -136,10 +136,10 @@ struct CarePage: View {
             }
             .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
                 if restored {
-                    Button("现在关掉 Clio") { exit(0) }
-                    Button("等会儿", role: .cancel) {}
+                    Button(L.t("actions.quitApp")) { exit(0) }
+                    Button(L.t("actions.cancel"), role: .cancel) {}
                 } else {
-                    Button("好", role: .cancel) {}
+                    Button(L.t("actions.done"), role: .cancel) {}
                 }
             }
         }

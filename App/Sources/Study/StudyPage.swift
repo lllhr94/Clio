@@ -47,7 +47,7 @@ struct StudyFolder: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     if top {
-                        Text(Words.t("「文件」App › 我的 iPhone › Clio › 书案"))
+                        Text(L.t("files.localPath"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                     }
@@ -67,8 +67,8 @@ struct StudyFolder: View {
                                 NavigationLink(value: item) { row(item) }
                                     .buttonStyle(PressStyle())
                                     .contextMenu {
-                                        if !item.folder { ShareLink(item: item.url) { Label("分享", systemImage: "square.and.arrow.up") } }
-                                        Button("删掉", systemImage: "trash", role: .destructive) { deleting = item }
+                                        if !item.folder { ShareLink(item: item.url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") } }
+                                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
                                     }
                                 if item.id != items.last?.id { Kit.divider }
                             }
@@ -91,12 +91,12 @@ struct StudyFolder: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("从「文件」导入", systemImage: "square.and.arrow.down") { importing = true }
-                    Button("新建文件夹", systemImage: "folder.badge.plus") { newFolder = ""; naming = true }
+                    Button(L.t("actions.importFromFiles"), systemImage: "square.and.arrow.down") { importing = true }
+                    Button(L.t("actions.newFolder"), systemImage: "folder.badge.plus") { newFolder = ""; naming = true }
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("导入文件或新建文件夹")
+                .accessibilityLabel(L.t("actions.addFilesOrFolder"))
             }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -117,20 +117,20 @@ struct StudyFolder: View {
             Haptics.thud()
             withAnimation(Ink.Motion.settle) { load() }
         }
-        .alert("新建文件夹", isPresented: $naming) {
-            TextField("名字", text: $newFolder)
-            Button("建") {
+        .alert(L.t("actions.newFolder"), isPresented: $naming) {
+            TextField(L.t("files.folderName"), text: $newFolder)
+            Button(L.t("actions.create")) {
                 let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
                 guard !name.isEmpty else { return }
                 try? FileManager.default.createDirectory(at: folder.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
                 withAnimation(Ink.Motion.settle) { load() }
             }
-            Button("算了", role: .cancel) {}
+            Button(L.t("actions.cancel"), role: .cancel) {}
         }
         .onAppear(perform: load)
         .refreshable { load() }
-        .confirmationDialog("删掉「\(deleting?.url.lastPathComponent ?? "")」？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            Button("删掉", role: .destructive) {
+        .confirmationDialog(L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            Button(L.t("actions.delete"), role: .destructive) {
                 if let item = deleting {
                     try? FileManager.default.removeItem(at: item.url)
                     Haptics.lock()
@@ -138,7 +138,7 @@ struct StudyFolder: View {
                 }
                 deleting = nil
             }
-            Button("留着", role: .cancel) { deleting = nil }
+            Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
         }
     }
 
@@ -227,7 +227,7 @@ struct StudyFile: View {
                 if QLPreviewController.canPreview(url as NSURL) {
                     QuickPreview(url: url).ignoresSafeArea(edges: .bottom)
                 } else {
-                    Text("预览不了，可以分享到别的 App")
+                    Text(L.t("files.previewUnavailable"))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .padding(Ink.Space.page)
@@ -239,7 +239,7 @@ struct StudyFile: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if (markdown || table) && text != nil {
-                    Button(plain ? (table ? "表格" : "排版") : "原文") { plain.toggle() }
+                    Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
                 ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
             }

@@ -89,9 +89,9 @@ struct SettingsView: View {
                 if let editingMemory { team.editMemory(editingMemory.id, memoryText) }
                 editingMemory = nil
             }
-            Button("算了", role: .cancel) { editingMemory = nil }
+            Button(L.t("actions.cancel"), role: .cancel) { editingMemory = nil }
         } message: {
-            Text("改空就是忘掉。")
+            Text(L.t("settings.clearMemoryNote"))
         }
     }
 
@@ -137,7 +137,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var searchResults: some View {
         if found.isEmpty {
-            Text("没找到「\(query)」。换个说法试试，比如「密钥」「字号」「通知」。")
+            Text(L.format("settings.searchNothing", query))
                 .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -189,8 +189,8 @@ struct SettingsView: View {
 
     private var demoCard: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
-            Text("现在是演示数据").font(Ink.secondary).foregroundStyle(Ink.ink)
-            Button("退出演示，去接模型") {
+            Text(L.t("settings.demoData")).font(Ink.secondary).foregroundStyle(Ink.ink)
+            Button(L.t("settings.exitDemoSetup")) {
                 dismiss()
                 onLeaveDemo()
             }
@@ -219,7 +219,7 @@ struct SettingsView: View {
                     Haptics.light()
                     adding = true
                 } label: {
-                    RowLabel(title: "添一家服务", end: .none) { IconBadge(symbol: "plus") }
+                    RowLabel(title: L.t("settings.addService"), end: .none) { IconBadge(symbol: "plus") }
                 }
                 .buttonStyle(PressStyle(haptic: false))
             }
@@ -262,7 +262,7 @@ struct SettingsView: View {
                         Haptics.tick(0.6)
                         team.setBackupModel(nil)
                     } label: {
-                        if team.settings.backupModel == nil { Label("不用备用", systemImage: "checkmark") } else { Text("不用备用") }
+                        if team.settings.backupModel == nil { Label(L.t("settings.noBackupModel"), systemImage: "checkmark") } else { Text(L.t("settings.noBackupModel")) }
                     }
                     ModelChoices(team: team, current: team.settings.backupModel) { ref in
                         Haptics.tick(0.6)
@@ -272,11 +272,11 @@ struct SettingsView: View {
                     HStack {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(team.settings.backupModel == nil ? "备用模型：没设" : "备用模型：\(team.modelTitle(team.settings.backupModel))")
+                            Text(team.settings.backupModel == nil ? L.t("settings.backupModelUnset") : L.format("settings.backupModelSummary", team.modelTitle(team.settings.backupModel)))
                                 .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(1)
-                            Text("主模型出错时换它接着答，会在对话里说一声。")
+                            Text(L.t("settings.backupModelNote"))
                                 .font(.system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.inkFaint)
                         }
@@ -291,14 +291,14 @@ struct SettingsView: View {
 
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading(L.t("nav.memory"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
+            heading(L.t("nav.memory"), L.format("settings.memoryCounts", team.surfaceMemories.count, team.deepMemories.count))
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
-                    TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
+                    TextField(L.t("settings.memoryPlaceholder"), text: $memoryDraft)
                         .font(.system(size: Ink.Size.sub))
                         .submitLabel(.done)
                         .onSubmit(addMemory)
-                    Button("记下", action: addMemory)
+                    Button(L.t("actions.save"), action: addMemory)
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .disabled(memoryDraft.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -312,7 +312,7 @@ struct SettingsView: View {
                             .foregroundStyle(item.deep == true ? Ink.inkSoft : Ink.ink)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if item.deep == true {
-                            Text(Words.t("旧事")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
+                            Text(L.t("organize.earlier")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Ink.rule.opacity(0.6), in: .capsule)
                         }
@@ -325,21 +325,21 @@ struct SettingsView: View {
                         editingMemory = item
                     }
                     .contextMenu {
-                        Button("改一改", systemImage: "pencil") {
+                        Button(L.t("actions.edit"), systemImage: "pencil") {
                             memoryText = item.text
                             editingMemory = item
                         }
                         if item.deep == true {
-                            Button(Words.t("常记在心"), systemImage: "pin") { withAnimation(.smooth) { team.setDeep(item.id, false) } }
+                            Button(L.t("actions.pinMemory"), systemImage: "pin") { withAnimation(.smooth) { team.setDeep(item.id, false) } }
                         } else {
-                            Button(Words.t("收进旧事"), systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(item.id, true) } }
+                            Button(L.t("actions.archiveMemory"), systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(item.id, true) } }
                         }
-                        Button("忘掉", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { team.deleteMemory(item.id) } }
+                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { withAnimation(.smooth) { team.deleteMemory(item.id) } }
                     }
                 }
             }
             .paperCard()
-            Text(team.memories.isEmpty ? Words.t("聊天时说起你自己的事，旅伴会记下来。也可以在上面自己记。") : Words.t("点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。"))
+            Text(team.memories.isEmpty ? L.t("settings.memoryEmptyNote") : Words.t("点一条可以改，长按可以挪进旧事或忘掉。超过 \(TeamModel.surfaceLimit) 件常记时，最久没提起的会自动沉下去。"))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
         }
     }
