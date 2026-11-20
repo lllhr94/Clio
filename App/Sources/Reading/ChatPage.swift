@@ -754,9 +754,18 @@ struct ChatPage: View {
                 say(Words.t("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。"))
             }
         } label: {
-            chip("sparkle", shortName(current) + (level == .auto ? "" : " · \(level.title)"), lit: own != nil || level != .auto)
+            // Just the service's icon; the name is in the menu. A dot when this conversation has its own model or depth.
+            let found = team.resolve(current)
+            ZStack(alignment: .topTrailing) {
+                ServiceIcon(service: found.flatMap { Service.of($0.endpoint) }, size: 20)
+                    .frame(width: 32, height: 32)
+                if own != nil || level != .auto {
+                    Circle().fill(Ink.accent).frame(width: 7, height: 7).offset(x: -3, y: 4)
+                }
+            }
+            .contentShape(Rectangle())
         }
-        .accessibilityLabel("模型：\(shortName(current))")
+        .accessibilityLabel("模型：\(shortName(current))\(level == .auto ? "" : "，思考\(level.title)")")
     }
 
     /// How hard the model thinks in this conversation: on its own in a gathering, inside the model menu otherwise.
@@ -765,7 +774,7 @@ struct ChatPage: View {
         return Menu {
             thinkingChoices
         } label: {
-            chip(level == .auto ? "brain" : level.symbol, level == .auto ? "思考" : level.title, lit: level != .auto)
+            chip(level == .auto ? "brain" : level.symbol, nil, lit: level != .auto)
         }
         .accessibilityLabel("思考强度：\(level.title)")
     }
@@ -814,7 +823,7 @@ struct ChatPage: View {
                 Section { Text(Words.t("在设置 › 远山 添一台主机，这里就能选它。")) }
             }
         } label: {
-            chip(current.symbol, current == .desk ? Words.t("书案") : current.title, lit: current != .desk)
+            chip(current.symbol, nil, lit: current != .desk)
         }
         .accessibilityLabel("工作地点：\(current.title)")
     }
@@ -1563,6 +1572,14 @@ struct ChatPage: View {
                         .onChange(of: draft) { old, new in keepLongPaste(old, new) }
                         .padding(.vertical, 6)
                         .frame(minHeight: 34)
+                    // While writing: what it goes out with, as small icons in the same row, not a row of their own.
+                    if composing {
+                        HStack(spacing: 2) {
+                            if isRoom { thinkChip } else { modelChip }
+                            if team.place(of: chat.key) != .desk { placeChip }
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    }
                     Button {
                         Haptics.light()
                         typing = false
@@ -1573,17 +1590,6 @@ struct ChatPage: View {
                     .buttonStyle(TapStyle())
                     .accessibilityLabel("用量：下次请求约占上下文的 \(UsageSheet.percent(context?.share ?? 0))")
                     action
-                }
-                // While writing: what this message goes out with. Web, where the work happens, abilities, model.
-                if composing {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: Ink.Space.s) {
-                            if isRoom { thinkChip } else { modelChip }
-                            if team.place(of: chat.key) != .desk { placeChip }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
             .animation(Ink.Motion.settle, value: composing)
