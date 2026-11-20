@@ -120,6 +120,8 @@ jobs:
       # Pictures of the main screens, to check the look without a phone.
       - name: Screenshots (simulator)
         if: inputs.shots
+        # A failed picture is reported, but must not hold back the probe build.
+        continue-on-error: true
         env:
           SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
