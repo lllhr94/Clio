@@ -118,17 +118,18 @@
   },
   "empty": {
     "home": "窗前清净，新纸已铺，随时落笔。",
-    "conversationHistory": "暂无往语，待你起第一句。",
+    "conversationHistory": "絮语录还空着，等你起第一句。",
     "memory": "尚未拾遗，相处久了自然留痕。",
     "files": "书案还空着，旅伴写下的东西会放在这里。",
     "pendingApprovals": "眼下没有要你落款的事。",
-    "searchNoResult": "寻访无果，不妨换个词再探。",
+    "searchNoResult": "寻访无果，换个词再找找。",
     "tasks": "今日无课，难得清闲。",
     "scheduledJobs": "尚未设漏，暂无定时差遣。",
-    "favorites": "尚未集珍，合心意的随手收下。",
+    "favorites": "集珍尚空，合心意的随手收下。",
     "remoteHosts": "别馆未连，添一台主机便可往来。",
     "connectors": "港湾空着，接上常用的服务便可停靠。",
-    "diary": "尚无新篇。"
+    "diary": "尚无新篇。",
+    "groupChat": "雅集尚未开席，邀几位旅伴一起聊聊。"
   },
   "loading": {
     "generic": "正在展卷…",
@@ -144,23 +145,26 @@
     "connectingRemoteHost": "正在连别馆…",
     "compactingContext": "正在收卷…",
     "listeningVoice": "正在细听…",
-    "viewingImage": "正在端详来图…"
+    "viewingImage": "正在端详来图…",
+    "writing": "正在落笔…",
+    "approval": "此事待签，你落款后再动手。"
   },
   "errors": {
     "offline": "网路不通，查一下网络再试。",
     "timeout": "久候未复，不妨再试一回。",
     "serverError": "笔庄暂歇，未能应答，稍后再试或另择一家。",
-    "insufficientQuota": "笔庄的额度用尽了，添墨后再续。",
+    "insufficientQuota": "墨量已尽，去笔庄添些墨再续。",
     "invalidApiKey": "笔庄的凭证似有差池，核对后再试。",
     "rateLimited": "落笔过急，稍候再试。",
     "contextOverflow": "文脉过长，请先收卷，或另起一叶。",
-    "permissionDenied": "尚未获此应许，先到调弦里放行。",
+    "permissionDenied": "尚未获此应许，先去打开吧。",
     "skillFailed": "此番锦囊未能奏效，已停手待命。",
     "connectorDisconnected": "港湾暂阻，外面的服务未能接洽。",
     "remoteHostUnreachable": "与别馆失联，检查主机和网络。",
-    "attachmentUnsupported": "这份夹页过厚，或格式还认不得。",
+    "attachmentUnsupported": "这份夹页认不得，换个常见格式试试。",
     "unknown": "偶遇阻滞，展开可察详因。",
-    "cannotUndo": "删除后无法恢复。"
+    "cannotUndo": "删除后无法恢复。",
+    "generation": "笔锋一顿，没能写完，再来一次吧。"
   },
   "onboarding": {
     "page1": {

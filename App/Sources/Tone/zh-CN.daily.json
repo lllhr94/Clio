@@ -117,18 +117,19 @@
     "settings": "宠物设置"
   },
   "empty": {
-    "home": "随时可以开始新对话。",
-    "conversationHistory": "还没有对话，说第一句吧。",
+    "home": "今天想聊点什么？随时告诉我。",
+    "conversationHistory": "还没有对话，发出第一条消息试试。",
     "memory": "记忆还是空的，聊得多了会慢慢记下。",
     "files": "文件还空着，助手写下的东西会放在这里。",
     "pendingApprovals": "眼下没有要你批准的事。",
-    "searchNoResult": "没找到，换个说法试试。",
+    "searchNoResult": "没找到相关内容，换个关键词试试。",
     "tasks": "今天没有计划。",
     "scheduledJobs": "还没有定时任务。",
-    "favorites": "收藏册还是空的，喜欢的东西随手收下。",
+    "favorites": "看到喜欢的，可以收藏到这里。",
     "remoteHosts": "还没有远程主机，添一台就能用。",
     "connectors": "还没连接器，连上常用的服务，助手就能替你用。",
-    "diary": "还没有日记。"
+    "diary": "还没有日记。",
+    "groupChat": "还没有群聊，拉几位助手一起聊吧。"
   },
   "loading": {
     "generic": "正在加载…",
@@ -144,23 +145,26 @@
     "connectingRemoteHost": "正在连远程主机…",
     "compactingContext": "正在压缩前文…",
     "listeningVoice": "正在听…",
-    "viewingImage": "正在看图…"
+    "viewingImage": "正在看图…",
+    "writing": "正在整理内容…",
+    "approval": "需要你确认才能继续。"
   },
   "errors": {
-    "offline": "网络断了，检查一下再试。",
+    "offline": "网络好像断了，检查连接后再试。",
     "timeout": "等太久没有回音，再试一次。",
     "serverError": "模型服务暂时没回应，稍后再试，或换一家。",
-    "insufficientQuota": "模型服务的额度用完了，充值或换一家再试。",
+    "insufficientQuota": "额度用完了，充值后再继续。",
     "invalidApiKey": "模型服务的密钥无效或已过期，核对一下再试。",
     "rateLimited": "请求太快了，稍等一下再试。",
     "contextOverflow": "前文太长了，先压缩前文，或开个新对话。",
-    "permissionDenied": "还没开这项权限，先到设置里打开。",
+    "permissionDenied": "要先打开这项权限才能用。",
     "skillFailed": "技能没能完成，已经停下。",
     "connectorDisconnected": "连接器断开了，连不上外面的服务。",
     "remoteHostUnreachable": "连不上远程主机，检查主机和网络。",
-    "attachmentUnsupported": "这个附件太大，或格式还不支持。",
+    "attachmentUnsupported": "读不了这个文件，换个常见格式试试。",
     "unknown": "出了点意外，展开看详情。",
-    "cannotUndo": "删除后无法恢复。"
+    "cannotUndo": "删除后无法恢复。",
+    "generation": "出了点小问题，内容没能写完。"
   },
   "onboarding": {
     "page1": {
