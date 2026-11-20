@@ -56,4 +56,6 @@
 
 ## C7 宠物预览
 
-`design/incoming/pet/roubao/` 已有 idle 和 thinking 各三帧。`design/incoming/pet/copper-heroine/` 新增与 App 图标一致的红发少女，已有闲坐和思考各三帧。两只角色等主人确认方向。C9 的四张引导图与 C5 的头像和插画接入都等第一只角色定稿。
+- 肉包方向已确认。已清理闲坐与思考的轮廓及杂点，补完五个必做状态，并提交睡醒、左右轻戳、挠痒、拎起、走路和整理帽子的预览。等主人确认总预览后，用 `tools/make_pet_pack.py` 放进 `App/Pets/roubao/`，署名「lllhr94」、授权「仅限 Clio 使用」，再跑一次 `shots=false` 的编译。
+- 红发少女的旧缩图改为直接在 48×48 像素格绘制。先看闲坐、思考两组。
+- C9 引导图和 C5 头像接入等首只宠物定稿。
