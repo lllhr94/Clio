@@ -222,7 +222,7 @@ struct PetStage: View {
 
     @ViewBuilder
     private var menu: some View {
-        if packs.count > 1 {
+        if library.packs.count > 1 {
             Button(L.t("pet.change"), systemImage: "arrow.triangle.2.circlepath") { library.next() }
         }
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
