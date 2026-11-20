@@ -24,6 +24,7 @@ struct SetupView: View {
     @State private var connected: Endpoint?
     /// The service's model list, fetched as soon as there is a key: models are picked before anything is saved.
     @State private var fetched: [String]?
+    @State private var fetchedImageModels: [String]?
     @State private var picked: Set<String> = []
     @State private var fetching = false
     @State private var fetchNote: String?
@@ -301,15 +302,17 @@ struct SetupView: View {
 
     private func fetchModels() async {
         let secret = self.secret
-        guard secret.count >= 8 || choice.keyless, address.hasPrefix("http") else { fetched = nil; fetchNote = nil; return }
+        guard secret.count >= 8 || choice.keyless, address.hasPrefix("http") else { fetched = nil; fetchedImageModels = nil; fetchNote = nil; return }
         try? await Task.sleep(nanoseconds: 700_000_000)
         guard !Task.isCancelled else { return }
         fetching = true
         fetchNote = nil
         let probe = Endpoint(id: "probe", name: choice.name, kind: choice.kind, baseURL: address, models: [], service: custom ? nil : choice.id)
         do {
-            let listed = TeamModel.keep(try await probe.provider(key: secret).models(), for: probe)
+            let raw = try await probe.provider(key: secret).models()
+            let listed = TeamModel.keep(raw, for: probe)
             guard !Task.isCancelled else { return }
+            fetchedImageModels = probe.kind == .openai ? raw : nil
             if listed.isEmpty {
                 fetched = nil
                 fetchNote = "连上了，但它没给模型列表，下面填个模型名就行"
@@ -320,6 +323,7 @@ struct SetupView: View {
         } catch {
             guard !Task.isCancelled else { return }
             fetched = nil
+            fetchedImageModels = nil
             let advice = Explain.model(error, service: choice.name)
             fetchNote = "拿不到模型列表：\(advice.displayTitle)\n也可以直接填模型名。"
         }
@@ -502,6 +506,7 @@ struct SetupView: View {
         // The list is already here and models are picked: nothing more to ask the service.
         if let fetched, !picked.isEmpty {
             endpoint.listed = fetched
+            endpoint.imageModels = fetchedImageModels
             var models = fetched.filter(picked.contains)
             if !typed.isEmpty, !models.contains(typed) { models.insert(typed, at: 0) }
             endpoint.models = models
@@ -510,7 +515,9 @@ struct SetupView: View {
         }
         Task {
             do {
-                let listed = TeamModel.keep(try await endpoint.provider(key: secret).models(), for: endpoint)
+                let raw = try await endpoint.provider(key: secret).models()
+                let listed = TeamModel.keep(raw, for: endpoint)
+                if endpoint.kind == .openai { endpoint.imageModels = raw }
                 var models = TeamModel.firstPicks(listed, service: service)
                 if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
                 guard !models.isEmpty else { throw TeamError(message: "连上了，但没找到能聊天的模型。请填上模型名再试。") }

@@ -89,6 +89,8 @@ struct Endpoint: Codable, Identifiable, Equatable {
     var models: [String]
     /// Everything the service listed last time, in use or not.
     var listed: [String]?
+    /// The original service catalog for the image picker, separate from the filtered chat list.
+    var imageModels: [String]?
     /// What the user set right about a model; the rest is guessed from its name.
     var overrides: [String: ModelTraits]?
     /// How to ask it for thinking; nil: as its service does.
@@ -120,6 +122,11 @@ struct Endpoint: Codable, Identifiable, Equatable {
     /// Every model it knows of: in use first, then the rest of the list.
     var allModels: [String] { models + (listed ?? []).filter { !models.contains($0) } }
 
+    static func looksLikeImageModel(_ model: String) -> Bool {
+        let name = model.lowercased()
+        return ["image", "dall-e", "flux", "seedream", "imagen"].contains { name.contains($0) }
+    }
+
     func provider(key: String) -> ModelProvider {
         switch kind {
         case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle)
@@ -134,6 +141,8 @@ struct TeamSettings: Codable, Equatable {
     var defaultModel: String?
     /// Tried once when the chosen model fails before a turn is done. `endpointId/modelId`.
     var backupModel: String?
+    /// Optional OpenAI-compatible images model, using the existing endpoint/model reference.
+    var imageModel: String?
     var mainBotId: String?
 }
 

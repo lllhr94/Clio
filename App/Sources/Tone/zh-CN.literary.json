@@ -84,6 +84,17 @@
     "newProfileCard": "写一张新名帖"
   },
   "settings": {
+    "imageModel": "生图模型",
+    "imageModelNone": "不使用生图模型",
+    "imageModelNote": "选一个支持 OpenAI 兼容生图接口的模型。选好后，旅伴就能用它画图。未设置时不会发出生图请求。",
+    "imageModelAvailable": "可选模型",
+    "imageModelManual": "手填模型",
+    "imageModelPlaceholder": "模型名称",
+    "imageModelSearch": "搜索模型或服务",
+    "imageModelNoService": "先添加一家支持 OpenAI 兼容接口的模型服务。",
+    "refreshImageModels": "刷新模型列表",
+    "imageModelsRefreshed": "模型列表已刷新。",
+    "imageGenerate": "生成图片",
     "permissions": "应许",
     "vault": "密匣",
     "faceLock": "封缄",
@@ -354,6 +365,14 @@
     "testingModel": "正在测试…"
   },
   "errors": {
+    "imagePromptEmpty": "请先说明想画什么。",
+    "imageTimeout": "生图超时了，请稍后再试。",
+    "imageConnection": "连不上生图服务，检查网络或服务地址后再试。",
+    "imageEndpoint": "生图服务的地址不正确，请到模型服务里检查。",
+    "imageResponse": "生图服务没有返回可用的图片，请检查所选模型是否支持生图。",
+    "imageRejected": "这次的描述被生图服务拒绝了，可以修改描述后再试。",
+    "imageSave": "图片生成了，但没能保存到手机。",
+    "imageModelList": "没能刷新模型列表，检查服务地址和密钥，或手填模型名。",
     "offline": "网路不通，查一下网络再试。",
     "timeout": "久候未复，不妨再试一回。",
     "serverError": "笔庄暂歇，未能应答，稍后再试或另择一家。",

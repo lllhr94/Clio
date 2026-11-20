@@ -228,6 +228,15 @@ struct SettingsView: View {
                     RowLabel(title: L.t("settings.addService"), end: .none) { IconBadge(symbol: "plus") }
                 }
                 .buttonStyle(PressStyle(haptic: false))
+                Kit.divider
+                NavigationLink {
+                    ImageModelPage(team: team)
+                } label: {
+                    let current = team.imageModelSelection.map { "\($0.model) · \($0.endpoint.name)" }
+                    RowLabel("photo.badge.plus", tint: Tint.ai, title: L.t("settings.imageModel"),
+                             line: current ?? L.t("settings.imageModelNone"))
+                }
+                .buttonStyle(PressStyle(haptic: false))
             }
             .paperCard()
         }
