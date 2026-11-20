@@ -236,7 +236,7 @@ struct SettingsView: View {
         let host = URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL
         var line = "\(host) · 在用 \(endpoint.models.count) 个"
         if !endpoint.models.isEmpty { line += seeing == 0 ? " · 都不看图" : seeing == endpoint.models.count ? " · 都能看图" : " · \(seeing) 个能看图" }
-        return RowLabel(title: endpoint.name, line: line) { ServiceIcon(service: Service.of(endpoint), size: Kit.badge) }
+        return RowLabel(title: endpoint.name, line: line) { ServiceIcon(service: Service.of(endpoint), size: Kit.badge, name: endpoint.name) }
     }
 
     @ViewBuilder
@@ -355,7 +355,7 @@ struct SettingsView: View {
                 ServicePage(team: team, id: found.endpoint.id)
             } label: {
                 HStack(spacing: Ink.Space.m) {
-                    ServiceIcon(service: Service.of(found.endpoint), size: 46)
+                    ServiceIcon(service: Service.of(found.endpoint), size: 46, name: found.endpoint.name)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(found.model).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                         Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)

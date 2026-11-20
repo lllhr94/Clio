@@ -123,18 +123,30 @@ actor BrandIcons {
 }
 
 /// A model service's icon: the maker's own, or a plain symbol for 自定义 and a computer on the network.
+/// A service Clio does not know (a relay you added yourself) shows the first letter of the name you gave it;
+/// with no name either, a chip.
 struct ServiceIcon: View {
     let service: Service?
     var size: CGFloat = 38
+    /// The endpoint's own name, for a service not in the catalog.
+    var name: String? = nil
 
     var body: some View {
         if let symbol = service?.symbol {
-            RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
-                .fill(Ink.mine)
-                .frame(width: size, height: size)
-                .overlay { Image(systemName: symbol).font(.system(size: size * 0.44, weight: .medium)).foregroundStyle(Ink.inkSoft) }
+            plain(symbol)
+        } else if let service {
+            BrandIcon(domain: service.domain, mark: String(service.name.first ?? "C"), tint: Ink.Tile.accent, size: size)
+        } else if let first = name?.trimmingCharacters(in: .whitespaces).first {
+            BrandIcon(domain: nil, mark: String(first).uppercased(), tint: Ink.Tile.accent, size: size)
         } else {
-            BrandIcon(domain: service?.domain, mark: String(service?.name.first ?? "?"), tint: Ink.accent, size: size)
+            plain("cpu")
         }
+    }
+
+    private func plain(_ symbol: String) -> some View {
+        RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
+            .fill(Ink.mine)
+            .frame(width: size, height: size)
+            .overlay { Image(systemName: symbol).font(.system(size: size * 0.44, weight: .medium)).foregroundStyle(Ink.inkSoft) }
     }
 }

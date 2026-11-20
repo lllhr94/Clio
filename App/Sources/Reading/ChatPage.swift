@@ -464,6 +464,7 @@ struct ChatPage: View {
             afterDetail = nil
         }) {
             ChatDetail(team: team, chat: chat, title: team.title(of: chat.key) ?? bot.name,
+                       bot: isRoom ? nil : bot,
                        openCard: isRoom ? nil : { afterDetail = "card" },
                        openLeaves: { afterDetail = "leaves" })
         }
@@ -785,7 +786,7 @@ struct ChatPage: View {
             // Just the service's icon; the name is in the menu. A dot when this conversation has its own model or depth.
             let found = team.resolve(current)
             ZStack(alignment: .topTrailing) {
-                ServiceIcon(service: found.flatMap { Service.of($0.endpoint) }, size: 20)
+                ServiceIcon(service: found.flatMap { Service.of($0.endpoint) }, size: 20, name: found?.endpoint.name)
                     .frame(width: 32, height: 32)
                 if own != nil || level != .auto {
                     Circle().fill(Ink.accent).frame(width: 7, height: 7).offset(x: -3, y: 4)

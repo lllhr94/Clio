@@ -7,6 +7,8 @@ struct ChatDetail: View {
     @ObservedObject var team: TeamModel
     @ObservedObject var chat: ChatModel
     let title: String
+    /// The companion this conversation is with; nil for a gathering.
+    var bot: BotInfo? = nil
     var openCard: (() -> Void)?
     var openLeaves: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -71,6 +73,10 @@ struct ChatDetail: View {
 
     private var hero: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
+            if let bot, let openCard {
+                companion(bot, openCard)
+                Kit.rule(inset: 0)
+            }
             Text(title).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink).lineLimit(2)
             HStack(spacing: 0) {
                 stat("\(minutes)", "分钟")
@@ -80,11 +86,33 @@ struct ChatDetail: View {
             HStack(spacing: Ink.Space.s) {
                 pill("用量", "chart.pie") { usage = true }
                 if let openLeaves { pill(Words.t("絮语页"), "book.pages") { openLeaves(); dismiss() } }
-                if let openCard { pill(Words.t("名帖"), "person.text.rectangle") { openCard(); dismiss() } }
             }
         }
         .padding(Ink.Space.l)
         .paperCard()
+    }
+
+    /// Who this conversation is with, first on the page: tap to change the name, the character, the model.
+    private func companion(_ bot: BotInfo, _ open: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            open()
+            dismiss()
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                PetStill(size: 44, wash: Ink.wash(for: bot), avatar: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bot.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink)
+                    Text("名字、性格、用哪个模型").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                }
+                Spacer(minLength: Ink.Space.s)
+                Text(L.t("actions.edit")).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent)
+                Kit.chevron
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("编辑\(bot.name)的名字、性格和模型")
     }
 
     private func stat(_ value: String, _ unit: String) -> some View {
