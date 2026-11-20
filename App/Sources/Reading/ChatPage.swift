@@ -605,7 +605,7 @@ struct ChatPage: View {
     private var header: some View {
         let layout = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
             AnyLayout(HStackLayout(spacing: Ink.Space.s))
-        layout {
+        return layout {
             HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
                 headerBack
                 headerIdentity
