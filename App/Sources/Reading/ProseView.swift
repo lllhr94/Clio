@@ -108,7 +108,11 @@ private struct BlockView: View {
                 .padding(.top, level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
                 .padding(.bottom, -Pref.size * 0.3)
         case .paragraph(let text):
-            if text.contains("![") {
+            if let files = FileCard.links(in: text) {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, file in FileCard(label: file.label, path: file.path) }
+                }
+            } else if text.contains("![") {
                 PictureParagraph(text: text, fading: fading)
             } else {
                 Inline(text: text, font: Ink.reading, fading: fading)
@@ -559,5 +563,93 @@ struct ProsePicture: View {
               let data = try? Data(contentsOf: url), let picture = UIImage(data: data) else { failed = true; return }
         file = url
         image = picture
+    }
+}
+
+
+/// A file the companion made, handed over in the reply: a line that is only a link into 书案 (`[周报.pdf](书案/周报.pdf)`)
+/// becomes a card. Tap it to read it in the system viewer, which can also share it or save it to 文件.
+struct FileCard: View {
+    let label: String
+    let path: String
+    @State private var open = false
+
+    private var url: URL? {
+        var cleaned = path.removingPercentEncoding ?? path
+        if cleaned.hasPrefix("file://"), let url = URL(string: path) { cleaned = url.path }
+        if cleaned.hasPrefix(Workspace.root.path) { cleaned = String(cleaned.dropFirst(Workspace.root.path.count)) }
+        return Workspace.resolve(cleaned)
+    }
+
+    var body: some View {
+        let file = url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        Button {
+            guard file != nil else { return }
+            Haptics.light()
+            open = true
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                IconBadge(symbol: Self.symbol(for: path), tint: file == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label.isEmpty ? (path as NSString).lastPathComponent : label)
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                    Text(file.map(Self.detail) ?? "找不到这个文件了")
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Ink.Space.s)
+                if file != nil { Kit.chevron }
+            }
+            .padding(Ink.Space.m)
+            .inkBlock()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("打开 \(label)")
+        .sheet(isPresented: $open) {
+            if let file { QuickPreview(url: file).ignoresSafeArea() }
+        }
+    }
+
+    /// The links in a paragraph made only of links to files (one per line), or nil when it is ordinary text.
+    static func links(in text: String) -> [(label: String, path: String)]? {
+        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !lines.isEmpty, let pattern = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(\s*<?([^)>]+?)>?\s*\)$"#) else { return nil }
+        var found: [(label: String, path: String)] = []
+        for line in lines {
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = pattern.firstMatch(in: line, range: range),
+                  let label = Range(match.range(at: 1), in: line), let target = Range(match.range(at: 2), in: line) else { return nil }
+            let path = String(line[target])
+            // Only files: a web link stays a link in the text.
+            let lower = path.lowercased()
+            if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("mailto:") { return nil }
+            found.append((String(line[label]), path))
+        }
+        return found
+    }
+
+    static func symbol(for path: String) -> String {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "pdf": "doc.richtext"
+        case "doc", "docx", "pages", "rtf": "doc.text"
+        case "xls", "xlsx", "csv", "numbers": "tablecells"
+        case "ppt", "pptx", "key": "rectangle.on.rectangle"
+        case "png", "jpg", "jpeg", "gif", "heic", "webp": "photo"
+        case "md", "txt": "text.alignleft"
+        case "zip": "doc.zipper"
+        case "mp3", "m4a", "wav": "waveform"
+        case "mp4", "mov": "film"
+        default: "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    static func detail(_ url: URL) -> String {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let where_ = "书案/" + Workspace.relative(url)
+        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) + " · " + where_
     }
 }

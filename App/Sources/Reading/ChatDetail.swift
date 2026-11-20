@@ -19,7 +19,7 @@ struct ChatDetail: View {
     enum Tab: String, CaseIterable, Identifiable {
         case steps, files
         var id: String { rawValue }
-        var title: String { self == .steps ? "轨迹" : "改动" }
+        var title: String { self == .steps ? "轨迹" : "产出" }
     }
 
     private var steps: [(label: String, seconds: Int?)] {
