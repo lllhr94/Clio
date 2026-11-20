@@ -1110,7 +1110,7 @@ struct ChatPage: View {
         let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             // A pause is not a failure: said in ink, not in red.
-            Label(advice.title, systemImage: next == .resume ? "pause.circle" : "exclamationmark.triangle")
+            Label(advice.displayTitle, systemImage: next == .resume ? "pause.circle" : "exclamationmark.triangle")
                 .font(.system(size: Ink.Size.sub, weight: .semibold))
                 .foregroundStyle(next == .resume ? Ink.ink : Ink.stop)
             if !advice.detail.isEmpty {

@@ -188,9 +188,13 @@ final class TeamModel: ObservableObject {
     init() {
         load()
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
-        if Shots.name != nil {
+        if let shot = Shots.name {
             showDemo()
-            fillDemoChat()
+            if shot == "model-error" {
+                fillDemoError()
+            } else {
+                fillDemoChat()
+            }
         }
         answering = NotificationCenter.default.addObserver(forName: .clioAnswerApproval, object: nil, queue: .main) { [weak self] note in
             guard let id = note.object as? String else { return }
@@ -1404,7 +1408,7 @@ final class TeamModel: ObservableObject {
             if forced == nil, let backup = settings.backupModel, backup != used, let other = resolve(backup) {
                 let advice = Explain.model(error, service: endpoint.name)
                 append(Entry(id: UUID().uuidString, at: Now.ms,
-                             message: .assistant("\(found.model) 没答上来（\(advice.title)），换备用模型 \(other.model) 接着答。"),
+                             message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(other.model) 接着答。"),
                              note: true), to: key)
                 return await turn(bot, in: key, room: room, using: backup)
             }
@@ -1772,7 +1776,7 @@ final class TeamModel: ObservableObject {
             return ToolOutput("停下了。", isError: true)
         } catch {
             let advice = Explain.model(error, service: found.endpoint.name)
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(advice.title + "\n" + advice.detail), note: true), to: helperKey)
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(advice.displayTitle + "\n" + advice.detail), note: true), to: helperKey)
             return ToolOutput("\(helper.name)没做成：\(advice.title)", isError: true)
         }
         // What the helper read from the web came along in its answer: the asking conversation is careful from here on too.
@@ -2074,6 +2078,15 @@ final class TeamModel: ObservableObject {
             Approval(id: "a2", botId: "chef", tool: "添加提醒事项", reason: "今晚 18:30  泡黄豆", at: Now.ms, answerable: true),
         ]
         doing = [Self.key(bot: "scout"): "搜索：周末天气"]
+    }
+
+    private func fillDemoError() {
+        let key = Self.key(bot: "chief")
+        let advice = Explain.model(ProviderError(status: 429, "slow down"), service: "演示服务")
+        append(Entry(id: UUID().uuidString, at: Now.ms - 1_000, message: .user("帮我看看周末的天气。")), to: key)
+        append(Entry(id: UUID().uuidString, at: Now.ms,
+                     message: .assistant(advice.title + "\n" + advice.detail),
+                     note: true, next: advice.next?.rawValue), to: key)
     }
 
     /// For screenshots: one conversation with every kind of thing a reply can hold (steps, sources, 心绪,

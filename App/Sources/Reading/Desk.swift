@@ -645,7 +645,7 @@ struct Desk: View {
             guard let shot = Shots.name else { return }
             try? await Task.sleep(nanoseconds: 800_000_000)
             switch shot {
-            case "chat", "sidebar", "plan":
+            case "chat", "sidebar", "plan", "model-error":
                 opened = .companion("chief")
                 if shot == "sidebar" {
                     try? await Task.sleep(nanoseconds: 1_200_000_000)
