@@ -25,7 +25,7 @@ struct HillsPage: View {
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
 
-                        section("主机", add: { editingHost = Hills.Host(name: "", address: "", user: "root") }) {
+                        section(L.t("remote.hosts"), add: { editingHost = Hills.Host(name: "", address: "", user: "root") }) {
                             if hills.hosts.isEmpty {
                                 empty(L.t("empty.remoteHosts"))
                             }
@@ -36,7 +36,7 @@ struct HillsPage: View {
                         }
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            SectionTitle("这台手机的钥匙")
+                            SectionTitle(L.t("remote.phoneKey"))
                             VStack(alignment: .leading, spacing: Ink.Space.m) {
                                 Text("用钥匙登录更安全。把下面这行加进服务器的 ~/.ssh/authorized_keys，主机里选「用钥匙」。")
                                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -60,9 +60,9 @@ struct HillsPage: View {
                             .paperCard()
                         }
 
-                        section("MCP 服务", add: { editingServer = Hills.Server(name: "", url: "https://") }) {
+                        section(L.t("remote.services"), add: { editingServer = Hills.Server(name: "", url: "https://") }) {
                             if hills.servers.isEmpty {
-                                empty(Words.t("还没有。填一个 MCP 服务地址（Streamable HTTP），它的工具就会借给旅伴用。"))
+                                empty(L.t("empty.remoteServices"))
                             }
                             ForEach(hills.servers) { server in
                                 serverRow(server)
@@ -75,7 +75,7 @@ struct HillsPage: View {
                 }
             }
             .hitchPage("远山")
-            .navigationTitle(Words.t("远山"))
+            .navigationTitle(L.t("nav.remoteHost"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } } }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
@@ -299,8 +299,8 @@ private struct HostEditor: View {
         NavigationStack {
             Form {
                 PaperRows {
-                Section("称呼") { TextField("比如：香港 VPS", text: $host.name) }
-                Section("地址") {
+                Section(L.t("remote.displayName")) { TextField("比如：香港 VPS", text: $host.name) }
+                Section(L.t("remote.address")) {
                     TextField("域名或 IP", text: $host.address).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     TextField("端口", text: $port).keyboardType(.numberPad)
                     TextField("用户名", text: $host.user).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -320,7 +320,7 @@ private struct HostEditor: View {
             }
             }
             .paperForm()
-            .navigationTitle(host.name.isEmpty ? "新主机" : host.name)
+            .navigationTitle(host.name.isEmpty ? L.t("remote.newHost") : host.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
@@ -349,7 +349,7 @@ private struct ServerEditor: View {
         NavigationStack {
             Form {
                 PaperRows {
-                Section("称呼") { TextField("比如：VPS 浏览器", text: $server.name) }
+                Section(L.t("remote.displayName")) { TextField("比如：VPS 浏览器", text: $server.name) }
                 Section {
                     Toggle(Words.t("经远山 SSH 隧道连"), isOn: Binding(
                         get: { server.tunnelHost != nil },
@@ -372,7 +372,7 @@ private struct ServerEditor: View {
                 Section {
                     TextField(server.tunnelHost == nil ? "https://…/mcp" : Hills.browserAddress, text: $server.url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     SecureField(Vault.load(String.self, key: "mcp.\(server.id)") == nil ? "令牌（可不填）" : "令牌（已存，不改就留空）", text: $token)
-                } header: { Text(server.tunnelHost == nil ? "地址" : "在那台电脑上的地址") } footer: {
+                } header: { Text(server.tunnelHost == nil ? L.t("remote.address") : L.t("remote.tunneledAddress")) } footer: {
                     Text("支持 Streamable HTTP 的 MCP 服务。令牌会作为 Authorization: Bearer 发送。")
                 }
                 if server.tunnelHost != nil {
@@ -384,7 +384,7 @@ private struct ServerEditor: View {
                             UIPasteboard.general.string = Hills.browserCommand
                             Haptics.tick(0.5)
                         }
-                    } header: { Text("在 VPS 上手动启动浏览器") } footer: {
+                    } header: { Text(L.t("remote.startBrowser")) } footer: {
                         Text(Words.t("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。"))
                     }
                 }
@@ -392,7 +392,7 @@ private struct ServerEditor: View {
             }
             }
             .paperForm()
-            .navigationTitle(server.name.isEmpty ? "新 MCP 服务" : server.name)
+            .navigationTitle(server.name.isEmpty ? L.t("remote.newService") : server.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }

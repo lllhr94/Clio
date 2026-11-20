@@ -203,7 +203,7 @@ struct SettingsView: View {
 
     private var services: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("模型服务")
+            heading(L.t("settings.modelService"))
             VStack(spacing: 0) {
                 ForEach(team.settings.endpoints) { endpoint in
                     NavigationLink {
@@ -238,7 +238,7 @@ struct SettingsView: View {
     private var defaultModel: some View {
         if !team.models.isEmpty {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                heading("默认模型")
+                heading(L.t("settings.defaultModel"))
                 Menu {
                     ModelChoices(team: team, current: team.settings.defaultModel) { ref in
                         Haptics.tick(0.6)
@@ -290,7 +290,7 @@ struct SettingsView: View {
 
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading(Words.t("拾遗"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
+            heading(L.t("nav.memory"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
             VStack(spacing: 0) {
                 HStack(spacing: Ink.Space.s) {
                     TextField("自己记一条，比如：我不吃香菜", text: $memoryDraft)
@@ -431,9 +431,9 @@ struct SettingsView: View {
     }
 
     private var aiGroup: some View {
-        group("AI") {
-            pushRow("sparkles", Tint.ai, "模型", team.settings.endpoints.isEmpty ? "还没接" : team.modelShort(team.settings.defaultModel), warn: team.settings.endpoints.isEmpty) {
-                subpage("模型") {
+        group(L.t("settings.ai")) {
+            pushRow("sparkles", Tint.ai, "settings.models", team.settings.endpoints.isEmpty ? "还没接" : team.modelShort(team.settings.defaultModel), warn: team.settings.endpoints.isEmpty) {
+                subpage(L.t("settings.models")) {
                     services
                     defaultModel
                 }
@@ -462,7 +462,7 @@ struct SettingsView: View {
     }
 
     private var looksGroup: some View {
-        group("外观") {
+        group(L.t("settings.appearance")) {
             row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
             divider
             row("pawprint", Tint.looks, "nav.pet", PetLibrary.shared.choice == "none" ? "不显示" : (PetLibrary.shared.pack?.name ?? Persona.stored.kind.word)) { petting = true }
@@ -507,7 +507,7 @@ struct SettingsView: View {
     }
 
     private var toolGroup: some View {
-        group("工具") {
+        group(L.t("settings.tools")) {
             row("books.vertical", Tint2.tools, "nav.files", "旅伴写的文件") { elsewhere(.study) }
             divider
             row("terminal", Tint2.tools, "nav.terminal", "手机里的 Linux") { elsewhere(.den) }
@@ -517,7 +517,7 @@ struct SettingsView: View {
     }
 
     private var generalGroup: some View {
-        group("通用") {
+        group(L.t("settings.general")) {
             row("bell", Tint.general, "通知、锁屏与后台", nil) { lookFocus = "notify"; looking = true }
             divider
             row("lock", Tint.general, "settings.faceLock", UserDefaults.standard.bool(forKey: "lock.faceid") ? "开" : "关") { lookFocus = "lock"; looking = true }

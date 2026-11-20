@@ -74,7 +74,7 @@ struct UsageSheet: View {
                     .foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button(folding ? "正在写前情提要…" : "压缩前文", systemImage: "rectangle.compress.vertical") { fold() }
+                    Button(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext"), systemImage: "rectangle.compress.vertical") { fold() }
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(Ink.accent)
                         .buttonStyle(TapStyle())

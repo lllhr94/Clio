@@ -30,7 +30,14 @@
     "compactContext": "压缩前文",
     "attachment": "附件",
     "source": "来源",
-    "pleaseFill": "请你填写"
+    "pleaseFill": "请你填写",
+    "note": "便笺",
+    "quoteFollowup": "引用追问",
+    "chooseFromFiles": "从文件选择",
+    "addToConversation": "添加到对话",
+    "workLocation": "在哪里干活",
+    "details": "对话详情",
+    "newGroup": "新建群聊"
   },
   "approval": {
     "pending": "待批准",
@@ -59,7 +66,8 @@
     "frequent": "常用",
     "earlier": "较早",
     "pinMemory": "设为常用",
-    "toEarlier": "移到较早"
+    "toEarlier": "移到较早",
+    "newProfileCard": "新建资料卡"
   },
   "settings": {
     "permissions": "权限",
@@ -72,7 +80,37 @@
     "appearanceAndChat": "外观与对话",
     "accentColor": "主色",
     "uiDensity": "界面大小",
-    "tone": "称谓"
+    "tone": "称谓",
+    "defaultModel": "默认模型",
+    "ai": "AI",
+    "tools": "工具",
+    "general": "通用",
+    "models": "模型",
+    "chatTextSize": "对话字号",
+    "appLock": "上锁",
+    "contextCompaction": "压缩",
+    "modelContext": "交给模型的",
+    "background": "在后台",
+    "companionRoutine": "助手的日常",
+    "motion": "动静",
+    "backup": "备份",
+    "diagnosticInfo": "诊断",
+    "modelConnectivity": "模型连通",
+    "recentErrors": "最近的错误",
+    "frameDrops": "掉帧记录",
+    "archivedConversations": "已归档的对话",
+    "activeModels": "在用的模型",
+    "apiType": "接口",
+    "balance": "余额",
+    "chooseProvider": "选一家",
+    "chooseAddress": "用哪个地址",
+    "serviceAddress": "服务的地址",
+    "modelName": "模型名",
+    "apiKey": "密钥（API Key）",
+    "chooseModels": "用哪些模型",
+    "firstModel": "第一步 · 接一个模型",
+    "addModelService": "添一个模型服务",
+    "moreModelServices": "之后随时能在设置里再加"
   },
   "styleSwitcher": {
     "title": "称谓",
@@ -114,7 +152,9 @@
     "needsAnswer": "等你回答",
     "hideHour": "藏起来 1 小时",
     "change": "换宠物",
-    "settings": "宠物设置"
+    "settings": "宠物设置",
+    "choose": "选一只",
+    "size": "大小"
   },
   "empty": {
     "home": "随时可以开始新对话。",
@@ -128,7 +168,20 @@
     "favorites": "收藏册还是空的，喜欢的东西随手收下。",
     "remoteHosts": "还没有远程主机，添一台就能用。",
     "connectors": "还没连接器，连上常用的服务，助手就能替你用。",
-    "diary": "还没有日记。"
+    "diary": "还没有日记。",
+    "skills": "还没有技能。",
+    "createScheduledJob": "还没有定时任务。点右上角的 ＋ 设一个。",
+    "remoteServices": "还没有。填一个 MCP 服务地址（Streamable HTTP），工具就可以给助手用。",
+    "savedConversations": "还没有收起来的对话。可以另开新对话，旧对话会留在这里。",
+    "conversationTools": "这段对话还没用过工具。",
+    "conversationFiles": "这段对话还没改过文件。",
+    "startConversation": "还没有聊过。点上面的助手，说第一句话吧。",
+    "activeConversations": "都归档了，下面能翻出来。",
+    "vault": "密码箱还空着。",
+    "diaryForCompanion": "%@ 还没写过日记。晚上九点以后，当天聊过的话会写成一页。",
+    "diaryDisabled": "日记还没打开。在设置的外观页打开后，%@ 会在晚上写一页当天的日记。",
+    "groupChat": "群聊里的助手会轮流说话",
+    "chatWithCompanion": "和 %@ 说点什么吧"
   },
   "loading": {
     "generic": "正在加载…",
@@ -144,7 +197,14 @@
     "connectingRemoteHost": "正在连远程主机…",
     "compactingContext": "正在压缩前文…",
     "listeningVoice": "正在听…",
-    "viewingImage": "正在看图…"
+    "viewingImage": "正在看图…",
+    "writingDiary": "正在写日记…",
+    "fetchingModels": "正在拿模型列表…",
+    "preparingBackup": "正在打包…",
+    "testingModels": "正在测试各家模型…",
+    "requestingPermissions": "正在一项项请求系统权限…",
+    "measuringMirrors": "正在测哪个源最快…",
+    "recognizingScan": "正在识别扫描里的文字…"
   },
   "errors": {
     "offline": "网络断了，检查一下再试。",
@@ -188,5 +248,54 @@
       "primaryCta": "接模型服务",
       "secondaryCta": "先看演示"
     }
+  },
+  "terminal": {
+    "installSoftware": "装常用软件"
+  },
+  "connectors": {
+    "customAddress": "自己填地址",
+    "google": "谷歌",
+    "onDevice": "此设备上",
+    "connected": "已连接",
+    "details": "详情",
+    "googleSetup": "谷歌这边还要做的",
+    "googleCredentials": "第一次：做一个你自己的登录凭据",
+    "clientId": "客户端 ID"
+  },
+  "vault": {
+    "newItem": "存一条",
+    "notes": "备注"
+  },
+  "skills": {
+    "edit": "改技能",
+    "new": "新技能",
+    "name": "名字"
+  },
+  "routines": {
+    "new": "新定时任务",
+    "name": "叫什么",
+    "schedule": "什么时候",
+    "assignee": "谁来做"
+  },
+  "remote": {
+    "newHost": "新主机",
+    "newService": "新 MCP 服务",
+    "hosts": "主机",
+    "services": "MCP 服务",
+    "phoneKey": "这台手机的钥匙",
+    "displayName": "称呼",
+    "address": "地址",
+    "tunneledAddress": "在那台电脑上的地址",
+    "startBrowser": "在 VPS 上手动启动浏览器"
+  },
+  "diary": {
+    "writeToday": "现在写今天的"
+  },
+  "permissions": {
+    "onPhone": "手机里的事",
+    "personal": "身边与身体",
+    "alwaysAllowed": "批准时选了「以后都允许」的",
+    "web": "搜索与浏览",
+    "connections": "远程主机、连接器与密码箱"
   }
 }

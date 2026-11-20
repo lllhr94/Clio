@@ -54,7 +54,7 @@ struct StudyFolder: View {
                     if items.isEmpty {
                         VStack(spacing: Ink.Space.m) {
                             Whale(size: 72, pose: .idle, still: true)
-                            Text(Words.t("书案还空着"))
+                            Text(L.t("empty.files"))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
                                 .multilineTextAlignment(.center)
@@ -81,7 +81,7 @@ struct StudyFolder: View {
             }
         }
         .hitchPage("书案")
-        .navigationTitle(top ? Words.t("书案") : folder.lastPathComponent)
+        .navigationTitle(top ? L.t("nav.files") : folder.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {

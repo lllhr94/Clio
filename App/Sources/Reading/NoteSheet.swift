@@ -91,7 +91,7 @@ struct NoteSheet: View {
                 .padding(.vertical, Ink.Space.xl)
             }
             .background(Ink.paper)
-            .navigationTitle("笺")
+            .navigationTitle(L.t("chat.note"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

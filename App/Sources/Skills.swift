@@ -209,7 +209,7 @@ struct SkillsPage: View {
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if items.isEmpty {
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
-                            EmptyNote(symbol: "books.vertical", words: "还没有技能。")
+                            EmptyNote(symbol: "books.vertical", words: L.t("empty.skills"))
                             Button("装几个示例：旅行规划、周报、读长文档、记账") {
                                 let count = SkillShelf.installSamples()
                                 note = "装好 \(count) 个，点开可以改成你的习惯。"
@@ -301,7 +301,7 @@ struct SkillEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("名字") {
+                Section(L.t("skills.name")) {
                     TextField("比如：周报", text: $name)
                 }
                 Section {
@@ -323,7 +323,7 @@ struct SkillEditor: View {
             }
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(item == nil ? "新技能" : "改技能")
+            .navigationTitle(item == nil ? L.t("skills.new") : L.t("skills.edit"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }

@@ -53,7 +53,7 @@ struct AbilitiesSheet: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle(Words.t("本事"))
+            .navigationTitle(L.t("agent.capabilities"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }

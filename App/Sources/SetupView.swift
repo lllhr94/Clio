@@ -114,8 +114,8 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: Ink.Space.xl) {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        Text(first ? "第一步 · 接一个模型" : "添一个模型服务").font(Ink.title).foregroundStyle(Ink.ink)
-                        Text(Words.t("之后随时能在调弦里再加")).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                        Text(first ? L.t("settings.firstModel") : L.t("settings.addModelService")).font(Ink.title).foregroundStyle(Ink.ink)
+                        Text(L.t("settings.moreModelServices")).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     }
                     Spacer()
                     if !first {
@@ -151,7 +151,7 @@ struct SetupView: View {
     @ViewBuilder
     private var servicePicker: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "选一家", note: "都能用自己的密钥直连。不在里面的，选最后的「自定义」")
+            FieldTitle(text: L.t("settings.chooseProvider"), note: "都能用自己的密钥直连。不在里面的，选最后的「自定义」")
             // One list, top to bottom, like every other list in Clio.
             VStack(spacing: 0) {
                 ForEach(Array(Service.catalog.enumerated()), id: \.element.id) { index, item in
@@ -164,7 +164,7 @@ struct SetupView: View {
 
         if choice.addresses.count > 1 {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: "用哪个地址", note: "账号在哪边注册的就选哪边，密钥不通用")
+                FieldTitle(text: L.t("settings.chooseAddress"), note: "账号在哪边注册的就选哪边，密钥不通用")
                 Picker("地址", selection: $region) {
                     ForEach(choice.addresses.indices, id: \.self) { index in
                         Text(choice.addresses[index].label).tag(index)
@@ -177,7 +177,7 @@ struct SetupView: View {
 
         if custom {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: "服务的地址", note: choice.keyless ? "电脑的局域网地址加端口：Ollama 是 http://电脑IP:11434/v1，LM Studio 是 http://电脑IP:1234/v1。Ollama 要先设 OLLAMA_HOST=0.0.0.0 才让手机连" : (choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1"))
+                FieldTitle(text: L.t("settings.serviceAddress"), note: choice.keyless ? "电脑的局域网地址加端口：Ollama 是 http://电脑IP:11434/v1，LM Studio 是 http://电脑IP:1234/v1。Ollama 要先设 OLLAMA_HOST=0.0.0.0 才让手机连" : (choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1"))
                 TextField(choice.keyless ? "称呼，比如 我的 4090" : "称呼，比如 我的中转站", text: $name).paperField()
                 TextField(choice.keyless ? "http://192.168.1.10:11434/v1" : "https://…", text: $baseURL)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -193,7 +193,7 @@ struct SetupView: View {
 
         if custom || choice.asksModel {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: "模型名", note: choice.asksModel ? "这家要你自己填" : "可以不填，会自动去拿列表")
+                FieldTitle(text: L.t("settings.modelName"), note: choice.asksModel ? "这家要你自己填" : "可以不填，会自动去拿列表")
                 TextField(choice.modelHint ?? "比如 gpt-5、qwen-plus", text: $modelName)
                     .font(.system(size: Ink.Size.sub, design: .monospaced))
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -207,7 +207,7 @@ struct SetupView: View {
     private var keyField: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack {
-                FieldTitle(text: "密钥（API Key）", note: choice.keyless ? "本地的一般不用，空着就行" : "只存在这台手机的钥匙串里")
+                FieldTitle(text: L.t("settings.apiKey"), note: choice.keyless ? "本地的一般不用，空着就行" : "只存在这台手机的钥匙串里")
                 Spacer()
                 if let help = helpURL {
                     Button("去哪拿？") { openURL(help) }
@@ -287,13 +287,13 @@ struct SetupView: View {
         if fetching {
             HStack(spacing: Ink.Space.s) {
                 ProgressView()
-                Text("正在拿模型列表…").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text(L.t("loading.fetchingModels")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
         } else if let fetched {
             let words = modelSearch.trimmingCharacters(in: .whitespaces).lowercased()
             let shown = Array((words.isEmpty ? fetched : fetched.filter { $0.lowercased().contains(words) }).prefix(60))
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: "用哪些模型", note: "共 \(fetched.count) 个，已选 \(picked.count) 个")
+                FieldTitle(text: L.t("settings.chooseModels"), note: "共 \(fetched.count) 个，已选 \(picked.count) 个")
                 VStack(spacing: 0) {
                     if fetched.count > 10 {
                         TextField("搜模型名", text: $modelSearch)
@@ -335,7 +335,7 @@ struct SetupView: View {
         Button(action: connect) {
             HStack(spacing: Ink.Space.s) {
                 if busy { ProgressView().tint(Ink.paper) }
-                Text(busy ? "正在接上…" : (fetched != nil ? "接上，用这 \(picked.count) 个模型" : "连上试试"))
+                Text(busy ? L.t("loading.connectingModel") : (fetched != nil ? "接上，用这 \(picked.count) 个模型" : "连上试试"))
                     .font(.system(size: Ink.Size.body, weight: .semibold))
             }
             .foregroundStyle(Ink.paper)

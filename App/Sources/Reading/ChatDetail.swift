@@ -52,7 +52,7 @@ struct ChatDetail: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle("对话详情")
+            .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } }
@@ -114,7 +114,7 @@ struct ChatDetail: View {
     private var stepList: some View {
         let all = steps
         if all.isEmpty {
-            EmptyNote(symbol: "point.topleft.down.to.point.bottomright.curvepath", words: "这段对话还没用过工具。")
+            EmptyNote(symbol: "point.topleft.down.to.point.bottomright.curvepath", words: L.t("empty.conversationTools"))
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(all.enumerated()), id: \.offset) { index, step in
@@ -136,7 +136,7 @@ struct ChatDetail: View {
     @ViewBuilder
     private var fileList: some View {
         if files.isEmpty {
-            EmptyNote(symbol: "doc.badge.ellipsis", words: "这段对话还没改过文件。")
+            EmptyNote(symbol: "doc.badge.ellipsis", words: L.t("empty.conversationFiles"))
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(files.enumerated()), id: \.offset) { _, file in

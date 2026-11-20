@@ -30,7 +30,14 @@
     "compactContext": "收卷",
     "attachment": "夹页",
     "source": "出处",
-    "pleaseFill": "回笺"
+    "pleaseFill": "回笺",
+    "note": "便笺",
+    "quoteFollowup": "引用追问",
+    "chooseFromFiles": "从书案挑",
+    "addToConversation": "添加到絮语",
+    "workLocation": "在哪里干活",
+    "details": "絮语详情",
+    "newGroup": "开一场雅集"
   },
   "approval": {
     "pending": "待签",
@@ -59,7 +66,8 @@
     "frequent": "常记",
     "earlier": "旧事",
     "pinMemory": "常记在心",
-    "toEarlier": "收进旧事"
+    "toEarlier": "收进旧事",
+    "newProfileCard": "写一张新名帖"
   },
   "settings": {
     "permissions": "应许",
@@ -72,7 +80,37 @@
     "appearanceAndChat": "纸墨与絮语",
     "accentColor": "设色",
     "uiDensity": "疏密",
-    "tone": "称谓"
+    "tone": "称谓",
+    "defaultModel": "默认模型",
+    "ai": "AI",
+    "tools": "工具",
+    "general": "通用",
+    "models": "模型",
+    "chatTextSize": "絮语字号",
+    "appLock": "上锁",
+    "contextCompaction": "压缩",
+    "modelContext": "交给模型的",
+    "background": "在后台",
+    "companionRoutine": "旅伴的日常",
+    "motion": "动静",
+    "backup": "备份",
+    "diagnosticInfo": "诊断",
+    "modelConnectivity": "模型连通",
+    "recentErrors": "最近的错误",
+    "frameDrops": "掉帧记录",
+    "archivedConversations": "已入藏的絮语",
+    "activeModels": "在用的模型",
+    "apiType": "接口",
+    "balance": "余额",
+    "chooseProvider": "选一家",
+    "chooseAddress": "用哪个地址",
+    "serviceAddress": "服务的地址",
+    "modelName": "模型名",
+    "apiKey": "密钥（API Key）",
+    "chooseModels": "用哪些模型",
+    "firstModel": "第一步 · 接一个模型",
+    "addModelService": "添一个模型服务",
+    "moreModelServices": "之后随时能在调弦里再加"
   },
   "styleSwitcher": {
     "title": "称谓",
@@ -114,7 +152,9 @@
     "needsAnswer": "等你回话",
     "hideHour": "藏起来 1 小时",
     "change": "换一只伴读",
-    "settings": "伴读设置"
+    "settings": "伴读设置",
+    "choose": "选一只",
+    "size": "大小"
   },
   "empty": {
     "home": "窗前清净，新纸已铺，随时落笔。",
@@ -128,7 +168,20 @@
     "favorites": "尚未集珍，合心意的随手收下。",
     "remoteHosts": "别馆未连，添一台主机便可往来。",
     "connectors": "港湾空着，接上常用的服务便可停靠。",
-    "diary": "尚无新篇。"
+    "diary": "尚无新篇。",
+    "skills": "还没有良方。",
+    "createScheduledJob": "还没有更漏。点右上角的 ＋ 设一个。",
+    "remoteServices": "还没有。填一个 MCP 服务地址（Streamable HTTP），工具就可以给旅伴用。",
+    "savedConversations": "还没有收起来的絮语。可以另起一叶，旧的会留在这里。",
+    "conversationTools": "这段絮语还没用过工具。",
+    "conversationFiles": "这段絮语还没改过文件。",
+    "startConversation": "还没有聊过。点上面的旅伴，说第一句话吧。",
+    "activeConversations": "都入藏了，下面能翻出来。",
+    "vault": "密匣还空着。",
+    "diaryForCompanion": "%@ 还没写过手札。晚上九点以后，当天聊过的话会写成一叶。",
+    "diaryDisabled": "手札还没打开。在调弦的设色页打开后，%@ 会在晚上写一叶当天的手札。",
+    "groupChat": "雅集里的旅伴会轮流说话",
+    "chatWithCompanion": "同 %@ 说点什么吧"
   },
   "loading": {
     "generic": "正在展卷…",
@@ -144,7 +197,14 @@
     "connectingRemoteHost": "正在连别馆…",
     "compactingContext": "正在收卷…",
     "listeningVoice": "正在细听…",
-    "viewingImage": "正在端详来图…"
+    "viewingImage": "正在端详来图…",
+    "writingDiary": "正在写手札…",
+    "fetchingModels": "正在拿模型列表…",
+    "preparingBackup": "正在打包…",
+    "testingModels": "正在测试各家模型…",
+    "requestingPermissions": "正在一项项请求系统权限…",
+    "measuringMirrors": "正在测哪个源最快…",
+    "recognizingScan": "正在识别扫描里的文字…"
   },
   "errors": {
     "offline": "网路不通，查一下网络再试。",
@@ -188,5 +248,54 @@
       "primaryCta": "前往笔庄",
       "secondaryCta": "先览样张"
     }
+  },
+  "terminal": {
+    "installSoftware": "装常用软件"
+  },
+  "connectors": {
+    "customAddress": "自己填地址",
+    "google": "谷歌",
+    "onDevice": "此设备上",
+    "connected": "已连接",
+    "details": "详情",
+    "googleSetup": "谷歌这边还要做的",
+    "googleCredentials": "第一次：做一个你自己的登录凭据",
+    "clientId": "客户端 ID"
+  },
+  "vault": {
+    "newItem": "存一条",
+    "notes": "备注"
+  },
+  "skills": {
+    "edit": "改技能",
+    "new": "新技能",
+    "name": "名字"
+  },
+  "routines": {
+    "new": "新更漏",
+    "name": "叫什么",
+    "schedule": "什么时候",
+    "assignee": "谁来做"
+  },
+  "remote": {
+    "newHost": "新主机",
+    "newService": "新 MCP 服务",
+    "hosts": "主机",
+    "services": "MCP 服务",
+    "phoneKey": "这台手机的钥匙",
+    "displayName": "称呼",
+    "address": "地址",
+    "tunneledAddress": "在那台电脑上的地址",
+    "startBrowser": "在 VPS 上手动启动浏览器"
+  },
+  "diary": {
+    "writeToday": "现在写今天的"
+  },
+  "permissions": {
+    "onPhone": "手机里的事",
+    "personal": "身边与身体",
+    "alwaysAllowed": "落款时选了「以后都允许」的",
+    "web": "寻访与漫游",
+    "connections": "别馆、港湾与密匣"
   }
 }

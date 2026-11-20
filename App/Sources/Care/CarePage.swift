@@ -26,12 +26,12 @@ struct CarePage: View {
                 PaperRows {
                 Section {
                     Toggle("连模型密钥一起备份", isOn: $withKeys)
-                    Button(making ? "正在打包…" : "做一份备份") { make() }.disabled(making)
+                    Button(making ? L.t("loading.preparingBackup") : "做一份备份") { make() }.disabled(making)
                     if let made {
                         ShareLink(item: made) { Label("存到「文件」或发出去", systemImage: "square.and.arrow.up") }
                     }
                     Button("从备份恢复") { restoring = true }
-                } header: { Text("备份") } footer: {
+                } header: { Text(L.t("settings.backup")) } footer: {
                     Text(Words.t("不含信匣和远山的密码"))
                 }
 
@@ -56,7 +56,7 @@ struct CarePage: View {
                             }
                         }
                     }
-                } header: { Text(Words.t("已归档的絮语")) } footer: {
+                } header: { Text(L.t("settings.archivedConversations")) } footer: {
                     Text(Words.t("拿回来后回到案头"))
                 }
 
@@ -68,14 +68,14 @@ struct CarePage: View {
                     row("数据占用", sizeText)
                     row(Words.t("斗室"), denText)
                     row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
-                } header: { Text("诊断") }
+                } header: { Text(L.t("settings.diagnosticInfo")) }
 
                 Section {
                     ForEach(team.settings.endpoints) { endpoint in
                         row(endpoint.name, probes[endpoint.id] ?? "未测")
                     }
-                    Button(probing ? "正在一家家试…" : "试一试模型连不连得上") { probe() }.disabled(probing || team.settings.endpoints.isEmpty)
-                } header: { Text("模型连通") }
+                    Button(probing ? L.t("loading.testingModels") : "试一试模型连不连得上") { probe() }.disabled(probing || team.settings.endpoints.isEmpty)
+                } header: { Text(L.t("settings.modelConnectivity")) }
 
                 Section {
                     if Diag.log.isEmpty {
@@ -86,7 +86,7 @@ struct CarePage: View {
                         }
                         Button("清空记录", role: .destructive) { Diag.clear(); notice = "清空了。" }
                     }
-                } header: { Text("最近的错误") }
+                } header: { Text(L.t("settings.recentErrors")) }
 
                 Section {
                     Toggle("掉帧记录仪", isOn: $recordingHitches)
@@ -106,7 +106,7 @@ struct CarePage: View {
                             hitchesCopied = false
                         }
                     }
-                } header: { Text("掉帧记录") } footer: {
+                } header: { Text(L.t("settings.frameDrops")) } footer: {
                     Text("记下每次卡顿和当时在做什么，开着耗电")
                 }
 
@@ -121,7 +121,7 @@ struct CarePage: View {
             }
             .paperForm()
             .hitchPage("养护")
-            .navigationTitle(Words.t("养护"))
+            .navigationTitle(L.t("settings.diagnostics"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in

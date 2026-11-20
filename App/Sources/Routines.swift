@@ -144,7 +144,7 @@ struct RoutinesPage: View {
                     Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if team.routines.isEmpty {
-                        EmptyNote(symbol: "alarm", words: L.t("empty.scheduledJobs") + "点右上角的 ＋ 设一个。")
+                        EmptyNote(symbol: "alarm", words: L.t("empty.createScheduledJob"))
                     } else {
                         VStack(spacing: 0) {
                             ForEach(team.routines) { routine in
@@ -233,7 +233,7 @@ struct RoutineEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("叫什么") {
+                Section(L.t("routines.name")) {
                     TextField("比如：早间新闻", text: $routine.title)
                 }
                 Section {
@@ -244,7 +244,7 @@ struct RoutineEditor: View {
                 } footer: {
                     Text(Words.t("到点时作为你的话发给旅伴"))
                 }
-                Section("什么时候") {
+                Section(L.t("routines.schedule")) {
                     DatePicker("几点", selection: $time, displayedComponents: .hourAndMinute)
                     HStack(spacing: 6) {
                         ForEach(1...7, id: \.self) { day in
@@ -259,7 +259,7 @@ struct RoutineEditor: View {
                     }
                     Text(preview.when).font(.footnote).foregroundStyle(.secondary)
                 }
-                Section("谁来做") {
+                Section(L.t("routines.assignee")) {
                     Picker(Words.t("旅伴"), selection: $routine.botId) {
                         ForEach(team.bots) { bot in Text(bot.name).tag(bot.id) }
                     }
@@ -275,7 +275,7 @@ struct RoutineEditor: View {
             }
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(isNew ? "新的" + L.t("agent.scheduledJobs") : L.t("agent.scheduledJobs"))
+            .navigationTitle(isNew ? L.t("routines.new") : L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }

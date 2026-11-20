@@ -67,7 +67,7 @@ struct DenPage: View {
             }
             .buttonStyle(PressStyle())
             VStack(alignment: .leading, spacing: 0) {
-                Text(Words.t("斗室")).font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
+                Text(L.t("nav.terminal")).font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
                     Circle().fill(dot).frame(width: 6, height: 6)
                     Text(status).font(Ink.footnote).foregroundStyle(Ink.inkSoft)

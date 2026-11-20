@@ -175,7 +175,7 @@ struct TideSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(Words.t("潮水"))
+            .navigationTitle(L.t("nav.dailyDiscover"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
         }
@@ -280,11 +280,11 @@ struct DiarySheet: View {
                     if pages.isEmpty {
                         EmptyNote(
                             symbol: "book.closed",
-                            words: Pref.diaryOn ? "\(bot.name)还没写过日记。晚上九点以后，当天聊过的话会写成一页。" : Words.t("日记还没打开。在调弦 › 旅伴的日常里打开，\(bot.name)会在晚上写一页当天的日记。"),
-                            action: ("现在写今天的", { write() })
+                            words: String(format: Pref.diaryOn ? L.t("empty.diaryForCompanion") : L.t("empty.diaryDisabled"), bot.name),
+                            action: (L.t("diary.writeToday"), { write() })
                         )
                     }
-                    if writing { ProgressView("正在写…").frame(maxWidth: .infinity) }
+                    if writing { ProgressView(L.t("loading.writingDiary")).frame(maxWidth: .infinity) }
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     ForEach(pages) { page in
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
