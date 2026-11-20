@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Everything the desk can open, behind the whale: companions, tools, and settings, each with a line on what it is for.
+/// Everything the desk can open: companions, tools, and settings, each with a line on what it is for.
 enum DrawerItem: String, Identifiable, CaseIterable {
-    case newCompanion, importCard, gathering, portrait
+    case newCompanion, importCard, gathering
     case study, den, hills, vault
     case tuning, look, grants, care
 
@@ -13,7 +13,6 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .newCompanion: Words.t("新旅伴")
         case .importCard: Words.t("收名帖")
         case .gathering: Words.t("雅集")
-        case .portrait: "形象"
         case .study: Words.t("书案")
         case .den: Words.t("斗室")
         case .hills: Words.t("远山")
@@ -30,7 +29,6 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .newCompanion: Words.t("写一张名帖，请一位新旅伴")
         case .importCard: Words.t("导入别人递来的名帖文件")
         case .gathering: Words.t("让几位旅伴围坐着一起聊")
-        case .portrait: "换成别的样子，或用自己的画像"
         case .study: Words.t("旅伴写下的文件都在这里")
         case .den: "手机里的 Linux，能装软件、跑脚本"
         case .hills: "你的 VPS 和 MCP 服务"
@@ -47,7 +45,6 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .newCompanion: "person.badge.plus"
         case .importCard: "square.and.arrow.down"
         case .gathering: "person.3"
-        case .portrait: "paintpalette"
         case .study: "books.vertical"
         case .den: "terminal"
         case .hills: "mountain.2"
@@ -60,7 +57,7 @@ enum DrawerItem: String, Identifiable, CaseIterable {
     }
 
     static let groups: [(String, [DrawerItem])] = [
-        (Words.t("旅伴"), [.newCompanion, .gathering, .portrait, .importCard]),
+        (Words.t("旅伴"), [.newCompanion, .gathering, .importCard]),
         ("器物", [.study, .den, .hills, .vault]),
         ("调理", [.tuning, .look, .grants, .care]),
     ]
@@ -79,7 +76,7 @@ struct DrawerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
                     HStack(alignment: .center, spacing: Ink.Space.m) {
-                        PetStill(size: 44, still: true)
+                        PetStill(size: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("抽屉").font(Ink.title).foregroundStyle(Ink.ink)
                             Text(Words.t("案头以外的东西，都收在这里。")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)

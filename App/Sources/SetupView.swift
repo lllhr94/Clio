@@ -451,7 +451,7 @@ struct SetupView: View {
     private var done: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xl) {
             Spacer(minLength: 0)
-            PetStill(size: 110, state: "working", pose: .writing)
+            PetStill(size: 110, state: "working")
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("接好了").font(Ink.display).foregroundStyle(Ink.ink)
                 if let connected {

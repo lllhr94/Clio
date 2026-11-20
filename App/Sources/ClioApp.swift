@@ -43,7 +43,6 @@ struct ClioApp: App {
 
     init() {
         Pref.settleType()
-        Persona.adoptFigures()
     }
 
     var body: some Scene {

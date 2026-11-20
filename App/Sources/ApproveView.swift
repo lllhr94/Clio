@@ -195,7 +195,7 @@ struct ApproveView: View {
             .foregroundStyle(Ink.inkSoft)
 
             HStack(spacing: 12) {
-                PetStill(size: 46, state: "notification", pose: verdict == nil ? .waiting : .idle,
+                PetStill(size: 46, state: verdict == nil ? "notification" : "idle",
                          wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {

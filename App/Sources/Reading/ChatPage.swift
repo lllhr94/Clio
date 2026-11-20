@@ -33,9 +33,9 @@ struct ChatPage: View {
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
     @State private var context: TeamModel.ContextEstimate?
     @State private var usageOpen = false
-    /// A turn has just finished well: the whale flips.
+    /// A turn has just finished well: the pet is glad.
     @State private var cheering = false
-    /// Nothing has happened for a few minutes: the whale dozes.
+    /// Nothing has happened for a few minutes: the pet dozes.
     @State private var dozing = false
     @State private var stirs = 0
     /// How many of the newest lines are drawn; 「更早的」 adds more.
@@ -77,13 +77,14 @@ struct ChatPage: View {
         return .idle
     }
 
-    private var pose: WhalePose {
-        if waiting != nil { return .waiting }
-        if !chat.streaming.isEmpty || doing == "正在回复" { return .writing }
-        if working || typing || dictation.listening { return .thinking }
-        if cheering { return .cheering }
-        if dozing { return .sleeping }
-        return .idle
+    /// Which of the pet's states the portrait in the header and the empty page show.
+    private var petState: String {
+        if waiting != nil { return "notification" }
+        if !chat.streaming.isEmpty || doing == "正在回复" { return "working" }
+        if working || typing || dictation.listening { return "thinking" }
+        if cheering { return "attention" }
+        if dozing { return "sleeping" }
+        return "idle"
     }
 
     /// 「更早的」: draws forty more of the older lines, keeping the line you were looking at in place.
@@ -113,7 +114,7 @@ struct ChatPage: View {
         return error.split(separator: "\n").first.map { last.text.contains($0) } ?? false
     }
 
-    /// Something happened: the whale wakes, and the doze clock starts over.
+    /// Something happened: the pet wakes, and the doze clock starts over.
     private func stir() {
         if dozing { dozing = false }
         stirs += 1
@@ -608,7 +609,7 @@ struct ChatPage: View {
             .buttonStyle(PressStyle())
             .accessibilityLabel("打开侧边栏")
             HStack(spacing: Ink.Space.s) {
-                PetStill(size: 30, pose: pose, avatar: true)
+                PetStill(size: 30, state: petState, avatar: true)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
@@ -636,9 +637,12 @@ struct ChatPage: View {
                     Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
                         withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
                     }
-                } else if PetLibrary.shared.choice != "none" {
+                } else {
                     Button("让\(L.t("nav.pet"))出来", systemImage: "eye") {
-                        withAnimation(Ink.Motion.settle) { PetLibrary.shared.hiddenUntil = nil }
+                        withAnimation(Ink.Motion.settle) {
+                            PetLibrary.shared.hiddenUntil = nil
+                            PetLibrary.shared.visible = true
+                        }
                     }
                 }
             }
@@ -924,7 +928,7 @@ struct ChatPage: View {
 
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
-            PetStill(size: 96, pose: pose)
+            PetStill(size: 96, state: petState)
             Text(isRoom ? L.t("empty.groupChat") : String(format: L.t("empty.chatWithCompanion"), bot.name))
                 .font(Ink.reading)
                 .foregroundStyle(Ink.inkSoft)
@@ -1051,7 +1055,7 @@ struct ChatPage: View {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
                     HStack(spacing: Ink.Space.s) {
-                        PetStill(size: 22, wash: Ink.wash(for: speaker), still: true, avatar: true)
+                        PetStill(size: 22, wash: Ink.wash(for: speaker), avatar: true)
                         Text(speaker.name).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                     }
                 }

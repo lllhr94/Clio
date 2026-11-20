@@ -113,13 +113,13 @@ struct SettingsView: View {
         Spot(title: "界面大小：整个界面放大缩小", words: "界面 缩放 大小 太大 太小 紧凑 放大 缩小 ui", page: "look#ui"),
         Spot(title: "称谓：日常或书卷", words: "称谓 叫法 名字 诗意 普通 书卷 日常 称呼 旁注", page: "look#tone"),
         Spot(title: "用面容锁住 Clio", words: "面容 face id 锁 密码 隐私", page: "look#lock"),
-        Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 形象", page: "look#motion"),
+        Spot(title: "思考过程、心绪、逐字淡入、触感", words: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹", page: "look#motion"),
         Spot(title: "压缩前文、上下文、温度", words: "压缩 上下文 温度 输出 长度", page: "look#context"),
         Spot(title: "通知、锁屏、灵动岛、后台续跑", words: "通知 锁屏 灵动岛 后台 实时活动 续跑", page: "look#notify"),
         Spot(title: "晨信和日记", words: "晨信 日记 早上", page: "look#morning"),
         Spot(title: "能做的事和要不要先问", words: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室", page: "grants"),
         Spot(title: "连接器：谷歌、Notion、高德地图等", words: "连接器 连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp", page: "connectors"),
-        Spot(title: "宠物：选一只、大小、安静模式、导入", words: "宠物 伴读 鲸鱼 形象 气泡 安静 导入 宠物包", page: "pet"),
+        Spot(title: "宠物：选一只、大小、安静模式、导入", words: "宠物 伴读 小克 肉包 形象 头像 气泡 安静 导入 宠物包 图片 gif", page: "pet"),
         Spot(title: "定时任务", words: "定时 每天 每周 到点 任务", page: "timing"),
         Spot(title: "技能", words: "技能 skill 本事", page: "skills"),
         Spot(title: "养护：备份、日志、诊断", words: "养护 备份 恢复 日志 诊断 掉帧 清理", page: "care"),
@@ -465,7 +465,7 @@ struct SettingsView: View {
         group(L.t("settings.appearance")) {
             row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
             divider
-            row("pawprint", Tint.looks, "nav.pet", PetLibrary.shared.choice == "none" ? "不显示" : (PetLibrary.shared.pack?.name ?? Persona.stored.kind.word)) { petting = true }
+            row("pawprint", Tint.looks, "nav.pet", (PetLibrary.shared.pack?.name ?? "") + (PetLibrary.shared.visible ? "" : " · 不站出来")) { petting = true }
             divider
             HStack(spacing: Ink.Space.m) {
                 badge("quote.bubble", Tint.looks)
@@ -501,8 +501,6 @@ struct SettingsView: View {
             row("person.3", Tint2.people, "nav.groupChat", team.rooms.isEmpty ? "没有" : "\(team.rooms.count) 个") { elsewhere(.gathering) }
             divider
             row("square.and.arrow.down", Tint2.people, Words.t("收名帖"), nil) { elsewhere(.importCard) }
-            divider
-            row("face.smiling", Tint2.people, "形象", nil) { elsewhere(.portrait) }
         }
     }
 

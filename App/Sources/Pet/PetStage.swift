@@ -35,25 +35,22 @@ struct PetStage: View {
     @State private var wander: CGFloat = 0
     @State private var facingRight = false
     /// A one-off: a reaction, a moment of joy, a stumble. Plays over the state until `until`.
-    @State private var oneOff: (anim: String, pose: WhalePose?, until: Date)?
+    @State private var oneOff: (anim: String, until: Date)?
     @State private var since = Date()
     @State private var shownAnim = ""
     @State private var lastTouch = Date()
     @State private var now = Date()
     @State private var nextIdle = Date().addingTimeInterval(.random(in: 45...150))
     @State private var taps: [Date] = []
-    @State private var bounce = false
-    @State private var tilt = 0.0
 
     private var bodyHeight: CGFloat { CGFloat(30 * library.factor) * UIScale.factor }
-    private var whaleSize: CGFloat { CGFloat(44 * library.factor) * UIScale.factor }
     private var figureWidth: CGFloat {
-        guard let pack = library.pack else { return whaleSize * 1.15 }
+        guard let pack = library.pack else { return bodyHeight }
         return bodyHeight * CGFloat(pack.canvasW / pack.content.h)
     }
     /// From the feet to the top of the drawing.
     private var standHeight: CGFloat {
-        guard let pack = library.pack else { return whaleSize }
+        guard let pack = library.pack else { return bodyHeight }
         return bodyHeight * CGFloat(pack.baseline / pack.content.h)
     }
 
@@ -70,7 +67,7 @@ struct PetStage: View {
             let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), width - margin)
             ZStack(alignment: .bottomLeading) {
                 Color.clear
-                if library.shown {
+                if library.shown, library.pack != nil {
                     figure
                         .frame(width: figureWidth, height: standHeight, alignment: .bottom)
                         .contentShape(Rectangle())
@@ -103,8 +100,8 @@ struct PetStage: View {
             guard let kind = news.react?.kind else { return }
             touch()
             switch kind {
-            case .done: play(state: "attention", pose: .cheering, seconds: 3)
-            case .failed: play(state: "error", pose: .thinking, seconds: 3)
+            case .done: play(state: "attention", seconds: 3)
+            case .failed: play(state: "error", seconds: 3)
             case .approval, .answer: break
             }
         }
@@ -119,30 +116,6 @@ struct PetStage: View {
             let anim = currentAnim(pack)
             SpritePet(pack: pack, anim: anim, since: since, bodyHeight: bodyHeight, mirrored: mirrored(pack))
                 .onChange(of: anim) { _, _ in since = Date() }
-        } else {
-            PetFigure(size: whaleSize, pose: whalePose, writing: isWriting)
-            .scaleEffect(x: facingRight ? -1 : 1, y: 1)
-            .scaleEffect(dragging ? 1.12 : (bounce ? 1.1 : 1), anchor: .bottom)
-            .rotationEffect(.degrees(tilt), anchor: .bottom)
-            .shadow(color: .black.opacity(dragging ? 0.16 : 0.06), radius: dragging ? 10 : 3, y: dragging ? 6 : 1)
-        }
-    }
-
-    private var isWriting: Bool {
-        switch mood {
-        case .writing, .working: true
-        default: false
-        }
-    }
-
-    private var whalePose: WhalePose {
-        if let pose = oneOff?.pose { return pose }
-        if asleep { return .sleeping }
-        switch mood {
-        case .idle: return .idle
-        case .thinking: return .thinking
-        case .writing, .working, .sweeping: return .writing
-        case .waiting: return .waiting
         }
     }
 
@@ -173,7 +146,7 @@ struct PetStage: View {
             let wasAsleep = asleep
             touch()
             if wasAsleep {
-                play(state: "waking", pose: .idle, seconds: Double(library.pack?.wakeMs ?? 1200) / 1000)
+                play(state: "waking", seconds: Double(library.pack?.wakeMs ?? 1200) / 1000)
                 return
             }
             // A bubble about another conversation: the pet takes you there.
@@ -187,12 +160,12 @@ struct PetStage: View {
             Haptics.tick(0.5)
             if taps.count >= 6 {
                 taps = []
-                react("annoyed", fallback: "tickle", whale: { shake() })
+                react("annoyed", fallback: "tickle")
             } else if taps.count >= 3 {
-                react("tickle", fallback: nil, whale: { wiggle() })
+                react("tickle", fallback: nil)
             } else {
                 let left = value.location.x < width / 2
-                react(left ? "tapLeft" : "tapRight", fallback: nil, whale: { hop(left: left) })
+                react(left ? "tapLeft" : "tapRight", fallback: nil)
             }
         }
     }
@@ -223,7 +196,7 @@ struct PetStage: View {
 
     @ViewBuilder
     private var menu: some View {
-        if library.packs.count > 0 {
+        if library.packs.count > 1 {
             Button(L.t("pet.change"), systemImage: "arrow.triangle.2.circlepath") { library.next() }
         }
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
@@ -239,55 +212,19 @@ struct PetStage: View {
         now = lastTouch
     }
 
-    private func react(_ name: String, fallback: String?, whale: () -> Void) {
-        if let pack = library.pack {
-            if let anim = pack.reaction(name) ?? fallback.flatMap({ pack.reaction($0) }) {
-                let ms = pack.animations[anim]?.total ?? 1200
-                oneOff = (anim, nil, Date().addingTimeInterval(Double(ms) / 1000))
-                since = Date()
-            }
-        } else {
-            whale()
-        }
+    private func react(_ name: String, fallback: String?) {
+        guard let pack = library.pack,
+              let anim = pack.reaction(name) ?? fallback.flatMap({ pack.reaction($0) }) else { return }
+        let ms = pack.animations[anim]?.total ?? 1200
+        oneOff = (anim, Date().addingTimeInterval(Double(ms) / 1000))
+        since = Date()
     }
 
-    private func play(state: String, pose: WhalePose, seconds: Double) {
-        if let pack = library.pack {
-            guard let anim = pack.anim(for: state) else { return }
-            let hold = Double(pack.minDisplay[state] ?? Int(seconds * 1000)) / 1000
-            oneOff = (anim, nil, Date().addingTimeInterval(hold))
-            since = Date()
-        } else {
-            oneOff = ("", pose, Date().addingTimeInterval(seconds))
-            if pose == .cheering { hop(left: false) }
-        }
-    }
-
-    private func hop(left: Bool) {
-        guard !calm else { return }
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.45)) { bounce = true; tilt = left ? -8 : 8 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { bounce = false; tilt = 0 }
-        }
-    }
-
-    private func wiggle() {
-        guard !calm else { return }
-        for (step, angle) in [10.0, -10, 8, -8, 0].enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.08) {
-                withAnimation(.easeInOut(duration: 0.08)) { tilt = angle }
-            }
-        }
-    }
-
-    private func shake() {
-        guard !calm else { return }
-        Haptics.thud()
-        for (step, angle) in [-4.0, 4, -4, 4, 0].enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.05) {
-                withAnimation(.linear(duration: 0.05)) { tilt = angle }
-            }
-        }
+    private func play(state: String, seconds: Double) {
+        guard let pack = library.pack, let anim = pack.anim(for: state) else { return }
+        let hold = Double(pack.minDisplay[state] ?? Int(seconds * 1000)) / 1000
+        oneOff = (anim, Date().addingTimeInterval(hold))
+        since = Date()
     }
 
     /// Once a second: one-offs run out, naps begin, and now and then a little wander or an idle flourish.
@@ -306,68 +243,9 @@ struct PetStage: View {
             withAnimation(.easeInOut(duration: 1.6)) { wander = step }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { wanderTarget = wander }
         } else if let pack, let pick = pack.idlePool.randomElement() {
-            oneOff = (pick.anim, nil, now.addingTimeInterval(Double(pick.ms) / 1000))
+            oneOff = (pick.anim, now.addingTimeInterval(Double(pick.ms) / 1000))
             since = now
         }
-    }
-}
-
-/// Clio's own pet: the figure from 形象 (卷卷, 墨团, 天鹅, the whale or your pictures). Figures other than 卷卷
-/// hold a little scroll, as Clio holds hers; it opens while they write and rolls up again when they are done.
-struct PetFigure: View {
-    var size: CGFloat
-    var pose: WhalePose
-    var writing: Bool
-    @AppStorage("persona") private var stored = Data()
-
-    private var bare: Persona {
-        var persona = (try? JSONDecoder().decode(Persona.self, from: stored)) ?? Persona()
-        persona.frame = .bare
-        return persona
-    }
-
-    var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            // Standing on the bar, not framed like a portrait: the whale without its disc.
-            Whale(size: size, pose: pose, persona: bare)
-            if bare.kind != .scroll {
-                ScrollProp(open: writing, size: size * 0.5)
-                    .offset(x: size * 0.1, y: -size * 0.02)
-            }
-        }
-        .frame(width: size * 1.15, height: size, alignment: .bottom)
-        .animation(Ink.Motion.settle, value: writing)
-    }
-}
-
-/// A little scroll: rolled up into one tube while idle, opened out between its two rods while writing.
-private struct ScrollProp: View {
-    var open: Bool
-    var size: CGFloat
-
-    var body: some View {
-        let rodW = size * 0.13, rodH = size * 0.5
-        HStack(spacing: 0) {
-            rod(rodW, rodH)
-            ZStack {
-                Rectangle().fill(Ink.paperRaised)
-                VStack(spacing: size * 0.07) {
-                    ForEach(0..<3, id: \.self) { _ in Capsule().fill(Ink.inkFaint.opacity(0.7)).frame(height: max(1, size * 0.035)) }
-                }
-                .padding(.horizontal, size * 0.08)
-                .opacity(open ? 1 : 0)
-            }
-            .frame(width: open ? size * 0.72 : size * 0.42, height: open ? rodH * 0.84 : rodW * 1.25)
-            .overlay(Rectangle().strokeBorder(Ink.inkSoft.opacity(0.5), lineWidth: 0.5))
-            rod(rodW, rodH)
-        }
-        .rotationEffect(.degrees(open ? -8 : -24))
-        .accessibilityHidden(true)
-    }
-
-    /// When rolled up, the rods are only the round ends of the tube.
-    private func rod(_ width: CGFloat, _ height: CGFloat) -> some View {
-        Capsule().fill(Ink.accent.opacity(0.85)).frame(width: width, height: open ? height : width * 1.5)
     }
 }
 

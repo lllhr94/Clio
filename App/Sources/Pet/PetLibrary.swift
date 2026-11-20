@@ -3,16 +3,18 @@ import Observation
 import UIKit
 import ZIPFoundation
 
-/// The pets on this phone: your figure from 形象, bundled packs, and the packs you imported.
-/// What is picked, how big, quiet or not, hidden for a while: all kept here.
+/// The pets on this phone: the bundled ones (小克, 肉包) and the ones you imported.
+/// Which one is yours, whether it stands on the composer, how big, quiet or not, hidden for a while: all kept here.
+/// The pet you pick is also every portrait and illustration in Clio, shown or not.
 @MainActor
 @Observable
 final class PetLibrary {
     static let shared = PetLibrary()
 
-    /// "whale" (the figure from 形象; the id is kept from when it was always the whale), "none", or a pack's id.
-    /// Bundled packs are "builtin-<folder>"; 小克 ("builtin-xiaoke") is the one a new phone starts with.
+    /// The pack that is yours. Bundled packs are "builtin-<folder>", imported ones "user-<name>".
     var choice: String { didSet { UserDefaults.standard.set(choice, forKey: "pet.choice") } }
+    /// Stands on the composer. Off, it still appears in portraits and illustrations.
+    var visible: Bool { didSet { UserDefaults.standard.set(visible, forKey: "pet.visible") } }
     /// "small", "standard", "large" or "custom".
     var size: String { didSet { UserDefaults.standard.set(size, forKey: "pet.size") } }
     /// Custom size, as a share of standard: 0.5…3.
@@ -25,9 +27,16 @@ final class PetLibrary {
 
     private init() {
         let store = UserDefaults.standard
-        // Whoever had put the old companion figure away keeps it away; everyone else meets 小克.
-        let fallback = store.object(forKey: "mascot.shown") as? Bool == false ? "none" : "builtin-xiaoke"
-        choice = store.string(forKey: "pet.choice") ?? fallback
+        // From before there was only one kind of pet: "whale" (the old drawn figures) and "none" become 小克,
+        // and whoever had put the figure away keeps it off the composer.
+        let stored = store.string(forKey: "pet.choice")
+        let old = stored == nil || stored == "whale" || stored == "none"
+        choice = old ? Self.standard : stored!
+        if let kept = store.object(forKey: "pet.visible") as? Bool {
+            visible = kept
+        } else {
+            visible = !(stored == "none" || store.object(forKey: "mascot.shown") as? Bool == false)
+        }
         size = store.string(forKey: "pet.size") ?? "standard"
         custom = store.object(forKey: "pet.custom") as? Double ?? 1
         quiet = store.bool(forKey: "pet.quiet")
@@ -35,8 +44,13 @@ final class PetLibrary {
         reload()
     }
 
-    var shown: Bool { choice != "none" && (hiddenUntil.map { $0 < Date() } ?? true) }
-    var pack: PetPack? { packs.first { $0.id == choice } }
+    /// 小克: the pet every phone starts with, and the one that stands in if yours is gone.
+    static let standard = "builtin-xiaoke"
+
+    /// On the composer now.
+    var shown: Bool { visible && (hiddenUntil.map { $0 < Date() } ?? true) }
+    /// Yours; 小克 if yours cannot be read.
+    var pack: PetPack? { packs.first { $0.id == choice } ?? packs.first { $0.id == Self.standard } ?? packs.first }
 
     /// How much bigger than standard.
     var factor: Double {
@@ -57,8 +71,10 @@ final class PetLibrary {
     func reload() {
         let bundledRoot = Bundle.main.resourceURL?.appendingPathComponent("Pets", isDirectory: true)
         let bundled = bundledRoot.map { loadPacks(in: $0, idPrefix: "builtin-") } ?? []
-        packs = (bundled + loadPacks(in: folder)).sorted { $0.name < $1.name }
-        if choice != "whale", choice != "none", pack == nil { choice = "whale" }
+        // The bundled ones first, 小克 at the top; then yours by name.
+        packs = bundled.sorted { ($0.id == Self.standard ? 0 : 1, $0.name) < ($1.id == Self.standard ? 0 : 1, $1.name) }
+            + loadPacks(in: folder).sorted { $0.name < $1.name }
+        if !packs.isEmpty, !packs.contains(where: { $0.id == choice }) { choice = Self.standard }
     }
 
     private func loadPacks(in root: URL, idPrefix: String = "") -> [PetPack] {
@@ -81,7 +97,8 @@ final class PetLibrary {
 
     /// The next pet in the list, for 换宠物 on the pet itself.
     func next() {
-        let all = ["whale"] + packs.map(\.id)
+        let all = packs.map(\.id)
+        guard !all.isEmpty else { return }
         let at = all.firstIndex(of: choice) ?? -1
         choice = all[(at + 1) % all.count]
     }
@@ -94,7 +111,7 @@ final class PetLibrary {
         guard let pack = packs.first(where: { $0.id == id }), canDelete(pack) else { return }
         try? FileManager.default.removeItem(at: pack.dir)
         PetSheets.forget(id)
-        if choice == id { choice = "whale" }
+        if choice == id { choice = Self.standard }
         reload()
     }
 
@@ -102,6 +119,7 @@ final class PetLibrary {
 
     /// Takes a pet-pack zip (schema 1: `pack.json` and its PNG sheets, at the top or in one folder),
     /// checks everything it names, and keeps only those files. The same pack imported again replaces the old one.
+    /// A single picture or animation (PNG, GIF, APNG, WebP) becomes a pet that only has its idle state.
     func install(_ zip: URL) throws -> PetPack {
         let fm = FileManager.default
         let scratch = fm.temporaryDirectory.appendingPathComponent("pet-\(UUID().uuidString)", isDirectory: true)
@@ -112,10 +130,15 @@ final class PetLibrary {
         let size = (try? zip.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= 64 << 20 else { throw PetPack.Problem.bad("包太大了（超过 64 MB）") }
 
-        let archive: Archive
-        do { archive = try Archive(url: zip, accessMode: .read) } catch { throw PetPack.Problem.bad("打不开这个 zip") }
+        let ext = zip.pathExtension.lowercased()
+        if ext != "zip" {
+            guard ["png", "gif", "apng", "webp"].contains(ext) else { throw PetPack.Problem.bad("认不得这种文件：用 zip、PNG、GIF 或 WebP") }
+            try fm.copyItem(at: zip, to: scratch.appendingPathComponent("idle." + ext))
+        }
+        let archive: Archive? = ext == "zip" ? try? Archive(url: zip, accessMode: .read) : nil
+        if ext == "zip", archive == nil { throw PetPack.Problem.bad("打不开这个 zip") }
         var entries = 0, unpacked = 0
-        for entry in archive {
+        for entry in archive.map { Array($0) } ?? [] {
             entries += 1
             unpacked += Int(entry.uncompressedSize)
             guard entries <= 256, unpacked <= 64 << 20 else { throw PetPack.Problem.bad("包里的文件太多或太大") }
@@ -125,7 +148,7 @@ final class PetLibrary {
             let target = scratch.appendingPathComponent(path)
             guard target.standardizedFileURL.path.hasPrefix(scratch.standardizedFileURL.path) else { continue }
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            _ = try archive.extract(entry, to: target)
+            _ = try archive?.extract(entry, to: target)
         }
 
         // pack.json at the top, or in exactly one folder.

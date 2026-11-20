@@ -17,7 +17,7 @@ struct FormSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.l) {
                         HStack(spacing: Ink.Space.m) {
-                            PetStill(size: 44, state: "notification", pose: .waiting, still: true, avatar: true)
+                            PetStill(size: 44, state: "notification", avatar: true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("\(form.from)递来一张笺").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 Text(form.title).font(Ink.serif(22, bold: true)).foregroundStyle(Ink.ink)

@@ -1,14 +1,14 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 宠物设置: which pet, how big, quiet or not; importing your own; Clio's own whale wears the portrait you made.
+/// 宠物设置: which pet is yours (it is also every portrait in Clio), whether it stands on the composer, how big,
+/// quiet or not; importing your own, from a pet pack or a single picture.
 struct PetPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var library = PetLibrary.shared
     @State private var importing = false
     @State private var notice: String?
     @State private var deleting: PetPack?
-    @State private var portrait = false
 
     var body: some View {
         NavigationStack {
@@ -22,7 +22,6 @@ struct PetPage: View {
                     }
 
                     Section {
-                        choiceRow(id: "whale", title: "你的形象", line: "就是「形象」里那位：卷卷、墨团、天鹅、鲸鱼，或你自己的画像")
                         ForEach(library.packs) { pack in
                             choiceRow(id: pack.id, title: pack.name, line: [pack.author, pack.license].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .contextMenu {
@@ -31,14 +30,13 @@ struct PetPage: View {
                                     }
                                 }
                         }
-                        choiceRow(id: "none", title: "不显示", line: nil)
                         Button {
                             importing = true
                         } label: {
-                            Label("导入宠物包（zip）", systemImage: "square.and.arrow.down")
+                            Label("导入宠物", systemImage: "square.and.arrow.down")
                         }
                     } header: { Text(L.t("pet.choose")) } footer: {
-                        Text("两种都认：DSH Go、Clawd on Desk 那种宠物包（pack.json 加几张 PNG）；或者每个状态一个 GIF / APNG 打成一个 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）。长按导入的可以删掉。")
+                        Text("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。")
                     }
 
                     Section {
@@ -62,17 +60,15 @@ struct PetPage: View {
                     } header: { Text(L.t("pet.size")) }
 
                     Section {
+                        Toggle("站在输入框上", isOn: $library.visible)
                         Toggle("安静模式", isOn: $library.quiet)
                         if let until = library.hiddenUntil, until > Date() {
                             Button("现在就出来（藏到 \(until.formatted(date: .omitted, time: .shortened))）") {
                                 withAnimation(Ink.Motion.settle) { library.hiddenUntil = nil }
                             }
                         }
-                        if library.choice == "whale" {
-                            Button("换个形象") { portrait = true }
-                        }
                     } footer: {
-                        Text("它站在输入框上。别的\(L.t("chat.conversation"))做完、出错、等你确认时冒个气泡，点气泡直接过去；安静模式下只做动作。点它、连点、拖它、长按，都有反应。")
+                        Text("关掉「站在输入框上」只是不站出来，头像和插图还是它。别的\(L.t("chat.conversation"))做完、出错、等你确认时冒个气泡，点气泡直接过去；安静模式下只做动作。点它、连点、拖它、长按，都有反应。")
                     }
                 }
             }
@@ -80,7 +76,7 @@ struct PetPage: View {
             .navigationTitle(L.t("pet.settings"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.zip]) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.zip, .png, .gif, .webP]) { result in
                 guard case .success(let url) = result else { return }
                 do {
                     let pack = try library.install(url)
@@ -99,7 +95,6 @@ struct PetPage: View {
                     deleting = nil
                 }
             } message: { Text(L.daily["errors.cannotUndo"] ?? "删除后无法恢复。") }
-            .sheet(isPresented: $portrait) { PortraitPage() }
         }
     }
 
@@ -107,10 +102,6 @@ struct PetPage: View {
     private var preview: some View {
         if let pack = library.pack {
             SpritePet(pack: pack, anim: pack.anim(for: "idle") ?? "", since: Date(), bodyHeight: CGFloat(30 * library.factor) * UIScale.factor)
-        } else if library.choice == "none" {
-            Text("不显示").foregroundStyle(Ink.inkFaint)
-        } else {
-            PetFigure(size: CGFloat(44 * library.factor) * UIScale.factor, pose: .idle, writing: false)
         }
     }
 

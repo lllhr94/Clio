@@ -30,9 +30,7 @@ struct ClioRoot: View {
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            if Shots.name == "figures" {
-                FigureGallery()
-            } else if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
+            if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
                 ShotSettingsPage(name: shot, team: team)
             } else if team.phase == .setup || holdingSetup {
                 SetupView(team: team, first: true) { holdingSetup = false }
@@ -102,7 +100,6 @@ struct Desk: View {
     @State private var editing: EditTarget?
     @State private var tuning = false
     @State private var settingsPage: String?
-    @State private var dressing = false
     @State private var gathering = false
     @State private var studying = false
     @State private var denning = false
@@ -568,7 +565,6 @@ struct Desk: View {
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
         .sheet(item: $roomEditing) { room in RoomEditor(team: team, room: room) }
-        .sheet(isPresented: $dressing) { PortraitPage() }
         .sheet(isPresented: $studying) { StudyPage() }
         .fullScreenCover(isPresented: $denning) { DenPage() }
         .sheet(isPresented: $granting) { GrantsPage(team: team) }
@@ -686,7 +682,6 @@ struct Desk: View {
         case .newCompanion: editing = EditTarget(id: "new", bot: nil)
         case .importCard: importing = true
         case .gathering: gathering = true
-        case .portrait: dressing = true
         case .study: studying = true
         case .den: denning = true
         case .hills: hilling = true
@@ -760,7 +755,7 @@ struct Desk: View {
                         opened = .companion(bot.id)
                     } label: {
                         HStack(spacing: Ink.Space.s) {
-                            PetStill(size: 28, wash: Ink.wash(for: bot), still: true, avatar: true)
+                            PetStill(size: 28, wash: Ink.wash(for: bot), avatar: true)
                             Text(bot.name).font(Ink.label).foregroundStyle(Ink.ink)
                             if team.isWorking(TeamModel.key(bot: bot.id)) {
                                 Circle().fill(Ink.accent).frame(width: 6, height: 6)
@@ -898,7 +893,7 @@ struct Desk: View {
             HStack(alignment: .top, spacing: Ink.Space.m) {
                 Group {
                     if let bot = item.bot {
-                        PetStill(size: 28, wash: Ink.wash(for: bot), still: true, avatar: true)
+                        PetStill(size: 28, wash: Ink.wash(for: bot), avatar: true)
                     } else {
                         Image(systemName: "person.3")
                             .font(.system(size: Ink.Size.micro, weight: .semibold))

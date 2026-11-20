@@ -211,7 +211,7 @@ jobs:
           status=0
           for mode in light dark; do
             xcrun simctl ui "$UDID" appearance "$mode"
-            for shot in desk chat sidebar settings figures connectors look grants add pet; do
+            for shot in desk chat sidebar settings connectors look grants add pet; do
               capture "$shot" "shots/$mode-$shot.png" || status=1
             done
           done

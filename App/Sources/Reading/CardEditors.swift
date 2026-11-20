@@ -402,7 +402,7 @@ struct RoomEditor: View {
         } label: {
             VStack(spacing: Ink.Space.s) {
                 ZStack(alignment: .topTrailing) {
-                    PetStill(size: 56, wash: Ink.wash(for: bot), still: true, avatar: true)
+                    PetStill(size: 56, wash: Ink.wash(for: bot), avatar: true)
                         .opacity(order == nil ? 0.5 : 1)
                     if let order {
                         Text("\(order + 1)")

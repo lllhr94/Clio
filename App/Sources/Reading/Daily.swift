@@ -110,7 +110,7 @@ struct TideChip: View {
     }
 }
 
-/// The tide's corner of the desk: what it brought, picked up with a word from the whale; and the collection.
+/// The tide's corner of the desk: what it brought, picked up with a word from the pet; and the collection.
 struct TideSheet: View {
     @ObservedObject var book = TideBook.shared
     /// Who picks things up: the main companion's name.
@@ -184,7 +184,7 @@ struct TideSheet: View {
 
     private func reveal(_ find: Tide.Find) -> some View {
         VStack(spacing: Ink.Space.m) {
-            PetStill(size: 64, state: "attention", pose: .cheering)
+            PetStill(size: 64, state: "attention")
             Image(systemName: find.symbol)
                 .font(.system(size: 40))
                 .foregroundStyle(Ink.accent)
