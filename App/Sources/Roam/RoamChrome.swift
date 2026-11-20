@@ -3,6 +3,8 @@ import SwiftUI
 /// The globe in a chat's top bar. It shows once the browser has a page, and pulses while a companion is on it.
 struct RoamButton: View {
     @ObservedObject var browser: BrowserSession
+    /// Inside a group of buttons that share one glass: no glass of its own.
+    var bare = false
     let open: (Bool) -> Void
 
     var body: some View {
@@ -12,12 +14,21 @@ struct RoamButton: View {
                 open(true)
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: "safari")
-                        .font(.system(size: Ink.Size.body, weight: .medium))
-                        .foregroundStyle(Ink.ink)
-                        .symbolEffect(.pulse, isActive: browser.loading)
-                        .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                        .glassFace(in: Circle())
+                    if bare {
+                        Image(systemName: "safari")
+                            .font(.system(size: Ink.Size.body, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                            .symbolEffect(.pulse, isActive: browser.loading)
+                            .frame(width: Ink.Bar.height * 0.9, height: Ink.Bar.height)
+                            .contentShape(Rectangle())
+                    } else {
+                        Image(systemName: "safari")
+                            .font(.system(size: Ink.Size.body, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                            .symbolEffect(.pulse, isActive: browser.loading)
+                            .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                            .glassFace(in: Circle())
+                    }
                     if browser.handoff != nil {
                         Circle().fill(Ink.warn).frame(width: 9, height: 9).offset(x: -2, y: 2)
                     }

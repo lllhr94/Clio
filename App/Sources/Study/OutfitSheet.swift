@@ -63,7 +63,7 @@ struct OutfitSheet: View {
             .navigationTitle("装常用软件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { done(nil) } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done(nil) } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("开装") { done(command) }.fontWeight(.semibold).disabled(chosen.isEmpty && mirror == "dl-cdn.alpinelinux.org")
                 }

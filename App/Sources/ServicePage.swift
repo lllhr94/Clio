@@ -522,7 +522,7 @@ struct ModelSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(model)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
         .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.guess(model) }
         .onChange(of: traits) { _, value in

@@ -586,7 +586,6 @@ struct ChatPage: View {
     private struct ReadingFile: Identifiable { let url: URL; var id: URL { url } }
     @State private var reading: ReadingFile?
 
-    @AppStorage("mascot.shown") private var mascotShown = true
 
     private func leave() {
         typing = false
@@ -633,43 +632,31 @@ struct ChatPage: View {
             }
             .contextMenu {
                 if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
-                Button(mascotShown ? "收起浮着的形象" : "放出浮着的形象", systemImage: mascotShown ? "eye.slash" : "eye") {
-                    withAnimation(Ink.Motion.settle) { mascotShown.toggle() }
+                if PetLibrary.shared.shown {
+                    Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
+                        withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
+                    }
+                } else if PetLibrary.shared.choice != "none" {
+                    Button("让\(L.t("nav.pet"))出来", systemImage: "eye") {
+                        withAnimation(Ink.Motion.settle) { PetLibrary.shared.hiddenUntil = nil }
+                    }
                 }
             }
             .accessibilityHint("点一下看对话详情")
             Spacer(minLength: 0)
-            RoamButton(browser: team.browser) { open in
-                typing = false
-                roaming = open
+            // The page's own tools share one glass, so the bar reads as three things, not five circles.
+            HStack(spacing: 0) {
+                RoamButton(browser: team.browser, bare: true) { open in
+                    typing = false
+                    roaming = open
+                }
+                // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
+                headerTool("folder", Words.t("书案里的文件")) { filesOpen = true }
+                headerTool("book.pages", Words.t("絮语页")) { leafing = true }
             }
-            // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
-            Button {
-                Haptics.light()
-                typing = false
-                filesOpen = true
-            } label: {
-                Image(systemName: "folder")
-                    .font(.system(size: Ink.Size.body, weight: .medium))
-                    .foregroundStyle(Ink.ink)
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                    .glassFace(in: Circle())
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel(Words.t("书案里的文件"))
-            Button {
-                Haptics.light()
-                typing = false
-                leafing = true
-            } label: {
-                Image(systemName: "book.pages")
-                    .font(.system(size: Ink.Size.body, weight: .medium))
-                    .foregroundStyle(Ink.ink)
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                    .glassFace(in: Circle())
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel(Words.t("絮语页"))
+            .padding(.horizontal, Ink.Space.xs)
+            .glassBacking(in: Capsule())
+            .animation(Ink.Motion.settle, value: team.browser.used)
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
@@ -686,6 +673,22 @@ struct ChatPage: View {
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
         }
+    }
+
+    private func headerTool(_ symbol: String, _ label: String, _ run: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            typing = false
+            run()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: Ink.Size.body, weight: .medium))
+                .foregroundStyle(Ink.ink)
+                .frame(width: Ink.Bar.height * 0.9, height: Ink.Bar.height)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(label)
     }
 
     // MARK: Composer chips
@@ -1441,11 +1444,14 @@ struct ChatPage: View {
 
     private var composer: some View {
         VStack(spacing: Ink.Space.s) {
-            if let plan = team.plans[chat.key] {
-                PlanCard(steps: plan) { team.clearPlan(chat.key) }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            // The plan sits right on the composer, as one block with it, not as a second bar floating above.
+            VStack(spacing: Ink.Space.xs) {
+                if let plan = team.plans[chat.key] {
+                    PlanCard(steps: plan) { team.clearPlan(chat.key) }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                dock
             }
-            dock
             if let problem = dictation.problem {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
                     .onTapGesture { dictation.problem = nil }
@@ -1473,7 +1479,7 @@ struct ChatPage: View {
                         Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold))
                         Text("改了重发：之后的对话会重新来过").font(Ink.footnote)
                         Spacer()
-                        Button("算了") {
+                        Button(L.t("actions.cancel")) {
                             withAnimation(Ink.Motion.settle) {
                                 editing = nil
                                 draft = ""
@@ -2559,7 +2565,7 @@ private struct SourcesSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle("\(urls.count) 个" + L.t("chat.source"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
     }
 

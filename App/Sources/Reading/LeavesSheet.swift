@@ -136,11 +136,11 @@ struct LeavesSheet: View {
                                             .padding(Ink.Space.m)
                                             .paperCard()
                                         HStack {
-                                            Button("算了") {
+                                            Button(L.t("actions.cancel")) {
                                                 withAnimation(Ink.Motion.settle) { editingDigest = false }
                                             }
                                             Spacer()
-                                            Button("存好") {
+                                            Button(L.t("actions.save")) {
                                                 team.editSummary(key, digestDraft)
                                                 Haptics.thud()
                                                 withAnimation(Ink.Motion.settle) { editingDigest = false }
@@ -229,7 +229,7 @@ struct LeavesSheet: View {
             } message: {
                 Text("原文放回，提要退回压缩前")
             }
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .sheet(item: $reading) { bot in DiarySheet(team: team, bot: bot) }
         }
     }

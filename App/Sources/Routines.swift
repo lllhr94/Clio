@@ -162,7 +162,7 @@ struct RoutinesPage: View {
             .navigationTitle(L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Haptics.light()
@@ -278,9 +278,9 @@ struct RoutineEditor: View {
             .navigationTitle(isNew ? "新的" + L.t("agent.scheduledJobs") : L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("存好") { save() }
+                    Button(L.t("actions.save")) { save() }
                         .disabled(routine.title.trimmingCharacters(in: .whitespaces).isEmpty || routine.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }

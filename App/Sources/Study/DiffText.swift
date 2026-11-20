@@ -84,7 +84,7 @@ struct DiffSheet: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.done")) { dismiss() } }
                 if let url {
                     ToolbarItem(placement: .topBarTrailing) { Button("打开文件") { open(url) } }
                 }

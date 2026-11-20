@@ -52,7 +52,7 @@ struct SettingsView: View {
                     .padding(.vertical, Ink.Space.l)
                     }
                 }
-                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "找一项设置")
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找一项设置")
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
@@ -61,7 +61,7 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("好了") {
+                    Button(L.t("actions.done")) {
                         Haptics.light()
                         dismiss()
                     }
@@ -85,7 +85,7 @@ struct SettingsView: View {
         .sheet(isPresented: $petting) { PetPage() }
         .alert(Words.t("改这条拾遗"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
             TextField("", text: $memoryText)
-            Button("存好") {
+            Button(L.t("actions.save")) {
                 if let editingMemory { team.editMemory(editingMemory.id, memoryText) }
                 editingMemory = nil
             }

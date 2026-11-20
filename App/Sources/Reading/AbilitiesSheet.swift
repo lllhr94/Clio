@@ -55,7 +55,7 @@ struct AbilitiesSheet: View {
             }
             .navigationTitle(Words.t("本事"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
     }
 

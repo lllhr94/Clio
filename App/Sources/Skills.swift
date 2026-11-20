@@ -237,7 +237,7 @@ struct SkillsPage: View {
             .navigationTitle(L.t("agent.skills"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("写一个新技能", systemImage: "square.and.pencil") { editing = Editing(item: nil) }
@@ -326,9 +326,9 @@ struct SkillEditor: View {
             .navigationTitle(item == nil ? "新技能" : "改技能")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("存好") {
+                    Button(L.t("actions.save")) {
                         let skill = Skill(name: name.trimmingCharacters(in: .whitespacesAndNewlines), description: description.trimmingCharacters(in: .whitespacesAndNewlines), body: body_.trimmingCharacters(in: .whitespacesAndNewlines))
                         SkillShelf.save(skill, over: item?.file)
                         Haptics.thud()

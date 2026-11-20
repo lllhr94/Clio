@@ -92,7 +92,7 @@ struct GrantsPage: View {
             .navigationTitle(Words.t("应许"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
         .onAppear(perform: load)

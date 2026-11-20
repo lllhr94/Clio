@@ -41,7 +41,7 @@ struct SecretsPage: View {
             .navigationTitle(Words.t("信匣"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { editing = Secrets.Item(title: "") } label: { Image(systemName: "plus") }
                 }
@@ -134,9 +134,9 @@ private struct SecretEditor: View {
             .navigationTitle(isNew ? "存一条" : item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("存好") {
+                    Button(L.t("actions.save")) {
                         Secrets.shared.save(item, secret: secret.isEmpty ? nil : secret)
                         Haptics.thud()
                         dismiss()

@@ -209,7 +209,7 @@ struct BotEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("算了") {
+                    Button(L.t("actions.cancel")) {
                         Haptics.light()
                         dismiss()
                     }
@@ -371,7 +371,7 @@ struct RoomEditor: View {
             .navigationTitle(Words.t(room == nil ? "开一场雅集" : "雅集"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(room == nil ? "开席" : "存好") { save() }
                         .fontWeight(.semibold)

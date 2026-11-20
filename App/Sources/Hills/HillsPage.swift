@@ -77,7 +77,7 @@ struct HillsPage: View {
             .hitchPage("远山")
             .navigationTitle(Words.t("远山"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
             .sheet(item: $editingServer) { server in ServerEditor(server: server) }
             .fullScreenCover(item: $terminalHost) { host in InkstonePage(hill: host) }
@@ -323,9 +323,9 @@ private struct HostEditor: View {
             .navigationTitle(host.name.isEmpty ? "新主机" : host.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("存好") {
+                    Button(L.t("actions.save")) {
                         host.port = Int(port) ?? 22
                         if host.name.trimmingCharacters(in: .whitespaces).isEmpty { host.name = host.address }
                         Hills.shared.save(host, password: password.isEmpty ? nil : password)
@@ -395,9 +395,9 @@ private struct ServerEditor: View {
             .navigationTitle(server.name.isEmpty ? "新 MCP 服务" : server.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("存好") {
+                    Button(L.t("actions.save")) {
                         if server.name.trimmingCharacters(in: .whitespaces).isEmpty { server.name = URL(string: server.url)?.host() ?? "MCP" }
                         Hills.shared.save(server, token: token.isEmpty ? nil : token)
                         let saved = server

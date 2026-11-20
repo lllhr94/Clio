@@ -65,7 +65,8 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 - **间距**：`Ink.Space.xs 4 / s 8 / m 12 / l 16 / xl 24 / xxl 32 / page 20`。
 - **圆角只有三种**：卡片 `Ink.Radius.card`（28）、卡片里的小块 `Ink.Radius.small`（14）、控件一律胶囊 `Capsule()`。所有圆角都用 `style: .continuous`。图标是圆角方块，比例统一用 `Kit.iconCorner(size)`。旅伴头像用圆形。
 - **界面大小**：以上数值都乘 `UIScale.factor`（用户在「外观」里选紧凑 / 偏小 / 标准 / 偏大），所以它们是计算属性，不要缓存成常量。
-- **公用组件**（`Kit.swift`）：列表行 `RowLabel`、图标 `IconBadge`、行间分隔 `Kit.divider`、分组标题 `SectionTitle`、主按钮 `WideButtonStyle`。新页面用它们，不要再手搓一套。
+- **公用组件**（`Kit.swift`）：列表行 `RowLabel`、图标 `IconBadge`、行间分隔 `Kit.divider`、分组标题 `SectionTitle`、主按钮 `WideButtonStyle`、装行的卡片 `paperCard()`、正文里的代码块和表格 `inkBlock()`（小圆角）。新页面用它们，不要再手搓一套。
+- **弹出页按钮**：只看的页面右上角「好了」（`L.t("actions.done")`），其他操作（＋、菜单）也放右上；要填写的页面左上「取消」、右上「保存」。搜索框一律在标题下面常驻（`.navigationBarDrawer(displayMode: .always)`）。
 - **颜色**只用 `Ink`：`ink / inkSoft / inkFaint / paper / paperRaised / rule / accent / accentWash / ok / warn / stop`。
 - 浮在内容上的顶栏、输入框要垫纸色渐隐（见 `ChatPage` 的 header 和 composer），不要用系统的 hard scroll edge（会出现带横线的实心条）。
 
