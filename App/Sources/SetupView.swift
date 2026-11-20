@@ -47,57 +47,106 @@ struct SetupView: View {
             }
         }
         .animation(Ink.Motion.unfold, value: step)
-        .onAppear { step = first ? .welcome : .service }
+        .onAppear { step = first && !UserDefaults.standard.bool(forKey: Self.introSeen) ? .welcome : .service }
     }
 
-    // MARK: Welcome
+    // MARK: Welcome: four pages, then the service
+
+    @State private var page = 0
+    /// Once the four pages are through (to the service, or to the demo and back), they are not shown again.
+    static let introSeen = "intro.seen"
+
+    /// Whose drawings the pages use: 肉包 if that is the pet picked, else 小克.
+    private var artist: String { PetLibrary.shared.choice.hasSuffix("roubao") ? "roubao" : "xiaoke" }
 
     private var welcome: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xl) {
-            Spacer(minLength: 0)
-            PetStill(size: 120)
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("你好，这里是 Clio").font(Ink.display).foregroundStyle(Ink.ink)
-                Text(Words.t("几位住在你手机里的旅伴。")).font(Ink.reading).foregroundStyle(Ink.inkSoft)
+        VStack(spacing: 0) {
+            TabView(selection: $page) {
+                introPage(1).tag(0)
+                introPage(2).tag(1)
+                introPage(3) { ToneCards() }.tag(2)
+                introPage(4).tag(3)
             }
-            VStack(alignment: .leading, spacing: Ink.Space.l) {
-                point("lock", "对话只在这台手机上", Words.t("不经过任何人的服务器，旅伴直接用你自己的密钥连模型。"))
-                point("globe", "会上网，也会动手", "搜索、开网页、在手机里的小 Linux 跑脚本，替你记日程。")
-                point("checkmark.seal", "大事都先问你", Words.t("加日程、填网页、连服务器这类事，旅伴会递一张笺等你落印。"))
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .animation(Ink.Motion.settle, value: page)
+
+            VStack(spacing: Ink.Space.l) {
+                dots
+                introButtons
             }
-            Spacer(minLength: 0)
-            // 称谓, asked once and taking effect at once: this page and the next already speak in it.
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text(L.t("onboarding.page3.title")).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
-                ToneCards()
-            }
-            Button {
-                Haptics.light()
-                step = .service
-            } label: {
-                Text(L.t("onboarding.page4.primaryCta"))
-                    .font(.system(size: Ink.Size.body, weight: .semibold))
-                    .foregroundStyle(Ink.paper)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(Ink.accent, in: .capsule)
-            }
-            .buttonStyle(PressStyle(haptic: false))
+            .padding(.horizontal, Ink.Space.page + 4)
+            .padding(.bottom, Ink.Space.xl)
         }
-        .padding(.horizontal, Ink.Space.page + 4)
-        .padding(.vertical, Ink.Space.xl)
     }
 
-    private func point(_ icon: String, _ title: String, _ words: String) -> some View {
-        HStack(alignment: .top, spacing: Ink.Space.m) {
-            Image(systemName: icon)
-                .font(.system(size: Ink.Size.sub, weight: .medium))
-                .foregroundStyle(Ink.accent)
-                .frame(width: 32, height: 32)
-                .background(Ink.accentWash, in: .circle)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink)
-                Text(words).font(Ink.secondary).foregroundStyle(Ink.inkSoft).fixedSize(horizontal: false, vertical: true)
+    private func introPage(_ n: Int) -> some View { introPage(n) { EmptyView() } }
+
+    private func introPage<Extra: View>(_ n: Int, @ViewBuilder extra: () -> Extra) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.xl) {
+            Spacer(minLength: 0)
+            Image("onboarding-\(artist)-\(n)")
+                .resizable()
+                .interpolation(.none)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(width: 192 * UIScale.factor, height: 192 * UIScale.factor)
+                .frame(maxWidth: .infinity)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                Text(L.t("onboarding.page\(n).title"))
+                    .font(Ink.display).foregroundStyle(Ink.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L.t("onboarding.page\(n).subtitle"))
+                    .font(Ink.reading).foregroundStyle(Ink.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            extra()
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Ink.Space.page + 4)
+    }
+
+    private var dots: some View {
+        HStack(spacing: Ink.Space.s) {
+            ForEach(0..<4, id: \.self) { i in
+                Capsule()
+                    .fill(i == page ? Ink.accent : Ink.rule)
+                    .frame(width: i == page ? 18 : 6, height: 6)
+            }
+        }
+        .animation(Ink.Motion.settle, value: page)
+        .accessibilityElement()
+        .accessibilityLabel("第 \(page + 1) 页，共 4 页")
+    }
+
+    @ViewBuilder
+    private var introButtons: some View {
+        if page < 3 {
+            Button {
+                Haptics.light()
+                withAnimation(Ink.Motion.settle) { page += 1 }
+            } label: {
+                Text(L.t("onboarding.page\(page + 1).cta"))
+            }
+            .buttonStyle(WideButtonStyle())
+        } else {
+            VStack(spacing: Ink.Space.s) {
+                Button {
+                    Haptics.light()
+                    UserDefaults.standard.set(true, forKey: Self.introSeen)
+                    step = .service
+                } label: {
+                    Text(L.t("onboarding.page4.primaryCta"))
+                }
+                .buttonStyle(WideButtonStyle())
+                Button {
+                    Haptics.light()
+                    UserDefaults.standard.set(true, forKey: Self.introSeen)
+                    team.showDemo()
+                    onDone()
+                } label: {
+                    Text(L.t("onboarding.page4.secondaryCta"))
+                }
+                .buttonStyle(WideButtonStyle(filled: false))
             }
         }
     }

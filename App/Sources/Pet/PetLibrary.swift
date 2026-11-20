@@ -11,6 +11,7 @@ final class PetLibrary {
     static let shared = PetLibrary()
 
     /// "whale" (the figure from 形象; the id is kept from when it was always the whale), "none", or a pack's id.
+    /// Bundled packs are "builtin-<folder>"; 小克 ("builtin-xiaoke") is the one a new phone starts with.
     var choice: String { didSet { UserDefaults.standard.set(choice, forKey: "pet.choice") } }
     /// "small", "standard", "large" or "custom".
     var size: String { didSet { UserDefaults.standard.set(size, forKey: "pet.size") } }
@@ -24,8 +25,8 @@ final class PetLibrary {
 
     private init() {
         let store = UserDefaults.standard
-        // Whoever had put the old companion figure away keeps it away.
-        let fallback = store.object(forKey: "mascot.shown") as? Bool == false ? "none" : "whale"
+        // Whoever had put the old companion figure away keeps it away; everyone else meets 小克.
+        let fallback = store.object(forKey: "mascot.shown") as? Bool == false ? "none" : "builtin-xiaoke"
         choice = store.string(forKey: "pet.choice") ?? fallback
         size = store.string(forKey: "pet.size") ?? "standard"
         custom = store.object(forKey: "pet.custom") as? Double ?? 1

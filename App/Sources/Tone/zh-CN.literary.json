@@ -229,12 +229,12 @@
     "page1": {
       "title": "不止对谈，亦是案头旅伴",
       "subtitle": "理顺书案，往来别馆，替你分担琐务与长卷。",
-      "cta": "展卷"
+      "cta": "继续"
     },
     "page2": {
       "title": "诸事尽可托付，要紧处先请你落款",
       "subtitle": "凡涉应许与要务，皆先递上便笺，待你落款方才动手。",
-      "cta": "明了"
+      "cta": "继续"
     },
     "page3": {
       "title": "择一称心称谓",
@@ -243,13 +243,13 @@
       "dailyOptionDesc": "直白明快，所见即所得",
       "literaryOptionTitle": "书卷",
       "literaryOptionDesc": "纸墨尺牍，一室清雅相伴",
-      "cta": "定下"
+      "cta": "就这样"
     },
     "page4": {
       "title": "择一笔庄，便可开卷",
       "subtitle": "填妥笔庄凭证即可启程，也可先览样张。",
-      "primaryCta": "前往笔庄",
-      "secondaryCta": "先览样张"
+      "primaryCta": "接上笔庄",
+      "secondaryCta": "先看样张"
     }
   },
   "terminal": {
