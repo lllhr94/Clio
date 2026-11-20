@@ -1,0 +1,468 @@
+{
+ "schema": 1,
+ "id": "roubao",
+ "name": "肉包",
+ "author": "lllhr94",
+ "license": "仅限 Clio 使用",
+ "source": "",
+ "pixelArt": true,
+ "scale": 1,
+ "canvas": {
+  "w": 48,
+  "h": 48
+ },
+ "anchor": {
+  "x": 24.0,
+  "baseline": 48
+ },
+ "contentBox": {
+  "x": 7,
+  "y": 0,
+  "w": 34,
+  "h": 48
+ },
+ "animations": {
+  "attention": {
+   "sheet": "attention.png",
+   "frameW": 32,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 8,
+    "y": 1,
+    "w": 32,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 210
+    },
+    {
+     "i": 1,
+     "ms": 180
+    },
+    {
+     "i": 2,
+     "ms": 400
+    }
+   ]
+  },
+  "drag": {
+   "sheet": "drag.png",
+   "frameW": 34,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 1,
+    "w": 34,
+    "h": 47
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 180
+    },
+    {
+     "i": 1,
+     "ms": 180
+    },
+    {
+     "i": 2,
+     "ms": 200
+    }
+   ]
+  },
+  "error": {
+   "sheet": "error.png",
+   "frameW": 33,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 8,
+    "y": 1,
+    "w": 33,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 190
+    },
+    {
+     "i": 1,
+     "ms": 280
+    },
+    {
+     "i": 2,
+     "ms": 460
+    }
+   ]
+  },
+  "idle-adjust-hood": {
+   "sheet": "idle-adjust-hood.png",
+   "frameW": 32,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 8,
+    "y": 1,
+    "w": 32,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 230
+    },
+    {
+     "i": 1,
+     "ms": 330
+    },
+    {
+     "i": 2,
+     "ms": 430
+    }
+   ]
+  },
+  "idle": {
+   "sheet": "idle.png",
+   "frameW": 34,
+   "frameH": 48,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 0,
+    "w": 34,
+    "h": 48
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 650
+    },
+    {
+     "i": 1,
+     "ms": 120
+    },
+    {
+     "i": 2,
+     "ms": 650
+    }
+   ]
+  },
+  "notification": {
+   "sheet": "notification.png",
+   "frameW": 32,
+   "frameH": 46,
+   "cols": 3,
+   "box": {
+    "x": 8,
+    "y": 2,
+    "w": 32,
+    "h": 46
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 380
+    },
+    {
+     "i": 1,
+     "ms": 180
+    },
+    {
+     "i": 2,
+     "ms": 520
+    }
+   ]
+  },
+  "react-left": {
+   "sheet": "react-left.png",
+   "frameW": 34,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 1,
+    "w": 34,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 130
+    },
+    {
+     "i": 1,
+     "ms": 150
+    },
+    {
+     "i": 2,
+     "ms": 230
+    }
+   ]
+  },
+  "react-right": {
+   "sheet": "react-right.png",
+   "frameW": 34,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 1,
+    "w": 34,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 130
+    },
+    {
+     "i": 1,
+     "ms": 150
+    },
+    {
+     "i": 2,
+     "ms": 230
+    }
+   ]
+  },
+  "roam": {
+   "sheet": "roam.png",
+   "frameW": 30,
+   "frameH": 45,
+   "cols": 3,
+   "box": {
+    "x": 9,
+    "y": 3,
+    "w": 30,
+    "h": 45
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 155
+    },
+    {
+     "i": 1,
+     "ms": 130
+    },
+    {
+     "i": 2,
+     "ms": 155
+    }
+   ]
+  },
+  "sleeping": {
+   "sheet": "sleeping.png",
+   "frameW": 34,
+   "frameH": 44,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 4,
+    "w": 34,
+    "h": 44
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 780
+    },
+    {
+     "i": 1,
+     "ms": 800
+    },
+    {
+     "i": 2,
+     "ms": 900
+    }
+   ]
+  },
+  "thinking": {
+   "sheet": "thinking.png",
+   "frameW": 35,
+   "frameH": 48,
+   "cols": 3,
+   "box": {
+    "x": 6,
+    "y": 0,
+    "w": 35,
+    "h": 48
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 420
+    },
+    {
+     "i": 1,
+     "ms": 420
+    },
+    {
+     "i": 2,
+     "ms": 580
+    }
+   ]
+  },
+  "tickle": {
+   "sheet": "tickle.png",
+   "frameW": 34,
+   "frameH": 47,
+   "cols": 3,
+   "box": {
+    "x": 7,
+    "y": 1,
+    "w": 34,
+    "h": 47
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 125
+    },
+    {
+     "i": 1,
+     "ms": 145
+    },
+    {
+     "i": 2,
+     "ms": 250
+    }
+   ]
+  },
+  "waking": {
+   "sheet": "waking.png",
+   "frameW": 36,
+   "frameH": 44,
+   "cols": 3,
+   "box": {
+    "x": 6,
+    "y": 4,
+    "w": 36,
+    "h": 44
+   },
+   "loop": false,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 300
+    },
+    {
+     "i": 1,
+     "ms": 350
+    },
+    {
+     "i": 2,
+     "ms": 550
+    }
+   ]
+  },
+  "working": {
+   "sheet": "working.png",
+   "frameW": 32,
+   "frameH": 48,
+   "cols": 3,
+   "box": {
+    "x": 8,
+    "y": 0,
+    "w": 32,
+    "h": 48
+   },
+   "loop": true,
+   "frames": [
+    {
+     "i": 0,
+     "ms": 140
+    },
+    {
+     "i": 1,
+     "ms": 140
+    },
+    {
+     "i": 2,
+     "ms": 180
+    }
+   ]
+  }
+ },
+ "states": {
+  "idle": [
+   "idle"
+  ],
+  "thinking": [
+   "thinking"
+  ],
+  "working": [
+   "working"
+  ],
+  "notification": [
+   "notification"
+  ],
+  "attention": [
+   "attention"
+  ],
+  "error": [
+   "error"
+  ],
+  "sleeping": [
+   "sleeping"
+  ],
+  "waking": [
+   "waking"
+  ],
+  "roam": [
+   "roam"
+  ]
+ },
+ "reactions": {
+  "tapLeft": "react-left",
+  "tapRight": "react-right",
+  "tickle": "tickle",
+  "drag": "drag"
+ },
+ "idlePool": {
+  "everyMs": {
+   "mean": 120000,
+   "min": 45000,
+   "max": 300000
+  },
+  "anims": [
+   {
+    "anim": "idle-adjust-hood",
+    "ms": 1980,
+    "weight": 1
+   }
+  ]
+ },
+ "timings": {
+  "minDisplay": {
+   "attention": 3000,
+   "error": 3000,
+   "notification": 2000
+  },
+  "wakeMs": 1200
+ },
+ "sleep": {
+  "afterMs": 60000
+ },
+ "roam": {
+  "anim": "roam",
+  "faces": "right"
+ }
+}
