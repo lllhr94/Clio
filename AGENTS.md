@@ -47,6 +47,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 
 - 截图：加 `-F 'inputs[shots]=true'`。截图被推到 `shots/<run>` 分支：`git fetch origin shots/<run>` 后 `git archive FETCH_HEAD | tar -x -C <目录>`。截图模式用启动参数 `-clioShot <界面名>`，进演示数据并打开对应界面（见 `App/Sources/Shots.swift` 和 `Desk.swift` 里的 `Shots.name`）。
 - 只读 Release 用 REST（`gh api repos/.../releases/tags/<tag>`），GraphQL 用不了。
+- 发版前在 `docs/releases/<版本>.md` 写好更新说明（中文、按主人看得懂的话写），发布时 CI 会自动贴到 `v<版本>` 页面。
 - 版本号在 `App/project.yml`：`CFBundleShortVersionString` / `CFBundleVersion`。
 
 ## Swift 5 模式的坑（编译器版本见 CI 的 Xcode 26.3）
