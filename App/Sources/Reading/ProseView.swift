@@ -25,6 +25,7 @@ enum ParsedCache {
 struct ProseView: View {
     // Read so a change in 纸墨 redraws the text.
     @AppStorage("look.face") private var face = "serif"
+    @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
     @AppStorage("look.leading") private var leading = 11.0
     @AppStorage("look.fade") private var fade = true
@@ -38,7 +39,7 @@ struct ProseView: View {
     }
 
     var body: some View {
-        let _ = (face, size, leading)
+        let _ = (face, code, size, leading)
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         // Paragraphs a little under one line apart, as in the reading apps that read best.
         VStack(alignment: .leading, spacing: Pref.size * 0.8) {
@@ -47,7 +48,7 @@ struct ProseView: View {
             }
         }
         // The blocks do not read the size themselves, so they would keep the old one: a new size makes them anew.
-        .id("\(face)-\(size)")
+        .id("\(face)-\(code)-\(size)")
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }
@@ -61,27 +62,28 @@ private struct BlockView: View {
         switch block {
         case .heading(let level, let text):
             // Headings in the reading face, a step or two larger: never a different family from the text under them.
-            Inline(text: text, font: level <= 1 ? Ink.body(Pref.size + 5, bold: true) : (level == 2 ? Ink.body(Pref.size + 3, bold: true) : Ink.body(Pref.size + 1, bold: true)), fading: fading, tight: true)
-                // More air above a heading than below it, so it belongs to what follows.
-                .padding(.top, level <= 2 ? Pref.size * 0.6 : Pref.size * 0.2)
-                .padding(.bottom, -Pref.size * 0.25)
+            Inline(text: text, font: headingFont(level), fading: fading, tight: true)
+                // Much more air above a heading than below it, so it plainly belongs to what follows.
+                .padding(.top, level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
+                .padding(.bottom, -Pref.size * 0.3)
         case .paragraph(let text):
             Inline(text: text, font: Ink.reading, fading: fading)
         case .list(let items):
-            VStack(alignment: .leading, spacing: Pref.size * 0.5) {
+            // Items closer together than paragraphs, so a list reads as one thing.
+            VStack(alignment: .leading, spacing: Pref.size * 0.35) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: Pref.size * 0.45) {
                         marker(item)
-                            .frame(width: item.number != nil ? 24 : 16, alignment: item.number != nil ? .trailing : .center)
+                            .frame(width: item.number != nil ? Pref.size * 1.3 : Pref.size * 0.8, alignment: item.number != nil ? .trailing : .center)
                         Inline(text: item.text, font: Ink.reading, fading: fading && index == items.count - 1)
                     }
-                    .padding(.leading, 2 + CGFloat(item.depth) * 22)
+                    .padding(.leading, CGFloat(item.depth) * Pref.size * 1.25)
                 }
             }
         case .quote(let blocks):
-            HStack(alignment: .top, spacing: Ink.Space.m) {
-                Capsule().fill(Ink.inkFaint.opacity(0.6)).frame(width: 2.5)
+            HStack(alignment: .top, spacing: Pref.size * 0.8) {
+                Capsule().fill(Ink.rule).frame(width: 3)
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
                         BlockView(block: inner, fading: fading && index == blocks.count - 1)
@@ -97,7 +99,16 @@ private struct BlockView: View {
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading)
         case .rule:
-            Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.vertical, Ink.Space.s)
+            Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.vertical, Pref.size * 0.5)
+        }
+    }
+
+    /// Headings in the reading face, a step or two larger: never a different family from the text under them.
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case ...1: Ink.body(Pref.size + 6, bold: true)
+        case 2: Ink.body(Pref.size + 3, bold: true)
+        default: Ink.body(Pref.size + 1, bold: true)
         }
     }
 
@@ -108,13 +119,14 @@ private struct BlockView: View {
                 .font(.system(size: Ink.Size.sub))
                 .foregroundStyle(checked ? Ink.accent : Ink.inkFaint)
         } else if let number = item.number {
+            // Numbers in the text's own weight and a softer ink: they lead the eye, the words carry it.
             Text("\(number).")
-                .font(Ink.body(Pref.size, bold: true).monospacedDigit())
-                .foregroundStyle(Ink.ink)
-        } else {
-            Text(item.depth == 0 ? "•" : "◦")
-                .font(.system(size: Pref.size, weight: .regular))
+                .font(Ink.body(Pref.size, bold: false).monospacedDigit())
                 .foregroundStyle(Ink.inkSoft)
+        } else {
+            Text(item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪"))
+                .font(.system(size: Pref.size * (item.depth == 0 ? 1 : 0.85), weight: .bold))
+                .foregroundStyle(Ink.inkFaint)
         }
     }
 }
@@ -133,8 +145,9 @@ private struct Inline: View {
         for run in out.runs {
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
-                out[run.range].font = Ink.code
-                out[run.range].backgroundColor = Ink.accentWash
+                // Code in a sentence: the code face a little smaller, on a warm tint, in the accent's ink.
+                out[run.range].font = Ink.mono(CGFloat(max(12, Pref.size - 2)))
+                out[run.range].backgroundColor = Ink.mine
             }
             if intent.contains(.stronglyEmphasized), noteInk == nil {
                 out[run.range].foregroundColor = Ink.ink
@@ -205,7 +218,9 @@ private struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text((language.isEmpty ? "代码" : language) + " · \(lineCount) 行").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text(language.isEmpty ? "代码" : language.lowercased())
+                    .font(Ink.mono(Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
                 Spacer()
                 Button {
                     // As plain code: no-break and zero-width spaces some models write would break a pasted command.
@@ -234,7 +249,7 @@ private struct CodeBlock: View {
             ScrollView(.horizontal) {
                 Text(Highlight.code(shown, language: language))
                     .font(Ink.code)
-                    .lineSpacing(4)
+                    .lineSpacing(Pref.size * 0.3)
                     .padding(Ink.Space.l)
                     .fixedSize(horizontal: true, vertical: false)
             }
@@ -273,8 +288,9 @@ private struct TableBlock: View {
 
     private var widths: [CGFloat] {
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let head = UIFont.systemFont(ofSize: Self.cellSize, weight: .semibold)
-        let body = UIFont.systemFont(ofSize: Self.cellSize)
+        // Measured in the face the cells are set in, so a column is as wide as its words really are.
+        let head = Pref.face.postScript(bold: true).flatMap { UIFont(name: $0, size: Self.cellSize) } ?? .systemFont(ofSize: Self.cellSize, weight: .semibold)
+        let body = Pref.face.postScript(bold: false).flatMap { UIFont(name: $0, size: Self.cellSize) } ?? .systemFont(ofSize: Self.cellSize)
         return (0..<columns).map { column in
             var natural = Self.measure(column < table.header.count ? table.header[column] : "", font: head)
             for row in table.rows where column < row.count {
@@ -296,8 +312,10 @@ private struct TableBlock: View {
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
                 row(table.header, head: true, widths: widths)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
-                    Rectangle().fill(Ink.rule).frame(height: 0.5)
+                // The header stands on a firmer line than the rows between themselves.
+                Rectangle().fill(Ink.inkFaint.opacity(0.6)).frame(height: 1)
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
+                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5) }
                     row(cells, head: false, widths: widths)
                 }
             }
@@ -316,7 +334,7 @@ private struct TableBlock: View {
                     .frame(width: width, alignment: frameAlign(column))
             }
         }
-        .padding(.vertical, Ink.Space.m)
+        .padding(.vertical, Self.cellSize * 0.65)
     }
 
     private func frameAlign(_ column: Int) -> Alignment {
@@ -327,11 +345,12 @@ private struct TableBlock: View {
     private func cellText(_ cell: String, head: Bool, column: Int) -> some View {
         let align = column < table.aligns.count ? table.aligns[column] : .leading
         let styled = (try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(cell)
+        // Cells in the reading face, like the words around the table; the body in full ink, as text to read.
         return Text(styled)
-            .font(.system(size: Self.cellSize, weight: head ? .semibold : .regular))
-            .foregroundStyle(head ? Ink.ink : Ink.inkSoft)
+            .font(Ink.body(Double(Self.cellSize), bold: head))
+            .foregroundStyle(Ink.ink)
             .multilineTextAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
-            .lineSpacing(2)
+            .lineSpacing(Self.cellSize * 0.25)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
