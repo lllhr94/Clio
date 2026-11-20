@@ -19,10 +19,6 @@ on:
         description: "Also build for the simulator and take screenshots of the main screens (light and dark)"
         type: boolean
         default: false
-      shot_model_error:
-        description: "When taking screenshots, capture the model error card in both tones"
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -122,7 +118,6 @@ jobs:
         if: inputs.shots
         continue-on-error: true
         env:
-          SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
           SWIFTTERM_BUILD_TAG: "1.20.0"
           SWIFTTERM_BUILD_COMMIT: release
@@ -164,25 +159,14 @@ jobs:
           # A first launch to warm up (the first one in a fresh simulator is slow).
           xcrun simctl launch "$UDID" io.github.lllhr94.clio -clioShot desk >/dev/null || true
           sleep 40
-          if [[ "$SHOT_MODEL_ERROR" == "true" ]]; then
-            xcrun simctl ui "$UDID" appearance light
-            for tone in daily literary; do
-              plain=NO
-              if [[ "$tone" == "daily" ]]; then plain=YES; fi
-              xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot model-error -look.plainNames "$plain" >/dev/null
+          for mode in light dark; do
+            xcrun simctl ui "$UDID" appearance "$mode"
+            for shot in desk chat sidebar settings figures connectors look grants add pet; do
+              xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot "$shot" >/dev/null
               sleep 20
-              xcrun simctl io "$UDID" screenshot "shots/model-error-$tone.png" >/dev/null
+              xcrun simctl io "$UDID" screenshot "shots/$mode-$shot.png" >/dev/null
             done
-          else
-            for mode in light dark; do
-              xcrun simctl ui "$UDID" appearance "$mode"
-              for shot in desk chat sidebar settings figures connectors look grants add pet; do
-                xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot "$shot" >/dev/null
-                sleep 20
-                xcrun simctl io "$UDID" screenshot "shots/$mode-$shot.png" >/dev/null
-              done
-            done
-          fi
+          done
           ls -la shots
           # Anything that crashed while the pictures were taken, so a blank picture can be explained.
           mkdir -p shots/crashes
