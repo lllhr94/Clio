@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// Turns web pages into text a model can read, and search result pages into a list.
 public enum WebText {
@@ -168,9 +169,59 @@ enum WebFetch {
     }
 }
 
-/// Searches the web: Bing first, DuckDuckGo when Bing gives nothing.
+/// Compare the query's significant words with the result title and snippet before accepting a source.
+private struct SearchRelevance {
+    private let terms: Set<String>
+    private static let genericWords: Set<String> = [
+        "什么", "怎么", "如何", "哪里", "查询", "官网", "开放", "运营", "时间", "开放时间", "运营时间",
+        "今天", "明天", "周六", "周日",
+        "a", "an", "the", "and", "or", "for", "how", "what", "when", "where", "to", "in", "of",
+    ]
+
+    init(query: String) {
+        let words = Self.words(Self.normalized(query))
+        let significant = words.subtracting(Self.genericWords)
+        terms = significant.isEmpty ? words : significant
+    }
+
+    func matches(_ result: WebText.Result) -> Bool {
+        guard !terms.isEmpty else { return true }
+        let text = Self.normalized(result.title + " " + result.snippet)
+        let words = Self.words(text)
+        let minimum = min(terms.count, max(2, (terms.count + 1) / 2))
+        return terms.lazy.filter { term in
+            if term.unicodeScalars.contains(where: { $0.properties.isIdeographic }) {
+                return text.contains(term)
+            }
+            return words.contains(term)
+        }.prefix(minimum).count == minimum
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+    }
+
+    private static func words(_ text: String) -> Set<String> {
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        return Set(tokenizer.tokens(for: text.startIndex..<text.endIndex).map { String(text[$0]) })
+    }
+}
+
+/// Searches the web: international Bing, mainland Bing, then DuckDuckGo.
 public struct WebSearchTool: AgentTool {
-    public init() {}
+    private let fetchHTML: @Sendable (URL) async throws -> String
+
+    public init() {
+        fetchHTML = { url in
+            let page = try await WebFetch.get(url, timeout: 12)
+            return WebText.decode(page.data, encodingName: page.encoding)
+        }
+    }
+
+    init(fetchHTML: @escaping @Sendable (URL) async throws -> String) {
+        self.fetchHTML = fetchHTML
+    }
 
     public var spec: ToolSpec {
         ToolSpec(
@@ -197,29 +248,36 @@ public struct WebSearchTool: AgentTool {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&+=?#")
         let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
-        var results: [WebText.Result] = []
+        let relevance = SearchRelevance(query: query)
         var failures: [String] = []
-        for (address, parse) in [
-            ("https://www.bing.com/search?q=\(encoded)&setlang=zh-Hans", WebText.bingResults),
-            ("https://cn.bing.com/search?q=\(encoded)", WebText.bingResults),
-            ("https://html.duckduckgo.com/html/?q=\(encoded)", WebText.duckResults),
+        var hadUnrelatedResults = false
+        for (source, address, parse) in [
+            ("Bing 国际站", "https://www.bing.com/search?q=\(encoded)&setlang=zh-Hans", WebText.bingResults),
+            ("Bing 中国站", "https://cn.bing.com/search?q=\(encoded)", WebText.bingResults),
+            ("DuckDuckGo", "https://html.duckduckgo.com/html/?q=\(encoded)", WebText.duckResults),
         ] {
             guard let url = URL(string: address) else { continue }
             do {
-                let page = try await WebFetch.get(url, timeout: 12)
-                results = parse(WebText.decode(page.data, encodingName: page.encoding))
-                if !results.isEmpty { break }
+                try Task.checkCancellation()
+                let raw = parse(try await fetchHTML(url))
+                let results = raw.filter(relevance.matches)
+                guard !results.isEmpty else {
+                    hadUnrelatedResults = hadUnrelatedResults || !raw.isEmpty
+                    continue
+                }
+                let lines = results.prefix(8).enumerated().map { index, result in
+                    "\(index + 1). \(result.title)\n   \(result.url)\n   \(result.snippet)"
+                }
+                return ToolOutput((["搜索来源：\(source)"] + lines).joined(separator: "\n"))
             } catch {
+                try Task.checkCancellation()
                 failures.append(error.localizedDescription)
             }
         }
-        guard !results.isEmpty else {
-            return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
+        if hadUnrelatedResults {
+            return ToolOutput("没有找到与搜索词足够相关的结果。可以补上地点、名称或日期再搜。")
         }
-        let lines = results.prefix(8).enumerated().map { index, result in
-            "\(index + 1). \(result.title)\n   \(result.url)\n   \(result.snippet)"
-        }
-        return ToolOutput(lines.joined(separator: "\n"))
+        return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
     }
 }
 

@@ -203,6 +203,53 @@ final class AgentTests: XCTestCase {
 }
 
 final class WebTextTests: XCTestCase {
+    func testSearchFallsBackWhenMainlandBingReturnsUnrelatedPages() async throws {
+        let tool = WebSearchTool { url in
+            switch url.host {
+            case "www.bing.com":
+                return "<html></html>"
+            case "cn.bing.com":
+                return """
+                <li class="b_algo"><h2><a href="https://tax.example.org">陕西省电子税务局</a></h2><p>申报查询</p></li>
+                """
+            default:
+                return """
+                <div class="result__body"><a class="result__a" href="https://weather.example.org">重庆周末天气预报</a>
+                <a class="result__snippet">重庆周六有小雨</a></div>
+                """
+            }
+        }
+        let output = try await tool.run(.object(["query": .string("重庆 周六 天气")]))
+        XCTAssertTrue(output.text.contains("DuckDuckGo"))
+        XCTAssertTrue(output.text.contains("重庆周末天气预报"))
+        XCTAssertFalse(output.text.contains("陕西省电子税务局"))
+    }
+
+    func testSearchKeepsOnlyRelevantResultsFromTheChosenSource() async throws {
+        let tool = WebSearchTool { _ in
+            """
+            <li class="b_algo"><h2><a href="https://weather.example.org">重庆天气预报</a></h2><p>未来七天</p></li>
+            <li class="b_algo"><h2><a href="https://other.example.org">成都天气预报</a></h2><p>未来七天</p></li>
+            """
+        }
+        let output = try await tool.run(.object(["query": .string("重庆 天气")]))
+        XCTAssertTrue(output.text.contains("Bing 国际站"))
+        XCTAssertTrue(output.text.contains("重庆天气预报"))
+        XCTAssertFalse(output.text.contains("成都天气预报"))
+    }
+
+    func testSearchExplainsWhenOnlyUnrelatedResultsWereFound() async throws {
+        let tool = WebSearchTool { _ in
+            """
+            <li class="b_algo"><h2><a href="https://ad.example.org">陌陌推广</a></h2><p>推广活动</p></li>
+            """
+        }
+        let output = try await tool.run(.object(["query": .string("苏州博物馆 开放时间")]))
+        XCTAssertTrue(output.text.contains("没有找到与搜索词足够相关的结果"))
+        XCTAssertFalse(output.text.contains("陌陌"))
+        XCTAssertFalse(output.isError)
+    }
+
     func testPageText() {
         let html = """
         <html><head><title>天气 &amp; 预报</title><style>p{}</style></head>
