@@ -21,12 +21,14 @@
 
 `notification/` 有三帧，分别停留 900／170／650 ms。以 `idle/01.png` 为底，举起一只手，轻抬后停住等候。[逐帧对照](notification-preview.png) · [循环 GIF](notification.gif)
 
-## 完成（基本通过，已修笑嘴）
+## 完成（通过）
 
 `attention/` 有三帧，分别停留 300／240／440 ms，播放一次。以 `idle/01.png` 为底，局部改出笑眼和三像素宽的小弧形笑嘴，两颗小星星升起后淡出。[逐帧对照](attention-preview.png) · [GIF](attention.gif)
 
-## 工作预览（待确认）
+## 工作（通过，已微调）
 
-`working/` 有三帧，分别停留 780／200／260 ms，循环播放。以 `idle/01.png` 为底，视线向下，一手捧着摊开的书，另一手把右页翻向左边。[逐帧对照](working-preview.png) · [循环 GIF](working.gif)
+`working/` 有三帧，分别停留 780／200／260 ms，循环播放。以 `idle/01.png` 为底，瞳孔往下移一格，一手捧着摊开的书，另一手把右页翻向左边。第三帧用两条细线表示纸页。[逐帧对照](working-preview.png) · [循环 GIF](working.gif)
 
-确认后做 error。
+## 出错预览（待确认）
+
+`error/` 有三帧，分别停留 200／300／560 ms，播放一次。以 `idle/01.png` 为底，换成 × 眼和小波浪嘴，右上方冒出一个问号。[逐帧对照](error-preview.png) · [GIF](error.gif)
