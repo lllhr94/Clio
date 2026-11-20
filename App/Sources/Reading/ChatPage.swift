@@ -608,7 +608,7 @@ struct ChatPage: View {
             .buttonStyle(PressStyle())
             .accessibilityLabel("打开侧边栏")
             HStack(spacing: Ink.Space.s) {
-                Whale(size: 30, pose: pose)
+                PetStill(size: 30, pose: pose, avatar: true)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                     HStack(spacing: 4) {
@@ -924,7 +924,7 @@ struct ChatPage: View {
 
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
-            Whale(size: 96, pose: pose)
+            PetStill(size: 96, pose: pose)
             Text(isRoom ? L.t("empty.groupChat") : String(format: L.t("empty.chatWithCompanion"), bot.name))
                 .font(Ink.reading)
                 .foregroundStyle(Ink.inkSoft)
@@ -1051,7 +1051,7 @@ struct ChatPage: View {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
                     HStack(spacing: Ink.Space.s) {
-                        Whale(size: 22, wash: Ink.wash(for: speaker), still: true)
+                        PetStill(size: 22, wash: Ink.wash(for: speaker), still: true, avatar: true)
                         Text(speaker.name).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                     }
                 }

@@ -38,7 +38,7 @@ struct CompanionWidgetView: View {
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
-                Image(systemName: entry.snapshot?.status == "闲坐" || entry.snapshot == nil ? "water.waves" : "ellipsis")
+                Image(systemName: entry.snapshot?.status == "闲坐" || entry.snapshot == nil ? "bubble.left" : "ellipsis")
                     .font(.system(size: 20, weight: .semibold))
             }
             .widgetURL(URL(string: "clio://ask"))
@@ -66,7 +66,7 @@ struct CompanionWidgetView: View {
             if let snapshot = entry.snapshot {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Image(systemName: "water.waves").font(.system(size: 13, weight: .semibold)).foregroundStyle(accent)
+                        Image(systemName: "bubble.left").font(.system(size: 13, weight: .semibold)).foregroundStyle(accent)
                         Text(snapshot.name).font(.system(size: 15, weight: .semibold, design: .serif)).foregroundStyle(ink).lineLimit(1)
                         Spacer(minLength: 0)
                     }
@@ -86,7 +86,7 @@ struct CompanionWidgetView: View {
                 .widgetURL(URL(string: "clio://chat/\(snapshot.chat)"))
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Image(systemName: "water.waves").foregroundStyle(accent)
+                    Image(systemName: "bubble.left").foregroundStyle(accent)
                     Text("打开 Clio 一次，这里就会有旅伴的近况。").font(.system(size: 13, design: .serif)).foregroundStyle(soft)
                 }
             }
@@ -162,7 +162,7 @@ struct TurnActivityWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.attributes.name, systemImage: "water.waves")
+                    Label(context.attributes.name, systemImage: "bubble.left")
                         .font(.system(size: 15, weight: .semibold, design: .serif))
                         .foregroundStyle(Self.accent)
                         .lineLimit(1)
@@ -201,7 +201,7 @@ struct TurnActivityWidget: Widget {
 
     static func symbol(_ phase: TurnAttributes.ContentState.Phase) -> String {
         switch phase {
-        case .working: return "water.waves"
+        case .working: return "ellipsis.circle"
         case .waiting: return "hand.raised.fill"
         case .done: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"

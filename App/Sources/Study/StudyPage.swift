@@ -53,7 +53,7 @@ struct StudyFolder: View {
                     }
                     if items.isEmpty {
                         VStack(spacing: Ink.Space.m) {
-                            Whale(size: 72, pose: .idle, still: true)
+                            PetStill(size: 72, still: true)
                             Text(L.t("empty.files"))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)

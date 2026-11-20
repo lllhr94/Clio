@@ -184,7 +184,7 @@ struct TideSheet: View {
 
     private func reveal(_ find: Tide.Find) -> some View {
         VStack(spacing: Ink.Space.m) {
-            Whale(size: 64, pose: .cheering)
+            PetStill(size: 64, state: "attention", pose: .cheering)
             Image(systemName: find.symbol)
                 .font(.system(size: 40))
                 .foregroundStyle(Ink.accent)

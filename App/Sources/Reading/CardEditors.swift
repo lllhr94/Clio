@@ -232,7 +232,7 @@ struct BotEditor: View {
     private var preview: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: Ink.Space.l) {
-                Whale(size: 72, wash: Ink.wash(named: tint))
+                PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(trimmed.isEmpty ? "未署名" : trimmed)
                         .font(Ink.serif(24, bold: true))
@@ -402,7 +402,7 @@ struct RoomEditor: View {
         } label: {
             VStack(spacing: Ink.Space.s) {
                 ZStack(alignment: .topTrailing) {
-                    Whale(size: 56, wash: Ink.wash(for: bot), still: true)
+                    PetStill(size: 56, wash: Ink.wash(for: bot), still: true, avatar: true)
                         .opacity(order == nil ? 0.5 : 1)
                     if let order {
                         Text("\(order + 1)")

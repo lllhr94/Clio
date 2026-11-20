@@ -55,7 +55,7 @@ struct SetupView: View {
     private var welcome: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xl) {
             Spacer(minLength: 0)
-            Whale(size: 120, pose: .idle)
+            PetStill(size: 120)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("你好，这里是 Clio").font(Ink.display).foregroundStyle(Ink.ink)
                 Text(Words.t("几位住在你手机里的旅伴。")).font(Ink.reading).foregroundStyle(Ink.inkSoft)
@@ -402,7 +402,7 @@ struct SetupView: View {
     private var done: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xl) {
             Spacer(minLength: 0)
-            Whale(size: 110, pose: .writing)
+            PetStill(size: 110, state: "working", pose: .writing)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("接好了").font(Ink.display).foregroundStyle(Ink.ink)
                 if let connected {
