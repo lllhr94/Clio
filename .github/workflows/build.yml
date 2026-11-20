@@ -70,6 +70,8 @@ jobs:
       - name: Generate the Xcode project
         run: |
           which xcodegen || brew install xcodegen
+          # Every build gets a higher build number, so an installer never mistakes a new probe for the one already on the phone.
+          sed -i '' "s/CFBundleVersion: \"[0-9]*\"/CFBundleVersion: \"${{ github.run_number }}\"/" App/project.yml
           xcodegen generate
 
       - name: Build (no code signing)

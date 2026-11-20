@@ -1255,6 +1255,8 @@ final class TeamModel: ObservableObject {
     /// Chats being paused because the background time is running out, with what each was doing then.
     /// Their cancel adds no 「被你叫停了」, and the partial reply the agent hands back is already kept.
     private var pausing: [String: (doing: String, saved: Bool)] = [:]
+    /// Turns iOS paused while Clio was away: they go on by themselves when Clio is back on screen.
+    private var pausedAway: Set<String> = []
     /// Watches the background time while turns are going and the app is away.
     private var watching: Task<Void, Never>?
 
@@ -1313,8 +1315,9 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(partial + "……"), speaker: kept?.speaker), to: key)
         }
         pausing[key] = (doing: doing[key] ?? "干活", saved: !partial.isEmpty)
+        pausedAway.insert(key)
         if Pref.notifyDone {
-            Notify.now("\(chatName(key))停在半路", "离开 Clio 太久，iOS 只给了这么些时间。" + (partial.isEmpty ? "" : "写好的部分已存下，") + "回来点「接着做」。", chat: key)
+            Notify.now("\(chatName(key))停在半路", "离开 Clio 太久，iOS 只给了这么些时间。" + (partial.isEmpty ? "" : "写好的部分已存下，") + "回来会自动接着做。", chat: key)
         }
         Diag.note("后台时间用完，\(chatName(key)) 的这一轮先停下" + (partial.isEmpty ? "" : "（存下 \(partial.count) 字）"))
         stop(key)
@@ -1326,7 +1329,7 @@ final class TeamModel: ObservableObject {
         let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
         append(Entry(
             id: UUID().uuidString, at: Now.ms,
-            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)点「接着做」从停下的地方继续。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知、锁屏与后台 打开「后台保持运行」。")),
+            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)回到 Clio 会自动接着做。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知、锁屏与后台 打开「后台保持运行」。")),
             note: true, next: Explain.Next.resume.rawValue
         ), to: key)
     }
@@ -1385,10 +1388,18 @@ final class TeamModel: ObservableObject {
         }
         let paused = pausing[key] != nil
         notePause(key)
+        if paused, UIApplication.shared.applicationState == .active, pausedAway.contains(key) {
+            // Clio came back while this turn was still stopping: go on as soon as it has.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard let self, self.runs[key] == nil, self.pausedAway.remove(key) != nil else { return }
+                self.resume(key)
+            }
+        }
         notify(key, .finished)
         if runs[key] == nil {
             let reply = history(key).last { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }?.message.text
-            let line = paused ? "停在半路，回到 Clio 点「接着做」" : cancelled ? "被你叫停了" : ok ? reply : history(key).last?.message.text
+            let line = paused ? "停在半路，回到 Clio 会自动接着做" : cancelled ? "被你叫停了" : ok ? reply : history(key).last?.message.text
             LiveTurns.end(chat: key, ok: ok && !cancelled && !paused, line: line)
             BackgroundTurn.end(chat: key, ok: ok && !cancelled)
         }
@@ -2097,6 +2108,17 @@ final class TeamModel: ObservableObject {
         morningIfDue()
         diaryIfDue()
         TideBook.shared.refresh()
+        resumePaused()
+    }
+
+    /// Back on screen: each turn iOS paused goes on from where it stopped, without a tap.
+    private func resumePaused() {
+        let waiting = pausedAway
+        pausedAway.removeAll()
+        for key in waiting {
+            // Still winding down: picked up when it has (see where the pause note is written).
+            if runs[key] == nil { resume(key) } else { pausedAway.insert(key) }
+        }
     }
 
     // MARK: 晨信
