@@ -33,7 +33,7 @@
 
 `error/` 有三帧，分别停留 200／300／560 ms，播放一次。以 `idle/01.png` 为底，换成 × 眼和小波浪嘴，右上方冒出一个问号。[逐帧对照](error-preview.png) · [GIF](error.gif)
 
-## 可选动作与总预览（待确认）
+## 可选动作与总预览（通过）
 
 以下各三帧，播放一次。[全部状态，每行一组](all-states-preview.png)
 
@@ -44,4 +44,4 @@
 | 右侧被戳 | 170／220／240 ms | 圆眼，画面右侧冒感叹号，再回到闲坐。[GIF](react-right.gif) |
 | 被连戳 | 250／220／350 ms | 笑眼、张嘴笑，两侧的小波纹飘开后消失。[GIF](tickle.gif) |
 
-drag 和 roam 省略。主人确认总预览后打包。
+drag 和 roam 省略。定稿已用 `tools/make_pet_pack.py` 打入 `App/Pets/xiaoke/`，沿用预览时长。
