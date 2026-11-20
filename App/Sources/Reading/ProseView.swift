@@ -27,7 +27,7 @@ struct ProseView: View {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 11.0
+    @AppStorage("look.leading") private var leading = 0.0
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -39,7 +39,7 @@ struct ProseView: View {
     }
 
     var body: some View {
-        let _ = (face, code, size, leading)
+        let _ = (face, code, size)
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         // Paragraphs a little under one line apart, as in the reading apps that read best.
         VStack(alignment: .leading, spacing: Pref.size * 0.8) {
@@ -47,8 +47,8 @@ struct ProseView: View {
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
             }
         }
-        // The blocks do not read the size themselves, so they would keep the old one: a new size makes them anew.
-        .id("\(face)-\(code)-\(size)")
+        // Changes to reading typography rebuild blocks that do not observe those preferences themselves.
+        .id("\(face)-\(code)-\(size)-\(leading)")
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }

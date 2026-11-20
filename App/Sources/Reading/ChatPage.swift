@@ -508,7 +508,7 @@ struct ChatPage: View {
             Button(L.t("actions.cancel"), role: .cancel) {}
             Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
         }
-        .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
+        .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $filesOpen) { StudyPage() }
         .sheet(isPresented: $detailOpen, onDismiss: {

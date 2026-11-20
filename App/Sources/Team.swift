@@ -1329,7 +1329,7 @@ final class TeamModel: ObservableObject {
         let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
         append(Entry(
             id: UUID().uuidString, at: Now.ms,
-            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)回到 Clio 会自动接着做。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知、锁屏与后台 打开「后台保持运行」。")),
+            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)回到 Clio 会自动接着做。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知与隐私 › 通知与后台 打开「后台保持运行」。")),
             note: true, next: Explain.Next.resume.rawValue
         ), to: key)
     }
