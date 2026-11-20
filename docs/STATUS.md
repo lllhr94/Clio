@@ -54,6 +54,6 @@
 - **Claude / Codex**：写代码、修 bug、跑 CI、截图核对。一次只一个人在 `batch-*` 分支上推，开工前 `git pull`，收工更新本文件。
 - **Gemini**：外援做设计（App 图标、宠物素材、文案润色），要求见 `docs/DESIGN-BRIEF.md`。产出放 `design/incoming/`，由写代码的一方接入。
 
-## C7 肉包预览
+## C7 宠物预览
 
-`design/incoming/pet/roubao/` 已有 idle 和 thinking 各三帧，等主人确认角色和动作后继续。C9 的四张引导图与 C5 的头像和插画接入都等第一只角色定稿。
+`design/incoming/pet/roubao/` 已有 idle 和 thinking 各三帧。`design/incoming/pet/copper-heroine/` 新增与 App 图标一致的红发少女，已有闲坐和思考各三帧。两只角色等主人确认方向。C9 的四张引导图与 C5 的头像和插画接入都等第一只角色定稿。
