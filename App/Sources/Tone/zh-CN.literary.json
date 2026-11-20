@@ -179,7 +179,7 @@
     "activeConversations": "都入藏了，下面能翻出来。",
     "vault": "密匣还空着。",
     "diaryForCompanion": "%@ 还没写过手札。晚上九点以后，当天聊过的话会写成一叶。",
-    "diaryDisabled": "手札还没打开。在调弦的设色页打开后，%@ 会在晚上写一叶当天的手札。",
+    "diaryDisabled": "手札还没打开。在调弦 › 纸墨与絮语 › 旅伴的日常中打开后，%@ 会在晚上写一叶当天的手札。",
     "groupChat": "雅集里的旅伴会轮流说话",
     "chatWithCompanion": "同 %@ 说点什么吧"
   },
