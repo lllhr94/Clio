@@ -198,7 +198,19 @@ enum Ink {
     // MARK: Type
 
     /// Whether a font is on this phone now (Apple's 宋体 and 楷体 only once fetched).
-    static func has(_ name: String) -> Bool { UIFont(name: name, size: 12) != nil }
+    /// Asked for every line of text drawn, so the answer is kept: looking a font up each time made long replies stutter.
+    /// `FontShelf` clears it when a download ends.
+    static func has(_ name: String) -> Bool {
+        if let known = fonts.object(forKey: name as NSString) { return known.boolValue }
+        let found = UIFont(name: name, size: 12) != nil
+        fonts.setObject(NSNumber(value: found), forKey: name as NSString)
+        return found
+    }
+
+    /// Forget which fonts are on the phone (one has just been fetched).
+    static func recheckFonts() { fonts.removeAllObjects() }
+
+    private static let fonts = NSCache<NSString, NSNumber>()
 
     /// Any face at any size; a face not on the phone yet stands in as the system serif.
     static func face(_ face: Pref.Face, _ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {

@@ -241,7 +241,9 @@ struct SpritePet: View {
     var body: some View {
         let u = unit
         // The view is as tall as the drawing down to its feet; what lies under the feet (a shadow) hangs below.
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+        // Pixel frames hold for a tenth of a second or more: twelve looks a second is plenty, and keeps the phone
+        // from redrawing the pet thirty times a second for nothing.
+        TimelineView(.animation(minimumInterval: 1 / 12)) { timeline in
             frame(at: timeline.date, unit: u)
         }
         .frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.baseline) * u, alignment: .top)

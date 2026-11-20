@@ -43,10 +43,12 @@ final class FontShelf {
                 case .downloading:
                     shelf.loading[face] = percent / 100
                 case .didFailWithError:
+                    Ink.recheckFonts()
                     shelf.loading[face] = nil
                     shelf.failed.insert(face)
                     shelf.generation += 1
                 case .didFinish:
+                    Ink.recheckFonts()
                     shelf.loading[face] = nil
                     if !Ink.has(names[0]) { shelf.failed.insert(face) }
                     shelf.generation += 1
