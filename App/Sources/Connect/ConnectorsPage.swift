@@ -25,7 +25,7 @@ struct ConnectorsPage: View {
                         if kind == "全部" { onDevice }
                         categories
                     }
-                    if !mine.isEmpty && kind == "全部" { section("已连接", mine) }
+                    if !mine.isEmpty && kind == "全部" { section(L.t("connectors.connected"), mine) }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
                         let items = Connector.catalog.filter { $0.group == group && matches($0) && work.server(of: $0) == nil }
                         if !items.isEmpty { section(group, items) }
@@ -81,7 +81,7 @@ struct ConnectorsPage: View {
     private var onDevice: some View {
         let grants: [Grant] = [.health, .location, .calendar, .reminders, .contacts, .photos]
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading("此设备上")
+            heading(L.t("connectors.onDevice"))
             VStack(spacing: 0) {
                 ForEach(Array(grants.enumerated()), id: \.element) { index, grant in
                     if index > 0 { Kit.divider }
@@ -327,7 +327,7 @@ private struct ConnectorDetail: View {
     /// 详情: what kind of service it is, how it lets Clio in, and its address.
     private var details: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("详情")
+            SectionTitle(L.t("connectors.details"))
             VStack(spacing: 0) {
                 detailRow("类别", connector.group)
                 Kit.rule(inset: Ink.Space.l)
@@ -423,7 +423,7 @@ private struct ConnectorDetail: View {
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                SectionTitle("谷歌这边还要做的")
+                SectionTitle(L.t("connectors.googleSetup"))
                 Text("谷歌的官方 MCP 目前在开发者预览：你的 Google Cloud 项目要加入 Workspace Developer Preview，并启用这项 API 和对应的 MCP 服务（比如 gmail.googleapis.com 和 gmailmcp.googleapis.com）。没开的话，连接时会提示具体缺哪一项。")
                     .font(Ink.secondary).foregroundStyle(Ink.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -684,7 +684,7 @@ private struct CustomSheet: View {
                     .disabled(busy || !url.hasPrefix("http") || url.count < 12)
                 }
             }
-            .navigationTitle("自己填地址")
+            .navigationTitle(L.t("connectors.customAddress"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } } }
         }
@@ -757,7 +757,7 @@ private struct GoogleSheet: View {
                         step(4, "「凭据 → 创建凭据 → OAuth 客户端 ID」，应用类型选「iOS」，软件包 ID 填 io.github.lllhr94.clio。")
                         step(5, "复制生成的客户端 ID，粘到下面，点登录。")
                         Button("打开 Google Cloud 控制台") { if let url = URL(string: "https://console.cloud.google.com/apis/credentials") { openURL(url) } }
-                    } header: { Text("第一次：做一个你自己的登录凭据") } footer: {
+                    } header: { Text(L.t("connectors.googleCredentials")) } footer: {
                         Text("Clio 不经过任何别人的服务器：手机直接向谷歌登录，令牌只存在钥匙串里。")
                     }
                     Section {
@@ -775,12 +775,12 @@ private struct GoogleSheet: View {
                             }
                         }
                         .disabled(google.busy || !client.contains(".apps.googleusercontent.com"))
-                    } header: { Text("客户端 ID") } footer: {
+                    } header: { Text(L.t("connectors.clientId")) } footer: {
                         if let problem = google.problem { Text(problem).foregroundStyle(Ink.stop) }
                     }
                 }
             }
-            .navigationTitle("谷歌")
+            .navigationTitle(L.t("connectors.google"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }

@@ -10,11 +10,11 @@ struct GrantsPage: View {
     @State private var systems: [Grant: Grant.System] = [:]
 
     private let groups: [(String, [Grant])] = [
-        (Words.t("出门寻访"), [.web, .browser, .links]),
-        (Words.t("远山、连接器与信匣"), [.hills, .mcp, .google, .vault]),
-        (Words.t("案头与小屋"), [.desk, .den, .memory, .letters]),
-        ("手机里的事", [.calendar, .reminders, .contacts, .photos, .clipboard]),
-        ("身边与身体", [.location, .motion, .health, .device]),
+        (L.t("permissions.web"), [.web, .browser, .links]),
+        (L.t("permissions.connections"), [.hills, .mcp, .google, .vault]),
+        (L.t("nav.filesAndTerminal"), [.desk, .den, .memory, .letters]),
+        (L.t("permissions.onPhone"), [.calendar, .reminders, .contacts, .photos, .clipboard]),
+        (L.t("permissions.personal"), [.location, .motion, .health, .device]),
     ]
 
     var body: some View {
@@ -30,7 +30,7 @@ struct GrantsPage: View {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(asking ? "正在一项项问系统…" : Words.t("一并应许")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text(asking ? L.t("loading.requestingPermissions") : Words.t("一并应许")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                     Text("一次问完系统授权")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
@@ -58,7 +58,7 @@ struct GrantsPage: View {
                         }
                         if !team.alwaysAllowed.isEmpty {
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                Text(Words.t("落印时说过「以后都允许」的")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                                Text(L.t("permissions.alwaysAllowed")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
                                 VStack(spacing: 0) {
                                     ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
                                         HStack {
@@ -89,7 +89,7 @@ struct GrantsPage: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle(Words.t("应许"))
+            .navigationTitle(L.t("settings.permissions"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }

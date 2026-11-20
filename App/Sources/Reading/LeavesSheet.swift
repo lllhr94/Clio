@@ -76,7 +76,7 @@ struct LeavesSheet: View {
                                     Image(systemName: "rectangle.compress.vertical").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(folding ? "正在写前情提要…" : "压缩前文").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
                                     Text(Words.t("较早的话写成提要，原文收进絮语页"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
@@ -173,7 +173,7 @@ struct LeavesSheet: View {
                         }
 
                         if leaves.isEmpty {
-                            EmptyNote(symbol: "book.pages", words: Words.t("还没有收起来的絮语。话题聊远了，就另起一叶；旧的会留在这里，随时翻回去。"))
+                            EmptyNote(symbol: "book.pages", words: L.t("empty.savedConversations"))
                         } else {
                             Text(Words.t("收起的絮语")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
                             VStack(spacing: 0) {
@@ -214,7 +214,7 @@ struct LeavesSheet: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle(Words.t("絮语页"))
+            .navigationTitle(L.t("chat.conversationHistory"))
             .navigationBarTitleDisplayMode(.inline)
             .confirmationDialog("拆开压缩？", isPresented: Binding(get: { unfolding != nil }, set: { if !$0 { unfolding = nil } }), titleVisibility: .visible) {
                 Button("拆开，原文放回来") {

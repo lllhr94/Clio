@@ -35,7 +35,7 @@ struct PetPage: View {
                         } label: {
                             Label("导入宠物包（zip）", systemImage: "square.and.arrow.down")
                         }
-                    } header: { Text("选一只") } footer: {
+                    } header: { Text(L.t("pet.choose")) } footer: {
                         Text("两种都认：DSH Go、Clawd on Desk 那种宠物包（pack.json 加几张 PNG）；或者每个状态一个 GIF / APNG 打成一个 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）。长按导入的可以删掉。")
                     }
 
@@ -57,7 +57,7 @@ struct PetPage: View {
                                 Slider(value: $library.custom, in: 0.5...3, step: 0.05)
                             }
                         }
-                    } header: { Text("大小") }
+                    } header: { Text(L.t("pet.size")) }
 
                     Section {
                         Toggle("安静模式", isOn: $library.quiet)

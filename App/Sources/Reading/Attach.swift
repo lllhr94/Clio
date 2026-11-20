@@ -81,7 +81,7 @@ struct DeskPicker: View {
                     .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找文件名")
                 }
             }
-            .navigationTitle(Words.t("从书案挑"))
+            .navigationTitle(L.t("chat.chooseFromFiles"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done([]) } }
@@ -240,7 +240,7 @@ struct PlusSheet: View {
                 .padding(.bottom, Ink.Space.xl)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(Words.t("添加到絮语"))
+            .navigationTitle(L.t("chat.addToConversation"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -446,7 +446,7 @@ struct PlacePicker: View {
         }
         .scrollContentBackground(.hidden)
         .background(Ink.paper.ignoresSafeArea())
-        .navigationTitle("在哪里干活")
+        .navigationTitle(L.t("chat.workLocation"))
         .navigationBarTitleDisplayMode(.inline)
     }
 }

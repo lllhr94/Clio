@@ -36,9 +36,9 @@ enum Live {
         if waiting { return Words.t("等你落印") }
         guard let doing else { return nil }
         switch doing {
-        case "正在想": return "正在想…"
-        case "正在回复": return "正在写…"
-        case "正在压缩前文": return "正在压缩前文…"
+        case "正在想": return L.t("loading.thinking")
+        case "正在回复": return L.t("loading.replying")
+        case "正在压缩前文": return L.t("loading.compactingContext")
         default:
             let parts = doing.split(separator: "：", maxSplits: 1).map(String.init)
             return parts.count == 2 ? "正在\(word(parts[0]))…" : Words.t(doing)

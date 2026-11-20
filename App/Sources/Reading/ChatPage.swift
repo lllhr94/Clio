@@ -495,7 +495,7 @@ struct ChatPage: View {
             ScannerView { pages in
                 scanning = false
                 guard !pages.isEmpty else { return }
-                say("正在识别扫描里的文字…")
+                say(L.t("loading.recognizingScan"))
                 Task {
                     if let kept = await Scan.keep(pages) {
                         withAnimation(Ink.Motion.settle) { files.append(kept.text) }
@@ -925,7 +925,7 @@ struct ChatPage: View {
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
             Whale(size: 96, pose: pose)
-            Text(isRoom ? Words.t("雅集里的旅伴会轮流说话") : "同\(bot.name)说点什么吧")
+            Text(isRoom ? L.t("empty.groupChat") : String(format: L.t("empty.chatWithCompanion"), bot.name))
                 .font(Ink.reading)
                 .foregroundStyle(Ink.inkSoft)
             VStack(spacing: Ink.Space.s) {
@@ -1170,7 +1170,7 @@ struct ChatPage: View {
         case .tuning: tuningOpen = true
         case .care: careOpen = true
         case .compress:
-            say("正在把前文压成提要…")
+            say(L.t("loading.compactingContext"))
             Task {
                 do {
                     let folded = try await team.compress(chat.key)

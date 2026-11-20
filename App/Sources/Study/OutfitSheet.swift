@@ -37,7 +37,7 @@ struct OutfitSheet: View {
                     }
                     .pickerStyle(.segmented)
                 } header: { Text("软件源") } footer: {
-                    Text(measuring ? "正在测哪个源最快……" : "测过了：数字是毫秒，越小越快，已经替你选了最快的。没有数字的是连不上。")
+                    Text(measuring ? L.t("loading.measuringMirrors") : "测过了：数字是毫秒，越小越快，已经替你选了最快的。没有数字的是连不上。")
                 }
                 Section("要装的") {
                     ForEach(Self.kits, id: \.0) { kit in
@@ -60,7 +60,7 @@ struct OutfitSheet: View {
             }
             .paperForm()
             .task { await measure() }
-            .navigationTitle("装常用软件")
+            .navigationTitle(L.t("terminal.installSoftware"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done(nil) } }

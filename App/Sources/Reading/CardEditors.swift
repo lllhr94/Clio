@@ -205,7 +205,7 @@ struct BotEditor: View {
                 .scrollDismissesKeyboard(.interactively)
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle(Words.t(bot == nil ? "写一张新名帖" : "名帖"))
+            .navigationTitle(bot == nil ? L.t("organize.newProfileCard") : L.t("organize.profileCard"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -368,7 +368,7 @@ struct RoomEditor: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle(Words.t(room == nil ? "开一场雅集" : "雅集"))
+            .navigationTitle(room == nil ? L.t("chat.newGroup") : L.t("nav.groupChat"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }

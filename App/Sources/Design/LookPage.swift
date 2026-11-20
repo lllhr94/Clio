@@ -73,7 +73,7 @@ struct LookPage: View {
                         ForEach(Self.sizes.indices, id: \.self) { step in Text(Self.sizes[step].title).tag(step) }
                     }
                     .pickerStyle(.segmented)
-                } header: { Text("对话字号") } footer: { Text("对话里正文的大小，上面的小样跟着变。") }
+                } header: { Text(L.t("settings.chatTextSize")) } footer: { Text("对话里正文的大小，上面的小样跟着变。") }
                 .spot("size", lit)
 
                 Section {
@@ -88,10 +88,10 @@ struct LookPage: View {
                     RowLabel("textformat.size", title: "设置里的一行", line: "换一档看看，整个界面一起变", end: .valueChevron("示例"))
                         .padding(.horizontal, -Ink.Space.l)
                         .allowsHitTesting(false)
-                } header: { Text("界面大小") } footer: { Text("按钮、图标、列表和间距一起放大缩小，对话字号另外调。") }
+                } header: { Text(L.t("settings.uiDensity")) } footer: { Text("按钮、图标、列表和间距一起放大缩小，对话字号另外调。") }
                 .spot("ui", lit)
 
-                Section(Words.t("纸墨")) {
+                Section(L.t("settings.appearance")) {
                     Picker("明暗", selection: $scheme) {
                         Text("跟随系统").tag("system")
                         Text("纸白").tag("light")
@@ -119,7 +119,7 @@ struct LookPage: View {
                 }
                 .spot("tone", lit)
 
-                Section("动静") {
+                Section(L.t("settings.motion")) {
                     Toggle("触感反馈", isOn: $haptics)
                     Toggle("回复逐字淡入", isOn: $fade)
                     Toggle("回复下显示耗时和用量", isOn: $stats)
@@ -132,7 +132,7 @@ struct LookPage: View {
 
                 Section {
                     Toggle("用面容锁住 Clio", isOn: $faceLock)
-                } header: { Text("上锁") } footer: {
+                } header: { Text(L.t("settings.appLock")) } footer: {
                     Text("切到后台再回来时要先过面容（或密码）。手机没设密码时不会锁。")
                 }
                 .spot("lock", lit)
@@ -143,7 +143,7 @@ struct LookPage: View {
                         Stepper("超过 \(compressAt / 1000) 千字时压缩", value: $compressAt, in: 20_000...300_000, step: 10_000)
                     }
                     Stepper("压缩后留最近 \(keepRecent) 条原文", value: $keepRecent, in: 4...40, step: 2)
-                } header: { Text("压缩") } footer: {
+                } header: { Text(L.t("settings.contextCompaction")) } footer: {
                     Text(Words.t("较早的话写成提要，原文留在絮语页"))
                 }
                 .spot("compress", lit)
@@ -163,7 +163,7 @@ struct LookPage: View {
                         Text("1.6 万").tag(16384)
                         Text("3.2 万").tag(32768)
                     }
-                } header: { Text("交给模型的") } footer: {
+                } header: { Text(L.t("settings.modelContext")) } footer: {
                     Text("带得多记得多，也更慢更费")
                 }
                 .spot("context", lit)
@@ -173,7 +173,7 @@ struct LookPage: View {
                     if morningOn {
                         Stepper("\(morningHour) 点以后第一次打开时写", value: $morningHour, in: 5...11)
                     }
-                } header: { Text(Words.t("晨信")) } footer: {
+                } header: { Text(L.t("agent.morningBrief")) } footer: {
                     Text("看看日程、提醒和天气，写一封便笺")
                 }
                 .onChange(of: morningOn) { _, _ in TeamModel.scheduleMorning() }
@@ -181,7 +181,7 @@ struct LookPage: View {
 
                 Section {
                     Toggle("晚上写日记", isOn: $diaryOn)
-                } header: { Text(Words.t("旅伴的日常")) } footer: {
+                } header: { Text(L.t("settings.companionRoutine")) } footer: {
                     Text(Words.t("晚上离开时，旅伴各写一页日记"))
                 }
                 .onChange(of: morningHour) { _, _ in TeamModel.scheduleMorning() }
@@ -190,7 +190,7 @@ struct LookPage: View {
                     Toggle("离开时干完活、出错都通知我", isOn: $notifyDone)
                     Toggle(Words.t("锁屏和灵动岛显示旅伴在做什么"), isOn: $liveOn)
                     Toggle(Words.t("切走后让旅伴接着做一会儿"), isOn: $bgContinue)
-                } header: { Text("在后台") } footer: {
+                } header: { Text(L.t("settings.background")) } footer: {
                     Text("干活时在锁屏和灵动岛显示进度。切走后系统会给一张进度卡，可以在那里叫停；系统忙时可能不给。")
                 }
                 .spot("notify", lit)
@@ -210,7 +210,7 @@ struct LookPage: View {
                 withAnimation(.easeOut(duration: 0.6)) { lit = nil }
             }
             }
-            .navigationTitle(Words.t("纸墨与絮语"))
+            .navigationTitle(L.t("settings.appearanceAndChat"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }

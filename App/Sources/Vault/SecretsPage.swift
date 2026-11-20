@@ -19,7 +19,7 @@ struct SecretsPage: View {
                         if secrets.items.isEmpty {
                             VStack(spacing: Ink.Space.m) {
                                 Image(systemName: "lock.rectangle.stack").font(.system(size: 36)).foregroundStyle(Ink.inkFaint)
-                                Text(Words.t("信匣还空着"))
+                                Text(L.t("empty.vault"))
                                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint).multilineTextAlignment(.center)
                             }
                             .frame(maxWidth: .infinity)
@@ -38,7 +38,7 @@ struct SecretsPage: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             }
-            .navigationTitle(Words.t("信匣"))
+            .navigationTitle(L.t("settings.vault"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
@@ -127,11 +127,11 @@ private struct SecretEditor: View {
                         Button { showing.toggle() } label: { Image(systemName: showing ? "eye.slash" : "eye") }.buttonStyle(TapStyle(grow: 8))
                     }
                 }
-                Section("备注") { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }
+                Section(L.t("vault.notes")) { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }
             }
             }
             .paperForm()
-            .navigationTitle(isNew ? "存一条" : item.title)
+            .navigationTitle(isNew ? L.t("vault.newItem") : item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }

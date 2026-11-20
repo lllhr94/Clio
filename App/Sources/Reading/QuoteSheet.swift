@@ -19,7 +19,7 @@ struct QuoteSheet: View {
             }
             .padding(.top, Ink.Space.s)
             .background(Ink.paper)
-            .navigationTitle("引用追问")
+            .navigationTitle(L.t("chat.quoteFollowup"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done(nil) } }

@@ -442,7 +442,7 @@ struct Desk: View {
                     if shownThreads.isEmpty {
                         EmptyNote(
                             symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
-                            words: recent.isEmpty ? Words.t("还没有聊过。点上面的旅伴，说第一句话吧。") : "都归档了，下面能翻出来。"
+                            words: recent.isEmpty ? L.t("empty.startConversation") : L.t("empty.activeConversations")
                         )
                     }
                     ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in

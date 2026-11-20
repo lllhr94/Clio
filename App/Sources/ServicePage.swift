@@ -45,7 +45,7 @@ struct ServicePage: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
-        .navigationTitle(endpoint?.name ?? "服务")
+        .navigationTitle(endpoint?.name ?? L.t("settings.modelService"))
         .navigationBarTitleDisplayMode(.inline)
         .hitchPage("服务")
         .onAppear {
@@ -112,7 +112,7 @@ struct ServicePage: View {
 
     private func inUse(_ endpoint: Endpoint) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "在用的模型", note: "选模型时只列这些。点一个看它能做什么，猜错了可以改")
+            FieldTitle(text: L.t("settings.activeModels"), note: "选模型时只列这些。点一个看它能做什么，猜错了可以改")
             VStack(spacing: 0) {
                 ForEach(endpoint.models, id: \.self) { model in
                     modelRow(endpoint, model)
@@ -241,7 +241,7 @@ struct ServicePage: View {
 
     private func connection(_ endpoint: Endpoint) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "接口", note: endpoint.kind == .anthropic ? "Claude 那种接口" : "OpenAI 那种接口（大多数服务都是）")
+            FieldTitle(text: L.t("settings.apiType"), note: endpoint.kind == .anthropic ? "Claude 那种接口" : "OpenAI 那种接口（大多数服务都是）")
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 labeled("称呼") {
                     TextField("称呼", text: $name).font(.system(size: Ink.Size.sub)).onSubmit { save(endpoint) }
@@ -355,7 +355,7 @@ struct ServicePage: View {
 
     private func balance(_ endpoint: Endpoint) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "余额")
+            FieldTitle(text: L.t("settings.balance"))
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     if let reading {
@@ -388,7 +388,7 @@ struct ServicePage: View {
 
     private func refresh(_ endpoint: Endpoint) {
         working = true
-        note = "正在拿模型列表…"
+        note = L.t("loading.fetchingModels")
         Task {
             do {
                 let count = try await team.refreshModels(endpoint.id)
