@@ -13,8 +13,12 @@
 - **一次只做一个状态**，做完出预览和 GIF 给主人看，点头后再做下一个。
 - 可以顺手修帧与帧之间头发边缘的个别抖动像素，但不能改造型。
 
-## 睡觉预览（待确认）
+## 睡觉（通过，已补小 z）
 
-`sleeping/` 有三帧，分别停留 1150／630／780 ms。以 `idle/01.png` 为底，闭着眼，手放松，嘴和手部的细微动作表现呼吸。[逐帧对照](sleeping-preview.png) · [循环 GIF](sleeping.gif)
+`sleeping/` 有三帧，分别停留 1150／630／780 ms。以 `idle/01.png` 为底，闭着眼，手放松，嘴和手部的细微动作表现呼吸。头顶右上方的小 z 每帧向上飘 2 像素，颜色逐步变浅。[逐帧对照](sleeping-preview.png) · [循环 GIF](sleeping.gif)
 
-确认后接着做 notification、attention、working、error，每次交一组预览。
+## 等批准预览（待确认）
+
+`notification/` 有三帧，分别停留 900／170／650 ms。以 `idle/01.png` 为底，举起一只手，轻抬后停住等候。[逐帧对照](notification-preview.png) · [循环 GIF](notification.gif)
+
+确认后依次做 attention、working、error，每次交一组预览。
