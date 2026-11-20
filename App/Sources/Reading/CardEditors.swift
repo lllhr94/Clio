@@ -52,6 +52,7 @@ struct BotEditor: View {
     /// A picture just picked, not saved yet.
     @State private var photo: UIImage?
     @State private var photoItem: PhotosPickerItem?
+    @State private var choosingPhoto = false
 
     /// Ways to begin a card, for when a blank page is hard.
     private static let samples: [(title: String, role: String, words: String)] = [
@@ -83,6 +84,8 @@ struct BotEditor: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
                         preview
+
+                        faces
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "称呼")
@@ -156,8 +159,6 @@ struct BotEditor: View {
                             }
                             .disabled(team.models.isEmpty)
                         }
-
-                        faces
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "底色")
@@ -263,6 +264,7 @@ struct BotEditor: View {
             }
             .scrollIndicators(.hidden)
         }
+        .photosPicker(isPresented: $choosingPhoto, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task {
@@ -272,6 +274,16 @@ struct BotEditor: View {
                 }
             }
         }
+    }
+
+    private func pickFace(_ value: String?) {
+        Haptics.tick(0.5)
+        withAnimation(Ink.Motion.press) { face = value }
+    }
+
+    @ViewBuilder
+    private func faceItem(_ title: String, picked: Bool) -> some View {
+        if picked { Label(title, systemImage: "checkmark") } else { Text(title) }
     }
 
     @ViewBuilder
@@ -315,7 +327,25 @@ struct BotEditor: View {
     private var preview: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: Ink.Space.l) {
-                PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
+                // Tap the face itself to change it: the obvious place to look.
+                Menu {
+                    Button { pickFace(nil) } label: { faceItem("默认（跟宠物设置走）", picked: face == nil) }
+                    ForEach(PetLibrary.shared.packs, id: \.id) { pack in
+                        Button { pickFace("pet:\(pack.id)") } label: { faceItem(pack.name, picked: face == "pet:\(pack.id)") }
+                    }
+                    Button { choosingPhoto = true } label: { Label("从相册选一张", systemImage: "photo") }
+                } label: {
+                    PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: Ink.Size.micro, weight: .bold))
+                                .foregroundStyle(Ink.paper)
+                                .frame(width: 22, height: 22)
+                                .background(Ink.accent, in: .circle)
+                                .overlay(Circle().strokeBorder(Ink.paper, lineWidth: 2))
+                        }
+                }
+                .accessibilityLabel("换头像")
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(trimmed.isEmpty ? "未署名" : trimmed)
                         .font(Ink.serif(24, bold: true))
