@@ -26,7 +26,9 @@ struct PetPage: View {
                         ForEach(library.packs) { pack in
                             choiceRow(id: pack.id, title: pack.name, line: [pack.author, pack.license].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .contextMenu {
-                                    Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = pack }
+                                    if library.canDelete(pack) {
+                                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = pack }
+                                    }
                                 }
                         }
                         choiceRow(id: "none", title: "不显示", line: nil)
