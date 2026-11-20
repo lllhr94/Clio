@@ -53,3 +53,7 @@
 
 - **Claude / Codex**：写代码、修 bug、跑 CI、截图核对。一次只一个人在 `batch-*` 分支上推，开工前 `git pull`，收工更新本文件。
 - **Gemini**：外援做设计（App 图标、宠物素材、文案润色），要求见 `docs/DESIGN-BRIEF.md`。产出放 `design/incoming/`，由写代码的一方接入。
+
+## 首次打开引导
+
+- C9：小克、肉包各四张引导插画，源文件与对照图在 `design/incoming/onboarding/`。待主人选定整套角色，再由 Claude 接入引导页。
