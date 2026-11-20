@@ -59,6 +59,16 @@ actor BrandIcons {
         }
         // The service's own icons first: what its home page links to, then the usual places. Then favicon services,
         // the ones reachable from China before the ones that are not.
+        // A full address is the icon itself (products that share one domain, like Google's).
+        if domain.hasPrefix("https://") {
+            if let url = URL(string: domain), let image = await fetch(url) {
+                try? image.pngData()?.write(to: file, options: .atomic)
+                memory[domain] = image
+                return image
+            }
+            misses.insert(domain)
+            return nil
+        }
         var sources = await linked(on: domain)
         sources += [
             "https://\(domain)/apple-touch-icon.png",

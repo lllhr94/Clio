@@ -23,7 +23,6 @@ struct ConnectorsPage: View {
                     if query.isEmpty {
                         suggestCard
                         if kind == "全部" { onDevice }
-                        categories
                     }
                     if !mine.isEmpty && kind == "全部" { section(L.t("connectors.connected"), mine) }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
@@ -49,6 +48,19 @@ struct ConnectorsPage: View {
                 }
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
+            }
+            // The kinds stay put under the search field, on paper, so the list never shows through behind them.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if query.isEmpty {
+                    categories
+                        .padding(.horizontal, Ink.Space.page)
+                        .padding(.vertical, Ink.Space.s)
+                        .background {
+                            LinearGradient(stops: [.init(color: Ink.paper, location: 0.75), .init(color: Ink.paper.opacity(0), location: 1)],
+                                           startPoint: .top, endPoint: .bottom)
+                                .ignoresSafeArea(edges: .top)
+                        }
+                }
             }
             .background(Ink.paper.ignoresSafeArea())
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找连接器")
@@ -196,7 +208,7 @@ struct ConnectorsPage: View {
             googleOpen = true
         } label: {
             RowLabel(title: L.t("connectors.useOwnClientID"), line: google.account ?? L.t("connectors.ownClientNote"), end: google.connected ? .valueChevron(L.t("connectors.connected"), Ink.ok) : .chevron) {
-                ConnectorIcon(mark: "G", tint: Ink.Tile.dai, domain: "mail.google.com")
+                ConnectorIcon(mark: "ID", tint: Ink.Tile.mo, domain: nil)
             }
         }
         .buttonStyle(PressStyle(haptic: false))
@@ -568,8 +580,11 @@ struct Connector: Identifiable, Hashable {
             "neon": "neon.tech", "exa": "exa.ai", "wolfram": "wolframalpha.com", "deepwiki": "deepwiki.com",
             "context7": "context7.com", "mslearn": "learn.microsoft.com", "cfdocs": "developers.cloudflare.com",
             "huggingface": "huggingface.co", "g-gmail": "mail.google.com", "g-drive": "drive.google.com",
-            "g-calendar": "calendar.google.com", "g-docs": "docs.google.com", "g-sheets": "sheets.google.com",
-            "g-slides": "slides.google.com",
+            "g-calendar": "calendar.google.com", 
+            // docs / sheets / slides share one favicon (Drive's); these are each product's own.
+            "g-docs": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_document_x128.png",
+            "g-sheets": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_spreadsheet_x128.png",
+            "g-slides": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_presentation_x128.png",
         ]
         if let found = known[id] { return found }
         return URL(string: url)?.host
