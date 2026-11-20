@@ -15,10 +15,14 @@
 
 ## 睡觉（通过，已补小 z）
 
-`sleeping/` 有三帧，分别停留 1150／630／780 ms。以 `idle/01.png` 为底，闭着眼，手放松，嘴和手部的细微动作表现呼吸。头顶右上方的小 z 每帧向上飘 2 像素，颜色逐步变浅。[逐帧对照](sleeping-preview.png) · [循环 GIF](sleeping.gif)
+`sleeping/` 有三帧，分别停留 1150／630／780 ms。以 `idle/01.png` 为底，闭着眼，手放松，嘴和手部的细微动作表现呼吸。头顶右上方的 4×4 z 每帧向上飘 2 像素，从深橙逐步变浅。[逐帧对照](sleeping-preview.png) · [循环 GIF](sleeping.gif)
 
-## 等批准预览（待确认）
+## 等批准（通过）
 
 `notification/` 有三帧，分别停留 900／170／650 ms。以 `idle/01.png` 为底，举起一只手，轻抬后停住等候。[逐帧对照](notification-preview.png) · [循环 GIF](notification.gif)
 
-确认后依次做 attention、working、error，每次交一组预览。
+## 完成预览（待确认）
+
+`attention/` 有三帧，分别停留 300／240／440 ms，播放一次。以 `idle/01.png` 为底，局部改出笑眼、上扬嘴角，两颗小星星升起后淡出。[逐帧对照](attention-preview.png) · [GIF](attention.gif)
+
+确认后依次做 working、error，每次交一组预览。
