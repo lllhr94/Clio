@@ -5,6 +5,8 @@ import WidgetKit
 enum WidgetFeed {
     private static var last: WidgetSnapshot?
 
+    private static let toldKey = "widget.toldNoKeychain"
+
     static func publish(_ team: TeamModel) {
         guard let id = team.mainBotId, let bot = team.bots.first(where: { $0.id == id }) else { return }
         let key = TeamModel.key(bot: id)
@@ -14,8 +16,10 @@ enum WidgetFeed {
         last = snapshot
         if Shelf.put(snapshot) {
             WidgetCenter.shared.reloadAllTimelines()
-        } else {
-            Diag.note("小组件：这个签名不让 app 和小组件共用钥匙串，小组件拿不到近况")
+        } else if !UserDefaults.standard.bool(forKey: Self.toldKey) {
+            // The signing will not change by itself: say it once, not every time the widget is fed.
+            UserDefaults.standard.set(true, forKey: Self.toldKey)
+            Diag.note("小组件：这个签名不让 app 和小组件共用钥匙串，小组件拿不到近况（只记这一次）")
         }
     }
 }
