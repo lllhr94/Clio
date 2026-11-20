@@ -37,7 +37,8 @@ struct LookPage: View {
 
     /// The reading sizes on offer, each with the line spacing that suits it.
     static let sizes: [(title: String, size: Double, leading: Double)] = [
-        ("超小", 15, 7.5), ("小", 16, 8), ("中", 17, 8.5), ("大", 19, 9.5),
+        // Reaching well past the system's own largest reading size: 楷体 and 文楷 read smaller than 苹方 at the same size.
+        ("小", 15, 7.5), ("较小", 16, 8), ("中", 17, 8.5), ("大", 19, 9.5), ("特大", 21, 10.5), ("超大", 24, 12),
     ]
 
     /// The step closest to a size kept from before (when it was a slider).
