@@ -123,13 +123,8 @@ struct SetupView: View {
                             Haptics.light()
                             onDone()
                         } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: Ink.Size.sub, weight: .semibold))
-                                .foregroundStyle(Ink.inkSoft)
-                                .frame(width: 32, height: 32)
-                                .background(Ink.mine, in: .circle)
+                            Text(L.t("actions.cancel")).font(Ink.label).foregroundStyle(Ink.accent)
                         }
-                        .accessibilityLabel("关闭")
                     }
                 }
 

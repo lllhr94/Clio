@@ -78,13 +78,13 @@ struct DeskPicker: View {
                         .padding(.horizontal, Ink.Space.page)
                         .padding(.vertical, Ink.Space.l)
                     }
-                    .searchable(text: $query, prompt: "找文件名")
+                    .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找文件名")
                 }
             }
             .navigationTitle(L.t("chat.chooseFromFiles"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { done([]) } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done([]) } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(chosen.isEmpty ? "带上" : "带上 \(chosen.count) 个") { done(Array(chosen).sorted()) }
                         .fontWeight(.semibold)

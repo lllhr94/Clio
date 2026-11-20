@@ -186,3 +186,14 @@ final class UIScale {
 
     static var factor: CGFloat { CGFloat(shared.value) }
 }
+
+
+extension View {
+    /// A block inside running text (code, a table): raised paper with the small corner and a hairline edge.
+    /// Cards that hold rows use `paperCard()`; blocks in what you read use this.
+    func inkBlock() -> some View {
+        background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule, lineWidth: 0.5))
+            .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+    }
+}

@@ -65,7 +65,8 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 - **间距**：`Ink.Space.xs 4 / s 8 / m 12 / l 16 / xl 24 / xxl 32 / page 20`。
 - **圆角只有三种**：卡片 `Ink.Radius.card`（28）、卡片里的小块 `Ink.Radius.small`（14）、控件一律胶囊 `Capsule()`。所有圆角都用 `style: .continuous`。图标是圆角方块，比例统一用 `Kit.iconCorner(size)`。旅伴头像用圆形。
 - **界面大小**：以上数值都乘 `UIScale.factor`（用户在「外观」里选紧凑 / 偏小 / 标准 / 偏大），所以它们是计算属性，不要缓存成常量。
-- **公用组件**（`Kit.swift`）：列表行 `RowLabel`、图标 `IconBadge`、行间分隔 `Kit.divider`、分组标题 `SectionTitle`、主按钮 `WideButtonStyle`。新页面用它们，不要再手搓一套。
+- **公用组件**（`Kit.swift`）：列表行 `RowLabel`、图标 `IconBadge`、行间分隔 `Kit.divider`、分组标题 `SectionTitle`、主按钮 `WideButtonStyle`、装行的卡片 `paperCard()`、正文里的代码块和表格 `inkBlock()`（小圆角）。新页面用它们，不要再手搓一套。
+- **弹出页按钮**：只看的页面右上角「好了」（`L.t("actions.done")`），其他操作（＋、菜单）也放右上；要填写的页面左上「取消」、右上「保存」。搜索框一律在标题下面常驻（`.navigationBarDrawer(displayMode: .always)`）。
 - **颜色**只用 `Ink`：`ink / inkSoft / inkFaint / paper / paperRaised / rule / accent / accentWash / ok / warn / stop`。
 - 浮在内容上的顶栏、输入框要垫纸色渐隐（见 `ChatPage` 的 header 和 composer），不要用系统的 hard scroll edge（会出现带横线的实心条）。
 
@@ -73,6 +74,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 
 - 界面上的名字和提示**从词典取**：`L.t("nav.settings")`。词典在 `App/Sources/Tone/`，两份 JSON 的键必须完全一致。
 - 新加文字：两份词典都加同一个键。书卷说法要好懂，不要生造词；**按钮保持日常说法**（保存、取消、删除……）；删除类确认的后果提示固定写直白的（`errors.cannotUndo`）。
+- **书卷词表里的词都是功能名**（书案＝文件，斗室＝终端，港湾＝连接器，更漏＝定时任务，良方＝技能，便笺＝批准单，手札＝日记……），只在说那个功能时用，不要拿来当装饰造句，比如断网别写「港湾失联」、超时别写「更漏已过」。
 - `L.hint(key)`：书卷模式下开着「日常旁注」时，给出日常说法当灰色小字。
 - 老代码里的 `Words.t("…")` 是用旧书卷名写的句子，会自动换成当前称谓下的名字；新代码优先用 `L.t`。
 - 词表定稿（书卷）：窗前 书案 斗室 别馆 漫游 雅集 拾遗 旅伴 伴读 手札 集珍 日课 偶得 调弦；絮语 另起一叶 絮语录 沉吟 落笔 闲坐 思绪 文脉 收卷 夹页 出处 回笺；待签 落款 退回 便笺；诸艺 良方 港湾 更漏 寻访 行迹 晨信 来信 音信 样张；名帖 镇纸 入藏 未阅 常记 旧事；应许 密匣 封缄 笔庄 墨量 校音 设色 疏密 称谓。

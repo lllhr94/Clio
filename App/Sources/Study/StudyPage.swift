@@ -86,7 +86,7 @@ struct StudyFolder: View {
         .toolbar {
             if let close {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("好了") { close() }
+                    Button(L.t("actions.done")) { close() }
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {

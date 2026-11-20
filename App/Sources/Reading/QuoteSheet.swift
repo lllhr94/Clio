@@ -22,7 +22,7 @@ struct QuoteSheet: View {
             .navigationTitle(L.t("chat.quoteFollowup"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("算了") { done(nil) } }
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { done(nil) } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(selected.isEmpty ? "引用整段" : "引用选中的") {
                         Haptics.tick(0.6)

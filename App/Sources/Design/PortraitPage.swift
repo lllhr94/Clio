@@ -15,7 +15,7 @@ struct PortraitPage: View {
                         .font(Ink.display)
                         .foregroundStyle(Ink.ink)
                     Spacer()
-                    Button("好了") { dismiss() }
+                    Button(L.t("actions.done")) { dismiss() }
                         .font(Ink.label)
                         .foregroundStyle(Ink.accent)
                 }

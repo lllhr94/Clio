@@ -55,7 +55,7 @@ struct ChatDetail: View {
             .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarLeading) {
                     ShareLink(item: exportFile(), preview: SharePreview("\(title).md")) {
                         Label("导出", systemImage: "square.and.arrow.up")

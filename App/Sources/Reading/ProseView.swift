@@ -81,7 +81,7 @@ private struct BlockView: View {
             }
         case .quote(let blocks):
             HStack(alignment: .top, spacing: Ink.Space.m) {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(Ink.rule).frame(width: 3)
+                Capsule().fill(Ink.inkFaint.opacity(0.6)).frame(width: 2.5)
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
                         BlockView(block: inner, fading: fading && index == blocks.count - 1)
@@ -97,7 +97,7 @@ private struct BlockView: View {
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading)
         case .rule:
-            Rectangle().fill(Ink.rule).frame(height: 1).padding(.vertical, Ink.Space.s)
+            Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.vertical, Ink.Space.s)
         }
     }
 
@@ -230,7 +230,7 @@ private struct CodeBlock: View {
             .padding(.leading, Ink.Space.l)
             .padding(.trailing, Ink.Space.xs)
             .frame(height: 34)
-            Rectangle().fill(Ink.rule).frame(height: 1)
+            Rectangle().fill(Ink.rule).frame(height: 0.5)
             ScrollView(.horizontal) {
                 Text(Highlight.code(shown, language: language))
                     .font(Ink.code)
@@ -252,10 +252,10 @@ private struct CodeBlock: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 1) }
+                .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 0.5) }
             }
         }
-        .paperCard()
+        .inkBlock()
     }
 }
 
@@ -297,7 +297,7 @@ private struct TableBlock: View {
             VStack(alignment: .leading, spacing: 0) {
                 row(table.header, head: true, widths: widths)
                 ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
-                    Rectangle().fill(Ink.rule).frame(height: 1)
+                    Rectangle().fill(Ink.rule).frame(height: 0.5)
                     row(cells, head: false, widths: widths)
                 }
             }
@@ -306,7 +306,7 @@ private struct TableBlock: View {
         }
         .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .paperCard()
+        .inkBlock()
     }
 
     private func row(_ cells: [String], head: Bool, widths: [CGFloat]) -> some View {

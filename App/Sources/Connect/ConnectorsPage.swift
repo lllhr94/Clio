@@ -54,7 +54,7 @@ struct ConnectorsPage: View {
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找连接器")
             .navigationTitle(L.t("agent.connectors"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .navigationDestination(for: Connector.self) { ConnectorDetail(connector: $0) }
         }
         .sheet(isPresented: $googleOpen) { GoogleSheet() }
@@ -686,7 +686,7 @@ private struct CustomSheet: View {
             }
             .navigationTitle(L.t("connectors.customAddress"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("算了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } } }
         }
     }
 
@@ -782,7 +782,7 @@ private struct GoogleSheet: View {
             }
             .navigationTitle(L.t("connectors.google"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
     }
 

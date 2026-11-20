@@ -92,7 +92,7 @@ struct GrantsPage: View {
             .navigationTitle(L.t("settings.permissions"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
         .onAppear(perform: load)

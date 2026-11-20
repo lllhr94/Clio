@@ -55,7 +55,7 @@ struct AbilitiesSheet: View {
             }
             .navigationTitle(L.t("agent.capabilities"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
     }
 

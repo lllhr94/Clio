@@ -177,7 +177,7 @@ struct TideSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("nav.dailyDiscover"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
         .hitchPage("潮水")
     }
@@ -323,7 +323,7 @@ struct DiarySheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     if !pages.isEmpty { Button("写今天的") { write() }.disabled(writing) }
                 }
-                ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
         .hitchPage("日记")

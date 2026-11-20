@@ -212,7 +212,7 @@ struct LookPage: View {
             }
             .navigationTitle(L.t("settings.appearanceAndChat"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
         .clioScheme(scheme)
     }

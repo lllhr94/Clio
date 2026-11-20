@@ -37,7 +37,7 @@ struct UsageSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("settings.usage"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好了") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
         .hitchPage("用量")
         .task {
