@@ -19,6 +19,10 @@ on:
         description: "Also build for the simulator and take screenshots of the main screens (light and dark)"
         type: boolean
         default: false
+      shot_model_error:
+        description: "Also capture the model error card in both tones"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -117,6 +121,7 @@ jobs:
       - name: Screenshots (simulator)
         if: inputs.shots
         env:
+          SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
           SWIFTTERM_BUILD_TAG: "1.20.0"
           SWIFTTERM_BUILD_COMMIT: release
@@ -161,9 +166,10 @@ jobs:
 
           capture() {
             local shot="$1" output="$2" token elapsed attempt
+            shift 2
             for attempt in 1 2; do
               token="$(uuidgen)"
-              if xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -clioShot "$shot" -clioShotToken "$token" >/dev/null; then
+              if xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -clioShot "$shot" -clioShotToken "$token" "$@" >/dev/null; then
                 for ((elapsed=0; elapsed<90; elapsed++)); do
                   if [[ "$(cat "$DATA_DIR/tmp/clio-shot-ready" 2>/dev/null || true)" == "$token" ]] &&
                      xcrun simctl io "$UDID" screenshot "$output" >/dev/null &&
@@ -187,6 +193,11 @@ jobs:
               capture "$shot" "shots/$mode-$shot.png" || status=1
             done
           done
+          if [[ "$SHOT_MODEL_ERROR" == "true" ]]; then
+            xcrun simctl ui "$UDID" appearance light
+            capture model-error shots/model-error-daily.png -look.plainNames YES || status=1
+            capture model-error shots/model-error-literary.png -look.plainNames NO || status=1
+          fi
           ls -la shots
           # Anything that crashed while the pictures were taken, so a blank picture can be explained.
           mkdir -p shots/crashes
