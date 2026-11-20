@@ -27,6 +27,37 @@ final class ProviderTests: XCTestCase {
         )
     }
 
+    func testOpenAIReplyImagesFromMessageAndDelta() throws {
+        let chat = #"{"choices":[{"message":{"content":[{"type":"text","text":"第一张"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}}],"images":[{"image_url":"https://cdn.example/out.png"}]}}]}"#
+        let inline = ReplyImage.embedded(ImagePart(mediaType: "image/png", data: Data([1, 2, 3])))
+        let remote = ReplyImage.remote(try XCTUnwrap(URL(string: "https://cdn.example/out.png")))
+        XCTAssertEqual(try OpenAIProvider.decode(chat), [.text("第一张"), .image(inline), .image(remote)])
+        let delta = #"{"choices":[{"delta":{"images":[{"b64_json":"AQID"},{"url":"file:///tmp/out.png"}]}}]}"#
+        XCTAssertEqual(try OpenAIProvider.decode(delta), [.image(inline)])
+    }
+
+    func testOpenAIKeepsChunkedDataURLsOutOfVisibleText() {
+        var splitter = ReplyImageText()
+        let chunks = ["图片：!", "[预览](", "data:im", "age/png;base", "64,AQI", "D)\n", "完成", " data:image/webp;base64,BAUG"]
+        var events = chunks.flatMap { splitter.feed($0) }
+        events += splitter.flush()
+        let text = events.compactMap { if case .text(let piece) = $0 { return piece } else { return nil } }.joined()
+        let images = events.compactMap { if case .image(let image) = $0 { return image } else { return nil } }
+        XCTAssertEqual(text, "图片：\n完成 ")
+        XCTAssertEqual(images, [
+            .embedded(ImagePart(mediaType: "image/png", data: Data([1, 2, 3]))),
+            .embedded(ImagePart(mediaType: "image/webp", data: Data([4, 5, 6]))),
+        ])
+    }
+
+    func testOrdinaryMarkdownRemainsText() {
+        var splitter = ReplyImageText()
+        var events = splitter.feed("原文！ ![封面](") + splitter.feed("https://example.com/pic.png) 和 d")
+        events += splitter.flush()
+        XCTAssertEqual(events.compactMap { if case .text(let piece) = $0 { return piece } else { return nil } }.joined(),
+                       "原文！ ![封面](https://example.com/pic.png) 和 d")
+    }
+
     func testOpenAIErrorInStream() {
         XCTAssertThrowsError(try OpenAIProvider.decode(#"{"error":{"message":"bad"}}"#))
     }
@@ -169,6 +200,31 @@ final class AgentTests: XCTestCase {
         XCTAssertTrue(events.contains(.toolFinished(id: "c1", ok: true)))
         XCTAssertEqual(provider.requests.count, 2)
         XCTAssertEqual(provider.requests[1].messages.count, 3)
+    }
+
+    func testNativeImageOnlyReplyGetsStoredOnceAndEmitted() async throws {
+        let image = ReplyImage.embedded(ImagePart(mediaType: "image/png", data: Data([1, 2, 3])))
+        let provider = ScriptedProvider([[.image(image), .image(image), .finish(reason: "stop")]])
+        let recorder = Recorder()
+        var agent = Agent(provider: provider, model: "m", system: "")
+        agent.renderReplyImages = { images in
+            XCTAssertEqual(images, [image])
+            return "![](书案/图片/first.png)"
+        }
+        try await agent.run(history: [.user("一张图")]) { await recorder.add($0) }
+        let events = await recorder.events
+        XCTAssertEqual(events, [.message(.assistant("![](书案/图片/first.png)"))])
+    }
+
+    func testNativeImageLinkIsAppendedAfterReplyText() async throws {
+        let image = ReplyImage.embedded(ImagePart(mediaType: "image/png", data: Data([1, 2, 3])))
+        let provider = ScriptedProvider([[.text("画好了"), .image(image), .finish(reason: "stop")]])
+        let recorder = Recorder()
+        var agent = Agent(provider: provider, model: "m", system: "")
+        agent.renderReplyImages = { _ in "![](书案/图片/first.png)" }
+        try await agent.run(history: [.user("一张图")]) { await recorder.add($0) }
+        let events = await recorder.events
+        XCTAssertEqual(events, [.text("画好了"), .message(.assistant("画好了\n\n![](书案/图片/first.png)"))])
     }
 
     func testDeclinedApprovalDoesNotRun() async throws {
