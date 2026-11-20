@@ -20,7 +20,7 @@
    - 每个角色 12 个状态的动画，透明底 GIF 或 APNG，文件名用状态名。
    - 规格见 `docs/DESIGN-BRIEF.md` 第 2 节。参考风格：DSH Go 宠物那种像素风，但必须是原创形象，不照着别家角色画。
    - 另给每个角色一张 64×64 的静态头像 PNG（闲坐姿态）。
-2. **App 图标**：1024×1024，书卷意象，可以带上默认角色。另给深色版、单色版。
+2. **App 图标**：现已改由 Codex 做（见 C8）。
 3. **文案**：空状态、加载中、出错提示的日常 / 书卷两版（键见 `App/Sources/Tone/zh-CN.daily.json` 的 `empty.*`、`loading.*`、`errors.*`）。
 
 ## Codex：工程活
@@ -29,13 +29,17 @@
 - [x] **C2 出错提示走词典**：`AgentKit` 里的出错解释（`Explain`）在包里拿不到 `L`。在 App 侧按错误类型（断网、超时、401 密钥无效、402/额度、429 太快、上下文超长、服务器 5xx）映射到 `errors.*` 的键，显示时用当前称谓。
 - [x] **C3 截图流程稳定**：亮色模式偶尔整张白屏（启动慢）；设置子页（连接器、外观、权限、添加服务）在截图模式下打不开（sheet 叠在 fullScreenCover 上的时机）。目标：20 张截图每次都对。可以考虑截图前轮询判断画面已出现，而不是固定等几秒。
 - [x] **C4 内置宠物包**：让 App 能带内置宠物包（放在 App 包里的 `Pets/<id>/pack.json` + PNG），`PetLibrary` 同时读内置和用户导入的，内置的不能删。Gemini 的像素角色到了以后，用 `tools/make_pet_pack.py`（或 App 里的 `PetConvert`）做成包放进去。
-- [ ] **C5 像素角色当头像**（卡在美术：Gemini 额度用完）：旅伴头像、空状态插画能用宠物包的静态帧（闲坐第一帧，最近邻放大保持像素清晰）。等 C4 和美术到位后做。
+- [ ] **C5 像素角色当头像和插画**：`DESIGN-BRIEF.md` 第 2.5 节表里的每个位置，在选了宠物包时用它对应状态的第一帧（最近邻放大，保持像素清晰），没选时保持现在的形象。等 C7 第一只宠物定稿后做。小组件和灵动岛里的 `water.waves`（鲸鱼时代留下的）一起换成中性图标。
 - [x] **C6 搜索结果跑偏**：搜索工具有时返回完全不相干的结果（动漫、陌陌推广页）。查清楚是哪个搜索源、怎么触发的，给出修法（换源、加过滤、结果和问题不相关时提示）。
 
 - [ ] **C7 像素宠物（美术，由 Codex 出图）**：分支 `codex/c7-pixel-pets`。
-  - **角色由主人直接告诉 Codex**，这里不限定形象。技术规范、调色板、出图流程见 `docs/DESIGN-BRIEF.md` 第 2 节，必须遵守。
-  - 每个新角色先交 `idle`、`thinking` 两个状态（各 2～4 帧）的 `preview.png` 给主人看，点头后再做全部状态。
-  - 出图后**必须**过 `tools/pixelize.py`。原图放 `design/incoming/pet/<角色>/raw/`，处理后放 `design/incoming/pet/<角色>/`；定稿后用 `tools/make_pet_pack.py` 做成包放 `App/Pets/<id>/`（C4 已支持），截图（`pet`、`chat`）确认在 App 里正常，再做 C5。
+  - **角色由主人直接告诉 Codex**，这里不限定形象。规范、调色板、出图流程见 `docs/DESIGN-BRIEF.md` 第 2 节，必须遵守。
+  - 每个新角色先交 `idle`、`thinking` 两个状态（各 2～4 帧）的 `preview.png` 给主人看，点头后再做全部状态（必做 7 个，可选的尽量做）。
+  - 出图后**必须**过 `tools/pixelize.py`。原图放 `design/incoming/pet/<角色>/raw/`，处理后放 `design/incoming/pet/<角色>/`；定稿后用 `tools/make_pet_pack.py` 做成包放 `App/Pets/<id>/`（C4 已支持），截图（`pet`、`chat`）确认在 App 里正常。
+- [ ] **C8 App 图标**：分支 `codex/c8-app-icon`。规范见 `DESIGN-BRIEF.md` 第 1 节：浅色、深色、单色三张 1024。先交 2～3 个方向的小样给主人挑，定了再出正式图、改 `Contents.json`，CI 编译确认图标生效。
+- [ ] **C9 首次打开引导插画**：分支 `codex/c9-onboarding-art`。4 张，规范见 `DESIGN-BRIEF.md` 第 2.5 节。用 C7 定稿的角色，C7 定稿后再做。只交图（放 `design/incoming/onboarding/`），引导页的代码由 Claude 写。
+
+顺序：C7（先 idle、thinking 给主人看）→ C8 小样可以同时做 → C7 定稿 → C5、C9。
 
 ## Claude：主笔与把关
 

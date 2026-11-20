@@ -10,11 +10,13 @@ iOS 原生的个人 AI 助手 App。名字来自希腊神话里掌管历史的�
 
 ## 1. App 图标
 
-- 交付：一张 **1024×1024 PNG**，不透明背景，**不要自己画圆角**（iOS 会裁）。
-- 意象由主人定，可以带上主人选定的宠物角色。
-- 缩到 29×29 也要认得出：不要细线、文字、复杂纹样。
-- 最好再给一张深色模式版本和一张单色（tinted）版本。
-- 放到：`design/incoming/app-icon/`
+- 意象由主人定，可以用主人选定的宠物角色。原创，不用别家标志。
+- 交付三张 **1024×1024 PNG**，**不要自己画圆角**（iOS 会裁）：
+  - `light.png`：浅色模式，不透明背景。
+  - `dark.png`：深色模式，背景透明或深色，主体提亮。
+  - `tinted.png`：单色版，灰度图，iOS 会按用户选的颜色染色。
+- 缩到 29×29 也要认得出：主体大、轮廓清楚，不要细线、文字、复杂纹样。像素风的话，先画小图再用最近邻放大到 1024，不要插值。
+- 原图放 `design/incoming/app-icon/`；定稿后放进 `App/Sources/Assets.xcassets/AppIcon.appiconset/`，`Contents.json` 写三种外观（`luminosity: dark`、`luminosity: tinted`）。
 
 ## 2. 宠物（像素风）
 
@@ -83,6 +85,28 @@ AI 出的「像素风」一般是大图，格子不齐、边缘发虚、颜色�
 3. 看 `preview.png`，个别歪掉的像素手工修（任何能编辑 PNG 的工具都行），再用 `tools/make_pet_pack.py` 打包。
 
 收到后用 `tools/make_pet_pack.py` 做成宠物包（`pack.json` + 序列帧），App 里「宠物设置 › 导入宠物包」就能用，也可以做成内置宠物。
+
+## 2.5 插画（用同一个宠物角色）
+
+App 里有几处大一点的形象位，现在画的是旧形象，要换成宠物角色的**静态图**（从宠物包里取对应状态的第一帧，最近邻放大，不另画）：
+
+| 位置 | 现在的代码 | 用哪个状态 |
+|---|---|---|
+| 首次打开欢迎页（大） | `SetupView` | idle |
+| 正在连接模型 | `SetupView` | working |
+| 聊天空状态（大） | `ChatPage` | idle |
+| 文件、浏览器等页面空状态 | `StudyPage`、`Browser`、`Drawer` | idle |
+| 批准单、填表 | `ApproveView`、`FormSheet` | notification |
+| 日课完成 | `Daily` | attention |
+| 旅伴头像（列表、编辑、对话里） | `Desk`、`CardEditors`、`ChatPage`、`NoteSheet` | idle |
+
+所以宠物包必须有 idle、working、notification、attention，且第一帧就是好看的定格姿势。
+
+**首次打开引导**（4 页，文案在词典 `onboarding.*`）每页一张插画，像素风、同一个角色、透明底、正方形 96×96：
+1. 替你动手（角色在桌前操作文件、终端）
+2. 你拍板（角色递上一张批准单）
+3. 选称谓（角色拿着两张卡片比较）
+4. 接上模型（角色接上一根线 / 打开一扇门）
 
 ## 3. 界面小图标（暂不需要）
 
