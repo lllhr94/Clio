@@ -36,6 +36,8 @@ PALETTE = [
     "4E6A85",  # 黛
     "B5524A",  # 胭
     "D9B36C",  # 缃
+    "7FA3D1",  # 鲸蓝
+    "5A7DB0",  # 深鲸蓝
 ]
 RGB = [tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) for h in PALETTE]
 IMAGE_EXT = {".png", ".gif", ".webp", ".jpg", ".jpeg"}
