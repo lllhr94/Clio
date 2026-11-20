@@ -28,7 +28,7 @@ Clio：iOS 原生（SwiftUI，iOS 26）个人 agent App，引擎是同仓库的 
 - **用户的图片只留在手机上**，不进仓库。
 - **不写主人的真实姓名、联系方式等个人信息**。仓库是公开的；需要署名（宠物包 `author` 等）一律写 GitHub 用户名 `lllhr94`。
 - **不要 force push**。不要改写已推送的历史。
-- 新加第三方依赖前确认许可兼容 GPL-3.0（MIT、BSD、Apache-2.0 可以），并写进 README 致谢。
+- 新加第三方依赖前确认许可兼容 GPL-3.0（MIT、BSD、Apache-2.0 可以），并写进 README 致谢。字体可以用 SIL OFL 1.1 的，授权全文放在字体旁边；裁小或改过的字体不能沿用原字体的「保留字体名」，要改名（见 `App/Fonts/README.md`）。
 
 ## 构建、验证
 
@@ -68,7 +68,8 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 - **界面大小**：以上数值都乘 `UIScale.factor`（用户在「外观」里选紧凑 / 偏小 / 标准 / 偏大），所以它们是计算属性，不要缓存成常量。
 - **公用组件**（`Kit.swift`）：列表行 `RowLabel`、图标 `IconBadge`、行间分隔 `Kit.divider`、分组标题 `SectionTitle`、主按钮 `WideButtonStyle`、装行的卡片 `paperCard()`、正文里的代码块和表格 `inkBlock()`（小圆角）。新页面用它们，不要再手搓一套。
 - **弹出页按钮**：只看的页面右上角「好了」（`L.t("actions.done")`），其他操作（＋、菜单）也放右上；要填写的页面左上「取消」、右上「保存」。搜索框一律在标题下面常驻（`.navigationBarDrawer(displayMode: .always)`）。
-- **颜色**只用 `Ink`：`ink / inkSoft / inkFaint / paper / paperRaised / rule / accent / accentWash / ok / warn / stop`。
+- **颜色**只用 `Ink`：`ink / inkSoft / inkFaint / paper / paperRaised / rule / accent / accentWash / ok / warn / stop`；朱红 `seal / sealInk` 只给朱印用。
+- **Clio 的标志元素**（主人定的，别再加别的）：侧边栏顶上的字标 `Clio`（`Ink.wordmark`，Hoefler Text 斜体）加朱印 `ClioSeal`（白字「克」，马善政毛笔字）；批准单落款盖 `ClioSeal`；空对话的题词 `Inscription`。题词、引导页标题、批准单 / 填表的标题用 `Ink.kai`（Clio Kai，霞鹜文楷裁小），**正文和按钮不用**。
 - 浮在内容上的顶栏、输入框要垫纸色渐隐（见 `ChatPage` 的 header 和 composer），不要用系统的 hard scroll edge（会出现带横线的实心条）。
 
 ## 文字：称谓（日常 / 书卷）

@@ -197,3 +197,38 @@ extension View {
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 }
+
+
+/// Clio's seal: 克 cut white into cinnabar, a little askew, as a seal pressed by hand is.
+/// It stands beside the name at the head of the sidebar and is pressed on what you approve. Its corner is its own:
+/// a seal is not a card or a control.
+struct ClioSeal: View {
+    var size: CGFloat = 22
+    var tilt: Double = 0
+
+    var body: some View {
+        Text("克")
+            .font(.custom("ClioSeal-Regular", size: size * 0.76))
+            .foregroundStyle(Ink.sealInk)
+            .frame(width: size, height: size)
+            .background(Ink.seal, in: .rect(cornerRadius: size * 0.12, style: .continuous))
+            .rotationEffect(.degrees(tilt))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A line written over an empty page, between two hairlines, like an inscription on a flyleaf.
+struct Inscription: View {
+    var text: String
+
+    var body: some View {
+        HStack(spacing: Ink.Space.m) {
+            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
+            Text(text)
+                .font(Ink.kai((17 * UIScale.factor).rounded(), relativeTo: .body))
+                .foregroundStyle(Ink.inkSoft)
+                .multilineTextAlignment(.center)
+            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
+        }
+    }
+}

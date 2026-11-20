@@ -63,6 +63,9 @@ enum Ink {
     static let ink = pair(0x2B2A27, 0xECE6DA)
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
     static let inkFaint = pair(0xA8A294, 0x6E685D)
+    /// 朱: the seal's cinnabar, and the paper-white of the character cut into it. Only for the seal.
+    static let seal = pair(0xB23A2B, 0xC5564A)
+    static let sealInk = pair(0xFBF3EA, 0xFBF3EA)
     static var rule: Color { Theme.shared.palette.rule }
     /// The accent and its pale ground, from the palette the user picked.
     static var accent: Color { Theme.shared.palette.accent }
@@ -158,6 +161,16 @@ enum Ink {
         }
         return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
     }
+
+    /// Clio Kai (霞鹜文楷, cut down to the common characters): for the few lines that are written rather than set —
+    /// inscriptions, the titles of the welcome pages and of what a companion hands you. Never the running text.
+    /// Rare characters it lacks fall back to the system font by themselves.
+    static func kai(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom("ClioKai-Regular", size: size, relativeTo: style)
+    }
+
+    /// The word 「Clio」 at the head of the sidebar: Hoefler Text italic, which every iPhone has.
+    static func wordmark(_ size: CGFloat) -> Font { .custom("HoeflerText-Italic", size: size, relativeTo: .title) }
 
     static var display: Font { serif((30 * UIScale.factor).rounded(), bold: true, relativeTo: .largeTitle) }
     static var title: Font { serif((22 * UIScale.factor).rounded(), bold: true, relativeTo: .title2) }

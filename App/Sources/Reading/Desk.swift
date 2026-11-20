@@ -231,7 +231,13 @@ struct Desk: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Ink.Space.s) {
-                Text("Clio").font(Ink.serif(28, bold: true)).foregroundStyle(Ink.ink)
+                HStack(alignment: .center, spacing: Ink.Space.s) {
+                    Text("Clio").font(Ink.wordmark((34 * UIScale.factor).rounded())).foregroundStyle(Ink.ink)
+                    ClioSeal(size: (20 * UIScale.factor).rounded())
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Clio")
+                .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button {
                     Haptics.light()

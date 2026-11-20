@@ -929,9 +929,13 @@ struct ChatPage: View {
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
             PetStill(size: 96, state: petState)
-            Text(isRoom ? L.t("empty.groupChat") : String(format: L.t("empty.chatWithCompanion"), bot.name))
-                .font(Ink.reading)
-                .foregroundStyle(Ink.inkSoft)
+            if isRoom {
+                Text(L.t("empty.groupChat"))
+                    .font(Ink.reading)
+                    .foregroundStyle(Ink.inkSoft)
+            } else {
+                Inscription(text: L.t("empty.inscription"))
+            }
             VStack(spacing: Ink.Space.s) {
                 ForEach(starters, id: \.0) { item in
                     Button {

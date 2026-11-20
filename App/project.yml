@@ -43,6 +43,9 @@ targets:
       - path: Pets
         type: folder
         buildPhase: resources
+      - path: Fonts
+        buildPhase: resources
+        excludes: ["*.md"]
     dependencies:
       - target: ClioWidget
       - package: AgentKit
@@ -66,6 +69,7 @@ targets:
         CFBundleShortVersionString: "0.33"
         CFBundleVersion: "35"
         UILaunchScreen: {}
+        UIAppFonts: [ClioKai-Regular.ttf, ClioSeal-Regular.ttf]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:

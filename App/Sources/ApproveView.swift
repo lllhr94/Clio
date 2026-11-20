@@ -200,7 +200,7 @@ struct ApproveView: View {
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.serif(20, bold: true)).lineLimit(1)
+                    Text(name).font(Ink.kai(20, relativeTo: .title3)).lineLimit(1)
                 }
             }
 
@@ -245,16 +245,24 @@ struct ApproveView: View {
         .frame(width: 300)
         .background(SlipShape().fill(Ink.paperRaised))
         .overlay(alignment: .bottomTrailing) {
-            Stamp(
-                word: verdict == .rejected ? "已拒绝" : "已批准",
-                date: Self.clock(stampedAt, "MM-dd HH:mm"),
-                ink: verdict == .rejected ? Ink.inkSoft : Color(hex: 0xB23A2E)
-            )
+            Group {
+                if verdict == .rejected {
+                    Stamp(word: "已拒绝", date: Self.clock(stampedAt, "MM-dd HH:mm"), ink: Ink.inkSoft)
+                        .rotationEffect(.degrees(-14))
+                } else {
+                    // Approved: Clio's own seal, pressed beside your name, with when.
+                    VStack(spacing: Ink.Space.xs) {
+                        ClioSeal(size: 66, tilt: -8)
+                        Text(Self.clock(stampedAt, "MM-dd HH:mm"))
+                            .font(.system(size: Ink.Size.micro, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Ink.seal)
+                    }
+                }
+            }
             .scaleEffect(verdict != nil ? 1 : 2.8)
             .opacity(verdict != nil ? 1 : 0)
-            .rotationEffect(.degrees(-14))
-            .padding(.trailing, 16)
-            .padding(.bottom, 14)
+            .padding(.trailing, 18)
+            .padding(.bottom, 16)
         }
         .shadow(color: Ink.ink.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
     }

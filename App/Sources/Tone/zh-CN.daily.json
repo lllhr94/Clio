@@ -181,7 +181,8 @@
     "vault": "密码箱还空着。",
     "diaryForCompanion": "%@ 还没写过日记。晚上九点以后，当天聊过的话会写成一页。",
     "diaryDisabled": "日记还没打开。在设置 › 外观与对话 › 助手的日常中打开后，%@ 会在晚上写一页当天的日记。",
-    "chatWithCompanion": "和 %@ 说点什么吧"
+    "chatWithCompanion": "和 %@ 说点什么吧",
+    "inscription": "今天写点什么"
   },
   "loading": {
     "generic": "正在加载…",
