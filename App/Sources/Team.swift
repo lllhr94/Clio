@@ -894,6 +894,14 @@ final class TeamModel: ObservableObject {
     /// The current conversation's title, if one was written.
     func title(of key: String) -> String? { options(key).title }
 
+    /// Gives a conversation the title you chose. Empty clears it (the companion names it again after the next exchange).
+    func rename(_ key: String, to title: String) {
+        var value = options(key)
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        value.title = clean.isEmpty ? nil : String(clean.prefix(40))
+        setOptions(key, value)
+    }
+
     /// After the first exchange of a new conversation, one small request writes its title.
     private func nameChatIfNew(_ key: String) {
         guard options(key).title == nil else { return }

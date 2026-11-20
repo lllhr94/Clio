@@ -503,6 +503,11 @@ struct ChatPage: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
+        .alert("重命名对话", isPresented: $renaming) {
+            TextField("对话标题", text: $renameText)
+            Button(L.t("actions.cancel"), role: .cancel) {}
+            Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
+        }
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) {} }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $filesOpen) { StudyPage() }
@@ -720,6 +725,10 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
+            Button("重命名对话", systemImage: "pencil") {
+                renameText = team.title(of: chat.key) ?? ""
+                renaming = true
+            }
             if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
             if PetLibrary.shared.shown {
                 Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
@@ -1778,6 +1787,8 @@ struct ChatPage: View {
     /// When the companion started on the current turn, for the seconds under the conversation.
     @State private var workingSince: Date?
     @State private var cardOpen = false
+    @State private var renaming = false
+    @State private var renameText = ""
     @State private var tuningOpen = false
     @State private var careOpen = false
     @State private var petSettingsOpen = false

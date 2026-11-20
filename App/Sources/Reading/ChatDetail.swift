@@ -15,6 +15,8 @@ struct ChatDetail: View {
     @State private var tab = Tab.steps
     @State private var files: [Snapshots.Kept] = []
     @State private var usage = false
+    @State private var renaming = false
+    @State private var renameText = ""
 
     enum Tab: String, CaseIterable, Identifiable {
         case steps, files
@@ -65,6 +67,11 @@ struct ChatDetail: View {
                 }
             }
         }
+        .alert("重命名对话", isPresented: $renaming) {
+            TextField("对话标题", text: $renameText)
+            Button(L.t("actions.cancel"), role: .cancel) {}
+            Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
+        }
         .sheet(isPresented: $usage) {
             UsageSheet(team: team, key: chat.key).presentationDetents([.medium, .large])
         }
@@ -77,7 +84,17 @@ struct ChatDetail: View {
                 companion(bot, openCard)
                 Kit.rule(inset: 0)
             }
-            Text(title).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink).lineLimit(2)
+            Button {
+                renameText = team.title(of: chat.key) ?? ""
+                renaming = true
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                    Text(team.title(of: chat.key) ?? title).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink).lineLimit(2)
+                    Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("重命名对话")
             HStack(spacing: 0) {
                 stat("\(minutes)", "分钟")
                 stat("\(steps.count)", "步")

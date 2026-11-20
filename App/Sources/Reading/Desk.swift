@@ -122,6 +122,9 @@ struct Desk: View {
     @State private var sideOpen = Shots.name == "sidebar"
     /// What a conversation calls to open the sidebar; one object for the desk's whole life (see `ChatPage.side`).
     @State private var sideControl = SideControl()
+    /// The conversation being renamed from the sidebar, and the words typed so far.
+    @State private var renamingKey: String?
+    @State private var renameText = ""
     @State private var sideQuery = ""
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
@@ -203,6 +206,11 @@ struct Desk: View {
 
     /// How far right the conversation sits.
     private var shift: CGFloat { max(0, (sideOpen ? sideWidth : 0) + pull) }
+
+    private func startRename(_ key: String) {
+        renameText = team.title(of: key) ?? ""
+        renamingKey = key
+    }
 
     private func openSide() {
         Haptics.light()
@@ -353,8 +361,10 @@ struct Desk: View {
             HStack(spacing: Ink.Space.s) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
-                    if !item.preview.isEmpty {
-                        Text(item.preview).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                    // What the conversation is about (its title, which you can rename), else its last words.
+                    let line = team.title(of: key) ?? item.preview
+                    if !line.isEmpty {
+                        Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
                 }
                 Spacer(minLength: Ink.Space.s)
@@ -376,6 +386,7 @@ struct Desk: View {
             Button(team.pinned.contains(key) ? "取消置顶" : "置顶", systemImage: team.pinned.contains(key) ? "pin.slash" : "pin") {
                 withAnimation(Ink.Motion.settle) { team.pin(key, !team.pinned.contains(key)) }
             }
+            Button("重命名", systemImage: "pencil") { startRename(key) }
         }
     }
 
@@ -561,6 +572,14 @@ struct Desk: View {
         }
         .animation(Ink.Motion.unfold, value: opened)
         .onAppear { sideControl.open = { openSide() } }
+        .alert("重命名对话", isPresented: Binding(get: { renamingKey != nil }, set: { if !$0 { renamingKey = nil } })) {
+            TextField("对话标题", text: $renameText)
+            Button(L.t("actions.cancel"), role: .cancel) { renamingKey = nil }
+            Button(L.t("actions.save")) {
+                if let key = renamingKey { team.rename(key, to: renameText) }
+                renamingKey = nil
+            }
+        }
         .onChange(of: opened) { _, _ in
             if sideOpen || pull != 0 { sideOpen = false; pull = 0 }
         }
@@ -942,6 +961,7 @@ struct Desk: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .contextMenu {
+            Button("重命名", systemImage: "pencil") { startRename(item.id.id) }
             if team.pinned.contains(item.id.id) {
                 Button("取消置顶", systemImage: "pin.slash") { withAnimation(Ink.Motion.settle) { team.pin(item.id.id, false) } }
             } else {
