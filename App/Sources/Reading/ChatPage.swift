@@ -461,7 +461,7 @@ struct ChatPage: View {
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
             // The pet stands on the composer's top edge (or the plan card's, when that is showing).
-            PetStage(mood: petMood) { petSettingsOpen = true }
+            PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
                 .opacity(dictation.listening ? 0 : 1)
             composerBar
                 // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
@@ -698,7 +698,7 @@ struct ChatPage: View {
 
     private var headerIdentity: some View {
         HStack(spacing: Ink.Space.s) {
-            PetStill(size: 30, state: petState, avatar: true)
+            PetStill(size: 30, state: petState, avatar: true, bot: isRoom ? nil : bot)
             VStack(alignment: .leading, spacing: 0) {
                 Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
@@ -1011,7 +1011,7 @@ struct ChatPage: View {
 
     private var empty: some View {
         VStack(spacing: Ink.Space.l) {
-            PetStill(size: 96, state: petState)
+            PetStill(size: 96, state: petState, bot: isRoom ? nil : bot)
             if isRoom {
                 Text(L.t("empty.groupChat"))
                     .font(Ink.reading)
@@ -1142,7 +1142,7 @@ struct ChatPage: View {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
                     HStack(spacing: Ink.Space.s) {
-                        PetStill(size: 22, wash: Ink.wash(for: speaker), avatar: true)
+                        PetStill(size: 22, wash: Ink.wash(for: speaker), avatar: true, bot: speaker)
                         Text(speaker.name).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                     }
                 }

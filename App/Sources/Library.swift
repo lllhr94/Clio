@@ -20,6 +20,9 @@ struct BotInfo: Codable, Identifiable, Equatable {
     var lastAt: Double?
     var blocked: Blocked?
     var createdAt: Double?
+    /// Its face: nil follows the pet picked in 宠物设置; "pet:<pack id>" one particular pet; "photo" a picture
+    /// from the album, kept on this phone (`Avatars`).
+    var avatar: String?
 }
 
 struct RoomInfo: Codable, Identifiable, Equatable {

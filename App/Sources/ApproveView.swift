@@ -202,7 +202,7 @@ struct ApproveView: View {
 
             HStack(spacing: 12) {
                 PetStill(size: 46, state: verdict == nil ? "notification" : "idle",
-                         wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true)
+                         wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true, bot: bot)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L.t("approval.from")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)

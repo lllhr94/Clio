@@ -117,7 +117,7 @@ struct ChatDetail: View {
             dismiss()
         } label: {
             HStack(spacing: Ink.Space.m) {
-                PetStill(size: 44, wash: Ink.wash(for: bot), avatar: true)
+                PetStill(size: 44, wash: Ink.wash(for: bot), avatar: true, bot: bot)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(bot.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink)
                     Text("名字、性格、用哪个模型").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)

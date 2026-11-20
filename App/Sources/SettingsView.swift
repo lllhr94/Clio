@@ -522,7 +522,7 @@ struct SettingsView: View {
             editingBot = bot
         } label: {
             RowLabel(title: bot.name, line: bot.role, end: .valueChevron(team.modelShort(bot.model ?? team.settings.defaultModel))) {
-                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true)
+                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true, bot: bot)
             }
         }
         .buttonStyle(PressStyle(haptic: false))

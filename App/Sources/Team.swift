@@ -421,24 +421,34 @@ final class TeamModel: ObservableObject {
         saveBots()
     }
 
-    func saveBot(id: String?, name: String, role: String, color: String, model: String? = nil, instructions: String? = nil) async throws {
+    /// Saves a companion and returns its id. `avatar`: nil leaves it as it is, "" goes back to the default pet.
+    @discardableResult
+    func saveBot(id: String?, name: String, role: String, color: String, model: String? = nil, instructions: String? = nil,
+                 avatar: String? = nil) async throws -> String {
+        let saved: String
         if let id, let index = bots.firstIndex(where: { $0.id == id }) {
             bots[index].name = name
             bots[index].role = role
             bots[index].color = color
             if let model { bots[index].model = model.isEmpty ? nil : model }
             if let instructions { bots[index].instructions = instructions }
+            if let avatar { bots[index].avatar = avatar.isEmpty ? nil : avatar }
+            saved = id
         } else {
-            bots.append(BotInfo(id: UUID().uuidString, name: name, role: role, color: color, instructions: instructions,
-                                model: model?.isEmpty == false ? model : nil, createdAt: Now.ms))
+            saved = UUID().uuidString
+            bots.append(BotInfo(id: saved, name: name, role: role, color: color, instructions: instructions,
+                                model: model?.isEmpty == false ? model : nil, createdAt: Now.ms,
+                                avatar: avatar?.isEmpty == false ? avatar : nil))
         }
         withAnimation(.smooth(duration: 0.35)) { sortBots() }
         saveBots()
+        return saved
     }
 
     func deleteBot(_ id: String) async throws {
         guard bots.count > 1 else { throw TeamError(message: "至少要留一个 Bot。") }
         stop(Self.key(bot: id))
+        Avatars.forget(id)
         withAnimation(.smooth(duration: 0.35)) {
             bots.removeAll { $0.id == id }
             for index in rooms.indices { rooms[index].members?.removeAll { $0 == id } }

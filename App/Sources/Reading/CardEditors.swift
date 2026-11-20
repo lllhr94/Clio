@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // MARK: Shared pieces
 
@@ -46,6 +47,11 @@ struct BotEditor: View {
     @State private var error: String?
     @State private var confirmingDelete = false
     @FocusState private var naming: Bool
+    /// nil = the pet picked in 宠物设置; "pet:<id>" = a pet of its own; "photo" = a picture from 相册.
+    @State private var face: String?
+    /// A picture just picked, not saved yet.
+    @State private var photo: UIImage?
+    @State private var photoItem: PhotosPickerItem?
 
     /// Ways to begin a card, for when a blank page is hard.
     private static let samples: [(title: String, role: String, words: String)] = [
@@ -64,6 +70,7 @@ struct BotEditor: View {
         _tint = State(initialValue: bot?.color.flatMap { key in Ink.tints.contains { $0.key == key } ? key : nil } ?? "dai")
         _model = State(initialValue: bot?.model ?? "")
         _instructions = State(initialValue: bot?.instructions ?? "")
+        _face = State(initialValue: bot?.avatar)
     }
 
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -150,6 +157,8 @@ struct BotEditor: View {
                             .disabled(team.models.isEmpty)
                         }
 
+                        faces
+
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "底色")
                             HStack(spacing: Ink.Space.m) {
@@ -228,11 +237,85 @@ struct BotEditor: View {
         .onAppear { if bot == nil { naming = true } }
     }
 
+    /// 头像: the default pet, a pet of its own, or a photo.
+    private var faces: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: "头像", note: "选一只宠物的话，和它聊天时站在输入框上的也是这只")
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.m) {
+                    faceChoice(nil, title: "默认") {
+                        PetStill(size: 52, wash: Ink.wash(named: tint), avatar: true, face: .some(nil))
+                    }
+                    ForEach(PetLibrary.shared.packs, id: \.id) { pack in
+                        faceChoice("pet:\(pack.id)", title: pack.name) {
+                            PetStill(size: 52, wash: Ink.wash(named: tint), avatar: true, face: .some("pet:\(pack.id)"))
+                        }
+                    }
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        faceLabel(picked: face == "photo", title: "相册") {
+                            photoFace
+                        }
+                    }
+                    .buttonStyle(TapStyle())
+                    .accessibilityLabel("从相册选一张")
+                }
+                .padding(.vertical, Ink.Space.xs)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self), let picture = UIImage(data: data) {
+                    photo = picture
+                    withAnimation(Ink.Motion.press) { face = "photo" }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var photoFace: some View {
+        if let shown = photo ?? (bot?.avatar == "photo" ? bot.flatMap { Avatars.image($0.id) } : nil) {
+            Image(uiImage: shown).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(Circle())
+        } else {
+            Image(systemName: "photo")
+                .font(.system(size: Ink.Size.body, weight: .medium))
+                .foregroundStyle(Ink.inkSoft)
+                .frame(width: 52, height: 52)
+                .background(Ink.paperRaised, in: .circle)
+        }
+    }
+
+    private func faceChoice<Face: View>(_ value: String?, title: String, @ViewBuilder face shown: () -> Face) -> some View {
+        Button {
+            Haptics.tick(0.5)
+            withAnimation(Ink.Motion.press) { face = value }
+        } label: {
+            faceLabel(picked: face == value, title: title, shown)
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(face == value ? .isSelected : [])
+    }
+
+    private func faceLabel<Face: View>(picked: Bool, title: String, @ViewBuilder _ shown: () -> Face) -> some View {
+        VStack(spacing: Ink.Space.xs) {
+            shown()
+                .overlay(Circle().strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 2 : 1))
+            Text(title)
+                .font(.system(size: Ink.Size.micro, weight: picked ? .semibold : .regular))
+                .foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+                .lineLimit(1)
+                .frame(width: 60)
+        }
+    }
+
     /// The card as it will look.
     private var preview: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: Ink.Space.l) {
-                PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true)
+                PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(trimmed.isEmpty ? "未署名" : trimmed)
                         .font(Ink.serif(24, bold: true))
@@ -275,8 +358,13 @@ struct BotEditor: View {
         error = nil
         Task {
             do {
-                try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: tint, model: model,
-                                       instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines))
+                // A photo is kept under the companion's id, so a new one is saved first to learn it.
+                let chosen = face
+                if chosen == "photo", let photo, let known = bot?.id { Avatars.save(photo, for: known) }
+                let id = try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: tint, model: model,
+                                                instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), avatar: chosen ?? "")
+                if chosen == "photo", let photo, bot == nil { Avatars.save(photo, for: id) }
+                if chosen != "photo", bot?.avatar == "photo" { Avatars.forget(id) }
                 Haptics.thud()
                 dismiss()
             } catch {
@@ -402,7 +490,7 @@ struct RoomEditor: View {
         } label: {
             VStack(spacing: Ink.Space.s) {
                 ZStack(alignment: .topTrailing) {
-                    PetStill(size: 56, wash: Ink.wash(for: bot), avatar: true)
+                    PetStill(size: 56, wash: Ink.wash(for: bot), avatar: true, bot: bot)
                         .opacity(order == nil ? 0.5 : 1)
                     if let order {
                         Text("\(order + 1)")

@@ -22,6 +22,8 @@ enum PetMood: Equatable {
 /// finishes or waits for you. Only its body takes touches; everything around it passes through.
 struct PetStage: View {
     var mood: PetMood
+    /// The companion's own face ("pet:<id>"), when it has one: that pet stands here instead of the one picked in 宠物设置.
+    var face: String? = nil
     /// Opens 宠物设置.
     var openSettings: () -> Void
 
@@ -48,19 +50,25 @@ struct PetStage: View {
 
     private var bodyHeight: CGFloat { CGFloat(30 * library.factor) * UIScale.factor }
     private var figureWidth: CGFloat {
-        guard let pack = library.pack else { return bodyHeight }
+        guard let pack = pack else { return bodyHeight }
         return bodyHeight * CGFloat(pack.canvasW / pack.content.h)
     }
     /// From the feet to the top of the drawing.
     private var standHeight: CGFloat {
-        guard let pack = library.pack else { return bodyHeight }
+        guard let pack = pack else { return bodyHeight }
         return bodyHeight * CGFloat(pack.baseline / pack.content.h)
     }
 
     private var asleep: Bool {
         guard mood == .idle, oneOff == nil, !dragging else { return false }
-        let after = Double(library.pack?.sleepAfter ?? 60_000) / 1000
+        let after = Double(pack?.sleepAfter ?? 60_000) / 1000
         return now.timeIntervalSince(lastTouch) > after
+    }
+
+    private var pack: PetPack? {
+        if let face, face.hasPrefix("pet:"),
+           let own = library.packs.first(where: { $0.id == String(face.dropFirst(4)) }) { return own }
+        return library.pack
     }
 
     var body: some View {
@@ -71,7 +79,7 @@ struct PetStage: View {
             let height = min(max(CGFloat(lift) + dragUp, 0), maxLift)
             ZStack(alignment: .bottomLeading) {
                 Color.clear
-                if library.shown, library.pack != nil {
+                if library.shown, pack != nil {
                     figure
                         .frame(width: figureWidth, height: standHeight, alignment: .bottom)
                         .contentShape(Rectangle())
@@ -116,7 +124,7 @@ struct PetStage: View {
 
     @ViewBuilder
     private var figure: some View {
-        if let pack = library.pack {
+        if let pack = pack {
             let anim = currentAnim(pack)
             SpritePet(pack: pack, anim: anim, since: since, bodyHeight: bodyHeight, mirrored: mirrored(pack))
                 .onChange(of: anim) { _, _ in since = Date() }
@@ -150,7 +158,7 @@ struct PetStage: View {
             let wasAsleep = asleep
             touch()
             if wasAsleep {
-                play(state: "waking", seconds: Double(library.pack?.wakeMs ?? 1200) / 1000)
+                play(state: "waking", seconds: Double(pack?.wakeMs ?? 1200) / 1000)
                 return
             }
             // A bubble about another conversation: the pet takes you there.
@@ -214,7 +222,7 @@ struct PetStage: View {
 
     @ViewBuilder
     private var menu: some View {
-        if library.packs.count > 1 {
+        if packs.count > 1 {
             Button(L.t("pet.change"), systemImage: "arrow.triangle.2.circlepath") { library.next() }
         }
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
@@ -236,7 +244,7 @@ struct PetStage: View {
     }
 
     private func react(_ name: String, fallback: String?) {
-        guard let pack = library.pack,
+        guard let pack = pack,
               let anim = pack.reaction(name) ?? fallback.flatMap({ pack.reaction($0) }) else { return }
         let ms = pack.animations[anim]?.total ?? 1200
         oneOff = (anim, Date().addingTimeInterval(Double(ms) / 1000))
@@ -244,7 +252,7 @@ struct PetStage: View {
     }
 
     private func play(state: String, seconds: Double) {
-        guard let pack = library.pack, let anim = pack.anim(for: state) else { return }
+        guard let pack = pack, let anim = pack.anim(for: state) else { return }
         let hold = Double(pack.minDisplay[state] ?? Int(seconds * 1000)) / 1000
         oneOff = (anim, Date().addingTimeInterval(hold))
         since = Date()
@@ -255,7 +263,7 @@ struct PetStage: View {
         now = Date()
         if let one = oneOff, one.until < now { oneOff = nil }
         guard !calm, library.shown, mood == .idle, !dragging, oneOff == nil, !asleep, news.bubble == nil, now > nextIdle else { return }
-        let pack = library.pack
+        let pack = self.pack
         let every: (mean: Int, min: Int, max: Int) = pack?.idleEvery ?? (mean: 120_000, min: 45_000, max: 300_000)
         nextIdle = now.addingTimeInterval(Double(Int.random(in: every.min...Swift.max(every.min, every.max))) / 1000 * 0.6)
         if Bool.random() || pack?.idlePool.isEmpty != false {
