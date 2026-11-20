@@ -11,6 +11,10 @@ struct SettingsView: View {
     /// The companions' and tools' pages, opened by the desk once settings is closed.
     var openElsewhere: ((DrawerItem) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+    private var accessibilityScale: CGFloat { typeSize.isAccessibilitySize ? textScale : 1 }
+
     @State private var query = ""
     @State private var connecting = false
     @State private var petting = false
@@ -249,13 +253,13 @@ struct SettingsView: View {
                     HStack {
                         Image(systemName: "sparkle").foregroundStyle(Ink.accent)
                         Text(team.modelTitle(team.settings.defaultModel))
-                            .font(.system(size: Ink.Size.body, weight: .medium))
+                            .font(.system(size: Ink.Size.body * accessibilityScale, weight: .medium))
                             .foregroundStyle(Ink.ink)
-                            .lineLimit(1)
+                            .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
-                    .paperField()
+                    .paperField(height: typeSize.isAccessibilitySize ? nil : 50)
                 }
                 Menu {
                     Button {
@@ -273,17 +277,17 @@ struct SettingsView: View {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(team.settings.backupModel == nil ? "备用模型：没设" : "备用模型：\(team.modelTitle(team.settings.backupModel))")
-                                .font(.system(size: Ink.Size.sub, weight: .medium))
+                                .font(.system(size: Ink.Size.sub * accessibilityScale, weight: .medium))
                                 .foregroundStyle(Ink.ink)
-                                .lineLimit(1)
+                                .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                             Text("主模型出错时换它接着答，会在对话里说一声。")
-                                .font(.system(size: Ink.Size.small))
+                                .font(.system(size: Ink.Size.small * accessibilityScale))
                                 .foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                     }
-                    .paperField()
+                    .paperField(height: typeSize.isAccessibilitySize ? nil : 50)
                 }
             }
         }

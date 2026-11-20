@@ -66,6 +66,7 @@ struct DenPage: View {
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
+            .accessibilityLabel("关闭终端")
             VStack(alignment: .leading, spacing: 0) {
                 Text(L.t("nav.terminal")).font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
@@ -105,6 +106,7 @@ struct DenPage: View {
                     .frame(width: 36, height: 36)
                     .glassFace(in: Circle())
             }
+            .accessibilityLabel("更多终端操作")
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s)
@@ -183,6 +185,7 @@ struct DenPage: View {
                     .frame(width: 34, height: 34)
                     .background(command.isEmpty ? Ink.inkFaint : Ink.accent, in: .circle)
             }
+            .accessibilityLabel("运行命令")
             .disabled(command.isEmpty)
         }
         .padding(.horizontal, Ink.Space.l)

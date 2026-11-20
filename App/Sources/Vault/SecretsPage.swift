@@ -44,6 +44,7 @@ struct SecretsPage: View {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { editing = Secrets.Item(title: "") } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("添加密码项目")
                 }
             }
             .sheet(item: $editing) { item in SecretEditor(item: item) }
@@ -125,6 +126,7 @@ private struct SecretEditor: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         Button { showing.toggle() } label: { Image(systemName: showing ? "eye.slash" : "eye") }.buttonStyle(TapStyle(grow: 8))
+                            .accessibilityLabel(showing ? "隐藏密码" : "显示密码")
                     }
                 }
                 Section(L.t("vault.notes")) { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }

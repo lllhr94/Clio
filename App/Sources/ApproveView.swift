@@ -4,6 +4,10 @@ import SwiftUI
 struct ApproveView: View {
     @ObservedObject var team: TeamModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+    private var largeText: Bool { typeSize.isAccessibilitySize }
+    private var accessibilityScale: CGFloat { largeText ? textScale : 1 }
 
     private enum Verdict { case allowed, rejected }
 
@@ -42,7 +46,7 @@ struct ApproveView: View {
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
                             .padding(.horizontal, 14)
-                            .frame(height: 34)
+                            .frame(minHeight: 34)
                             .glassEffect(.regular, in: .capsule)
                             .transition(.opacity)
                     }
@@ -66,7 +70,7 @@ struct ApproveView: View {
                 Spacer(minLength: 12)
 
                 ZStack {
-                    if waiting > 0 {
+                    if waiting > 0 && !largeText {
                         SlipShape()
                             .fill(Ink.paperRaised)
                             .frame(width: 300, height: 300)
@@ -78,8 +82,9 @@ struct ApproveView: View {
                             .transition(.opacity)
                     }
                     slip
+                        .padding(.horizontal, largeText ? Ink.Space.l : 0)
                         .scaleEffect(1 - 0.035 * press)
-                        .rotationEffect(.degrees(Double(-4 - 2 * press)))
+                        .rotationEffect(.degrees(largeText ? 0 : Double(-4 - 2 * press)))
                         .offset(y: 12 * press)
                         .id(current.id)
                         .transition(.asymmetric(
@@ -95,24 +100,25 @@ struct ApproveView: View {
 
                 VStack(spacing: 10) {
                     Text(title)
-                        .font(Ink.serif(28, bold: true))
+                        .font(Ink.serif(28, bold: true, relativeTo: .title))
                         .foregroundStyle(Ink.ink)
                         .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.7)
+                        .lineLimit(largeText ? nil : 2)
+                        .minimumScaleFactor(largeText ? 1 : 0.7)
                         .contentTransition(.opacity)
                     Text(note ?? subtitle)
-                        .font(.system(size: Ink.Size.body))
+                        .font(.system(size: Ink.Size.body * accessibilityScale))
                         .foregroundStyle(note == nil ? Ink.inkSoft : Ink.stop)
                         .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
                     controls
                         .padding(.top, 18)
-                        .frame(height: 164, alignment: .top)
+                        .frame(minHeight: largeText ? nil : 164, alignment: .top)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
             }
+            .modifier(ApprovalViewport(scrolls: largeText))
         }
         .fontDesign(.rounded)
         .onAppear {
@@ -156,7 +162,9 @@ struct ApproveView: View {
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.warn)
                 } else {
-                    HStack(spacing: Ink.Space.s) {
+                    let choices = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
+                        AnyLayout(HStackLayout(spacing: Ink.Space.s))
+                    choices {
                         choice("以后都允许", on: $always)
                         choice(Words.t("这段絮语都放行"), on: $trustChat)
                     }
@@ -166,9 +174,9 @@ struct ApproveView: View {
                     answer(allow: false)
                 } label: {
                     Text("不批准")
-                        .font(.system(size: Ink.Size.body, weight: .semibold))
+                        .font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
-                        .frame(height: 46)
+                        .frame(minHeight: 46)
                         .padding(.horizontal, 24)
                         .contentShape(Rectangle())
                 }
@@ -200,20 +208,20 @@ struct ApproveView: View {
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3)).lineLimit(1)
+                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3)).lineLimit(largeText ? nil : 1)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("想做的事").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
-                    Text(tool).font(.system(size: Ink.Size.body, weight: .semibold)).lineLimit(2)
+                    Text(tool).font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold)).lineLimit(largeText ? nil : 2)
                 }
                 if let text = current.detail?.text, !text.isEmpty {
-                    Text(text).font(.system(size: Ink.Size.sub)).lineLimit(4)
+                    Text(text).font(.system(size: Ink.Size.sub * accessibilityScale)).lineLimit(largeText ? nil : 4)
                 }
                 if let reason = current.reason, !reason.isEmpty {
-                    Text(reason).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).lineLimit(4)
+                    Text(reason).font(.system(size: Ink.Size.sub * accessibilityScale)).foregroundStyle(Ink.inkSoft).lineLimit(largeText ? nil : 4)
                 }
                 if let code = current.detail?.code, !code.isEmpty {
                     // The whole command, scrolled, never cut off: what is approved must be seen in full.
@@ -242,7 +250,8 @@ struct ApproveView: View {
         }
         .foregroundStyle(Ink.ink)
         .padding(.init(top: 26, leading: 20, bottom: 22, trailing: 20))
-        .frame(width: 300)
+        .frame(width: largeText ? nil : 300)
+        .frame(maxWidth: largeText ? .infinity : nil, alignment: .leading)
         .background(SlipShape().fill(Ink.paperRaised))
         .overlay(alignment: .bottomTrailing) {
             Group {
@@ -290,11 +299,11 @@ struct ApproveView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: Ink.Size.small))
-                Text(title).font(.system(size: Ink.Size.small, weight: .medium))
+                Text(title).font(.system(size: Ink.Size.small * accessibilityScale, weight: .medium))
             }
             .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
             .padding(.horizontal, 10)
-            .frame(height: 30)
+            .frame(minHeight: 30)
             .background(on.wrappedValue ? Ink.accentWash : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : Ink.rule))
         }
@@ -359,6 +368,18 @@ struct ApproveView: View {
 }
 
 /// The round seal.
+private struct ApprovalViewport: ViewModifier {
+    let scrolls: Bool
+
+    func body(content: Content) -> some View {
+        if scrolls {
+            ScrollView { content }
+        } else {
+            content
+        }
+    }
+}
+
 private struct Stamp: View {
     let word: String
     let date: String

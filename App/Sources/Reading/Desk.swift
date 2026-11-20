@@ -263,6 +263,7 @@ struct Desk: View {
                     .autocorrectionDisabled()
                 if !sideQuery.isEmpty {
                     Button { sideQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Ink.inkFaint) }
+                    .accessibilityLabel("清除搜索")
                         .buttonStyle(.plain)
                 }
             }

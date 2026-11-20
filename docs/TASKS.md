@@ -46,7 +46,7 @@
 - [ ] **C10 称谓铺满第二轮**：分支 `codex/c10-tone-2`。把界面上还写死的中文名词、提示、按钮改成 `L.t("…")`（重点：设置各子页的说明文字、连接器页、斗室、书案、批准单、填表）。新键两份词典同时加；书卷说法拿不准的先和日常写成一样，在 PR 里列成表请主人定。遵守 `AGENTS.md`「称谓」一节：书卷词只当功能名，按钮用日常说法。
 - [ ] **C11 规矩自动检查**：分支 `codex/c11-lint`。写 `tools/lint.py`，在 CI 编译前跑，违反就报错并指出文件行号：两份词典键不一致；`App/Sources` 里出现 `design: .monospaced`、`.custom("`（`Ink.swift`、`Kit.swift` 除外）、`Color(red:` / `Color(hex:`（`Ink.swift`、`NoteSheet.swift`、`Photos.swift` 除外）。把它加进 `.github/workflows/build.yml`。
 - [ ] **C12 宠物画中画（先调研）**：分支 `codex/c12-pet-pip`。切出 App 后，宠物能不能用 iPhone 的画中画小窗继续显示（`AVPictureInPictureController` + 把序列帧画进 `AVSampleBufferDisplayLayer`）。先交一份调研：可行性、耗电、要不要额外权限、自签安装有没有限制；主人点头再写代码，做成「宠物设置」里的开关，默认关。
-- [ ] **C13 无障碍**：分支 `codex/c13-a11y`。只有图标的按钮都要有 `accessibilityLabel`（中文）；系统字号调到最大时，设置、聊天、批准单不能截断或重叠（必要时换行或缩小间距）。列出改了哪些地方。
+- [x] **C13 无障碍**：分支 `codex/c13-a11y`。只有图标的按钮都要有 `accessibilityLabel`（中文）；系统字号调到最大时，设置、聊天、批准单不能截断或重叠（必要时换行或缩小间距）。列出改了哪些地方。
 
 ## Claude：主笔与把关
 
