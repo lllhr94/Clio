@@ -4,7 +4,7 @@
 AI 出的像素风图通常是大图，格子不齐、边缘有抗锯齿、颜色几十上百种。这个工具：
 1. 去掉背景（透明背景直接用；纯色背景从四角取色抠掉）。
 2. 所有帧共用一个外框，缩到目标画布（默认 32×32），每格取出现最多的颜色，不做插值。
-3. 颜色吸附到 docs/DESIGN-BRIEF.md 里的 Clio 调色板，半透明一律变成全透明或不透明。
+3. 颜色吸附到 Clio 调色板（或用 --palette auto 按原图自己的颜色收成 --colors 种），半透明一律变成全透明或不透明。
 4. 去掉轮廓外一圈发虚留下的浅灰毛边（--raw 关掉）。
 5. 角色水平居中、脚贴画布底部，所有帧位置一致。
 6. 另存一张放大 8 倍的预览，方便看。
@@ -155,11 +155,23 @@ def main():
     ap.add_argument("--size", type=int, default=32)
     ap.add_argument("--preview", type=int, default=8)
     ap.add_argument("--raw", action="store_true", help="不去毛边")
+    ap.add_argument("--palette", choices=["clio", "auto"], default="clio",
+                    help="clio：吸到 Clio 调色板；auto：按原图自己的颜色收成 --colors 种")
+    ap.add_argument("--colors", type=int, default=16)
     a = ap.parse_args()
 
     groups = collect(a.src)
     loaded = {k: [f for p in paths for f in frames_of(p)] for k, paths in groups.items()}
     loaded = {k: [drop_background(f) for f in fs] for k, fs in loaded.items()}
+    if a.palette == "auto":
+        global RGB
+        opaque = [c[:3] for fs in loaded.values() for f in fs for c in f.getdata() if c[3] >= 128]
+        strip = Image.new("RGB", (len(opaque), 1))
+        strip.putdata(opaque)
+        flat = strip.quantize(colors=a.colors, method=Image.Quantize.MEDIANCUT).getpalette()[: a.colors * 3]
+        RGB = sorted({tuple(flat[i:i + 3]) for i in range(0, len(flat), 3)}, key=sum)
+        a.raw = True  # 去毛边只认得 Clio 调色板里的墨色
+        print(f"自动调色板：{len(RGB)} 色")
     box = bbox([f for fs in loaded.values() for f in fs])  # 所有状态共用一个外框，大小位置一致
 
     a.out.mkdir(parents=True, exist_ok=True)
