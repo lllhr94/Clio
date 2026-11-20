@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Check Clio's two dictionaries and SwiftUI design rules."""
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TONE = Path("App/Sources/Tone")
+INK = Path("App/Sources/Design/Ink.swift")
+EXCEPTIONS = {
+    "custom": {INK, Path("App/Sources/Design/Kit.swift")},
+    "color": {INK, Path("App/Sources/Reading/NoteSheet.swift"), Path("App/Sources/Photos.swift")},
+}
+MESSAGES = {
+    "mono": "Use Ink.mono or Ink.uiMono for monospaced text",
+    "custom": "Choose fonts through Ink",
+    "color": "Use a color from Ink",
+}
+SWIFT_PATTERNS = re.compile(
+    r'//[^\n]*|/\*[\s\S]*?\*/'
+    r'|(?P<mono>\bdesign\s*:\s*\.\s*monospaced\b)'
+    r'|(?P<custom>\.\s*custom\s*\(\s*(?=#*"))'
+    r'|(?P<color>\bColor\s*\(\s*(?:red|hex)\s*:)'
+    r'|(?P<raw>#+)(?:"""[\s\S]*?"""|"[^\n]*?")(?P=raw)'
+    r'|"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"'
+)
+KEY = re.compile(r'^([ \t]*)("(?:\\.|[^"\\])*")[ \t]*:[ \t]*', re.MULTILINE)
+
+
+def leaf_keys(node, prefix=()):
+    for key, value in node.items():
+        path = (*prefix, key)
+        if isinstance(value, dict):
+            yield from leaf_keys(value, path)
+        else:
+            yield path
+
+
+def key_lines(text):
+    parents = []
+    for match in KEY.finditer(text):
+        indent = len(match[1].expandtabs())
+        while parents and parents[-1][0] >= indent:
+            parents.pop()
+        key = json.loads(match[2])
+        path = (*(parent for _, parent in parents), key)
+        if text[match.end():].lstrip().startswith("{"):
+            parents.append((indent, key))
+        yield path, text.count("\n", 0, match.start(2)) + 1
+
+
+def dictionaries():
+    entries = {}
+    for style in ("daily", "literary"):
+        path = TONE / f"zh-CN.{style}.json"
+        try:
+            text = (ROOT / path).read_text(encoding="utf-8")
+            content = json.loads(text)
+        except json.JSONDecodeError as error:
+            yield path, error.lineno, error.msg
+            continue
+        except OSError as error:
+            yield path, 1, str(error)
+            continue
+        if not isinstance(content, dict):
+            yield path, 1, "Expected a JSON object"
+            continue
+        entries[style] = (path, set(leaf_keys(content)), dict(key_lines(text)))
+    if len(entries) != 2:
+        return
+    for style, other in (("daily", "literary"), ("literary", "daily")):
+        path, content, lines = entries[style]
+        for key in sorted(content - entries[other][1]):
+            yield path, lines.get(key, 1), f"{'.'.join(key)!r} is missing from the {other} dictionary"
+
+
+def swift_sources():
+    for full_path in sorted((ROOT / "App/Sources").rglob("*.swift")):
+        path = full_path.relative_to(ROOT)
+        text = full_path.read_text(encoding="utf-8")
+        for match in SWIFT_PATTERNS.finditer(text):
+            rule = match.lastgroup
+            if rule in MESSAGES and path not in EXCEPTIONS.get(rule, ()):
+                yield path, text.count("\n", 0, match.start()) + 1, MESSAGES[rule]
+
+
+def main():
+    errors = [*dictionaries(), *swift_sources()]
+    for path, line, message in errors:
+        print(f"{path}:{line}: {message}", file=sys.stderr)
+    if not errors:
+        print("Clio lint passed.")
+    return int(bool(errors))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -223,12 +223,12 @@ enum Ink {
 
     /// Code, commands, paths, the terminal, model names: Maple Mono unless 系统等宽 is picked in 字体.
     /// Chinese inside falls back to the system's own.
-    static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if Pref.code == .maple {
+    static func mono(_ size: CGFloat, weight: Font.Weight = .regular, preference: Pref.Code? = nil) -> Font {
+        if (preference ?? Pref.code) == .maple {
             let name = weight == .regular || weight == .light || weight == .thin || weight == .ultraLight ? "MapleMono-Regular" : "MapleMono-SemiBold"
             if has(name) { return .custom(name, size: size) }
         }
-        return .system(size: size, weight: weight, design: .monospaced)
+        return Font.system(size: size, weight: weight).monospaced()
     }
 
     /// The same, for UIKit views (the terminal).
@@ -399,5 +399,24 @@ struct FadeIn: TextRenderer {
                 }
             }
         }
+    }
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255
+        )
+    }
+
+    /// The same color, darker (`amount` below 1) or mixed toward white (`lift` above 0).
+    static func shade(_ hex: UInt32, amount: Double = 1, lift: Double = 0) -> Color {
+        func channel(_ shift: UInt32) -> Double {
+            let value = Double((hex >> shift) & 0xFF) / 255 * amount
+            return min(1, value + (1 - value) * lift)
+        }
+        return Color(red: channel(16), green: channel(8), blue: channel(0))
     }
 }
