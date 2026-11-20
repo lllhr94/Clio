@@ -71,7 +71,7 @@ struct SettingsView: View {
         .task {
             guard let startAt else { return }
             // A sheet asked for while this page is still sliding in is dropped; wait for it to settle.
-            try? await Task.sleep(nanoseconds: Shots.name == nil ? 600_000_000 : 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 600_000_000)
             go(startAt)
         }
         .sheet(isPresented: $adding) { SetupView(team: team) { adding = false } }

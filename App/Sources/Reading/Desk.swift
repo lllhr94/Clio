@@ -32,6 +32,8 @@ struct ClioRoot: View {
             Ink.paper.ignoresSafeArea()
             if Shots.name == "figures" {
                 FigureGallery()
+            } else if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
+                ShotSettingsPage(name: shot, team: team)
             } else if team.phase == .setup || holdingSetup {
                 SetupView(team: team, first: true) { holdingSetup = false }
                     .transition(.blurReplace)
@@ -39,6 +41,14 @@ struct ClioRoot: View {
             } else {
                 Desk(team: team)
                     .transition(.blurReplace)
+            }
+        }
+        .background {
+            if let token = Shots.readyToken {
+                ShotReady(token: token)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
         .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
@@ -88,7 +98,7 @@ struct ClioRoot: View {
 /// 案头: the companions, the gatherings, and the latest of each conversation.
 struct Desk: View {
     @ObservedObject var team: TeamModel
-    @State private var opened: Opened?
+    @State private var opened: Opened? = Shots.startsInChat ? .companion("chief") : nil
     @State private var editing: EditTarget?
     @State private var tuning = false
     @State private var settingsPage: String?
@@ -112,7 +122,7 @@ struct Desk: View {
     /// How far a drag has moved the conversation (right to open the sidebar, left to close it).
     @State private var pull: CGFloat = 0
     /// The sidebar is out, the conversation pushed to the right.
-    @State private var sideOpen = false
+    @State private var sideOpen = Shots.name == "sidebar"
     @State private var sideQuery = ""
     @State private var query = ""
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
@@ -640,24 +650,6 @@ struct Desk: View {
             }
         }
         .task { answerShortcut() }
-        .task {
-            // Screenshots: open the screen asked for.
-            guard let shot = Shots.name else { return }
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            switch shot {
-            case "chat", "sidebar", "plan":
-                opened = .companion("chief")
-                if shot == "sidebar" {
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    openSide()
-                }
-            case "settings": tuning = true
-            case "connectors", "look", "grants", "add", "pet":
-                settingsPage = shot
-                tuning = true
-            default: break
-            }
-        }
     }
 
     /// Siri or a shortcut: the newest conversation, or a fresh leaf with the newest companion. Nothing is sent.
