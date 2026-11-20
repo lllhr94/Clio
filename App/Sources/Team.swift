@@ -127,6 +127,8 @@ final class TeamModel: ObservableObject {
 
     /// Clio is about to leave the screen: turns still running ask iOS to let them finish in the background.
     func keepGoingInBackground() {
+        guard !runs.isEmpty else { return }
+        KeepAwake.start()
         for key in runs.keys { BackgroundTurn.begin(chat: key, name: chatName(key)) }
     }
 
@@ -1238,7 +1240,7 @@ final class TeamModel: ObservableObject {
         }
         doing[key] = "正在想"
         toolCount[key] = 0
-        LiveTurns.begin(chat: key, name: chatName(key))
+        LiveTurns.begin(chat: key, name: chatName(key), face: LiveFace.png(for: bots.first { Self.key(bot: $0.id) == key }))
         let task = Task { [weak self] in
             await previous?.value
             await self?.run(key, token: token)
@@ -1287,6 +1289,14 @@ final class TeamModel: ObservableObject {
 
     /// iOS takes the time back now: the last chance to keep what was written (if the watch missed it), then the time goes back.
     private func graceRunsOut(_ key: String, token: UUID) {
+        // Kept awake by 后台保持运行: the clock on this grace ran out, but the app is not being frozen; take a fresh one.
+        if KeepAwake.playing, runs[key]?.token == token {
+            endGrace(token)
+            graces[token] = UIApplication.shared.beginBackgroundTask(withName: "clio-turn") { [weak self] in
+                MainActor.assumeIsolated { self?.graceRunsOut(key, token: token) }
+            }
+            return
+        }
         if runs[key]?.token == token { pause(key) }
         endGrace(token)
     }
@@ -1316,7 +1326,7 @@ final class TeamModel: ObservableObject {
         let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
         append(Entry(
             id: UUID().uuidString, at: Now.ms,
-            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)点「接着做」从停下的地方继续。"),
+            message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)点「接着做」从停下的地方继续。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知、锁屏与后台 打开「后台保持运行」。")),
             note: true, next: Explain.Next.resume.rawValue
         ), to: key)
     }
@@ -1382,6 +1392,7 @@ final class TeamModel: ObservableObject {
             LiveTurns.end(chat: key, ok: ok && !cancelled && !paused, line: line)
             BackgroundTurn.end(chat: key, ok: ok && !cancelled)
         }
+        if runs.isEmpty { KeepAwake.stop() }
         nameChatIfNew(key)
         watchBalance(key)
         endGrace(token)

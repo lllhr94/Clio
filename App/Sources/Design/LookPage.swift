@@ -29,7 +29,8 @@ struct LookPage: View {
     @AppStorage("morning.hour") private var morningHour = 7
     @AppStorage("notify.done") private var notifyDone = true
     @AppStorage("live.on") private var liveOn = true
-    @AppStorage("bg.continue") private var bgContinue = true
+    @AppStorage("bg.continue") private var bgContinue = false
+    @AppStorage(KeepAwake.key) private var keepAwake = false
     @AppStorage("look.fps") private var fps = false
     @AppStorage("lock.faceid") private var faceLock = false
     @AppStorage("look.thinking") private var showThinking = true
@@ -194,6 +195,7 @@ struct LookPage: View {
                 Section {
                     Toggle(L.t("settings.notifyBackground"), isOn: $notifyDone)
                     Toggle(L.t("settings.liveProgress"), isOn: $liveOn)
+                    Toggle(L.t("settings.keepAwake"), isOn: $keepAwake)
                     Toggle(L.t("settings.backgroundContinue"), isOn: $bgContinue)
                 } header: { Text(L.t("settings.background")) } footer: {
                     Text(L.t("settings.backgroundProgressNote"))
@@ -251,7 +253,7 @@ struct LookPage: View {
     }
 
     private func reset() {
-        for key in ["look.scheme", "look.face", "look.mark", "look.code", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue",
+        for key in ["look.scheme", "look.face", "look.mark", "look.code", "look.ui", "look.size", "look.leading", "look.haptics", "look.fade", "look.stats", "look.traceOpen", "look.fps", "notify.done", "live.on", "look.accent", "look.plainNames", "look.oled", "look.toneHint", "look.thinking", "pulse.on", "lock.faceid", "bg.continue", "bg.keepAwake",
                     "chat.autoCompress", "chat.compressAt", "chat.keepRecent", "chat.contextChars", "chat.contextCount", "chat.temperature", "chat.maxOutput"] {
             UserDefaults.standard.removeObject(forKey: key)
         }

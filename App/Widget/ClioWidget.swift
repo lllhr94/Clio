@@ -184,18 +184,51 @@ struct TurnActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
+                Self.face(context)
             } compactTrailing: {
-                if context.state.phase == .working {
-                    Self.clock(context.state).font(.system(size: 13).monospacedDigit()).frame(maxWidth: 44)
-                } else {
-                    Text(Self.word(context.state.phase)).font(.system(size: 13, weight: .medium)).foregroundStyle(Self.tint(context.state.phase))
-                }
+                Self.mark(context.state)
             } minimal: {
-                Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
+                Self.face(context)
             }
             .widgetURL(URL(string: "clio://chat/\(context.attributes.chat)"))
             .keylineTint(Self.accent)
+        }
+    }
+
+    /// The companion's tiny face (its pet in pixels, or its photo); a plain mark if none came along.
+    @ViewBuilder
+    static func face(_ context: ActivityViewContext<TurnAttributes>) -> some View {
+        if let data = context.attributes.face, let picture = UIImage(data: data) {
+            Image(uiImage: picture)
+                .resizable()
+                .interpolation(.none)
+                .scaledToFit()
+                .frame(width: 24, height: 24)
+        } else {
+            Image(systemName: "bubble.left.fill").foregroundStyle(accent)
+        }
+    }
+
+    /// Right of the island, kept small: a ring that keeps filling while it works, ✓ when done.
+    @ViewBuilder
+    static func mark(_ state: TurnAttributes.ContentState) -> some View {
+        switch state.phase {
+        case .working:
+            let from = state.ring ?? state.started
+            ProgressView(timerInterval: from...from.addingTimeInterval(60), countsDown: false) {
+                EmptyView()
+            } currentValueLabel: {
+                EmptyView()
+            }
+            .progressViewStyle(.circular)
+            .tint(accent)
+            .frame(width: 20, height: 20)
+        case .waiting:
+            Image(systemName: "hand.raised.fill").foregroundStyle(warn)
+        case .done:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(ok)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(stop)
         }
     }
 

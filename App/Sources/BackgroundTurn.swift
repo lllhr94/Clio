@@ -12,7 +12,8 @@ enum BackgroundTurn {
     /// Stops the turn of a chat; set by the team.
     static var stop: ((String) -> Void)?
 
-    static var on: Bool { UserDefaults.standard.object(forKey: "bg.continue") == nil ? true : UserDefaults.standard.bool(forKey: "bg.continue") }
+    /// Off unless asked for: the system's own card pops the Dynamic Island wide open each time Clio leaves the screen.
+    static var on: Bool { UserDefaults.standard.bool(forKey: "bg.continue") }
 
     static func begin(chat: String, name: String) {
         // Asked once per turn: a request already in (steps set) or a task already running is left alone.

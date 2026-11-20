@@ -16,10 +16,14 @@ struct TurnAttributes: ActivityAttributes {
         var started: Date
         /// When it finished, to stop the clock.
         var ended: Date?
+        /// The small ring in the Dynamic Island fills over a minute from here; moved on as the turn goes.
+        var ring: Date?
     }
 
     /// The companion's name, or the gathering's.
     var name: String
     /// The conversation, for opening it: `clio://chat/<chat>`.
     var chat: String
+    /// The companion's face, a tiny PNG (its pet's first frame, or its photo), for the Dynamic Island.
+    var face: Data?
 }

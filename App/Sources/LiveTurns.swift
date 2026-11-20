@@ -1,5 +1,6 @@
 import ActivityKit
 import Foundation
+import UIKit
 
 /// Puts each running turn on the lock screen and in the Dynamic Island, and takes it down when it ends.
 @MainActor
@@ -11,9 +12,9 @@ enum LiveTurns {
     static var on: Bool { UserDefaults.standard.object(forKey: "live.on") == nil ? true : UserDefaults.standard.bool(forKey: "live.on") }
 
     /// A turn began. Live Activities can only be started while Clio is on screen; a turn begun in the background has none.
-    static func begin(chat: String, name: String) {
+    static func begin(chat: String, name: String, face: Data? = nil) {
         guard on, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let state = TurnAttributes.ContentState(doing: "正在想", phase: .working, steps: 0, started: Date())
+        let state = TurnAttributes.ContentState(doing: "正在想", phase: .working, steps: 0, started: Date(), ring: Date())
         if let activity = running[chat] {
             // A new turn in the same conversation: the same card, a fresh clock.
             states[chat] = state
@@ -21,7 +22,7 @@ enum LiveTurns {
             return
         }
         do {
-            let activity = try Activity.request(attributes: TurnAttributes(name: name, chat: chat), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+            let activity = try Activity.request(attributes: TurnAttributes(name: name, chat: chat, face: face), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
             running[chat] = activity
             states[chat] = state
         } catch {
@@ -37,6 +38,7 @@ enum LiveTurns {
         let urgent = phase != state.phase
         state.doing = doing
         state.phase = phase
+        if Date().timeIntervalSince(state.ring ?? state.started) > 55 { state.ring = Date() }
         states[chat] = state
         if !urgent, let last = sent[chat], Date().timeIntervalSince(last) < 1.2 {
             // Too soon after the last: the newest goes out a moment later, unless something else has gone first.
@@ -52,8 +54,8 @@ enum LiveTurns {
             return
         }
         sent[chat] = Date()
-        let alert = phase == .waiting ? AlertConfiguration(title: "\(activity.attributes.name)在等你批准", body: "打开 Clio 看看", sound: .default) : nil
-        Task { await activity.update(ActivityContent(state: state, staleDate: nil), alertConfiguration: alert) }
+        // Never pops the island open: a wait for approval comes as a notification (see `TeamModel.ask`).
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
     }
 
     private static var later: Set<String> = []
@@ -73,7 +75,15 @@ enum LiveTurns {
         state.ended = Date()
         let words = (line ?? "").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         state.doing = words.isEmpty ? (ok ? "做完了，点开看看" : "这次没做成，点开看看") : String(words.prefix(80))
-        Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(8 * 60))) }
+        // The island shows ✓ (or !) for a few seconds before the card leaves it; the lock screen keeps it a while.
+        let grace = UIApplication.shared.beginBackgroundTask(withName: "clio-live-end")
+        let final = ActivityContent(state: state, staleDate: nil)
+        Task {
+            await activity.update(final)
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            await activity.end(final, dismissalPolicy: .after(Date().addingTimeInterval(8 * 60)))
+            if grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
+        }
     }
 
     /// Cards left from a run that ended while Clio was closed.
