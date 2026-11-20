@@ -19,6 +19,10 @@ on:
         description: "Also build for the simulator and take screenshots of the main screens (light and dark)"
         type: boolean
         default: false
+      shot_model_error:
+        description: "Also capture the model error card in both tones"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -116,8 +120,8 @@ jobs:
       # Pictures of the main screens, to check the look without a phone.
       - name: Screenshots (simulator)
         if: inputs.shots
-        continue-on-error: true
         env:
+          SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
           SWIFTTERM_BUILD_TAG: "1.20.0"
           SWIFTTERM_BUILD_COMMIT: release
@@ -156,23 +160,51 @@ jobs:
           xcrun simctl install "$UDID" "$APP"
           xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
           mkdir -p shots
-          # A first launch to warm up (the first one in a fresh simulator is slow).
-          xcrun simctl launch "$UDID" io.github.lllhr94.clio -clioShot desk >/dev/null || true
-          sleep 40
+          xcrun swiftc ../tools/check_ci_screenshot.swift -o /tmp/clio-check-screenshot
+          BUNDLE=io.github.lllhr94.clio
+          DATA_DIR="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)"
+
+          capture() {
+            local shot="$1" output="$2" token elapsed attempt
+            shift 2
+            for attempt in 1 2; do
+              token="$(uuidgen)"
+              if xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -clioShot "$shot" -clioShotToken "$token" "$@" >/dev/null; then
+                for ((elapsed=0; elapsed<90; elapsed++)); do
+                  if [[ "$(cat "$DATA_DIR/tmp/clio-shot-ready" 2>/dev/null || true)" == "$token" ]] &&
+                     xcrun simctl io "$UDID" screenshot "$output" >/dev/null &&
+                     /tmp/clio-check-screenshot "$output"; then
+                    return 0
+                  fi
+                  sleep 1
+                done
+              fi
+              echo "::warning::Screenshot attempt $attempt failed for $output"
+            done
+            rm -f "$output"
+            echo "::error::Could not capture a rendered screen for $output"
+            return 1
+          }
+
+          status=0
           for mode in light dark; do
             xcrun simctl ui "$UDID" appearance "$mode"
             for shot in desk chat sidebar settings figures connectors look grants add pet; do
-              xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot "$shot" >/dev/null
-              sleep 20
-              xcrun simctl io "$UDID" screenshot "shots/$mode-$shot.png" >/dev/null
+              capture "$shot" "shots/$mode-$shot.png" || status=1
             done
           done
+          if [[ "$SHOT_MODEL_ERROR" == "true" ]]; then
+            xcrun simctl ui "$UDID" appearance light
+            capture model-error shots/model-error-daily.png -look.plainNames YES || status=1
+            capture model-error shots/model-error-literary.png -look.plainNames NO || status=1
+          fi
           ls -la shots
           # Anything that crashed while the pictures were taken, so a blank picture can be explained.
           mkdir -p shots/crashes
           find ~/Library/Logs/DiagnosticReports -name 'Clio*' -newer simbuild.log -exec cp {} shots/crashes/ \; 2>/dev/null || true
           xcrun simctl spawn "$UDID" log show --last 15m --style compact --predicate 'process == "Clio"' 2>/dev/null | grep -iE "fault|error|crash|terminat|assert|fatal" | tail -n 300 > shots/crashes/clio-log.txt || true
           ls -la shots/crashes
+          exit "$status"
 
       - name: Push the screenshots to a branch of their own
         if: always() && inputs.shots
