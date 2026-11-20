@@ -53,7 +53,7 @@ struct PetStill: View {
 
     private var drawn: some View {
         let inner = avatar ? size * 0.78 : size
-        content(inner)
+        return content(inner)
             .frame(width: inner, height: inner)
             .frame(width: size, height: size)
             .background {
