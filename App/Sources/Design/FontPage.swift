@@ -151,7 +151,7 @@ struct FontPage: View {
                         Text(code.note).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
                     Text("git log --oneline -3  # 0.33")
-                        .font(code == .maple && Ink.has("MapleMono-Regular") ? .custom("MapleMono-Regular", size: Ink.Size.sub) : .system(size: Ink.Size.sub, design: .monospaced))
+                        .font(Ink.mono(Ink.Size.sub, preference: code))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
                 }

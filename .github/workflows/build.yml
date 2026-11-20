@@ -39,6 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lint app sources
+        working-directory: .
+        run: python3 tools/lint.py
+
       - name: Use Xcode 26
         run: |
           XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
