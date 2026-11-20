@@ -323,7 +323,7 @@ private struct TableGrid: View {
 }
 
 /// The system viewer, for PDFs, Office files, and anything else it knows.
-private struct QuickPreview: UIViewControllerRepresentable {
+struct QuickPreview: UIViewControllerRepresentable {
     let url: URL
 
     func makeCoordinator() -> Source { Source(url: url) }

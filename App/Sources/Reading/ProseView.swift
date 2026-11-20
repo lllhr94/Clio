@@ -108,7 +108,11 @@ private struct BlockView: View {
                 .padding(.top, level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
                 .padding(.bottom, -Pref.size * 0.3)
         case .paragraph(let text):
-            Inline(text: text, font: Ink.reading, fading: fading)
+            if text.contains("![") {
+                PictureParagraph(text: text, fading: fading)
+            } else {
+                Inline(text: text, font: Ink.reading, fading: fading)
+            }
         case .list(let items):
             // Items closer together than paragraphs, so a list reads as one thing.
             VStack(alignment: .leading, spacing: Pref.size * 0.35) {
@@ -457,5 +461,103 @@ enum Highlight {
             }
         }
         return out
+    }
+}
+
+
+/// A paragraph with pictures in it (`![描述](地址)`): the words, then each picture under them.
+private struct PictureParagraph: View {
+    let text: String
+    let fading: Bool
+
+    var body: some View {
+        let parts = Self.split(text)
+        VStack(alignment: .leading, spacing: Pref.size * 0.6) {
+            if !parts.words.isEmpty {
+                Inline(text: parts.words, font: Ink.reading, fading: fading)
+            }
+            ForEach(Array(parts.pictures.enumerated()), id: \.offset) { _, picture in
+                ProsePicture(source: picture.source, label: picture.label)
+            }
+        }
+    }
+
+    static func split(_ text: String) -> (words: String, pictures: [(label: String, source: String)]) {
+        guard let pattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#) else {
+            return (text, [])
+        }
+        let whole = NSRange(text.startIndex..., in: text)
+        var pictures: [(label: String, source: String)] = []
+        for match in pattern.matches(in: text, range: whole) {
+            guard let label = Range(match.range(at: 1), in: text), let source = Range(match.range(at: 2), in: text) else { continue }
+            pictures.append((String(text[label]), String(text[source])))
+        }
+        let words = pattern.stringByReplacingMatches(in: text, range: whole, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (words, pictures)
+    }
+}
+
+/// One picture in a reply: from the web, or from 书案 (a path the companion wrote there). Tap to see it whole,
+/// with the system viewer's share and save.
+struct ProsePicture: View {
+    let source: String
+    var label: String = ""
+    @State private var image: UIImage?
+    @State private var file: URL?
+    @State private var failed = false
+    @State private var open = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
+                    .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .onTapGesture { if file != nil { Haptics.light(); open = true } }
+                    .accessibilityLabel(label.isEmpty ? "图片" : label)
+                    .accessibilityAddTraits(.isImage)
+            } else if failed {
+                Label(label.isEmpty ? "图片打不开" : "图片打不开：\(label)", systemImage: "photo.badge.exclamationmark")
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkFaint)
+            } else {
+                RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
+                    .fill(Ink.mine)
+                    .frame(height: 160)
+                    .overlay { ProgressView() }
+            }
+        }
+        .task(id: source) { await load() }
+        .sheet(isPresented: $open) {
+            if let file { QuickPreview(url: file).ignoresSafeArea() }
+        }
+    }
+
+    private func load() async {
+        if let url = URL(string: source), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                guard let picture = UIImage(data: data) else { failed = true; return }
+                // Kept as a file so the viewer can share and save it.
+                let name = url.lastPathComponent.isEmpty ? "图片.png" : url.lastPathComponent
+                let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + name)
+                try? data.write(to: local)
+                file = local
+                image = picture
+            } catch {
+                failed = true
+            }
+            return
+        }
+        var path = source
+        if path.hasPrefix("file://"), let url = URL(string: path) { path = url.path }
+        if path.hasPrefix(Workspace.root.path) { path = String(path.dropFirst(Workspace.root.path.count)) }
+        guard let url = Workspace.resolve(path.removingPercentEncoding ?? path),
+              let data = try? Data(contentsOf: url), let picture = UIImage(data: data) else { failed = true; return }
+        file = url
+        image = picture
     }
 }
