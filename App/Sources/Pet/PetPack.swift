@@ -109,6 +109,21 @@ struct PetPack: Identifiable {
         for (state, value) in root["states"] as? [String: Any] ?? [:] {
             if let list = value as? [String] { states[state] = list } else if let one = value as? String { states[state] = [one] }
         }
+        // Other names for the same states (the brief given to designers used these), and states named only by
+        // an animation of that name.
+        let aliases: [String: [String]] = [
+            "notification": ["awaiting_approval", "awaiting-approval", "waiting"],
+            "attention": ["done", "happy"],
+            "roam": ["walking", "walk"],
+        ]
+        for state in ["idle", "thinking", "working", "notification", "attention", "error", "sleeping", "waking", "sweeping", "roam"] where states[state] == nil {
+            let names = [state] + (aliases[state] ?? [])
+            if let found = names.lazy.compactMap({ states[$0] }).first {
+                states[state] = found
+            } else if let anim = names.first(where: { animations[$0] != nil }) {
+                states[state] = [anim]
+            }
+        }
         var tiers: [String: [(min: Int, anim: String)]] = [:]
         for (state, value) in root["tiers"] as? [String: Any] ?? [:] {
             let steps = (value as? [[String: Any]] ?? []).compactMap { step -> (min: Int, anim: String)? in
@@ -124,6 +139,11 @@ struct PetPack: Identifiable {
             let names: [String] = (rawReactions[key] as? [String]) ?? ((rawReactions[key] as? String).map { [$0] } ?? [])
             let base = String(key.reversed().drop { $0.isNumber }.reversed())
             if base != key, rawReactions[base] != nil { reactions[base, default: []] += names } else { reactions[key, default: []] += names }
+        }
+        for (reaction, names) in ["tapLeft": ["poke_left", "poke-left", "react-left"], "tapRight": ["poke_right", "poke-right", "react-right"],
+                                  "drag": ["lifted"], "tickle": ["tickle"], "annoyed": ["annoyed"]] where reactions[reaction] == nil {
+            if let found = names.lazy.compactMap({ reactions[$0] }).first { reactions[reaction] = found }
+            else if let anim = names.first(where: { animations[$0] != nil }) { reactions[reaction] = [anim] }
         }
         let timings = root["timings"] as? [String: Any] ?? [:]
         func ints(_ any: Any?) -> [String: Int] {
@@ -153,7 +173,7 @@ struct PetPack: Identifiable {
             wakeMs: Int(num(timings["wakeMs"]) ?? 1500), reactions: reactions,
             idleEvery: (Int(num(every["mean"]) ?? 120_000), Int(num(every["min"]) ?? 45_000), Int(num(every["max"]) ?? 300_000)),
             idlePool: poolAnims,
-            roamAnim: (roam["anim"] as? String).flatMap { animations[$0] != nil ? $0 : nil },
+            roamAnim: (roam["anim"] as? String).flatMap { animations[$0] != nil ? $0 : nil } ?? states["roam"]?.first,
             faces: roam["faces"] as? String ?? "left",
             sleepAfter: Int(num((root["sleep"] as? [String: Any])?["afterMs"]) ?? 60_000)
         )

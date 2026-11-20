@@ -120,8 +120,12 @@ final class PetLibrary {
                 if fm.fileExists(atPath: inner.path) { candidates.append(inner) }
             }
         }
+        // No pack.json: plain animations, one per state, made into a pack here.
+        if candidates.isEmpty {
+            candidates = [try PetConvert.build(from: scratch, name: zip.deletingPathExtension().lastPathComponent)]
+        }
         guard candidates.count == 1, let manifest = candidates.first else {
-            throw PetPack.Problem.bad(candidates.isEmpty ? "包里找不到 pack.json（这里认 DSH Go / Clawd 那种 schema 1 宠物包）" : "包里有好几个 pack.json，不知道用哪个")
+            throw PetPack.Problem.bad("包里有好几个 pack.json，不知道用哪个")
         }
         let base = manifest.deletingLastPathComponent()
         let data = try Data(contentsOf: manifest)
