@@ -68,7 +68,7 @@ iOS 原生的个人 AI 助手 App。名字来自希腊神话里掌管历史的�
 | `#B8AEA3` 淡墨 | 浅阴影 | | `#4E6A85` 黛 | 衣带、书签 |
 | `#F4EEE2` 纸白 | 白袍、书页 | | `#B5524A` 胭 | 腮红、印章 |
 | `#E2D8C6` 纸影 | 袍子暗部 | | `#D9B36C` 缃 | 卷轴木轴、金边 |
-| `#7FA3D1` 鲸蓝 | 胖鲸身子 | | `#5A7DB0` 深鲸蓝 | 胖鲸背、暗部 |
+| `#7FA3D1` 浅蓝 | 身体、衣服 | | `#5A7DB0` 深蓝 | 暗部 |
 
 表情和动作要丰富：每个状态一眼看得出不同。必做状态：idle、thinking、working、notification、attention、error、sleeping；其余（waking、react-left/right、tickle、drag、roam、idle-xxx）有更好，没有 App 会用 idle 代替。轮廓一律 1 像素的墨色，不要黑色（#000）。
 
