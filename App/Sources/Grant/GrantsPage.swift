@@ -30,8 +30,8 @@ struct GrantsPage: View {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(asking ? L.t("loading.requestingPermissions") : Words.t("一并应许")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
-                                    Text("一次问完系统授权")
+                                    Text(asking ? L.t("loading.requestingPermissions") : L.t("actions.requestAllPermissions")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    Text(L.t("settings.requestPermissionsNote"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
                                 Spacer(minLength: 0)
@@ -64,7 +64,7 @@ struct GrantsPage: View {
                                         HStack {
                                             Text(tool).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
                                             Spacer()
-                                            Button("收回") { withAnimation(.smooth) { team.revokeAlways(tool) } }
+                                            Button(L.t("actions.revokePermission")) { withAnimation(.smooth) { team.revokeAlways(tool) } }
                                                 .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.stop)
                                         }
                                         .padding(.horizontal, Ink.Space.l)
@@ -149,7 +149,7 @@ struct GrantsPage: View {
                     .accessibilityAddTraits(current == preset ? .isSelected : [])
                 }
             }
-            Text(current == nil ? "自定义：下面有几项是你单独改过的" : "下面每项还能单独改")
+            Text(current == nil ? L.t("settings.customPermissions") : L.t("settings.editPermissionsNote"))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
         }
     }

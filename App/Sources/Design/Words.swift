@@ -30,6 +30,10 @@ enum L {
         (plain ? daily[key] ?? literary[key] : literary[key] ?? daily[key]) ?? key
     }
 
+    static func format(_ key: String, _ values: CVarArg...) -> String {
+        String(format: t(key), arguments: values)
+    }
+
     /// 日常旁注: in 书卷 with the side note on, the everyday words for the same key, shown small and gray beside it.
     /// Nothing when both say the same thing.
     static func hint(_ key: String) -> String? {

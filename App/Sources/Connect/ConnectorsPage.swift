@@ -36,7 +36,7 @@ struct ConnectorsPage: View {
                     } label: {
                         HStack(spacing: Ink.Space.m) {
                             Image(systemName: "plus").font(.system(size: Ink.Size.title, weight: .medium)).foregroundStyle(Ink.ink).frame(width: 40)
-                            Text("添加自定义连接器").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                            Text(L.t("connectors.addCustom")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                             Spacer()
                         }
                         .padding(.horizontal, Ink.Space.l)
@@ -44,7 +44,7 @@ struct ConnectorsPage: View {
                         .paperCard()
                     }
                     .buttonStyle(PressStyle(haptic: false))
-                    Text(Words.t("连上的服务，所有旅伴都能用；会改动东西的操作，旅伴会先问你。连接器是 MCP 服务，手机上只能用网址形式的；要在电脑上启动本地命令的那种，只能在电脑上用。"))
+                    Text(L.t("connectors.usageNote"))
                         .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.horizontal, 4)
                 }
                 .padding(.horizontal, Ink.Space.page)
@@ -66,12 +66,12 @@ struct ConnectorsPage: View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
             IconBadge(symbol: "square.grid.2x2", tint: Ink.Tile.mo)
             VStack(alignment: .leading, spacing: 3) {
-                Text("连接器推荐").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
-                Text(Words.t("聊天时遇到某个连接器能帮上忙的事，旅伴会提一句，告诉你去哪里连。"))
+                Text(L.t("connectors.suggestions")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                Text(L.t("connectors.suggestionsNote"))
                     .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
             }
             Spacer(minLength: 0)
-            Toggle("连接器推荐", isOn: $suggest).labelsHidden().tint(Ink.accent)
+            Toggle(L.t("connectors.suggestions"), isOn: $suggest).labelsHidden().tint(Ink.accent)
         }
         .padding(Ink.Space.l)
         .paperCard()
@@ -185,7 +185,7 @@ struct ConnectorsPage: View {
 
     private func row(_ item: Connector) -> some View {
         let failed = work.server(of: item).map { hills.lastError[$0.id] != nil }
-        return RowLabel(title: item.name, line: item.line, end: failed.map { RowEnd.valueChevron($0 ? "出错了" : "已连接", $0 ? Ink.stop : Ink.ok) } ?? RowEnd.chevron) {
+        return RowLabel(title: item.name, line: item.line, end: failed.map { RowEnd.valueChevron($0 ? L.t("connectors.connectionError") : L.t("connectors.connected"), $0 ? Ink.stop : Ink.ok) } ?? RowEnd.chevron) {
             ConnectorIcon(connector: item)
         }
     }
@@ -195,7 +195,7 @@ struct ConnectorsPage: View {
             Haptics.light()
             googleOpen = true
         } label: {
-            RowLabel(title: "用自己的 Client ID 连", line: google.account ?? "备用：上面连不上时，用你自己的谷歌项目连 Gmail 和云盘", end: google.connected ? .valueChevron("已连接", Ink.ok) : .chevron) {
+            RowLabel(title: L.t("connectors.useOwnClientID"), line: google.account ?? L.t("connectors.ownClientNote"), end: google.connected ? .valueChevron(L.t("connectors.connected"), Ink.ok) : .chevron) {
                 ConnectorIcon(mark: "G", tint: Ink.Tile.dai, domain: "mail.google.com")
             }
         }
@@ -318,9 +318,9 @@ private struct ConnectorDetail: View {
         .navigationTitle(connector.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $googleOpen) { GoogleSheet() }
-        .confirmationDialog("断开\(connector.name)？", isPresented: $confirming, titleVisibility: .visible) {
-            Button("断开", role: .destructive) { work.disconnect(connector); dismiss() }
-        } message: { Text(Words.t("旅伴就用不了它的工具了；登录凭据也会从这台手机删掉。")) }
+        .confirmationDialog(L.format("connectors.disconnectConfirm", connector.name), isPresented: $confirming, titleVisibility: .visible) {
+            Button(L.t("actions.disconnect"), role: .destructive) { work.disconnect(connector); dismiss() }
+        } message: { Text(L.t("connectors.disconnectNote")) }
     }
 
     /// 详情: what kind of service it is, how it lets Clio in, and its address.
@@ -341,7 +341,7 @@ private struct ConnectorDetail: View {
                 Kit.rule(inset: Ink.Space.l)
                 HStack(alignment: .top, spacing: Ink.Space.m) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("连接器地址").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
+                        Text(L.t("connectors.address")).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                         Text(connector.url).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
                     }
                     Spacer(minLength: 0)
@@ -352,7 +352,7 @@ private struct ConnectorDetail: View {
                         Image(systemName: "doc.on.doc").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("复制地址")
+                    .accessibilityLabel(L.t("actions.copyAddress"))
                 }
                 .padding(Ink.Space.l)
             }
@@ -371,7 +371,7 @@ private struct ConnectorDetail: View {
 
     private var status: some View {
         let connected = server != nil && server.flatMap { hills.lastError[$0.id] } == nil
-        return Text(server == nil ? "未连接" : (connected ? "已连接" : "出错了"))
+        return Text(server == nil ? L.t("connectors.notConnected") : (connected ? L.t("connectors.connected") : L.t("connectors.connectionError")))
             .font(.system(size: Ink.Size.small, weight: .medium))
             .foregroundStyle(server == nil ? Ink.inkSoft : (connected ? Ink.ok : Ink.stop))
             .padding(.horizontal, 12)
@@ -402,28 +402,28 @@ private struct ConnectorDetail: View {
         switch connector.auth {
         case .oauth:
             VStack(spacing: Ink.Space.s) {
-                bigButton("用 \(connector.name) 账号登录") { go(token: nil) }
-                Text("会打开\(connector.name)的登录页，登录完回到这里。").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                bigButton(L.format("actions.signInWithProvider", connector.name)) { go(token: nil) }
+                Text(L.format("connectors.signInNote", connector.name)).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
             tokenBox(title: "或者粘贴令牌", placeholder: "访问令牌（Access Token）", page: connector.tokenPage)
         case .open:
             VStack(spacing: Ink.Space.s) {
-                bigButton("连接") { go(token: nil) }
-                Text("公开的服务，不用登录。").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                bigButton(L.t("actions.connect")) { go(token: nil) }
+                Text(L.t("connectors.publicAccessNote")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
         case .google:
             VStack(spacing: Ink.Space.s) {
                 if !google.connected || google.needsMoreScopes {
                     bigButton(google.connected ? "重新登录谷歌，授权新的权限" : "先登录谷歌") { googleOpen = true }
                 } else {
-                    bigButton("连接") { go(token: nil) }
+                    bigButton(L.t("actions.connect")) { go(token: nil) }
                 }
-                Text("用的是谷歌官方的 MCP 服务，和 Claude 里的一样。手机直接连谷歌，用你在「谷歌」里的登录，不经过别人。")
+                Text(L.t("connectors.googleOfficialNote"))
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 SectionTitle(L.t("connectors.googleSetup"))
-                Text("谷歌的官方 MCP 目前在开发者预览：你的 Google Cloud 项目要加入 Workspace Developer Preview，并启用这项 API 和对应的 MCP 服务（比如 gmail.googleapis.com 和 gmailmcp.googleapis.com）。没开的话，连接时会提示具体缺哪一项。")
+                Text(L.t("connectors.googlePreviewNote"))
                     .font(Ink.secondary).foregroundStyle(Ink.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Ink.Space.l)
@@ -437,7 +437,7 @@ private struct ConnectorDetail: View {
                         Text(step).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                     }
                 }
-                Button("去拿\(title)") { if let url = URL(string: page) { openURL(url) } }
+                Button(L.format("connectors.credentialsShortcut", title)) { if let url = URL(string: page) { openURL(url) } }
                     .font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -453,7 +453,7 @@ private struct ConnectorDetail: View {
                 Text(title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                 Spacer()
                 if let page, let url = URL(string: page) {
-                    Button("去生成") { openURL(url) }.font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
+                    Button(L.t("actions.generate")) { openURL(url) }.font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
             }
             .padding(.leading, 4)
@@ -467,7 +467,7 @@ private struct ConnectorDetail: View {
                 Button {
                     go(token: token)
                 } label: {
-                    Text(connector.auth == .oauth ? "用令牌连接" : "连接")
+                    Text(connector.auth == .oauth ? L.t("actions.connectWithToken") : L.t("actions.connect"))
                         .font(.system(size: Ink.Size.body, weight: .medium))
                         .foregroundStyle(token.trimmingCharacters(in: .whitespaces).isEmpty ? Ink.inkFaint : Ink.accent)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -486,7 +486,7 @@ private struct ConnectorDetail: View {
         if let server {
             let tools = hills.tools(of: server)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                SectionTitle("带来的工具（\(tools.count)）")
+                SectionTitle(L.format("connectors.toolCount", tools.count))
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(tools.enumerated()), id: \.element.name) { index, tool in
                         if index > 0 { Kit.rule(inset: 40) }
@@ -505,13 +505,13 @@ private struct ConnectorDetail: View {
                     }
                 }
                 .paperCard()
-                Text(Words.t("眼睛是只读的，旅伴直接用；笔是会改动东西的，每次先问你。"))
+                Text(L.t("connectors.toolPermissionNote"))
                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, 4)
             }
             HStack(spacing: Ink.Space.m) {
-                Button("重新连接") { go(token: nil) }
+                Button(L.t("actions.reconnect")) { go(token: nil) }
                     .buttonStyle(.bordered).tint(Ink.accent)
-                Button("断开", role: .destructive) { confirming = true }
+                Button(L.t("actions.disconnect"), role: .destructive) { confirming = true }
                     .buttonStyle(.bordered)
             }
             .controlSize(.large)
@@ -656,7 +656,7 @@ private struct CustomSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("称呼，比如 公司的知识库", text: $name)
+                    TextField(L.t("connectors.namePlaceholder"), text: $name)
                     TextField("https://…/mcp", text: $url)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -665,14 +665,14 @@ private struct CustomSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } footer: {
-                    Text(result ?? "支持 Streamable HTTP 的 MCP 服务。令牌空着时，要登录的服务会自己弹出登录页。旧式只有 /sse 的地址暂时连不上。")
+                    Text(result ?? L.t("connectors.customTransportNote"))
                 }
                 Section {
                     Button {
                         Task { await add() }
                     } label: {
                         HStack {
-                            Text("连上")
+                            Text(L.t("actions.connect"))
                             if busy { Spacer(); ProgressView() }
                         }
                     }
@@ -715,7 +715,7 @@ enum Connecting {
                 return "没登录上：\(error.localizedDescription)"
             }
         }
-        if count >= 0 { return Words.t("连上了，带来 \(count) 个工具。旅伴现在就能用。") }
+        if count >= 0 { return L.format("connectors.connectedWithTools", count) }
         return "没连上：\(hills.lastError[server.id] ?? "不明原因")"
     }
 }
@@ -734,13 +734,13 @@ private struct GoogleSheet: View {
                     Section {
                         Label(account, systemImage: "checkmark.circle.fill").foregroundStyle(Ink.ok)
                         if google.needsMoreScopes {
-                            Text("Clio 现在能连更多谷歌服务（日历、文档、表格、幻灯片），要重新登录一次授权。")
+                            Text(L.t("connectors.googleReauthorize"))
                                 .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.warn)
                         }
                         Text(Words.t("旅伴能找、读你的 Gmail 和云端硬盘，能存邮件草稿；真要发信，每次都会先问你。"))
                             .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                        Button("重新登录") { Task { await google.signIn() } }.disabled(google.busy)
-                        Button("退出谷歌", role: .destructive) { google.signOut() }
+                        Button(L.t("actions.signInAgain")) { Task { await google.signIn() } }.disabled(google.busy)
+                        Button(L.t("actions.signOutGoogle"), role: .destructive) { google.signOut() }
                     } footer: {
                         Text(Words.t("谷歌把还在测试的应用的登录 7 天作废；到时旅伴会说登录过期，回这里点「重新登录」。"))
                     }
@@ -751,9 +751,9 @@ private struct GoogleSheet: View {
                         step(3, "「OAuth 同意屏幕」：用户类型选「外部」，把你自己的 Gmail 加进「测试用户」。")
                         step(4, "「凭据 → 创建凭据 → OAuth 客户端 ID」，应用类型选「iOS」，软件包 ID 填 io.github.lllhr94.clio。")
                         step(5, "复制生成的客户端 ID，粘到下面，点登录。")
-                        Button("打开 Google Cloud 控制台") { if let url = URL(string: "https://console.cloud.google.com/apis/credentials") { openURL(url) } }
+                        Button(L.t("actions.openGoogleConsole")) { if let url = URL(string: "https://console.cloud.google.com/apis/credentials") { openURL(url) } }
                     } header: { Text(L.t("connectors.googleCredentials")) } footer: {
-                        Text("Clio 不经过任何别人的服务器：手机直接向谷歌登录，令牌只存在钥匙串里。")
+                        Text(L.t("connectors.googlePrivacyNote"))
                     }
                     Section {
                         TextField("xxxx.apps.googleusercontent.com", text: $client)
@@ -765,7 +765,7 @@ private struct GoogleSheet: View {
                             Task { await google.signIn() }
                         } label: {
                             HStack {
-                                Text("用谷歌账号登录")
+                                Text(L.t("actions.signInGoogle"))
                                 if google.busy { Spacer(); ProgressView() }
                             }
                         }

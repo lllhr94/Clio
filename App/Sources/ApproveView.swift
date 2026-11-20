@@ -42,7 +42,7 @@ struct ApproveView: View {
             VStack(spacing: 0) {
                 HStack {
                     if waiting > 0 {
-                        Text("后面还有 \(waiting) 张")
+                        Text(L.format("approval.remaining", waiting))
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
                             .padding(.horizontal, 14)
@@ -62,7 +62,7 @@ struct ApproveView: View {
                     .buttonStyle(.glass)
                     .buttonBorderShape(.circle)
                     .controlSize(.large)
-                    .accessibilityLabel("关闭")
+                    .accessibilityLabel(L.t("actions.close"))
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
@@ -129,24 +129,24 @@ struct ApproveView: View {
             // Answered somewhere else while this slip was open.
             guard verdict == nil, !busy, !team.approvals.contains(where: { $0.id == current.id }) else { return }
             handled.insert(current.id)
-            withAnimation(.smooth) { note = "这张单子已经在别处处理了。" }
+            withAnimation(.smooth) { note = L.t("approval.handledElsewhere") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { advance() }
         }
     }
 
     private var title: String {
         switch verdict {
-        case .allowed: return "盖章，放行"
-        case .rejected: return "已拒绝"
-        case nil: return "\(name)在等你点头"
+        case .allowed: return L.t("approval.approvedTitle")
+        case .rejected: return L.t("approval.refusedTitle")
+        case nil: return L.format("approval.waitingForUser", name)
         }
     }
 
     private var subtitle: String {
         switch verdict {
-        case .allowed: return "\(name)已经继续干活。"
-        case .rejected: return "\(name)不会做这件事。"
-        case nil: return answerable ? "向右滑到底，就算批准。" : "这张单子现在答不了。"
+        case .allowed: return L.format("approval.allowedNote", name)
+        case .rejected: return L.format("approval.refusedNote", name)
+        case nil: return answerable ? L.t("approval.slideNote") : L.t("approval.notAnswerable")
         }
     }
 
@@ -158,20 +158,20 @@ struct ApproveView: View {
                     .disabled(busy)
                 if current.forced == true {
                     // Standing permission would not cover this step anyway: say why instead of offering it.
-                    Label("这一轮读过网页，这一步每次都要你点头", systemImage: "exclamationmark.shield")
+                    Label(L.t("approval.webRequiresApproval"), systemImage: "exclamationmark.shield")
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.warn)
                 } else {
                     HStack(spacing: Ink.Space.s) {
-                        choice("以后都允许", on: $always)
-                        choice(Words.t("这段絮语都放行"), on: $trustChat)
+                        choice(L.t("actions.allowAlways"), on: $always)
+                        choice(L.t("actions.allowConversation"), on: $trustChat)
                     }
                 }
                 Button {
                     Haptics.light()
                     answer(allow: false)
                 } label: {
-                    Text("不批准")
+                    Text(L.t("actions.rejectApproval"))
                         .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(minHeight: 46)
@@ -191,7 +191,7 @@ struct ApproveView: View {
     private var slip: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("落 印 笺")
+                Text(L.t("approval.approvalSheet"))
                     .font(.system(size: Ink.Size.small, weight: .bold))
                     .tracking(2)
                 Spacer()
@@ -205,13 +205,13 @@ struct ApproveView: View {
                          wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3)).lineLimit(1)
+                    Text(L.t("approval.from")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3))
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("想做的事").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                Text(L.t("approval.requestedAction")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
                     Text(tool).font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold)).lineLimit(largeText ? nil : 2)
                 }
@@ -241,8 +241,8 @@ struct ApproveView: View {
                 .frame(height: 1.5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(Words.t("落印")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                Text("你").font(.system(size: Ink.Size.body, weight: .semibold))
+                Text(L.t("approval.signer")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                Text(L.t("approval.you")).font(.system(size: Ink.Size.body, weight: .semibold))
             }
             .frame(height: 62, alignment: .bottomLeading)
         }
@@ -254,7 +254,7 @@ struct ApproveView: View {
         .overlay(alignment: .bottomTrailing) {
             Group {
                 if verdict == .rejected {
-                    Stamp(word: "已拒绝", date: Self.clock(stampedAt, "MM-dd HH:mm"), ink: Ink.inkSoft)
+                    Stamp(word: L.t("approval.refusedTitle"), date: Self.clock(stampedAt, "MM-dd HH:mm"), ink: Ink.inkSoft)
                         .rotationEffect(.degrees(-14))
                 } else {
                     // Approved: Clio's own seal, pressed beside your name, with when.
@@ -416,7 +416,7 @@ private struct SlideTrack: View {
         GeometryReader { proxy in
             let travel = max(1, proxy.size.width - knob - 10)
             ZStack(alignment: .leading) {
-                Text(Words.t("滑过去，落印"))
+                Text(L.t("actions.slideToApprove"))
                     .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.inkSoft)
                     .frame(maxWidth: .infinity)
@@ -453,7 +453,7 @@ private struct SlideTrack: View {
                                 }
                             }
                     )
-                    .accessibilityLabel("滑动批准")
+                    .accessibilityLabel(L.t("actions.slideToApprove"))
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction { onDone() }
             }

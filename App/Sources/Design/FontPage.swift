@@ -72,8 +72,8 @@ struct FontPage: View {
                             Theme.shared.setFace(face)
                         }
                     }
-                } header: { Text("正文") } footer: {
-                    Text("对话、笔记这类要读的文字。字号在「外观」里调。")
+                } header: { Text(L.t("settings.fontBody")) } footer: {
+                    Text(L.t("settings.fontBodyNote"))
                 }
 
                 Section {
@@ -85,23 +85,23 @@ struct FontPage: View {
                             Theme.shared.setMark(face)
                         }
                     }
-                } header: { Text("标题和题词") } footer: {
-                    Text("空对话上的那句话、引导页和批准单的标题。按钮和正文不跟着变。")
+                } header: { Text(L.t("settings.fontTitles")) } footer: {
+                    Text(L.t("settings.fontTitlesNote"))
                 }
 
                 Section {
                     ForEach(Pref.Code.allCases) { code in
                         codeRow(code)
                     }
-                } header: { Text("代码") } footer: {
-                    Text("回复里的代码、终端、步骤里的命令、模型名。中文仍用正文字体。")
+                } header: { Text(L.t("settings.fontCode")) } footer: {
+                    Text(L.t("settings.fontCodeNote"))
                 }
 
                 Section {
                     Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，代码字体是 Maple Mono 7.9，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                } header: { Text("出处") }
+                } header: { Text(L.t("settings.fontCredits")) }
             }
         }
         .paperForm()
@@ -174,9 +174,9 @@ struct FontPage: View {
         case .loading(let progress):
             ProgressView(value: progress).frame(width: 44)
         case .missing:
-            Text("下载").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
+            Text(L.t("actions.download")).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
         case .failed:
-            Text("重试").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.stop)
+            Text(L.t("actions.retry")).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.stop)
         case .ready:
             if picked {
                 Image(systemName: "checkmark").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)

@@ -34,7 +34,7 @@ struct ServicePage: View {
                     if !(endpoint.listed ?? []).filter({ !endpoint.models.contains($0) }).isEmpty { more(endpoint) }
                     connection(endpoint)
                     if Balance.source(baseURL: endpoint.baseURL) != nil { balance(endpoint) }
-                    Button("删掉这家服务", role: .destructive) { removing = true }
+                    Button(L.t("actions.deleteProvider"), role: .destructive) { removing = true }
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, Ink.Space.m)
@@ -60,11 +60,11 @@ struct ServicePage: View {
                 .presentationDetents([.large])
         }
         .confirmationDialog(Words.t("删掉 \(endpoint?.name ?? "")？用它的旅伴会改用默认模型，密钥也一起删掉。"), isPresented: $removing, titleVisibility: .visible) {
-            Button("删掉", role: .destructive) {
+            Button(L.t("actions.delete"), role: .destructive) {
                 team.removeEndpoint(id)
                 dismiss()
             }
-            Button("先留着", role: .cancel) {}
+            Button(L.t("actions.cancel"), role: .cancel) {}
         }
     }
 
@@ -125,7 +125,7 @@ struct ServicePage: View {
                         .autocorrectionDisabled()
                         .submitLabel(.done)
                         .onSubmit { addTyped(endpoint) }
-                    Button("添上") { addTyped(endpoint) }
+                    Button(L.t("actions.add")) { addTyped(endpoint) }
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.accent)
                         .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -149,14 +149,14 @@ struct ServicePage: View {
                     HStack(spacing: 6) {
                         Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
-                            Text("默认").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
+                            Text(L.t("settings.defaultModelBadge")).font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(Ink.accentWash, in: .capsule)
                         }
                     }
                     TraitChips(traits: traits, corrected: endpoint.corrected(model))
                     if gone {
-                        Text("列表里没有了，可能已下线").font(Ink.footnote).foregroundStyle(Ink.warn)
+                        Text(L.t("settings.modelUnavailable")).font(Ink.footnote).foregroundStyle(Ink.warn)
                     }
                 }
                 Spacer(minLength: 0)
@@ -168,8 +168,8 @@ struct ServicePage: View {
         }
         .buttonStyle(TapStyle())
         .contextMenu {
-            Button("设为默认模型", systemImage: "star") { team.setDefaultModel("\(endpoint.id)/\(model)") }
-            Button("不用了", systemImage: "minus.circle", role: .destructive) {
+            Button(L.t("actions.setDefaultModel"), systemImage: "star") { team.setDefaultModel("\(endpoint.id)/\(model)") }
+            Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
                 withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models.filter { $0 != model }) }
             }
         }
@@ -275,8 +275,8 @@ struct ServicePage: View {
                     Rectangle().fill(Ink.rule).frame(height: 1)
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("思考参数怎么写").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
-                            Text("选思考强度没效果时再换").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                            Text(L.t("settings.thinkingFormat")).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
+                            Text(L.t("settings.thinkingFormatNote")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()
                         Menu {
@@ -295,7 +295,7 @@ struct ServicePage: View {
                                 }
                             }
                         } label: {
-                            Text(style?.title ?? "跟着服务").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent).lineLimit(1)
+                            Text(style?.title ?? L.t("settings.providerDefault")).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent).lineLimit(1)
                         }
                     }
                 }
@@ -306,13 +306,13 @@ struct ServicePage: View {
                             .font(Ink.mono(Ink.Size.sub))
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         if !newKey.isEmpty {
-                            Button("换上") { replaceKey(endpoint) }
+                            Button(L.t("actions.replaceKey")) { replaceKey(endpoint) }
                                 .font(.system(size: Ink.Size.sub, weight: .semibold))
                                 .foregroundStyle(Ink.accent)
                         }
                     }
                 }
-                Text("只存在本机钥匙串，不进备份")
+                Text(L.t("settings.keyStorageNote"))
                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
             }
             .padding(Ink.Space.l)
@@ -362,7 +362,7 @@ struct ServicePage: View {
                         Text(reading.shown).font(Ink.serif(24, bold: true)).foregroundStyle(Ink.ink)
                         if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     } else {
-                        Text(balanceNote ?? "在查…").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                        Text(balanceNote ?? L.t("loading.checking")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                     }
                 }
                 Spacer()
@@ -434,7 +434,7 @@ struct TraitChips: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            tag(traits.sees ? "看图" : "不看图", traits.sees ? "eye" : "eye.slash", on: traits.sees)
+            tag(traits.sees ? L.t("settings.modelVision") : "不看图", traits.sees ? "eye" : "eye.slash", on: traits.sees)
             if traits.thinks { tag("思考", "brain", on: true) }
             if !traits.tools { tag("不用工具", "wrench.and.screwdriver", on: false) }
             tag(Tokens.short(traits.window).replacingOccurrences(of: ".05M", with: "M").replacingOccurrences(of: ".00M", with: "M"), "text.alignleft", on: true)
@@ -473,46 +473,46 @@ struct ModelSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("看图", isOn: $traits.sees)
-                    Toggle("用工具", isOn: $traits.tools)
-                    Toggle("会思考", isOn: $traits.thinks)
+                    Toggle(L.t("settings.modelVision"), isOn: $traits.sees)
+                    Toggle(L.t("settings.modelTools"), isOn: $traits.tools)
+                    Toggle(L.t("settings.modelReasoning"), isOn: $traits.thinks)
                     Picker("上下文", selection: $traits.window) {
                         ForEach(windowChoices, id: \.self) { value in
                             Text(Tokens.short(value)).tag(value)
                         }
                     }
                 } header: {
-                    Text("它能做什么")
+                    Text(L.t("settings.modelCapabilities"))
                 } footer: {
                     Text(footer)
                 }
                 Section {
-                    Button(working ? "在试…" : "试试它能不能看图", systemImage: "eye") { testSight() }
+                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModelVision"), systemImage: "eye") { testSight() }
                         .disabled(working)
-                    Button(working ? "在试…" : "试连这个模型", systemImage: "bolt.horizontal") { testReply() }
+                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModel"), systemImage: "bolt.horizontal") { testReply() }
                         .disabled(working)
                     if let note {
                         Text(note).font(.footnote).foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("发一张红色小图问颜色，花一点点钱")
+                    Text(L.t("settings.visionTestNote"))
                 }
                 Section {
                     if team.settings.defaultModel == ref {
                         Label("这是默认模型", systemImage: "star.fill").foregroundStyle(.secondary)
                     } else {
-                        Button("设为默认模型", systemImage: "star") {
+                        Button(L.t("actions.setDefaultModel"), systemImage: "star") {
                             team.setDefaultModel(ref)
                             Haptics.thud()
                         }
                     }
                     if endpoint?.corrected(model) == true {
-                        Button("改回按名字猜的", systemImage: "arrow.uturn.backward") {
+                        Button(L.t("actions.resetModelCapabilities"), systemImage: "arrow.uturn.backward") {
                             team.setTraits(endpointId, model: model, nil)
                             traits = ModelTraits.guess(model)
                         }
                     }
-                    Button("不用这个模型", systemImage: "minus.circle", role: .destructive) {
+                    Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
                         if let endpoint { team.setModels(endpointId, endpoint.models.filter { $0 != model }) }
                         dismiss()
                     }

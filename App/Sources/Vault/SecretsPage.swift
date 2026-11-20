@@ -13,7 +13,7 @@ struct SecretsPage: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.l) {
-                        Text(Words.t("密码在钥匙串里，旅伴看不到"))
+                        Text(L.t("settings.secretsStorageNote"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         if secrets.items.isEmpty {
@@ -72,14 +72,14 @@ struct SecretsPage: View {
         .contentShape(Rectangle())
         .onTapGesture { editing = item }
         .contextMenu {
-            Button(revealed[item.id] == nil ? "看密码" : "藏起密码", systemImage: "eye") {
+            Button(revealed[item.id] == nil ? L.t("actions.showPassword") : L.t("actions.hidePassword"), systemImage: "eye") {
                 if revealed[item.id] != nil { revealed[item.id] = nil; return }
                 Task {
                     guard await Secrets.unlock("看「\(item.title)」的密码") else { return }
                     revealed[item.id] = Secrets.secret(item.id) ?? "（没存密码）"
                 }
             }
-            Button("复制密码", systemImage: "doc.on.doc") {
+            Button(L.t("actions.copyPassword"), systemImage: "doc.on.doc") {
                 Task {
                     guard await Secrets.unlock("复制「\(item.title)」的密码"), let secret = Secrets.secret(item.id) else { return }
                     UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: secret]], options: [.expirationDate: Date().addingTimeInterval(90), .localOnly: true])
@@ -87,9 +87,9 @@ struct SecretsPage: View {
                 }
             }
             if !item.user.isEmpty {
-                Button("复制用户名", systemImage: "person") { UIPasteboard.general.string = item.user }
+                Button(L.t("actions.copyUserName"), systemImage: "person") { UIPasteboard.general.string = item.user }
             }
-            Button("删掉", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { secrets.remove(item) } }
+            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { withAnimation(.smooth) { secrets.remove(item) } }
         }
     }
 }

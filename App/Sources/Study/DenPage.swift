@@ -76,7 +76,7 @@ struct DenPage: View {
             }
             Spacer(minLength: 0)
             if !den.running.isEmpty {
-                Button("停下") {
+                Button(L.t("actions.stop")) {
                     Haptics.lock()
                     den.stopAll()
                 }
@@ -94,11 +94,11 @@ struct DenPage: View {
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel("笔砚")
+            .accessibilityLabel(L.t("terminal.tools"))
             Menu {
-                Button("笔砚（真终端）", systemImage: "apple.terminal") { inkstone = true }
-                Button("装常用软件", systemImage: "shippingbox") { outfitting = true }
-                Button("清屏", systemImage: "eraser") { den.clear() }
+                Button(L.t("actions.openInteractiveTerminal"), systemImage: "apple.terminal") { inkstone = true }
+                Button(L.t("actions.installCommonPackages"), systemImage: "shippingbox") { outfitting = true }
+                Button(L.t("actions.clearTerminal"), systemImage: "eraser") { den.clear() }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -133,7 +133,7 @@ struct DenPage: View {
     @ViewBuilder
     private var intro: some View {
         if den.log.isEmpty {
-            Text(Words.t("手机里的 Alpine Linux，书案在 /root/desk"))
+            Text(L.t("terminal.alpineNote"))
                 .font(Ink.secondary)
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.bottom, Ink.Space.m)
@@ -162,7 +162,7 @@ struct DenPage: View {
     private var composer: some View {
         HStack(spacing: Ink.Space.s) {
             Text("#").font(Ink.mono(Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.accent)
-            TextField("命令", text: $command)
+            TextField(L.t("terminal.command"), text: $command)
                 .font(Ink.mono(Ink.Size.sub))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -176,7 +176,7 @@ struct DenPage: View {
                 } label: {
                     Image(systemName: "arrow.up").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.inkSoft)
                 }
-                .accessibilityLabel("上一条")
+                .accessibilityLabel(L.t("actions.previousCommand"))
             }
             Button(action: send) {
                 Image(systemName: "return")
