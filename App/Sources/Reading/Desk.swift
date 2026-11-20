@@ -650,7 +650,7 @@ struct Desk: View {
                     openSide()
                 }
             case "settings": tuning = true
-            case "connectors", "look", "grants", "add":
+            case "connectors", "look", "grants", "add", "pet":
                 settingsPage = shot
                 tuning = true
             default: break
