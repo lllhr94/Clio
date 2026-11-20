@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""把霞鹜文楷、马善政裁小成 App/Fonts/ 里的 Clio Kai（常规、加粗）、Clio Seal（见 App/Fonts/README.md）。
+"""把霞鹜文楷 GB、马善政裁小成 App/Fonts/ 里的 Clio Kai（常规、加粗）、Clio Seal（见 App/Fonts/README.md）。
 
-用法：python3 tools/subset_fonts.py LXGWWenKai-Regular.ttf LXGWWenKai-Medium.ttf MaShanZheng-Regular.ttf
+用法：python3 tools/subset_fonts.py LXGWWenKaiGB-Regular.ttf LXGWWenKaiGB-Medium.ttf MaShanZheng-Regular.ttf
 需要：pip install fonttools
-霞鹜文楷的保留字体名（霞鹜、LXGW 等）不能留在裁小后的字体名里，这里统一改名。
+霞鹜文楷 GB 的保留字体名（霞鹜、LXGW 等）不能留在裁小后的字体名里，这里统一改名。
 """
 import os
 import sys

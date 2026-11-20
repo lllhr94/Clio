@@ -90,7 +90,7 @@ struct FontPage: View {
                 }
 
                 Section {
-                    Text("文楷取自霞鹜文楷，朱印取自马善政毛笔楷书，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
+                    Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                 } header: { Text("出处") }

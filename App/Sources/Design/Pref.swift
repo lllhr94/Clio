@@ -11,7 +11,7 @@ enum Pref {
     // MARK: 纸墨 — how it looks
 
     /// A face to read or title in. 宋体 and 楷体 are Apple's, fetched the first time they are picked (`FontShelf`);
-    /// 文楷 (Clio Kai, from 霞鹜文楷) comes with the app; the rest are the system's own.
+    /// 文楷 (Clio Kai, from 霞鹜文楷 GB) comes with the app; the rest are the system's own.
     enum Face: String, CaseIterable, Identifiable {
         // 书卷 first: Latin and figures in the system serif, Chinese in PingFang, as the best reading apps set it.
         case serif, sans, rounded, song, kai, wenkai
@@ -34,7 +34,7 @@ enum Pref {
             case .rounded: "圆头，柔和"
             case .song: "苹果提供的宋体，第一次用要下载"
             case .kai: "苹果提供的楷体，第一次用要下载"
-            case .wenkai: "霞鹜文楷，带手写感，已内置（简体常用字全收）"
+            case .wenkai: "霞鹜文楷 GB，国标字形，带手写感，已内置"
             }
         }
 
