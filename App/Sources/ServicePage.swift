@@ -396,7 +396,7 @@ struct ServicePage: View {
                 let waiting = (fresh?.listed ?? []).filter { !(fresh?.models ?? []).contains($0) }.count
                 note = "列表里有 \(count) 个能聊天的模型" + (waiting > 0 ? "，在用的之外还有 \(waiting) 个，在下面挑。" : "。")
             } catch {
-                note = Explain.model(error, service: endpoint.name).title
+                note = Explain.model(error, service: endpoint.name).displayTitle
             }
             working = false
         }
@@ -591,7 +591,7 @@ extension TeamModel {
             return (true, "通了：\(model)，\(String(format: "%.1f", Date().timeIntervalSince(started))) 秒，回了「\(answer.prefix(8))」。")
         } catch {
             let advice = Explain.model(error, service: endpoint.name)
-            return (false, "不通：\(advice.title)。\(advice.detail)")
+            return (false, "不通：\(advice.displayTitle)\n\(advice.detail)")
         }
     }
 
@@ -612,7 +612,7 @@ extension TeamModel {
         } catch let failure as ProviderError where failure.status == 400 || failure.status == 422 {
             return (false, "服务不收图片：\(failure.message.prefix(80))。已标成不能看图。")
         } catch {
-            return (nil, "没试成：\(Explain.model(error, service: endpoint.name).title)")
+            return (nil, "没试成：\(Explain.model(error, service: endpoint.name).displayTitle)")
         }
     }
 }

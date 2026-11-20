@@ -233,7 +233,7 @@ struct SetupView: View {
     private var adviceCard: some View {
         if let advice {
             VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                Label(advice.title, systemImage: "exclamationmark.triangle")
+                Label(advice.displayTitle, systemImage: "exclamationmark.triangle")
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.stop)
                 Text(advice.detail).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
@@ -271,8 +271,8 @@ struct SetupView: View {
         } catch {
             guard !Task.isCancelled else { return }
             fetched = nil
-            let status = (error as? ProviderError)?.status
-            fetchNote = status == 401 || status == 403 ? "密钥不对，或者没开通" : "拿不到模型列表：\(Explain.model(error, service: choice.name).title)。也可以直接填模型名"
+            let advice = Explain.model(error, service: choice.name)
+            fetchNote = "拿不到模型列表：\(advice.displayTitle)\n也可以直接填模型名。"
         }
         fetching = false
     }
