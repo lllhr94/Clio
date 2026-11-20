@@ -852,13 +852,13 @@ struct Desk: View {
         let archived = team.archived.contains(key)
         let pinned = team.pinned.contains(key)
         return [
-            SwipeAction(title: pinned ? "取消置顶" : "置顶", symbol: pinned ? "pin.slash" : "pin", tint: Ink.warn) {
+            SwipeAction(title: pinned ? "取消置顶" : "置顶", symbol: pinned ? "pin.slash" : "pin", tint: Ink.Tile.xiang) {
                 withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
             },
-            SwipeAction(title: archived ? "拿回来" : "归档", symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.accent) {
+            SwipeAction(title: archived ? "拿回来" : "归档", symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.Tile.accent) {
                 withAnimation(Ink.Motion.settle) { team.archive(key, !archived) }
             },
-            SwipeAction(title: item.bot == nil ? "散了" : "清空", symbol: "trash", tint: Ink.stop) {
+            SwipeAction(title: item.bot == nil ? "散了" : "清空", symbol: "trash", tint: Ink.Tile.yan) {
                 clearing = item.id
             },
         ]

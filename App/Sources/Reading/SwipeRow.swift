@@ -35,7 +35,7 @@ struct SwipeRow<Content: View>: View {
                             Image(systemName: action.symbol).font(.system(size: Ink.Size.body, weight: .medium))
                             Text(action.title).font(.system(size: Ink.Size.small, weight: .medium))
                         }
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Ink.Tile.glyph)
                         .frame(width: width)
                         .frame(maxHeight: .infinity)
                         .background(action.tint)

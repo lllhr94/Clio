@@ -105,12 +105,11 @@ struct ConnectorsPage: View {
 
     private static func deviceTint(_ grant: Grant) -> Color {
         switch grant {
-        case .health: Color(red: 0.95, green: 0.25, blue: 0.35)
-        case .location: Color(red: 0.20, green: 0.48, blue: 0.95)
-        case .calendar: Color(red: 0.92, green: 0.30, blue: 0.25)
-        case .reminders: Color(red: 0.95, green: 0.55, blue: 0.15)
-        case .contacts: Color(red: 0.45, green: 0.45, blue: 0.50)
-        default: Color(red: 0.30, green: 0.65, blue: 0.40)
+        case .health, .calendar: Ink.Tile.yan
+        case .location: Ink.Tile.dai
+        case .reminders: Ink.Tile.xiang
+        case .contacts: Ink.Tile.mo
+        default: Ink.Tile.zhu
         }
     }
 
@@ -197,7 +196,7 @@ struct ConnectorsPage: View {
             googleOpen = true
         } label: {
             RowLabel(title: "用自己的 Client ID 连", line: google.account ?? "备用：上面连不上时，用你自己的谷歌项目连 Gmail 和云盘", end: google.connected ? .valueChevron("已连接", Ink.ok) : .chevron) {
-                ConnectorIcon(mark: "G", tint: Color(red: 0.30, green: 0.55, blue: 0.85), domain: "mail.google.com")
+                ConnectorIcon(mark: "G", tint: Ink.Tile.dai, domain: "mail.google.com")
             }
         }
         .buttonStyle(PressStyle(haptic: false))
@@ -584,11 +583,7 @@ struct Connector: Identifiable, Hashable {
 
     /// A colour of its own, the same every time.
     var tint: Color {
-        let colors: [Color] = [
-            Color(red: 0.36, green: 0.42, blue: 0.86), Color(red: 0.89, green: 0.49, blue: 0.27), Color(red: 0.25, green: 0.66, blue: 0.62),
-            Color(red: 0.72, green: 0.36, blue: 0.62), Color(red: 0.30, green: 0.55, blue: 0.85), Color(red: 0.46, green: 0.62, blue: 0.30),
-            Color(red: 0.80, green: 0.36, blue: 0.38), Color(red: 0.55, green: 0.45, blue: 0.80), Color(red: 0.20, green: 0.24, blue: 0.30),
-        ]
+        let colors: [Color] = [Ink.Tile.dai, Ink.Tile.xiang, Ink.Tile.zhu, Ink.Tile.teng, Ink.Tile.yan, Ink.Tile.mo]
         let sum = id.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
         return colors[sum % colors.count]
     }
