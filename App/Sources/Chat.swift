@@ -94,6 +94,17 @@ final class ChatModel: ObservableObject {
     private var target = ""
     private var shown = 0
     private var finalCount = 0
+    /// When the text on the page last changed. Characters still come out every frame, but the page is redrawn at
+    /// most `Self.redraws` times a second: redrawing a long reply sixty times a second is what made it stutter.
+    private var published: TimeInterval = 0
+    private static let redraws = 15.0
+
+    private func due(_ done: Bool) -> Bool {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard done || now - published >= 1 / Self.redraws else { return false }
+        published = now
+        return true
+    }
     private var typing: Task<Void, Never>?
 
     private var demo: Bool { team.phase == .demo }
@@ -154,14 +165,14 @@ final class ChatModel: ObservableObject {
                 return false
             }
             shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
-            fresh?.shown = shown
+            if due(shown >= finalCount) { fresh?.shown = shown }
             return true
         }
         let goal = target.count
         if shown > goal { shown = goal }
         guard shown < goal else { return false }
         shown = min(goal, shown + max(1, (goal - shown) / 10))
-        streaming = String(target.prefix(shown))
+        if due(shown >= goal) { streaming = String(target.prefix(shown)) }
         return true
     }
 

@@ -95,14 +95,7 @@ struct ChatPage: View {
     private var earlier: some View {
         Button {
             Haptics.light()
-            let anchor = chat.lines.suffix(shownCount).first?.id
-            shownCount += 40
-            if let anchor {
-                Task { @MainActor in
-                    await Task.yield()
-                    scroller?.scrollTo(anchor, anchor: .top)
-                }
-            }
+            loadEarlier()
         } label: {
             Label("更早的 \(chat.lines.count - shownCount) 条", systemImage: "arrow.up")
                 .font(.system(size: Ink.Size.small, weight: .medium))
@@ -110,6 +103,55 @@ struct ChatPage: View {
                 .frame(maxWidth: .infinity, minHeight: 36)
         }
         .buttonStyle(TapStyle())
+    }
+
+    /// Draws forty more older lines and keeps the one at the top of the screen where it was. Called by the button,
+    /// and by itself when the reader scrolls near the top, so long conversations read on without stopping.
+    private func loadEarlier() {
+        guard chat.lines.count > shownCount, !loadingEarlier else { return }
+        loadingEarlier = true
+        let anchor = chat.lines.suffix(shownCount).first?.id
+        shownCount += 40
+        Task { @MainActor in
+            await Task.yield()
+            if let anchor { scroller?.scrollTo(anchor, anchor: .top) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            loadingEarlier = false
+        }
+    }
+
+    @State private var loadingEarlier = false
+
+    /// A failure in the conversation: what went wrong, and a way to try again right there.
+    private func failureCard(_ error: String) -> some View {
+        HStack(alignment: .center, spacing: Ink.Space.m) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: Ink.Size.sub, weight: .semibold))
+                .foregroundStyle(Ink.stop)
+            Text(error)
+                .font(.system(size: Ink.Size.sub))
+                .foregroundStyle(Ink.stop)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !working {
+                Button {
+                    Haptics.light()
+                    following = true
+                    chat.retry()
+                } label: {
+                    Label(L.t("actions.retry"), systemImage: "arrow.clockwise")
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .padding(.horizontal, Ink.Space.m)
+                        .frame(height: 32)
+                        .background(Ink.paper, in: .capsule)
+                }
+                .buttonStyle(PressStyle(haptic: false))
+            }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+        .background(Ink.stopWash, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 
     /// A failure already explained in the conversation (the card with 再试一次) is not repeated in red under it.
@@ -188,7 +230,7 @@ struct ChatPage: View {
                         .transition(.opacity)
                 }
                 if !chat.streaming.isEmpty {
-                    ProseView(text: chat.streaming, streaming: true)
+                    StreamingProse(text: chat.streaming)
                         .id("streaming")
                 }
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
@@ -198,10 +240,8 @@ struct ChatPage: View {
                         .transition(.opacity.combined(with: .offset(y: 8)))
                 }
                 if let error = chat.error, !saidInNote(error) {
-                    Text(error)
-                        .font(Ink.secondary)
-                        .foregroundStyle(Ink.stop)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                    failureCard(error)
+                        .transition(.opacity.combined(with: .offset(y: 6)))
                 }
                 if let form = asker.current, form.inline, team.isWorking(chat.key) {
                     InlineAsk(form: form)
@@ -249,6 +289,12 @@ struct ChatPage: View {
                 Self.below(geometry) > 320
             } action: { _, far in
                 withAnimation(Ink.Motion.settle) { farFromEnd = far }
+            }
+            // Near the top while the reader scrolls up: the older lines come in by themselves.
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top < 240
+            } action: { _, nearTop in
+                if nearTop, scrolling { loadEarlier() }
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
@@ -1095,7 +1141,7 @@ struct ChatPage: View {
                     PulseBox(text: felt)
                 }
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
-                    ProseView(text: String(line.text.prefix(shown)), streaming: true)
+                    StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     ProseView(text: line.text)
                         .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.small, style: .continuous))
@@ -1683,16 +1729,24 @@ struct ChatPage: View {
 
     /// Back to the newest line, if the page is following: once as soon as what arrived is laid out,
     /// and once more after the new row has settled in, since its height is only right by then.
+    /// Asks for one trip to the bottom. Sending fires several changes a moment apart (the composer empties, the new
+    /// line arrives, the reply starts): each used to scroll on its own and the page twitched. Now a new ask replaces the
+    /// one still waiting, so they land as a single move once the page has settled for a frame.
     private func followToEnd(settle: Bool = true) {
         guard following else { return }
-        Task { @MainActor in
-            await Task.yield()
-            if following { toEnd() }
+        followPending?.cancel()
+        followPending = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 24_000_000)
+            guard !Task.isCancelled, following else { return }
+            toEnd()
             guard settle else { return }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            if following { toEnd(animated: true) }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, following else { return }
+            toEnd(animated: true)
         }
     }
+
+    @State private var followPending: Task<Void, Never>?
 
     private func toEnd(animated: Bool = false) {
         guard let scroller else { return }

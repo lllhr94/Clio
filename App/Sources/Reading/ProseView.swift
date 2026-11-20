@@ -54,6 +54,47 @@ struct ProseView: View {
     }
 }
 
+/// A reply still being written. The paragraphs already finished are set once and left alone (their text no longer
+/// changes, so SwiftUI does not draw them again); only the last one, still growing, is set again as characters come.
+/// Setting the whole reply anew for every few characters is what made long replies stutter.
+struct StreamingProse: View {
+    let text: String
+
+    var body: some View {
+        let cut = Self.settled(text)
+        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+            if cut > text.startIndex {
+                ProseView(text: String(text[..<cut]).trimmingCharacters(in: .newlines))
+            }
+            ProseView(text: String(text[cut...]), streaming: true)
+        }
+    }
+
+    /// Where the finished part ends: just after the last blank line that is not inside a code block.
+    static func settled(_ text: String) -> String.Index {
+        var cut = text.startIndex
+        var inFence = false
+        var lineStart = text.startIndex
+        var previousBlank = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let next = text[index...].firstIndex(of: "\n") ?? text.endIndex
+            let line = text[lineStart..<next].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") || line.hasPrefix("~~~") { inFence.toggle() }
+            let blank = line.isEmpty
+            // A blank line after text, outside a fence, closes the block above it.
+            if blank, !previousBlank, !inFence, lineStart > text.startIndex, next < text.endIndex {
+                cut = text.index(after: next)
+            }
+            previousBlank = blank
+            guard next < text.endIndex else { break }
+            index = text.index(after: next)
+            lineStart = index
+        }
+        return cut
+    }
+}
+
 private struct BlockView: View {
     let block: Prose.Block
     let fading: Bool
@@ -148,6 +189,7 @@ private struct Inline: View {
                 // Code in a sentence: the code face a little smaller, on a warm tint, in the accent's ink.
                 out[run.range].font = Ink.mono(CGFloat(max(12, Pref.size - 2)))
                 out[run.range].backgroundColor = Ink.mine
+                out[run.range].foregroundColor = Ink.Code.inline
             }
             if intent.contains(.stronglyEmphasized), noteInk == nil {
                 out[run.range].foregroundColor = Ink.ink
@@ -208,6 +250,10 @@ private struct CodeBlock: View {
     @State private var unfolded = false
 
     private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
+    /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
+    private var isOutput: Bool {
+        ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased())
+    }
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { lineCount > 20 }
     private var shown: String {
@@ -218,7 +264,7 @@ private struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(language.isEmpty ? "代码" : language.lowercased())
+                Text(isOutput ? "输出" : (language.isEmpty ? "代码" : language.lowercased()))
                     .font(Ink.mono(Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
                 Spacer()
@@ -247,7 +293,8 @@ private struct CodeBlock: View {
             .frame(height: 34)
             Rectangle().fill(Ink.rule).frame(height: 0.5)
             ScrollView(.horizontal) {
-                Text(Highlight.code(shown, language: language))
+                Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
+                    .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                     .font(Ink.code)
                     .lineSpacing(Pref.size * 0.3)
                     .padding(Ink.Space.l)
@@ -378,7 +425,11 @@ enum Highlight {
             let character = text[index]
             if rest.hasPrefix("//") || (hashComments && character == "#") {
                 let end = rest.firstIndex(of: "\n") ?? text.endIndex
-                append(text[index..<end], Ink.inkFaint)
+                // Comments in faint italics: notes in the margin, not the code.
+                var part = AttributedString(String(text[index..<end]))
+                part.foregroundColor = Ink.inkFaint
+                part.font = Ink.mono(CGFloat(max(12, Pref.size - 3))).italic()
+                out += part
                 index = end
             } else if character == "\"" || character == "'" || character == "`" {
                 var end = text.index(after: index)
@@ -387,16 +438,18 @@ enum Highlight {
                     if end < text.endIndex { end = text.index(after: end) }
                 }
                 if end < text.endIndex, text[end] == character { end = text.index(after: end) }
-                append(text[index..<end], Ink.ok)
+                append(text[index..<end], Ink.Code.string)
                 index = end
             } else if character.isLetter || character == "_" {
                 let end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
                 let word = text[index..<end]
-                append(word, keywords.contains(String(word)) ? Ink.accent : Ink.ink)
+                // A name called with ( is a function.
+                let calls = end < text.endIndex && text[end] == "("
+                append(word, keywords.contains(String(word)) ? Ink.Code.keyword : (calls ? Ink.Code.function : Ink.ink))
                 index = end
             } else if character.isNumber {
                 let end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
-                append(text[index..<end], Ink.warn)
+                append(text[index..<end], Ink.Code.number)
                 index = end
             } else {
                 append(text[index...index], Ink.ink)

@@ -87,6 +87,21 @@ enum Ink {
     /// 朱: the seal's cinnabar, and the paper-white of the character cut into it. Only for the seal.
     static let seal = pair(0xB23A2B, 0xC5564A)
 
+    /// Code in a reply, from the same pigments as everything else; lighter in dark mode so they read on dark paper.
+    enum Code {
+        /// Code inside a sentence (a path, a name).
+        static let inline = pair(0xA4504A, 0xE0958C)
+        static let keyword = pair(0x6F5C96, 0xB3A3D6)
+        static let function = pair(0x4A6A8A, 0x8FB0CF)
+        static let string = pair(0x4F7A5A, 0x8DBB97)
+        static let number = pair(0xA9772F, 0xD9A65C)
+        /// A block of what a program printed, not code to read.
+        static let output = pair(0x4F7A5A, 0x8DBB97)
+    }
+
+    /// A failure in the conversation: the card's ground.
+    static let stopWash = pair(0xF4E3E0, 0x3A2624)
+
     /// The tiles settings rows lead with: one pigment per group, deep enough for a white glyph, the same in light
     /// and dark (as a printed tile would be). Named for the colors Clio's palette already uses.
     enum Tile {
