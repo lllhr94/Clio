@@ -95,5 +95,6 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 - **分工和分支规则见 `docs/TASKS.md`**：`batch-*` 只由 Claude 合并推送；Codex 在 `codex/<任务名>` 分支上做，开 PR 合进去。
 
 - 做完一段工作，更新 `docs/STATUS.md`：做了什么、没做完什么、下一步、已知问题。
+- 主人提的每个问题记进 `docs/FEEDBACK.md`（总账），做完打勾、写明哪一包。
 - 提交信息用英文写清楚改了什么；一次提交只做一件事。
 - 不确定的产品决定（命名、取舍）问主人，别自己拍板。
