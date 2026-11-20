@@ -273,6 +273,7 @@ final class TeamModel: ObservableObject {
     func removeEndpoint(_ id: String) {
         settings.endpoints.removeAll { $0.id == id }
         Vault.remove("key-\(id)")
+        if settings.imageModel?.hasPrefix(id + "/") == true { settings.imageModel = nil }
         if resolve(settings.defaultModel) == nil {
             settings.defaultModel = settings.endpoints.first.flatMap { endpoint in Self.preferred(endpoint).map { "\(endpoint.id)/\($0)" } }
         }
@@ -285,13 +286,33 @@ final class TeamModel: ObservableObject {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
         guard let key = apiKey(for: id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
-        let listed = Self.keep(try await endpoint.provider(key: key).models(), for: endpoint)
+        let raw = try await endpoint.provider(key: key).models()
+        let listed = Self.keep(raw, for: endpoint)
+        storeImageModels(raw, for: endpoint)
         guard !listed.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
         guard let again = settings.endpoints.firstIndex(where: { $0.id == id }) else { return listed.count }
         settings.endpoints[again].listed = listed
         if settings.endpoints[again].models.isEmpty { settings.endpoints[again].models = Self.firstPicks(listed, service: Service.of(endpoint)) }
         saveSettings()
         return listed.count
+    }
+
+    /// Refreshes a service's images candidates without changing its chat model selection.
+    func refreshImageModels(_ id: String) async throws {
+        guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.kind == .openai }),
+              let key = apiKey(for: id), !key.isEmpty else {
+            throw TeamError(message: L.t("errors.invalidApiKey"))
+        }
+        let listed = try await endpoint.provider(key: key).models()
+        try Task.checkCancellation()
+        storeImageModels(listed, for: endpoint)
+    }
+
+    private func storeImageModels(_ listed: [String], for endpoint: Endpoint) {
+        guard endpoint.kind == .openai,
+              let index = settings.endpoints.firstIndex(where: { $0.id == endpoint.id && $0.baseURL == endpoint.baseURL }) else { return }
+        settings.endpoints[index].imageModels = listed
+        saveSettings()
     }
 
     /// The chat models of what a service listed.
@@ -378,6 +399,19 @@ final class TeamModel: ObservableObject {
 
     func setBackupModel(_ ref: String?) {
         settings.backupModel = ref
+        saveSettings()
+    }
+
+    var imageModelSelection: (endpoint: Endpoint, model: String)? {
+        guard let selected = resolve(settings.imageModel), selected.endpoint.kind == .openai else { return nil }
+        return selected
+    }
+
+    func setImageModel(_ ref: String?) {
+        if let ref {
+            guard let selected = resolve(ref), selected.endpoint.kind == .openai else { return }
+        }
+        settings.imageModel = ref
         saveSettings()
     }
 
@@ -1655,6 +1689,7 @@ final class TeamModel: ObservableObject {
         - 一件事里有一块交给团队里更擅长的旅伴更好时（查资料、写稿、算账），用 ask_companion 请它做，把要求写完整；它的结果回来后，由你整理好告诉用户。不要为了小事请人。
         - 用户要你每天、每周到点去做某件事（整理新闻、写周报、记账总结），用 schedule_task 设定时任务；只到点说一句话的用 message_later。
         - 用户要把内容做成能发出去的文件（PDF、Word、表格），用 make_document，存在书案/文稿。
+        - 用户要求画图或配图时用 generate_image。成功后把工具给的图片 Markdown 行原样写进回答。如果没有这个工具，直说这段对话没有接上可用的生图模型，请用户到「设置 › 模型服务 › 生图模型」选一个。工具报错时直接告诉用户原因。
         - 要三步以上才能做完的事，先用 update_plan 列出步骤，做完一步更新一次，让用户看到进度。
         - 用户问到自己存的资料（书案里的 PDF、笔记、文档）里写了什么，先用 search_docs 找到在哪个文件哪一页，再用 read_pdf 或 read_file 细读，回答时说出处。
         - 远游是 app 里的真浏览器（browser_* 工具），登录状态会保留。要登录才能看的、要点按钮填表的、web_read 读不出来的页面，用远游：browser_open 打开，browser_read 看页面和编号，再 browser_click、browser_type。页面变了就重新 browser_read。手机版页面缺东西时，browser_open 带 desktop: true 换电脑版；要看版式、图表、图片时用 browser_screenshot（有的模型看不了图，就没有这个工具）。网页给的下载会先问用户，同意了才存进书案/收件。
@@ -1703,6 +1738,10 @@ final class TeamModel: ObservableObject {
         )
         all += WorkspaceTools.all(host: workplace.host, kit: kit)
         all += Workspace.tools()
+        if phase != .demo, let selected = imageModelSelection {
+            all.append(GenerateImage(baseURL: selected.endpoint.baseURL, model: selected.model,
+                                     apiKey: apiKey(for: selected.endpoint.id)))
+        }
         all += Phone.tools()
         all += Hills.shared.tools()
         all += GoogleTools.all()
