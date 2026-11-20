@@ -3,14 +3,14 @@ import Observation
 import UIKit
 import ZIPFoundation
 
-/// The pets on this phone: Clio's own whale (drawn, wearing the portrait you made) and the packs you imported.
+/// The pets on this phone: your figure from 形象 (drawn, or your pictures) and the packs you imported.
 /// What is picked, how big, quiet or not, hidden for a while: all kept here.
 @MainActor
 @Observable
 final class PetLibrary {
     static let shared = PetLibrary()
 
-    /// "whale" (Clio's own), "none", or an imported pack's id.
+    /// "whale" (the figure from 形象; the id is kept from when it was always the whale), "none", or a pack's id.
     var choice: String { didSet { UserDefaults.standard.set(choice, forKey: "pet.choice") } }
     /// "small", "standard", "large" or "custom".
     var size: String { didSet { UserDefaults.standard.set(size, forKey: "pet.size") } }

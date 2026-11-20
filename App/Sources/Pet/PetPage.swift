@@ -22,7 +22,7 @@ struct PetPage: View {
                     }
 
                     Section {
-                        choiceRow(id: "whale", title: "Clio 的鲸鱼", line: "抱着一卷书的鲸鱼，样子跟着你在「形象」里画的变")
+                        choiceRow(id: "whale", title: "你的形象", line: "就是「形象」里那位：卷卷、墨团、天鹅、鲸鱼，或你自己的画像")
                         ForEach(library.packs) { pack in
                             choiceRow(id: pack.id, title: pack.name, line: [pack.author, pack.license].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .contextMenu {
@@ -67,7 +67,7 @@ struct PetPage: View {
                             }
                         }
                         if library.choice == "whale" {
-                            Button("换鲸鱼的样子（形象）") { portrait = true }
+                            Button("换个形象") { portrait = true }
                         }
                     } footer: {
                         Text("它站在输入框上。别的\(L.t("chat.conversation"))做完、出错、等你确认时冒个气泡，点气泡直接过去；安静模式下只做动作。点它、连点、拖它、长按，都有反应。")
@@ -108,7 +108,7 @@ struct PetPage: View {
         } else if library.choice == "none" {
             Text("不显示").foregroundStyle(Ink.inkFaint)
         } else {
-            ScrollWhale(size: CGFloat(44 * library.factor) * UIScale.factor, pose: .idle, writing: false)
+            PetFigure(size: CGFloat(44 * library.factor) * UIScale.factor, pose: .idle, writing: false)
         }
     }
 

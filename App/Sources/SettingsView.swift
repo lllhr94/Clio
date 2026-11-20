@@ -465,7 +465,7 @@ struct SettingsView: View {
         group("外观") {
             row("paintpalette", Tint.looks, "主题、字号与对话", Theme.shared.palette.title + " · " + LookPage.sizes[LookPage.sizeStep(Pref.size)].title) { looking = true }
             divider
-            row("pawprint", Tint.looks, "nav.pet", PetLibrary.shared.choice == "none" ? "不显示" : (PetLibrary.shared.pack?.name ?? "鲸鱼")) { petting = true }
+            row("pawprint", Tint.looks, "nav.pet", PetLibrary.shared.choice == "none" ? "不显示" : (PetLibrary.shared.pack?.name ?? Persona.stored.kind.word)) { petting = true }
             divider
             HStack(spacing: Ink.Space.m) {
                 badge("quote.bubble", Tint.looks)

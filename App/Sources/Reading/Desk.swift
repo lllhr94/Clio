@@ -30,7 +30,9 @@ struct ClioRoot: View {
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            if team.phase == .setup || holdingSetup {
+            if Shots.name == "figures" {
+                FigureGallery()
+            } else if team.phase == .setup || holdingSetup {
                 SetupView(team: team, first: true) { holdingSetup = false }
                     .transition(.blurReplace)
                     .onAppear { holdingSetup = true }

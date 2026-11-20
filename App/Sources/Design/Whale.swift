@@ -147,10 +147,10 @@ struct Persona: Codable, Equatable {
         }
     }
 
-    enum Kind: String, Codable { case whale, picture }
+    /// Which figure is drawn (see `Figures.swift`), or pictures the user brought.
+    enum Kind: String, Codable { case scroll, ink, swan, whale, picture }
 
-    /// The drawn whale, or pictures the user brought.
-    var kind = Kind.whale
+    var kind = Kind.scroll
     var outline = 0
     var tone = 0
     var wash = 0
@@ -183,6 +183,19 @@ struct Persona: Codable, Equatable {
         guard let data = UserDefaults.standard.data(forKey: "persona"),
               let persona = try? JSONDecoder().decode(Persona.self, from: data) else { return Persona() }
         return persona
+    }
+
+    /// Once: the whale stops being everyone's figure; a portrait still drawn as the whale becomes 卷卷,
+    /// keeping its colours, frame and charm. The whale stays one of the figures to pick.
+    static func adoptFigures() {
+        let store = UserDefaults.standard
+        guard !store.bool(forKey: "persona.figures1") else { return }
+        store.set(true, forKey: "persona.figures1")
+        var persona = stored
+        if persona.kind == .whale {
+            persona.kind = .scroll
+            Self.store(persona)
+        }
     }
 
     static func store(_ persona: Persona) {
@@ -269,7 +282,6 @@ struct Whale: View {
     }
 
     private func drawn(_ parts: Persona, _ time: Double) -> some View {
-        let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
         let ink = tone ?? parts.toneColor
         let ground = wash ?? parts.washColor
         let bob: Double = switch pose {
@@ -278,15 +290,9 @@ struct Whale: View {
         case .sleeping: sin(time * 0.7) * 0.012
         default: sin(time * 1.4) * 0.02
         }
-        let wag: Double = switch pose {
-        case .writing: sin(time * 9) * 10
-        case .waiting: sin(time * 3) * 6
-        case .cheering: sin(time * 14) * 14
-        case .sleeping: sin(time * 0.7) * 2
-        default: sin(time * 1.4) * 3
-        }
         let inner = size * (parts.frame == .bare ? 0.96 : 0.78)
         let hole = parts.frame == .bare ? Ink.paper : ground
+        let spots = Self.spots(parts)
         return ZStack {
             switch parts.frame {
             case .circle: Circle().fill(ground)
@@ -294,25 +300,12 @@ struct Whale: View {
             case .bare: Color.clear
             }
             ZStack {
-                WhaleTail(look: outline)
-                    .fill(ink)
-                    .rotationEffect(.degrees(wag), anchor: UnitPoint(x: outline.start + 0.1, y: outline.mid))
-                WhaleBody(look: outline).fill(ink)
-                // The eye is a dot of the ground, so it stays a silhouette; asleep, a closed line.
-                if pose == .sleeping {
-                    Capsule()
-                        .fill(hole)
-                        .frame(width: inner * 0.075, height: inner * 0.018)
-                        .position(x: inner * outline.eye.x, y: inner * (outline.eye.y + 0.01))
-                } else {
-                    Circle()
-                        .fill(hole)
-                        .frame(width: inner * 0.058, height: inner * 0.058)
-                        .position(x: inner * outline.eye.x, y: inner * outline.eye.y)
-                }
-                charm(parts.charm, outline, inner, ink, hole)
+                figure(parts, time, inner, ink, hole)
+                charm(parts.charm, spots, inner, ink, hole)
                 if pose == .thinking { bubbles(time, inner, ink) }
-                if pose == .waiting { spout(time, inner, ink) }
+                if pose == .waiting {
+                    if parts.kind == .whale { spout(time, inner, ink) } else { raised(time, inner, ink, spots) }
+                }
                 if pose == .cheering { sparks(time, inner, ink) }
                 if pose == .sleeping { dozing(time, inner, ink) }
             }
@@ -322,6 +315,69 @@ struct Whale: View {
         .frame(width: size, height: size)
         .clipShape(clip(parts.frame))
         .accessibilityHidden(true)
+    }
+
+    /// The figure itself.
+    @ViewBuilder
+    private func figure(_ parts: Persona, _ time: Double, _ inner: CGFloat, _ ink: Color, _ hole: Color) -> some View {
+        switch parts.kind {
+        case .whale: whale(parts, time, inner, ink, hole)
+        case .ink: InkFigure(pose: pose, time: time, inner: inner, ink: ink, hole: hole)
+        case .swan: SwanFigure(pose: pose, time: time, inner: inner, ink: ink, hole: hole)
+        case .scroll, .picture: ScrollFigure(pose: pose, time: time, inner: inner, ink: ink, hole: hole)
+        }
+    }
+
+    /// Where the figure's eye, crown and neck are, for charms and marks.
+    static func spots(_ parts: Persona) -> FigureSpots {
+        switch parts.kind {
+        case .whale:
+            let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
+            return FigureSpots(eye: outline.eye, crown: CGPoint(x: 0.70, y: outline.back + 0.03),
+                               neck: CGPoint(x: outline.start + 0.24, y: outline.mid + 0.02))
+        case .ink: return InkFigure.spots
+        case .swan: return SwanFigure.spots
+        case .scroll, .picture: return ScrollFigure.spots
+        }
+    }
+
+    private func whale(_ parts: Persona, _ time: Double, _ inner: CGFloat, _ ink: Color, _ hole: Color) -> some View {
+        let outline = WhaleLook.looks[min(max(parts.outline, 0), WhaleLook.looks.count - 1)]
+        let wag: Double = switch pose {
+        case .writing: sin(time * 9) * 10
+        case .waiting: sin(time * 3) * 6
+        case .cheering: sin(time * 14) * 14
+        case .sleeping: sin(time * 0.7) * 2
+        default: sin(time * 1.4) * 3
+        }
+        return ZStack {
+            WhaleTail(look: outline)
+                .fill(ink)
+                .rotationEffect(.degrees(wag), anchor: UnitPoint(x: outline.start + 0.1, y: outline.mid))
+            WhaleBody(look: outline).fill(ink)
+            // The eye is a dot of the ground, so it stays a silhouette; asleep, a closed line.
+            if pose == .sleeping {
+                Capsule()
+                    .fill(hole)
+                    .frame(width: inner * 0.075, height: inner * 0.018)
+                    .position(x: inner * outline.eye.x, y: inner * (outline.eye.y + 0.01))
+            } else {
+                Circle()
+                    .fill(hole)
+                    .frame(width: inner * 0.058, height: inner * 0.058)
+                    .position(x: inner * outline.eye.x, y: inner * outline.eye.y)
+            }
+        }
+        .frame(width: inner, height: inner)
+    }
+
+    /// Waiting for you (for figures without a spout): a small mark bobbing above its crown.
+    private func raised(_ time: Double, _ inner: CGFloat, _ ink: Color, _ spots: FigureSpots) -> some View {
+        let rise = (sin(time * 3) + 1) / 2
+        return Image(systemName: "exclamationmark")
+            .font(.system(size: inner * 0.16, weight: .heavy))
+            .foregroundStyle(ink)
+            .position(x: inner * (spots.crown.x + 0.16), y: inner * (spots.crown.y - 0.02 - 0.03 * rise))
     }
 
     private func clip(_ frame: Persona.Frame) -> AnyShape {
@@ -334,9 +390,9 @@ struct Whale: View {
 
     /// Small things the whale can wear; drawn in the same two inks, so it stays a silhouette.
     @ViewBuilder
-    private func charm(_ charm: Persona.Charm, _ outline: WhaleLook, _ inner: CGFloat, _ ink: Color, _ hole: Color) -> some View {
-        let eye = CGPoint(x: inner * outline.eye.x, y: inner * outline.eye.y)
-        let crown = CGPoint(x: inner * 0.70, y: inner * (outline.back + 0.03))
+    private func charm(_ charm: Persona.Charm, _ spots: FigureSpots, _ inner: CGFloat, _ ink: Color, _ hole: Color) -> some View {
+        let eye = CGPoint(x: inner * spots.eye.x, y: inner * spots.eye.y)
+        let crown = CGPoint(x: inner * spots.crown.x, y: inner * spots.crown.y)
         switch charm {
         case .none:
             EmptyView()
@@ -355,7 +411,7 @@ struct Whale: View {
                     .offset(x: -inner * 0.03, y: inner * 0.16)
             }
             .rotationEffect(.degrees(8))
-            .position(x: inner * (outline.start + 0.24), y: inner * (outline.mid + 0.02))
+            .position(x: inner * spots.neck.x, y: inner * spots.neck.y)
         case .glasses:
             Circle()
                 .stroke(hole, lineWidth: max(1, inner * 0.022))

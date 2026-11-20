@@ -80,7 +80,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 ## 宠物
 
 - 代码在 `App/Sources/Pet/`。`PetStage` 站在输入框上沿；`PetMood` 由 `ChatPage.petMood` 算；别的对话的事件经 `PetNews.shared.post` 冒气泡（`TeamModel` 在做完、出错、递批准单时调用）。
-- 内置宠物是 Clio 的鲸鱼（矢量，`Whale` + 书卷道具 `ScrollWhale`）。
+- 内置宠物就是「形象」里选的那位（`PetFigure`）。形象有：卷卷（书卷精，默认）、墨团、天鹅、鲸鱼，或用户自己的画像。画法在 `Design/Figures.swift`，统一入口是 `Whale` 视图（名字是历史遗留），`Persona.kind` 决定画哪个。新形象：加一个 `Persona.Kind`，在 `Figures.swift` 画六种姿态（idle / thinking / writing / waiting / cheering / sleeping），给出 `FigureSpots`（眼、头顶、脖子的位置），只用两种颜色（ink 和 hole）画成剪影。截图里 `-clioShot figures` 会列出全部形象和姿态。
 - 自定义宠物包：schema 1 格式（`pack.json` + PNG 序列帧），与 DSH Go / Clawd on Desk 兼容。解析在 `PetPack.parse`，导入在 `PetLibrary.install`。`tools/make_pet_pack.py` 能把动图或序列帧做成宠物包。
 
 ## 交接

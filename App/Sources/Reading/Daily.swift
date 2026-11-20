@@ -79,7 +79,7 @@ struct TideChip: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(book.waiting.count > 1 ? "漂来了 \(book.waiting.count) 样东西" : "今天漂来了一样东西")
                                 .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
-                            Text("点开，\(keeper)游过去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            Text("点开，\(keeper)去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
                         Spacer(minLength: 0)
                         Kit.chevron
@@ -125,7 +125,7 @@ struct TideSheet: View {
                     if let shown {
                         reveal(shown)
                     } else if !book.waiting.isEmpty {
-                        Text("水上漂来的，点一下，\(keeper)游过去捡起来。")
+                        Text("水上漂来的，点一下，\(keeper)去捡起来。")
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: Ink.Space.m)], spacing: Ink.Space.m) {
                             ForEach(book.waiting) { find in

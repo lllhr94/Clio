@@ -120,7 +120,7 @@ struct PetStage: View {
             SpritePet(pack: pack, anim: anim, since: since, bodyHeight: bodyHeight, mirrored: mirrored(pack))
                 .onChange(of: anim) { _, _ in since = Date() }
         } else {
-            ScrollWhale(size: whaleSize, pose: whalePose, writing: isWriting)
+            PetFigure(size: whaleSize, pose: whalePose, writing: isWriting)
             .scaleEffect(x: facingRight ? -1 : 1, y: 1)
             .scaleEffect(dragging ? 1.12 : (bounce ? 1.1 : 1), anchor: .bottom)
             .rotationEffect(.degrees(tilt), anchor: .bottom)
@@ -312,9 +312,9 @@ struct PetStage: View {
     }
 }
 
-/// Clio's own pet: the whale (in the portrait you made) holding a little scroll, as Clio holds hers.
-/// The scroll opens while it writes and rolls up again when it is done.
-struct ScrollWhale: View {
+/// Clio's own pet: the figure from 形象 (卷卷, 墨团, 天鹅, the whale or your pictures). Figures other than 卷卷
+/// hold a little scroll, as Clio holds hers; it opens while they write and rolls up again when they are done.
+struct PetFigure: View {
     var size: CGFloat
     var pose: WhalePose
     var writing: Bool
@@ -330,8 +330,10 @@ struct ScrollWhale: View {
         ZStack(alignment: .bottomTrailing) {
             // Standing on the bar, not framed like a portrait: the whale without its disc.
             Whale(size: size, pose: pose, persona: bare)
-            ScrollProp(open: writing, size: size * 0.5)
-                .offset(x: size * 0.1, y: -size * 0.02)
+            if bare.kind != .scroll {
+                ScrollProp(open: writing, size: size * 0.5)
+                    .offset(x: size * 0.1, y: -size * 0.02)
+            }
         }
         .frame(width: size * 1.15, height: size, alignment: .bottom)
         .animation(Ink.Motion.settle, value: writing)

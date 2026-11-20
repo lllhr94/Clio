@@ -37,9 +37,14 @@ struct PortraitPage: View {
                 .padding(.vertical, Ink.Space.xl)
                 .paperCard()
 
-                HStack(spacing: Ink.Space.s) {
-                    chip("默认", picked: persona.kind == .whale) { persona.kind = .whale }
-                    chip("画像", picked: persona.kind == .picture) { persona.kind = .picture }
+                // The figures to pick from, each shown as itself, then pictures of your own.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Ink.Space.m) {
+                        ForEach(Persona.Kind.figures, id: \.self) { kind in
+                            swatch(kind.word, picked: persona.kind == kind, preview: with { $0.kind = kind }) { persona.kind = kind }
+                        }
+                        chip("画像", picked: persona.kind == .picture) { persona.kind = .picture }
+                    }
                 }
 
                 if persona.kind == .picture {
@@ -67,11 +72,13 @@ struct PortraitPage: View {
                     }
                 }
 
+                if persona.kind.drawn {
                 if persona.kind == .whale {
                 part("轮廓") {
                     ForEach(0..<WhaleLook.looks.count, id: \.self) { index in
                         swatch(WhaleLook.names[index], picked: persona.outline == index, preview: with { $0.outline = index }) { persona.outline = index }
                     }
+                }
                 }
                 part("墨色") {
                     ForEach(0..<Persona.tones.count, id: \.self) { index in

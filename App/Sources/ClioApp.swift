@@ -41,7 +41,10 @@ extension Notification.Name {
 struct ClioApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
-    init() { Pref.settleType() }
+    init() {
+        Pref.settleType()
+        Persona.adoptFigures()
+    }
 
     var body: some Scene {
         WindowGroup {

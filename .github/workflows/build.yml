@@ -161,7 +161,7 @@ jobs:
           sleep 40
           for mode in light dark; do
             xcrun simctl ui "$UDID" appearance "$mode"
-            for shot in desk chat sidebar settings connectors look grants add pet; do
+            for shot in desk chat sidebar settings figures connectors look grants add pet; do
               xcrun simctl launch --terminate-running-process "$UDID" io.github.lllhr94.clio -clioShot "$shot" >/dev/null
               sleep 20
               xcrun simctl io "$UDID" screenshot "shots/$mode-$shot.png" >/dev/null
