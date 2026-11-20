@@ -277,11 +277,10 @@ struct SettingsView: View {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(team.settings.backupModel == nil ? "备用模型：没设" : "备用模型：\(team.modelTitle(team.settings.backupModel))")
-                                .font(.system(size: Ink.Size.sub * accessibilityScale, weight: .medium))
+                                .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink)
-                                .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                             Text("主模型出错时换它接着答，会在对话里说一声。")
-                                .font(.system(size: Ink.Size.small * accessibilityScale))
+                                .font(.system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.inkFaint)
                         }
                         Spacer()

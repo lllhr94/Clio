@@ -162,9 +162,7 @@ struct ApproveView: View {
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.warn)
                 } else {
-                    let choices = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
-                        AnyLayout(HStackLayout(spacing: Ink.Space.s))
-                    choices {
+                    HStack(spacing: Ink.Space.s) {
                         choice("以后都允许", on: $always)
                         choice(Words.t("这段絮语都放行"), on: $trustChat)
                     }
@@ -174,7 +172,7 @@ struct ApproveView: View {
                     answer(allow: false)
                 } label: {
                     Text("不批准")
-                        .font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold))
+                        .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(minHeight: 46)
                         .padding(.horizontal, 24)
@@ -208,7 +206,7 @@ struct ApproveView: View {
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3)).lineLimit(largeText ? nil : 1)
+                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3))
                 }
             }
 
@@ -300,6 +298,7 @@ struct ApproveView: View {
             HStack(spacing: 4) {
                 Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: Ink.Size.small))
                 Text(title).font(.system(size: Ink.Size.small * accessibilityScale, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
             .padding(.horizontal, 10)
