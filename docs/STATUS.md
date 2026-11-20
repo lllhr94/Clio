@@ -33,7 +33,7 @@
 
 ## 首次打开引导
 
-- C9：小克、肉包各四张引导插画，统一全身视角、脚底线、像素网格和道具比例，小克用原立绘的铜橘发色。对照图和素材在 `design/incoming/onboarding/`。待主人选定整套角色，再由 Claude 接入引导页。
+- C9：小克四页引导已改用 C7 定稿的闲坐首帧，只叠加道具与手，预览在 `design/incoming/onboarding/preview.png`。等主人确认后由 Claude 接入。
 
 ## 统一打磨清单
 
