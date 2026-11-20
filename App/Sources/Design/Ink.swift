@@ -86,6 +86,29 @@ enum Ink {
     static let inkFaint = pair(0xA8A294, 0x6E685D)
     /// 朱: the seal's cinnabar, and the paper-white of the character cut into it. Only for the seal.
     static let seal = pair(0xB23A2B, 0xC5564A)
+
+    /// The tiles settings rows lead with: one pigment per group, deep enough for a white glyph, the same in light
+    /// and dark (as a printed tile would be). Named for the colors Clio's palette already uses.
+    enum Tile {
+        /// 黛: AI, models.
+        static let dai = pair(0x4F7099, 0x5B7DA6)
+        /// 胭: companions.
+        static let yan = pair(0xA9554C, 0xB86259)
+        /// 缃: what they can do.
+        static let xiang = pair(0xA9772F, 0xB5843C)
+        /// 墨: tools.
+        static let mo = pair(0x57534D, 0x6A655E)
+        /// 藤: how it looks.
+        static let teng = pair(0x6F5C96, 0x7D6AA4)
+        /// 竹: general.
+        static let zhu = pair(0x4D7C5B, 0x5A8968)
+        /// Switched off.
+        static let off = pair(0xB4AEA3, 0x4C4842)
+        /// The glyph on a tile.
+        static let glyph = pair(0xFFFFFF, 0xFFFFFF)
+        /// The accent the user picked, kept deep in dark mode too so a white glyph reads on it.
+        static var accent: Color { Theme.shared.palette.tile }
+    }
     static let sealInk = pair(0xFBF3EA, 0xFBF3EA)
     static var rule: Color { Theme.shared.palette.rule }
     /// The accent and its pale ground, from the palette the user picked.
@@ -96,6 +119,8 @@ enum Ink {
         var key: String
         var title: String
         var accent: Color
+        /// The accent as a tile ground: the light-mode accent in both modes.
+        var tile: Color
         var wash: Color
         var paper: Color
         var raised: Color
@@ -111,6 +136,7 @@ enum Ink {
             self.key = key
             self.title = title
             self.accent = Ink.pair(light, dark)
+            self.tile = Ink.pair(light, Ink.mix(light, 0xFFFFFF, 0.08))
             self.wash = wash
             func mixed(_ baseLight: UInt32, _ baseDark: UInt32, _ amount: Double) -> Color {
                 Ink.pair(Ink.mix(baseLight, light, amount * tint), Ink.mix(baseDark, dark, amount * tint))

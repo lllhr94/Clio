@@ -100,7 +100,7 @@ struct AbilitiesSheet: View {
         let global = grant.policy
         let on = !team.options(key).off.contains(grant.rawValue)
         return HStack(spacing: Ink.Space.m) {
-            IconBadge(symbol: grant.symbol, tint: global == .off || !on ? Ink.inkFaint : Ink.accent)
+            IconBadge(symbol: grant.symbol, tint: global == .off || !on ? Ink.Tile.off : Ink.Tile.accent)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Ink.Space.s) {
                     Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(global == .off ? Ink.inkFaint : Ink.ink)

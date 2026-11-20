@@ -157,7 +157,7 @@ struct GrantsPage: View {
     private func row(_ grant: Grant) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(alignment: .top, spacing: Ink.Space.m) {
-                IconBadge(symbol: grant.symbol, tint: policies[grant] == .off ? Ink.inkFaint : Ink.accent)
+                IconBadge(symbol: grant.symbol, tint: policies[grant] == .off ? Ink.Tile.off : Ink.Tile.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: Ink.Space.s) {
                         Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)

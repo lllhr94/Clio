@@ -376,11 +376,12 @@ struct SettingsView: View {
 
     // MARK: Groups, the way settings are laid out elsewhere: a heading, rows with a coloured icon
 
+    /// One pigment per group (see `Ink.Tile`).
     private enum Tint {
-        static let ai = Color(red: 0.36, green: 0.55, blue: 0.86)
-        static let ability = Color(red: 0.85, green: 0.58, blue: 0.27)
-        static let looks = Color(red: 0.62, green: 0.48, blue: 0.84)
-        static let general = Color(red: 0.42, green: 0.66, blue: 0.45)
+        static let ai = Ink.Tile.dai
+        static let ability = Ink.Tile.xiang
+        static let looks = Ink.Tile.teng
+        static let general = Ink.Tile.zhu
     }
 
     private func group<Content: View>(_ title: String, @ViewBuilder _ rows: () -> Content) -> some View {
@@ -485,8 +486,8 @@ struct SettingsView: View {
     }
 
     private enum Tint2 {
-        static let people = Color(red: 0.86, green: 0.42, blue: 0.48)
-        static let tools = Color(red: 0.40, green: 0.47, blue: 0.56)
+        static let people = Ink.Tile.yan
+        static let tools = Ink.Tile.mo
     }
 
     /// Leaves settings and opens one of the desk's own pages.

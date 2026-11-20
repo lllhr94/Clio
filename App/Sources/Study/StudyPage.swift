@@ -144,7 +144,7 @@ struct StudyFolder: View {
 
     private func row(_ item: StudyPage.Item) -> some View {
         HStack(spacing: Ink.Space.m) {
-            IconBadge(symbol: item.folder ? "folder" : Self.icon(item.url), tint: item.folder ? Ink.accent : Ink.inkSoft)
+            IconBadge(symbol: item.folder ? "folder" : Self.icon(item.url), tint: item.folder ? Ink.Tile.accent : Ink.Tile.mo)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.url.lastPathComponent).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
                 Text((item.folder ? "" : Workspace.size(item.bytes) + " · ") + item.changed.formatted(.relative(presentation: .named)))

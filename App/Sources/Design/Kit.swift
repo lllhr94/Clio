@@ -2,20 +2,24 @@ import SwiftUI
 
 // The few pieces every page is built from, so a row in 设置 and a row in 连接器 are the same row.
 
-/// The small square every list row leads with: a symbol on a wash of its tint.
+/// The small tile every list row leads with: a white, filled symbol on a solid tile of its group's pigment,
+/// lit a little from above and edged with a hairline, as a printed app icon is.
 struct IconBadge: View {
     var symbol: String
-    var tint: Color = Ink.accent
+    var tint: Color = Ink.Tile.accent
     var size: CGFloat = Kit.badge
 
     var body: some View {
-        RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
-            .fill(tint.opacity(0.15))
+        let shape = RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
+        shape
+            .fill(tint.gradient)
+            .overlay(shape.strokeBorder(Ink.Tile.glyph.opacity(0.14), lineWidth: 0.5))
             .frame(width: size, height: size)
             .overlay {
                 Image(systemName: symbol)
-                    .font(.system(size: size * 0.47, weight: .medium))
-                    .foregroundStyle(tint)
+                    .symbolVariant(.fill)
+                    .font(.system(size: size * 0.5, weight: .semibold))
+                    .foregroundStyle(Ink.Tile.glyph)
             }
             .accessibilityHidden(true)
     }

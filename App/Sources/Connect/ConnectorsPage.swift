@@ -64,7 +64,7 @@ struct ConnectorsPage: View {
     /// Clio's own suggestions: while talking, a companion may say which connector would help.
     private var suggestCard: some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
-            IconBadge(symbol: "square.grid.2x2", tint: Ink.inkSoft)
+            IconBadge(symbol: "square.grid.2x2", tint: Ink.Tile.mo)
             VStack(alignment: .leading, spacing: 3) {
                 Text("连接器推荐").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(Words.t("聊天时遇到某个连接器能帮上忙的事，旅伴会提一句，告诉你去哪里连。"))
