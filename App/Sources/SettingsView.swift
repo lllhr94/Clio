@@ -17,6 +17,7 @@ struct SettingsView: View {
 
     @State private var query = ""
     @State private var connecting = false
+    @State private var editingBot: BotInfo?
     @State private var petting = false
     @Environment(\.openURL) private var openURL
     @State private var adding = false
@@ -87,6 +88,7 @@ struct SettingsView: View {
         .sheet(isPresented: $skilling) { SkillsPage() }
         .sheet(isPresented: $hilling) { HillsPage() }
         .sheet(isPresented: $petting) { PetPage() }
+        .sheet(item: $editingBot) { bot in BotEditor(team: team, bot: bot) }
         .alert(Words.t("改这条拾遗"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
             TextField("", text: $memoryText)
             Button(L.t("actions.save")) {
@@ -501,12 +503,30 @@ struct SettingsView: View {
 
     private var companionGroup: some View {
         group(L.t("nav.assistant")) {
-            row("person.badge.plus", Tint2.people, Words.t("新旅伴"), "\(team.bots.count) 位") { elsewhere(.newCompanion) }
+            // Each companion its own row: tap to change the name, the character, the model.
+            ForEach(team.bots) { bot in
+                companionRow(bot)
+                divider
+            }
+            row("person.badge.plus", Tint2.people, Words.t("新旅伴"), nil) { elsewhere(.newCompanion) }
             divider
             row("person.3", Tint2.people, "nav.groupChat", team.rooms.isEmpty ? "没有" : "\(team.rooms.count) 个") { elsewhere(.gathering) }
             divider
             row("square.and.arrow.down", Tint2.people, Words.t("收名帖"), nil) { elsewhere(.importCard) }
         }
+    }
+
+    private func companionRow(_ bot: BotInfo) -> some View {
+        Button {
+            Haptics.light()
+            editingBot = bot
+        } label: {
+            RowLabel(title: bot.name, line: bot.role, end: .valueChevron(team.modelShort(bot.model ?? team.settings.defaultModel))) {
+                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true)
+            }
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("\(bot.name)，改名字、性格、模型")
     }
 
     private var toolGroup: some View {
