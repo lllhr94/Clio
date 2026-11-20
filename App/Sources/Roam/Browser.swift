@@ -572,7 +572,7 @@ struct RoamPage: View {
                 .overlay {
                     if browser.url == nil {
                         VStack(spacing: Ink.Space.l) {
-                            Whale(size: 96, pose: .idle)
+                            PetStill(size: 96)
                             Text(Words.t("旅伴替你上网时，页面在这里"))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)

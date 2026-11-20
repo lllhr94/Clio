@@ -760,7 +760,7 @@ struct Desk: View {
                         opened = .companion(bot.id)
                     } label: {
                         HStack(spacing: Ink.Space.s) {
-                            Whale(size: 28, wash: Ink.wash(for: bot), still: true)
+                            PetStill(size: 28, wash: Ink.wash(for: bot), still: true, avatar: true)
                             Text(bot.name).font(Ink.label).foregroundStyle(Ink.ink)
                             if team.isWorking(TeamModel.key(bot: bot.id)) {
                                 Circle().fill(Ink.accent).frame(width: 6, height: 6)
@@ -898,7 +898,7 @@ struct Desk: View {
             HStack(alignment: .top, spacing: Ink.Space.m) {
                 Group {
                     if let bot = item.bot {
-                        Whale(size: 28, wash: Ink.wash(for: bot), still: true)
+                        PetStill(size: 28, wash: Ink.wash(for: bot), still: true, avatar: true)
                     } else {
                         Image(systemName: "person.3")
                             .font(.system(size: Ink.Size.micro, weight: .semibold))

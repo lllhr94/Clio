@@ -195,7 +195,8 @@ struct ApproveView: View {
             .foregroundStyle(Ink.inkSoft)
 
             HStack(spacing: 12) {
-                Whale(size: 46, pose: verdict == nil ? .waiting : .idle, wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash)
+                PetStill(size: 46, state: "notification", pose: verdict == nil ? .waiting : .idle,
+                         wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true)
                     .padding(.top, 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("来自").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)

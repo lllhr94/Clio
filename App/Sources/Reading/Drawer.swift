@@ -79,7 +79,7 @@ struct DrawerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
                     HStack(alignment: .center, spacing: Ink.Space.m) {
-                        Whale(size: 44, pose: .idle, still: true)
+                        PetStill(size: 44, still: true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("抽屉").font(Ink.title).foregroundStyle(Ink.ink)
                             Text(Words.t("案头以外的东西，都收在这里。")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
