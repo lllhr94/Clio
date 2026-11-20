@@ -1440,6 +1440,7 @@ final class TeamModel: ObservableObject {
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
+        agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto
@@ -1832,6 +1833,7 @@ final class TeamModel: ObservableObject {
             tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true) : [],
             approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key) ?? false }
         )
+        agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ImagePart: Codable, Equatable, Sendable {
+public struct ImagePart: Codable, Hashable, Sendable {
     public var mediaType: String
     public var data: Data
 

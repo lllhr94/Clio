@@ -74,6 +74,9 @@ public struct Agent: Sendable {
     public var approve: @Sendable (ApprovalAsk, String) async -> Bool
     public var temperature: Double?
     public var outputLimit: Int?
+    /// Converts native reply images to caller-owned text (for example local Markdown links).
+    public var renderReplyImages: (@Sendable ([ReplyImage]) async throws -> String)?
+
     /// How hard to think.
     public var thinking: Thinking = .auto
     /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
@@ -137,6 +140,8 @@ public struct Agent: Sendable {
             }
             var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
             var text = ""
+            var images: [ReplyImage] = []
+            var seenImages: Set<ReplyImage> = []
             var reasoning = ""
             var signature = ""
             var calls: [Int: ToolCall] = [:]
@@ -151,6 +156,8 @@ public struct Agent: Sendable {
                         case .text(let piece):
                             text += piece
                             await emit(.text(piece))
+                        case .image(let image):
+                            if seenImages.insert(image).inserted { images.append(image) }
                         case .reasoning(let piece):
                             reasoning += piece
                             await emit(.reasoning(piece))
@@ -184,7 +191,7 @@ public struct Agent: Sendable {
                     let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
                     // Nothing came through yet and the failure looks passing (a dropped or refused connection, a busy server):
                     // ask again, a couple of times, before telling the user.
-                    if !cancelled, text.isEmpty, reasoning.isEmpty, calls.isEmpty, attempt < retryDelays.count, Self.passing(error) {
+                    if !cancelled, text.isEmpty, reasoning.isEmpty, images.isEmpty, calls.isEmpty, attempt < retryDelays.count, Self.passing(error) {
                         let wait = retryDelays[attempt]
                         attempt += 1
                         await emit(.retrying(attempt: attempt))
@@ -192,7 +199,7 @@ public struct Agent: Sendable {
                         continue
                     }
                     // A model that does not take the thinking setting says so with a 400: go on without it.
-                    if !cancelled, thinking != .auto, text.isEmpty, reasoning.isEmpty, calls.isEmpty,
+                    if !cancelled, thinking != .auto, text.isEmpty, reasoning.isEmpty, images.isEmpty, calls.isEmpty,
                        let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 {
                         await emit(.thinkingRefused(thinking, reason: failure.message))
                         thinking = .auto
@@ -204,6 +211,11 @@ public struct Agent: Sendable {
                     if cancelled { throw CancellationError() }
                     throw error
                 }
+            }
+            if !images.isEmpty, let renderReplyImages {
+                try Task.checkCancellation()
+                let attachments = try await renderReplyImages(images)
+                if !attachments.isEmpty { text += (text.isEmpty ? "" : "\n\n") + attachments }
             }
             let made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
             var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)

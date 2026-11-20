@@ -1,7 +1,5 @@
 import AgentKit
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 /// Saves a generated image in the phone's workspace, independent of the chat's work location.
 struct GenerateImage: AgentTool {
@@ -57,29 +55,13 @@ struct GenerateImage: AgentTool {
             return failure("errors.imageConnection")
         }
 
-        let clock = ISO8601DateFormatter()
-        clock.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let stamp = clock.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let folder = Workspace.root.appendingPathComponent("图片", isDirectory: true)
-        let file = folder.appendingPathComponent("\(stamp)-\(UUID().uuidString.prefix(8)).png")
-        guard let image = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any],
-              let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
-              width > 0, height > 0, width <= 8192, height <= 8192,
-              let pixels = CGImageSourceCreateImageAtIndex(image, 0, nil) else {
-            return failure("errors.imageResponse")
-        }
-        try Task.checkCancellation()
+        let path: String
         do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let png = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(png as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
-                return failure("errors.imageSave")
-            }
-            CGImageDestinationAddImage(destination, pixels, nil)
-            guard CGImageDestinationFinalize(destination) else { return failure("errors.imageSave") }
-            try (png as Data).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            path = try WorkspaceImages.save(data)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as WorkspaceImages.Failure {
+            return failure(error.key)
         } catch {
             return failure("errors.imageSave")
         }
@@ -88,7 +70,7 @@ struct GenerateImage: AgentTool {
             .replacingOccurrences(of: "[", with: "［")
             .replacingOccurrences(of: "]", with: "］")
             .components(separatedBy: .newlines).joined(separator: " ")
-        return ToolOutput("图片已保存。把下面这行原样写进给用户的回答：\n![\(alt)](书案/图片/\(file.lastPathComponent))")
+        return ToolOutput("图片已保存。把下面这行原样写进给用户的回答：\n![\(alt)](\(path))")
     }
 
     private func failure(_ key: String) -> ToolOutput { ToolOutput(L.t(key), isError: true) }

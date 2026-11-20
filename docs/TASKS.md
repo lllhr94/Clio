@@ -51,7 +51,7 @@
 
 - [ ] **C14 聊天手感的规则测试**：等 Claude 做完 `docs/CHAT-SMOOTH.md` 第一批 A～D 后，给分段规则、跟随规则、发送补位写单元测试（见该文 E 条）。
 
-- [ ] **C15 生图**：分支 `codex/c15-image-gen`，PR 合到 `batch-0.34`。
+- [x] **C15 生图**：分支 `codex/c15-image-gen`，PR 合到 `batch-0.34`。
   1. **设置**：「模型服务」里加一项「生图模型」：从已接的服务里选一个模型（名字含 image、dall-e、flux、seedream、imagen 的排前面，也能手填模型名），可以不选。存在 `settings` 里，备份要带上（密钥照旧不进备份）。
   2. **工具 `generate_image`**（只有选了生图模型才给模型看到）：参数 `prompt`（必填）、`size`（可选，默认 1024x1024）。按 OpenAI 兼容接口 `POST {baseURL}/images/generations` 发 `{model, prompt, size, n: 1}`，返回里取 `b64_json` 或 `url`（url 就下载下来）。存成 `书案/图片/<日期时间>.png`，工具结果返回给模型一句话加 `![<prompt 前 20 字>](书案/图片/xxx.png)`，并提示它把这一行原样写进回答（回复里的 `![]()` 已经会显示成图片，见 `ProsePicture`）。超时、额度不足、内容被拒都要给出直白的中文错误（走 `errors.*` 词典）。
   3. **系统提示**：`Team.swift` 里讲工具的那段加一句：用户要画图、要配图时用 `generate_image`；没有这个工具时直说没接生图模型，去「设置 › 模型服务 › 生图模型」选一个。

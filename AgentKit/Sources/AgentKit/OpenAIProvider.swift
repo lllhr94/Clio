@@ -20,7 +20,7 @@ public struct OpenAIProvider: ModelProvider {
             http.setValue("application/json", forHTTPHeaderField: "Content-Type")
             http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             http.httpBody = try HTTP.json(Self.body(request, style: style))
-            return Self.splittingThoughts(HTTP.stream(http, decode: Self.decode))
+            return Self.splittingThoughts(HTTP.stream(http, acceptsJSON: true, decode: Self.decode))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -38,18 +38,28 @@ public struct OpenAIProvider: ModelProvider {
         AsyncThrowingStream { continuation in
             let task = Task {
                 var splitter = ThinkSplitter()
+                var images = ReplyImageText()
+                func send(_ event: StreamEvent) {
+                    if case .text(let text) = event {
+                        for piece in images.feed(text) { continuation.yield(piece) }
+                    } else {
+                        continuation.yield(event)
+                    }
+                }
                 do {
                     for try await event in events {
                         if case .text(let piece) = event {
-                            for split in splitter.feed(piece) { continuation.yield(split) }
+                            for split in splitter.feed(piece) { send(split) }
                         } else {
                             continuation.yield(event)
                         }
                     }
-                    for split in splitter.flush() { continuation.yield(split) }
+                    for split in splitter.flush() { send(split) }
+                    for piece in images.flush() { continuation.yield(piece) }
                     continuation.finish()
                 } catch {
-                    for split in splitter.flush() { continuation.yield(split) }
+                    for split in splitter.flush() { send(split) }
+                    for piece in images.flush() { continuation.yield(piece) }
                     continuation.finish(throwing: error)
                 }
             }
@@ -133,6 +143,12 @@ public struct OpenAIProvider: ModelProvider {
                 events.append(.reasoning(reasoning))
             }
             if let text = delta["content"]?.string, !text.isEmpty { events.append(.text(text)) }
+            for part in delta["content"]?.array ?? [] {
+                if let text = part["text"]?.string, !text.isEmpty { events.append(.text(text)) }
+                if let image = replyImage(part) { events.append(.image(image)) }
+            }
+            let images = (delta["images"]?.array ?? []) + (choice["images"]?.array ?? [])
+            events += images.compactMap(replyImage).map(StreamEvent.image)
             for (position, call) in (delta["tool_calls"]?.array ?? []).enumerated() {
                 let index = call["index"]?.number.map { Int($0) } ?? position
                 let function = call["function"] ?? .null
@@ -145,11 +161,22 @@ public struct OpenAIProvider: ModelProvider {
             }
             if let reason = choice["finish_reason"]?.string { events.append(.finish(reason: reason)) }
         }
+        events += (json["images"]?.array ?? []).compactMap(replyImage).map(StreamEvent.image)
         if let usage = json["usage"], case .object = usage {
             // DeepSeek says prompt_cache_hit_tokens; OpenAI and most others, prompt_tokens_details.cached_tokens.
             let cached = usage["prompt_cache_hit_tokens"]?.number ?? usage["prompt_tokens_details"]?["cached_tokens"]?.number ?? 0
             events.append(.usage(input: Int(usage["prompt_tokens"]?.number ?? 0), output: Int(usage["completion_tokens"]?.number ?? 0), cached: Int(cached)))
         }
         return events
+    }
+
+    private static func replyImage(_ part: JSONValue) -> ReplyImage? {
+        let field = part["image_url"]
+        let source = part.string ?? field?["url"]?.string ?? field?.string
+        if let url = source ?? part["url"]?.string, let image = ReplyImage.source(url) { return image }
+        if let base64 = part["b64_json"]?.string {
+            return ReplyImage.base64(base64[...], mediaType: part["mime_type"]?.string ?? "image/png")
+        }
+        return nil
     }
 }

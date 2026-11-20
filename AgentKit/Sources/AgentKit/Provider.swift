@@ -42,6 +42,7 @@ public struct ModelRequest: Sendable {
 /// What a model's stream says, one piece at a time.
 public enum StreamEvent: Equatable, Sendable {
     case text(String)
+    case image(ReplyImage)
     case reasoning(String)
     /// Claude signs its thoughts; the signature goes back with them, or Claude will not take them.
     case reasoningSignature(String)
@@ -126,13 +127,20 @@ enum HTTP {
     }
 
     /// Runs a streaming request and passes each SSE data line to `decode`.
-    static func stream(_ request: URLRequest, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
+    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let (bytes, response) = try await session.bytes(for: request)
                     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                     guard status == 200 else { throw await failure(status: status, bytes: bytes) }
+                    if acceptsJSON, response.mimeType == "application/json" {
+                        var body = Data()
+                        for try await byte in bytes { body.append(byte) }
+                        for event in try decode(String(decoding: body, as: UTF8.self)) { continuation.yield(event) }
+                        continuation.finish()
+                        return
+                    }
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
                         guard let payload = SSE.payload(of: line), payload != "[DONE]" else { continue }
