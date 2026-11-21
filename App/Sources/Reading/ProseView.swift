@@ -260,7 +260,11 @@ private struct CodeBlock: View {
     private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
     /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
     private var isOutput: Bool {
-        ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased())
+        if ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased()) { return true }
+        // No language given, and nothing that reads as code: a log or what a command printed.
+        guard language.isEmpty else { return false }
+        let marks = ["{", "}", ";", " = ", "=>", "->", "def ", "func ", "function ", "import ", "return ", "const ", "let ", "class "]
+        return !marks.contains { text.contains($0) }
     }
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { lineCount > 20 }
