@@ -70,7 +70,7 @@ final class Dictation: ObservableObject {
             self.request = request
             input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.tap(request) { [weak self] level in
                 Task { @MainActor in
-                    guard let self, sessionID == id, listening else { return }
+                    guard let self, self.sessionID == id, self.listening else { return }
                     self.level = level
                 }
             })
@@ -80,9 +80,9 @@ final class Dictation: ObservableObject {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { listening = true }
             task = recognizer.recognitionTask(with: request, resultHandler: Self.results { [weak self] text, done in
                 Task { @MainActor in
-                    guard let self, sessionID == id else { return }
-                    if let text { onText?(text) }
-                    if done { finish(cancelTask: false) }
+                    guard let self, self.sessionID == id else { return }
+                    if let text { self.onText?(text) }
+                    if done { self.finish(cancelTask: false) }
                 }
             })
         } catch {
@@ -98,8 +98,8 @@ final class Dictation: ObservableObject {
         request.endAudio()
         finishing = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            guard let self, sessionID == id else { return }
-            cancel()
+            guard let self, self.sessionID == id else { return }
+            self.cancel()
         }
     }
 
