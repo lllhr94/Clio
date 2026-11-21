@@ -115,3 +115,11 @@
   5. 交 PR 前跑一次 CI（shots=false），列出改了什么、怎么在真机上试。
 - [ ] **C20 常亮黑屏**：分支 `codex/c20-always-on`。新文件里做一个全黑的覆盖窗口：只显示当前旅伴的宠物小像、正在做的这一步、已用时间，每 15 秒整体挪一点位置防烧屏，任何触摸关闭；期间屏幕不自动锁（`isIdleTimerDisabled`），关闭后恢复。只提供 `AlwaysOn.show(chat:)` / `hide()` 这样的入口，聊天页里的按钮由 Claude 接。不碰 `ChatPage.swift`。
 
+- [ ] **C21 互查：审 Claude 这一批**（C18～C20 交完后做）。不改代码，只在 PR 里或 `docs/REVIEW-0.34.md` 写问题清单（文件:行、触发条件、后果、建议改法），按严重程度排。范围是 batch-0.34 上从 `39a26d8` 到最新的 Claude 提交，加上 `cbe41a9`（名帖卡）：
+  - 性格（`Temper.swift`、`Pulse.swift`、`Team.swift` 的 system 和 saveBot）：老旅伴是否都按「温」，白纸是否完全不写心绪，用户设定是否压过性格。
+  - 朱印字（`Kit.swift` 的 `ClioSeal`、`App/Fonts/ClioSeal-Regular.ttf`）：字体名、OFL 声明、缺字退回是否可靠。
+  - 名帖（`NameCardView.swift`、`NameCard.swift`、`Desk.swift` 收名帖）：旧名帖文件能否照收；照片和宠物是否跟着走；**有没有任何记忆被带出去**。
+  - 编辑器（`CardEditors.swift`）：新建 / 编辑后性格、风格、朱印字是否存对。
+  - 聊天页（`ChatPage.swift`、`Glance.swift`、`NoteSheet.swift`）：头像呼吸、一眼卡、新消息浮上来、记下了 / 撤回、问答目录、长图、健康卡片；有没有卡顿风险（每帧重算、重复加载）。
+  - 规矩：设计系统、词典两份键一致、不写死字号颜色。
+
