@@ -66,9 +66,9 @@ struct FrameMeter: View {
                 .font(Ink.mono(Ink.Size.micro))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, Ink.Space.s)
+        .padding(.vertical, Ink.Space.xs)
+        .background(Ink.paperRaised.opacity(0.94), in: Capsule())
         .allowsHitTesting(false)
         .onAppear { clock.start() }
         .onDisappear { clock.stop() }
