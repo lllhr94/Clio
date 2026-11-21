@@ -380,6 +380,23 @@ extension View {
             .contentShape(shape)
     }
 
+    /// Your message bubble: a touch of glass, without the cost of real glass on every bubble in a long chat.
+    /// The paper tint, a light catching the top edge, a hairline and a soft shadow under it.
+    func glassBubble<S: InsettableShape>(in shape: S, tint: Color) -> some View {
+        background {
+            shape.fill(tint)
+                .overlay {
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0)],
+                                              startPoint: .top, endPoint: .center))
+                }
+                .overlay {
+                    shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.08), Ink.rule],
+                                                      startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
+                }
+                .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
+        }
+    }
+
     /// Liquid Glass behind a bar that holds its own controls (the composer, an address bar). The clear layer sits
     /// between the glass and the controls: taps between them land on it instead of on the glass.
     func glassBacking<S: Shape>(in shape: S) -> some View {
