@@ -22,13 +22,13 @@ struct DiffText: View {
                     .foregroundStyle(color(line))
                     .lineLimit(wraps ? nil : 1)
                     .truncationMode(.tail)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
+                    .padding(.horizontal, Ink.Space.s)
+                    .padding(.vertical, Ink.Space.xs / 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(wash(line))
             }
             if lines.count > limit {
-                Text("……还有 \(lines.count - limit) 行").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(6)
+                Text("……还有 \(lines.count - limit) 行").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(Ink.Space.s)
             }
         }
         .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
