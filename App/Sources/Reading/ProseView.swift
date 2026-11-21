@@ -324,8 +324,10 @@ private struct CodeBlock: View {
                 Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
                     .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                     .font(Ink.code)
-                    .lineSpacing(Pref.size * 0.3)
-                    .padding(Ink.Space.l)
+                    // Close lines, as in a terminal: rows of output and code read as columns.
+                    .lineSpacing(Pref.size * 0.12)
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.vertical, Ink.Space.m)
                     .fixedSize(horizontal: true, vertical: false)
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             }
