@@ -213,7 +213,11 @@ enum Reckoner {
         return unsafeBitCast(symbol, to: SetLimit.self)
     }()
 
-    private static func shouldTerminate(_ context: OpaquePointer?, _ pointer: UnsafeMutableRawPointer?) -> Bool {
+    private static let shouldTerminate: ShouldTerminate = { context, pointer in
+        Reckoner.checkTime(context, pointer)
+    }
+
+    private static func checkTime(_ context: OpaquePointer?, _ pointer: UnsafeMutableRawPointer?) -> Bool {
         guard let context, let pointer, let group = JSContextGetGroup(context), let setLimit else { return true }
         let run = Unmanaged<Run>.fromOpaque(pointer).takeUnretainedValue()
         if run.interruption != nil { return true }
