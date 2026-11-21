@@ -81,7 +81,8 @@
     "newGroup": "新建群聊",
     "stopAsk": "停下这件事？",
     "stopNow": "停下",
-    "stopAskNote": "已经做完的部分会留下。不想每次都问，可以在设置里关掉。"
+    "stopAskNote": "已经做完的部分会留下。不想每次都问，可以在设置里关掉。",
+    "questionMap": "问题导航"
   },
   "approval": {
     "pending": "待批准",

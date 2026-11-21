@@ -185,7 +185,7 @@ enum Phone {
                 guard status == .authorized || status == .limited else { return ToolOutput("没有相册权限。请用户在「设置 › Clio › 照片」里打开。", isError: true) }
                 let options = PHFetchOptions()
                 options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                options.fetchLimit = min(100, max(1, Int(arguments["count"]?.number ?? 20)))
+                options.fetchLimit = min(100, max(1, (arguments["count"]?.int ?? 20)))
                 let assets = PHAsset.fetchAssets(with: options)
                 var lines: [String] = []
                 let formatter = DateFormatter()
@@ -201,7 +201,7 @@ enum Phone {
                 return ToolOutput(lines.isEmpty ? "相册是空的。" : lines.joined(separator: "\n"))
             },
             DeskTool(name: "steps", description: "读手机记的步数和步行距离，按天。", parameters: ["type": "object", "properties": ["days": ["type": "number", "description": "最近几天，默认 1（今天），最多 7"]]], label: { _ in "步数：看看走了多少" }) { arguments in
-                switch await steps(days: Int(arguments["days"]?.number ?? 1)) {
+                switch await steps(days: (arguments["days"]?.int ?? 1)) {
                 case .failure(let error): return ToolOutput("读不到步数：\(error.localizedDescription)。可能要在「设置 › Clio › 运动与健身」里打开。", isError: true)
                 case .success(let rows):
                     let formatter = DateFormatter()

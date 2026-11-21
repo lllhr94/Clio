@@ -163,13 +163,13 @@ enum HealthTools {
                     "days": ["type": "number", "description": "最近几天，默认 1（今天），最多 30"],
                 ],
             ], label: { arguments in
-                let days = Int(arguments["days"]?.number ?? 1)
+                let days = (arguments["days"]?.int ?? 1)
                 return "健康：看看" + (days <= 1 ? "今天" : "最近 \(days) 天")
             }) { arguments in
                 if !Health.asked, let problem = await Health.authorize() { return ToolOutput(problem, isError: true) }
                 let wanted = (arguments["kinds"]?.array ?? []).compactMap { $0.string.flatMap(Health.Kind.init(rawValue:)) }
                 let kinds: [Health.Kind] = wanted.isEmpty ? [.steps, .sleep, .resting, .energy] : wanted
-                let count = min(30, max(1, Int(arguments["days"]?.number ?? 1)))
+                let count = min(30, max(1, (arguments["days"]?.int ?? 1)))
                 do {
                     let days = try await Health.days(count, kinds: kinds)
                     let formatter = DateFormatter()

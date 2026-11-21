@@ -23,7 +23,7 @@ enum GoogleTools {
         ],
     ], label: { arguments in "Gmail：找 " + (arguments["query"]?.string ?? "最近的邮件") }) { arguments in
         let query = arguments["query"]?.string ?? ""
-        let limit = min(25, max(1, Int(arguments["max"]?.number ?? 10)))
+        let limit = min(25, max(1, (arguments["max"]?.int ?? 10)))
         var parts = URLComponents(string: gmail + "/messages")!
         parts.queryItems = [URLQueryItem(name: "maxResults", value: String(limit))] + (query.isEmpty ? [] : [URLQueryItem(name: "q", value: query)])
         let list = try await Google.get(parts.url!.absoluteString)
@@ -151,7 +151,7 @@ enum GoogleTools {
         ],
     ], label: { arguments in "云端硬盘：找 " + (arguments["query"]?.string ?? "最近的文件") }) { arguments in
         let words = (arguments["query"]?.string ?? "").replacingOccurrences(of: "'", with: "\\'")
-        let limit = min(30, max(1, Int(arguments["max"]?.number ?? 10)))
+        let limit = min(30, max(1, (arguments["max"]?.int ?? 10)))
         var parts = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
         var items = [
             URLQueryItem(name: "pageSize", value: String(limit)),

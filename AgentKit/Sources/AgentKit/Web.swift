@@ -365,7 +365,7 @@ public struct WebReadTool: AgentTool {
         if LocalAddress.isLocal(page.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
         let type = page.type ?? ""
         if type.contains("pdf") || PDFText.looksLike(page.data) {
-            let from = Int(arguments["page"]?.number ?? 1)
+            let from = (arguments["page"]?.int ?? 1)
             guard let reading = PDFText.read(page.data, from: from, count: 30) else { return ToolOutput("这个 PDF 打不开，可能损坏了或加了密码。", isError: true) }
             var text = reading.shown(limit: limit)
             if reading.read.count > 0, reading.blank.count == reading.read.count {

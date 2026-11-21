@@ -20,7 +20,7 @@ struct WeatherTool: AgentTool {
     func run(_ arguments: JSONValue) async throws -> ToolOutput {
         let place = (arguments["place"]?.string ?? "").trimmingCharacters(in: .whitespaces)
         guard !place.isEmpty else { return ToolOutput("要给一个地名。", isError: true) }
-        let days = min(16, max(1, Int(arguments["days"]?.number ?? 7)))
+        let days = min(16, max(1, (arguments["days"]?.int ?? 7)))
         guard let spot = try await Self.find(place) else {
             return ToolOutput("没找到「\(place)」这个地方。换个写法（比如只写城市名），或者用网页搜索。", isError: true)
         }
@@ -35,9 +35,13 @@ struct WeatherTool: AgentTool {
         ]
         let json = try await Self.get(parts.url!)
         var lines = ["\(spot.name)（\(spot.region)）"]
+        // When and in which time zone it was looked up, so a card read days later shows dates, not 「今天」 (the review, #10).
+        if let time = json["current"]?["time"]?.string {
+            lines.append("查询于：\(time.replacingOccurrences(of: "T", with: " "))（\(json["timezone"]?.string ?? "当地时间")）")
+        }
         if let now = json["current"] {
-            let code = Int(now["weather_code"]?.number ?? -1)
-            lines.append("现在：\(Self.words(code))，\(Self.degrees(now["temperature_2m"]))，体感 \(Self.degrees(now["apparent_temperature"]))，湿度 \(Int(now["relative_humidity_2m"]?.number ?? 0))%，风速 \(Int(now["wind_speed_10m"]?.number ?? 0)) km/h")
+            let code = (now["weather_code"]?.int ?? -1)
+            lines.append("现在：\(Self.words(code))，\(Self.degrees(now["temperature_2m"]))，体感 \(Self.degrees(now["apparent_temperature"]))，湿度 \((now["relative_humidity_2m"]?.int ?? 0))%，风速 \((now["wind_speed_10m"]?.int ?? 0)) km/h")
         }
         if let daily = json["daily"], let dates = daily["time"]?.array {
             let codes = daily["weather_code"]?.array ?? []
@@ -46,10 +50,11 @@ struct WeatherTool: AgentTool {
             let rain = daily["precipitation_probability_max"]?.array ?? []
             lines.append("日期 | 天气 | 气温 | 降雨概率")
             for (index, date) in dates.enumerated() {
-                let code = index < codes.count ? Int(codes[index].number ?? -1) : -1
-                let low = index < lows.count ? Int((lows[index].number ?? 0).rounded()) : 0
-                let high = index < highs.count ? Int((highs[index].number ?? 0).rounded()) : 0
-                let chance = index < rain.count ? rain[index].number.map { "\(Int($0))%" } ?? "—" : "—"
+                let code = index < codes.count ? (codes[index].int ?? -1) : -1
+                // A value the service has no measure for shows as 「—」, never as 0℃.
+                let low = index < lows.count ? Self.whole(lows[index]) : "—"
+                let high = index < highs.count ? Self.whole(highs[index]) : "—"
+                let chance = index < rain.count ? (rain[index].int.map { "\($0)%" } ?? "—") : "—"
                 lines.append("\(date.string ?? "") | \(Self.words(code)) | \(low)~\(high)℃ | \(chance)")
             }
         }
@@ -82,8 +87,14 @@ struct WeatherTool: AgentTool {
     }
 
     private static func degrees(_ value: JSONValue?) -> String {
-        guard let number = value?.number else { return "—" }
-        return "\(Int(number.rounded()))℃"
+        let text = whole(value)
+        return text == "—" ? text : text + "℃"
+    }
+
+    /// A reading rounded to a whole number, or 「—」 when missing or not a sensible number.
+    private static func whole(_ value: JSONValue?) -> String {
+        guard let number = value?.number, number.isFinite, abs(number) < 1e6 else { return "—" }
+        return String(Int(number.rounded()))
     }
 
     /// WMO weather codes in plain words.

@@ -48,9 +48,9 @@ public struct OpenAIProvider: ModelProvider {
         let names = ["context_length", "context_window", "max_context_length", "max_model_len", "max_input_tokens",
                      "input_token_limit", "inputTokenLimit", "max_context_tokens"]
         for name in names {
-            if let value = entry[name]?.number, value >= 1024 { return Int(value) }
+            if let value = entry[name]?.int, value >= 1024 { return value }
         }
-        if let value = entry["top_provider"]?["context_length"]?.number, value >= 1024 { return Int(value) }
+        if let value = entry["top_provider"]?["context_length"]?.int, value >= 1024 { return value }
         return nil
     }
 
@@ -171,7 +171,7 @@ public struct OpenAIProvider: ModelProvider {
             let images = (delta["images"]?.array ?? []) + (choice["images"]?.array ?? [])
             events += images.compactMap(replyImage).map(StreamEvent.image)
             for (position, call) in (delta["tool_calls"]?.array ?? []).enumerated() {
-                let index = call["index"]?.number.map { Int($0) } ?? position
+                let index = call["index"]?.int ?? position
                 let function = call["function"] ?? .null
                 if let id = call["id"]?.string, !id.isEmpty {
                     events.append(.toolCallStart(index: index, id: id, name: function["name"]?.string ?? ""))
@@ -186,7 +186,7 @@ public struct OpenAIProvider: ModelProvider {
         if let usage = json["usage"], case .object = usage {
             // DeepSeek says prompt_cache_hit_tokens; OpenAI and most others, prompt_tokens_details.cached_tokens.
             let cached = usage["prompt_cache_hit_tokens"]?.number ?? usage["prompt_tokens_details"]?["cached_tokens"]?.number ?? 0
-            events.append(.usage(input: Int(usage["prompt_tokens"]?.number ?? 0), output: Int(usage["completion_tokens"]?.number ?? 0), cached: Int(cached)))
+            events.append(.usage(input: (usage["prompt_tokens"]?.int ?? 0), output: (usage["completion_tokens"]?.int ?? 0), cached: JSONValue.number(cached).int ?? 0))
         }
         return events
     }

@@ -77,7 +77,7 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var string: String? {
         switch self {
         case .string(let value): return value
-        case .number(let value): return value.rounded() == value ? String(Int(value)) : String(value)
+        case .number(let value): return JSONValue.whole(value).map(String.init) ?? String(value)
         case .bool(let value): return value ? "true" : "false"
         default: return nil
         }
@@ -89,6 +89,19 @@ public enum JSONValue: Codable, Equatable, Sendable {
         case .string(let value): return Double(value)
         default: return nil
         }
+    }
+
+    /// The number as an Int, cut toward zero; nil when it is not a number, not finite or too large. A number
+    /// from a model or a service goes through this rather than `Int(_:)`, which stops the app on such values.
+    public var int: Int? {
+        guard let value = number, value.isFinite, abs(value) < 9e15 else { return nil }
+        return Int(value)
+    }
+
+    /// A whole number that fits an Int, or nil.
+    public static func whole(_ value: Double) -> Int? {
+        guard value.isFinite, value.rounded() == value, abs(value) < 9e15 else { return nil }
+        return Int(value)
     }
 
     public var bool: Bool? {

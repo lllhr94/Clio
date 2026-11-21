@@ -2280,32 +2280,51 @@ struct ChatPage: View {
             let span = max(1, rows.count - 1)
             GeometryReader { box in
                 let height = box.size.height
+                let place = { (index: Int) in height * CGFloat(index - first) / CGFloat(span) }
                 ZStack(alignment: .top) {
                     Capsule().fill(Ink.rule.opacity(0.5)).frame(width: 3)
                     ForEach(asked, id: \.self) { index in
-                        let row = rows[index]
+                        let shown = visible.contains(rows[index].id)
                         Capsule()
-                            .fill(visible.contains(row.id) ? Ink.accent : Ink.inkFaint)
-                            .frame(width: visible.contains(row.id) ? 10 : 7, height: 3)
-                            .offset(y: height * CGFloat(index - first) / CGFloat(span) - 1.5)
-                            .onTapGesture {
-                                Haptics.tick(0.4)
-                                following = false
-                                jumpedTo = row.id
-                                lingerJumpButtons()
-                                withAnimation(Ink.Motion.settle) { scroller?.scrollTo(row.id, anchor: .top) }
-                            }
+                            .fill(shown ? Ink.accent : Ink.inkFaint)
+                            .frame(width: shown ? 10 : 7, height: 3)
+                            .offset(y: place(index) - 1.5)
                     }
                 }
                 .frame(width: 24, height: height, alignment: .top)
                 .contentShape(Rectangle())
+                // One tap target for the whole strip: a touch goes to the nearest question (the review, #32).
+                .gesture(SpatialTapGesture().onEnded { tap in
+                    guard let nearest = asked.min(by: { abs(place($0) - tap.location.y) < abs(place($1) - tap.location.y) }) else { return }
+                    jump(to: rows[nearest].id)
+                })
             }
             .frame(width: 24)
             .padding(.vertical, Ink.Bar.height * 2)
             .padding(.trailing, 2)
             .transition(.opacity)
-            .accessibilityHidden(true)
+            // VoiceOver: one element that steps through the questions with a swipe up or down.
+            .accessibilityElement()
+            .accessibilityLabel(L.t("chat.questionMap"))
+            .accessibilityValue(minimapPlace(rows: rows, asked: asked, visible: visible))
+            .accessibilityAdjustableAction { direction in
+                let earlier = direction == .decrement
+                if let target = question(earlier: earlier) { jump(to: target) }
+            }
         }
+    }
+
+    private func minimapPlace(rows: ArraySlice<ChatLine>, asked: [Int], visible: Set<String>) -> String {
+        guard let at = asked.firstIndex(where: { visible.contains(rows[$0].id) }) else { return "\(asked.count)" }
+        return "\(at + 1) / \(asked.count)"
+    }
+
+    private func jump(to id: String) {
+        Haptics.tick(0.4)
+        following = false
+        jumpedTo = id
+        lingerJumpButtons()
+        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
     }
 
     private func lingerJumpButtons() {
@@ -2668,6 +2687,7 @@ struct ChatPage: View {
         draft = ""
         photos = []
         files = []
+        DraftAttachments.clear(chat.key)
         following = true
         followToEnd()
     }
@@ -3733,27 +3753,66 @@ private final class ChatDraft {
 
 /// Pictures and files picked for a message not yet sent, kept with the conversation like its words
 /// (in Caches: they are only waiting to be sent).
+/// Pictures and files picked for a message not sent yet, kept across leaving the page or the app being closed.
+/// Saved off the main thread into a fresh folder that replaces the old one only once every picture is written, so a
+/// failed or cut-short save leaves the last good copy (the review, #7). The file list lives in the same folder.
 enum DraftAttachments {
+    private static let queue = DispatchQueue(label: "clio.draft-attachments", qos: .utility)
+
+    private static var root: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("drafts", isDirectory: true)
+    }
+
     private static func folder(_ chat: String) -> URL {
-        let safe = chat.replacingOccurrences(of: "/", with: "_")
-        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("drafts", isDirectory: true).appendingPathComponent(safe, isDirectory: true)
+        root.appendingPathComponent(chat.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
+    }
+
+    private struct Manifest: Codable {
+        var photos: Int
+        var files: [String]
     }
 
     static func save(photos: [Data], files: [String], chat: String) {
         let dir = folder(chat)
-        let manager = FileManager.default
-        try? manager.removeItem(at: dir)
-        UserDefaults.standard.set(files.isEmpty ? nil : files, forKey: "draftFiles." + chat)
-        guard !photos.isEmpty else { return }
-        try? manager.createDirectory(at: dir, withIntermediateDirectories: true)
-        for (index, data) in photos.enumerated() {
-            try? data.write(to: dir.appendingPathComponent("\(index).img"), options: .atomic)
+        queue.async {
+            let manager = FileManager.default
+            UserDefaults.standard.removeObject(forKey: "draftFiles." + chat)
+            guard !photos.isEmpty || !files.isEmpty else {
+                try? manager.removeItem(at: dir)
+                return
+            }
+            let fresh = root.appendingPathComponent(".new-" + UUID().uuidString, isDirectory: true)
+            do {
+                try manager.createDirectory(at: fresh, withIntermediateDirectories: true)
+                for (index, data) in photos.enumerated() {
+                    try data.write(to: fresh.appendingPathComponent("\(index).img"))
+                }
+                try JSONEncoder().encode(Manifest(photos: photos.count, files: files)).write(to: fresh.appendingPathComponent("draft.json"))
+                if manager.fileExists(atPath: dir.path) {
+                    _ = try manager.replaceItemAt(dir, withItemAt: fresh)
+                } else {
+                    try manager.moveItem(at: fresh, to: dir)
+                }
+            } catch {
+                try? manager.removeItem(at: fresh)
+            }
         }
     }
 
+    /// Forgets a chat's draft attachments, right when the message goes out.
+    static func clear(_ chat: String) {
+        save(photos: [], files: [], chat: chat)
+    }
+
     static func load(_ chat: String) -> (photos: [Data], files: [String]) {
+        queue.sync {}
         let dir = folder(chat)
+        if let data = try? Data(contentsOf: dir.appendingPathComponent("draft.json")),
+           let manifest = try? JSONDecoder().decode(Manifest.self, from: data) {
+            let photos = (0..<manifest.photos).compactMap { try? Data(contentsOf: dir.appendingPathComponent("\($0).img")) }
+            return (photos, manifest.files)
+        }
+        // Saved by an earlier version: pictures alone in the folder, the file list in the settings.
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
             .filter { $0.hasSuffix(".img") }
             .sorted { (Int($0.dropLast(4)) ?? 0) < (Int($1.dropLast(4)) ?? 0) }
@@ -3780,24 +3839,74 @@ struct WeatherCard: View {
     private var place: String { lines.first ?? "" }
     private var now: String? { lines.first { $0.hasPrefix("现在：") }.map { String($0.dropFirst(3)) } }
 
+    /// 「查询于：2026-11-21 14:00（Asia/Shanghai）」: when the forecast was fetched, in the place's own time.
+    private var asked: (day: String, time: String, zone: TimeZone?)? {
+        guard let line = lines.first(where: { $0.hasPrefix("查询于：") }) else { return nil }
+        let body = line.dropFirst(4)
+        let stamp = body.split(separator: "（").first.map(String.init) ?? ""
+        let parts = stamp.split(separator: " ").map(String.init)
+        guard let day = parts.first else { return nil }
+        let zone = body.split(separator: "（").dropFirst().first.map { TimeZone(identifier: String($0.dropLast())) } ?? nil
+        return (day, parts.count > 1 ? parts[1] : "", zone)
+    }
+
+    /// The place's date right now.
+    private func today(in zone: TimeZone?) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }
+
+    /// Fetched today, there: the card is live and may say 「今天」「明天」.
+    private var live: Bool {
+        guard let asked else { return false }
+        return asked.day == today(in: asked.zone)
+    }
+
+    /// The line under the place for a card that is not today's: when it was looked up.
+    private var fetchedNote: String? {
+        guard !live else { return nil }
+        guard let asked else { return "以前查的预报" }
+        return "\(Self.shortDate(asked.day) ?? asked.day) \(asked.time) 查的"
+    }
+
     private var days: [Day] {
-        lines.filter { $0.contains(" | ") && !$0.hasPrefix("日期") }.enumerated().compactMap { index, row in
+        let live = live
+        return lines.filter { $0.contains(" | ") && !$0.hasPrefix("日期") }.enumerated().compactMap { index, row in
             let cells = row.components(separatedBy: " | ")
             guard cells.count >= 4 else { return nil }
-            return Day(id: index, date: Self.day(cells[0], index: index), sky: cells[1], range: cells[2], rain: cells[3])
+            return Day(id: index, date: Self.day(cells[0], index: index, live: live), sky: cells[1], range: cells[2], rain: cells[3])
         }
     }
 
-    /// 「2026-11-22」 → 「今天」「明天」「周日」.
-    private static func day(_ text: String, index: Int) -> String {
-        if index == 0 { return "今天" }
-        if index == 1 { return "明天" }
+    private static func parse(_ text: String) -> Date? {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(identifier: "UTC")
         parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: text) else { return text }
+        return parser.date(from: text)
+    }
+
+    private static func shortDate(_ text: String) -> String? {
+        guard let date = parse(text) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let parts = calendar.dateComponents([.month, .day], from: date)
+        return "\(parts.month ?? 0)/\(parts.day ?? 0)"
+    }
+
+    /// 「2026-11-22」 → 「今天」「明天」 on a live card, else 「周日」 or, on an old card, 「11/22」.
+    private static func day(_ text: String, index: Int, live: Bool) -> String {
+        if live, index == 0 { return "今天" }
+        if live, index == 1 { return "明天" }
+        guard let date = parse(text) else { return text }
+        if !live { return shortDate(text) ?? text }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
         let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-        return names[Calendar.current.component(.weekday, from: date) - 1]
+        return names[calendar.component(.weekday, from: date) - 1]
     }
 
     static func symbol(_ sky: String) -> String {
@@ -3819,9 +3928,12 @@ struct WeatherCard: View {
                     .foregroundStyle(Ink.accent)
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if let fetchedNote {
+                    Text(fetchedNote).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                }
             }
             if let now {
-                Text(now)
+                Text(live ? now : "当时：" + now)
                     .font(.system(size: Ink.Size.sub))
                     .foregroundStyle(Ink.ink)
                     .fixedSize(horizontal: false, vertical: true)

@@ -92,7 +92,7 @@ public enum WorkspaceTools {
                         try await host.stopJob(job)
                         return ToolOutput("停掉了后台任务 \(job)。")
                     }
-                    let state = try await host.checkJob(job, lines: min(400, max(5, Int(arguments["lines"]?.number ?? 40))))
+                    let state = try await host.checkJob(job, lines: min(400, max(5, (arguments["lines"]?.int ?? 40))))
                     let head = state.running ? "还在跑。" : "跑完了，退出码 \(state.exit.map(String.init) ?? "不明")。"
                     return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : hide(Shell.clip(state.tail))))
                 } catch {
@@ -137,8 +137,8 @@ public enum WorkspaceTools {
                     return ToolOutput(WorkspaceError.notText(target, data.count).localizedDescription + hint, isError: true)
                 }
                 let all = text.components(separatedBy: "\n")
-                let start = max(1, Int(arguments["from"]?.number ?? 1))
-                let count = max(1, Int(arguments["lines"]?.number ?? 400))
+                let start = max(1, (arguments["from"]?.int ?? 1))
+                let count = max(1, (arguments["lines"]?.int ?? 400))
                 let slice = all.dropFirst(start - 1).prefix(count)
                 if slice.isEmpty { return ToolOutput("文件只有 \(all.count) 行。", isError: true) }
                 let numbered = slice.enumerated().map { "\(start + $0.offset)\t\($0.element)" }.joined(separator: "\n")
@@ -188,7 +188,7 @@ public enum WorkspaceTools {
     static func listDir(_ host: WorkspaceHost) -> AgentTool {
         HostTool(name: "list_dir", description: "看\(host.title)里一个文件夹有什么。path 留空看 \(host.root)；depth 是往下看几层，默认 2。", parameters: ["type": "object", "properties": ["path": path(host), "depth": ["type": "number"]]], label: { "\(host.title)：翻看 \($0["path"]?.string ?? "")" }) { arguments in
             do {
-                return ToolOutput(try await host.listDir(arguments["path"]?.string ?? "", depth: Int(arguments["depth"]?.number ?? 2)))
+                return ToolOutput(try await host.listDir(arguments["path"]?.string ?? "", depth: (arguments["depth"]?.int ?? 2)))
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
