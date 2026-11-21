@@ -653,3 +653,8 @@ struct FileCard: View {
         return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) + " · " + where_
     }
 }
+
+/// Typing in the composer redraws the page; a reply whose words did not change is not laid out again.
+extension ProseView: Equatable {
+    static func == (a: ProseView, b: ProseView) -> Bool { a.text == b.text && a.streaming == b.streaming }
+}

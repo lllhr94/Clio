@@ -31,6 +31,8 @@ struct ChatPage: View {
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
     @State private var following = true
+    /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
+    @State private var jumpedTo: String?
     /// The conversation is moving under the reader's finger or settling after it.
     @State private var scrolling = false
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
@@ -1160,6 +1162,7 @@ struct ChatPage: View {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     ProseView(text: line.text)
+                        .equatable()
                         .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                         .contextMenu { replyMenu(line) }
                 }
@@ -1821,27 +1824,69 @@ struct ChatPage: View {
         .animation(Ink.Motion.unfold, value: waiting?.id)
         .overlay(alignment: .top) {
             // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
-            if farFromEnd && !following {
+            HStack(spacing: Ink.Space.m) {
+                if showsBackToMine { backToMine }
+                if farFromEnd && !following { backToEnd }
+            }
+            .offset(y: -46)
+            .animation(Ink.Motion.settle, value: showsBackToMine)
+            .animation(Ink.Motion.settle, value: farFromEnd && !following)
+        }
+    }
+
+    /// 回到我上一句: shown when you are reading back, or under a long reply; each tap goes one of your messages further up.
+    private var showsBackToMine: Bool {
+        guard chat.lines.contains(where: { $0.kind == .user }) else { return false }
+        if farFromEnd && !following { return true }
+        guard let last = chat.lines.last, last.kind == .bot else { return false }
+        return last.text.count > 600 || chat.lines.suffix(6).contains(where: { $0.kind == .steps })
+    }
+
+    private var backToMine: some View {
+        Button {
+            Haptics.light()
+            let mine = chat.lines.suffix(shownCount).filter { $0.kind == .user }.map(\.id)
+            let target: String?
+            if let jumped = jumpedTo, let index = mine.firstIndex(of: jumped) {
+                target = index > 0 ? mine[index - 1] : mine.first
+            } else {
+                target = mine.last
+            }
+            guard let target else { return }
+            following = false
+            jumpedTo = target
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
+        } label: {
+            floating("arrow.up")
+        }
+        .buttonStyle(PressStyle())
+        .transition(.scale(scale: 0.6).combined(with: .opacity))
+        .accessibilityLabel("回到我上一句")
+    }
+
+    private func floating(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: Ink.Size.sub, weight: .semibold))
+            .foregroundStyle(Ink.ink)
+            .frame(width: 36, height: 36)
+            .background(Ink.paperRaised, in: .circle)
+            .overlay(Circle().strokeBorder(Ink.rule, lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+            .contentShape(.circle)
+    }
+
+    private var backToEnd: some View {
                 Button {
                     Haptics.light()
                     following = true
+                    jumpedTo = nil
                     toEnd(animated: true)
                 } label: {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 36, height: 36)
-                        .background(Ink.paperRaised, in: .circle)
-                        .overlay(Circle().strokeBorder(Ink.rule, lineWidth: 0.5))
-                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-                        .contentShape(.circle)
+                    floating("arrow.down")
                 }
                 .buttonStyle(PressStyle())
-                .offset(y: -46)
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
                 .accessibilityLabel("回到最新")
-            }
-        }
     }
 
     private static let end = "foot-of-page"
@@ -2248,8 +2293,11 @@ private struct Trace: View {
     }
     @State private var open = Pref.traceOpen
 
-    /// Steps shown while the companion works, before 「前面还有」.
-    private static let liveRows = 4
+    /// While it works: 「第 3 步：搜索 重庆天气」.
+    private var liveLine: String {
+        guard let current = line.tools.last else { return "沉吟" }
+        return "第 \(line.tools.count) 步：" + current
+    }
 
     /// Done: 「6 步 · 搜索、读网页、写文件 · 12 秒」.
     private var summary: String {
@@ -2285,7 +2333,7 @@ private struct Trace: View {
                     } else {
                         Image(systemName: "checkmark.circle").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ok)
                     }
-                    Text(Words.t(line.live ? (line.tools.isEmpty ? "沉吟" : "第 \(line.tools.count) 步") : summary))
+                    Text(Words.t(line.live ? liveLine : summary))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
@@ -2299,9 +2347,9 @@ private struct Trace: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
-            // While it works: only the newest few steps, the rest folded above them. Done: one line until opened.
-            if open || line.live {
-                let hidden = open ? 0 : max(0, line.tools.count - Self.liveRows)
+            // One line whether it works or is done (「第 3 步：搜索 重庆天气」); every step when you open it.
+            if open {
+                let hidden = 0
                 VStack(alignment: .leading, spacing: 0) {
                     if hidden > 0 {
                         Button {
