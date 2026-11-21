@@ -66,12 +66,12 @@ private final class Clock {
     }
 }
 
-@MainActor
 /// Stands in for the app's draft store; the fixture only checks the composer empties.
 private enum DraftAttachments {
     static func clear(_ chat: String) {}
 }
 
+@MainActor
 private final class FlowFixture {
     var draft = "你好"
     var photos = ["photo"]
