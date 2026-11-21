@@ -121,7 +121,7 @@ private struct TerminalHost: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         view.terminalDelegate = context.coordinator
-        view.font = Ink.uiMono(13)
+        view.font = Ink.uiMono(Ink.Size.small)
         paint(view)
         context.coordinator.attach(view)
         DispatchQueue.main.async { _ = view.becomeFirstResponder() }
@@ -129,6 +129,8 @@ private struct TerminalHost: UIViewRepresentable {
     }
 
     func updateUIView(_ view: TerminalView, context: Context) {
+        let font = Ink.uiMono(Ink.Size.small)
+        if view.font != font { view.font = font }
         paint(view)
     }
 
@@ -138,10 +140,10 @@ private struct TerminalHost: UIViewRepresentable {
     }
 
     private func paint(_ view: TerminalView) {
-        let dark = scheme == .dark
-        view.nativeBackgroundColor = dark ? UIColor(red: 0.11, green: 0.10, blue: 0.09, alpha: 1) : UIColor(red: 0.985, green: 0.97, blue: 0.94, alpha: 1)
-        view.nativeForegroundColor = dark ? UIColor(red: 0.92, green: 0.89, blue: 0.84, alpha: 1) : UIColor(red: 0.17, green: 0.16, blue: 0.14, alpha: 1)
-        view.caretColor = UIColor(red: 0.29, green: 0.42, blue: 0.54, alpha: 1)
+        let traits = UITraitCollection(userInterfaceStyle: scheme == .dark ? .dark : .light)
+        view.nativeBackgroundColor = UIColor(Ink.paper).resolvedColor(with: traits)
+        view.nativeForegroundColor = UIColor(Ink.ink).resolvedColor(with: traits)
+        view.caretColor = UIColor(Ink.accent).resolvedColor(with: traits)
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {
