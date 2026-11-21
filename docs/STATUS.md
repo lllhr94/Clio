@@ -6,6 +6,8 @@
 
 ## 2026-11-21 交接：接手的人先看这一节
 
+**最新（11-21 晚）**：清单看 `docs/PLAN-NEXT.md`（Claude 马上做 / 接下来 / 交给 Codex）；给 Codex 的整份在 `docs/CODEX-NEXT.md`；Open Minis 65 条规则在 `docs/MINIS-RULES.md` 等主人勾选；多平台在 `docs/PLATFORMS.md`；浏览器和云端在 `docs/BROWSER-AND-CLOUD.md`。主人说「暂时先这样」，下一批等主人发话。
+
 **当前状态**
 - 分支 `batch-0.34`，最新包已打：https://github.com/lllhr94/Clio/releases/download/probe-batch-0.34/Clio-probe.ipa （run 44881677457，编译通过；含 C22/C23 宠物起落和大小滑杆；含远山钥匙只算一次、来源只在「N 个来源」一处并带网页名字）。主人在真机上试，等反馈。
 - 已合入：C14～C21（Codex）；Claude 的性格 / 说话风格 / 朱印字 / 名帖正反面、头像呼吸与一眼卡、记下了可撤回、问答目录、做成长图、健康卡片、常亮黑屏入口；浏览器小窗宽度、来源不重复（正文末尾的「来源：」链接列表在有来源条时藏起来，提示词也不让模型写）、窄表格铺满卡片。
