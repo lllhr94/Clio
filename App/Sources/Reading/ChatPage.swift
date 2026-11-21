@@ -1174,10 +1174,9 @@ struct ChatPage: View {
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
-                    ProseView(text: line.text)
+                    // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
+                    SelectableProse(text: line.text)
                         .equatable()
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                        .contextMenu { replyMenu(line) }
                 }
                 let found = sources(for: line)
                 if !found.isEmpty, !(chat.fresh?.id == line.id) {
@@ -1190,6 +1189,17 @@ struct ChatPage: View {
                 if line.id == chat.lines.last(where: { $0.kind == .bot })?.id, !working {
                     footer(line)
                         .transition(.opacity)
+                } else if !(chat.fresh?.id == line.id) {
+                    // Older replies: the same menu, quietly.
+                    Menu { replyMenu(line) } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: Ink.Size.small, weight: .medium))
+                            .foregroundStyle(Ink.inkFaint)
+                            .frame(width: 28, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .padding(.leading, -6)
+                    .accessibilityLabel("这条回复的更多操作")
                 }
             }
         case .steps:
@@ -1511,7 +1521,6 @@ struct ChatPage: View {
     /// The same actions on every reply, by a long press: the footer only sits under the last one.
     @ViewBuilder
     private func replyMenu(_ line: ChatLine) -> some View {
-        Button("选择文字", systemImage: "selection.pin.in.out") { picking = line }
         Button("复制", systemImage: "doc.on.doc") {
             UIPasteboard.general.string = line.text
             Haptics.tick(0.5)

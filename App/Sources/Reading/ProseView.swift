@@ -658,3 +658,225 @@ struct FileCard: View {
 extension ProseView: Equatable {
     static func == (a: ProseView, b: ProseView) -> Bool { a.text == b.text && a.streaming == b.streaming }
 }
+
+// MARK: - Selectable replies
+
+/// A finished reply you can select in freely, as in a reading app: the words (paragraphs, headings, lists, quotes)
+/// are one native text, so a drag can run from one paragraph into the next. Code, tables, pictures, files and formulas
+/// stand between them as their own blocks (code keeps its copy button).
+struct SelectableProse: View, Equatable {
+    @AppStorage("look.face") private var face = "serif"
+    @AppStorage("look.code") private var code = "maple"
+    @AppStorage("look.size") private var size = 17.0
+    @AppStorage("look.leading") private var leading = 0.0
+    /// Native text takes its colours when set: a change of light and dark sets it again.
+    @Environment(\.colorScheme) private var scheme
+    let text: String
+
+    static func == (a: SelectableProse, b: SelectableProse) -> Bool { a.text == b.text }
+
+    enum Part {
+        case words([Prose.Block])
+        case block(Prose.Block)
+    }
+
+    /// Runs of words, and the blocks that stand on their own.
+    static func parts(_ blocks: [Prose.Block]) -> [Part] {
+        var out: [Part] = []
+        var run: [Prose.Block] = []
+        func flush() {
+            if !run.isEmpty { out.append(.words(run)) }
+            run = []
+        }
+        for block in blocks {
+            if ProseWords.isWords(block) {
+                run.append(block)
+            } else {
+                flush()
+                out.append(.block(block))
+            }
+        }
+        flush()
+        return out
+    }
+
+    var body: some View {
+        let _ = (face, code, size, leading)
+        let parts = Self.parts(ParsedCache.blocks(text))
+        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .words(let blocks):
+                    ProseText(attributed: ProseWords.make(blocks))
+                case .block(let block):
+                    BlockView(block: block, fading: false)
+                }
+            }
+        }
+        .id("\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)")
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The words of a reply as one attributed text, set like `BlockView` sets them.
+enum ProseWords {
+    static func isWords(_ block: Prose.Block) -> Bool {
+        switch block {
+        case .heading, .list: return true
+        case .paragraph(let text): return FileCard.links(in: text) == nil && !text.contains("![")
+        case .quote(let inner): return inner.allSatisfy(isWords)
+        default: return false
+        }
+    }
+
+    static func make(_ blocks: [Prose.Block]) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for (index, block) in blocks.enumerated() {
+            if index > 0 { out.append(NSAttributedString(string: "\n")) }
+            out.append(set(block, quoteDepth: 0, first: index == 0))
+        }
+        return out
+    }
+
+    private static func style(spacing: CGFloat = Pref.size * 0.8, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = tight ? Ink.leading * 0.5 : Ink.leading
+        style.paragraphSpacing = spacing
+        style.paragraphSpacingBefore = before
+        style.firstLineHeadIndent = indent
+        style.headIndent = indent + hanging
+        if hanging > 0 { style.tabStops = [NSTextTab(textAlignment: .left, location: indent + hanging)] }
+        return style
+    }
+
+    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool) -> NSAttributedString {
+        let quote = CGFloat(quoteDepth) * Pref.size * 1.1
+        let ink = quoteDepth > 0 ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
+        switch block {
+        case .heading(let level, let text):
+            let grow: CGFloat = level <= 1 ? 6 : (level == 2 ? 3 : 1)
+            let before: CGFloat = first ? 0 : (level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
+            return inline(text, size: Pref.size + grow, bold: true, ink: ink,
+                          paragraph: style(spacing: Pref.size * 0.5, before: before, indent: quote, tight: true))
+        case .paragraph(let text):
+            return inline(text, size: Pref.size, bold: false, ink: ink, paragraph: style(indent: quote))
+        case .list(let items):
+            let out = NSMutableAttributedString()
+            for (index, item) in items.enumerated() {
+                if index > 0 { out.append(NSAttributedString(string: "\n")) }
+                let marker: String
+                if let checked = item.checked { marker = checked ? "☑︎" : "☐" }
+                else if let number = item.number { marker = "\(number)." }
+                else { marker = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪") }
+                let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
+                let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
+                let last = index == items.count - 1
+                let paragraph = style(spacing: last ? Pref.size * 0.8 : Pref.size * 0.35, indent: indent, hanging: hang)
+                out.append(NSAttributedString(string: marker + "\t", attributes: [
+                    .font: Ink.uiFace(Pref.size), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
+                ]))
+                out.append(inline(item.text, size: Pref.size, bold: false, ink: ink, paragraph: paragraph))
+            }
+            return out
+        case .quote(let inner):
+            let out = NSMutableAttributedString()
+            for (index, block) in inner.enumerated() {
+                if index > 0 { out.append(NSAttributedString(string: "\n")) }
+                out.append(set(block, quoteDepth: quoteDepth + 1, first: first && index == 0))
+            }
+            return out
+        default:
+            return NSAttributedString()
+        }
+    }
+
+    /// One block's words with their marks: bold, italics, code, links, strikethrough.
+    private static func inline(_ text: String, size: CGFloat, bold: Bool, ink: UIColor, paragraph: NSParagraphStyle) -> NSAttributedString {
+        let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        let out = NSMutableAttributedString()
+        for run in parsed.runs {
+            let piece = String(parsed[run.range].characters)
+            let intent = run.inlinePresentationIntent ?? []
+            var font = Ink.uiFace(size, bold: bold || intent.contains(.stronglyEmphasized))
+            if intent.contains(.emphasized), let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                font = UIFont(descriptor: slanted, size: size)
+            }
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]
+            if intent.contains(.code) {
+                attributes[.font] = Ink.uiMono(max(12, size - 2))
+                attributes[.backgroundColor] = UIColor(Ink.mine)
+                attributes[.foregroundColor] = UIColor(Ink.Code.inline)
+            }
+            if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if let link = run.link {
+                attributes[.link] = link
+                attributes[.foregroundColor] = UIColor(Ink.accent)
+                attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            out.append(NSAttributedString(string: piece, attributes: attributes))
+        }
+        return out
+    }
+}
+
+/// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
+private struct ProseText: UIViewRepresentable {
+    let attributed: NSAttributedString
+    @Environment(\.openURL) private var openURL
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(usingTextLayoutManager: true)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        // Our own link colours stay.
+        view.linkTextAttributes = [:]
+        view.delegate = context.coordinator
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.open = openURL
+        if !view.attributedText.isEqual(to: attributed) { view.attributedText = attributed }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.window?.windowScene?.screen.bounds.width ?? 360
+        let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(fitted.height))
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var open: OpenURLAction?
+
+        /// A tapped link goes where the rest of Clio sends links (the in-app browser, 书案 files …).
+        func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
+            if case .link(let url) = textItem.content, let open {
+                return UIAction { _ in open(url) }
+            }
+            return defaultAction
+        }
+    }
+}
+
+extension Ink {
+    /// The reading face as a UIKit font, for native selectable text.
+    static func uiFace(_ size: CGFloat, bold: Bool = false) -> UIFont {
+        if let name = Pref.face.postScript(bold: bold), has(name), let font = UIFont(name: name, size: size) { return font }
+        let base = UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+        let design: UIFontDescriptor.SystemDesign
+        switch Pref.face {
+        case .sans: design = .default
+        case .rounded: design = .rounded
+        default: design = .serif
+        }
+        guard let described = base.fontDescriptor.withDesign(design) else { return base }
+        return UIFont(descriptor: described, size: size)
+    }
+}
