@@ -72,6 +72,12 @@ private final class FlowFixture {
     var files = ["file"]
     var following = true
     var scrolling = false
+    var jumpedTo: String?
+    var hideJumps: Task<Void, Never>?
+    var jumpVisible = false
+    var selecting: Set<UUID> = []
+
+    func lingerJumpButtons() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
     let clock = Clock()
@@ -164,6 +170,9 @@ private enum ChatFlowTests {
         try check(flow.following, false, "Wait for the user's fling to stop")
         flow.changePhase(from: .decelerating, to: .idle, at: 79)
         try check(flow.following, true, "Resume within 80 points including the composer inset")
+        flow.selecting.insert(UUID())
+        try check(flow.requestFollow() == nil, true, "A selection prevents auto-follow")
+        flow.selecting = []
 
         let scheduled = flow.requestFollow()
         await flow.clock.waitForSleepers(1)
