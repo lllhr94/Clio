@@ -14,6 +14,8 @@ struct NoteSheet: View {
     @State private var title: String
     @State private var signed = true
     @State private var saved = false
+    @State private var previewWidth: CGFloat = 0
+    private static let exportWidth: CGFloat = 390
 
     enum Theme: String, CaseIterable {
         case paper = "纸"
@@ -69,10 +71,12 @@ struct NoteSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Ink.Space.xl) {
-                    sheet
+                    sheet(width: previewWidth > 0 ? min(Self.exportWidth, max(1, previewWidth - Ink.Space.page * 2)) : nil)
                         .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .shadow(color: Ink.Artwork.black.opacity(0.10), radius: Ink.Space.l, y: Ink.Space.s)
-                    HStack(spacing: Ink.Space.s) {
+                    let themeLayout = previewWidth > 0 && previewWidth < Ink.Size.body * 16
+                        ? AnyLayout(VStackLayout(spacing: Ink.Space.s)) : AnyLayout(HStackLayout(spacing: Ink.Space.s))
+                    themeLayout {
                         ForEach(Theme.allCases, id: \.self) { item in
                             Button {
                                 withAnimation(Ink.Motion.settle) { theme = item }
@@ -95,27 +99,28 @@ struct NoteSheet: View {
                         TextField("题目（可空）", text: $title)
                             .font(Ink.label)
                             .padding(.horizontal, Ink.Space.l)
-                            .frame(height: 46)
+                            .frame(minHeight: Ink.Bar.height)
                             .paperCard()
                         if question?.isEmpty == false {
                             Toggle("带上我的问题", isOn: $withQuestion)
                                 .font(Ink.label)
                                 .tint(Ink.accent)
                                 .padding(.horizontal, Ink.Space.l)
-                                .frame(height: 46)
+                                .frame(minHeight: Ink.Bar.height)
                                 .paperCard()
                         }
                         Toggle("落款写上\(from)", isOn: $signed)
                             .font(Ink.label)
                             .tint(Ink.accent)
                             .padding(.horizontal, Ink.Space.l)
-                            .frame(height: 46)
+                            .frame(minHeight: Ink.Bar.height)
                             .paperCard()
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.xl)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { previewWidth = $0 }
             .background(Ink.paper)
             .navigationTitle(L.t("chat.note"))
             .navigationBarTitleDisplayMode(.inline)
@@ -141,7 +146,7 @@ struct NoteSheet: View {
         }
     }
 
-    private var sheet: some View {
+    private func sheet(width: CGFloat?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if !title.isEmpty {
                 Text(title)
@@ -182,13 +187,13 @@ struct NoteSheet: View {
             .padding(.bottom, Ink.Space.xxl)
         }
         .padding(.horizontal, Ink.Space.xxl)
-        .frame(width: 390, alignment: .leading)
+        .frame(width: width, alignment: .leading)
         .background(theme.ground)
     }
 
     @MainActor
     private func rendered() -> UIImage? {
-        let renderer = ImageRenderer(content: sheet)
+        let renderer = ImageRenderer(content: sheet(width: Self.exportWidth))
         // Very long pages at a lower scale, so the picture stays within what the phone can hold.
         renderer.scale = (text.count + (question?.count ?? 0)) > 4000 ? 2 : 3
         return renderer.uiImage

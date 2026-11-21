@@ -308,6 +308,12 @@ enum CSV {
 /// A grid that scrolls both ways, the first row as its header.
 private struct TableGrid: View {
     let rows: [[String]]
+    @State private var width: CGFloat = 0
+
+    private var narrowColumn: CGFloat { Ink.Size.small * 4.6 }
+    private var wideColumn: CGFloat {
+        width > 0 ? min(Ink.Size.body * 16, max(narrowColumn, width * 0.56)) : Ink.Size.body * 13
+    }
 
     var body: some View {
         let columns = rows.map(\.count).max() ?? 0
@@ -320,7 +326,7 @@ private struct TableGrid: View {
                                 .font(index == 0 ? .system(size: Ink.Size.small, weight: .semibold) : .system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(3)
-                                .frame(minWidth: 60, maxWidth: 220, alignment: .leading)
+                                .frame(minWidth: narrowColumn, maxWidth: wideColumn, alignment: .leading)
                                 .padding(.horizontal, Ink.Space.s)
                                 .padding(.vertical, Ink.Space.s)
                                 .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
@@ -332,6 +338,7 @@ private struct TableGrid: View {
             .padding(Ink.Space.l)
             .textSelection(.enabled)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 }
 

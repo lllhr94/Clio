@@ -25,6 +25,17 @@ struct ApproveView: View {
     @State private var slide: CGFloat = 0
     @State private var lastTick = 0
     @State private var shown = false
+    @State private var viewport = CGSize.zero
+
+    private var shortWindow: Bool { viewport.height > 0 && viewport.height < viewport.width * 1.25 }
+    private var slipWidth: CGFloat? {
+        guard viewport.width > 0 else { return nil }
+        let gutter = (largeText ? Ink.Space.l : Ink.Space.page) * 2
+        return min(max(1, viewport.width - gutter), viewport.width * (largeText ? 0.92 : 0.80),
+                   Ink.Size.body * (largeText ? 33 : 24))
+    }
+    private var paperSide: CGFloat { min((slipWidth ?? 0) * 0.93, viewport.height * 0.53) }
+    private var stampSide: CGFloat { (slipWidth ?? 0) * 0.36 }
 
     init(approval: Approval, team: TeamModel) {
         self.team = team
@@ -67,7 +78,7 @@ struct ApproveView: View {
                     if waiting > 0 && !largeText {
                         SlipShape()
                             .fill(Ink.paperRaised)
-                            .frame(width: min(300, UIScreen.main.bounds.width * 0.72), height: min(300, UIScreen.main.bounds.width * 0.72))
+                            .frame(width: paperSide, height: paperSide)
                             .rotationEffect(.degrees(5))
                             .offset(x: 14, y: 12)
                             .blur(radius: 1.5)
@@ -83,7 +94,7 @@ struct ApproveView: View {
                         .id(current.id)
                         .transition(.asymmetric(
                             insertion: .scale(scale: 0.86).combined(with: .opacity).combined(with: .offset(x: 10, y: 30)),
-                            removal: .offset(x: 300, y: -520).combined(with: .opacity)
+                            removal: .offset(x: viewport.width * 0.85, y: -viewport.height * 0.65).combined(with: .opacity)
                         ))
                 }
                 .scaleEffect(shown ? 1 : 0.9)
@@ -107,13 +118,14 @@ struct ApproveView: View {
                         .contentTransition(.opacity)
                     controls
                         .padding(.top, Ink.Space.l)
-                        .frame(minHeight: largeText ? nil : 164, alignment: .top)
+                        .frame(minHeight: largeText || shortWindow ? nil : Ink.Bar.height * 3.6, alignment: .top)
                 }
                 .padding(.horizontal, Ink.Space.xl)
                 .padding(.bottom, Ink.Space.m)
             }
-            .modifier(ApprovalViewport(scrolls: largeText))
+            .modifier(ApprovalViewport(scrolls: largeText || shortWindow))
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
         .fontDesign(.rounded)
         .onAppear {
             Haptics.prepare()
@@ -242,18 +254,17 @@ struct ApproveView: View {
         }
         .foregroundStyle(Ink.ink)
         .padding(.init(top: 26, leading: 20, bottom: 22, trailing: 20))
-        .frame(width: largeText ? nil : 300)
-        .frame(maxWidth: largeText ? .infinity : nil, alignment: .leading)
+        .frame(width: slipWidth, alignment: .leading)
         .background(SlipShape().fill(Ink.paperRaised))
         .overlay(alignment: .bottomTrailing) {
             Group {
                 if verdict == .rejected {
-                    Stamp(word: L.t("approval.refusedTitle"), date: Self.clock(stampedAt, "MM-dd HH:mm"), ink: Ink.inkSoft)
+                    Stamp(word: L.t("approval.refusedTitle"), date: Self.clock(stampedAt, "MM-dd HH:mm"), ink: Ink.inkSoft, side: stampSide)
                         .rotationEffect(.degrees(-14))
                 } else {
                     // Approved: Clio's own seal, pressed beside your name, with when.
                     VStack(spacing: Ink.Space.xs) {
-                        ClioSeal(size: 66, tilt: -8)
+                        ClioSeal(size: stampSide * 0.61, tilt: -8)
                         Text(Self.clock(stampedAt, "MM-dd HH:mm"))
                             .font(Ink.mono(Ink.Size.micro, weight: .semibold))
                             .foregroundStyle(Ink.seal)
@@ -377,6 +388,7 @@ private struct Stamp: View {
     let word: String
     let date: String
     let ink: Color
+    let side: CGFloat
 
     var body: some View {
         ZStack {
@@ -391,7 +403,7 @@ private struct Stamp: View {
             }
             .foregroundStyle(ink)
         }
-        .frame(width: 108, height: 108)
+        .frame(width: side, height: side)
         .opacity(0.92)
         .accessibilityHidden(true)
     }

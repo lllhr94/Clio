@@ -15,6 +15,7 @@ struct ChatPage: View {
     @StateObject private var dictation = Dictation()
     @ObservedObject private var asker = Asker.shared
     @State private var petPerch = PetPerch()
+    @State private var chatViewport = CGSize.zero
     @Environment(\.accessibilityReduceMotion) private var calmPetMotion
     @Environment(\.scenePhase) private var scenePhase
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
@@ -510,10 +511,10 @@ struct ChatPage: View {
     /// The floating pet follows the top of this stack, including the keyboard safe area.
     private var bottomStack: some View {
         VStack(spacing: 0) {
-            PetPerchSpace(face: isRoom ? nil : bot.avatar)
+            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: chatViewport)
             VStack(spacing: 0) {
                 if let form = dockedForm {
-                    PetDockSlip { InlineAsk(form: form).id(form.id) }
+                    PetDockSlip(availableHeight: chatViewport.height) { InlineAsk(form: form).id(form.id) }
                         .padding(.horizontal, Ink.Bar.edge)
                         .padding(.bottom, Ink.Space.s)
                         .transition(.opacity)
@@ -570,6 +571,7 @@ struct ChatPage: View {
                 .zIndex(3)
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { chatViewport = $0 }
         .safeAreaInset(edge: .bottom) { bottomStack }
         .sheet(isPresented: $petSettingsOpen) { PetPage() }
         .onAppear {
@@ -842,7 +844,7 @@ struct ChatPage: View {
                     glancing = true
                 }
                 .popover(isPresented: $glancing) {
-                    GlanceCard(team: team, bot: bot, key: chat.key,
+                    GlanceCard(team: team, bot: bot, key: chat.key, availableWidth: chatViewport.width,
                                openCard: { glancing = false; cardOpen = true },
                                openDetail: { glancing = false; detailOpen = true })
                         .presentationCompactAdaptation(.popover)
@@ -2995,7 +2997,7 @@ private struct Trace: View {
                             }
                             .padding(.horizontal, Ink.Space.m)
                             .padding(.vertical, Ink.Space.s)
-                            .frame(maxWidth: 220, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .paperCard()
                         }
                         .buttonStyle(PressStyle())
