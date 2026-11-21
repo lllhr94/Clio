@@ -62,7 +62,7 @@ struct RowLabel<Leading: View>: View {
     var body: some View {
         HStack(alignment: large ? .top : .center, spacing: Ink.Space.m) {
             leading
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 let labels = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.xs)) :
                     AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: Ink.Space.s))
                 labels {
