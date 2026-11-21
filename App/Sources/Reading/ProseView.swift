@@ -337,47 +337,45 @@ private struct CodeBlock: View {
 }
 
 /// A table that scrolls sideways when it is wider than the page.
-/// Each column gets a width measured from its words (up to 260 points, then they wrap), and each row is as tall
+/// Each column's width is planned for the room the table has (see `spread`), and each row is as tall
 /// as its tallest cell, so a cell that wraps onto several lines pushes the line under it down instead of
 /// running over it.
 private struct TableBlock: View {
     let table: Prose.Table
 
-    private static let widest: CGFloat = 260
     /// Table text, two points under the reading size.
     private static var cellSize: CGFloat { CGFloat(max(12, Pref.size - 2)) }
     private static let gap: CGFloat = 20
     /// How wide the block is on the page, so a narrow table can spread across it.
     @State private var room: CGFloat = 0
 
-    /// The measured widths, with any room left over shared out between the columns: a table of short cells
-    /// fills its card instead of sitting in the left half of it.
+    /// Column widths planned for the width the table really has, on any phone, the way reading apps lay out tables
+    /// (after Open Minis' planner, written anew): a column with more text is never narrower than one with less.
+    /// 1. Everything fits on one line: the leftover room is shared in proportion to each column's text.
+    /// 2. Each column at a comfortable width (at most 35% of the room) fits: they fill the room, the wordier ones
+    ///    getting more, and cells wrap.
+    /// 3. Otherwise the table slides sideways, no column wider than 70% of the room, so the next one peeks in.
     private func spread(_ natural: [CGFloat]) -> [CGFloat] {
         guard !natural.isEmpty, room > 0 else { return natural }
-        let used = natural.reduce(0, +) + Self.gap * CGFloat(natural.count - 1) + Ink.Space.l * 2
-        let extra = room - used
-        if extra < -1 {
-            // Too wide for the page: narrow the wide columns and let their cells wrap, as Open Minis does, so the table
-            // fits the phone. Only when even that cannot fit (many columns) does it still slide sideways.
-            let floor: CGFloat = 56
-            let available = room - Self.gap * CGFloat(natural.count - 1) - Ink.Space.l * 2
-            guard available >= floor * CGFloat(natural.count) else { return natural.map { max(floor, min($0, 160)) } }
-            var widths = natural
-            // Take the excess from the widest columns first, never below the floor.
-            var excess = widths.reduce(0, +) - available
-            while excess > 0.5 {
-                let widest = widths.max() ?? floor
-                let next = widths.filter { $0 < widest }.max() ?? floor
-                let wide = widths.indices.filter { widths[$0] >= widest - 0.5 }
-                let step = min(widest - max(next, floor), excess / CGFloat(wide.count))
-                guard step > 0.01 else { break }
-                for index in wide { widths[index] -= step }
-                excess -= step * CGFloat(wide.count)
-            }
-            return widths
+        let count = CGFloat(natural.count)
+        let available = room - Self.gap * (count - 1) - Ink.Space.l * 2
+        guard available > 0 else { return natural }
+        let floor = min(80, available / count)
+        let total = natural.reduce(0, +)
+        if total <= available {
+            let extra = available - total
+            return natural.map { $0 + extra * $0 / max(1, total) }
         }
-        guard extra > 1 else { return natural }
-        return natural.map { $0 + extra / CGFloat(natural.count) }
+        let comfortable = natural.map { max(floor, min($0, available * 0.35)) }
+        let snug = comfortable.reduce(0, +)
+        if snug <= available {
+            // The rest goes to the columns that still want more, in proportion to how much more.
+            let wants = zip(natural, comfortable).map { max(0, $0 - $1) }
+            let wanted = wants.reduce(0, +)
+            let extra = available - snug
+            return zip(comfortable, wants).map { $0 + (wanted > 0 ? extra * $1 / wanted : extra / count) }
+        }
+        return natural.map { max(floor, min($0, available * 0.7)) }
     }
 
     private var widths: [CGFloat] {
@@ -390,7 +388,7 @@ private struct TableBlock: View {
             for row in table.rows where column < row.count {
                 natural = max(natural, Self.measure(row[column], font: body))
             }
-            return min(Self.widest, max(28, ceil(natural) + 4))
+            return max(28, ceil(natural) + 4)
         }
     }
 
