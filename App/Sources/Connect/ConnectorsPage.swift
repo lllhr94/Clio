@@ -799,7 +799,7 @@ private struct GoogleSheet: View {
     }
 
     private func step(_ number: Int, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Ink.Space.s) {
             Text("\(number)").font(.system(size: Ink.Size.small, weight: .bold)).foregroundStyle(Ink.accent).frame(width: 16)
             Text(text).font(.system(size: Ink.Size.sub))
         }
