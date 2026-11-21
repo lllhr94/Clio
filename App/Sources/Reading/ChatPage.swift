@@ -919,7 +919,9 @@ struct ChatPage: View {
                         .presentationCompactAdaptation(.popover)
                 }
             VStack(alignment: .leading, spacing: 0) {
+                // One line: a long name wrapping pushed the status line out of the capsule.
                 Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
+                    .lineLimit(1)
                 HStack(spacing: 4) {
                     Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
                     Text(headerLine)

@@ -250,7 +250,9 @@ struct SpritePet: View {
         // The view is as tall as the drawing down to its feet; what lies under the feet (a shadow) hangs below.
         // Pixel frames hold for a tenth of a second or more: twelve looks a second is plenty, and keeps the phone
         // from redrawing the pet thirty times a second for nothing.
-        TimelineView(.animation(minimumInterval: 1 / 12)) { timeline in
+        // A single frame, or a one-shot that has played out, has nothing more to draw: the clock stops.
+        let still = pack.animations[anim].map { $0.frames.count <= 1 || (!$0.loop && Date().timeIntervalSince(since) * 1000 > Double($0.total)) } ?? true
+        TimelineView(.animation(minimumInterval: 1 / 12, paused: still)) { timeline in
             frame(at: timeline.date, unit: u)
         }
         .frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.baseline) * u, alignment: .top)
