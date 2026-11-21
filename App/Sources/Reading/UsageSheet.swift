@@ -58,7 +58,7 @@ struct UsageSheet: View {
             Text("预计下次请求").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             if let estimate {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Self.percent(estimate.share)).font(Ink.serif(30, bold: true)).foregroundStyle(Ink.ink)
+                    Text(Self.percent(estimate.share)).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                     Spacer()
                     Text("\(Tokens.short(estimate.total)) / \(Tokens.short(estimate.window))")
                         .font(.system(size: Ink.Size.sub, weight: .medium).monospacedDigit())
@@ -136,8 +136,8 @@ struct UsageSheet: View {
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(Ink.serif(24, bold: true)).foregroundStyle(Ink.ink).monospacedDigit()
+        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+            Text(value).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink).monospacedDigit()
             Text(label).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -174,9 +174,9 @@ struct UsageSheet: View {
     private func balanceCard(_ endpoint: Endpoint, source: Balance.Source) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if let reading {
-                        Text(reading.shown).font(Ink.serif(28, bold: true)).foregroundStyle(floor > 0 && reading.amount < floor ? Ink.stop : Ink.ink)
+                        Text(reading.shown).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(floor > 0 && reading.amount < floor ? Ink.stop : Ink.ink)
                         if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     } else if loadingBalance {
                         ProgressView()
