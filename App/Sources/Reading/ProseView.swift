@@ -636,28 +636,51 @@ struct ProsePicture: View {
     }
 
     private func load() async {
-        if let url = URL(string: source), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                guard let picture = UIImage(data: data) else { failed = true; return }
-                // Kept as a file so the viewer can share and save it.
-                let name = url.lastPathComponent.isEmpty ? "图片.png" : url.lastPathComponent
-                let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + name)
-                try? data.write(to: local)
-                file = local
-                image = picture
-            } catch {
-                failed = true
-            }
-            return
+        image = nil
+        file = nil
+        failed = false
+        let written = source
+        let remote = URL(string: written).flatMap { url in
+            ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? url : nil
         }
-        var path = source
-        if path.hasPrefix("file://"), let url = URL(string: path) { path = url.path }
-        if path.hasPrefix(Workspace.root.path) { path = String(path.dropFirst(Workspace.root.path.count)) }
-        guard let url = Workspace.resolve(path.removingPercentEncoding ?? path),
-              let data = try? Data(contentsOf: url), let picture = UIImage(data: data) else { failed = true; return }
-        file = url
-        image = picture
+        do {
+            let downloaded: URL?
+            if let remote {
+                let (temporary, response) = try await URLSession.shared.download(from: remote)
+                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                downloaded = temporary
+            } else {
+                downloaded = nil
+            }
+            let preview = await Task.detached(priority: .userInitiated) { () -> (Data, URL)? in
+                if let downloaded, let remote {
+                    defer { try? FileManager.default.removeItem(at: downloaded) }
+                    guard let thumbnail = Workspace.picture(downloaded) else { return nil }
+                    let name = remote.lastPathComponent.isEmpty ? "picture" : remote.lastPathComponent
+                    let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + name)
+                    guard (try? FileManager.default.moveItem(at: downloaded, to: local)) != nil else { return nil }
+                    return (thumbnail.data, local)
+                }
+                var path = written
+                if path.hasPrefix("file://"), let url = URL(string: path) { path = url.path }
+                let root = Workspace.root.path
+                if path.hasPrefix(root + "/") { path = String(path.dropFirst(root.count)) }
+                guard let url = Workspace.resolve(path.removingPercentEncoding ?? path),
+                      let thumbnail = Workspace.picture(url) else { return nil }
+                return (thumbnail.data, url)
+            }.value
+            guard !Task.isCancelled else {
+                if remote != nil, let preview { try? FileManager.default.removeItem(at: preview.1) }
+                return
+            }
+            guard let (data, local) = preview, let picture = UIImage(data: data) else { failed = true; return }
+            file = local
+            image = picture
+        } catch {
+            if !Task.isCancelled { failed = true }
+        }
     }
 }
 

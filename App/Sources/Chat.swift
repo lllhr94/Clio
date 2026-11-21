@@ -447,7 +447,7 @@ final class ChatModel {
 
     /// A kept photo. `preview` is ignored: the phone has the whole photo.
     func photo(_ name: String, preview: Bool) async -> Data? {
-        Disk.photo(name)
+        await Task.detached(priority: .userInitiated) { Disk.photo(name) }.value
     }
 
     // MARK: Sending

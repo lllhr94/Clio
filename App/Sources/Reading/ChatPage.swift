@@ -28,6 +28,7 @@ struct ChatPage: View {
     @State private var spokenBase = ""
     @State private var photos: [Data] = []
     @State private var picks: [PhotosPickerItem] = []
+    @State private var attachmentRevision = UUID()
     @State private var takingPhoto = false
     @State private var approving: Approval?
     @State private var viewing: String?
@@ -682,11 +683,9 @@ struct ChatPage: View {
                 bring(kind)
             }
         }) {
+            let revision = attachmentRevision
             PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
-                guard photos.count < 4 else { say("最多带四张图。"); return nil }
-                guard let small = Self.shrink(data) else { return nil }
-                withAnimation(Ink.Motion.settle) { photos.append(small) }
-                return small
+                await addPhoto(data, revision: revision)
             }, removePhoto: { data in
                 if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
             }, pick: { attachPicked = $0 })
@@ -777,24 +776,32 @@ struct ChatPage: View {
             ApproveView(approval: approval, team: team)
         }
         .fullScreenCover(isPresented: $takingPhoto) {
-            CameraPicker { data in
-                if let data, let small = Self.shrink(data), photos.count < 4 { photos.append(small) }
+            let revision = attachmentRevision
+            CameraPicker { image in
+                guard let image else { return }
+                Task {
+                    let photo = await Task.detached(priority: .userInitiated) {
+                        image.jpegData(compressionQuality: 0.9)
+                    }.value
+                    if let photo { _ = await addPhoto(photo, revision: revision) }
+                }
             }
             .ignoresSafeArea()
         }
         .sheet(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
             PhotoViewer(chat: chat, attachmentId: item.id)
         }
-        .onChange(of: picks) { _, items in
+        .task(id: picks) {
+            let items = picks
+            let revision = attachmentRevision
             guard !items.isEmpty else { return }
-            Task {
-                for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self), let small = Self.shrink(data), photos.count < 4 {
-                        withAnimation(Ink.Motion.settle) { photos.append(small) }
-                    }
+            for item in items {
+                guard !Task.isCancelled, revision == attachmentRevision, picks == items, photos.count < 4 else { return }
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    _ = await addPhoto(data, revision: revision, selection: items)
                 }
-                picks = []
             }
+            if !Task.isCancelled, revision == attachmentRevision, picks == items { picks = [] }
         }
         .onChange(of: chat.lines.last?.id) { _, _ in
             if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
@@ -2715,6 +2722,7 @@ struct ChatPage: View {
     }
 
     private func clearComposer() {
+        invalidatePhotoSelection()
         historyPage = nil
         draft = ""
         photos = []
@@ -2723,15 +2731,20 @@ struct ChatPage: View {
         followToEnd()
     }
 
-    /// Smaller and as JPEG: quick to send and enough for a model to read.
-    static func shrink(_ data: Data) -> Data? {
-        guard let image = UIImage(data: data) else { return nil }
-        let scale = min(1, 1568 / max(1, max(image.size.width, image.size.height)))
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-            .jpegData(compressionQuality: 0.8)
+    private func invalidatePhotoSelection() {
+        attachmentRevision = UUID()
+        picks = []
+    }
+
+    private func addPhoto(_ data: Data, revision: UUID, selection: [PhotosPickerItem]? = nil) async -> Data? {
+        guard revision == attachmentRevision, photos.count < 4 else { return nil }
+        let small = await Task.detached(priority: .userInitiated) {
+            Picture.shrink(data, longest: 1568)?.data
+        }.value
+        guard !Task.isCancelled, revision == attachmentRevision, selection == nil || selection == picks,
+              photos.count < 4, let small else { return nil }
+        withAnimation(Ink.Motion.settle) { photos.append(small) }
+        return small
     }
 }
 

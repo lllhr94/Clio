@@ -84,6 +84,7 @@ private final class FlowFixture {
     var historyPage: [String]?
 
     func lingerJumpButtons() {}
+    func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
     let clock = Clock()
