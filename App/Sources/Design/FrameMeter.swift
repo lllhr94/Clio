@@ -96,7 +96,7 @@ enum MeterWindow {
         let window = PassThroughWindow(windowScene: scene)
         window.windowLevel = .statusBar + 1
         window.backgroundColor = .clear
-        let host = UIHostingController(rootView: FrameMeter().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, 8).padding(.top, 50))
+        let host = UIHostingController(rootView: FrameMeter().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, Ink.Space.s).padding(.top, Ink.Space.huge))
         host.view.backgroundColor = .clear
         window.rootViewController = host
         window.isUserInteractionEnabled = false
