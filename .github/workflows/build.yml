@@ -49,6 +49,10 @@ jobs:
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
           xcodebuild -version
 
+      - name: Test chat flow rules
+        working-directory: .
+        run: python3 tools/test_chat_flow.py
+
       - name: Test the engine (AgentKit)
         working-directory: AgentKit
         run: |
