@@ -221,7 +221,7 @@ struct EmptyNote: View {
     var body: some View {
         VStack(spacing: Ink.Space.m) {
             Image(systemName: symbol)
-                .font(.system(size: 28, weight: .light))
+                .font(.system(size: Ink.Size.title, weight: .light))
                 .foregroundStyle(Ink.inkFaint)
             Text(words)
                 .font(Ink.footnote)
