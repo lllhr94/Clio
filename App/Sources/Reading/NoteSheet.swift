@@ -17,17 +17,17 @@ struct NoteSheet: View {
 
         var ground: Color {
             switch self {
-            case .paper: Color(hex: 0xF7F3EA)
-            case .ink: Color(hex: 0x1F1D1A)
-            case .blossom: Color(hex: 0xF8ECEA)
+            case .paper: Ink.Artwork.paper
+            case .ink: Ink.Artwork.darkPaper
+            case .blossom: Ink.Artwork.blossom
             }
         }
 
         var words: Color {
             switch self {
-            case .paper: Color(hex: 0x3A4A5A)
-            case .ink: Color(hex: 0xE6DFD1)
-            case .blossom: Color(hex: 0x6A4650)
+            case .paper: Ink.Artwork.paperText
+            case .ink: Ink.Artwork.darkPaperText
+            case .blossom: Ink.Artwork.blossomText
             }
         }
     }
@@ -53,7 +53,7 @@ struct NoteSheet: View {
                 VStack(spacing: Ink.Space.xl) {
                     sheet
                         .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
-                        .shadow(color: .black.opacity(0.10), radius: 18, y: 10)
+                        .shadow(color: Ink.Artwork.black.opacity(0.10), radius: Ink.Space.l, y: Ink.Space.s)
                     HStack(spacing: Ink.Space.s) {
                         ForEach(Theme.allCases, id: \.self) { item in
                             Button {
@@ -94,10 +94,10 @@ struct NoteSheet: View {
             .navigationTitle(L.t("chat.note"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关上") { dismiss() }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
                 }
-                ToolbarItemGroup(placement: .confirmationAction) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button(saved ? "已存" : "存入相册", systemImage: saved ? "checkmark" : "square.and.arrow.down") { save() }
                     if let image = rendered() {
                         ShareLink(item: Image(uiImage: image), preview: SharePreview(title.isEmpty ? "笺" : title, image: Image(uiImage: image)))
@@ -111,7 +111,7 @@ struct NoteSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             if !title.isEmpty {
                 Text(title)
-                    .font(Ink.serif(34, bold: true, relativeTo: .largeTitle))
+                    .font(Ink.serif(Ink.Size.title, bold: true, relativeTo: .largeTitle))
                     .foregroundStyle(theme.words)
                     .padding(.top, Ink.Space.huge)
                 Rectangle().fill(theme.words.opacity(0.18)).frame(height: 1).padding(.vertical, Ink.Space.xl)
@@ -125,7 +125,7 @@ struct NoteSheet: View {
                 Spacer()
                 PetStill(size: 22, wash: theme.words.opacity(0.14), avatar: true)
                 Text(signed ? "\(from) · Clio" : "Clio")
-                    .font(Ink.serif(14, relativeTo: .footnote))
+                    .font(Ink.serif(Ink.Size.small, relativeTo: .footnote))
                     .foregroundStyle(theme.words.opacity(0.6))
                 Spacer()
             }
