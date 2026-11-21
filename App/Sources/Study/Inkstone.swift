@@ -22,18 +22,6 @@ struct InkstonePage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Ink.Space.m) {
-                Button {
-                    Haptics.light()
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 36, height: 36)
-                        .glassFace(in: Circle())
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel("关闭交互终端")
                 Menu {
                     Section("在哪台机器上写") {
                         Button {
@@ -51,8 +39,8 @@ struct InkstonePage: View {
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 4) {
-                            Text("笔砚").font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
+                        HStack(spacing: Ink.Space.xs) {
+                            Text("笔砚").font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                             Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                         Text(subtitle).font(Ink.footnote).foregroundStyle(ended ? Ink.stop : Ink.inkSoft).lineLimit(1)
@@ -69,6 +57,11 @@ struct InkstonePage: View {
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.accent)
                 }
+                Button(L.t("actions.done")) {
+                    Haptics.light()
+                    dismiss()
+                }
+                .buttonStyle(PressStyle())
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.s)
@@ -76,13 +69,13 @@ struct InkstonePage: View {
             if let hill {
                 TerminalHost(ended: $ended, why: $endedWhy, hill: hill)
                     .id(session)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, Ink.Space.xs)
             } else {
                 switch den.state {
                 case .awake:
                     TerminalHost(ended: $ended, why: $endedWhy, hill: nil)
                         .id(session)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, Ink.Space.xs)
                 case .broken(let why):
                     Text(why).font(Ink.secondary).foregroundStyle(Ink.stop).frame(maxWidth: .infinity, maxHeight: .infinity)
                 default:
