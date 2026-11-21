@@ -462,6 +462,30 @@ struct ChatPage: View {
         .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
     }
 
+    /// The pet, then the composer (or the find bar), on paper that fades up into the page.
+    private var bottomStack: some View {
+        VStack(spacing: 0) {
+        // The pet stands on the composer's top edge (or the plan card's, when that is showing).
+        PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
+            .opacity(dictation.listening || finding ? 0 : 1)
+        Group {
+            if finding { findBar } else { composerBar }
+        }
+            // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
+            // no longer reads through the glass.
+            .background(alignment: .bottom) {
+                LinearGradient(stops: [
+                    .init(color: Ink.paper.opacity(0), location: 0),
+                    .init(color: Ink.paper.opacity(0.92), location: 0.35),
+                    .init(color: Ink.paper, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                .padding(.top, -Ink.Space.xl)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
@@ -479,26 +503,7 @@ struct ChatPage: View {
                 .zIndex(3)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-            // The pet stands on the composer's top edge (or the plan card's, when that is showing).
-            PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
-                .opacity(dictation.listening || finding ? 0 : 1)
-            if finding { findBar } else { composerBar }
-                // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
-                // no longer reads through the glass.
-                .background(alignment: .bottom) {
-                    LinearGradient(stops: [
-                        .init(color: Ink.paper.opacity(0), location: 0),
-                        .init(color: Ink.paper.opacity(0.92), location: 0.35),
-                        .init(color: Ink.paper, location: 1),
-                    ], startPoint: .top, endPoint: .bottom)
-                    .padding(.top, -Ink.Space.xl)
-                    .ignoresSafeArea(edges: .bottom)
-                    .allowsHitTesting(false)
-                }
-            }
-        }
+        .safeAreaInset(edge: .bottom) { bottomStack }
         .sheet(isPresented: $petSettingsOpen) { PetPage() }
         .onAppear {
             chat.open()
