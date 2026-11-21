@@ -91,6 +91,7 @@ final class TeamModel: ObservableObject {
     private var memoryBook = MemoryBook()
     private var reviewingMemory = false
     private var memoryReviewAttempts: [String: Date] = [:]
+    private var cleanReviewTails: [String: ReviewTail] = [:]
     private var diaryReviewAttempt: Date?
     @Published private(set) var settings = TeamSettings()
     /// What each chat's Bot is doing now, by chat key.
@@ -240,6 +241,7 @@ final class TeamModel: ObservableObject {
             ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
         memories = memoryBook.memories
         memoryReviews = memoryBook.reviews
+        cleanReviewTails = [:]
         laters = Disk.load([Later].self, "later.json") ?? []
         routines = Disk.load([Routine].self, "routines.json") ?? []
         entries = [:]
@@ -2345,13 +2347,24 @@ extension TeamModel {
         let key: String
         let leaf: Leaf?
         let name: String
+
+        var id: String { leaf.map { key + "~" + $0.id } ?? key }
+    }
+
+    private struct ReviewTail: Equatable {
+        let entry: String?
+        let count: Int
+        let cutoff: String
     }
 
     private func reviewConversations(now: Date, includeLeaves: Bool) async {
+        if memoryBook.budgetDay == Tide.day(of: now),
+           memoryBook.requests >= MemoryReviewRules.requestsPerDay { return }
         let cutoff = Tide.day(of: now.addingTimeInterval(-7 * 86_400))
         let keys = bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) }
         var remaining = includeLeaves ? 8 : 2
         memoryReviewAttempts = memoryReviewAttempts.filter { now.timeIntervalSince($0.value) < 3600 }
+        cleanReviewTails = cleanReviewTails.filter { $0.value.cutoff == cutoff }
 
         for key in keys {
             guard remaining > 0, !Task.isCancelled, Grant.memory.policy == .allow else { break }
@@ -2364,43 +2377,47 @@ extension TeamModel {
             }
             for source in sources {
                 guard remaining > 0, !Task.isCancelled, canReview(key) else { break }
-                let sourceID = source.leaf.map { key + "~" + $0.id } ?? key
-                guard memoryReviewAttempts[sourceID] == nil,
+                guard memoryReviewAttempts[source.id] == nil,
                       let batch = reviewBatch(source, cutoff: cutoff, now: now) else { continue }
                 remaining -= 1
                 do {
                     try await review(source, day: batch.day, lines: batch.lines, cutoff: cutoff)
                 } catch {
                     // Network/model/disk failures leave every entry eligible for another attempt.
-                    if !Task.isCancelled { memoryReviewAttempts[sourceID] = now }
+                    if !Task.isCancelled { memoryReviewAttempts[source.id] = now }
                 }
             }
         }
     }
 
     private func canReview(_ key: String) -> Bool {
-        phase == .ready && Grant.memory.policy == .allow && runs[key] == nil
-            && !options(key).off.contains(Grant.memory.rawValue)
-    }
-
-    private func reviewEntries(_ source: ReviewSource) -> [Entry] {
-        let list: [Entry]
-        if let leaf = source.leaf {
-            list = entries(in: leaf, of: source.key)
-        } else {
-            list = history(source.key)
-        }
-        return list.filter {
-            $0.note != true && $0.fold != true && $0.message.role != .tool
-                && $0.message.toolCalls.isEmpty && !$0.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        guard phase == .ready, Grant.memory.policy == .allow, runs[key] == nil,
+              !options(key).off.contains(Grant.memory.rawValue) else { return false }
+        return bots.contains { Self.key(bot: $0.id) == key } || rooms.contains { Self.key(room: $0.id) == key }
     }
 
     private func reviewBatch(_ source: ReviewSource, cutoff: String, now: Date) -> (day: String, lines: [Entry])? {
-        let entries = reviewEntries(source)
-        guard let last = entries.map(\.at).max(),
-              now.timeIntervalSince1970 - last / 1000 >= MemoryReviewRules.idle else { return nil }
-        let eligible = entries.filter { Self.reviewDay($0) >= cutoff }
+        let list: [Entry]
+        let tail: ReviewTail
+        if let leaf = source.leaf {
+            guard leaves(source.key).contains(where: { $0.id == leaf.id }) else { return nil }
+            tail = ReviewTail(entry: leaf.id, count: leaf.count, cutoff: cutoff)
+            guard cleanReviewTails[source.id] != tail else { return nil }
+            list = entries(in: leaf, of: source.key)
+        } else {
+            list = history(source.key)
+            tail = ReviewTail(entry: list.last?.id, count: list.count, cutoff: cutoff)
+            guard cleanReviewTails[source.id] != tail else { return nil }
+        }
+
+        let recent = now.timeIntervalSince1970 * 1000 - 8 * 86_400_000
+        let eligible = list.filter {
+            $0.at >= recent && $0.note != true && $0.fold != true && $0.message.role != .tool
+                && $0.message.toolCalls.isEmpty && !$0.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && Self.reviewDay($0) >= cutoff
+        }
+        if let last = eligible.map(\.at).max(),
+           now.timeIntervalSince1970 - last / 1000 < MemoryReviewRules.idle { return nil }
         let byDay = Dictionary(grouping: eligible, by: Self.reviewDay)
         for day in byDay.keys.sorted() {
             guard let lines = byDay[day], lines.contains(where: { $0.message.role == .user }) else { continue }
@@ -2408,6 +2425,7 @@ extension TeamModel {
             let pending = lines.filter { !processed.contains($0.id) }
             if !pending.isEmpty { return (day, Array(pending.prefix(12))) }
         }
+        cleanReviewTails[source.id] = tail
         return nil
     }
 
