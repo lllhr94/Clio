@@ -1,5 +1,7 @@
 {
   "companion": {
+    "missingPetDefault": "这台手机还没有它用的宠物，头像先用默认宠物。导入那只宠物后，可以点头像手动换回。",
+    "missingPetStill": "这台手机还没有它用的宠物，头像先用名帖附带的定格图。导入那只宠物后，可以点头像手动换回。",
     "temper": "性格"
   },
   "homeThreads": {
