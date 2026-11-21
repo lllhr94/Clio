@@ -381,10 +381,10 @@ private struct Stamp: View {
     var body: some View {
         ZStack {
             Circle().strokeBorder(ink, lineWidth: 4)
-            Circle().strokeBorder(ink, lineWidth: 1.5).padding(7)
-            VStack(spacing: 2) {
+            Circle().strokeBorder(ink, lineWidth: 1.5).padding(Ink.Space.s)
+            VStack(spacing: Ink.Space.xs / 2) {
                 Text(word)
-                    .font(.system(size: 24, weight: .black))
+                    .font(.system(size: Ink.Size.title, weight: .black))
                     .tracking(2)
                 Text(date)
                     .font(Ink.mono(Ink.Size.micro, weight: .bold))
