@@ -205,8 +205,8 @@ struct ReminderAddTool: AgentTool {
 
 /// The Bot writes down what the user tells it about themselves.
 struct RememberTool: AgentTool {
-    /// True when it is new; false when the same words were already kept (then nothing new is written).
-    let keep: @Sendable (String) async -> Bool
+    /// The ID of a newly created memory. Refreshing an existing entry returns no ID.
+    let keep: @Sendable (String) async -> String?
 
     var spec: ToolSpec {
         ToolSpec(name: "remember", description: "记下关于用户的一件事（喜好、习惯、身边的人、正在做的事），以后每次聊天都会看到。只记用户亲口说的、以后用得上的；一次一件事，写成一句完整的话。", parameters: [
@@ -222,9 +222,8 @@ struct RememberTool: AgentTool {
         guard let fact = arguments["fact"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !fact.isEmpty else {
             return ToolOutput("没写要记什么。", isError: true)
         }
-        let added = await keep(fact)
-        // The chat's 「记下了」 line (and its 撤回) is only for what this turn added.
-        return ToolOutput(added ? "记下了。" : "这件事本来就记着，没有再记一遍。")
+        guard let id = await keep(fact) else { return ToolOutput("这件事本来就记着，没有再记一遍。") }
+        return ToolOutput("记下了。", detail: id)
     }
 }
 

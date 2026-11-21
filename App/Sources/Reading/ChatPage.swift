@@ -1415,8 +1415,8 @@ struct ChatPage: View {
                 roaming = true
             }, openFile: { url in
                 reading = ReadingFile(url: url)
-            }, unremember: { fact in
-                team.unremember(fact)
+            }, unremember: { id, fact in
+                team.unremember(id, fact: fact)
             })
         case .note:
             if line.fold {
@@ -2593,25 +2593,32 @@ private struct Trace: View {
     var visit: (URL) -> Void = { _ in }
     var openFile: (URL) -> Void = { _ in }
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
-    var unremember: ((String) -> Bool)?
+    var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
 
-    private func forget(_ fact: String, with unremember: (String) -> Bool) {
+    private func forget(_ memory: Remembered, with unremember: (String, String) -> Bool) {
         Haptics.light()
         // Shown as taken back only if it was: an entry you wrote or edited stays, and so does this line.
-        if unremember(fact) {
-            withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+        if unremember(memory.id, memory.fact) {
+            withAnimation(Ink.Motion.settle) { _ = undone.insert(memory.id) }
         } else {
             Haptics.lock()
         }
     }
 
     /// What these steps wrote into 拾遗, as the model wrote it.
-    private var remembered: [String] {
+    private struct Remembered: Identifiable {
+        let id: String
+        let fact: String
+    }
+
+    private var remembered: [Remembered] {
         line.tools.enumerated().compactMap { index, tool in
             guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count,
-                  line.details[index].output.hasPrefix("记下了") else { return nil }
-            return JSONValue.parse(line.details[index].input)?["fact"]?.string
+                  line.details[index].output.hasPrefix("记下了"),
+                  let id = line.details[index].full, UUID(uuidString: id) != nil,
+                  let fact = JSONValue.parse(line.details[index].input)?["fact"]?.string else { return nil }
+            return Remembered(id: id, fact: fact.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -2897,8 +2904,9 @@ private struct Trace: View {
         }
         if !line.live, let unremember {
             // 「记下了」: one quiet line per thing remembered, as Cindy's learning footer; 撤回 right there, or long-press.
-            ForEach(remembered, id: \.self) { fact in
-                let gone = undone.contains(fact)
+            ForEach(remembered) { memory in
+                let fact = memory.fact
+                let gone = undone.contains(memory.id)
                 HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
                     Image(systemName: gone ? "bookmark.slash" : "bookmark")
                         .font(.system(size: Ink.Size.micro))
@@ -2908,7 +2916,7 @@ private struct Trace: View {
                         .lineLimit(2)
                     Spacer(minLength: Ink.Space.s)
                     if !gone {
-                        Button("撤回") { forget(fact, with: unremember) }
+                        Button("撤回") { forget(memory, with: unremember) }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(Ink.accent)
                             .buttonStyle(.plain)
@@ -2919,7 +2927,7 @@ private struct Trace: View {
                 .contentShape(Rectangle())
                 .contextMenu {
                     if !gone {
-                        Button("撤回这条", systemImage: "bookmark.slash") { forget(fact, with: unremember) }
+                        Button("撤回这条", systemImage: "bookmark.slash") { forget(memory, with: unremember) }
                     }
                     Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = fact }
                 }
