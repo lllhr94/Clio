@@ -99,7 +99,7 @@ struct LookPage: View {
 
 struct ReadingSizePage: View {
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 0.0
+    @AppStorage("look.lineHeight") private var lineHeight = 1.5
 
     private static let sizes = [15.0, 16, 17, 19, 21, 24]
 
@@ -132,12 +132,19 @@ struct ReadingSizePage: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                LabeledSlider(title: L.t("settingsHome.lineSpacing"), value: Binding(
-                    get: { min(16, max(4, Pref.leading)) }, set: { leading = $0 }
-                ), range: 4...16, step: 0.5) { String(format: "%.1f", $0) }
-                if leading > 0 {
-                    Button(L.t("settingsHome.automaticSpacing")) { leading = 0 }
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    Text(L.t("settingsHome.lineSpacing"))
+                    Picker(L.t("settingsHome.lineSpacing"), selection: Binding(
+                        get: { Pref.lineHeights.indices.min { abs(Pref.lineHeights[$0] - lineHeight) < abs(Pref.lineHeights[$1] - lineHeight) } ?? 1 },
+                        set: { lineHeight = Pref.lineHeights[$0]; Haptics.tick(0.5) }
+                    )) {
+                        ForEach(Pref.lineHeights.indices, id: \.self) { index in
+                            Text(L.t("settingsHome.lineHeight\(index)")).tag(index)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
+                .animation(Ink.Motion.settle, value: lineHeight)
             } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
 
             Section {
@@ -156,7 +163,7 @@ struct ReadingSizePage: View {
 
     private func reset() {
         size = 17
-        leading = 0
+        lineHeight = 1.5
         UIScale.shared.value = 1
     }
 }
