@@ -340,7 +340,7 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top < 240
             } action: { _, nearTop in
-                if nearTop, scrolling { loadEarlier() }
+                if nearTop, scrolling, selecting.isEmpty { loadEarlier() }
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
@@ -569,10 +569,10 @@ struct ChatPage: View {
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
-            hideJumps?.cancel()
-            selecting.removeAll()
             chat.close()
             team.markSeen(chat.key)
+            hideJumps?.cancel()
+            selecting.removeAll()
             if dictation.listening { dictation.stop() }
         }
         .sheet(item: $noting) { note in
@@ -3549,37 +3549,4 @@ struct LookbackLine: View {
         .buttonStyle(.plain)
         .accessibilityLabel("回望：" + text)
     }
-}
-
-
-private final class ChatViewport {
-    var ids: [String] = []
-}
-
-private struct ChatBrowserIndicator: View {
-    @ObservedObject var browser: BrowserSession
-    let open: () -> Void
-    var body: some View {
-        if browser.acting {
-            Button(action: open) {
-                Image(systemName: "globe")
-                    .font(.system(size: Ink.Size.body, weight: .medium))
-                    .symbolEffect(.pulse, options: .repeating)
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                    .glassFace(in: Circle())
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel(L.t("nav.browser"))
-        }
-    }
-}
-
-private struct ChatShareSheet: UIViewControllerRepresentable {
-    let url: URL
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
