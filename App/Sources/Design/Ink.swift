@@ -20,8 +20,16 @@ final class Theme {
         UserDefaults.standard.set(value, forKey: "look.toneHint")
     }
 
-    /// Dark mode on pure black, for OLED screens.
+    /// Dark mode on pure black, for OLED screens. Off, dark mode is a warm ink-grey, not black.
     private(set) var oled: Bool = UserDefaults.standard.bool(forKey: "look.oled")
+
+    /// Light mode on pure white instead of paper, as most apps are.
+    private(set) var white: Bool = UserDefaults.standard.bool(forKey: "look.white")
+
+    func setWhite(_ value: Bool) {
+        white = value
+        UserDefaults.standard.set(value, forKey: "look.white")
+    }
 
     func setOled(_ value: Bool) {
         oled = value
@@ -79,8 +87,15 @@ enum Ink {
     // MARK: Colors
 
     /// Paper and its raised sheets take a breath of the accent's hue, so a whole page leans the same way (黛 keeps the plain paper).
-    static var paper: Color { Theme.shared.oled ? pair(Theme.shared.palette.paperLight, 0x000000) : Theme.shared.palette.paper }
-    static var paperRaised: Color { Theme.shared.oled ? pair(Theme.shared.palette.raisedLight, 0x121212) : Theme.shared.palette.raised }
+    /// The grounds: paper (or pure white) in light mode, warm ink-grey (or pure black) in dark mode.
+    static var paper: Color {
+        let theme = Theme.shared, palette = theme.palette
+        return pair(theme.white ? 0xFFFFFF : palette.paperLight, theme.oled ? 0x000000 : palette.paperDark)
+    }
+    static var paperRaised: Color {
+        let theme = Theme.shared, palette = theme.palette
+        return pair(theme.white ? 0xF4F4F5 : palette.raisedLight, theme.oled ? 0x121212 : palette.raisedDark)
+    }
     static let ink = pair(0x2B2A27, 0xECE6DA)
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
     static let inkFaint = pair(0xA8A294, 0x6E685D)
@@ -138,7 +153,10 @@ enum Ink {
         static var accent: Color { Theme.shared.palette.tile }
     }
     static let sealInk = pair(0xFBF3EA, 0xFBF3EA)
-    static var rule: Color { Theme.shared.palette.rule }
+    static var rule: Color {
+        let theme = Theme.shared, palette = theme.palette
+        return theme.white ? pair(0xE4E4E7, palette.ruleDark) : palette.rule
+    }
     /// The accent and its pale ground, from the palette the user picked.
     static var accent: Color { Theme.shared.palette.accent }
     static var accentWash: Color { Theme.shared.palette.wash }
@@ -157,6 +175,10 @@ enum Ink {
         /// The light-mode paper, for the pure-black dark mode that keeps the light one as it is.
         var paperLight: UInt32
         var raisedLight: UInt32
+        var paperDark: UInt32
+        var raisedDark: UInt32
+        var ruleDark: UInt32
+        var mineDark: UInt32
         var id: String { key }
 
         /// `light` and `dark` are the accent in both modes; `tint` is how much of it the neutrals take (0 for none).
@@ -173,6 +195,10 @@ enum Ink {
             raised = mixed(0xFBF8F1, 0x26231F, 0.035)
             paperLight = Ink.mix(0xF6F1E7, light, 0.05 * tint)
             raisedLight = Ink.mix(0xFBF8F1, light, 0.035 * tint)
+            paperDark = Ink.mix(0x1C1A17, dark, 0.05 * tint)
+            raisedDark = Ink.mix(0x26231F, dark, 0.035 * tint)
+            ruleDark = Ink.mix(0x37332D, dark, 0.08 * tint)
+            mineDark = Ink.mix(0x322E28, dark, 0.07 * tint)
             rule = mixed(0xE4DCCB, 0x37332D, 0.08)
             mine = mixed(0xECE4D3, 0x322E28, 0.07)
         }
@@ -196,7 +222,10 @@ enum Ink {
         Palette(key: "teng", title: "藤", light: 0x6E5A92, dark: 0xA996CF, wash: pair(0xE9E4F2, 0x332C42), tint: 1),
         Palette(key: "mo", title: "墨", light: 0x3F3D39, dark: 0xC9C2B5, wash: pair(0xE8E5DF, 0x35332F), tint: 0.5),
     ]
-    static var mine: Color { Theme.shared.palette.mine }
+    static var mine: Color {
+        let theme = Theme.shared, palette = theme.palette
+        return theme.white ? pair(0xEFEFF1, palette.mineDark) : palette.mine
+    }
     static let ok = pair(0x5E8C6A, 0x7FB08C)
     static let warn = pair(0xC08A3E, 0xD9A65C)
     static let stop = pair(0xB4534B, 0xD4776F)

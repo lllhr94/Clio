@@ -13,7 +13,50 @@ struct LookPage: View {
                 }
                 .pickerStyle(.segmented)
                 palettes
-                Toggle(L.t("settings.oled"), isOn: Binding(get: { Theme.shared.oled }, set: { Theme.shared.setOled($0) }))
+                grounds
+            }
+        }
+    }
+
+    /// The page itself: paper or pure white by day, warm ink-grey or pure black by night.
+    private var grounds: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            groundRow(L.t("settings.lightGround"), [(L.t("settings.groundPaper"), 0xF6F1E7, false), (L.t("settings.groundWhite"), 0xFFFFFF, true)],
+                      picked: Theme.shared.white) { Theme.shared.setWhite($0) }
+            groundRow(L.t("settings.darkGround"), [(L.t("settings.groundInk"), 0x1C1A17, false), (L.t("settings.groundBlack"), 0x000000, true)],
+                      picked: Theme.shared.oled) { Theme.shared.setOled($0) }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
+    private func groundRow(_ title: String, _ options: [(String, UInt32, Bool)], picked: Bool, set: @escaping (Bool) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(title)
+            HStack(spacing: Ink.Space.m) {
+                ForEach(options, id: \.0) { option in
+                    let chosen = option.2 == picked
+                    Button {
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { set(option.2) }
+                    } label: {
+                        HStack(spacing: Ink.Space.s) {
+                            RoundedRectangle(cornerRadius: Ink.Radius.small / 2, style: .continuous)
+                                .fill(Ink.pair(option.1, option.1))
+                                .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small / 2, style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
+                                .frame(width: 26, height: 26)
+                            Text(option.0).font(.system(size: Ink.Size.sub, weight: chosen ? .semibold : .regular))
+                                .foregroundStyle(chosen ? Ink.ink : Ink.inkSoft)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, Ink.Space.m)
+                        .frame(height: 44)
+                        .frame(maxWidth: .infinity)
+                        .background(chosen ? Ink.accentWash : Color.clear, in: .capsule)
+                        .overlay(Capsule().strokeBorder(chosen ? Ink.accent.opacity(0.6) : Ink.rule, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(chosen ? .isSelected : [])
+                }
             }
         }
     }
@@ -50,6 +93,7 @@ struct LookPage: View {
         scheme = "system"
         Theme.shared.pick("dai")
         Theme.shared.setOled(false)
+        Theme.shared.setWhite(false)
     }
 }
 

@@ -330,7 +330,13 @@
     "diagnosticsPrivacy": "不包含密钥、密码和聊天内容。",
     "searchNothing": "没找到「%@」。换个说法试试，比如「密钥」「字号」「通知」。",
     "backupModelSummary": "备用模型：%@",
-    "memoryCounts": "常用记忆 %lld · 历史记忆 %lld"
+    "memoryCounts": "常用记忆 %lld · 历史记忆 %lld",
+    "lightGround": "浅色时的底",
+    "darkGround": "深色时的底",
+    "groundPaper": "纸色",
+    "groundWhite": "纯白",
+    "groundInk": "墨灰",
+    "groundBlack": "纯黑"
   },
   "styleSwitcher": {
     "title": "称谓",
