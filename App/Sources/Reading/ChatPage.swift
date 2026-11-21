@@ -3873,11 +3873,11 @@ struct WeatherCard: View {
     }
 
     private var days: [Day] {
-        let live = live
+        let isLive = self.live
         return lines.filter { $0.contains(" | ") && !$0.hasPrefix("日期") }.enumerated().compactMap { index, row in
             let cells = row.components(separatedBy: " | ")
             guard cells.count >= 4 else { return nil }
-            return Day(id: index, date: Self.day(cells[0], index: index, live: live), sky: cells[1], range: cells[2], rain: cells[3])
+            return Day(id: index, date: Self.day(cells[0], index: index, live: isLive), sky: cells[1], range: cells[2], rain: cells[3])
         }
     }
 
