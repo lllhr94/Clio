@@ -29,8 +29,8 @@ struct GrantsPage: View {
                         } label: {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(asking ? L.t("loading.requestingPermissions") : L.t("actions.requestAllPermissions")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                    Text(asking ? L.t("loading.requestingPermissions") : L.t("actions.requestAllPermissions")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                     Text(L.t("settings.requestPermissionsNote"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
@@ -43,10 +43,7 @@ struct GrantsPage: View {
                         .disabled(asking)
                         ForEach(groups, id: \.0) { group in
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                Text(group.0)
-                                    .font(Ink.serif(15, bold: true))
-                                    .foregroundStyle(Ink.inkSoft)
-                                    .padding(.leading, Ink.Space.xs)
+                                SectionTitle(group.0)
                                 VStack(spacing: 0) {
                                     ForEach(group.1) { grant in
                                         row(grant)
@@ -58,7 +55,7 @@ struct GrantsPage: View {
                         }
                         if !team.alwaysAllowed.isEmpty {
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                Text(L.t("permissions.alwaysAllowed")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                                SectionTitle(L.t("permissions.alwaysAllowed"))
                                 VStack(spacing: 0) {
                                     ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
                                         HStack {
@@ -135,13 +132,13 @@ struct GrantsPage: View {
                         preset.apply()
                         for grant in Grant.allCases { policies[grant] = grant.policy }
                     } label: {
-                        VStack(spacing: 2) {
+                        VStack(spacing: Ink.Space.xs / 2) {
                             Text(preset.title).font(.system(size: Ink.Size.sub, weight: .semibold))
                             Text(preset.line).font(.system(size: Ink.Size.micro)).lineLimit(2).multilineTextAlignment(.center)
                         }
                         .foregroundStyle(current == preset ? Ink.accent : Ink.inkSoft)
                         .frame(maxWidth: .infinity, minHeight: 64)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, Ink.Space.xs)
                         .background(current == preset ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(current == preset ? Color.clear : Ink.rule))
                     }
@@ -158,7 +155,7 @@ struct GrantsPage: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(alignment: .top, spacing: Ink.Space.m) {
                 IconBadge(symbol: grant.symbol, tint: policies[grant] == .off ? Ink.Tile.off : Ink.Tile.accent)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     HStack(spacing: Ink.Space.s) {
                         Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                         systemBadge(grant)
@@ -216,8 +213,8 @@ struct GrantsPage: View {
         Text(text)
             .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, Ink.Space.s)
+            .padding(.vertical, Ink.Space.xs / 2)
             .background(color.opacity(0.12), in: .capsule)
     }
 }
