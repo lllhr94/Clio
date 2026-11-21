@@ -45,27 +45,21 @@ struct ApproveView: View {
                         Text(L.format("approval.remaining", waiting))
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
-                            .padding(.horizontal, 14)
+                            .padding(.horizontal, Ink.Space.l)
                             .frame(minHeight: 34)
                             .glassEffect(.regular, in: .capsule)
                             .transition(.opacity)
                     }
                     Spacer()
-                    Button {
+                    Button(L.t("actions.done")) {
                         Haptics.light()
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: Ink.Size.body, weight: .semibold))
-                            .frame(width: 26, height: 26)
                     }
                     .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-                    .accessibilityLabel(L.t("actions.close"))
+                    .buttonBorderShape(.capsule)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.top, Ink.Space.s)
 
                 Spacer(minLength: 12)
 
@@ -98,9 +92,9 @@ struct ApproveView: View {
 
                 Spacer(minLength: 12)
 
-                VStack(spacing: 10) {
+                VStack(spacing: Ink.Space.m) {
                     Text(title)
-                        .font(Ink.serif(28, bold: true, relativeTo: .title))
+                        .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title))
                         .foregroundStyle(Ink.ink)
                         .multilineTextAlignment(.center)
                         .lineLimit(largeText ? nil : 2)
@@ -112,11 +106,11 @@ struct ApproveView: View {
                         .multilineTextAlignment(.center)
                         .contentTransition(.opacity)
                     controls
-                        .padding(.top, 18)
+                        .padding(.top, Ink.Space.l)
                         .frame(minHeight: largeText ? nil : 164, alignment: .top)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
+                .padding(.horizontal, Ink.Space.xl)
+                .padding(.bottom, Ink.Space.m)
             }
             .modifier(ApprovalViewport(scrolls: largeText))
         }
@@ -153,7 +147,7 @@ struct ApproveView: View {
     @ViewBuilder
     private var controls: some View {
         if verdict == nil && answerable {
-            VStack(spacing: 6) {
+            VStack(spacing: Ink.Space.s) {
                 SlideTrack(progress: $slide, onTick: tick) { answer(allow: true) }
                     .disabled(busy)
                 if current.forced == true {
@@ -175,7 +169,7 @@ struct ApproveView: View {
                         .font(.system(size: Ink.Size.body, weight: .semibold))
                         .foregroundStyle(Ink.inkSoft)
                         .frame(minHeight: 46)
-                        .padding(.horizontal, 24)
+                        .padding(.horizontal, Ink.Space.xl)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(TapStyle())
@@ -189,7 +183,7 @@ struct ApproveView: View {
     // MARK: The slip
 
     private var slip: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Ink.Space.l) {
             HStack {
                 Text(L.t("approval.approvalSheet"))
                     .font(.system(size: Ink.Size.small, weight: .bold))
@@ -200,17 +194,17 @@ struct ApproveView: View {
             }
             .foregroundStyle(Ink.inkSoft)
 
-            HStack(spacing: 12) {
+            HStack(spacing: Ink.Space.m) {
                 PetStill(size: 46, state: verdict == nil ? "notification" : "idle",
                          wash: bot.map(Ink.wash(for:)) ?? Ink.accentWash, avatar: true, bot: bot)
-                    .padding(.top, 8)
-                VStack(alignment: .leading, spacing: 2) {
+                    .padding(.top, Ink.Space.s)
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(L.t("approval.from")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                    Text(name).font(Ink.mark(20, bold: true, relativeTo: .title3))
+                    Text(name).font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title3))
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text(L.t("approval.requestedAction")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
                     Text(tool).font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold)).lineLimit(largeText ? nil : 2)
@@ -230,8 +224,8 @@ struct ApproveView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 88)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
                     .background(Ink.mine, in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
                 }
             }
@@ -240,7 +234,7 @@ struct ApproveView: View {
                 .stroke(Ink.rule, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
                 .frame(height: 1.5)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 Text(L.t("approval.signer")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 Text(L.t("approval.you")).font(.system(size: Ink.Size.body, weight: .semibold))
             }
@@ -268,8 +262,8 @@ struct ApproveView: View {
             }
             .scaleEffect(verdict != nil ? 1 : 2.8)
             .opacity(verdict != nil ? 1 : 0)
-            .padding(.trailing, 18)
-            .padding(.bottom, 16)
+            .padding(.trailing, Ink.Space.l)
+            .padding(.bottom, Ink.Space.l)
         }
         .shadow(color: Ink.ink.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
     }
@@ -295,13 +289,13 @@ struct ApproveView: View {
             Haptics.tick(0.5)
             on.wrappedValue.toggle()
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: Ink.Space.xs) {
                 Image(systemName: on.wrappedValue ? "checkmark.circle.fill" : "circle").font(.system(size: Ink.Size.small))
                 Text(title).font(.system(size: Ink.Size.small * accessibilityScale, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Ink.Space.m)
             .frame(minHeight: 30)
             .background(on.wrappedValue ? Ink.accentWash : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : Ink.rule))
