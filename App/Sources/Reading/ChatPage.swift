@@ -232,7 +232,10 @@ struct ChatPage: View {
                         // A turn starts with what you said: more room above it than between the parts of a reply.
                         .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
                         .id(line.id)
-                        .transition(.opacity.combined(with: .offset(y: 12)))
+                        // Only what just arrived rises into place; history loaded above stays still.
+                        .transition(chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                                    ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
+                                    : .identity)
                 }
                 if team.compressing.contains(chat.key) {
                     // Said once, quietly: it is happening behind, and you can go on talking.
@@ -728,6 +731,19 @@ struct ChatPage: View {
     private var headerIdentity: some View {
         HStack(spacing: Ink.Space.s) {
             PetStill(size: 30, state: petState, avatar: true, bot: isRoom ? nil : bot)
+                .breathing(working, tint: Ink.accent)
+                // Its face opens a glance at it: what it does, what it made, its schedule.
+                .onTapGesture {
+                    guard !isRoom else { detailOpen = true; return }
+                    Haptics.light()
+                    glancing = true
+                }
+                .popover(isPresented: $glancing) {
+                    GlanceCard(team: team, bot: bot, key: chat.key,
+                               openCard: { glancing = false; cardOpen = true },
+                               openDetail: { glancing = false; detailOpen = true })
+                        .presentationCompactAdaptation(.popover)
+                }
             VStack(alignment: .leading, spacing: 0) {
                 Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
                 HStack(spacing: 4) {
@@ -2067,6 +2083,7 @@ struct ChatPage: View {
     /// When the companion started on the current turn, for the seconds under the conversation.
     @State private var workingSince: Date?
     @State private var cardOpen = false
+    @State private var glancing = false
     @State private var renaming = false
     @State private var renameText = ""
     @State private var tuningOpen = false
@@ -2277,6 +2294,12 @@ private struct Trace: View {
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
     var unremember: ((String) -> Bool)?
     @State private var undone: Set<String> = []
+
+    private func forget(_ fact: String, with unremember: (String) -> Bool) {
+        Haptics.light()
+        _ = unremember(fact)
+        withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+    }
 
     /// What these steps wrote into 拾遗, as the model wrote it.
     private var remembered: [String] {
@@ -2551,32 +2574,35 @@ private struct Trace: View {
             }
         }
         if !line.live, let unremember {
+            // 「记下了」: one quiet line per thing remembered, as Cindy's learning footer; 撤回 right there, or long-press.
             ForEach(remembered, id: \.self) { fact in
-                HStack(alignment: .top, spacing: Ink.Space.m) {
-                    Image(systemName: "bookmark").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 22)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(fact).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(undone.contains(fact) ? Ink.inkFaint : Ink.ink)
-                            .strikethrough(undone.contains(fact))
-                            .lineLimit(3)
-                        Text(undone.contains(fact) ? "已从\(Words.t("拾遗"))撤回" : "记进了\(Words.t("拾遗"))，以后每次聊天都会看到")
-                            .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                    }
-                    Spacer(minLength: 0)
-                    if !undone.contains(fact) {
-                        Button("撤回") {
-                            Haptics.light()
-                            _ = unremember(fact)
-                            withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
-                        }
-                        .font(.system(size: Ink.Size.small, weight: .semibold))
-                        .foregroundStyle(Ink.accent)
-                        .buttonStyle(.plain)
+                let gone = undone.contains(fact)
+                HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
+                    Image(systemName: gone ? "bookmark.slash" : "bookmark")
+                        .font(.system(size: Ink.Size.micro))
+                    Text(gone ? "撤回了：\(fact)" : "记下了：\(fact)")
+                        .font(Ink.footnote)
+                        .strikethrough(gone)
+                        .lineLimit(2)
+                    Spacer(minLength: Ink.Space.s)
+                    if !gone {
+                        Button("撤回") { forget(fact, with: unremember) }
+                            .font(.system(size: Ink.Size.small, weight: .medium))
+                            .foregroundStyle(Ink.accent)
+                            .buttonStyle(.plain)
                     }
                 }
-                .padding(Ink.Space.m)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .paperCard()
-                .padding(.top, Ink.Space.s)
+                .foregroundStyle(Ink.inkFaint)
+                .padding(.top, Ink.Space.xs)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    if !gone {
+                        Button("撤回这条", systemImage: "bookmark.slash") { forget(fact, with: unremember) }
+                    }
+                    Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = fact }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(gone ? "撤回了：\(fact)" : "记下了：\(fact)")
             }
         }
         Color.clear.frame(height: 0)
