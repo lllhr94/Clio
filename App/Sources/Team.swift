@@ -956,9 +956,9 @@ final class TeamModel: ObservableObject {
     func compress(_ key: String) async throws -> Int {
         guard !compressing.contains(key) else { return 0 }
         let all = Array(live(key))
-        let cut: Int
+        let firstCut: Int
         switch Turns.foldCut(all, keep: Pref.keepRecent) {
-        case .success(let found): cut = found
+        case .success(let found): firstCut = found
         case .failure(let problem): throw TeamError(message: problem.words)
         }
 
@@ -975,9 +975,10 @@ final class TeamModel: ObservableObject {
         defer { compressing.remove(key) }
 
         let crew = bots
-        let (transcript, folded) = Turns.transcript(all[..<cut], name: { entry in
-            entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name
-        }, label: \.label)
+        let speaker = { (entry: Entry) in entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name }
+        // Only what the model will read is marked as folded: a part too long moves the cut earlier.
+        let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
+        let (transcript, folded) = Turns.transcript(all[..<cut], name: speaker, label: \.label)
         let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
         let prompt = """
         \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。

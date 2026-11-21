@@ -135,6 +135,7 @@ enum Backup {
         // 3. Swap, folder by folder, putting the old one back if a step fails.
         ChatDisk.finishWrites()
         Disk.frozen = true
+        Disk.forgetPhotos()
         try manager.createDirectory(at: old, withIntermediateDirectories: true)
         var swapped: [String] = []
         do {
