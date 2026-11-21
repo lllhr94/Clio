@@ -2,6 +2,31 @@
   "companion": {
     "temper": "性格"
   },
+  "homeThreads": {
+    "all": "全部",
+    "working": "正在做",
+    "waiting": "等我确认",
+    "unread": "未读",
+    "colorFilter": "颜色标签",
+    "allColors": "全部颜色",
+    "removeColor": "移除标签",
+    "dai": "黛蓝",
+    "yan": "胭红",
+    "xiang": "缃黄",
+    "teng": "藤紫",
+    "zhu": "竹青",
+    "archived": "已归档",
+    "archive": "归档",
+    "restore": "从归档恢复",
+    "undo": "撤销",
+    "getStarted": "开始使用 Clio",
+    "connect": "接一家服务",
+    "connectHelp": "选择服务，连接你的模型",
+    "defaultHelp": "查看和选择平时聊天用的模型",
+    "backup": "从备份恢复",
+    "backupHelp": "选择之前导出的 Clio 备份",
+    "continue": "继续"
+  },
   "nav": {
     "home": "首页",
     "files": "文件",

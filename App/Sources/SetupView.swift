@@ -7,6 +7,7 @@ struct SetupView: View {
     @ObservedObject var team: TeamModel
     /// Shown on first launch: a welcome first, and no way out until a service is connected.
     var first = false
+    var welcomeOnly = false
     var onDone: () -> Void
 
     private enum Step { case welcome, service, done }
@@ -134,9 +135,9 @@ struct SetupView: View {
                 Button {
                     Haptics.light()
                     UserDefaults.standard.set(true, forKey: Self.introSeen)
-                    step = .service
+                    if welcomeOnly { onDone() } else { step = .service }
                 } label: {
-                    Text(L.t("onboarding.page4.primaryCta"))
+                    Text(L.t(welcomeOnly ? "homeThreads.continue" : "onboarding.page4.primaryCta"))
                 }
                 .buttonStyle(WideButtonStyle())
                 Button {
