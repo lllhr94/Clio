@@ -2745,7 +2745,7 @@ private struct Trace: View {
             } else if tool.hasPrefix("加提醒：") {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
             } else if tool.hasPrefix("健康："), !output.isEmpty {
-                out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://")))
+                out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://"), diff: full))
             } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
                 let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
@@ -2880,7 +2880,7 @@ private struct Trace: View {
                     }
                 } label: {
                     if item.kind == .health {
-                        HealthCard(text: item.detail)
+                        HealthCard(text: item.detail, format: item.diff)
                     } else {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
                         Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
@@ -3502,6 +3502,7 @@ struct OutlineSheet: View {
 /// What 健康 said, as a small card: a row per day, each number with its name under it.
 struct HealthCard: View {
     let text: String
+    let format: String?
 
     private struct Day: Identifiable {
         let id: Int
@@ -3510,9 +3511,9 @@ struct HealthCard: View {
     }
 
     private var days: [Day] {
-        text.split(separator: "\n").enumerated().compactMap { index, row in
+        HealthCardRows.newest(text, format: format).enumerated().compactMap { index, row in
             let parts = row.split(separator: "：", maxSplits: 1).map(String.init)
-            guard parts.count == 2, !parts[0].hasPrefix("（"), index < text.split(separator: "\n").count - 1 || text.count < 2900 else { return nil }
+            guard parts.count == 2 else { return nil }
             let values = parts[1].split(separator: "；").compactMap { item -> (String, String)? in
                 let piece = item.trimmingCharacters(in: .whitespaces)
                 guard let space = piece.firstIndex(of: " ") else { return nil }
@@ -3527,8 +3528,7 @@ struct HealthCard: View {
             Label("健康", systemImage: "heart.text.square")
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.Tile.yan)
-            // Newest first (see `health_read`); a last row cut off mid-number is left out.
-            ForEach(days.prefix(3)) { day in
+            ForEach(days) { day in
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(day.date).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                     if day.values.isEmpty {
