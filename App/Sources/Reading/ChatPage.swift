@@ -1147,7 +1147,10 @@ struct ChatPage: View {
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, Ink.Space.m)
-                        .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous), tint: editing == line.id ? Ink.accentWash : Ink.mine)
+                        // Real Liquid Glass, as Open Minis does: your bubbles scroll over replies, code and pictures,
+                        // so the glass has something to catch. Tinted a little with the paper, so it stays Clio's.
+                        .glassEffect(.regular.tint((editing == line.id ? Ink.accentWash : Ink.mine).opacity(0.45)),
+                                     in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
