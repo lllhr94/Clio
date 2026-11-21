@@ -70,10 +70,16 @@ enum Pref {
     /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
     static var mark: Face { Theme.shared.mark }
     static var size: Double { double("look.size", 17) }
-    /// The space added between lines. Zero leaves it proportional to the reading size.
+    /// How tall a line is, as a multiple of the reading size: 紧凑 1.35 · 适中 1.5 · 舒展 1.65 · 宽松 1.8.
+    static let lineHeights: [Double] = [1.35, 1.5, 1.65, 1.8]
+    static var lineHeight: Double { double("look.lineHeight", 1.5) }
+
+    /// The space added between lines, worked out so a line is `lineHeight` × the size tall whatever the face:
+    /// each face carries its own built-in gap (文楷's is large), which used to swallow the setting, so moving it
+    /// changed little. Now every face lands on the same line height.
     static var leading: Double {
-        let custom = store.double(forKey: "look.leading")
-        return custom > 0 ? custom : size * 0.5
+        let natural = Double(Ink.uiFace(CGFloat(size)).lineHeight)
+        return max(0, size * lineHeight - natural)
     }
 
     /// Once: the new reading type replaces the old default (宋体, tight lines) for anyone who had not changed it.

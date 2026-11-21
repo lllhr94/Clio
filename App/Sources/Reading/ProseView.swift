@@ -27,7 +27,7 @@ struct ProseView: View {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 0.0
+    @AppStorage("look.lineHeight") private var leading = 1.5
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -42,7 +42,7 @@ struct ProseView: View {
         let _ = (face, code, size)
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         // Paragraphs a little under one line apart, as in the reading apps that read best.
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
             }
@@ -62,7 +62,7 @@ struct StreamingProse: View {
 
     var body: some View {
         let cut = Self.settled(text)
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             if cut > text.startIndex {
                 ProseView(text: String(text[..<cut]).trimmingCharacters(in: .newlines))
             }
@@ -119,7 +119,7 @@ private struct BlockView: View {
             }
         case .list(let items):
             // Items closer together than paragraphs, so a list reads as one thing.
-            VStack(alignment: .leading, spacing: Pref.size * 0.35) {
+            VStack(alignment: .leading, spacing: Pref.size * 0.25) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
                     HStack(alignment: .firstTextBaseline, spacing: Pref.size * 0.45) {
@@ -273,8 +273,17 @@ private struct CodeBlock: View {
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { lineCount > 20 }
     private var shown: String {
-        guard folds, !unfolded else { return text }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+        // Blank lines a model leaves at the top or bottom of a block are not shown (they read as a gap under the label).
+        let body = Self.trimmedLines(text)
+        guard folds, !unfolded else { return body }
+        return body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+    }
+
+    static func trimmedLines(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 
     var body: some View {
@@ -306,8 +315,8 @@ private struct CodeBlock: View {
             }
             .padding(.leading, Ink.Space.l)
             .padding(.trailing, Ink.Space.xs)
-            .frame(height: 34)
-            Rectangle().fill(Ink.rule).frame(height: 0.5)
+            // A low label row with no rule under it, as Open Minis sets it (28 points): the code starts right below.
+            .frame(height: 28 * UIScale.factor)
             // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
             // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
             // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
@@ -315,8 +324,11 @@ private struct CodeBlock: View {
                 Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
                     .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                     .font(Ink.code)
-                    .lineSpacing(Pref.size * 0.3)
-                    .padding(Ink.Space.l)
+                    // Close lines, as in a terminal: rows of output and code read as columns.
+                    .lineSpacing(4 * UIScale.factor)
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.top, Ink.Space.xs)
+                    .padding(.bottom, Ink.Space.m)
                     .fixedSize(horizontal: true, vertical: false)
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             }
@@ -725,7 +737,7 @@ struct SelectableProse: View, Equatable {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 0.0
+    @AppStorage("look.lineHeight") private var leading = 1.5
     /// Native text takes its colours when set: a change of light and dark sets it again.
     @Environment(\.colorScheme) private var scheme
     let text: String
@@ -760,7 +772,7 @@ struct SelectableProse: View, Equatable {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(ParsedCache.blocks(text))
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 switch part {
                 case .words(let blocks):
@@ -795,7 +807,7 @@ enum ProseWords {
         return out
     }
 
-    private static func style(spacing: CGFloat = Pref.size * 0.8, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
+    private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = tight ? Ink.leading * 0.5 : Ink.leading
         style.paragraphSpacing = spacing
@@ -828,7 +840,7 @@ enum ProseWords {
                 let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
                 let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
                 let last = index == items.count - 1
-                let paragraph = style(spacing: last ? Pref.size * 0.8 : Pref.size * 0.35, indent: indent, hanging: hang)
+                let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.25, indent: indent, hanging: hang)
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
                     .font: Ink.uiFace(Pref.size), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
                 ]))
