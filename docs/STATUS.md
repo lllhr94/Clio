@@ -7,7 +7,7 @@
 ## 2026-11-21 交接：接手的人先看这一节
 
 **当前状态**
-- 分支 `batch-0.34`，最新包已打：https://github.com/lllhr94/Clio/releases/download/probe-batch-0.34/Clio-probe.ipa （run 44874031797，编译通过）。主人在真机上试，等反馈。
+- 分支 `batch-0.34`，最新包已打：https://github.com/lllhr94/Clio/releases/download/probe-batch-0.34/Clio-probe.ipa （run 44876388666，编译通过；含远山钥匙只算一次、一行式来源藏起来）。主人在真机上试，等反馈。
 - 已合入：C14～C21（Codex）；Claude 的性格 / 说话风格 / 朱印字 / 名帖正反面、头像呼吸与一眼卡、记下了可撤回、问答目录、做成长图、健康卡片、常亮黑屏入口；浏览器小窗宽度、来源不重复（正文末尾的「来源：」链接列表在有来源条时藏起来，提示词也不让模型写）、窄表格铺满卡片。
 - Codex 的互查问题见 `docs/REVIEW-0.34.md`，除 #8（群聊正在做的那行字闪）外都已处理。
 
