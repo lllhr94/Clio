@@ -137,7 +137,7 @@ struct TideSheet: View {
                                     }
                                 } label: {
                                     VStack(spacing: Ink.Space.s) {
-                                        Image(systemName: find.symbol).font(.system(size: 26)).foregroundStyle(Ink.accent)
+                                        Image(systemName: find.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                         Text(Self.when(find.day)).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
                                     .frame(maxWidth: .infinity, minHeight: 88)
@@ -148,7 +148,7 @@ struct TideSheet: View {
                             }
                         }
                     }
-                    Text("收藏册").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.top, Ink.Space.m)
+                    SectionTitle("收藏册").padding(.top, Ink.Space.m)
                     if book.collected.isEmpty {
                         EmptyNote(symbol: "water.waves", words: L.t("empty.favorites"))
                     } else {
@@ -156,7 +156,7 @@ struct TideSheet: View {
                             ForEach(book.collected) { find in
                                 HStack(alignment: .top, spacing: Ink.Space.m) {
                                     Image(systemName: find.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
-                                    VStack(alignment: .leading, spacing: 2) {
+                                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                         Text(find.name).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                                         Text(find.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                         Text(Self.when(find.day) + (find.picked ? "" : Words.t(" · 潮水留下的"))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
@@ -186,10 +186,10 @@ struct TideSheet: View {
         VStack(spacing: Ink.Space.m) {
             PetStill(size: 64, state: "attention")
             Image(systemName: find.symbol)
-                .font(.system(size: 40))
+                .font(.system(size: Ink.Size.title))
                 .foregroundStyle(Ink.accent)
                 .transition(.scale.combined(with: .opacity))
-            Text(find.name).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink)
+            Text(find.name).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
             Text("\(keeper)：\(find.line)").font(Ink.reading).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             Button(book.waiting.isEmpty ? "收好了" : "再看看别的") {
                 withAnimation(Ink.Motion.settle) { shown = nil }
