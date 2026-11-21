@@ -9,11 +9,13 @@ private enum StreamFixture {
 private enum ScrollPhase { case idle, interacting, decelerating }
 
 private struct ScrollGeometry {
-    let contentSize: CGSize
+    let contentSize: ContentSize
     let contentInsets: Insets
-    let visibleRect: CGRect
+    let visibleRect: VisibleRect
 
+    struct ContentSize { let height: CGFloat }
     struct Insets { let bottom: CGFloat }
+    struct VisibleRect { let maxY: CGFloat }
 }
 
 private enum Words {
@@ -76,9 +78,9 @@ private final class FlowFixture {
 
     func changePhase(from old: ScrollPhase, to phase: ScrollPhase, at distance: CGFloat) {
         let geometry = ScrollGeometry(
-            contentSize: CGSize(width: 320, height: 800),
+            contentSize: .init(height: 800),
             contentInsets: .init(bottom: 100),
-            visibleRect: CGRect(x: 0, y: 0, width: 320, height: 900 - distance)
+            visibleRect: .init(maxY: 900 - distance)
         )
         let context = (geometry: geometry, unused: ())
 // RULE: PHASE
