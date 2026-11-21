@@ -528,7 +528,7 @@ struct ChatPage: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $cardOpen) { BotEditor(team: team, bot: bot) }
+        .sheet(isPresented: $cardOpen) { NameCardSheet(team: team, bot: bot) }
         .alert("重命名对话", isPresented: $renaming) {
             TextField("对话标题", text: $renameText)
             Button(L.t("actions.cancel"), role: .cancel) {}

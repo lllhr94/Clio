@@ -132,6 +132,9 @@ struct Desk: View {
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
 
+    /// 看名帖: the card, large.
+    @State private var cardBot: BotInfo?
+
     private struct EditTarget: Identifiable {
         let id: String
         let bot: BotInfo?
@@ -597,6 +600,7 @@ struct Desk: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
         .sheet(item: $roomEditing) { room in RoomEditor(team: team, room: room) }
@@ -801,7 +805,7 @@ struct Desk: View {
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     .contextMenu {
-                        Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
+                        Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardBot = bot }
                         ShareLink(item: NameCard.file(for: bot)) { Label(Words.t("递名帖"), systemImage: "square.and.arrow.up") }
                     }
                 }
@@ -977,7 +981,7 @@ struct Desk: View {
                 Button(Words.t("改雅集"), systemImage: "pencil") { roomEditing = room }
                 Button(Words.t("散了这个雅集"), systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
             } else if let bot = item.bot {
-                Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { editing = EditTarget(id: bot.id, bot: bot) }
+                Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardBot = bot }
                 Button(Words.t("清空这段絮语"), systemImage: "trash", role: .destructive) { clearing = item.id }
             }
         }
