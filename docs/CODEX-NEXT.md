@@ -63,3 +63,16 @@ Minis 的做法 → Clio 怎么学（保留纸墨风格，不照抄）：
 
 ## 7. C30 Minis 规则表里的滑动和防卡死（表在 `docs/MINIS-RULES.md`）
 第 2、3、4、5、6、7、8、9、40、43、44、45、46 条：滑动时攒着后台刷新、回复高度只量一次并按内容记住、写完时不动你正在看的位置、新对话第一条不跳、发完消息输入框变矮不跳、转屏不跳、一轮收尾挪后台、养护页只扫一次、回前台只重排看得见的、启动不做重活、文件工具不在主线程、弹出列表先画后填、设置页查反复改状态。每条改完对照真机掉帧记录。和 C24 一起做最省事。
+
+## 8. C31 全项目审查第二批：卡顿和聊天手感（报告见 `docs/REVIEW-0.34-FULL.md`）
+分支 `codex/c31-review-perf`。只做这几条，Claude 同时在改第一批和第三批（备份、引擎、远游、远山、快照、天气、小地图、草稿附件、养护页），**不要动** `Backup.swift`、`WebDAV.swift`、`CarePage.swift`、`Agent.swift`、`Snapshots.swift`、`Hills.swift`、`Browser.swift`、`Weather.swift`、`Secrets.swift`(Asker)、`InlineAsk.swift`。
+- #22 首开长对话、发送、用量圆环的主线程重活（`Chat.swift` 读首屏、`Team.swift` contextEstimate 不读图片内容）
+- #23 流式长回复每次从头扫描、限频被小块绕过（`Chat.swift`、`ProseView.swift` 流式部分）
+- #24 翻历史到 160 条停住（两层分页联通、保持视口）
+- #25 搜索防抖、后台匹配、只跳最新查询
+- #26 终端输出按对话分组、节流（`ToolTail.swift`）
+- #27 选图、缩图、编码离开主线程；选图任务绑定草稿版本（`ChatPage.swift` 取图部分；草稿附件存盘 Claude 在改，接口 `DraftAttachments` 别动）
+- #29 掉帧记录写盘节流、记录刷新率
+- #30 宠物浮层静置时停止每帧采样（`PetPerch.swift`）
+- #31 输入时整串扫描、长粘贴写盘挪后台
+每条一个提交，PR 写回报告编号、验证结果。交前合最新 `batch-0.34`。
