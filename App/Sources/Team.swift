@@ -60,7 +60,7 @@ enum TurnEvent {
     /// More of what the model thinks before it answers.
     case thinking(String)
     /// More of the companion's 心绪 before it speaks.
-    case pulse(String)
+    case pulse(String, speaker: String?)
     case finished
     case failed(String)
 }
@@ -1663,7 +1663,7 @@ final class TeamModel: ObservableObject {
                 switch part {
                 case .pulse(let felt):
                     if doing[key] != "心里起了念头" { doing[key] = "心里起了念头" }
-                    notify(key, .pulse(felt))
+                    notify(key, .pulse(felt, speaker: speaker ?? runs[key]?.companion))
                 case .text(let piece):
                     if doing[key] != "正在回复" { doing[key] = "正在回复" }
                     streamed[key, default: (speaker: speaker, text: "")].text += piece

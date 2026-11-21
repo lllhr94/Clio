@@ -301,7 +301,8 @@ struct ChatPage: View {
     @ViewBuilder
     private var liveReply: some View {
         if !chat.pulse.isEmpty {
-            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(isRoom ? nil : bot))
+            let speaker = chat.pulseSpeaker.flatMap { id in team.bots.first { $0.id == id } }
+            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(speaker ?? (isRoom ? nil : bot)))
                 .id("pulse")
                 .transition(.opacity)
         }

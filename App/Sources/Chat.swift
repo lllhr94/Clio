@@ -70,6 +70,7 @@ final class ChatModel {
     private(set) var thinking = ""
     /// The 心绪 being written before the reply in progress.
     private(set) var pulse = ""
+    private(set) var pulseSpeaker: String?
     /// The reply that just finished: the row that took over from the streaming one.
     private(set) var fresh: Fresh?
 
@@ -329,7 +330,8 @@ final class ChatModel {
 
     private func hear(_ event: TurnEvent) {
         switch event {
-        case .pulse(let piece):
+        case .pulse(let piece, let speaker):
+            if pulseSpeaker != speaker { pulseSpeaker = speaker }
             pulse += piece
         case .thinking(let piece):
             thinking += piece
