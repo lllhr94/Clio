@@ -27,8 +27,11 @@ struct PetStage: View {
     @State private var news = PetNews.shared
     @AppStorage("pet.x") private var restX = 0.22
     @AppStorage("pet.lift") private var legacyLift = 0.0
-    /// A fraction of the scene height, independent of the composer and keyboard. Negative means docked.
+    /// Left over from when the pet could be pinned anywhere up the screen. It now always stands on the composer
+    /// (主人定的，像 DSH Go): an old pin is cleared on first show.
     @AppStorage("pet.pinnedY") private var pinnedY = -1.0
+    /// How far it may be held up while dragged, before it drops back on the composer.
+    private static let liftLimit: CGFloat = 28
     @Environment(\.accessibilityReduceMotion) private var calm
     @Environment(\.displayScale) private var displayScale
 
@@ -84,11 +87,9 @@ struct PetStage: View {
                     }
                 }
                 .frame(width: width, height: height)
-                .onChange(of: legacyLift > 0 ? perch.foot : 0, initial: true) {
-                    if legacyLift > 0, perch.foot > 0 {
-                        if pinnedY < 0 { pinnedY = Double(min(max(perch.foot - legacyLift, stand), height) / height) }
-                        legacyLift = 0
-                    }
+                .onAppear {
+                    if pinnedY >= 0 { pinnedY = -1 }
+                    if legacyLift > 0 { legacyLift = 0 }
                 }
             }
         }
@@ -110,9 +111,9 @@ struct PetStage: View {
         .onChange(of: mood) { _, _ in touch() }
     }
 
+    /// Always the composer's top edge; while dragged, held up a little above it.
     private func foot(in height: CGFloat, stand: CGFloat) -> CGFloat {
-        if let dragStart { return min(max(dragStart - dragUp, stand), height) }
-        if pinnedY >= 0 { return min(max(CGFloat(pinnedY) * height, stand), height) }
+        if dragging { return min(max(perch.foot - min(max(dragUp, 6), Self.liftLimit), stand), height) }
         return perch.foot
     }
 
@@ -138,7 +139,7 @@ struct PetStage: View {
             .contentShape(Rectangle())
             .gesture(tapGesture(width: width))
             .contextMenu { menu }
-            .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，拖动换位置，长按有菜单")
+            .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，左右拖动换位置，长按有菜单")
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { perch.bodyHit = $0 }
             .onDisappear { perch.bodyHit = .null }
             .onChange(of: anim) { since = Date() }
@@ -210,8 +211,8 @@ struct PetStage: View {
         }
     }
 
-    /// A drag detaches from the dock even if it was only horizontal. Its vertical
-    /// origin is captured when the gesture starts, so a moving keyboard can't tug on it.
+    /// A drag moves it left or right along the composer. Pulling up only lifts it a little while held; let go and it
+    /// drops back onto the composer at the new spot.
     private func dragGesture(width: CGFloat, height: CGFloat, margin: CGFloat, foot: CGFloat, stand: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
@@ -224,7 +225,7 @@ struct PetStage: View {
                         Haptics.tick(0.4)
                     }
                     drag = value.translation.width
-                    dragUp = -value.translation.height
+                    dragUp = max(0, -value.translation.height) * 0.4
                 }
             }
             .onEnded { value in
@@ -234,13 +235,14 @@ struct PetStage: View {
                 still.disablesAnimations = true
                 withTransaction(still) {
                     restX = min(max((landed - margin) / span, 0), 1)
-                    pinnedY = Double(min(max((dragStart ?? foot) + value.translation.height, stand), height) / height)
                     wander = 0
                     wanderTarget = 0
                     drag = 0
                     dragUp = 0
                     dragStart = nil
                 }
+                // A small bump as it lands back on the composer.
+                if !calm { landingCount += 1 }
                 Haptics.tick(0.6)
             }
     }
@@ -252,11 +254,6 @@ struct PetStage: View {
         }
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
             withAnimation(Ink.Motion.settle) { library.hideForAnHour() }
-        }
-        if pinnedY >= 0 {
-            Button(L.t("pet.returnToComposer"), systemImage: "arrow.down.to.line") {
-                withAnimation(calm ? .easeInOut(duration: 0.22) : Ink.Motion.unfold) { pinnedY = -1 }
-            }
         }
         Button(L.t("pet.settings"), systemImage: "gearshape") { perch.openSettings() }
     }

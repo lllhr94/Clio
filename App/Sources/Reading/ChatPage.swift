@@ -262,14 +262,16 @@ struct ChatPage: View {
 
     /// The lines of the conversation, what is arriving, and what waits to be sent.
     private var conversationContent: some View {
-        LazyVStack(spacing: 0) {
-            // Keep distant replies unmounted when the keyboard, stream or window size changes.
-            LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
+        // Only the rows are lazy. Lazy stacks nested in lazy stacks only guess each other's height: scrolling to the
+        // foot (tapping 「最新」, or a reply starting) then landed on a spot with nothing drawn yet — the blank page.
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if !chat.loaded { ProgressView().frame(maxWidth: .infinity) }
                 else if chat.lines.isEmpty && !chat.hasStreaming { empty }
                 if canLoadEarlier { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
+                // Keep distant replies unmounted when the keyboard, stream or window size changes.
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows) { line in
                         turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
@@ -2513,7 +2515,17 @@ struct ChatPage: View {
         } else {
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
+        // The first jump goes by guessed heights of rows not drawn yet; once they are drawn the foot may sit elsewhere.
+        // One more look a moment later puts the page on the real foot instead of a blank stretch.
+        settleEnd?.cancel()
+        settleEnd = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
+            guard following, historyPage == nil, selecting.isEmpty else { return }
+            scroller.scrollTo(Self.end, anchor: .bottom)
+        }
     }
+
+    @State private var settleEnd: Task<Void, Never>?
 
     @State private var pickerShown = false
     @State private var importingFile = false
