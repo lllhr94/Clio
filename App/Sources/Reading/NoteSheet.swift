@@ -1,9 +1,13 @@
 import SwiftUI
 
-/// 笺: a reply set as a page to keep or share.
+/// 笺: a reply set as a page to keep or share — with the question it answered, as one long picture of the exchange.
 struct NoteSheet: View {
     let text: String
     let from: String
+    /// What was asked, shown above the answer when 「带上我的问题」 is on.
+    var question: String? = nil
+    var bot: BotInfo? = nil
+    @State private var withQuestion = true
     @Environment(\.dismiss) private var dismiss
     @State private var theme: Theme = .paper
     @State private var title: String
@@ -32,9 +36,11 @@ struct NoteSheet: View {
         }
     }
 
-    init(text: String, from: String) {
+    init(text: String, from: String, question: String? = nil, bot: BotInfo? = nil) {
         self.text = text
         self.from = from
+        self.question = question
+        self.bot = bot
         let first = text.split(separator: "\n").first.map(String.init) ?? ""
         let bare = first.replacingOccurrences(of: "#", with: "").replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
         _title = State(initialValue: bare.count <= 14 ? bare : "")
@@ -79,6 +85,14 @@ struct NoteSheet: View {
                             .padding(.horizontal, Ink.Space.l)
                             .frame(height: 46)
                             .paperCard()
+                        if question?.isEmpty == false {
+                            Toggle("带上我的问题", isOn: $withQuestion)
+                                .font(Ink.label)
+                                .tint(Ink.accent)
+                                .padding(.horizontal, Ink.Space.l)
+                                .frame(height: 46)
+                                .paperCard()
+                        }
                         Toggle("落款写上\(from)", isOn: $signed)
                             .font(Ink.label)
                             .tint(Ink.accent)
@@ -118,15 +132,30 @@ struct NoteSheet: View {
             } else {
                 Spacer().frame(height: Ink.Space.huge)
             }
+            if withQuestion, let question, !question.isEmpty {
+                // The question, as a quiet slip above the answer.
+                HStack(alignment: .top, spacing: Ink.Space.s) {
+                    Text("问").font(Ink.serif(Ink.Size.small, bold: true)).foregroundStyle(theme.words.opacity(0.5))
+                    Text(question)
+                        .font(Ink.serif(Ink.Size.sub))
+                        .foregroundStyle(theme.words.opacity(0.75))
+                        .lineLimit(8)
+                }
+                .padding(Ink.Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(theme.words.opacity(0.06), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                .padding(.bottom, Ink.Space.xl)
+            }
             ProseView(text: body_)
                 .foregroundStyle(theme.words)
                 .environment(\.noteInk, theme.words)
             HStack(spacing: Ink.Space.s) {
                 Spacer()
-                PetStill(size: 22, wash: theme.words.opacity(0.14), avatar: true)
+                PetStill(size: 22, wash: theme.words.opacity(0.14), avatar: true, bot: bot)
                 Text(signed ? "\(from) · Clio" : "Clio")
                     .font(Ink.serif(Ink.Size.small, relativeTo: .footnote))
                     .foregroundStyle(theme.words.opacity(0.6))
+                if signed, let bot { ClioSeal(size: 18, tilt: -4, character: ClioSeal.character(for: bot)) }
                 Spacer()
             }
             .padding(.top, Ink.Space.huge)

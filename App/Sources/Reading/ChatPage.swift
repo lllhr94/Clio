@@ -520,7 +520,8 @@ struct ChatPage: View {
             if dictation.listening { dictation.stop() }
         }
         .sheet(item: $noting) { note in
-            NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name)
+            NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
+                      bot: isRoom ? nil : bot)
         }
         .sheet(item: $quoting) { item in
             QuoteSheet(text: item.text) { picked in
@@ -667,6 +668,12 @@ struct ChatPage: View {
 
     private struct Viewing: Identifiable { let id: String }
     private struct Noting: Identifiable { let id: String; let text: String }
+
+    /// What you asked just before a reply, for the picture of the exchange.
+    private func askedBefore(_ id: String) -> String? {
+        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return nil }
+        return chat.lines[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
+    }
     @State private var noting: Noting?
     @State private var quoting: Noting?
     /// Words from a reply the next message asks about.
@@ -1539,7 +1546,7 @@ struct ChatPage: View {
     private func replyMenu(_ line: ChatLine) -> some View {
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
-        Button(Words.t("做成笺"), systemImage: "scroll") { noting = Noting(id: line.id, text: line.text) }
+        Button(Words.t("做成长图"), systemImage: "photo.on.rectangle") { noting = Noting(id: line.id, text: line.text) }
         ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
         if !isRoom {
             Button(Words.t("从这里另起一叶"), systemImage: "arrow.triangle.branch") { fork(at: line) }
