@@ -27,7 +27,7 @@ struct ProseView: View {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 0.0
+    @AppStorage("look.lineHeight") private var leading = 1.5
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -42,7 +42,7 @@ struct ProseView: View {
         let _ = (face, code, size)
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         // Paragraphs a little under one line apart, as in the reading apps that read best.
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
             }
@@ -62,7 +62,7 @@ struct StreamingProse: View {
 
     var body: some View {
         let cut = Self.settled(text)
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             if cut > text.startIndex {
                 ProseView(text: String(text[..<cut]).trimmingCharacters(in: .newlines))
             }
@@ -734,7 +734,7 @@ struct SelectableProse: View, Equatable {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.leading") private var leading = 0.0
+    @AppStorage("look.lineHeight") private var leading = 1.5
     /// Native text takes its colours when set: a change of light and dark sets it again.
     @Environment(\.colorScheme) private var scheme
     let text: String
@@ -769,7 +769,7 @@ struct SelectableProse: View, Equatable {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(ParsedCache.blocks(text))
-        VStack(alignment: .leading, spacing: Pref.size * 0.8) {
+        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 switch part {
                 case .words(let blocks):
@@ -804,7 +804,7 @@ enum ProseWords {
         return out
     }
 
-    private static func style(spacing: CGFloat = Pref.size * 0.8, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
+    private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = tight ? Ink.leading * 0.5 : Ink.leading
         style.paragraphSpacing = spacing
@@ -837,7 +837,7 @@ enum ProseWords {
                 let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
                 let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
                 let last = index == items.count - 1
-                let paragraph = style(spacing: last ? Pref.size * 0.8 : Pref.size * 0.35, indent: indent, hanging: hang)
+                let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.35, indent: indent, hanging: hang)
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
                     .font: Ink.uiFace(Pref.size), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
                 ]))
