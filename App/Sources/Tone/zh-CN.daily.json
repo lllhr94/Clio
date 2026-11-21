@@ -47,6 +47,7 @@
     "filesAndTerminal": "文件与终端"
   },
   "chat": {
+    "pasteAttached": "已把粘贴的 %d 字存成文件：书案/%@",
     "earlier": "更早的消息",
     "menu": "对话菜单",
     "find": "在对话里找",

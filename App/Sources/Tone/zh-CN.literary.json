@@ -47,6 +47,7 @@
     "filesAndTerminal": "书案与斗室"
   },
   "chat": {
+    "pasteAttached": "已把粘贴的 %d 字存成文件：书案/%@",
     "earlier": "更早的絮语",
     "menu": "絮语菜单",
     "find": "在絮语里找",

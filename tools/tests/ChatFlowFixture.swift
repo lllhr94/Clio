@@ -3,6 +3,7 @@ import Foundation
 // Only the platform inputs and side effects are simulated. The runner fills in
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
 // RULE: STREAM_BLOCKS
+// RULE: DRAFT_INPUT
 
 private enum ScrollPhase { case idle, interacting, decelerating }
 
@@ -66,6 +67,7 @@ private final class Clock {
 
 @MainActor
 private final class FlowFixture {
+    var pasteTask: Task<Void, Never>?
     var draft = "你好"
     var photos = ["photo"]
     var files = ["file"]
@@ -124,6 +126,7 @@ private enum ChatFlowTests {
     static func main() async {
         do {
             try paragraphsAndFences()
+            try draftInput()
             try await followingTheReader()
             try await latestFollowWins()
             try await sendingCoalesces()
@@ -172,6 +175,17 @@ private enum ChatFlowTests {
                 try check(split, "", "Internal blank in \(name) stays live")
             }
         }
+    }
+
+    static func draftInput() throws {
+        let prefix = String(repeating: "正文", count: 2000)
+        try check(DraftInput.suggestion(in: prefix), nil, "A long draft without a command")
+        try check(DraftInput.suggestion(in: prefix + " @文件")?.text, "文件", "Mention at the end of a long draft")
+        try check(DraftInput.suggestion(in: "mail@file"), nil, "An email is not a mention")
+        try check(DraftInput.suggestion(in: " /技能 ")?.source, .skills, "Slash command")
+        let large = String(repeating: "👋🏽", count: 2501)
+        try check(DraftInput.longInsertion(from: "首尾", to: "首" + large + "尾"), large, "A large Unicode paste inside a draft")
+        try check(DraftInput.longInsertion(from: "首尾", to: "首👋🏽尾"), nil, "An ordinary edit is not a paste")
     }
 
     @MainActor

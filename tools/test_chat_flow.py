@@ -34,6 +34,7 @@ def fixture() -> str:
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     fragments = {
         "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
+        "DRAFT_INPUT": extract(chat, r"^enum DraftInput \{\n.*?^\}", "draft rules"),
         "BELOW": member(chat, "below"),
         "PHASE": phase_body,
         "FOLLOW": schedule,
