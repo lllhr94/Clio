@@ -2351,7 +2351,7 @@ private struct Trace: View {
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
     private struct Keepsake: Identifiable {
-        enum Kind { case event, reminder, file, remoteFile, command }
+        enum Kind { case event, reminder, file, remoteFile, command, health }
         let id: Int
         let kind: Kind
         let title: String
@@ -2451,6 +2451,8 @@ private struct Trace: View {
                 out.append(Keepsake(id: index, kind: .event, title: String(tool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
             } else if tool.hasPrefix("加提醒：") {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
+            } else if tool.hasPrefix("健康："), !output.isEmpty {
+                out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://")))
             } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
                 let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
@@ -2580,10 +2582,13 @@ private struct Trace: View {
                         } else if let url = item.url {
                             openFile(url)
                         }
-                    case .event, .reminder: if let url = item.url { UIApplication.shared.open(url) }
+                    case .event, .reminder, .health: if let url = item.url { UIApplication.shared.open(url) }
                     case .command: break
                     }
                 } label: {
+                    if item.kind == .health {
+                        HealthCard(text: item.detail)
+                    } else {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
                         Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
@@ -2608,6 +2613,7 @@ private struct Trace: View {
                     .padding(Ink.Space.m)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .paperCard()
+                    }
                 }
                 .buttonStyle(PressStyle())
                 .padding(.top, Ink.Space.s)
@@ -2763,6 +2769,7 @@ private struct Trace: View {
         case .file: "doc.text"
         case .remoteFile: "doc.badge.gearshape"
         case .command: "terminal"
+        case .health: "heart.text.square"
         }
     }
 
@@ -3157,5 +3164,59 @@ struct OutlineSheet: View {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
+    }
+}
+
+
+/// What 健康 said, as a small card: a row per day, each number with its name under it.
+struct HealthCard: View {
+    let text: String
+
+    private struct Day: Identifiable {
+        let id: Int
+        let date: String
+        let values: [(name: String, value: String)]
+    }
+
+    private var days: [Day] {
+        text.split(separator: "\n").enumerated().compactMap { index, row in
+            let parts = row.split(separator: "：", maxSplits: 1).map(String.init)
+            guard parts.count == 2, !parts[0].hasPrefix("（") else { return nil }
+            let values = parts[1].split(separator: "；").compactMap { item -> (String, String)? in
+                let piece = item.trimmingCharacters(in: .whitespaces)
+                guard let space = piece.firstIndex(of: " ") else { return nil }
+                return (String(piece[..<space]), String(piece[piece.index(after: space)...]))
+            }
+            return Day(id: index, date: parts[0], values: values)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Label("健康", systemImage: "heart.text.square")
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.Tile.yan)
+            ForEach(days.suffix(3)) { day in
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(day.date).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                    if day.values.isEmpty {
+                        Text("没有记录").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                    } else {
+                        HStack(alignment: .top, spacing: Ink.Space.l) {
+                            ForEach(Array(day.values.enumerated()), id: \.offset) { _, item in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.value).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1).minimumScaleFactor(0.7)
+                                    Text(item.name).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkSoft)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(Ink.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .paperCard()
+        .accessibilityElement(children: .combine)
     }
 }
