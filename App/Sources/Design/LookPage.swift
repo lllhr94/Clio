@@ -5,7 +5,8 @@ struct LookPage: View {
 
     var body: some View {
         PreferenceForm(L.t("settingsHome.theme"), reset: reset) {
-            Section(L.t("settingsHome.theme")) {
+            // No section title: the page is already called 设色, and three of the same word in a row read as a stutter.
+            Section {
                 Picker(L.t("settingsHome.lightMode"), selection: $scheme) {
                     Text(L.t("settings.followSystem")).tag("system")
                     Text(L.t("settings.lightAppearance")).tag("light")

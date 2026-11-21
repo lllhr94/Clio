@@ -211,7 +211,6 @@ final class TeamModel: ObservableObject {
                 fillDemoError()
             } else {
                 fillDemoChat()
-                if shot.hasPrefix("chat-") { fillDemoLong() }
             }
         } else {
             startup = Task.detached(priority: .userInitiated) { InitialData.read() }
@@ -2551,48 +2550,6 @@ final class TeamModel: ObservableObject {
 
     /// For screenshots: one conversation with every kind of thing a reply can hold (steps, sources, 心绪,
     /// thinking, a heading, a list, a table, code, files written), and a checklist under way.
-    /// For the screenshots of a long conversation: many more turns with every kind of block a reply can have.
-    func fillDemoLong() {
-        let key = Self.key(bot: "chief")
-        var at = Now.ms - 200_000
-        func add(_ message: Message) {
-            at += 3_000
-            append(Entry(id: UUID().uuidString, at: at, message: message, speaker: message.role == .user ? nil : "chief"), to: key)
-        }
-        let code = (1...26).map { "    print(\"第 \($0) 行\")" }.joined(separator: "\n")
-        for round in 1...6 {
-            add(.user("第 \(round) 个问题：帮我把这些整理一下，顺便写段代码"))
-            add(.assistant("""
-            好，分三块说。
-
-            - **先说结论**：第 \(round) 轮的要点在下面
-
-            - 中间隔了一行的列表项，也要连在一起
-
-            - 第三项，带一点 `行内代码`
-
-            | 项目 | 数量 | 备注 |
-            | :-- | --: | :-- |
-            | 甲 | 12 | 第一行 |
-            | 乙 | 7 | 第二行 |
-
-            > 引用一句：慢慢来，比较快。
-
-            ```swift
-            func greet() {
-            \(code)
-            }
-            ```
-
-            公式也试一下：
-
-            $$E = mc^2$$
-
-            最后一段正文，长一点，看换行和行距是不是舒服：路线、天气、要带的东西，我都写进书案了，想改哪一段直接告诉我。
-            """))
-        }
-    }
-
     func fillDemoChat() {
         let key = Self.key(bot: "chief")
         guard history(key).isEmpty else { return }

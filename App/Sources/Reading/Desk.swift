@@ -226,6 +226,13 @@ struct Desk: View {
             }
         }
         .scrollIndicators(.hidden)
+        // The last chip fades out at the edge instead of being cut by a hard line, so it reads as 「more this way」.
+        .mask {
+            HStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: Ink.Space.xl)
+            }
+        }
     }
 
     @ViewBuilder
