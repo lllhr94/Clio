@@ -31,6 +31,13 @@ struct ChatPage: View {
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
     @State private var following = true
+    /// 在对话里找: what is looked for, and which of the places found is in view.
+    @State private var finding = false
+    @State private var findText = ""
+    @State private var findAt = 0
+    @FocusState private var findFocus: Bool
+    /// A reply opened to pick any words from it.
+    @State private var picking: ChatLine?
     /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
     @State private var jumpedTo: String?
     /// The conversation is moving under the reader's finger or settling after it.
@@ -474,8 +481,8 @@ struct ChatPage: View {
             VStack(spacing: 0) {
             // The pet stands on the composer's top edge (or the plan card's, when that is showing).
             PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
-                .opacity(dictation.listening ? 0 : 1)
-            composerBar
+                .opacity(dictation.listening || finding ? 0 : 1)
+            if finding { findBar } else { composerBar }
                 // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
                 // no longer reads through the glass.
                 .background(alignment: .bottom) {
@@ -597,6 +604,9 @@ struct ChatPage: View {
         }
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
+        }
+        .sheet(item: $picking) { line in
+            PickWords(text: line.text)
         }
         .sheet(isPresented: $leafing) {
             LeavesSheet(team: team, key: chat.key, name: bot.name)
@@ -737,6 +747,7 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
+            Button("在对话里找", systemImage: "magnifyingglass") { startFinding() }
             Button("重命名对话", systemImage: "pencil") {
                 renameText = team.title(of: chat.key) ?? ""
                 renaming = true
@@ -1203,6 +1214,93 @@ struct ChatPage: View {
         }
     }
 
+    // MARK: Finding
+
+    /// The lines with what you look for, oldest first.
+    private var hits: [String] {
+        let wanted = findText.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return [] }
+        return chat.lines.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
+    }
+
+    private var currentHit: String? {
+        let found = hits
+        guard !found.isEmpty else { return nil }
+        return found[min(max(findAt, 0), found.count - 1)]
+    }
+
+    /// Everything said is looked through, not only what is on screen.
+    private func startFinding() {
+        Haptics.light()
+        withAnimation(Ink.Motion.settle) { finding = true }
+        findFocus = true
+        Task {
+            var rounds = 0
+            while chat.hasEarlier, rounds < 30 {
+                await chat.loadEarlier()
+                rounds += 1
+            }
+            shownCount = max(shownCount, chat.lines.count)
+        }
+    }
+
+    private func stopFinding() {
+        withAnimation(Ink.Motion.settle) { finding = false }
+        findText = ""
+        findAt = 0
+    }
+
+    /// Goes to the place found, newest first; the arrows step older or newer.
+    private func showHit(_ step: Int) {
+        let found = hits
+        guard !found.isEmpty else { return }
+        findAt = (findAt + step + found.count) % found.count
+        let target = found[findAt]
+        shownCount = max(shownCount, chat.lines.count)
+        following = false
+        Haptics.tick(0.4)
+        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
+    }
+
+    /// Where the composer was, while looking: the words, how many places, older / newer, and 完成.
+    private var findBar: some View {
+        let found = hits.count
+        return HStack(spacing: Ink.Space.s) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Ink.inkFaint)
+            TextField("在这段对话里找", text: $findText)
+                .font(.system(size: Ink.Size.body))
+                .focused($findFocus)
+                .submitLabel(.search)
+                .onSubmit { showHit(-1) }
+                .onChange(of: findText) {
+                    findAt = max(hits.count - 1, 0)
+                    if hits.count > 0 { showHit(0) }
+                }
+            if !findText.isEmpty {
+                Text(found == 0 ? "没找到" : "\(min(findAt + 1, found))/\(found)")
+                    .font(Ink.footnote.monospacedDigit())
+                    .foregroundStyle(Ink.inkSoft)
+                    .fixedSize()
+            }
+            Button { showHit(-1) } label: { Image(systemName: "chevron.up") }
+                .disabled(found == 0)
+                .accessibilityLabel("更早的一处")
+            Button { showHit(1) } label: { Image(systemName: "chevron.down") }
+                .disabled(found == 0)
+                .accessibilityLabel("更新的一处")
+            Button(L.t("actions.done")) { stopFinding() }
+                .font(.system(size: Ink.Size.sub, weight: .semibold))
+        }
+        .font(.system(size: Ink.Size.sub, weight: .semibold))
+        .foregroundStyle(Ink.accent)
+        .padding(.horizontal, Ink.Space.l)
+        .frame(minHeight: 48)
+        .glassFace(in: Capsule())
+        .padding(.horizontal, Ink.Bar.edge)
+        .padding(.bottom, Ink.Space.s)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
     // MARK: Faces
 
     private static let face: CGFloat = 32
@@ -1231,6 +1329,7 @@ struct ChatPage: View {
     /// A line with its face: the companion's above its reply, yours beside your bubble, and the time when a while has passed.
     @ViewBuilder
     private func turnRow(_ line: ChatLine, opens: Bool) -> some View {
+        let lit = finding && currentHit == line.id
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             if opens, let gap = timeGap(before: line) {
                 Text(gap)
@@ -1256,6 +1355,15 @@ struct ChatPage: View {
                 row(line)
             }
         }
+        // The place found: a soft ground behind it, so the eye lands there.
+        .background {
+            if lit {
+                RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
+                    .fill(Ink.accentWash)
+                    .padding(-Ink.Space.s)
+            }
+        }
+        .animation(Ink.Motion.settle, value: lit)
     }
 
     /// The companion's face and name, over what it says.
@@ -1396,6 +1504,7 @@ struct ChatPage: View {
     /// The same actions on every reply, by a long press: the footer only sits under the last one.
     @ViewBuilder
     private func replyMenu(_ line: ChatLine) -> some View {
+        Button("选择文字", systemImage: "selection.pin.in.out") { picking = line }
         Button("复制", systemImage: "doc.on.doc") {
             UIPasteboard.general.string = line.text
             Haptics.tick(0.5)
@@ -2848,5 +2957,51 @@ private struct SourcesSheet: View {
         let rest = url.path().removingPercentEncoding ?? url.path()
         let trimmed = rest.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return trimmed.isEmpty ? url.absoluteString : trimmed
+    }
+}
+
+
+/// 选择文字: the reply as plain selectable text, to pick any words from it and copy them.
+private struct PickWords: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Selectable(text: text)
+                .padding(.horizontal, Ink.Space.page)
+                .background(Ink.paper.ignoresSafeArea())
+                .navigationTitle("选择文字")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// A read-only text view you can select in: drag the handles, then 拷贝.
+private struct Selectable: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.backgroundColor = .clear
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 0, bottom: 32, right: 0)
+        view.adjustsFontForContentSizeCategory = true
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 6
+        view.attributedText = NSAttributedString(string: text, attributes: [
+            .font: UIFont.systemFont(ofSize: CGFloat(Pref.size)),
+            .foregroundColor: UIColor(Ink.ink),
+            .paragraphStyle: style,
+        ])
     }
 }
