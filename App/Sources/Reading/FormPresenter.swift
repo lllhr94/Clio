@@ -13,7 +13,7 @@ struct FormPresenter: ViewModifier {
     @ObservedObject private var placement = FormPlacement.shared
     @State private var token = UUID()
     @State private var sheet: Asker.Form?
-    @State private var displayed: UUID?
+    @State private var presented: UUID?
 
     private var ownsPresentation: Bool {
         inBrowser ? placement.browser == token : placement.browser == nil
@@ -21,23 +21,35 @@ struct FormPresenter: ViewModifier {
 
     private var eligible: Asker.Form? { ownsPresentation ? asker.current : nil }
 
+    private struct Update: Equatable {
+        let eligible: UUID?
+        let presented: UUID?
+    }
+
     func body(content: Content) -> some View {
         content
             .onAppear { if inBrowser { placement.browser = token } }
             .onDisappear { if inBrowser, placement.browser == token { placement.browser = nil } }
-            .task(id: eligible?.id) {
-                guard let form = eligible else { sheet = nil; return }
+            .task(id: Update(eligible: eligible?.id, presented: presented)) {
+                if let presented {
+                    // Wait for this sheet's onDismiss before showing the next one.
+                    if presented != eligible?.id { sheet = nil }
+                    return
+                }
+                guard let form = eligible else { return }
                 if !inBrowser, form.inline {
                     try? await Task.sleep(for: .milliseconds(500))
                     guard !Task.isCancelled, eligible?.id == form.id, !asker.inlineSeen else { return }
                 }
+                presented = form.id
                 sheet = form
             }
             .sheet(item: $sheet, onDismiss: {
-                if ownsPresentation, let displayed, asker.current?.id == displayed { asker.cancel(displayed) }
-                displayed = nil
+                let id = presented
+                if ownsPresentation, let id, asker.current?.id == id { asker.cancel(id) }
+                presented = nil
             }) { form in
-                FormSheet(form: form).onAppear { displayed = form.id }
+                FormSheet(form: form)
             }
     }
 }

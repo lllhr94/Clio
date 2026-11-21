@@ -48,7 +48,11 @@ def fixture() -> str:
 def run(command: list[str], label: str, timeout: int) -> None:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        if error.stdout:
+            print(error.stdout.decode(errors="replace"), end="")
+        if error.stderr:
+            print(error.stderr.decode(errors="replace"), file=sys.stderr, end="")
         raise SystemExit(f"::error::{label} timed out after {timeout}s")
     print(result.stdout, end="")
     print(result.stderr, file=sys.stderr, end="")

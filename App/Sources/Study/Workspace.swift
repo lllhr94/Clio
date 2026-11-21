@@ -213,9 +213,13 @@ enum Reckoner {
         return unsafeBitCast(symbol, to: SetLimit.self)
     }()
 
-    private static let shouldTerminate: ShouldTerminate = { _, pointer in
-        guard let pointer else { return true }
-        return Unmanaged<Run>.fromOpaque(pointer).takeUnretainedValue().interruption != nil
+    private static func shouldTerminate(_ context: OpaquePointer?, _ pointer: UnsafeMutableRawPointer?) -> Bool {
+        guard let context, let pointer, let group = JSContextGetGroup(context), let setLimit else { return true }
+        let run = Unmanaged<Run>.fromOpaque(pointer).takeUnretainedValue()
+        if run.interruption != nil { return true }
+        // Explicitly re-arm the next check. Some WebKit versions only invoke this callback once otherwise.
+        setLimit(group, 0.25, shouldTerminate, pointer)
+        return false
     }
 
     private static func evaluate(_ code: String, run: Run) -> ToolOutput {
@@ -233,6 +237,7 @@ enum Reckoner {
         var clipped = false
         var failure: String?
         context.exceptionHandler = { _, exception in
+            guard run.interruption == nil else { return }
             let line = exception?.objectForKeyedSubscript("line")?.toString() ?? "?"
             failure = "出错（第 \(line) 行）：\(exception?.toString() ?? "未知错误")"
         }
