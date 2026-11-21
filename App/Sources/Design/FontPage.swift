@@ -53,11 +53,13 @@ final class FontShelf {
                     shelf.loading[face] = nil
                     shelf.failed.insert(face)
                     shelf.generation += 1
+                    Theme.shared.fontArrived()
                 case .didFinish:
                     Ink.recheckFonts()
                     shelf.loading[face] = nil
                     if !Ink.has(names[0]) { shelf.failed.insert(face) }
                     shelf.generation += 1
+                    Theme.shared.fontArrived()
                 default:
                     break
                 }

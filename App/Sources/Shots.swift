@@ -9,9 +9,13 @@ enum Shots {
     static var startsInChat: Bool {
         switch name {
         case "chat", "sidebar", "plan", "model-error": true
-        default: false
+        default: name?.hasPrefix("chat-") == true
         }
     }
+
+    /// Scenes that need more than the opening picture: a long conversation, one jumped back to its foot, one with a
+    /// reply arriving. They wait `clioShotDelay` seconds after the first frames before saying they are ready.
+    static var delay: Double { UserDefaults.standard.double(forKey: "clioShotDelay") }
 
     static var readyToken: String? { UserDefaults.standard.string(forKey: "clioShotToken") }
 }
@@ -71,8 +75,11 @@ struct ShotReady: UIViewRepresentable {
             guard frames == 2 else { return }
             displayLink?.invalidate()
             displayLink = nil
-            let marker = FileManager.default.temporaryDirectory.appendingPathComponent("clio-shot-ready")
-            try? token.write(to: marker, atomically: true, encoding: .utf8)
+            let token = token
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, Shots.delay)) {
+                let marker = FileManager.default.temporaryDirectory.appendingPathComponent("clio-shot-ready")
+                try? token.write(to: marker, atomically: true, encoding: .utf8)
+            }
         }
     }
 }

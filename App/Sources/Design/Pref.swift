@@ -69,11 +69,11 @@ enum Pref {
     static var code: Code { Theme.shared.code }
     /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
     static var mark: Face { Theme.shared.mark }
-    static var size: Double { double("look.size", 17) }
+    static var size: Double { Theme.shared.size }
     /// How tall a line is, as a multiple of the reading size: 紧凑 1.35 · 适中 1.5 · 舒展 1.65 · 宽松 1.8.
     static let lineHeights: [Double] = [1.35, 1.5, 1.65, 1.8]
     static let defaultLineHeight = 1.65
-    static var lineHeight: Double { double("look.lineHeight", defaultLineHeight) }
+    static var lineHeight: Double { Theme.shared.lineHeight }
 
     /// The space added between lines, worked out so a line is `lineHeight` × the size tall whatever the face:
     /// each face carries its own built-in gap (文楷's is large), which used to swallow the setting, so moving it
@@ -97,7 +97,7 @@ enum Pref {
         store.set([15.0, 16, 17, 19][step], forKey: "look.size")
     }
     /// "system", "light" or "dark".
-    static var scheme: String { store.string(forKey: "look.scheme") ?? "system" }
+    static var scheme: String { Theme.shared.scheme }
     static var haptics: Bool { bool("look.haptics", true) }
     static var fade: Bool { bool("look.fade", true) }
     static var stats: Bool { bool("look.stats", true) }

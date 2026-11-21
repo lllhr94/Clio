@@ -416,6 +416,24 @@ struct ChatPage: View {
             .onChange(of: chat.error) { followToEnd() }
             .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
+            .task { await playShot() }
+        }
+    }
+
+    /// Screenshot scenes that act: send a message and catch the reply arriving; or go up, then back to the latest.
+    private func playShot() async {
+        guard let shot = Shots.name else { return }
+        try? await Task.sleep(for: .seconds(1))
+        switch shot {
+        case "chat-stream":
+            chat.send("再帮我列个要带的东西", photos: [])
+        case "chat-latest":
+            following = false
+            if let first = chat.lines.suffix(shownCount).first?.id { scroller?.scrollTo(first, anchor: .top) }
+            try? await Task.sleep(for: .seconds(1))
+            returnToLatest()
+        default:
+            break
         }
     }
 

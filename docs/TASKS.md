@@ -5,9 +5,9 @@
 
 ## 分支怎么走，免得撞车
 
-- `batch-0.34` 是本批次的集成分支（0.33 已发布），只由 Claude 合并和推送。
+- `batch-0.34` 是本批次的集成分支（0.33 已发布），只由 Claude 合并和推送。**2026-11-23 起约一个月 Claude 不在，由 Codex 临时合并，规矩见 `docs/HANDOFF.md`。**
 - **改了 Swift 代码的 PR，交之前自己在分支上跑一次 CI 编译（`shots=false`），编过了再交**，PR 里贴运行链接。只改文档和素材的可以不跑。
-- Codex 每个任务从最新的 `batch-0.33` 拉一个分支：`codex/<任务名>`，做完开 PR 合进 `batch-0.33`，写清楚改了什么、怎么验证（CI 编译结果、截图）。Claude 审完合并。
+- Codex 每个任务从最新的 `batch-0.34` 拉一个分支：`codex/<任务名>`，做完开 PR 合进 `batch-0.34`，写清楚改了什么、怎么验证（CI 编译结果、截图）。Claude 审完合并。
 - **Antigravity**（Google 的智能体编辑器，主人 11-22 接入）：和 Codex 同样的规矩。每个任务从最新的 `batch-*` 拉 `antigravity/<任务名>` 分支，做完开 PR，写清改了什么、怎么验证（CI 编译结果）；Claude 审完合并。不直接推 `batch-*` / `main`。审查意见写进 `docs/REVIEW-ANTIGRAVITY.md`（或发给主人转交），由 Claude 判断要不要做、交给谁做。开工前先读 `AGENTS.md` 和 `docs/STATUS.md`。
 - Gemini 的产出由主人放进 `design/incoming/`（或发给 Claude / Codex），由写代码的一方接入。
 - 谁做完一项，就在本文件把它勾掉，并更新 `docs/STATUS.md`。

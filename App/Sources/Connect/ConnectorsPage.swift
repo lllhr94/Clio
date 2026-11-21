@@ -790,6 +790,7 @@ private struct GoogleSheet: View {
                     }
                 }
             }
+            .paperForm()
             .navigationTitle(L.t("connectors.google"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }

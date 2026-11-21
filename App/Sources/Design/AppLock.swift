@@ -94,6 +94,7 @@ final class LockCurtain {
         window.rootViewController = host
         window.isHidden = false
         self.window = window
+        Theme.shared.applyScheme()
     }
 
     func hide() {

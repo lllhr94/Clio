@@ -521,6 +521,26 @@ final class ChatModel {
 
     // MARK: Demo
 
+    /// What the 「reply arriving」 screenshot streams: a loose list and a table with a gap, the cases that used to break.
+    private static let shotReply = """
+    要带的东西：
+
+    - 雨伞，下午三点后有雨
+
+    - 充电宝，拍照费电
+
+    - 一件薄外套
+
+    | 东西 | 谁带 |
+    | :-- | :-- |
+    | 雨伞 | 你 |
+
+    | 零食 | 朋友 |
+    | 水 | 都带 |
+
+    其余的到了再买，重庆什么都方便。再补一句很长的话，让这段回答在截图的时候还在一个字一个字地往外冒，看看页面会不会突然空白或者跳动。
+    """
+
     private func sendDemo(_ text: String) {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
             lines.append(ChatLine(id: "demo-\(UUID().uuidString)", kind: .user, text: text))
@@ -528,8 +548,9 @@ final class ChatModel {
         demoReply?.cancel()
         demoReply = Task { [weak self] in
             self?.demoWorking = true
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            let reply = "这是演示，我还没有接上模型。到设置里填一个 DeepSeek 或 Claude 的密钥，我就能真的回答你：一边想一边写，像现在这样一个字一个字冒出来。"
+            let shot = Shots.name == "chat-stream"
+            try? await Task.sleep(nanoseconds: shot ? 300_000_000 : 900_000_000)
+            let reply = shot ? Self.shotReply : "这是演示，我还没有接上模型。到设置里填一个 DeepSeek 或 Claude 的密钥，我就能真的回答你：一边想一边写，像现在这样一个字一个字冒出来。"
             self?.shown = 0
             self?.publishedShown = 0
             self?.fresh = nil
@@ -539,7 +560,7 @@ final class ChatModel {
                 rest = rest.dropFirst(burst.count)
                 self?.target.append(contentsOf: burst)
                 self?.type()
-                try? await Task.sleep(nanoseconds: 260_000_000)
+                try? await Task.sleep(nanoseconds: shot ? 50_000_000 : 260_000_000)
             }
             guard let self else { return }
             let said = Task.isCancelled ? self.streaming : self.target
