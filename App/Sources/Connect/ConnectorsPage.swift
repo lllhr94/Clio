@@ -310,7 +310,7 @@ private struct ConnectorDetail: View {
                 VStack(spacing: Ink.Space.s) {
                     ConnectorIcon(connector: connector, size: 92)
                         .padding(.bottom, Ink.Space.s)
-                    Text(connector.name).font(.system(size: 24, weight: .bold)).foregroundStyle(Ink.ink)
+                    Text(connector.name).font(.system(size: Ink.Size.title, weight: .bold)).foregroundStyle(Ink.ink)
                     Text(connector.line).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
                     status
                 }
@@ -352,7 +352,7 @@ private struct ConnectorDetail: View {
                 }())
                 Kit.rule(inset: Ink.Space.l)
                 HStack(alignment: .top, spacing: Ink.Space.m) {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         Text(L.t("connectors.address")).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                         Text(connector.url).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).textSelection(.enabled)
                     }
@@ -386,10 +386,10 @@ private struct ConnectorDetail: View {
         return Text(server == nil ? L.t("connectors.notConnected") : (connected ? L.t("connectors.connected") : L.t("connectors.connectionError")))
             .font(.system(size: Ink.Size.small, weight: .medium))
             .foregroundStyle(server == nil ? Ink.inkSoft : (connected ? Ink.ok : Ink.stop))
-            .padding(.horizontal, 12)
+            .padding(.horizontal, Ink.Space.m)
             .frame(height: 26)
             .background(Ink.paperRaised, in: .capsule)
-            .padding(.top, 4)
+            .padding(.top, Ink.Space.xs)
     }
 
     private func bigButton(_ title: String, _ run: @escaping () -> Void) -> some View {
@@ -468,7 +468,7 @@ private struct ConnectorDetail: View {
                     Button(L.t("actions.generate")) { openURL(url) }.font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
                 }
             }
-            .padding(.leading, 4)
+            .padding(.leading, Ink.Space.xs)
             VStack(spacing: 0) {
                 SecureField(placeholder, text: $token)
                     .textInputAutocapitalization(.never)
@@ -504,8 +504,8 @@ private struct ConnectorDetail: View {
                         if index > 0 { Kit.rule(inset: 40) }
                         HStack(alignment: .top, spacing: Ink.Space.m) {
                             Image(systemName: tool.readOnly == true ? "eye" : "pencil")
-                                .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).frame(width: 18).padding(.top, 2)
-                            VStack(alignment: .leading, spacing: 2) {
+                                .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).frame(width: 18).padding(.top, Ink.Space.xs / 2)
+                            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                 Text(tool.name).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                                 if !tool.description.isEmpty {
                                     Text(tool.description).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(2)
@@ -518,7 +518,7 @@ private struct ConnectorDetail: View {
                 }
                 .paperCard()
                 Text(L.t("connectors.toolPermissionNote"))
-                    .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, 4)
+                    .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
             }
             HStack(spacing: Ink.Space.m) {
                 Button(L.t("actions.reconnect")) { go(token: nil) }
