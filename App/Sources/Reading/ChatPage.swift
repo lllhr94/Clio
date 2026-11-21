@@ -657,6 +657,9 @@ struct ChatPage: View {
             NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
                       bot: isRoom ? nil : bot)
         }
+        .sheet(item: $selectingText) { item in
+            QuoteSheet(text: item.text, copying: true) { _ in selectingText = nil }
+        }
         .sheet(item: $quoting) { item in
             QuoteSheet(text: item.text) { picked in
                 quoting = nil
@@ -1921,6 +1924,7 @@ struct ChatPage: View {
     /// What ⋯ under a reply holds. Copying the whole reply is the icon beside it, so it is not here again.
     private func replyMenu(_ line: ChatLine) -> some View {
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
+        Button("选择文字", systemImage: "character.cursor.ibeam") { selectingText = Noting(id: line.id, text: line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
         Button(Words.t("做成长图"), systemImage: "photo.on.rectangle") { noting = Noting(id: line.id, text: line.text) }
         ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
@@ -2551,6 +2555,8 @@ struct ChatPage: View {
     @State private var settleEnd: Task<Void, Never>?
 
     @State private var pickerShown = false
+    /// 选择文字: part of a reply, to copy.
+    @State private var selectingText: Noting?
     @State private var importingFile = false
     @State private var files: [String] = []
     @State private var hint: String?
