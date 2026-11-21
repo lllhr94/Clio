@@ -82,6 +82,8 @@ final class TeamModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .setup
+    @Published private(set) var loading = true
+    private var startup: Task<InitialData, Never>?
     @Published private(set) var bots: [BotInfo] = []
     @Published private(set) var rooms: [RoomInfo] = []
     @Published private(set) var approvals: [Approval] = []
@@ -195,15 +197,17 @@ final class TeamModel: ObservableObject {
     private var written: [String: Int] = [:]
 
     init() {
-        load()
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
         if let shot = Shots.name {
+            loading = false
             showDemo()
             if shot == "model-error" {
                 fillDemoError()
             } else {
                 fillDemoChat()
             }
+        } else {
+            startup = Task.detached(priority: .userInitiated) { InitialData.read() }
         }
         answering = NotificationCenter.default.addObserver(forName: .clioAnswerApproval, object: nil, queue: .main) { [weak self] note in
             guard let id = note.object as? String else { return }
@@ -232,18 +236,50 @@ final class TeamModel: ObservableObject {
 
     // MARK: Keeping
 
-    private func load() {
-        settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
+    private struct InitialData: Sendable {
+        let settings: TeamSettings
+        let bots: [BotInfo]
+        let rooms: [RoomInfo]
+        let memory: MemoryBook
+        let laters: [Later]
+        let routines: [Routine]
+
+        nonisolated static func read() -> Self {
+            Self(
+                settings: Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings(),
+                bots: Disk.load([BotInfo].self, "bots.json") ?? [],
+                rooms: Disk.load([RoomInfo].self, "rooms.json") ?? [],
+                memory: Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? []),
+                laters: Disk.load([Later].self, "later.json") ?? [],
+                routines: Disk.load([Routine].self, "routines.json") ?? []
+            )
+        }
+    }
+
+    func prepare() async {
+        guard let startup else { return }
+        let data = await startup.value
+        guard loading else { return }
+        load(data)
+        startupCompleted()
+    }
+
+    private func startupCompleted() {
+        startup = nil
+        loading = false
+    }
+
+    private func load(_ data: InitialData) {
+        settings = data.settings
         if Self.settle(&settings) { saveSettings() }
-        bots = Disk.load([BotInfo].self, "bots.json") ?? []
-        rooms = Disk.load([RoomInfo].self, "rooms.json") ?? []
-        memoryBook = Disk.load(MemoryBook.self, "memory.json")
-            ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
+        bots = data.bots
+        rooms = data.rooms
+        memoryBook = data.memory
         memories = memoryBook.memories
         memoryReviews = memoryBook.reviews
         cleanReviewTails = [:]
-        laters = Disk.load([Later].self, "later.json") ?? []
-        routines = Disk.load([Routine].self, "routines.json") ?? []
+        laters = data.laters
+        routines = data.routines
         entries = [:]
         approvals = []
         phase = settings.endpoints.isEmpty ? .setup : .ready
@@ -538,7 +574,7 @@ final class TeamModel: ObservableObject {
         }
         if threadLabels[Self.key(bot: id)] != nil { setThreadLabel("", for: Self.key(bot: id)) }
         entries[Self.key(bot: id)] = nil
-        if keeping { Disk.remove(Disk.chatFile(Self.key(bot: id))) }
+        if keeping { ChatDisk.remove(Self.key(bot: id)) }
         saveBots()
         saveRooms()
     }
@@ -563,7 +599,7 @@ final class TeamModel: ObservableObject {
         withAnimation(.smooth(duration: 0.35)) { rooms.removeAll { $0.id == id } }
         if threadLabels[Self.key(room: id)] != nil { setThreadLabel("", for: Self.key(room: id)) }
         entries[Self.key(room: id)] = nil
-        if keeping { Disk.remove(Disk.chatFile(Self.key(room: id))) }
+        if keeping { ChatDisk.remove(Self.key(room: id)) }
         saveRooms()
     }
 
@@ -962,7 +998,7 @@ final class TeamModel: ObservableObject {
                            message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)
         current.insert(marker, at: at)
         entries[key] = current
-        if keeping { Disk.save(current, Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(current, chat: key) }
         setSummary(key, digest)
         notify(key, .changed)
         return folded
@@ -1013,7 +1049,7 @@ final class TeamModel: ObservableObject {
         let rest = history(key).filter { $0.id != line.id }
         entries[key] = rest
         if keeping {
-            Disk.save(rest, Disk.chatFile(key))
+            ChatDisk.save(rest, chat: key)
             setSummary(key, Disk.load(String.self, Self.foldSummary(key, line.id)))
             Disk.remove(Self.foldSummary(key, line.id))
         } else {
@@ -1035,7 +1071,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let restored = Turns.unfolded(original: original, current: history(key), marker: marker)
         entries[key] = restored
-        Disk.save(restored, Disk.chatFile(key))
+        ChatDisk.save(restored, chat: key)
         setSummary(key, Disk.load(String.self, Self.leafSummary(key, leaf.id)))
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
@@ -1097,7 +1133,7 @@ final class TeamModel: ObservableObject {
         setLeaves(key, [leaf] + leaves(key))
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
-        if keeping { Disk.save([Entry](), Disk.chatFile(key)) }
+        if keeping { ChatDisk.save([Entry](), chat: key) }
         clearPreview(key)
         notify(key, .changed)
     }
@@ -1117,7 +1153,7 @@ final class TeamModel: ObservableObject {
         var marker = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("从这里另起了一叶，原来的那段收在絮语页，随时能翻回去。"))
         marker.note = true
         entries[key] = restarted + [marker]
-        if keeping { Disk.save(entries[key] ?? [], Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(entries[key] ?? [], chat: key) }
         notify(key, .changed)
     }
 
@@ -1130,7 +1166,7 @@ final class TeamModel: ObservableObject {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
             }
-            Disk.save([Entry](), Disk.chatFile(key))
+            ChatDisk.save([Entry](), chat: key)
         }
         setLeaves(key, [])
         setSummary(key, nil)
@@ -1152,7 +1188,7 @@ final class TeamModel: ObservableObject {
         if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
         entries[key] = kept
         if keeping {
-            Disk.save(kept, Disk.chatFile(key))
+            ChatDisk.save(kept, chat: key)
             Disk.remove(Self.leafFile(key, leaf.id))
         }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
@@ -1215,7 +1251,7 @@ final class TeamModel: ObservableObject {
         var list = history(key)
         list.append(entry)
         entries[key] = list
-        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(list, chat: key) }
         notify(key, .changed)
     }
 
@@ -1716,7 +1752,7 @@ final class TeamModel: ObservableObject {
         guard let index = list.lastIndex(where: { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }) else { return }
         list[index].tokens = (list[index].tokens ?? 0) + total
         entries[key] = list
-        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(list, chat: key) }
         notify(key, .changed)
     }
 
@@ -1742,7 +1778,7 @@ final class TeamModel: ObservableObject {
         let turns = turnsToUndo(key)
         guard let list = Turns.retried(history(key)) else { return }
         entries[key] = list
-        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(list, chat: key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
         Task {
@@ -1770,7 +1806,7 @@ final class TeamModel: ObservableObject {
             return edited
         }) else { return }
         entries[key] = list
-        if keeping { Disk.save(list, Disk.chatFile(key)) }
+        if keeping { ChatDisk.save(list, chat: key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
         Task {
@@ -2243,6 +2279,7 @@ final class TeamModel: ObservableObject {
 
     /// Called when the app comes back to the front.
     func wake() {
+        guard !loading else { return }
         BackgroundTurn.stop = { [weak self] key in self?.stop(key) }
         LiveTurns.sweep()
         deliverDue()
@@ -2370,7 +2407,9 @@ final class TeamModel: ObservableObject {
 
     func leaveDemo() {
         doing = [:]
-        load()
+        loading = true
+        startup = Task.detached(priority: .userInitiated) { InitialData.read() }
+        Task { await prepare() }
     }
 }
 

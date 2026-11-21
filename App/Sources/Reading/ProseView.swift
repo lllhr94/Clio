@@ -772,17 +772,18 @@ struct SelectableProse: View, Equatable {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(ParsedCache.blocks(text))
+        let format = "\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(FontShelf.shared.generation)"
         VStack(alignment: .leading, spacing: Ink.paragraphGap) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 switch part {
                 case .words(let blocks):
-                    ProseText(attributed: ProseWords.make(blocks))
+                    ProseText(attributed: ProseWords.make(blocks), text: text, part: index, format: format)
                 case .block(let block):
                     BlockView(block: block, fading: false)
                 }
             }
         }
-        .id("\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)")
+        .id(format)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -907,6 +908,18 @@ extension EnvironmentValues {
 /// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
 private struct ProseText: UIViewRepresentable {
     let attributed: NSAttributedString
+    let text: String
+    let part: Int
+    let format: String
+
+    private struct Length: Hashable {
+        let text: String
+        let part: Int
+        let format: String
+        let width: CGFloat
+    }
+
+    @MainActor private static var heights: [Length: CGFloat] = [:]
     @Environment(\.openURL) private var openURL
     @Environment(\.chatSelectionChanged) private var selectionChanged
 
@@ -939,8 +952,13 @@ private struct ProseText: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         let width = proposal.width ?? uiView.window?.windowScene?.screen.bounds.width ?? 360
+        let key = Length(text: text, part: part, format: format, width: width)
+        if let height = Self.heights[key] { return CGSize(width: width, height: height) }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: ceil(fitted.height))
+        let height = ceil(fitted.height)
+        if Self.heights.count >= 256, let older = Self.heights.keys.first { Self.heights.removeValue(forKey: older) }
+        Self.heights[key] = height
+        return CGSize(width: width, height: height)
     }
 
     static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) {

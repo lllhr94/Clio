@@ -76,13 +76,14 @@ enum MemoryNight {
         if let night = diaryDay(at: now, catchUp: true) {
             UserDefaults.standard.set(night, forKey: lastDelivery)
         }
-        submit(earliest: nextEvening(after: now))
         backgroundRunning = true
         let previous = foreground
         previous?.cancel()
         let work = Task { @MainActor in
             defer { backgroundRunning = false }
             await previous?.value
+            await TeamModel.shared.prepare()
+            submit(earliest: nextEvening(after: now))
             await TeamModel.shared.reviewMemories(nightly: true, background: true)
             task.setTaskCompleted(success: !Task.isCancelled)
         }

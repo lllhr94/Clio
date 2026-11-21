@@ -68,6 +68,8 @@ final class ChatModel {
     private(set) var hasStreaming = false
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
     private(set) var thinking = ""
+    @ObservationIgnored private var pendingThought = ""
+    @ObservationIgnored private var thoughtUpdate: Task<Void, Never>?
     /// The 心绪 being written before the reply in progress.
     private(set) var pulse = ""
     /// The reply that just finished: the row that took over from the streaming one.
@@ -101,6 +103,8 @@ final class ChatModel {
     private var limit = 160
     /// The tool running now, before its result is kept.
     private var running: String?
+    private var browsingHistory = false
+    private var heldRows: [ChatLine]?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
     private var target = ""
     private var shown = 0
@@ -150,7 +154,10 @@ final class ChatModel {
     func close() {
         if let feed { team.unlisten(feed) }
         feed = nil
+        browsingHistory = false
+        heldRows = nil
         demoReply?.cancel()
+        clearThinking()
         typing?.cancel()
         typing = nil
     }
@@ -198,6 +205,7 @@ final class ChatModel {
     func loadAll() {
         guard hasEarlier else { return }
         limit = .max
+        heldRows = nil
         lines = build(team.history(key))
     }
 
@@ -205,6 +213,7 @@ final class ChatModel {
         guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true
         limit += 160
+        heldRows = nil
         lines = build(team.history(key))
         loadingEarlier = false
     }
@@ -293,7 +302,20 @@ final class ChatModel {
         return out
     }
 
+    func setBrowsingHistory(_ browsing: Bool) {
+        guard browsingHistory != browsing else { return }
+        browsingHistory = browsing
+        if !browsing, let heldRows {
+            self.heldRows = nil
+            apply(heldRows)
+        }
+    }
+
     private func apply(_ next: [ChatLine]) {
+        if browsingHistory {
+            heldRows = next
+            return
+        }
         let grew = next.count > lines.count
         if lines != next {
             if loaded && grew && streaming.isEmpty {
@@ -310,21 +332,45 @@ final class ChatModel {
 
     // MARK: Live
 
+    private func showThinking(_ piece: String) {
+        guard !piece.isEmpty else { return }
+        if thinking.isEmpty {
+            thinking = piece.count > 6000 ? String(piece.suffix(4000)) : piece
+            return
+        }
+        pendingThought += piece
+        guard thoughtUpdate == nil else { return }
+        thoughtUpdate = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            guard let self else { return }
+            let next = self.thinking + self.pendingThought
+            self.pendingThought = ""
+            self.thoughtUpdate = nil
+            self.thinking = next.count > 6000 ? String(next.suffix(4000)) : next
+        }
+    }
+
+    private func clearThinking() {
+        thoughtUpdate?.cancel()
+        thoughtUpdate = nil
+        pendingThought = ""
+        if !thinking.isEmpty { thinking = "" }
+    }
+
     private func hear(_ event: TurnEvent) {
         switch event {
         case .pulse(let piece):
             pulse += piece
         case .thinking(let piece):
-            thinking += piece
-            if thinking.count > 6000 { thinking = String(thinking.suffix(4000)) }
+            showThinking(piece)
         case .text(let piece):
-            if !thinking.isEmpty { thinking = "" }
+            clearThinking()
             if fresh?.shown != nil { fresh?.shown = nil }
             if target.isEmpty { shown = 0 }
             target += piece
             type()
         case .tool(let label):
-            thinking = ""
+            clearThinking()
             running = label
             apply(build(team.history(key)))
         case .changed:
@@ -338,6 +384,7 @@ final class ChatModel {
                 target = ""
                 streaming = ""
                 pulse = ""
+                heldRows = nil
                 lines = next
                 if fresh?.shown != nil { type() }
                 Haptics.tick(0.6)
@@ -350,7 +397,7 @@ final class ChatModel {
             }
         case .finished:
             running = nil
-            thinking = ""
+            clearThinking()
             pulse = ""
             if !target.isEmpty {
                 target = ""
@@ -358,7 +405,7 @@ final class ChatModel {
             }
             apply(build(team.history(key)))
         case .failed(let message):
-            thinking = ""
+            clearThinking()
             pulse = ""
             withAnimation(.smooth) { error = message }
             Haptics.lock()

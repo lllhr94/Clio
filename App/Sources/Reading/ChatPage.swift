@@ -240,16 +240,14 @@ struct ChatPage: View {
 
     /// The lines of the conversation, what is arriving, and what waits to be sent.
     private var conversationContent: some View {
-        VStack(spacing: 0) {
-            // A plain stack, not a lazy one: every line is measured, so "the bottom" is always exactly where it is.
-            // A lazy stack guesses the height of lines it has not drawn, and scrolling to the end could stop short.
-            // To keep that cheap, only the newest lines are drawn; older ones come in on request.
-            VStack(alignment: .leading, spacing: Ink.Space.m) {
+        LazyVStack(spacing: 0) {
+            // Keep distant replies unmounted when the keyboard, stream or window size changes.
+            LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && !chat.hasStreaming { empty }
                 if chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
-                VStack(alignment: .leading, spacing: Ink.Space.m) {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(chat.lines.suffix(shownCount)) { line in
                         turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
                             // A turn starts with what you said: more room above it than between the parts of a reply.
@@ -324,6 +322,7 @@ struct ChatPage: View {
             .environment(\.chatSelectionChanged, selectionChanged)
             .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
             // Nothing moves while the reader is up reading older lines.
             // How far the last line is from sitting just above the composer. The composer (and the bar over it
@@ -331,13 +330,13 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) > 2
             } action: { _, behind in
-                if behind, following { toEnd() }
+                if behind, following { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentSize.height
             } action: { _, _ in
                 // Every time what is on the page grows, keep to the bottom right away, not every 80 characters.
-                if following { toEnd() }
+                if following { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) >= 80
@@ -352,6 +351,7 @@ struct ChatPage: View {
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
+                chat.setBrowsingHistory(phase == .interacting || phase == .decelerating)
                 if moving != scrolling {
                     scrolling = moving
                     Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
@@ -381,14 +381,10 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
-            .onChange(of: growth) { followToEnd(settle: false) }
             .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
         }
     }
-
-    /// Steps of what is arriving (the reply every 80 characters, the thinking every 120): each step follows the page down.
-    private var growth: Int { chat.streaming.count / 80 + (chat.thinking.count / 120) * 1_000_000 }
 
     /// A message written while the companion works: it waits for the turn to finish, or goes now, or comes back to the composer.
     private func queuedRow(_ item: TeamModel.Queued) -> some View {
@@ -2157,9 +2153,8 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                let suggestions = hints
-                if !suggestions.isEmpty { hintStrip(suggestions) }
-                if largeText { draftField }
+                ChatSection { composerSuggestions }
+                if largeText { ChatSection { draftField } }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
                     Button {
@@ -2175,7 +2170,7 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
-                    if !largeText { draftField }
+                    if !largeText { ChatSection { draftField } }
                     // While writing: what it goes out with, as small icons in the same row, not a row of their own.
                     if composing {
                         HStack(spacing: 2) {
@@ -2213,7 +2208,6 @@ struct ChatPage: View {
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
         .animation(petDockMotion, value: waiting?.id)
-        .task(id: suggestionSource) { await loadSuggestions(suggestionSource) }
         .overlay(alignment: .top) {
             HStack(spacing: Ink.Space.s) {
                 jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
@@ -2303,11 +2297,6 @@ struct ChatPage: View {
         geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY
     }
 
-    /// Back to the newest line, if the page is following: once as soon as what arrived is laid out,
-    /// and once more after the new row has settled in, since its height is only right by then.
-    /// Asks for one trip to the bottom. Sending fires several changes a moment apart (the composer empties, the new
-    /// line arrives, the reply starts): each used to scroll on its own and the page twitched. Now a new ask replaces the
-    /// one still waiting, so they land as a single move once the page has settled for a frame.
     private func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
             selecting.insert(id)
@@ -2317,17 +2306,14 @@ struct ChatPage: View {
         }
     }
 
+    /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     private func followToEnd(settle: Bool = true) {
         guard following, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 24_000_000)
-            guard !Task.isCancelled, following else { return }
+            do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
+            guard following else { return }
             toEnd()
-            guard settle else { return }
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled, following else { return }
-            toEnd(animated: true)
         }
     }
 
@@ -2370,11 +2356,11 @@ struct ChatPage: View {
 
     /// Writing something: the row of chips shows under the text field.
     private var composing: Bool {
-        typing || !draft.isEmpty || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
+        typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty
+        draftState.hasSendableText || !photos.isEmpty || !files.isEmpty
     }
 
     private var action: some View {
@@ -2485,6 +2471,15 @@ struct ChatPage: View {
         let text = draft.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("/"), !text.contains("\n") { return .skills }
         return mention == nil ? nil : .files
+    }
+
+    private var composerSuggestions: some View {
+        let source = suggestionSource
+        let suggestions = source == nil ? [] : hints
+        return Group {
+            if !suggestions.isEmpty { hintStrip(suggestions) }
+        }
+        .task(id: source) { await loadSuggestions(source) }
     }
 
     private func loadSuggestions(_ source: SuggestionSource?) async {
@@ -3585,9 +3580,17 @@ private struct ChatSection<Content: View>: View {
 
 @MainActor @Observable
 private final class ChatDraft {
+    private(set) var hasText = false
+    private(set) var hasSendableText = false
+
     var text = "" {
         didSet {
-            guard oldValue != text, key != nil else { return }
+            guard oldValue != text else { return }
+            let hasText = !text.isEmpty
+            let hasSendableText = text.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
+            if self.hasText != hasText { self.hasText = hasText }
+            if self.hasSendableText != hasSendableText { self.hasSendableText = hasSendableText }
+            guard key != nil else { return }
             if text.isEmpty {
                 flush()
                 return

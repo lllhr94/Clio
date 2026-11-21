@@ -12,7 +12,7 @@ enum LiveTurns {
     static var on: Bool { UserDefaults.standard.object(forKey: "live.on") == nil ? true : UserDefaults.standard.bool(forKey: "live.on") }
 
     /// A turn began. Live Activities can only be started while Clio is on screen; a turn begun in the background has none.
-    static func begin(chat: String, name: String, face: Data? = nil) {
+    static func begin(chat: String, name: String, face: @autoclosure () -> Data? = nil) {
         guard on, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let state = TurnAttributes.ContentState(doing: "正在想", phase: .working, steps: 0, started: Date(), ring: Date())
         if let activity = running[chat] {
@@ -22,7 +22,7 @@ enum LiveTurns {
             return
         }
         do {
-            let activity = try Activity.request(attributes: TurnAttributes(name: name, chat: chat, face: face), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+            let activity = try Activity.request(attributes: TurnAttributes(name: name, chat: chat, face: face()), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
             running[chat] = activity
             states[chat] = state
         } catch {
