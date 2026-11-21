@@ -1164,7 +1164,8 @@ struct ChatPage: View {
 
     private func sources(for line: ChatLine) -> [URL] {
         guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
-        var urls: [URL] = []
+        // The pages the answer itself names come first: they are what it rests on.
+        var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
         var cursor = index - 1
         while cursor >= 0, chat.lines[cursor].kind == .steps {
             let step = chat.lines[cursor]
@@ -1173,12 +1174,12 @@ struct ChatPage: View {
                 // Pages it read count first; then what a search brought back.
                 let text = label.hasPrefix("搜索") ? step.details[position].output : step.details[position].input
                 for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
-                    if let url = URL(string: String(match.output)), url.host != nil, !urls.contains(url) { urls.append(url) }
+                    if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
                 }
             }
             cursor -= 1
         }
-        return Array(urls.prefix(5))
+        return Array(urls.prefix(8))
     }
 
     /// What this conversation can reach, in one line: 「在书案干活 · 能联网 · 远山 jp-1」.
@@ -1269,7 +1270,7 @@ struct ChatPage: View {
                 }
                 let found = sources(for: line)
                 if !found.isEmpty, !(chat.fresh?.id == line.id) {
-                    SourcesRow(urls: found) { url in
+                    SourcesRow(urls: found, titles: SourcesRow.titles(in: line.text)) { url in
                         typing = false
                         Task { await team.browser.open(url) }
                         roaming = true
@@ -2997,6 +2998,8 @@ private struct Dots: View {
 /// 出处: the pages behind an answer, as small cards with the site's name; a tap opens the page in 远游.
 struct SourcesRow: View {
     let urls: [URL]
+    /// What the answer called each page, where it linked one: 「中国天气网」 rather than 「weather.com.cn」.
+    var titles: [URL: String] = [:]
     let open: (URL) -> Void
     @State private var listing = false
 
@@ -3033,12 +3036,34 @@ struct SourcesRow: View {
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("\(urls.count) 个来源，点开看")
         .sheet(isPresented: $listing) {
-            SourcesSheet(urls: urls) { url in
+            SourcesSheet(urls: urls, titles: titles) { url in
                 listing = false
                 open(url)
             }
             .presentationDetents([.medium, .large])
         }
+    }
+
+    /// The links written in an answer, 「[名字](网址)」, in order.
+    static func cited(in text: String) -> [(title: String, url: URL)] {
+        var found: [(title: String, url: URL)] = []
+        for match in text.matches(of: #/\[([^\]\n]+)\]\((https?://[^)\s]+)\)/#) {
+            guard let url = URL(string: String(match.output.2)), url.host != nil, !isSearchPage(url),
+                  !found.contains(where: { $0.url == url }) else { continue }
+            found.append((String(match.output.1).trimmingCharacters(in: .whitespaces), url))
+        }
+        return found
+    }
+
+    static func titles(in text: String) -> [URL: String] {
+        Dictionary(cited(in: text).map { ($0.url, $0.title) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// A search engine's list of results is how the pages were found, not a source.
+    static func isSearchPage(_ url: URL) -> Bool {
+        let host = site(url), path = url.path()
+        let engines = ["bing.com", "cn.bing.com", "google.com", "baidu.com", "sogou.com", "so.com", "duckduckgo.com", "search.yahoo.com"]
+        return engines.contains(host) && (path.hasPrefix("/search") || path == "/s" || path == "/web" || path == "/" || path.isEmpty)
     }
 
     /// 「zhihu.com」 from 「https://www.zhihu.com/question/…」.
@@ -3054,6 +3079,7 @@ struct SourcesRow: View {
 /// The sources of a reply, one per row: the site's icon, the page's address, and where it leads.
 private struct SourcesSheet: View {
     let urls: [URL]
+    var titles: [URL: String] = [:]
     let open: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -3070,8 +3096,9 @@ private struct SourcesSheet: View {
                             HStack(spacing: Ink.Space.m) {
                                 BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 32)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(Self.path(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                    // The name the answer gave it, when it gave one; then the site.
+                                    Text(titles[url] ?? SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(titles[url] == nil ? Self.path(url) : SourcesRow.site(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                 }
                                 Spacer(minLength: 0)
                                 Image(systemName: "arrow.up.right").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
