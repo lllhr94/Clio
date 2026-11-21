@@ -18,10 +18,6 @@ struct CarePage: View {
     @State private var probes: [String: String] = [:]
     @State private var probing = false
     @State private var copied = false
-    @State private var hitchesCopied = false
-    @AppStorage("look.fps") private var fps = false
-    @AppStorage("care.hitches") private var recordingHitches = false
-    @ObservedObject private var hitches = Hitches.shared
 
     var body: some View {
         NavigationStack {
@@ -91,28 +87,7 @@ struct CarePage: View {
                     }
                 } header: { Text(L.t("settings.recentErrors")) }
 
-                Section {
-                    Toggle(L.t("settings.showFrameRate"), isOn: $fps)
-                    Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
-                    if hitches.recent.isEmpty {
-                        Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
-                    } else {
-                        ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
-                            Text(hitch.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
-                        }
-                        Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
-                            UIPasteboard.general.string = hitches.report
-                            hitchesCopied = true
-                            Haptics.tick(0.6)
-                        }
-                        Button("清空掉帧记录", role: .destructive) {
-                            hitches.clear()
-                            hitchesCopied = false
-                        }
-                    }
-                } header: { Text(L.t("settings.frameDrops")) } footer: {
-                    Text(L.t("settings.recordHitchesNote"))
-                }
+                HitchSettings()
 
                 Section {
                     Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
@@ -206,6 +181,7 @@ struct CarePage: View {
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)
+        let hitches = Hitches.shared
         if !hitches.recent.isEmpty { lines.append(hitches.report.split(separator: "\n").prefix(21).joined(separator: "\n")) }
         return lines.joined(separator: "\n")
     }
@@ -260,6 +236,39 @@ struct CarePage: View {
                 }
             }
             probing = false
+        }
+    }
+}
+
+
+private struct HitchSettings: View {
+    @State private var hitchesCopied = false
+    @AppStorage("look.fps") private var fps = false
+    @AppStorage("care.hitches") private var recordingHitches = false
+    @ObservedObject private var hitches = Hitches.shared
+
+    var body: some View {
+        Section {
+            Toggle(L.t("settings.showFrameRate"), isOn: $fps)
+            Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
+            if hitches.recent.isEmpty {
+                Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
+            } else {
+                ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
+                    Text(hitch.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
+                }
+                Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
+                    UIPasteboard.general.string = hitches.report
+                    hitchesCopied = true
+                    Haptics.tick(0.6)
+                }
+                Button("清空掉帧记录", role: .destructive) {
+                    hitches.clear()
+                    hitchesCopied = false
+                }
+            }
+        } header: { Text(L.t("settings.frameDrops")) } footer: {
+            Text(L.t("settings.recordHitchesNote"))
         }
     }
 }

@@ -8,7 +8,7 @@ struct StudyPage: View {
     @State private var items: [Item] = []
     @State private var deleting: Item?
 
-    struct Item: Identifiable, Hashable {
+    struct Item: Identifiable, Hashable, Sendable {
         let url: URL
         let folder: Bool
         let bytes: Int
@@ -40,6 +40,8 @@ struct StudyFolder: View {
     @State private var importing = false
     @State private var naming = false
     @State private var newFolder = ""
+    @State private var loading = true
+    @State private var request: UUID?
 
     var body: some View {
         ZStack {
@@ -51,7 +53,9 @@ struct StudyFolder: View {
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                     }
-                    if items.isEmpty {
+                    if loading {
+                        ProgressView(L.t("loading.generic"))
+                    } else if items.isEmpty {
                         VStack(spacing: Ink.Space.m) {
                             PetStill(size: 72)
                             Text(L.t("empty.files"))
@@ -62,7 +66,7 @@ struct StudyFolder: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, Ink.Space.xxl)
                     } else {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(items) { item in
                                 NavigationLink(value: item) { row(item) }
                                     .buttonStyle(PressStyle())
@@ -115,7 +119,7 @@ struct StudyFolder: View {
                 try? FileManager.default.copyItem(at: source, to: target)
             }
             Haptics.thud()
-            withAnimation(Ink.Motion.settle) { load() }
+            Task { await load() }
         }
         .alert(L.t("actions.newFolder"), isPresented: $naming) {
             TextField(L.t("files.folderName"), text: $newFolder)
@@ -123,18 +127,18 @@ struct StudyFolder: View {
                 let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
                 guard !name.isEmpty else { return }
                 try? FileManager.default.createDirectory(at: folder.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
-                withAnimation(Ink.Motion.settle) { load() }
+                Task { await load() }
             }
             Button(L.t("actions.cancel"), role: .cancel) {}
         }
-        .onAppear(perform: load)
-        .refreshable { load() }
+        .task(id: folder) { await load() }
+        .refreshable { await load() }
         .confirmationDialog(L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
             Button(L.t("actions.delete"), role: .destructive) {
                 if let item = deleting {
                     try? FileManager.default.removeItem(at: item.url)
                     Haptics.lock()
-                    withAnimation(Ink.Motion.settle) { load() }
+                    Task { await load() }
                 }
                 deleting = nil
             }
@@ -160,10 +164,20 @@ struct StudyFolder: View {
         }
     }
 
-    private func load() {
+    private func load() async {
+        let id = UUID()
+        request = id
+        let folder = self.folder
+        let result = await Task.detached(priority: .utility) { Self.readFolder(folder) }.value
+        guard !Task.isCancelled, request == id else { return }
+        items = result
+        loading = false
+    }
+
+    nonisolated private static func readFolder(_ folder: URL) -> [StudyPage.Item] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-        items = urls.map { url in
+        return urls.map { url in
             let values = try? url.resourceValues(forKeys: Set(keys))
             return StudyPage.Item(url: url, folder: values?.isDirectory == true, bytes: values?.fileSize ?? 0, changed: values?.contentModificationDate ?? .distantPast)
         }
@@ -234,14 +248,24 @@ struct StudyFile: View {
                     .accessibilityLabel("分享文件")
             }
         }
-        .onAppear {
-            defer { loaded = true }
-            if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(ext), let image = UIImage(contentsOfFile: url.path) {
-                picture = image
-                return
-            }
-            if let data = try? Data(contentsOf: url), data.count < 2_000_000 { text = String(data: data, encoding: .utf8) }
+        .task(id: url) {
+            let url = self.url
+            let result = await Task.detached(priority: .utility) { Self.readPreview(url) }.value
+            guard !Task.isCancelled else { return }
+            picture = result.picture
+            text = result.text
+            loaded = true
         }
+    }
+
+    nonisolated private static func readPreview(_ url: URL) -> (picture: UIImage?, text: String?) {
+        if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(url.pathExtension.lowercased()),
+           let image = UIImage(contentsOfFile: url.path) {
+            return (image.preparingForDisplay() ?? image, nil)
+        }
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size < 2_000_000,
+              let data = try? Data(contentsOf: url), data.count < 2_000_000 else { return (nil, nil) }
+        return (nil, String(data: data, encoding: .utf8))
     }
 }
 

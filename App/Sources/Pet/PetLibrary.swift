@@ -60,16 +60,13 @@ final class PetLibrary {
         return pack
     }
 
-    nonisolated private static func packsFolder() -> URL {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pets", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
+    nonisolated private static let packsFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("pets", isDirectory: true)
 
     private func reload() async {
         let found = await Task.detached(priority: .utility) {
             let bundled = Bundle.main.resourceURL.map { Self.loadPacks(in: $0.appendingPathComponent("Pets", isDirectory: true), idPrefix: "builtin-") } ?? []
-            return bundled + Self.loadPacks(in: Self.packsFolder())
+            return bundled + Self.loadPacks(in: Self.packsFolder)
         }.value
         packs = Self.ordered(found)
         if !packs.isEmpty, !packs.contains(where: { $0.id == choice }) { choice = Self.standard }
@@ -110,7 +107,7 @@ final class PetLibrary {
     }
 
     func canDelete(_ pack: PetPack) -> Bool {
-        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent().lastPathComponent == "pets"
+        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent() == Self.packsFolder
     }
 
     func delete(_ id: String) {
@@ -208,7 +205,7 @@ final class PetLibrary {
         }
 
         // Only pack.json and its sheets are kept; the old version is swapped out in one step.
-        let folder = packsFolder()
+        let folder = packsFolder
         let staging = folder.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         try data.write(to: staging.appendingPathComponent("pack.json"))

@@ -22,6 +22,15 @@ enum L {
     static let daily = load("zh-CN.daily")
     static let literary = load("zh-CN.literary")
 
+    /// Settings search uses both dictionaries. Start loading the other vocabulary after launch,
+    /// instead of making the first click into Settings do it.
+    static func prepare() {
+        Task.detached(priority: .utility) {
+            _ = daily
+            _ = literary
+        }
+    }
+
     /// True in 日常.
     static var plain: Bool { Theme.shared.plain }
 

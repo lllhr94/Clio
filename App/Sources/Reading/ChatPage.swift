@@ -3,6 +3,7 @@ import AgentKit
 import CoreLocation
 import Craft
 import PhotosUI
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
@@ -10,17 +11,19 @@ import VisionKit
 /// 絮语: a conversation with one companion, set as a page.
 struct ChatPage: View {
     @ObservedObject var team: TeamModel
-    @StateObject private var chat: ChatModel
+    @State private var chat: ChatModel
     @StateObject private var dictation = Dictation()
     @ObservedObject private var asker = Asker.shared
     @State private var petPerch = PetPerch()
     @Environment(\.accessibilityReduceMotion) private var calmPetMotion
+    @Environment(\.scenePhase) private var scenePhase
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
     /// desk made SwiftUI think the whole page had changed, and redraw all of it for every frame the sidebar slid.
     let side: SideControl
     private var back: () -> Void { side.open }
 
-    @State private var draft = ""
+    @State private var draftState = ChatDraft()
+    private var draft: String { get { draftState.text } nonmutating set { draftState.text = newValue } }
     @State private var spokenBase = ""
     @State private var photos: [Data] = []
     @State private var picks: [PhotosPickerItem] = []
@@ -76,27 +79,27 @@ struct ChatPage: View {
     init(team: TeamModel, bot: BotInfo, side: SideControl) {
         self.team = team
         self.side = side
-        _chat = StateObject(wrappedValue: ChatModel(bot: bot, team: team))
+        _chat = State(initialValue: ChatModel(bot: bot, team: team))
     }
 
     init(team: TeamModel, room: RoomInfo, side: SideControl) {
         self.team = team
         self.side = side
-        _chat = StateObject(wrappedValue: ChatModel(room: room, team: team))
+        _chat = State(initialValue: ChatModel(room: room, team: team))
     }
 
     private var isRoom: Bool { chat.roomId != nil }
 
     private var bot: BotInfo { isRoom ? chat.bot : (team.bots.first { $0.id == chat.bot.id } ?? chat.bot) }
     private var doing: String? { team.doing[chat.key] }
-    private var working: Bool { doing != nil || !chat.streaming.isEmpty }
+    private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
     /// What the pet acts out for this conversation.
     private var petMood: PetMood {
         if waiting != nil || (asker.current != nil && working) { return .waiting }
         if let doing, doing.contains("压缩") || doing.contains("提要") { return .sweeping }
-        if !chat.streaming.isEmpty { return .writing }
+        if chat.hasStreaming { return .writing }
         if working {
             if let doing, doing.contains("沉吟") || doing.contains("思考") { return .thinking }
             return .working(max(1, team.doing.count))
@@ -107,7 +110,7 @@ struct ChatPage: View {
     /// Which of the pet's states the portrait in the header and the empty page show.
     private var petState: String {
         if waiting != nil { return "notification" }
-        if !chat.streaming.isEmpty || doing == "正在回复" { return "working" }
+        if chat.hasStreaming || doing == "正在回复" { return "working" }
         if working || typing || dictation.listening { return "thinking" }
         if cheering { return "attention" }
         if dozing { return "sleeping" }
@@ -193,7 +196,7 @@ struct ChatPage: View {
     private var showsLive: Bool {
         guard doing != nil || waiting != nil else { return false }
         if let last = chat.lines.last, last.kind == .steps, last.live { return false }
-        return chat.streaming.isEmpty || waiting != nil
+        return !chat.hasStreaming || waiting != nil
     }
 
     /// What it is doing, in plain words, for the line under the conversation.
@@ -233,7 +236,7 @@ struct ChatPage: View {
             // A lazy stack guesses the height of lines it has not drawn, and scrolling to the end could stop short.
             // To keep that cheap, only the newest lines are drawn; older ones come in on request.
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
+                if chat.lines.isEmpty && !chat.hasStreaming { empty }
                 if chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
@@ -256,20 +259,7 @@ struct ChatPage: View {
                         .id("folding")
                         .transition(.opacity)
                 }
-                if !chat.pulse.isEmpty {
-                    PulseBox(text: chat.pulse, live: chat.streaming.isEmpty, temper: Temper.of(isRoom ? nil : bot))
-                        .id("pulse")
-                        .transition(.opacity)
-                }
-                if !chat.thinking.isEmpty && chat.streaming.isEmpty {
-                    ThinkingBox(text: chat.thinking, live: true)
-                        .id("thinking")
-                        .transition(.opacity)
-                }
-                if !chat.streaming.isEmpty {
-                    StreamingProse(text: chat.streaming)
-                        .id("streaming")
-                }
+                ChatSection { liveReply }
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
                 if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
                     ToolTailView()
@@ -292,6 +282,24 @@ struct ChatPage: View {
         }
         .padding(.horizontal, Ink.Space.page)
         .padding(.top, Ink.Space.m)
+    }
+
+    @ViewBuilder
+    private var liveReply: some View {
+        if !chat.pulse.isEmpty {
+            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(isRoom ? nil : bot))
+                .id("pulse")
+                .transition(.opacity)
+        }
+        if !chat.thinking.isEmpty && !chat.hasStreaming {
+            ThinkingBox(text: chat.thinking, live: true)
+                .id("thinking")
+                .transition(.opacity)
+        }
+        if chat.hasStreaming {
+            StreamingProse(text: chat.streaming)
+                .id("streaming")
+        }
     }
 
     /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
@@ -543,12 +551,13 @@ struct ChatPage: View {
         .onAppear {
             chat.open()
             PetNews.shared.focused = chat.key
-            if draft.isEmpty, let kept = Self.keptDraft(chat.key) { draft = kept }
+            draftState.load(chat.key)
         }
-        .onChange(of: draft) { _, text in Self.keepDraft(text, for: chat.key) }
+        .onChange(of: scenePhase) { if scenePhase != .active { draftState.flush() } }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
+            draftState.flush()
             chat.close()
             team.markSeen(chat.key)
             if dictation.listening { dictation.stop() }
@@ -1700,21 +1709,6 @@ struct ChatPage: View {
         return (nil, text)
     }
 
-    /// What was typed and not sent stays with the conversation — a new one too — across leaving it and relaunching
-    /// (Open Minis lost a new chat's draft on going back).
-    private static func keepDraft(_ text: String, for key: String) {
-        let name = "draft." + key
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            UserDefaults.standard.removeObject(forKey: name)
-        } else {
-            UserDefaults.standard.set(text, forKey: name)
-        }
-    }
-
-    private static func keptDraft(_ key: String) -> String? {
-        UserDefaults.standard.string(forKey: "draft." + key)
-    }
-
     /// No more of the companion's words follow before the user speaks again.
     private func endsTurn(_ line: ChatLine) -> Bool {
         guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return true }
@@ -1995,7 +1989,7 @@ struct ChatPage: View {
     }
 
     private var draftField: some View {
-        TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: $draft, axis: .vertical)
+        TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: Binding(get: { draft }, set: { draft = $0 }), axis: .vertical)
             .font(largeText ? .body : Ink.label)
             .foregroundStyle(Ink.ink)
             .lineLimit(1...(largeText ? 3 : 6))
@@ -2006,6 +2000,10 @@ struct ChatPage: View {
     }
 
     private var composer: some View {
+        ChatSection { composerContents }
+    }
+
+    private var composerContents: some View {
         VStack(spacing: Ink.Space.s) {
             // The plan sits right on the composer, as one block with it, not as a second bar floating above.
             VStack(spacing: Ink.Space.xs) {
@@ -2104,7 +2102,8 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                if !hints.isEmpty { hintStrip }
+                let suggestions = hints
+                if !suggestions.isEmpty { hintStrip(suggestions) }
                 if largeText { draftField }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
@@ -2159,6 +2158,7 @@ struct ChatPage: View {
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
         .animation(petDockMotion, value: waiting?.id)
+        .task(id: suggestionSource) { await loadSuggestions(suggestionSource) }
         .overlay(alignment: .top) {
             // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
             HStack(spacing: Ink.Space.m) {
@@ -2400,6 +2400,33 @@ struct ChatPage: View {
         return String(word)
     }
 
+    private enum SuggestionSource: Equatable { case files, skills }
+
+    private var suggestionSource: SuggestionSource? {
+        let text = draft.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("/"), !text.contains("\n") { return .skills }
+        return mention == nil ? nil : .files
+    }
+
+    private func loadSuggestions(_ source: SuggestionSource?) async {
+        switch source {
+        case .skills:
+            let skills = await Task.detached(priority: .userInitiated) { SkillShelf.enabled }.value
+            if !Task.isCancelled { draftState.skills = skills }
+        case .files:
+            let paths = await Task.detached(priority: .userInitiated) {
+                Workspace.files(under: Workspace.root, cap: 800)
+                    .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
+                    .sorted { $0.date > $1.date }
+                    .map(\.path)
+            }.value
+            if !Task.isCancelled { draftState.files = paths }
+        case nil:
+            draftState.files = []
+            draftState.skills = []
+        }
+    }
+
     private var hints: [Hint] {
         let text = draft.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("/"), !text.contains("\n") {
@@ -2422,7 +2449,7 @@ struct ChatPage: View {
                     detailOpen = true
                 },
             ]
-            for item in SkillShelf.all() where item.on {
+            for item in draftState.skills where item.on {
                 list.append(Hint(id: "skill-" + item.id, icon: "wand.and.stars", title: "/" + item.skill.name, note: item.skill.description) {
                     draft = "用技能「\(item.skill.name)」："
                 })
@@ -2430,22 +2457,18 @@ struct ChatPage: View {
             return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
         }
         if let word = mention?.lowercased() {
-            let all = Workspace.files(under: Workspace.root, cap: 800)
-                .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
-                .filter { word.isEmpty || $0.path.lowercased().contains(word) }
-                .sorted { $0.date > $1.date }
-                .prefix(6)
+            let all = draftState.files.lazy.filter { word.isEmpty || $0.lowercased().contains(word) }.prefix(6)
             return all.map { file in
-                Hint(id: "file-" + file.path, icon: "doc", title: (file.path as NSString).lastPathComponent, note: Words.t("书案/") + file.path) {
+                Hint(id: "file-" + file, icon: "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
                     if let at = draft.lastIndex(of: "@") { draft = String(draft[..<at]) }
-                    if !files.contains(file.path) { withAnimation(Ink.Motion.settle) { files.append(file.path) } }
+                    if !files.contains(file) { withAnimation(Ink.Motion.settle) { files.append(file) } }
                 }
             }
         }
         return []
     }
 
-    private var hintStrip: some View {
+    private func hintStrip(_ hints: [Hint]) -> some View {
         VStack(spacing: 0) {
             ForEach(hints.prefix(6)) { hint in
                 Button {
@@ -3471,5 +3494,52 @@ struct LookbackLine: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("回望：" + text)
+    }
+}
+
+
+private struct ChatSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View { content() }
+}
+
+@MainActor @Observable
+private final class ChatDraft {
+    var text = "" {
+        didSet {
+            guard oldValue != text, key != nil else { return }
+            if text.isEmpty {
+                flush()
+                return
+            }
+            save?.cancel()
+            save = Task {
+                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                flush()
+            }
+        }
+    }
+
+    var skills: [SkillShelf.Item] = []
+    var files: [String] = []
+    @ObservationIgnored private var key: String?
+    @ObservationIgnored private var save: Task<Void, Never>?
+
+    func load(_ chat: String) {
+        guard key == nil else { return }
+        text = UserDefaults.standard.string(forKey: "draft." + chat) ?? ""
+        key = "draft." + chat
+    }
+
+    func flush() {
+        save?.cancel()
+        save = nil
+        guard let key else { return }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(text, forKey: key)
+        }
     }
 }
