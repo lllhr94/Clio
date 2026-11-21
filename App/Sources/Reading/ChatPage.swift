@@ -3489,7 +3489,7 @@ struct OutlineSheet: View {
                 }
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找问过的话")
-            .navigationTitle("问答目录")
+            .navigationTitle(L.t("chat.outline"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
