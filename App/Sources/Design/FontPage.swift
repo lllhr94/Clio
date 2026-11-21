@@ -134,7 +134,7 @@ struct FontPage: View {
                         Text(face.note).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
                     Text(sample)
-                        .font(Ink.face(face, (19 * UIScale.factor).rounded()))
+                        .font(Ink.face(face, Ink.Size.title))
                         .foregroundStyle(state == .ready ? Ink.ink : Ink.inkFaint)
                         .lineLimit(1)
                 }
