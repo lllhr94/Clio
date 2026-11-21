@@ -258,8 +258,7 @@ final class TeamModel: ObservableObject {
     private func saveMemory() {
         guard keeping else { return }
         memoryBook.memories = memories
-        // Keep writing the original format until the first automated request needs its ledger.
-        if memoryBook.budgetDay == nil { Disk.save(memories, "memory.json") }
+        if memoryBook.budgetDay == nil && memoryBook.reviewFromDay == nil { Disk.save(memories, "memory.json") }
         else { Disk.save(memoryBook, "memory.json") }
     }
     private func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
@@ -2358,9 +2357,20 @@ extension TeamModel {
     }
 
     private func reviewConversations(now: Date, includeLeaves: Bool) async {
-        if memoryBook.budgetDay == Tide.day(of: now),
-           memoryBook.requests >= MemoryReviewRules.requestsPerDay { return }
-        let cutoff = Tide.day(of: now.addingTimeInterval(-7 * 86_400))
+        let today = Tide.day(of: now)
+        if memoryBook.budgetDay == today, memoryBook.requests >= MemoryReviewRules.requestsPerDay { return }
+        if memoryBook.reviewFromDay == nil {
+            var book = memoryBook
+            book.memories = memories
+            book.reviewFromDay = today
+            do {
+                try Disk.write(book, "memory.json")
+                memoryBook = book
+            } catch {
+                return
+            }
+        }
+        let cutoff = max(memoryBook.reviewFromDay ?? today, Tide.day(of: now.addingTimeInterval(-7 * 86_400)))
         let keys = bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) }
         var remaining = includeLeaves ? 8 : 2
         memoryReviewAttempts = memoryReviewAttempts.filter { now.timeIntervalSince($0.value) < 3600 }

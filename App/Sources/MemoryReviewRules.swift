@@ -39,6 +39,7 @@ struct MemoryBook: Codable {
     var memories: [Memory] = []
     var reviews: [MemoryReviewLog] = []
     var processed: [String: Set<String>] = [:]
+    var reviewFromDay: String?
     var budgetDay: String?
     var requests: Int = 0
     var diaryRequests: Int = 0

@@ -5,7 +5,9 @@ import UIKit
 @MainActor
 enum MemoryNight {
     private static let identifier = "io.github.lllhr94.clio.memory-night"
+    private static let lastDelivery = "memory-night.lastDelivery"
     private static var pending = false
+    private static var scheduleQuery: UUID?
     private static var foreground: Task<Void, Never>?
     private static var backgroundRunning = false
 
@@ -17,15 +19,41 @@ enum MemoryNight {
     }
 
     static func schedule() {
-        guard !pending, TeamModel.shared.phase == .ready else { return }
+        guard !pending, scheduleQuery == nil, TeamModel.shared.phase == .ready else { return }
+        let query = UUID()
+        let taskID = identifier
+        scheduleQuery = query
+        BGTaskScheduler.shared.getPendingTaskRequests { requests in
+            let alreadyScheduled = requests.contains { $0.identifier == taskID }
+            Task { @MainActor in
+                guard scheduleQuery == query else { return }
+                scheduleQuery = nil
+                if alreadyScheduled {
+                    pending = true
+                } else {
+                    let now = Date()
+                    let night = diaryDay(at: now)
+                    let eveningDue = night != nil && night != UserDefaults.standard.string(forKey: lastDelivery)
+                    submit(earliest: eveningDue ? now : nextEvening(after: now))
+                }
+            }
+        }
+    }
+
+    private static func nextEvening(after date: Date) -> Date? {
+        Calendar.current.nextDate(after: date, matching: DateComponents(hour: 21), matchingPolicy: .nextTime)
+    }
+
+    private static func submit(earliest: Date?) {
+        guard TeamModel.shared.phase == .ready else { return }
         let request = BGProcessingTaskRequest(identifier: identifier)
-        request.earliestBeginDate = Calendar.current.nextDate(after: Date(), matching: DateComponents(hour: 21), matchingPolicy: .nextTime)
+        request.earliestBeginDate = earliest
         request.requiresNetworkConnectivity = true
         do {
             try BGTaskScheduler.shared.submit(request)
             pending = true
         } catch {
-            // The system may disable background refresh or already have a request from a prior launch.
+            // The system may disable background refresh.
         }
     }
 
@@ -42,8 +70,13 @@ enum MemoryNight {
     static func cancelForeground() { foreground?.cancel() }
 
     private static func run(_ task: BGProcessingTask) {
+        scheduleQuery = nil
         pending = false
-        schedule()
+        let now = Date()
+        if let night = diaryDay(at: now, catchUp: true) {
+            UserDefaults.standard.set(night, forKey: lastDelivery)
+        }
+        submit(earliest: nextEvening(after: now))
         backgroundRunning = true
         let previous = foreground
         previous?.cancel()
