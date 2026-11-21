@@ -340,6 +340,18 @@ private struct TableBlock: View {
     /// Table text, two points under the reading size.
     private static var cellSize: CGFloat { CGFloat(max(12, Pref.size - 2)) }
     private static let gap: CGFloat = 20
+    /// How wide the block is on the page, so a narrow table can spread across it.
+    @State private var room: CGFloat = 0
+
+    /// The measured widths, with any room left over shared out between the columns: a table of short cells
+    /// fills its card instead of sitting in the left half of it.
+    private func spread(_ natural: [CGFloat]) -> [CGFloat] {
+        guard !natural.isEmpty, room > 0 else { return natural }
+        let used = natural.reduce(0, +) + Self.gap * CGFloat(natural.count - 1) + Ink.Space.l * 2
+        let extra = room - used
+        guard extra > 1 else { return natural }
+        return natural.map { $0 + extra / CGFloat(natural.count) }
+    }
 
     private var widths: [CGFloat] {
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
@@ -363,7 +375,7 @@ private struct TableBlock: View {
     }
 
     var body: some View {
-        let widths = self.widths
+        let widths = spread(self.widths)
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
                 row(table.header, head: true, widths: widths)
@@ -379,6 +391,7 @@ private struct TableBlock: View {
         }
         .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { room = $0 }
         .inkBlock()
     }
 
