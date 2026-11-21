@@ -23,7 +23,7 @@ struct InlineAsk: View {
                 Text(form.reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
             ForEach(form.fields) { field in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
                     if form.fields.count > 1 || !field.choices.isEmpty {
                         Text(field.label).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                     }
