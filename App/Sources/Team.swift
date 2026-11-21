@@ -60,7 +60,7 @@ enum TurnEvent {
     /// More of what the model thinks before it answers.
     case thinking(String)
     /// More of the companion's 心绪 before it speaks.
-    case pulse(String)
+    case pulse(String, speaker: String?)
     case finished
     case failed(String)
 }
@@ -620,16 +620,17 @@ final class TeamModel: ObservableObject {
     var deepMemories: [Memory] { memories.filter { $0.deep == true } }
 
     @discardableResult
-    func remember(_ fact: String, by bot: String?) -> Bool {
-        let added: Bool
+    func remember(_ fact: String, by bot: String?) -> String? {
+        let added: String?
         if let index = memories.firstIndex(where: { $0.text == fact }) {
-            added = false
+            added = nil
             memories[index].deep = nil
             memories[index].used = Now.ms
             if bot == nil { memories[index].editedByUser = true }
         } else {
-            memories.append(Memory(id: UUID().uuidString, text: fact, at: Now.ms, by: bot, used: Now.ms))
-            added = true
+            let id = UUID().uuidString
+            memories.append(Memory(id: id, text: fact, at: Now.ms, by: bot, used: Now.ms))
+            added = id
         }
         settleMemory()
         saveMemory()
@@ -698,10 +699,10 @@ final class TeamModel: ObservableObject {
     /// Takes back one thing a companion wrote into 拾遗 (from its step in the trace).
     @discardableResult
     /// 撤回 under a turn: only what a companion wrote and you have not touched; your own entries are never taken.
-    func unremember(_ fact: String) -> Bool {
-        let words = fact.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let index = memories.lastIndex(where: { $0.text == words && $0.by != nil && $0.editedByUser != true }) else { return false }
-        deleteMemory(memories[index].id)
+    func unremember(_ id: String, fact: String) -> Bool {
+        guard let memory = memories.first(where: { $0.id == id }),
+              memory.text == fact, memory.by != nil, memory.editedByUser != true else { return false }
+        deleteMemory(id)
         return true
     }
 
@@ -1662,7 +1663,7 @@ final class TeamModel: ObservableObject {
                 switch part {
                 case .pulse(let felt):
                     if doing[key] != "心里起了念头" { doing[key] = "心里起了念头" }
-                    notify(key, .pulse(felt))
+                    notify(key, .pulse(felt, speaker: speaker ?? runs[key]?.companion))
                 case .text(let piece):
                     if doing[key] != "正在回复" { doing[key] = "正在回复" }
                     streamed[key, default: (speaker: speaker, text: "")].text += piece
@@ -1764,7 +1765,9 @@ final class TeamModel: ObservableObject {
     func allChangedFiles(_ key: String) -> [Snapshots.Kept] {
         guard let first = history(key).first(where: { $0.message.role == .user && $0.note != true }) else { return [] }
         var seen = Set<String>()
-        return changedFiles(key, from: first.id).filter { seen.insert("\($0.place ?? "")|\($0.path)").inserted }
+        return changedFiles(key, from: first.id).reversed()
+            .filter { seen.insert("\($0.place ?? "")|\($0.path)").inserted }
+            .reversed()
     }
 
     /// Files those turns changed.
@@ -1926,7 +1929,7 @@ final class TeamModel: ObservableObject {
                 await self?.delegate(from: botId, to: name, task: task, chat: key) ?? ToolOutput("没办成。", isError: true)
             })
         }
-        all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) ?? false })
+        all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
         all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
         all.append(CalendarListTool())

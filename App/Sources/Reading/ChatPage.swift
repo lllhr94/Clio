@@ -47,7 +47,9 @@ struct ChatPage: View {
     @State private var findAt = 0
     @State private var hits: [String] = []
     /// How many lines were on the page before finding or the outline opened everything; restored after.
-    @State private var shownBefore: Int?
+    @State private var lookupRows: [ChatLine] = []
+    @State private var historyPage: [ChatLine]?
+    private var displayedRows: [ChatLine] { historyPage ?? chat.lines }
     @State private var outlinePairs: [OutlineSheet.Pair] = []
     @FocusState private var findFocus: Bool
     /// A reply opened to pick any words from it.
@@ -244,22 +246,23 @@ struct ChatPage: View {
             // Keep distant replies unmounted when the keyboard, stream or window size changes.
             LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && !chat.hasStreaming { empty }
-                if chat.lines.count > shownCount { earlier }
+                if historyPage == nil, chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                    ForEach(chat.lines.suffix(shownCount)) { line in
+                    ForEach(historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows) { line in
                         turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
                             // A turn starts with what you said: more room above it than between the parts of a reply.
-                            .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
+                            .padding(.top, line.kind == .user && line.id != displayedRows.first?.id ? Ink.Space.l : 0)
                             .id(line.id)
                             // Only what just arrived rises into place; history loaded above stays still.
-                            .transition(chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                            .transition(historyPage == nil && chat.lines.suffix(2).contains(where: { $0.id == line.id })
                                         ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
                                         : .identity)
                     }
                 }
                 .scrollTargetLayout()
+                if historyPage == nil {
                 if team.compressing.contains(chat.key) {
                     // Said once, quietly: it is happening behind, and you can go on talking.
                     Label("正在后台整理较早的聊天，不耽误你接着聊", systemImage: "text.append")
@@ -284,6 +287,7 @@ struct ChatPage: View {
                     queuedRow(item)
                         .transition(.opacity.combined(with: .offset(y: 8)))
                 }
+                }
             }
             // The foot of the page, under the breathing room at the bottom: scrolling to it shows everything,
             // and it is exactly the end of the content, so "at the bottom" and "scrolled to the foot" agree.
@@ -297,7 +301,8 @@ struct ChatPage: View {
     @ViewBuilder
     private var liveReply: some View {
         if !chat.pulse.isEmpty {
-            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(isRoom ? nil : bot))
+            let speaker = chat.pulseSpeaker.flatMap { id in team.bots.first { $0.id == id } }
+            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(speaker ?? (isRoom ? nil : bot)))
                 .id("pulse")
                 .transition(.opacity)
         }
@@ -364,7 +369,7 @@ struct ChatPage: View {
                     jumpVisible = true
                 }
                 if phase == .idle, old != .idle {
-                    following = selecting.isEmpty && Self.below(context.geometry) < 80
+                    following = historyPage == nil && selecting.isEmpty && Self.below(context.geometry) < 80
                     if old == .interacting || old == .decelerating { lingerJumpButtons() }
                 }
             }
@@ -377,7 +382,10 @@ struct ChatPage: View {
             .onChange(of: working, initial: true) { _, now in
                 workingSince = now ? (workingSince ?? Date()) : nil
             }
-            .onChange(of: chat.lines.last?.id) { followToEnd() }
+            .onChange(of: chat.lines.last?.id) {
+                if chat.lines.isEmpty { historyPage = nil; lookupRows = [] }
+                followToEnd()
+            }
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
@@ -690,7 +698,7 @@ struct ChatPage: View {
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
         }
-        .sheet(isPresented: $outlining, onDismiss: { if shownBefore != nil, following { restoreWindow() } }) {
+        .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
             OutlineSheet(pairs: outlinePairs) { id in
                 outlining = false
                 reveal(id)
@@ -759,8 +767,8 @@ struct ChatPage: View {
 
     /// What you asked just before a reply, for the picture of the exchange.
     private func askedBefore(_ id: String) -> String? {
-        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return nil }
-        return chat.lines[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
+        guard let index = displayedRows.firstIndex(where: { $0.id == id }) else { return nil }
+        return displayedRows[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
     }
     @State private var noting: Noting?
     @State private var quoting: Noting?
@@ -1284,12 +1292,12 @@ struct ChatPage: View {
     }
 
     private func findSources(for line: ChatLine) -> [URL] {
-        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
+        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return [] }
         // The pages the answer itself names come first: they are what it rests on.
         var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
         var cursor = index - 1
-        while cursor >= 0, chat.lines[cursor].kind == .steps {
-            let step = chat.lines[cursor]
+        while cursor >= 0, displayedRows[cursor].kind == .steps {
+            let step = displayedRows[cursor]
             for (position, label) in step.tools.enumerated() where label.hasPrefix("读网页") || label.hasPrefix("搜索") || label.hasPrefix("远游") {
                 guard position < step.details.count else { continue }
                 // Pages it read count first; then what a search brought back.
@@ -1416,8 +1424,8 @@ struct ChatPage: View {
                 roaming = true
             }, openFile: { url in
                 reading = ReadingFile(url: url)
-            }, unremember: { fact in
-                team.unremember(fact)
+            }, unremember: { id, fact in
+                team.unremember(id, fact: fact)
             })
         case .note:
             if line.fold {
@@ -1438,7 +1446,7 @@ struct ChatPage: View {
     /// 问答目录: each thing you said, with how the answer began.
     private var outline: [OutlineSheet.Pair] {
         var pairs: [OutlineSheet.Pair] = []
-        let lines = chat.lines
+        let lines = lookupRows
         for (index, line) in lines.enumerated() where line.kind == .user && !line.text.isEmpty {
             let answer = lines[(index + 1)...].prefix { $0.kind != .user }.first { $0.kind == .bot && !$0.text.isEmpty }?.text
             pairs.append(.init(id: line.id, question: line.text, answer: answer.map { String(Pulse.split($0).rest.prefix(80)) }, at: line.at))
@@ -1453,7 +1461,7 @@ struct ChatPage: View {
     private func findHits() -> [String] {
         let wanted = findText.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty else { return [] }
-        return chat.lines.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
+        return lookupRows.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
     }
 
     private var currentHit: String? {
@@ -1467,13 +1475,16 @@ struct ChatPage: View {
         Haptics.light()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
-        Task { await loadEverything() }
+        Task {
+            await loadEverything()
+            guard finding else { lookupRows = []; return }
+            if !findText.isEmpty { updateFindHits() }
+        }
     }
 
     /// The whole conversation, built once, for finding and the outline. Rows are only put on the page when going there.
     private func loadEverything() async {
-        if shownBefore == nil { shownBefore = shownCount }
-        chat.loadAll()
+        lookupRows = await chat.lookupRows()
     }
 
     private func stopFinding() {
@@ -1481,19 +1492,24 @@ struct ChatPage: View {
         findText = ""
         findAt = 0
         hits = []
-        restoreWindow()
+        lookupRows = []
     }
 
-    /// Widens the page just enough to hold this line (and what follows it), not the whole conversation.
+    /// Keep a bounded window around the result, without altering the live conversation's paging.
     private func reveal(_ id: String) {
-        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return }
-        shownCount = max(shownCount, chat.lines.count - index + 4)
+        if chat.lines.suffix(shownCount).contains(where: { $0.id == id }) {
+            historyPage = nil
+            return
+        }
+        guard let index = lookupRows.firstIndex(where: { $0.id == id }) else { return }
+        let bounds = max(0, index - 30)..<min(lookupRows.count, index + 31)
+        historyPage = Array(lookupRows[bounds])
     }
 
-    /// Back to the window the page had before everything was opened, unless you have since scrolled to the end.
-    private func restoreWindow() {
-        if let before = shownBefore, following { shownCount = before }
-        shownBefore = nil
+    private func updateFindHits() {
+        hits = findHits()
+        findAt = max(hits.count - 1, 0)
+        if !hits.isEmpty { showHit(0) }
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1505,7 +1521,10 @@ struct ChatPage: View {
         reveal(target)
         following = false
         Haptics.tick(0.4)
-        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
+        }
     }
 
     /// Where the composer was, while looking: the words, how many places, older / newer, and 完成.
@@ -1518,11 +1537,7 @@ struct ChatPage: View {
                 .focused($findFocus)
                 .submitLabel(.search)
                 .onSubmit { showHit(-1) }
-                .onChange(of: findText) {
-                    hits = findHits()
-                    findAt = max(hits.count - 1, 0)
-                    if hits.count > 0 { showHit(0) }
-                }
+                .onChange(of: findText) { updateFindHits() }
             if !findText.isEmpty {
                 Text(found == 0 ? "没找到" : "\(min(findAt + 1, found))/\(found)")
                     .font(Ink.footnote.monospacedDigit())
@@ -1565,7 +1580,7 @@ struct ChatPage: View {
     private var openers: Set<String> {
         var heads: Set<String> = []
         var last: String?
-        for line in chat.lines {
+        for line in displayedRows {
             guard let who = voice(line) else { continue }
             if who != last { heads.insert(line.id) }
             last = who
@@ -1632,8 +1647,8 @@ struct ChatPage: View {
     /// 「昨天 23:10」 over a line said more than half an hour after the one before it.
     private func timeGap(before line: ChatLine) -> String? {
         guard let at = line.at,
-              let index = chat.lines.firstIndex(where: { $0.id == line.id }), index > 0,
-              let before = chat.lines[..<index].last(where: { $0.at != nil })?.at,
+              let index = displayedRows.firstIndex(where: { $0.id == line.id }), index > 0,
+              let before = displayedRows[..<index].last(where: { $0.at != nil })?.at,
               at - before > 30 * 60 * 1000 else { return nil }
         let date = Date(timeIntervalSince1970: at / 1000)
         let calendar = Calendar.current
@@ -1762,8 +1777,8 @@ struct ChatPage: View {
 
     /// No more of the companion's words follow before the user speaks again.
     private func endsTurn(_ line: ChatLine) -> Bool {
-        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return true }
-        for later in chat.lines[(index + 1)...] {
+        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return true }
+        for later in displayedRows[(index + 1)...] {
             // In a group, another companion speaking ends this one's turn.
             if later.kind == .bot { return later.speaker != line.speaker }
             if later.kind == .user { return true }
@@ -2219,9 +2234,9 @@ struct ChatPage: View {
                     .allowsHitTesting(jumpVisible)
                     .accessibilityHidden(!jumpVisible)
                 backToEnd
-                    .opacity(jumpVisible && farFromEnd && !following ? 1 : 0)
-                    .allowsHitTesting(jumpVisible && farFromEnd && !following)
-                    .accessibilityHidden(!jumpVisible || !farFromEnd || following)
+                    .opacity(latestIsFloating ? 1 : 0)
+                    .allowsHitTesting(latestIsFloating)
+                    .accessibilityHidden(!latestIsFloating)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .offset(y: -Ink.Bar.height)
@@ -2254,7 +2269,7 @@ struct ChatPage: View {
     }
 
     private func question(earlier: Bool) -> String? {
-        let rows = chat.lines.suffix(shownCount)
+        let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
         let visible = Set(viewport.ids)
         let center = jumpedTo.flatMap { id in rows.firstIndex { $0.id == id } }
             ?? rows.firstIndex { visible.contains($0.id) }
@@ -2275,11 +2290,20 @@ struct ChatPage: View {
             .contentShape(.circle)
     }
 
+    private var latestIsFloating: Bool {
+        jumpVisible && (historyPage != nil || farFromEnd && !following)
+    }
+
     private func returnToLatest() {
         Haptics.light()
         following = true
         jumpedTo = nil
-        toEnd(animated: true)
+        if historyPage == nil {
+            toEnd(animated: true)
+        } else {
+            historyPage = nil
+            followToEnd()
+        }
     }
 
     private var backToEnd: some View {
@@ -2308,7 +2332,7 @@ struct ChatPage: View {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     private func followToEnd(settle: Bool = true) {
-        guard following, selecting.isEmpty else { return }
+        guard historyPage == nil, following, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
@@ -2320,7 +2344,7 @@ struct ChatPage: View {
     @State private var followPending: Task<Void, Never>?
 
     private func toEnd(animated: Bool = false) {
-        guard selecting.isEmpty, let scroller else { return }
+        guard historyPage == nil, selecting.isEmpty, let scroller else { return }
         if animated {
             withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
         } else {
@@ -2577,6 +2601,7 @@ struct ChatPage: View {
     }
 
     private func clearComposer() {
+        historyPage = nil
         draft = ""
         photos = []
         files = []
@@ -2602,25 +2627,34 @@ private struct Trace: View {
     var visit: (URL) -> Void = { _ in }
     var openFile: (URL) -> Void = { _ in }
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
-    var unremember: ((String) -> Bool)?
+    var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
 
-    private func forget(_ fact: String, with unremember: (String) -> Bool) {
+    private func forget(_ memory: Remembered, with unremember: (String, String) -> Bool) {
         Haptics.light()
         // Shown as taken back only if it was: an entry you wrote or edited stays, and so does this line.
-        if unremember(fact) {
-            withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+        guard let id = memory.memoryID else { return }
+        if unremember(id, memory.fact) {
+            withAnimation(Ink.Motion.settle) { _ = undone.insert(id) }
         } else {
             Haptics.lock()
         }
     }
 
     /// What these steps wrote into 拾遗, as the model wrote it.
-    private var remembered: [String] {
+    private struct Remembered: Identifiable {
+        let id: Int
+        let memoryID: String?
+        let fact: String
+    }
+
+    private var remembered: [Remembered] {
         line.tools.enumerated().compactMap { index, tool in
             guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count,
-                  line.details[index].output.hasPrefix("记下了") else { return nil }
-            return JSONValue.parse(line.details[index].input)?["fact"]?.string
+                  line.details[index].output.hasPrefix("记下了"),
+                  let fact = JSONValue.parse(line.details[index].input)?["fact"]?.string else { return nil }
+            let id = line.details[index].full.flatMap { UUID(uuidString: $0) == nil ? nil : $0 }
+            return Remembered(id: index, memoryID: id, fact: fact.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -2737,7 +2771,7 @@ private struct Trace: View {
             } else if tool.hasPrefix("加提醒：") {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
             } else if tool.hasPrefix("健康："), !output.isEmpty {
-                out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://")))
+                out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://"), diff: full))
             } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
                 let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
@@ -2872,7 +2906,7 @@ private struct Trace: View {
                     }
                 } label: {
                     if item.kind == .health {
-                        HealthCard(text: item.detail)
+                        HealthCard(text: item.detail, format: item.diff)
                     } else {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
                         Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
@@ -2906,8 +2940,9 @@ private struct Trace: View {
         }
         if !line.live, let unremember {
             // 「记下了」: one quiet line per thing remembered, as Cindy's learning footer; 撤回 right there, or long-press.
-            ForEach(remembered, id: \.self) { fact in
-                let gone = undone.contains(fact)
+            ForEach(remembered) { memory in
+                let fact = memory.fact
+                let gone = memory.memoryID.map(undone.contains) ?? false
                 HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
                     Image(systemName: gone ? "bookmark.slash" : "bookmark")
                         .font(.system(size: Ink.Size.micro))
@@ -2916,8 +2951,8 @@ private struct Trace: View {
                         .strikethrough(gone)
                         .lineLimit(2)
                     Spacer(minLength: Ink.Space.s)
-                    if !gone {
-                        Button("撤回") { forget(fact, with: unremember) }
+                    if !gone, memory.memoryID != nil {
+                        Button("撤回") { forget(memory, with: unremember) }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(Ink.accent)
                             .buttonStyle(.plain)
@@ -2927,8 +2962,8 @@ private struct Trace: View {
                 .padding(.top, Ink.Space.xs)
                 .contentShape(Rectangle())
                 .contextMenu {
-                    if !gone {
-                        Button("撤回这条", systemImage: "bookmark.slash") { forget(fact, with: unremember) }
+                    if !gone, memory.memoryID != nil {
+                        Button("撤回这条", systemImage: "bookmark.slash") { forget(memory, with: unremember) }
                     }
                     Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = fact }
                 }
@@ -3480,7 +3515,7 @@ struct OutlineSheet: View {
                 }
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找问过的话")
-            .navigationTitle("问答目录")
+            .navigationTitle(L.t("chat.outline"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
@@ -3493,6 +3528,7 @@ struct OutlineSheet: View {
 /// What 健康 said, as a small card: a row per day, each number with its name under it.
 struct HealthCard: View {
     let text: String
+    let format: String?
 
     private struct Day: Identifiable {
         let id: Int
@@ -3501,9 +3537,9 @@ struct HealthCard: View {
     }
 
     private var days: [Day] {
-        text.split(separator: "\n").enumerated().compactMap { index, row in
+        HealthCardRows.newest(text, format: format).enumerated().compactMap { index, row in
             let parts = row.split(separator: "：", maxSplits: 1).map(String.init)
-            guard parts.count == 2, !parts[0].hasPrefix("（"), index < text.split(separator: "\n").count - 1 || text.count < 2900 else { return nil }
+            guard parts.count == 2 else { return nil }
             let values = parts[1].split(separator: "；").compactMap { item -> (String, String)? in
                 let piece = item.trimmingCharacters(in: .whitespaces)
                 guard let space = piece.firstIndex(of: " ") else { return nil }
@@ -3518,8 +3554,7 @@ struct HealthCard: View {
             Label("健康", systemImage: "heart.text.square")
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.Tile.yan)
-            // Newest first (see `health_read`); a last row cut off mid-number is left out.
-            ForEach(days.prefix(3)) { day in
+            ForEach(days) { day in
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(day.date).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                     if day.values.isEmpty {

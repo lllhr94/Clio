@@ -83,6 +83,7 @@ private final class FlowFixture {
     var hideJumps: Task<Void, Never>?
     var jumpVisible = false
     var selecting: Set<UUID> = []
+    var historyPage: [String]?
 
     func lingerJumpButtons() {}
     private(set) var scrolls: [Bool] = []

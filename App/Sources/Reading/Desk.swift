@@ -520,7 +520,10 @@ struct Desk: View {
                                                         avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
                         if let picture { Avatars.save(picture, for: id) }
                         Haptics.thud()
-                        notice = Words.t("收下了\(name)的名帖。") + (missingPet ? "它用的宠物你这里没有，头像先用它的定格画；导入那只宠物后可以在名帖里换回来。" : "")
+                        notice = Words.t("收下了\(name)的名帖。")
+                        if missingPet {
+                            notice = (notice ?? "") + (picture == nil ? L.t("companion.missingPetDefault") : L.t("companion.missingPetStill"))
+                        }
                     } catch {
                         notice = "没收下：\(error.localizedDescription)"
                     }

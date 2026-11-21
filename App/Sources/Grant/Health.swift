@@ -183,7 +183,7 @@ enum HealthTools {
                     }
                     let empty = days.allSatisfy { $0.values.isEmpty }
                     let note = empty ? "\n（一条记录都没有：可能用户在「设置 › 健康 › 数据访问」里没给 Clio 打开这些项目，iOS 不会告诉 app 是哪种情况。）" : ""
-                    return ToolOutput(lines.joined(separator: "\n") + note)
+                    return ToolOutput(lines.joined(separator: "\n") + note, detail: HealthCardRows.newestFirst)
                 } catch {
                     return ToolOutput(Health.explain(error), isError: true)
                 }
