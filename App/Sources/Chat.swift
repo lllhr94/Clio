@@ -192,7 +192,9 @@ final class ChatModel {
     private func step() -> Bool {
         if let settling = fresh, settling.shown != nil {
             guard shown < finalCount else {
-                withAnimation(.easeOut(duration: 0.45)) { fresh?.shown = nil }
+                // Straight over, no crossfade: the writing layout and the finished one differ a little (list spacing,
+                // a table drawn whole), and fading one into the other showed both at once, a line apart.
+                fresh?.shown = nil
                 return false
             }
             shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
