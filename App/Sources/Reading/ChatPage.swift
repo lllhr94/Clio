@@ -315,6 +315,7 @@ struct ChatPage: View {
         }
         if chat.hasStreaming {
             StreamingProse(text: chat.streaming)
+                .id(chat.streamGeneration)
                 .id("streaming")
         }
     }

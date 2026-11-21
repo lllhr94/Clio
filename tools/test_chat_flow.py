@@ -33,7 +33,7 @@ def fixture() -> str:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     fragments = {
-        "SETTLED": member(READING / "ProseView.swift", "settled"),
+        "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
         "BELOW": member(chat, "below"),
         "PHASE": phase_body,
         "FOLLOW": schedule,

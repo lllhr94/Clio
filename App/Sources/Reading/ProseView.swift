@@ -54,44 +54,66 @@ struct ProseView: View {
     }
 }
 
-/// A reply still being written. The paragraphs already finished are set once and left alone (their text no longer
-/// changes, so SwiftUI does not draw them again); only the last one, still growing, is set again as characters come.
-/// Setting the whole reply anew for every few characters is what made long replies stutter.
+/// Once sealed, a block keeps its identity and its original text while the tail grows.
 struct StreamingProse: View {
     let text: String
+    @State private var blocks = StreamBlocks()
 
     var body: some View {
-        let cut = Self.settled(text)
         VStack(alignment: .leading, spacing: Ink.paragraphGap) {
-            if cut > text.startIndex {
-                ProseView(text: String(text[..<cut]).trimmingCharacters(in: .newlines))
+            ForEach(blocks.finished.indices, id: \.self) { index in
+                ProseView(text: blocks.finished[index]).equatable()
             }
-            ProseView(text: String(text[cut...]), streaming: true)
+            if !blocks.tail.isEmpty {
+                ProseView(text: blocks.tail, streaming: true)
+            }
+        }
+        .onChange(of: text, initial: true) { _, new in
+            // A stream only appends within this view's identity. A different reply gets a new identity.
+            if new.utf8.count < blocks.receivedBytes { blocks = StreamBlocks() }
+            let delta = String(decoding: new.utf8.dropFirst(blocks.receivedBytes), as: UTF8.self)
+            blocks.append(delta)
         }
     }
+}
 
-    /// Where the finished part ends: just after the last blank line that is not inside a code block.
-    static func settled(_ text: String) -> String.Index {
-        var cut = text.startIndex
-        var inFence = false
-        var lineStart = text.startIndex
-        var previousBlank = false
-        var index = text.startIndex
-        while index < text.endIndex {
-            let next = text[index...].firstIndex(of: "\n") ?? text.endIndex
-            let line = text[lineStart..<next].trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("```") || line.hasPrefix("~~~") { inFence.toggle() }
-            let blank = line.isEmpty
-            // A blank line after text, outside a fence, closes the block above it.
-            if blank, !previousBlank, !inFence, lineStart > text.startIndex, next < text.endIndex {
-                cut = text.index(after: next)
+/// Incremental blank-line scanner. The rendered tail includes the unfinished line, but the
+/// boundary scanner only sees it once its newline arrives.
+struct StreamBlocks {
+    private(set) var finished: [String] = []
+    private(set) var receivedBytes = 0
+    private var pending = ""
+    private var line = ""
+    private var fence: String?
+    private var previousBlank = false
+
+    var tail: String { pending + line }
+
+    mutating func append(_ delta: String) {
+        guard !delta.isEmpty else { return }
+        receivedBytes += delta.utf8.count
+        let lines = delta.utf8.split(separator: 10, omittingEmptySubsequences: false)
+        for (index, bytes) in lines.enumerated() {
+            line += String(decoding: bytes, as: UTF8.self)
+            guard index < lines.count - 1 else { break }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let marker = fence {
+                if trimmed.hasPrefix(marker) { fence = nil }
+            } else if trimmed.hasPrefix("```") {
+                fence = "```"
+            } else if trimmed.hasPrefix("~~~") {
+                fence = "~~~"
+            }
+            let blank = trimmed.isEmpty
+            let boundary = blank && !previousBlank && fence == nil && !pending.isEmpty
+            pending += line + "\n"
+            line = ""
+            if boundary {
+                finished.append(pending)
+                pending = ""
             }
             previousBlank = blank
-            guard next < text.endIndex else { break }
-            index = text.index(after: next)
-            lineStart = index
         }
-        return cut
     }
 }
 

@@ -2,9 +2,7 @@ import Foundation
 
 // Only the platform inputs and side effects are simulated. The runner fills in
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
-private enum StreamFixture {
-// RULE: SETTLED
-}
+// RULE: STREAM_BLOCKS
 
 private enum ScrollPhase { case idle, interacting, decelerating }
 
@@ -137,7 +135,9 @@ private enum ChatFlowTests {
 
     static func paragraphsAndFences() throws {
         func prefix(_ input: String) -> String {
-            String(input[..<StreamFixture.settled(input)])
+            var blocks = StreamBlocks()
+            for character in input { blocks.append(String(character)) }
+            return blocks.finished.joined()
         }
         try check(prefix("正在写 👋🏽"), "", "Incomplete paragraph")
         try check(prefix("第一段 👋🏽\n下一行\n\n正在写"), "第一段 👋🏽\n下一行\n\n", "Paragraph boundary")
@@ -149,6 +149,14 @@ private enum ChatFlowTests {
             let closed = intro + code + fence + "\n\n"
             try check(prefix(closed + "下面"), closed, "Closed fence can settle")
         }
+
+        var accumulator = StreamBlocks()
+        accumulator.append("前言\r")
+        accumulator.append("\n\r\n")
+        accumulator.append("👋")
+        accumulator.append("🏽")
+        try check(accumulator.finished, ["前言\r\n\r\n"], "CRLF split across updates")
+        try check(accumulator.tail, "👋🏽", "Combining scalars in the tail")
 
         // Require the documented result or the exact known behavior in the
         // protected renderer. Any new split point is a regression.
