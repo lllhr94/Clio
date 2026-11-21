@@ -504,15 +504,6 @@ struct RoamPage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Ink.Space.s) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 36, height: 36)
-                        .glassFace(in: Circle())
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel(Words.t("收起远游"))
                 HStack(spacing: Ink.Space.s) {
                     if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "globe").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft) }
                     TextField("网址或要搜的词", text: $address)
@@ -537,7 +528,7 @@ struct RoamPage: View {
                     Image(systemName: browser.desktop ? "desktopcomputer" : "iphone")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(browser.desktop ? Ink.accent : Ink.ink)
-                        .frame(width: 36, height: Ink.Bar.height)
+                        .frame(width: Kit.badge, height: Ink.Bar.height)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(TapStyle())
@@ -551,7 +542,7 @@ struct RoamPage: View {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
-                            .frame(width: 36, height: Ink.Bar.height)
+                            .frame(width: Kit.badge, height: Ink.Bar.height)
                     }
                     .accessibilityLabel("下载过的文件")
                 }
@@ -559,10 +550,14 @@ struct RoamPage: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(browser.canGoBack ? Ink.ink : Ink.inkFaint)
-                        .frame(width: 36, height: 36)
+                        .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                 }
                 .disabled(!browser.canGoBack)
                 .accessibilityLabel("上一页")
+                Button(L.t("actions.done")) {
+                    dismiss()
+                }
+                .buttonStyle(PressStyle())
             }
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, Ink.Space.s)
@@ -585,7 +580,7 @@ struct RoamPage: View {
             if let reason = browser.handoff {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "hand.raised").foregroundStyle(Ink.warn)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                         Text(Words.t("旅伴请你接手")).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
                     }

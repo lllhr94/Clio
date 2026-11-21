@@ -146,13 +146,9 @@ struct RoutinesPage: View {
                     if team.routines.isEmpty {
                         EmptyNote(symbol: "alarm", words: L.t("empty.createScheduledJob"))
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(team.routines) { routine in
-                                row(routine)
-                                Kit.rule(inset: Ink.Space.l)
-                            }
+                        RowCard {
+                            ForEach(team.routines) { routine in row(routine) }
                         }
-                        .paperCard()
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)
@@ -185,7 +181,7 @@ struct RoutinesPage: View {
     private func row(_ routine: Routine) -> some View {
         let who = team.bots.first { $0.id == routine.botId }?.name ?? "?"
         return HStack(alignment: .top, spacing: Ink.Space.m) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(routine.title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
                 Text("\(routine.when) · \(who)" + (routine.on ? (routine.next(after: Date()).map { " · 下次 \(When.show($0))" } ?? "") : "")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text(routine.prompt).font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(2)
@@ -246,7 +242,7 @@ struct RoutineEditor: View {
                 }
                 Section(L.t("routines.schedule")) {
                     DatePicker("几点", selection: $time, displayedComponents: .hourAndMinute)
-                    HStack(spacing: 6) {
+                    HStack(spacing: Ink.Space.s) {
                         ForEach(1...7, id: \.self) { day in
                             let on = routine.days.isEmpty || routine.days.contains(day)
                             Button(Self.names[day - 1]) { toggle(day) }
@@ -257,7 +253,7 @@ struct RoutineEditor: View {
                                 .buttonStyle(.plain)
                         }
                     }
-                    Text(preview.when).font(.footnote).foregroundStyle(.secondary)
+                    Text(preview.when).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
                 Section(L.t("routines.assignee")) {
                     Picker(Words.t("旅伴"), selection: $routine.botId) {

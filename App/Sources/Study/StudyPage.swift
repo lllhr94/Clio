@@ -85,7 +85,7 @@ struct StudyFolder: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.done")) { close() }
                 }
             }
@@ -143,21 +143,10 @@ struct StudyFolder: View {
     }
 
     private func row(_ item: StudyPage.Item) -> some View {
-        HStack(spacing: Ink.Space.m) {
-            IconBadge(symbol: item.folder ? "folder" : Self.icon(item.url), tint: item.folder ? Ink.Tile.accent : Ink.Tile.mo)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.url.lastPathComponent).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
-                Text((item.folder ? "" : Workspace.size(item.bytes) + " · ") + item.changed.formatted(.relative(presentation: .named)))
-                    .font(Ink.footnote)
-                    .foregroundStyle(Ink.inkFaint)
-            }
-            Spacer(minLength: 0)
-            Kit.chevron
-        }
-        .padding(.horizontal, Ink.Space.l)
-        .frame(minHeight: Kit.rowHeight)
-        .padding(.vertical, Ink.Space.xs)
-        .contentShape(Rectangle())
+        let detail = (item.folder ? "" : Workspace.size(item.bytes) + " · ") + item.changed.formatted(.relative(presentation: .named))
+        return RowLabel(item.folder ? "folder" : Self.icon(item.url),
+                        tint: item.folder ? Ink.Tile.accent : Ink.Tile.mo,
+                        title: item.url.lastPathComponent, line: detail)
     }
 
     static func icon(_ url: URL) -> String {
@@ -308,8 +297,8 @@ private struct TableGrid: View {
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(3)
                                 .frame(minWidth: 60, maxWidth: 220, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
+                                .padding(.horizontal, Ink.Space.s)
+                                .padding(.vertical, Ink.Space.s)
                                 .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
                                 .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
                         }

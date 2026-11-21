@@ -74,7 +74,7 @@ struct AbilitiesSheet: View {
                     } label: {
                         HStack(spacing: Ink.Space.m) {
                             IconBadge(symbol: item.0.symbol)
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                 Text(item.0.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                                 Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                             }
@@ -101,7 +101,7 @@ struct AbilitiesSheet: View {
         let on = !team.options(key).off.contains(grant.rawValue)
         return HStack(spacing: Ink.Space.m) {
             IconBadge(symbol: grant.symbol, tint: global == .off || !on ? Ink.Tile.off : Ink.Tile.accent)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 HStack(spacing: Ink.Space.s) {
                     Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(global == .off ? Ink.inkFaint : Ink.ink)
                     if global == .ask {

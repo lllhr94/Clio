@@ -22,18 +22,6 @@ struct InkstonePage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Ink.Space.m) {
-                Button {
-                    Haptics.light()
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 36, height: 36)
-                        .glassFace(in: Circle())
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel("关闭交互终端")
                 Menu {
                     Section("在哪台机器上写") {
                         Button {
@@ -51,8 +39,8 @@ struct InkstonePage: View {
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 4) {
-                            Text("笔砚").font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
+                        HStack(spacing: Ink.Space.xs) {
+                            Text("笔砚").font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                             Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                         Text(subtitle).font(Ink.footnote).foregroundStyle(ended ? Ink.stop : Ink.inkSoft).lineLimit(1)
@@ -69,6 +57,11 @@ struct InkstonePage: View {
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.accent)
                 }
+                Button(L.t("actions.done")) {
+                    Haptics.light()
+                    dismiss()
+                }
+                .buttonStyle(PressStyle())
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.s)
@@ -76,13 +69,13 @@ struct InkstonePage: View {
             if let hill {
                 TerminalHost(ended: $ended, why: $endedWhy, hill: hill)
                     .id(session)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, Ink.Space.xs)
             } else {
                 switch den.state {
                 case .awake:
                     TerminalHost(ended: $ended, why: $endedWhy, hill: nil)
                         .id(session)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, Ink.Space.xs)
                 case .broken(let why):
                     Text(why).font(Ink.secondary).foregroundStyle(Ink.stop).frame(maxWidth: .infinity, maxHeight: .infinity)
                 default:
@@ -128,7 +121,7 @@ private struct TerminalHost: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         view.terminalDelegate = context.coordinator
-        view.font = Ink.uiMono(13)
+        view.font = Ink.uiMono(Ink.Size.small)
         paint(view)
         context.coordinator.attach(view)
         DispatchQueue.main.async { _ = view.becomeFirstResponder() }
@@ -136,6 +129,8 @@ private struct TerminalHost: UIViewRepresentable {
     }
 
     func updateUIView(_ view: TerminalView, context: Context) {
+        let font = Ink.uiMono(Ink.Size.small)
+        if view.font != font { view.font = font }
         paint(view)
     }
 
@@ -145,10 +140,10 @@ private struct TerminalHost: UIViewRepresentable {
     }
 
     private func paint(_ view: TerminalView) {
-        let dark = scheme == .dark
-        view.nativeBackgroundColor = dark ? UIColor(red: 0.11, green: 0.10, blue: 0.09, alpha: 1) : UIColor(red: 0.985, green: 0.97, blue: 0.94, alpha: 1)
-        view.nativeForegroundColor = dark ? UIColor(red: 0.92, green: 0.89, blue: 0.84, alpha: 1) : UIColor(red: 0.17, green: 0.16, blue: 0.14, alpha: 1)
-        view.caretColor = UIColor(red: 0.29, green: 0.42, blue: 0.54, alpha: 1)
+        let traits = UITraitCollection(userInterfaceStyle: scheme == .dark ? .dark : .light)
+        view.nativeBackgroundColor = UIColor(Ink.paper).resolvedColor(with: traits)
+        view.nativeForegroundColor = UIColor(Ink.ink).resolvedColor(with: traits)
+        view.caretColor = UIColor(Ink.accent).resolvedColor(with: traits)
     }
 
     final class Coordinator: NSObject, TerminalViewDelegate {

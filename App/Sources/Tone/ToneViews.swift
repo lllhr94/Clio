@@ -31,7 +31,7 @@ struct ToneCards: View {
                 Spacer(minLength: Ink.Space.xs)
                 Text(sample).font(Ink.serif(Ink.Size.sub)).foregroundStyle(Ink.ink.opacity(0.8))
             }
-            .padding(Ink.Space.m + 2)
+            .padding(Ink.Space.m)
             .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
             .background(picked ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)

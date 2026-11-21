@@ -19,9 +19,9 @@ struct FormSheet: View {
                     VStack(alignment: .leading, spacing: Ink.Space.l) {
                         HStack(spacing: Ink.Space.m) {
                             PetStill(size: 44, state: "notification", avatar: true)
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                 Text(L.format("forms.sender", form.from)).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                Text(form.title).font(Ink.mark(22, bold: true, relativeTo: .title2)).foregroundStyle(Ink.ink)
+                                Text(form.title).font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title2)).foregroundStyle(Ink.ink)
                             }
                         }
                         if !form.reason.isEmpty {

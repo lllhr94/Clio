@@ -23,7 +23,7 @@ struct InlineAsk: View {
                 Text(form.reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
             ForEach(form.fields) { field in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
                     if form.fields.count > 1 || !field.choices.isEmpty {
                         Text(field.label).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                     }
@@ -75,14 +75,14 @@ private struct FlowChips: View {
     let pick: (String) -> Void
 
     var body: some View {
-        WrapLayout(spacing: 8) {
+        WrapLayout(spacing: Ink.Space.s) {
             ForEach(choices, id: \.self) { choice in
                 Button { pick(choice) } label: {
                     Text(choice)
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(choice == picked ? Ink.paper : Ink.ink)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.s)
                         .background(choice == picked ? Ink.accent : Ink.mine, in: .capsule)
                 }
                 .buttonStyle(.plain)
@@ -93,7 +93,7 @@ private struct FlowChips: View {
 
 /// Lays its children out in rows, wrapping when a row is full.
 struct WrapLayout: Layout {
-    var spacing: CGFloat = 8
+    var spacing: CGFloat = Ink.Space.s
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity

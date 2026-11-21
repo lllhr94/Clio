@@ -44,9 +44,7 @@ struct DeskPicker: View {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 if all.isEmpty {
-                    Text(Words.t("书案还空着。"))
-                        .font(Ink.secondary)
-                        .foregroundStyle(Ink.inkSoft)
+                    EmptyNote(symbol: "books.vertical", words: Words.t("书案还空着。"))
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
@@ -55,23 +53,18 @@ struct DeskPicker: View {
                                     Haptics.tick(0.4)
                                     if chosen.contains(item.path) { chosen.remove(item.path) } else { chosen.insert(item.path) }
                                 } label: {
-                                    HStack(spacing: Ink.Space.m) {
+                                    RowLabel(title: (item.path as NSString).lastPathComponent,
+                                             line: Words.t("书案/\(item.path) · \(Workspace.size(item.size))"),
+                                             end: .none) {
                                         Image(systemName: chosen.contains(item.path) ? "checkmark.circle.fill" : "circle")
                                             .font(.system(size: Ink.Size.title))
                                             .foregroundStyle(chosen.contains(item.path) ? Ink.accent : Ink.inkFaint)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text((item.path as NSString).lastPathComponent).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                                            Text(Words.t("书案/\(item.path) · \(Workspace.size(item.size))"))
-                                                .font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(1)
-                                        }
-                                        Spacer(minLength: 0)
+                                            .frame(width: Kit.badge)
                                     }
-                                    .padding(.horizontal, Ink.Space.l)
-                                    .padding(.vertical, Ink.Space.m)
-                                    .contentShape(Rectangle())
+                                    .accessibilityAddTraits(chosen.contains(item.path) ? .isSelected : [])
                                 }
                                 .buttonStyle(TapStyle())
-                                Kit.rule(inset: 48)
+                                Kit.divider
                             }
                         }
                         .paperCard()
@@ -243,8 +236,10 @@ struct PlusSheet: View {
             .navigationTitle(L.t("chat.addToConversation"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关上")
+                if added.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L.t("actions.done")) { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Picked from the strip: the corner is where you say you're done, like any photo picker.
@@ -276,7 +271,7 @@ struct PlusSheet: View {
     private var strip: some View {
         if access == .authorized || access == .limited {
             ScrollView(.horizontal) {
-                HStack(spacing: 4) {
+                HStack(spacing: Ink.Space.xs) {
                     ForEach(recent, id: \.localIdentifier) { asset in
                         let id = asset.localIdentifier
                         Button { take(asset) } label: {
@@ -290,7 +285,7 @@ struct PlusSheet: View {
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: Ink.Size.title))
                                         .foregroundStyle(.white, Ink.accent)
-                                        .padding(6)
+                                        .padding(Ink.Space.s)
                                 }
                             }
                         }
@@ -393,7 +388,7 @@ struct PlusSheet: View {
     private func toggle(_ icon: String, _ title: String, note: String, isOn: Bool, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(spacing: Ink.Space.m) {
             Image(systemName: icon).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink).frame(width: 28)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
             }
@@ -428,9 +423,9 @@ struct PlacePicker: View {
                     } label: {
                         HStack {
                             Label {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(item.0.title).foregroundStyle(Ink.ink)
-                                    Text(item.1).font(.footnote).foregroundStyle(Ink.inkSoft)
+                                    Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
                             } icon: {
                                 Image(systemName: item.0.symbol).foregroundStyle(Ink.accent)

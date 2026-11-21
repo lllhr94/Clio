@@ -62,7 +62,7 @@ struct RowLabel<Leading: View>: View {
     var body: some View {
         HStack(alignment: large ? .top : .center, spacing: Ink.Space.m) {
             leading
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 let labels = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.xs)) :
                     AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: Ink.Space.s))
                 labels {
@@ -177,7 +177,7 @@ struct WideButtonStyle: ButtonStyle {
             .font(.system(size: Ink.Size.body, weight: .semibold))
             // On the accent, the paper's color: dark on the pale accent of dark mode, light on the deep one of light mode.
             .foregroundStyle(filled ? Ink.paper : tint)
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: Kit.rowHeight)
             .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
@@ -242,7 +242,7 @@ struct Inscription: View {
         HStack(spacing: Ink.Space.m) {
             Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
             Text(text)
-                .font(Ink.mark((17 * UIScale.factor).rounded()))
+                .font(Ink.mark(Ink.Size.body))
                 .foregroundStyle(Ink.inkSoft)
                 .multilineTextAlignment(.center)
             Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)

@@ -87,6 +87,19 @@ enum Ink {
     /// 朱: the seal's cinnabar, and the paper-white of the character cut into it. Only for the seal.
     static let seal = pair(0xB23A2B, 0xC5564A)
 
+    // Exported artwork and image previews keep their own contrast in either appearance.
+    enum Artwork {
+        static let paper = Color(hex: 0xF7F3EA)
+        static let darkPaper = Color(hex: 0x1F1D1A)
+        static let blossom = Color(hex: 0xF8ECEA)
+        static let paperText = Color(hex: 0x3A4A5A)
+        static let darkPaperText = Color(hex: 0xE6DFD1)
+        static let blossomText = Color(hex: 0x6A4650)
+        static let white = Color(hex: 0xFFFFFF)
+        static let black = Color(hex: 0x000000)
+        static let badgeRed = UIColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1)
+    }
+
     /// Code in a reply, from the same pigments as everything else; lighter in dark mode so they read on dark paper.
     enum Code {
         /// Code inside a sentence (a path, a name).

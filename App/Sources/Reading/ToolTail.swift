@@ -45,7 +45,7 @@ struct ToolTailView: View {
 
     var body: some View {
         if !tail.lines.isEmpty {
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 ForEach(tail.lines) { line in
                     Text(line.text)
                         .font(Ink.mono(Ink.Size.micro))

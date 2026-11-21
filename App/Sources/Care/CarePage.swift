@@ -42,7 +42,7 @@ struct CarePage: View {
                     } else {
                         ForEach(team.archived.sorted(), id: \.self) { key in
                             HStack {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(team.chatName(key)).foregroundStyle(Ink.ink)
                                     if let title = team.title(of: key) {
                                         Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)

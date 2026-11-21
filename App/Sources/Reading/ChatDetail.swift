@@ -60,7 +60,7 @@ struct ChatDetail: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: exportFile(), preview: SharePreview("\(title).md")) {
                         Label("导出", systemImage: "square.and.arrow.up")
                     }
@@ -89,7 +89,7 @@ struct ChatDetail: View {
                 renaming = true
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
-                    Text(team.title(of: chat.key) ?? title).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink).lineLimit(2)
+                    Text(team.title(of: chat.key) ?? title).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink).lineLimit(2)
                     Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                 }
             }
@@ -118,7 +118,7 @@ struct ChatDetail: View {
         } label: {
             HStack(spacing: Ink.Space.m) {
                 PetStill(size: 44, wash: Ink.wash(for: bot), avatar: true, bot: bot)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(bot.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink)
                     Text("名字、性格、用哪个模型").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 }
@@ -133,8 +133,8 @@ struct ChatDetail: View {
     }
 
     private func stat(_ value: String, _ unit: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 2) {
-            Text(value).font(.system(size: 22, weight: .semibold).monospacedDigit()).foregroundStyle(Ink.ink)
+        HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs / 2) {
+            Text(value).font(.system(size: Ink.Size.title, weight: .semibold).monospacedDigit()).foregroundStyle(Ink.ink)
             Text(unit).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -170,7 +170,7 @@ struct ChatDetail: View {
                         if let seconds = step.seconds { Text(Clock.said(seconds)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     }
                     .padding(.horizontal, Ink.Space.l)
-                    .padding(.vertical, Ink.Space.s + 2)
+                    .padding(.vertical, Ink.Space.m)
                 }
             }
             .padding(.vertical, Ink.Space.xs)
@@ -202,18 +202,10 @@ struct ChatDetail: View {
     }
 
     private func fileRow(_ file: Snapshots.Kept, place: WorkPlace, isNew: Bool) -> some View {
-        HStack(spacing: Ink.Space.m) {
-            Image(systemName: isNew ? "doc.badge.plus" : "doc.text").foregroundStyle(Ink.accent).frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text((file.path as NSString).lastPathComponent).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                Text("\(place.title) · \(file.path)").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Text(isNew ? "新建" : "改过").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkSoft)
-        }
-        .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, Ink.Space.s + 2)
-        .contentShape(Rectangle())
+        RowLabel(isNew ? "doc.badge.plus" : "doc.text",
+                 title: (file.path as NSString).lastPathComponent,
+                 line: "\(place.title) · \(file.path)",
+                 end: .value(isNew ? "新建" : "改过"))
     }
 }
 

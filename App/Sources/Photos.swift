@@ -52,7 +52,7 @@ struct PhotoViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(1 - min(0.6, Double(abs(pull.height)) / 500)).ignoresSafeArea()
+            Ink.Artwork.black.opacity(1 - min(0.6, Double(abs(pull.height)) / 500)).ignoresSafeArea()
             if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -84,7 +84,7 @@ struct PhotoViewer: View {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { zoom = zoom > 1 ? 1 : 2.5 }
                     }
             } else {
-                ProgressView().controlSize(.large).tint(.white)
+                ProgressView().controlSize(.large).tint(Ink.Artwork.white)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -94,14 +94,14 @@ struct PhotoViewer: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: Ink.Size.body, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Color.white.opacity(0.2), in: .circle)
+                    .foregroundStyle(Ink.Artwork.white)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                    .background(Ink.Artwork.white.opacity(0.2), in: .circle)
             }
             .buttonStyle(TapStyle(grow: 8))
-            .padding(.trailing, 18)
-            .padding(.top, 8)
-            .accessibilityLabel("关闭")
+            .padding(.trailing, Ink.Space.l)
+            .padding(.top, Ink.Space.s)
+            .accessibilityLabel(L.t("actions.close"))
         }
         .task {
             if let local { image = UIImage(data: local); return }

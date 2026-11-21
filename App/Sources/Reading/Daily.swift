@@ -76,7 +76,7 @@ struct TideChip: View {
                 } label: {
                     HStack(spacing: Ink.Space.m) {
                         Image(systemName: newest.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                             Text(book.waiting.count > 1 ? "漂来了 \(book.waiting.count) 样东西" : "今天漂来了一样东西")
                                 .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
                             Text("点开，\(keeper)去捡起来").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -137,7 +137,7 @@ struct TideSheet: View {
                                     }
                                 } label: {
                                     VStack(spacing: Ink.Space.s) {
-                                        Image(systemName: find.symbol).font(.system(size: 26)).foregroundStyle(Ink.accent)
+                                        Image(systemName: find.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                         Text(Self.when(find.day)).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                     }
                                     .frame(maxWidth: .infinity, minHeight: 88)
@@ -148,7 +148,7 @@ struct TideSheet: View {
                             }
                         }
                     }
-                    Text("收藏册").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.top, Ink.Space.m)
+                    SectionTitle("收藏册").padding(.top, Ink.Space.m)
                     if book.collected.isEmpty {
                         EmptyNote(symbol: "water.waves", words: L.t("empty.favorites"))
                     } else {
@@ -156,7 +156,7 @@ struct TideSheet: View {
                             ForEach(book.collected) { find in
                                 HStack(alignment: .top, spacing: Ink.Space.m) {
                                     Image(systemName: find.symbol).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent).frame(width: 28)
-                                    VStack(alignment: .leading, spacing: 2) {
+                                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                         Text(find.name).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                                         Text(find.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                         Text(Self.when(find.day) + (find.picked ? "" : Words.t(" · 潮水留下的"))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
@@ -186,10 +186,10 @@ struct TideSheet: View {
         VStack(spacing: Ink.Space.m) {
             PetStill(size: 64, state: "attention")
             Image(systemName: find.symbol)
-                .font(.system(size: 40))
+                .font(.system(size: Ink.Size.title))
                 .foregroundStyle(Ink.accent)
                 .transition(.scale.combined(with: .opacity))
-            Text(find.name).font(Ink.serif(20, bold: true)).foregroundStyle(Ink.ink)
+            Text(find.name).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
             Text("\(keeper)：\(find.line)").font(Ink.reading).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             Button(book.waiting.isEmpty ? "收好了" : "再看看别的") {
                 withAnimation(Ink.Motion.settle) { shown = nil }
@@ -221,7 +221,7 @@ struct EmptyNote: View {
     var body: some View {
         VStack(spacing: Ink.Space.m) {
             Image(systemName: symbol)
-                .font(.system(size: 28, weight: .light))
+                .font(.system(size: Ink.Size.title, weight: .light))
                 .foregroundStyle(Ink.inkFaint)
             Text(words)
                 .font(Ink.footnote)
@@ -288,7 +288,7 @@ struct DiarySheet: View {
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     ForEach(pages) { page in
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
-                            Text(TideSheet.when(page.day)).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
+                            Text(TideSheet.when(page.day)).font(Ink.serif(Ink.Size.sub, bold: true)).foregroundStyle(Ink.inkSoft)
                             Text(page.text).font(Ink.reading).foregroundStyle(Ink.ink).lineSpacing(6)
                             if let reply = page.reply {
                                 Text("你回：\(reply)").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -320,7 +320,7 @@ struct DiarySheet: View {
             .navigationTitle("\(bot.name)的" + L.t("nav.diary"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     if !pages.isEmpty { Button("写今天的") { write() }.disabled(writing) }
                 }
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }

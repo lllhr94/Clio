@@ -17,13 +17,7 @@ struct SecretsPage: View {
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         if secrets.items.isEmpty {
-                            VStack(spacing: Ink.Space.m) {
-                                Image(systemName: "lock.rectangle.stack").font(.system(size: 36)).foregroundStyle(Ink.inkFaint)
-                                Text(L.t("empty.vault"))
-                                    .font(Ink.footnote).foregroundStyle(Ink.inkFaint).multilineTextAlignment(.center)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, Ink.Space.xxl)
+                            EmptyNote(symbol: "lock.rectangle.stack", words: L.t("empty.vault"))
                         } else {
                             VStack(spacing: 0) {
                                 ForEach(secrets.items) { item in
@@ -55,7 +49,7 @@ struct SecretsPage: View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: item.kind.symbol)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(item.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                     Text([item.user, item.site].filter { !$0.isEmpty }.joined(separator: " · ").ifEmpty(item.kind.title))
                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
@@ -64,7 +58,7 @@ struct SecretsPage: View {
                 Text(item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
             }
             if let shown = revealed[item.id] {
-                Text(shown).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, 40)
+                Text(shown).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).textSelection(.enabled).padding(.leading, Kit.badge + Ink.Space.m)
             }
         }
         .padding(.horizontal, Ink.Space.l)

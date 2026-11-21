@@ -146,12 +146,12 @@ struct ServicePage: View {
         } label: {
             HStack(alignment: .center, spacing: Ink.Space.m) {
                 ModelIcon(model: model, service: Service.of(endpoint), size: 30, name: endpoint.name)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    HStack(spacing: Ink.Space.s) {
                         Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
                             Text(L.t("settings.defaultModelBadge")).font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
-                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .padding(.horizontal, Ink.Space.s).padding(.vertical, Ink.Space.xs / 4)
                                 .background(Ink.accentWash, in: .capsule)
                         }
                     }
@@ -209,7 +209,7 @@ struct ServicePage: View {
                 }
                 ForEach(shown, id: \.self) { model in
                     HStack(spacing: Ink.Space.m) {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
                             Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                             Text(endpoint.traits(model).summary).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
                         }
@@ -218,13 +218,13 @@ struct ServicePage: View {
                             Haptics.tick(0.6)
                             withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
                         } label: {
-                            Image(systemName: "plus.circle.fill").font(.system(size: 22)).foregroundStyle(Ink.accent)
+                            Image(systemName: "plus.circle.fill").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                         }
                         .buttonStyle(TapStyle(grow: 8))
                         .accessibilityLabel("用 \(model)")
                     }
                     .padding(.horizontal, Ink.Space.l)
-                    .padding(.vertical, Ink.Space.s + 2)
+                    .padding(.vertical, Ink.Space.m)
                 }
                 if found.count > shown.count {
                     Text("还有 \(found.count - shown.count) 个，搜一搜就能找到。")
@@ -275,7 +275,7 @@ struct ServicePage: View {
                 if endpoint.kind == .openai {
                     Rectangle().fill(Ink.rule).frame(height: 1)
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                             Text(L.t("settings.thinkingFormat")).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
                             Text(L.t("settings.thinkingFormatNote")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                         }
@@ -358,9 +358,9 @@ struct ServicePage: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             FieldTitle(text: L.t("settings.balance"))
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if let reading {
-                        Text(reading.shown).font(Ink.serif(24, bold: true)).foregroundStyle(Ink.ink)
+                        Text(reading.shown).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                         if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     } else {
                         Text(balanceNote ?? L.t("loading.checking")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -434,7 +434,7 @@ struct TraitChips: View {
     var corrected = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Ink.Space.xs) {
             tag(traits.sees ? L.t("settings.modelVision") : "不看图", traits.sees ? "eye" : "eye.slash", on: traits.sees)
             if traits.thinks { tag("思考", "brain", on: true) }
             if !traits.tools { tag("不用工具", "wrench.and.screwdriver", on: false) }
@@ -448,7 +448,7 @@ struct TraitChips: View {
             .labelStyle(.titleAndIcon)
             .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(on ? Ink.inkSoft : Ink.inkFaint)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, Ink.Space.s)
             .frame(height: 20)
             .background(on ? Ink.mine : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on ? Color.clear : Ink.rule, lineWidth: 1))
@@ -493,7 +493,7 @@ struct ModelSheet: View {
                     Button(working ? L.t("loading.testingModel") : L.t("actions.testModel"), systemImage: "bolt.horizontal") { testReply() }
                         .disabled(working)
                     if let note {
-                        Text(note).font(.footnote).foregroundStyle(.secondary)
+                        Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                     }
                 } footer: {
                     Text(L.t("settings.visionTestNote"))
@@ -600,7 +600,7 @@ extension TeamModel {
     func probeSight(_ endpoint: Endpoint, model: String) async -> (sees: Bool?, note: String) {
         let size = CGSize(width: 64, height: 64)
         let data = UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.9) { context in
-            UIColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1).setFill()
+            Ink.Artwork.badgeRed.setFill()
             context.fill(CGRect(origin: .zero, size: size))
         }
         do {

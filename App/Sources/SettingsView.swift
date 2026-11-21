@@ -289,7 +289,7 @@ struct SettingsView: View {
                 } label: {
                     HStack {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                             Text(team.settings.backupModel == nil ? L.t("settings.backupModelUnset") : L.format("settings.backupModelSummary", team.modelTitle(team.settings.backupModel)))
                                 .font(.system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink)
@@ -334,7 +334,7 @@ struct SettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if item.deep == true {
                             Text(L.t("organize.earlier")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .padding(.horizontal, Ink.Space.s).padding(.vertical, Ink.Space.xs / 2)
                                 .background(Ink.rule.opacity(0.6), in: .capsule)
                         }
                     }
@@ -374,7 +374,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: Ink.Space.m) {
                     ModelIcon(model: found.model, service: Service.of(found.endpoint), size: 46, name: found.endpoint.name)
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
                         Text(found.model).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                         Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)
                             .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)

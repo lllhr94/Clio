@@ -17,7 +17,7 @@ struct ThinkingBox: View {
                 withAnimation(Ink.Motion.settle) { open.toggle() }
                 Haptics.tick(0.4)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Ink.Space.s) {
                     Image(systemName: "brain")
                         .font(.system(size: Ink.Size.small, weight: .medium))
                         .symbolEffect(.pulse, isActive: live)
@@ -82,7 +82,7 @@ struct PulseBox: View {
                 withAnimation(Ink.Motion.settle) { open.toggle() }
                 Haptics.tick(0.4)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Ink.Space.s) {
                     Text("✿").font(.system(size: Ink.Size.small))
                     Text(live ? "心绪" : (Pulse.vibe(text).map { "心绪 · \($0)" } ?? "心绪"))
                         .font(Ink.footnote)

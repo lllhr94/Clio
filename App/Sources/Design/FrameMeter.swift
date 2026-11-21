@@ -66,9 +66,9 @@ struct FrameMeter: View {
                 .font(Ink.mono(Ink.Size.micro))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, Ink.Space.s)
+        .padding(.vertical, Ink.Space.xs)
+        .background(Ink.paperRaised.opacity(0.94), in: Capsule())
         .allowsHitTesting(false)
         .onAppear { clock.start() }
         .onDisappear { clock.stop() }
@@ -96,7 +96,7 @@ enum MeterWindow {
         let window = PassThroughWindow(windowScene: scene)
         window.windowLevel = .statusBar + 1
         window.backgroundColor = .clear
-        let host = UIHostingController(rootView: FrameMeter().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, 8).padding(.top, 50))
+        let host = UIHostingController(rootView: FrameMeter().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, Ink.Space.s).padding(.top, Ink.Space.huge))
         host.view.backgroundColor = .clear
         window.rootViewController = host
         window.isUserInteractionEnabled = false

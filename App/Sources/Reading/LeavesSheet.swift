@@ -55,8 +55,8 @@ struct LeavesSheet: View {
                         } label: {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: "square.and.pencil").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(Words.t("另起一叶")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                    Text(Words.t("另起一叶")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                     Text(hasCurrent ? Words.t("眼下这段絮语收进下面，和\(name)从头聊起") : "眼下还是空白一页")
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
@@ -75,8 +75,8 @@ struct LeavesSheet: View {
                                 if folding { ProgressView().frame(width: 22) } else {
                                     Image(systemName: "rectangle.compress.vertical").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
                                 }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext")).font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                    Text(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                     Text(Words.t("较早的话写成提要，原文收进絮语页"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
@@ -101,8 +101,8 @@ struct LeavesSheet: View {
                             } label: {
                                 HStack(spacing: Ink.Space.m) {
                                     Image(systemName: "book.closed").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(companion.name)的日记").font(Ink.serif(17, bold: true)).foregroundStyle(Ink.ink)
+                                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                        Text("\(companion.name)的日记").font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                         Text(Pref.diaryOn ? "晚上写一页当天的事，你可以回一句" : Words.t("还没打开：调弦 › 旅伴的日常")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                     }
                                     Spacer(minLength: 0)
@@ -120,7 +120,7 @@ struct LeavesSheet: View {
                                     withAnimation(Ink.Motion.unfold) { showDigest.toggle() }
                                 } label: {
                                     HStack {
-                                        Text("前情提要").font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
+                                        Text("前情提要").font(Ink.serif(Ink.Size.sub, bold: true)).foregroundStyle(Ink.inkSoft)
                                         Spacer()
                                         Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .bold)).foregroundStyle(Ink.inkFaint)
                                             .rotationEffect(.degrees(showDigest ? -180 : 0))
@@ -181,7 +181,7 @@ struct LeavesSheet: View {
                         if leaves.isEmpty {
                             EmptyNote(symbol: "book.pages", words: L.t("empty.savedConversations"))
                         } else {
-                            Text(Words.t("收起的絮语")).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft).padding(.leading, Ink.Space.xs)
+                            SectionTitle(Words.t("收起的絮语"))
                             VStack(spacing: 0) {
                                 ForEach(leaves) { leaf in
                                     Button {
@@ -190,7 +190,7 @@ struct LeavesSheet: View {
                                         dismiss()
                                     } label: {
                                         HStack(spacing: Ink.Space.m) {
-                                            VStack(alignment: .leading, spacing: 3) {
+                                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
                                                 Text(leaf.title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink).lineLimit(1)
                                                 Text("\(Date(timeIntervalSince1970: leaf.at / 1000).formatted(.relative(presentation: .named))) · \(leaf.count) 条")
                                                     .font(Ink.footnote).foregroundStyle(Ink.inkFaint)

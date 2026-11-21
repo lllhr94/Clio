@@ -68,7 +68,9 @@ struct DrawerSheet: View {
     let pick: (DrawerItem) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    private let columns = [GridItem(.flexible(), spacing: Ink.Space.m), GridItem(.flexible(), spacing: Ink.Space.m)]
+    private var columns: [GridItem] {
+        [GridItem(.flexible(), spacing: Ink.Space.m), GridItem(.flexible(), spacing: Ink.Space.m)]
+    }
 
     var body: some View {
         ZStack {
@@ -77,29 +79,20 @@ struct DrawerSheet: View {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
                     HStack(alignment: .center, spacing: Ink.Space.m) {
                         PetStill(size: 44)
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                             Text("抽屉").font(Ink.title).foregroundStyle(Ink.ink)
                             Text(Words.t("案头以外的东西，都收在这里。")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                         }
                         Spacer()
-                        Button {
+                        Button(L.t("actions.done")) {
                             Haptics.light()
                             dismiss()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: Ink.Size.sub, weight: .semibold))
-                                .foregroundStyle(Ink.inkSoft)
-                                .frame(width: 32, height: 32)
-                                .background(Ink.mine, in: .circle)
                         }
-                        .accessibilityLabel("关上抽屉")
+                        .buttonStyle(PressStyle())
                     }
                     ForEach(DrawerItem.groups, id: \.0) { group in
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            Text(group.0)
-                                .font(Ink.serif(15, bold: true))
-                                .foregroundStyle(Ink.inkSoft)
-                                .padding(.leading, Ink.Space.xs)
+                            SectionTitle(group.0)
                             LazyVGrid(columns: columns, spacing: Ink.Space.m) {
                                 ForEach(group.1) { item in card(item) }
                             }
@@ -120,11 +113,7 @@ struct DrawerSheet: View {
             dismiss()
         } label: {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Image(systemName: item.symbol)
-                    .font(.system(size: Ink.Size.body, weight: .medium))
-                    .foregroundStyle(Ink.accent)
-                    .frame(width: 34, height: 34)
-                    .background(Ink.accentWash, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                IconBadge(symbol: item.symbol)
                 Text(item.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                 Text(item.line).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
