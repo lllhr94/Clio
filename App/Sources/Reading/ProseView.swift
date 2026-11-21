@@ -304,15 +304,14 @@ private struct CodeBlock: View {
             .padding(.trailing, Ink.Space.xs)
             .frame(height: 34)
             Rectangle().fill(Ink.rule).frame(height: 0.5)
-            ScrollView(.horizontal) {
-                Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
-                    .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
-                    .font(Ink.code)
-                    .lineSpacing(Pref.size * 0.3)
-                    .padding(Ink.Space.l)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .scrollIndicators(.hidden)
+            // Long lines wrap inside the block, as Open Minis does: nothing to slide sideways; the copy button copies them whole.
+            Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
+                .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
+                .font(Ink.code)
+                .lineSpacing(Pref.size * 0.3)
+                .padding(Ink.Space.l)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
             if folds {
                 Button {
                     Haptics.tick(0.4)
@@ -329,7 +328,11 @@ private struct CodeBlock: View {
                 .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 0.5) }
             }
         }
-        .inkBlock()
+        // Set apart from the words around it: a warmer, deeper ground and a firmer edge, so what is to be copied
+        // reads as something to copy.
+        .background(Ink.mine, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.inkFaint.opacity(0.45), lineWidth: 0.8))
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 }
 
@@ -353,6 +356,26 @@ private struct TableBlock: View {
         guard !natural.isEmpty, room > 0 else { return natural }
         let used = natural.reduce(0, +) + Self.gap * CGFloat(natural.count - 1) + Ink.Space.l * 2
         let extra = room - used
+        if extra < -1 {
+            // Too wide for the page: narrow the wide columns and let their cells wrap, as Open Minis does, so the table
+            // fits the phone. Only when even that cannot fit (many columns) does it still slide sideways.
+            let floor: CGFloat = 56
+            let available = room - Self.gap * CGFloat(natural.count - 1) - Ink.Space.l * 2
+            guard available >= floor * CGFloat(natural.count) else { return natural.map { max(floor, min($0, 160)) } }
+            var widths = natural
+            // Take the excess from the widest columns first, never below the floor.
+            var excess = widths.reduce(0, +) - available
+            while excess > 0.5 {
+                let widest = widths.max() ?? floor
+                let next = widths.filter { $0 < widest }.max() ?? floor
+                let wide = widths.indices.filter { widths[$0] >= widest - 0.5 }
+                let step = min(widest - max(next, floor), excess / CGFloat(wide.count))
+                guard step > 0.01 else { break }
+                for index in wide { widths[index] -= step }
+                excess -= step * CGFloat(wide.count)
+            }
+            return widths
+        }
         guard extra > 1 else { return natural }
         return natural.map { $0 + extra / CGFloat(natural.count) }
     }
