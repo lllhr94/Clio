@@ -980,8 +980,14 @@ struct ChatPage: View {
     private var thinkingChoices: some View {
         let level = options.thinking ?? .auto
         let now = isRoom ? nil : team.current(chat.key, bot: bot)
+        // Only the levels this model's service really tells apart (the one chosen stays visible).
+        let offered: [Thinking] = {
+            guard let now, now.endpoint.kind == .openai else { return Thinking.allCases }
+            let levels = now.endpoint.thinkingStyle.levels(thinks: now.traits.thinks)
+            return Thinking.allCases.filter { levels.contains($0) || $0 == level }
+        }()
         Section(Words.t("这段絮语想多深")) {
-            ForEach(Thinking.allCases, id: \.self) { option in
+            ForEach(offered, id: \.self) { option in
                 Button {
                     Haptics.tick(0.5)
                     team.setThinking(option, in: chat.key)

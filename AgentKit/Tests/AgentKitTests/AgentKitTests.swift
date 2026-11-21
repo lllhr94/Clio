@@ -660,3 +660,14 @@ final class CutShortTests: XCTestCase {
         XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: "stop"), .empty)
     }
 }
+
+final class ThinkingLevelsTests: XCTestCase {
+    func testDistinctLevels() {
+        XCTAssertEqual(ThinkingStyle.deepseek.levels(thinks: true), [.auto, .off, .low, .medium, .max])
+        XCTAssertEqual(ThinkingStyle.kimi.levels(thinks: true), [.auto, .low, .medium, .max])
+        XCTAssertEqual(ThinkingStyle.grok.levels(thinks: true), [.auto, .low, .medium])
+        XCTAssertEqual(ThinkingStyle.minimax.levels(thinks: true), [.auto])
+        XCTAssertEqual(ThinkingStyle.effort.levels(thinks: false), [.auto])
+        XCTAssertEqual(ThinkingStyle.effort.levels(thinks: true), [.auto, .off, .low, .medium, .high, .max])
+    }
+}
