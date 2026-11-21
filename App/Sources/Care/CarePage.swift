@@ -17,6 +17,7 @@ struct CarePage: View {
     @State private var probing = false
     @State private var copied = false
     @State private var hitchesCopied = false
+    @AppStorage("look.fps") private var fps = false
     @AppStorage("care.hitches") private var recordingHitches = false
     @ObservedObject private var hitches = Hitches.shared
 
@@ -89,6 +90,7 @@ struct CarePage: View {
                 } header: { Text(L.t("settings.recentErrors")) }
 
                 Section {
+                    Toggle(L.t("settings.showFrameRate"), isOn: $fps)
                     Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
                     if hitches.recent.isEmpty {
                         Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
@@ -117,11 +119,15 @@ struct CarePage: View {
                         Haptics.tick(0.6)
                     }
                 } footer: { Text(L.t("settings.diagnosticsPrivacy")) }
+
+                Section {
+                    Link("github.com/lllhr94/Clio", destination: URL(string: "https://github.com/lllhr94/Clio")!)
+                } footer: { Text(L.t("settingsHome.aboutCredits")) }
             }
             }
             .paperForm()
             .hitchPage("养护")
-            .navigationTitle(L.t("settings.diagnostics"))
+            .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in

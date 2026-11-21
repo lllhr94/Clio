@@ -104,10 +104,19 @@ struct FontPage: View {
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                 } header: { Text(L.t("settings.fontCredits")) }
+
+                Section {
+                    Button(L.t("actions.resetDefaults"), role: .destructive) {
+                        Theme.shared.setFace(.serif)
+                        Theme.shared.setMark(.wenkai)
+                        Theme.shared.setCode(.maple)
+                        Haptics.thud()
+                    }
+                }
             }
         }
         .paperForm()
-        .navigationTitle("字体")
+        .navigationTitle(L.t("settings.fonts"))
         .navigationBarTitleDisplayMode(.inline)
     }
 

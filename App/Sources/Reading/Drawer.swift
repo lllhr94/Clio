@@ -18,7 +18,7 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .hills: Words.t("远山")
         case .vault: Words.t("信匣")
         case .tuning: Words.t("调弦")
-        case .look: Words.t("纸墨与絮语")
+        case .look: L.t("settingsHome.theme")
         case .grants: Words.t("应许")
         case .care: Words.t("养护")
         }
@@ -33,8 +33,8 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         case .den: "手机里的 Linux，能装软件、跑脚本"
         case .hills: "你的 VPS 和 MCP 服务"
         case .vault: Words.t("账号密码，旅伴只拿得到编号")
-        case .tuning: Words.t("模型服务、密钥和拾遗")
-        case .look: "字体字号、明暗、压缩与上下文"
+        case .tuning: L.t("settingsHome.drawerSettingsLine")
+        case .look: L.t("settingsHome.themeLine")
         case .grants: Words.t("旅伴能做什么，一项项由你定")
         case .care: "备份、恢复、诊断"
         }

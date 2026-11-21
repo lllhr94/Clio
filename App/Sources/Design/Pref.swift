@@ -68,8 +68,11 @@ enum Pref {
     /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
     static var mark: Face { Theme.shared.mark }
     static var size: Double { double("look.size", 17) }
-    /// The space added between lines: a fixed share of the size, so every size reads about 1.6 lines apart.
-    static var leading: Double { size * 0.5 }
+    /// The space added between lines. Zero leaves it proportional to the reading size.
+    static var leading: Double {
+        let custom = store.double(forKey: "look.leading")
+        return custom > 0 ? custom : size * 0.5
+    }
 
     /// Once: the new reading type replaces the old default (宋体, tight lines) for anyone who had not changed it.
     static func settleType() {

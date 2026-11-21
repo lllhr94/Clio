@@ -114,7 +114,6 @@ struct Desk: View {
     @State private var caring = false
     @State private var drawer = false
     @State private var picked: DrawerItem?
-    @State private var looking = false
     @State private var roomEditing: RoomInfo?
     @State private var searching = false
     @State private var showArchived = false
@@ -598,7 +597,6 @@ struct Desk: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $looking) { LookPage() }
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
         .sheet(item: $roomEditing) { room in RoomEditor(team: team, room: room) }
@@ -636,13 +634,8 @@ struct Desk: View {
         }
         .fullScreenCover(isPresented: $tuning, onDismiss: {
             settingsPage = nil
-            // A companion or tool page picked in settings opens once settings is out of the way.
-            if let item = picked {
-                picked = nil
-                open(item)
-            }
         }) {
-            SettingsView(team: team, onLeaveDemo: {}, startAt: settingsPage, openElsewhere: { item in picked = item })
+            SettingsView(team: team, startAt: settingsPage)
         }
         .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
             Button(clearingIsRoom ? "散了" : "清空", role: .destructive) {
@@ -677,7 +670,9 @@ struct Desk: View {
             case "dictate": ShortcutDoor.knock(.dictate)
             case "new": ShortcutDoor.knock(.fresh)
             case "settings":
-                settingsPage = url.pathComponents.dropFirst().first
+                settingsPage = url.pathComponents.dropFirst().first.map { page in
+                    url.fragment.map { page + "#" + $0 } ?? page
+                }
                 tuning = true
             default: break
             }
@@ -724,7 +719,7 @@ struct Desk: View {
         case .hills: hilling = true
         case .vault: vaulting = true
         case .tuning: tuning = true
-        case .look: looking = true
+        case .look: settingsPage = "look"; tuning = true
         case .grants: granting = true
         case .care: caring = true
         }

@@ -25,9 +25,9 @@ struct ShotSettingsPage: View {
 
     var body: some View {
         switch name {
-        case "settings": SettingsView(team: team, onLeaveDemo: {}, openElsewhere: { _ in })
+        case "settings": SettingsView(team: team)
         case "connectors": ConnectorsPage()
-        case "look": LookPage()
+        case "look": NavigationStack { LookPage() }
         case "grants": GrantsPage(team: team)
         case "add": SetupView(team: team, onDone: {})
         case "pet": PetPage()
