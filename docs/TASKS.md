@@ -107,3 +107,11 @@
   4. 用便宜的小模型（设置里没有就用默认模型），一次整理的花费要有上限；失败就跳过，下次再来，不弹错。
   5. 不改 `ChatPage.swift`、`ProseView.swift`、`Pet/`。交 PR 前在自己分支跑一次 CI（shots=false）。
 
+- [ ] **C19 首页整理**：分支 `codex/c19-home`，PR 合到 `batch-0.34`。见 `docs/COMPANION-DESIGN.md` 第 6 节。只动侧边栏 / 首页（`Desk.swift` 的列表部分、`Team.swift` 里对话的存取），不碰 `ChatPage.swift`、`ProseView.swift`、`Pet/`、`NameCardView.swift`。
+  1. 对话筛选：全部 / 正在做 / 等我确认 / 未读，在侧边栏顶上常驻，选中的记住。
+  2. 归档：滑动或长按归档后，底部提示条 4 秒内可「撤销」；切出 App 立刻生效。归档的对话能在搜索里找回、恢复。
+  3. 颜色标签：长按对话打一个颜色（用 `Ink.Tile` 的几种），侧边栏行首一个小色点；筛选里能按颜色看。
+  4. 第一次用的三步清单：还没接任何模型服务时，首页显示「接一家服务 → 选默认模型 → 或者从备份恢复」，每步点了直达；这时先不显示新对话入口。
+  5. 交 PR 前跑一次 CI（shots=false），列出改了什么、怎么在真机上试。
+- [ ] **C20 常亮黑屏**：分支 `codex/c20-always-on`。新文件里做一个全黑的覆盖窗口：只显示当前旅伴的宠物小像、正在做的这一步、已用时间，每 15 秒整体挪一点位置防烧屏，任何触摸关闭；期间屏幕不自动锁（`isIdleTimerDisabled`），关闭后恢复。只提供 `AlwaysOn.show(chat:)` / `hide()` 这样的入口，聊天页里的按钮由 Claude 接。不碰 `ChatPage.swift`。
+
