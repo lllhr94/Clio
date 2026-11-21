@@ -366,7 +366,7 @@ struct SettingsView: View {
                 ServicePage(team: team, id: found.endpoint.id)
             } label: {
                 HStack(spacing: Ink.Space.m) {
-                    ServiceIcon(service: Service.of(found.endpoint), size: 46, name: found.endpoint.name)
+                    ModelIcon(model: found.model, service: Service.of(found.endpoint), size: 46, name: found.endpoint.name)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(found.model).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
                         Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)

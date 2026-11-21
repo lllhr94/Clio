@@ -145,6 +145,7 @@ struct ServicePage: View {
             editing = model
         } label: {
             HStack(alignment: .center, spacing: Ink.Space.m) {
+                ModelIcon(model: model, service: Service.of(endpoint), size: 30, name: endpoint.name)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)

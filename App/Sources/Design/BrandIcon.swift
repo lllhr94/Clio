@@ -160,3 +160,80 @@ struct ServiceIcon: View {
             .overlay { Image(systemName: symbol).font(.system(size: size * 0.44, weight: .medium)).foregroundStyle(Ink.inkSoft) }
     }
 }
+
+/// Which maker a model comes from, read off its name: a relay (喜鹊, OpenRouter …) can serve DeepSeek or Qwen,
+/// and the model's own icon says more than the relay's.
+enum ModelMaker {
+    /// Long names: found anywhere in the model's name.
+    private static let words: [(String, String)] = [
+        ("deepseek", "deepseek.com"), ("qwen", "chat.qwen.ai"), ("qwq", "chat.qwen.ai"), ("qvq", "chat.qwen.ai"),
+        ("tongyi", "chat.qwen.ai"), ("chatglm", "bigmodel.cn"), ("zhipu", "bigmodel.cn"), ("cogview", "bigmodel.cn"),
+        ("kimi", "kimi.com"), ("moonshot", "kimi.com"), ("doubao", "doubao.com"), ("claude", "claude.ai"),
+        ("gemini", "gemini.google.com"), ("gemma", "gemini.google.com"), ("imagen", "gemini.google.com"),
+        ("chatgpt", "openai.com"), ("dall-e", "openai.com"), ("openai", "openai.com"), ("codex", "openai.com"),
+        ("grok", "grok.com"), ("llama", "llama.com"), ("mistral", "mistral.ai"), ("mixtral", "mistral.ai"),
+        ("codestral", "mistral.ai"), ("magistral", "mistral.ai"), ("minimax", "minimaxi.com"), ("hunyuan", "hunyuan.tencent.com"),
+        ("ernie", "yiyan.baidu.com"), ("baichuan", "baichuan-ai.com"), ("stepfun", "stepfun.com"), ("internlm", "intern-ai.org.cn"),
+    ]
+    /// Short names: only as a whole piece of the name (「gpt-5」, 「o3-mini」, 「glm-4.6」), never inside another word.
+    private static let pieces: [(String, String)] = [
+        ("gpt", "openai.com"), ("o1", "openai.com"), ("o3", "openai.com"), ("o4", "openai.com"),
+        ("glm", "bigmodel.cn"), ("abab", "minimaxi.com"), ("step", "stepfun.com"), ("yi", "01.ai"), ("spark", "xfyun.cn"),
+    ]
+
+    /// The maker's site (for its icon), or nil if the name says nothing.
+    static func domain(of model: String) -> String? {
+        let whole = model.lowercased()
+        // 「qwen-token-plan/deepseek-v4.1-flash」: the last part is the model itself.
+        let last = whole.split(separator: "/").last.map(String.init) ?? whole
+        return find(in: last) ?? find(in: whole)
+    }
+
+    private static func find(in name: String) -> String? {
+        if let hit = words.first(where: { name.contains($0.0) }) { return hit.1 }
+        let parts = Set(name.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        return pieces.first(where: { parts.contains($0.0) })?.1
+    }
+}
+
+/// A model's icon: its maker's (DeepSeek, Qwen …), with the service it comes through as a small mark in the corner
+/// (「喜」 for 喜鹊). The service's own icon when the name says nothing, or when the service is the maker.
+struct ModelIcon: View {
+    let model: String?
+    let service: Service?
+    var size: CGFloat = 38
+    /// The endpoint's own name: its first character marks the corner.
+    var name: String? = nil
+
+    var body: some View {
+        if let model, let maker = ModelMaker.domain(of: model), !sameAsService(maker) {
+            BrandIcon(domain: maker, mark: String(model.first ?? "M").uppercased(), tint: Ink.Tile.accent, size: size)
+                .overlay(alignment: .bottomTrailing) { corner }
+        } else {
+            ServiceIcon(service: service, size: size, name: name)
+        }
+    }
+
+    private func sameAsService(_ maker: String) -> Bool {
+        guard let domain = service?.domain else { return false }
+        let root = { (site: String) in site.split(separator: ".").suffix(2).joined(separator: ".") }
+        return root(domain) == root(maker)
+    }
+
+    /// The service it comes through, as one character on a small paper disc.
+    @ViewBuilder
+    private var corner: some View {
+        if let first = (name ?? service?.name)?.trimmingCharacters(in: .whitespaces).first {
+            let side = max(size * 0.5, 11)
+            Text(String(first).uppercased())
+                .font(.system(size: side * 0.62, weight: .bold))
+                .foregroundStyle(Ink.ink)
+                .minimumScaleFactor(0.5)
+                .frame(width: side, height: side)
+                .background(Ink.paperRaised, in: .circle)
+                .overlay(Circle().strokeBorder(Ink.rule, lineWidth: 0.5))
+                .offset(x: side * 0.3, y: side * 0.3)
+                .accessibilityHidden(true)
+        }
+    }
+}

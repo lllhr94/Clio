@@ -853,7 +853,7 @@ struct ChatPage: View {
             // Just the service's icon; the name is in the menu. A dot when this conversation has its own model or depth.
             let found = team.resolve(current)
             ZStack(alignment: .topTrailing) {
-                ServiceIcon(service: found.flatMap { Service.of($0.endpoint) }, size: 20, name: found?.endpoint.name)
+                ModelIcon(model: found?.model, service: found.flatMap { Service.of($0.endpoint) }, size: 22, name: found?.endpoint.name)
                     .frame(width: 32, height: 32)
                 if own != nil || level != .auto {
                     Circle().fill(Ink.accent).frame(width: 7, height: 7).offset(x: -3, y: 4)
@@ -861,7 +861,7 @@ struct ChatPage: View {
             }
             .contentShape(Rectangle())
         }
-        .accessibilityLabel("模型：\(shortName(current))\(level == .auto ? "" : "，思考\(level.title)")")
+        .accessibilityLabel("模型：\(shortName(current))，经由\(team.resolve(current)?.endpoint.name ?? "")\(level == .auto ? "" : "，思考\(level.title)")")
     }
 
     /// How hard the model thinks in this conversation: on its own in a gathering, inside the model menu otherwise.
