@@ -259,7 +259,7 @@ struct Desk: View {
                     Label("新对话", systemImage: "square.and.pencil")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.paper)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, Ink.Space.l)
                         .frame(height: 38)
                         .background(Ink.ink, in: .capsule)
                 }
@@ -286,7 +286,7 @@ struct Desk: View {
             .padding(Ink.Space.l)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if sideQuery.isEmpty {
                         sideNav("house", Words.t("案头")) { jump(nil) }
                         sideNav("books.vertical", Words.t("书案")) { closeSide(); studying = true }
@@ -298,7 +298,7 @@ struct Desk: View {
                             .foregroundStyle(Ink.inkFaint)
                             .padding(.horizontal, Ink.Space.l)
                             .padding(.top, Ink.Space.l)
-                            .padding(.bottom, 4)
+                            .padding(.bottom, Ink.Space.xs)
                         ForEach(group.items, id: \.id) { item in
                             sideThread(item)
                         }
@@ -361,7 +361,7 @@ struct Desk: View {
             jump(item.id)
         } label: {
             HStack(spacing: Ink.Space.s) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
                     // What the conversation is about (its title, which you can rename), else its last words.
                     let line = team.title(of: key) ?? item.preview
@@ -379,7 +379,7 @@ struct Desk: View {
                 }
             }
             .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, 9)
+            .padding(.vertical, Ink.Space.s)
             .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -450,7 +450,7 @@ struct Desk: View {
                                 }
                                 if hit.key.hasPrefix("bot-") { opened = .companion(String(hit.key.dropFirst(4))) } else { opened = .gathering(String(hit.key.dropFirst(5))) }
                             } label: {
-                                VStack(alignment: .leading, spacing: 3) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs) {
                                     HStack {
                                         Text(hit.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                                         if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint) }
@@ -531,18 +531,18 @@ struct Desk: View {
 
             if let opened {
                 page(for: opened)
-                    .clipShape(RoundedRectangle(cornerRadius: shift > 0 ? 28 : 0, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: shift > 0 ? Ink.Radius.card : 0, style: .continuous))
                     // The shadow is cast by a plain rounded sheet of paper under the page, not by the page itself:
                     // shadowing the page made iOS trace every word and button for each frame of the slide.
                     .background {
-                        RoundedRectangle(cornerRadius: shift > 0 ? 28 : 0, style: .continuous)
+                        RoundedRectangle(cornerRadius: shift > 0 ? Ink.Radius.card : 0, style: .continuous)
                             .fill(Ink.paper)
-                            .shadow(color: .black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
+                            .shadow(color: Ink.Artwork.black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
                     }
                     .overlay {
                         // Open sidebar: a tap on the conversation's edge closes it.
                         if sideOpen {
-                            Color.black.opacity(0.001)
+                            Ink.ink.opacity(0.001)
                                 .onTapGesture { closeSide() }
                         }
                     }
@@ -744,7 +744,7 @@ struct Desk: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text(greeting).font(Ink.display).foregroundStyle(Ink.ink)
+                Text(greeting).font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title3)).foregroundStyle(Ink.ink)
                 Text("今天想聊点什么？").font(Ink.reading).foregroundStyle(Ink.inkSoft)
             }
             Spacer()
@@ -793,7 +793,7 @@ struct Desk: View {
                                 Circle().fill(Ink.accent).frame(width: 6, height: 6)
                             }
                         }
-                        .padding(.leading, Ink.Space.xs + 2)
+                        .padding(.leading, Ink.Space.s)
                         .padding(.trailing, Ink.Space.l)
                         .frame(height: 40)
                         .background(Ink.paperRaised, in: .capsule)
@@ -838,7 +838,7 @@ struct Desk: View {
                         .foregroundStyle(Ink.warn)
                         .frame(width: 34, height: 34)
                         .background(Ink.warn.opacity(0.14), in: .circle)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                         Text(team.approvals.count > 1 ? Words.t("\(team.approvals.count) 张笺等你落印") : Words.t("\(name)等你落印"))
                             .font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text("\(name)想\(first.tool ?? "做一件事")" + ((first.reason ?? "").isEmpty ? "" : "：\(first.reason!)"))
@@ -859,7 +859,7 @@ struct Desk: View {
     private func letter(_ next: Later) -> some View {
         HStack(spacing: Ink.Space.s) {
             Image(systemName: "envelope").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 Text(Words.t("来信 · ") + When.show(Date(timeIntervalSince1970: next.at))).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text("\(team.bots.first { $0.id == next.botId }?.name ?? "旅伴")约好来找你：\(next.text)")
                     .font(Ink.secondary)
@@ -934,7 +934,7 @@ struct Desk: View {
                             .background(Ink.accentWash, in: .circle)
                     }
                 }
-                .padding(.top, 2)
+                .padding(.top, Ink.Space.xs / 2)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(item.name).font(Ink.readingBold).foregroundStyle(Ink.ink)
