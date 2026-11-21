@@ -30,7 +30,9 @@ struct ApproveView: View {
     private var shortWindow: Bool { viewport.height > 0 && viewport.height < viewport.width * 1.25 }
     private var slipWidth: CGFloat? {
         guard viewport.width > 0 else { return nil }
-        return min(viewport.width * (largeText ? 0.92 : 0.80), Ink.Size.body * (largeText ? 33 : 24))
+        let gutter = (largeText ? Ink.Space.l : Ink.Space.page) * 2
+        return min(max(1, viewport.width - gutter), viewport.width * (largeText ? 0.92 : 0.80),
+                   Ink.Size.body * (largeText ? 33 : 24))
     }
     private var paperSide: CGFloat { min((slipWidth ?? 0) * 0.93, viewport.height * 0.53) }
     private var stampSide: CGFloat { (slipWidth ?? 0) * 0.36 }
