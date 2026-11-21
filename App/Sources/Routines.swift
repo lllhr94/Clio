@@ -146,13 +146,9 @@ struct RoutinesPage: View {
                     if team.routines.isEmpty {
                         EmptyNote(symbol: "alarm", words: L.t("empty.createScheduledJob"))
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(team.routines) { routine in
-                                row(routine)
-                                Kit.rule(inset: Ink.Space.l)
-                            }
+                        RowCard {
+                            ForEach(team.routines) { routine in row(routine) }
                         }
-                        .paperCard()
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)
@@ -185,7 +181,7 @@ struct RoutinesPage: View {
     private func row(_ routine: Routine) -> some View {
         let who = team.bots.first { $0.id == routine.botId }?.name ?? "?"
         return HStack(alignment: .top, spacing: Ink.Space.m) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(routine.title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
                 Text("\(routine.when) · \(who)" + (routine.on ? (routine.next(after: Date()).map { " · 下次 \(When.show($0))" } ?? "") : "")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 Text(routine.prompt).font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(2)
