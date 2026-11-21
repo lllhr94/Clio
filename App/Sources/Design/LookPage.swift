@@ -14,6 +14,7 @@ struct LookPage: View {
                 .pickerStyle(.segmented)
                 palettes
                 grounds
+                bubbles
             }
         }
     }
@@ -61,6 +62,36 @@ struct LookPage: View {
         }
     }
 
+    /// 我的气泡: the tint of your own messages.
+    private var bubbles: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(L.t("settings.bubbleColor"))
+            HStack(spacing: 0) {
+                bubbleChoice("", title: L.t("settings.bubbleAuto"), color: Ink.mine)
+                ForEach(Ink.palettes) { palette in bubbleChoice(palette.key, title: palette.title, color: palette.wash) }
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
+    private func bubbleChoice(_ key: String, title: String, color: Color) -> some View {
+        let picked = Theme.shared.bubble == key
+        return Button {
+            Haptics.tick(0.5)
+            withAnimation(Ink.Motion.settle) { Theme.shared.setBubble(key) }
+        } label: {
+            VStack(spacing: Ink.Space.xs) {
+                Capsule().fill(color)
+                    .overlay(Capsule().strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 2 : 1))
+                    .frame(width: 34, height: 22)
+                Text(title).font(.system(size: Ink.Size.small, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(picked ? .isSelected : [])
+    }
+
     /// 主色: the accent everything is drawn with.
     private var palettes: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
@@ -94,6 +125,7 @@ struct LookPage: View {
         Theme.shared.pick("dai")
         Theme.shared.setOled(false)
         Theme.shared.setWhite(false)
+        Theme.shared.setBubble("")
     }
 }
 

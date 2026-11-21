@@ -361,7 +361,9 @@
     "davAddress": "网盘地址，如 https://dav.jianguoyun.com/dav/",
     "davUser": "用户名",
     "davPassword": "密码（坚果云填应用密码）",
-    "davNote": "备份会放在网盘里的 Clio 文件夹。换手机时填同样的网盘，点「从网盘恢复最新的」。密码只存在这台手机的钥匙串里，不进备份。备份格式写在仓库的 docs/BACKUP-FORMAT.md，以后别的设备上的 Clio 也能读。"
+    "davNote": "备份会放在网盘里的 Clio 文件夹。换手机时填同样的网盘，点「从网盘恢复最新的」。密码只存在这台手机的钥匙串里，不进备份。备份格式写在仓库的 docs/BACKUP-FORMAT.md，以后别的设备上的 Clio 也能读。",
+    "bubbleColor": "我的气泡颜色",
+    "bubbleAuto": "随纸"
   },
   "styleSwitcher": {
     "title": "称谓",
@@ -666,5 +668,11 @@
     "secretNote": "机密项保存在密码保险箱，助手只能拿到编号。",
     "sender": "%@ 请你填表",
     "usePickedSecret": "使用密码保险箱中的「%@」"
+  },
+  "roam": {
+    "tabs": "标签",
+    "newTab": "新标签",
+    "closeTab": "关掉这个标签",
+    "tabCount": "%lld 个标签"
   }
 }

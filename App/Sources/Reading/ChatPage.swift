@@ -375,6 +375,7 @@ struct ChatPage: View {
                 }
             }
             .scrollIndicators(.hidden)
+            .overlay(alignment: .trailing) { minimap }
             .scrollDismissesKeyboard(.interactively)
             // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
             // reads through between the buttons, and the glass no longer picks up colours from the page.
@@ -578,12 +579,23 @@ struct ChatPage: View {
             chat.open()
             PetNews.shared.focused = chat.key
             draftState.load(chat.key)
+            if photos.isEmpty, files.isEmpty {
+                let kept = DraftAttachments.load(chat.key)
+                photos = kept.photos
+                files = kept.files
+            }
         }
-        .onChange(of: scenePhase) { if scenePhase != .active { draftState.flush() } }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active {
+                draftState.flush()
+                DraftAttachments.save(photos: photos, files: files, chat: chat.key)
+            }
+        }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
             draftState.flush()
+            DraftAttachments.save(photos: photos, files: files, chat: chat.key)
             chat.close()
             team.markSeen(chat.key)
             hideJumps?.cancel()
@@ -1366,11 +1378,13 @@ struct ChatPage: View {
                         .padding(.vertical, Ink.Space.m)
                         // Real Liquid Glass, as Open Minis does: your bubbles scroll over replies, code and pictures,
                         // so the glass has something to catch. Tinted a little with the paper, so it stays Clio's.
-                        .glassEffect(.regular.tint((editing == line.id ? Ink.accentWash : Ink.mine).opacity(0.45)),
+                        .glassEffect(.regular.tint(bubbleTint(editing: editing == line.id)),
                                      in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
+                            // Your own words too can be picked from and quoted, as replies can.
+                            Button("选字引用", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
                             Button("改了重发", systemImage: "pencil") {
                                 withAnimation(Ink.Motion.settle) {
                                     editing = line.id
@@ -1775,6 +1789,12 @@ struct ChatPage: View {
             return (note.isEmpty ? nil : note, rest)
         }
         return (nil, text)
+    }
+
+    /// Your bubble's glass: the paper's tint, or the colour picked in 外观 (stronger, so it shows through the glass).
+    private func bubbleTint(editing: Bool) -> Color {
+        if editing { return Ink.accentWash.opacity(0.45) }
+        return Theme.shared.bubble.isEmpty ? Ink.mine.opacity(0.45) : Ink.bubble.opacity(0.85)
     }
 
     /// No more of the companion's words follow before the user speaks again.
@@ -2247,6 +2267,46 @@ struct ChatPage: View {
         }
     }
 
+    /// 长对话小地图 (after Kelivo): while scrolling a long conversation, a thin strip at the right edge with a tick
+    /// for each thing you asked; the ones on screen are darker. A tap goes there. Hidden when not scrolling.
+    @ViewBuilder
+    private var minimap: some View {
+        let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
+        let asked = rows.indices.filter { rows[$0].kind == .user }
+        if jumpVisible, rows.count >= 30, asked.count >= 4 {
+            let visible = Set(viewport.ids)
+            let first = rows.startIndex
+            let span = max(1, rows.count - 1)
+            GeometryReader { box in
+                let height = box.size.height
+                ZStack(alignment: .top) {
+                    Capsule().fill(Ink.rule.opacity(0.5)).frame(width: 3)
+                    ForEach(asked, id: \.self) { index in
+                        let row = rows[index]
+                        Capsule()
+                            .fill(visible.contains(row.id) ? Ink.accent : Ink.inkFaint)
+                            .frame(width: visible.contains(row.id) ? 10 : 7, height: 3)
+                            .offset(y: height * CGFloat(index - first) / CGFloat(span) - 1.5)
+                            .onTapGesture {
+                                Haptics.tick(0.4)
+                                following = false
+                                jumpedTo = row.id
+                                lingerJumpButtons()
+                                withAnimation(Ink.Motion.settle) { scroller?.scrollTo(row.id, anchor: .top) }
+                            }
+                    }
+                }
+                .frame(width: 24, height: height, alignment: .top)
+                .contentShape(Rectangle())
+            }
+            .frame(width: 24)
+            .padding(.vertical, Ink.Bar.height * 2)
+            .padding(.trailing, 2)
+            .transition(.opacity)
+            .accessibilityHidden(true)
+        }
+    }
+
     private func lingerJumpButtons() {
         hideJumps?.cancel()
         hideJumps = Task {
@@ -2662,7 +2722,7 @@ private struct Trace: View {
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
     private struct Keepsake: Identifiable {
-        enum Kind { case event, reminder, file, remoteFile, command, health }
+        enum Kind { case event, reminder, file, remoteFile, command, health, weather }
         let id: Int
         let kind: Kind
         let title: String
@@ -2772,6 +2832,8 @@ private struct Trace: View {
                 out.append(Keepsake(id: index, kind: .event, title: String(tool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
             } else if tool.hasPrefix("加提醒：") {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
+            } else if tool.hasPrefix("查天气："), !output.isEmpty, !output.hasPrefix("没找到") {
+                out.append(Keepsake(id: index, kind: .weather, title: String(tool.dropFirst(4)), detail: output))
             } else if tool.hasPrefix("健康："), !output.isEmpty {
                 out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://"), diff: full))
             } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
@@ -2904,11 +2966,14 @@ private struct Trace: View {
                             openFile(url)
                         }
                     case .event, .reminder, .health: if let url = item.url { UIApplication.shared.open(url) }
+                    case .weather: break
                     case .command: break
                     }
                 } label: {
                     if item.kind == .health {
                         HealthCard(text: item.detail, format: item.diff)
+                    } else if item.kind == .weather {
+                        WeatherCard(text: item.detail)
                     } else {
                     HStack(alignment: .top, spacing: Ink.Space.m) {
                         Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
@@ -3092,6 +3157,7 @@ private struct Trace: View {
         case .remoteFile: "doc.badge.gearshape"
         case .command: "terminal"
         case .health: "heart.text.square"
+        case .weather: "cloud.sun"
         }
     }
 
@@ -3660,5 +3726,121 @@ private final class ChatDraft {
         } else {
             UserDefaults.standard.set(text, forKey: key)
         }
+    }
+}
+
+
+/// Pictures and files picked for a message not yet sent, kept with the conversation like its words
+/// (in Caches: they are only waiting to be sent).
+enum DraftAttachments {
+    private static func folder(_ chat: String) -> URL {
+        let safe = chat.replacingOccurrences(of: "/", with: "_")
+        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("drafts", isDirectory: true).appendingPathComponent(safe, isDirectory: true)
+    }
+
+    static func save(photos: [Data], files: [String], chat: String) {
+        let dir = folder(chat)
+        let manager = FileManager.default
+        try? manager.removeItem(at: dir)
+        UserDefaults.standard.set(files.isEmpty ? nil : files, forKey: "draftFiles." + chat)
+        guard !photos.isEmpty else { return }
+        try? manager.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (index, data) in photos.enumerated() {
+            try? data.write(to: dir.appendingPathComponent("\(index).img"), options: .atomic)
+        }
+    }
+
+    static func load(_ chat: String) -> (photos: [Data], files: [String]) {
+        let dir = folder(chat)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasSuffix(".img") }
+            .sorted { (Int($0.dropLast(4)) ?? 0) < (Int($1.dropLast(4)) ?? 0) }
+        let photos = names.compactMap { try? Data(contentsOf: dir.appendingPathComponent($0)) }
+        let files = UserDefaults.standard.stringArray(forKey: "draftFiles." + chat) ?? []
+        return (photos, files)
+    }
+}
+
+
+/// The weather tool's answer as a card: the place and now on top, then a row a day with a small sky and the range.
+struct WeatherCard: View {
+    let text: String
+
+    private struct Day: Identifiable {
+        let id: Int
+        let date: String
+        let sky: String
+        let range: String
+        let rain: String
+    }
+
+    private var lines: [String] { text.split(separator: "\n").map(String.init) }
+    private var place: String { lines.first ?? "" }
+    private var now: String? { lines.first { $0.hasPrefix("现在：") }.map { String($0.dropFirst(3)) } }
+
+    private var days: [Day] {
+        lines.filter { $0.contains(" | ") && !$0.hasPrefix("日期") }.enumerated().compactMap { index, row in
+            let cells = row.components(separatedBy: " | ")
+            guard cells.count >= 4 else { return nil }
+            return Day(id: index, date: Self.day(cells[0], index: index), sky: cells[1], range: cells[2], rain: cells[3])
+        }
+    }
+
+    /// 「2026-11-22」 → 「今天」「明天」「周日」.
+    private static func day(_ text: String, index: Int) -> String {
+        if index == 0 { return "今天" }
+        if index == 1 { return "明天" }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: text) else { return text }
+        let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        return names[Calendar.current.component(.weekday, from: date) - 1]
+    }
+
+    static func symbol(_ sky: String) -> String {
+        if sky.contains("雷") { return "cloud.bolt.rain" }
+        if sky.contains("雪") { return "cloud.snow" }
+        if sky.contains("雨") { return "cloud.rain" }
+        if sky.contains("雾") { return "cloud.fog" }
+        if sky.contains("阴") { return "cloud" }
+        if sky.contains("多云") { return "cloud.sun" }
+        if sky.contains("晴") { return "sun.max" }
+        return "cloud.sun"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                Label(place, systemImage: "cloud.sun")
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            if let now {
+                Text(now)
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(days) { day in
+                HStack(spacing: Ink.Space.m) {
+                    Text(day.date).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).frame(width: 44, alignment: .leading)
+                    Image(systemName: Self.symbol(day.sky)).symbolRenderingMode(.multicolor).font(.system(size: Ink.Size.sub)).frame(width: 22)
+                    Text(day.sky).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                    Spacer(minLength: Ink.Space.s)
+                    if day.rain != "—", day.rain != "0%" {
+                        Text(day.rain).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.Tile.dai)
+                    }
+                    Text(day.range).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.ink).monospacedDigit()
+                }
+            }
+        }
+        .padding(Ink.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .inkBlock()
+        .accessibilityElement(children: .combine)
     }
 }

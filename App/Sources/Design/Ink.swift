@@ -26,6 +26,14 @@ final class Theme {
     /// Light mode on pure white instead of paper, as most apps are.
     private(set) var white: Bool = UserDefaults.standard.bool(forKey: "look.white")
 
+    /// The tint of your own bubbles: "" follows the paper, or one of the palette keys (黛 胭 竹 缃 藤 墨).
+    private(set) var bubble: String = UserDefaults.standard.string(forKey: "look.bubble") ?? ""
+
+    func setBubble(_ value: String) {
+        bubble = value
+        UserDefaults.standard.set(value, forKey: "look.bubble")
+    }
+
     func setWhite(_ value: Bool) {
         white = value
         UserDefaults.standard.set(value, forKey: "look.white")
@@ -220,6 +228,13 @@ enum Ink {
         Palette(key: "teng", title: "藤", light: 0x6E5A92, dark: 0xA996CF, wash: pair(0xE9E4F2, 0x332C42), tint: 1),
         Palette(key: "mo", title: "墨", light: 0x3F3D39, dark: 0xC9C2B5, wash: pair(0xE8E5DF, 0x35332F), tint: 0.5),
     ]
+    /// Your own bubbles: the paper's tint, or a soft wash of the colour you picked (text stays plain ink, so it
+    /// always reads).
+    static var bubble: Color {
+        let theme = Theme.shared
+        guard !theme.bubble.isEmpty, let picked = palettes.first(where: { $0.key == theme.bubble }) else { return mine }
+        return picked.wash
+    }
     static var mine: Color {
         let theme = Theme.shared, palette = theme.palette
         return theme.white ? pair(0xEFEFF1, palette.mineDark) : palette.mine
@@ -292,16 +307,26 @@ enum Ink {
     /// Chinese inside falls back to the system's own.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular, preference: Pref.Code? = nil) -> Font {
         if (preference ?? Pref.code) == .maple {
-            let name = weight == .regular || weight == .light || weight == .thin || weight == .ultraLight ? "MapleMono-Regular" : "MapleMono-SemiBold"
-            if has(name) { return .custom(name, size: size) }
+            let light = weight == .regular || weight == .light || weight == .thin || weight == .ultraLight
+            if let font = mapleWithChinese(size, bold: !light) { return Font(font) }
         }
         return Font.system(size: size, weight: weight).monospaced()
     }
 
     /// The same, for UIKit views (the terminal).
     static func uiMono(_ size: CGFloat, bold: Bool = false) -> UIFont {
-        if Pref.code == .maple, let font = UIFont(name: bold ? "MapleMono-SemiBold" : "MapleMono-Regular", size: size) { return font }
+        if Pref.code == .maple, let font = mapleWithChinese(size, bold: bold) { return font }
         return .monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
+    }
+
+    /// Maple Mono, with Clio Mono CN behind it for Chinese: every Chinese character exactly two letters wide, so
+    /// columns of output and code line up even with Chinese in them (Maple Mono CN, cut to GB2312).
+    private static func mapleWithChinese(_ size: CGFloat, bold: Bool) -> UIFont? {
+        let name = bold ? "MapleMono-SemiBold" : "MapleMono-Regular"
+        guard has(name), let latin = UIFont(name: name, size: size) else { return nil }
+        guard has("ClioMonoCN-Regular") else { return latin }
+        let chinese = UIFontDescriptor(fontAttributes: [.name: "ClioMonoCN-Regular"])
+        return UIFont(descriptor: latin.fontDescriptor.addingAttributes([.cascadeList: [chinese]]), size: size)
     }
 
     /// Titles and inscriptions, in the face picked for them in 字体 (文楷 unless changed): the welcome pages,

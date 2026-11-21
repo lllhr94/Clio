@@ -70,7 +70,7 @@ targets:
         CFBundleShortVersionString: "0.34"
         CFBundleVersion: "36"
         UILaunchScreen: {}
-        UIAppFonts: [ClioKai-Regular.ttf, ClioKai-Medium.ttf, ClioSeal-Regular.ttf, MapleMono-Regular.ttf, MapleMono-SemiBold.ttf]
+        UIAppFonts: [ClioKai-Regular.ttf, ClioKai-Medium.ttf, ClioSeal-Regular.ttf, MapleMono-Regular.ttf, MapleMono-SemiBold.ttf, ClioMonoCN-Regular.ttf]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:
