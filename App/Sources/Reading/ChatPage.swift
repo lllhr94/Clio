@@ -47,6 +47,9 @@ struct ChatPage: View {
     @State private var findText = ""
     @State private var findAt = 0
     @State private var hits: [String] = []
+    @State private var findLoadTask: Task<Void, Never>?
+    @State private var findQueryTask: Task<Void, Never>?
+    @State private var findScrollTask: Task<Void, Never>?
     /// How many lines were on the page before finding or the outline opened everything; restored after.
     @State private var lookupRows: [ChatLine] = []
     @State private var historyPage: [ChatLine]?
@@ -622,6 +625,7 @@ struct ChatPage: View {
             team.markSeen(chat.key)
             hideJumps?.cancel()
             earlierTask?.cancel()
+            cancelFindTasks()
             selecting.removeAll()
             if dictation.listening { dictation.stop() }
         }
@@ -1495,14 +1499,6 @@ struct ChatPage: View {
 
     // MARK: Finding
 
-    /// The lines with what you look for, oldest first.
-    /// Worked out once per change of the words, not for every row.
-    private func findHits() -> [String] {
-        let wanted = findText.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return [] }
-        return lookupRows.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
-    }
-
     private var currentHit: String? {
         let found = hits
         guard !found.isEmpty else { return nil }
@@ -1514,10 +1510,12 @@ struct ChatPage: View {
         Haptics.light()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
-        Task {
-            await loadEverything()
-            guard finding else { lookupRows = []; return }
-            if !findText.isEmpty { updateFindHits() }
+        findLoadTask?.cancel()
+        findLoadTask = Task {
+            let rows = await chat.lookupRows()
+            guard !Task.isCancelled, finding else { return }
+            lookupRows = rows
+            updateFindHits()
         }
     }
 
@@ -1526,7 +1524,14 @@ struct ChatPage: View {
         lookupRows = await chat.lookupRows()
     }
 
+    private func cancelFindTasks() {
+        findLoadTask?.cancel()
+        findQueryTask?.cancel()
+        findScrollTask?.cancel()
+    }
+
     private func stopFinding() {
+        cancelFindTasks()
         withAnimation(Ink.Motion.settle) { finding = false }
         findText = ""
         findAt = 0
@@ -1546,9 +1551,31 @@ struct ChatPage: View {
     }
 
     private func updateFindHits() {
-        hits = findHits()
-        findAt = max(hits.count - 1, 0)
-        if !hits.isEmpty { showHit(0) }
+        findQueryTask?.cancel()
+        findScrollTask?.cancel()
+        hits = []
+        findAt = 0
+        let wanted = findText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty, !lookupRows.isEmpty else { return }
+        let rows = lookupRows
+        findQueryTask = Task {
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            let search = Task.detached(priority: .userInitiated) {
+                var result: [String] = []
+                for row in rows {
+                    if Task.isCancelled { return [] as [String] }
+                    if (row.kind == .user || row.kind == .bot), row.text.localizedCaseInsensitiveContains(wanted) {
+                        result.append(row.id)
+                    }
+                }
+                return result
+            }
+            let found = await withTaskCancellationHandler { await search.value } onCancel: { search.cancel() }
+            guard !Task.isCancelled, finding else { return }
+            hits = found
+            findAt = max(found.count - 1, 0)
+            if !found.isEmpty { showHit(0) }
+        }
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1560,8 +1587,10 @@ struct ChatPage: View {
         reveal(target)
         following = false
         Haptics.tick(0.4)
-        Task { @MainActor in
+        findScrollTask?.cancel()
+        findScrollTask = Task { @MainActor in
             await Task.yield()
+            guard !Task.isCancelled, finding else { return }
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
         }
     }
