@@ -729,6 +729,17 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
+    func loadHistory(_ key: String) async -> [Entry] {
+        if let kept = entries[key] { return kept }
+        guard keeping else { return [] }
+        let loaded = await Task.detached(priority: .userInitiated) {
+            Disk.load([Entry].self, Disk.chatFile(key)) ?? []
+        }.value
+        if let newer = entries[key] { return newer }
+        if !Task.isCancelled { entries[key] = loaded }
+        return loaded
+    }
+
     // MARK: Archive
 
     /// Conversations put away from the desk's list. Speaking in one brings it back.
@@ -1573,12 +1584,17 @@ final class TeamModel: ObservableObject {
             return false
         }
         let endpoint = found.endpoint
-        guard let apiKey = apiKey(for: endpoint.id), !apiKey.isEmpty else {
+        guard let apiKey = await Vault.readString("key-\(endpoint.id)"), !apiKey.isEmpty else {
             fail(key, "\(endpoint.name) 的密钥找不到了\n到调弦里给它换一次密钥。", next: .tuning)
             return false
         }
         let traits = endpoint.traits(found.model)
-        let messages = context(for: key, bot: bot, room: room, vision: traits.sees)
+        let context = context(for: key, bot: bot, room: room, vision: traits.sees)
+        let messages = await Task.detached(priority: .userInitiated) {
+            _ = SkillShelf.enabled
+            return context.resolvedMessages()
+        }.value
+        guard !Task.isCancelled else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
@@ -1819,20 +1835,45 @@ final class TeamModel: ObservableObject {
         }
     }
 
+    private struct RequestContext: Sendable {
+        var messages: [Message] = []
+        var photos: [Int: [String]] = [:]
+
+        func resolvedMessages() -> [Message] {
+            var result = messages
+            for (index, names) in photos {
+                let readable = names.compactMap { Disk.sendablePhoto($0) }
+                result[index].images = readable.map { ImagePart(data: $0) }
+                let lost = names.count - readable.count
+                if lost > 0 { result[index].text += "\n［有 \(lost) 张图片读不了，已经略过］" }
+            }
+            return Conversation.paired(result)
+        }
+
+        func estimatedTokens(echoes: Bool) -> Int {
+            let text = Conversation.paired(messages).reduce(0) { total, message in
+                total + Tokens.estimate(message.text) + message.images.count * Tokens.perImage
+                    + message.toolCalls.reduce(0) { $0 + Tokens.estimate($1.name + $1.arguments) }
+                    + (echoes ? Tokens.estimate(message.reasoning ?? "") : 0)
+            }
+            return text + photos.values.reduce(0) { $0 + $1.count * Tokens.perImage }
+        }
+    }
+
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
-    private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> [Message] {
+    private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
         let all = live(key).filter { $0.note != true }
         let start = Conversation.windowStart(all.map(\.message), maxChars: Pref.contextChars, maxCount: Pref.contextCount)
         let recent = Array(all[start...])
         let photoEntries = Set(recent.filter { !$0.photos.isEmpty }.suffix(3).map(\.id))
-        var messages: [Message] = []
+        var context = RequestContext()
         for entry in recent {
             var message = entry.message
             if room != nil {
                 if message.role == .assistant, entry.speaker != bot.id {
                     guard !message.text.isEmpty else { continue }
                     let name = bots.first { $0.id == entry.speaker }?.name ?? "另一个 Bot"
-                    messages.append(.user("【\(name)】\(message.text)"))
+                    context.messages.append(.user("【\(name)】\(message.text)"))
                     continue
                 }
                 if message.role == .tool, entry.speaker != bot.id { continue }
@@ -1840,20 +1881,15 @@ final class TeamModel: ObservableObject {
             }
             if !entry.photos.isEmpty, message.role != .tool {
                 if vision, photoEntries.contains(entry.id) {
-                    // A picture that cannot be read (gone, broken, a format the service refuses) becomes a line of
-                    // text, so it does not make every later message fail (Open Minis does the same).
-                    let readable = entry.photos.compactMap { Disk.sendablePhoto($0) }
-                    message.images = readable.map { ImagePart(data: $0) }
-                    let lost = entry.photos.count - readable.count
-                    if lost > 0 { message.text += "\n［有 \(lost) 张图片读不了，已经略过］" }
+                    context.photos[context.messages.count] = entry.photos
                 } else {
                     let ids = entry.photos.joined(separator: "、")
                     message.text += "\n［发了 \(entry.photos.count) 张图片，编号 \(ids)" + (vision ? "，已经看过" : "；你现在用的模型看不了图，要读图上的字就用 photo_text") + "］"
                 }
             }
-            messages.append(message)
+            context.messages.append(message)
         }
-        return Self.paired(messages)
+        return context
     }
 
     /// Every tool call gets its answer, even one cut off when a turn was stopped.
@@ -2044,7 +2080,7 @@ final class TeamModel: ObservableObject {
     // MARK: 用量
 
     /// About how big the next request will be, by part, and how much of the model's window that is.
-    struct ContextEstimate: Equatable {
+    struct ContextEstimate: Equatable, Sendable {
         var system = 0
         var tools = 0
         var messages = 0
@@ -2074,27 +2110,33 @@ final class TeamModel: ObservableObject {
     /// The model service a chat talks to.
     func chatEndpoint(_ key: String) -> Endpoint? { speaker(of: key)?.found?.endpoint }
 
-    func contextEstimate(_ key: String) -> ContextEstimate {
+    func contextEstimate(_ key: String) async -> ContextEstimate {
+        _ = await loadHistory(key)
+        guard !Task.isCancelled else { return ContextEstimate() }
+        await Task.detached(priority: .utility) { _ = SkillShelf.enabled }.value
         var estimate = ContextEstimate()
-        guard let who = speaker(of: key) else { return estimate }
+        guard !Task.isCancelled, let who = speaker(of: key) else { return estimate }
         let (bot, room, found) = (who.bot, who.room, who.found)
         let traits = found.map { $0.endpoint.traits($0.model) }
         let vision = traits?.sees ?? false
         let echoes = found?.endpoint.thinkingStyle.echoesReasoning ?? false
         estimate.model = found?.model ?? ""
         estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
-        estimate.system = Tokens.estimate(system(for: bot, room: room) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine)
-        estimate.tools = (traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision)).reduce(0) { total, tool in
-            let spec = tool.spec
-            let schema = (try? JSONEncoder().encode(spec.parameters)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-            return total + Tokens.estimate(spec.name + spec.description + schema)
-        }
-        estimate.messages = context(for: key, bot: bot, room: room, vision: vision).reduce(0) { total, message in
-            total + Tokens.estimate(message.text) + message.images.count * Tokens.perImage
-                + message.toolCalls.reduce(0) { $0 + Tokens.estimate($1.name + $1.arguments) }
-                + (echoes ? Tokens.estimate(message.reasoning ?? "") : 0)
-        }
-        return estimate
+        let prompt = system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue))
+            + summaryBlock(key) + offBlock(key) + place(of: key).promptLine
+        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision).map(\.spec)
+        let context = context(for: key, bot: bot, room: room, vision: vision)
+        let base = estimate
+        return await Task.detached(priority: .utility) {
+            var estimate = base
+            estimate.system = Tokens.estimate(prompt)
+            estimate.tools = specs.reduce(0) { total, spec in
+                let schema = (try? JSONEncoder().encode(spec.parameters)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+                return total + Tokens.estimate(spec.name + spec.description + schema)
+            }
+            estimate.messages = context.estimatedTokens(echoes: echoes)
+            return estimate
+        }.value
     }
 
     /// What is left on the account of `endpoint`, for the services that tell (DeepSeek, Moonshot, SiliconFlow, OpenRouter).

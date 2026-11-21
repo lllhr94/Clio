@@ -99,6 +99,7 @@ final class ChatModel {
 
     private let team: TeamModel
     private var feed: UUID?
+    private var opening: Task<Void, Never>?
     private var demoReply: Task<Void, Never>?
     /// How many kept messages are on screen.
     private var limit = 160
@@ -141,18 +142,26 @@ final class ChatModel {
     }
 
     func open() {
-        guard feed == nil else { return }
+        guard feed == nil, opening == nil else { return }
         if demo {
             if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
             return
         }
-        feed = team.listen(key) { [weak self] event in self?.hear(event) }
-        lines = build(team.history(key))
-        loaded = true
+        opening = Task { [weak self] in
+            guard let self else { return }
+            let history = await team.loadHistory(key)
+            guard !Task.isCancelled else { return }
+            feed = team.listen(key) { [weak self] event in self?.hear(event) }
+            lines = build(history)
+            loaded = true
+            opening = nil
+        }
     }
 
     func close() {
+        opening?.cancel()
+        opening = nil
         if let feed { team.unlisten(feed) }
         feed = nil
         browsingHistory = false
@@ -204,7 +213,7 @@ final class ChatModel {
 
     /// A read-only lookup snapshot. It must never enlarge the window used by live updates.
     func lookupRows() async -> [ChatLine] {
-        let history = team.history(key)
+        let history = await team.loadHistory(key)
         return await Task.detached(priority: .userInitiated) {
             Self.buildRows(history[...], working: false, running: nil)
         }.value

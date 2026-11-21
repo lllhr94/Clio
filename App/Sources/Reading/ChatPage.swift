@@ -246,7 +246,8 @@ struct ChatPage: View {
         LazyVStack(spacing: 0) {
             // Keep distant replies unmounted when the keyboard, stream or window size changes.
             LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                if chat.lines.isEmpty && !chat.hasStreaming { empty }
+                if !chat.loaded { ProgressView().frame(maxWidth: .infinity) }
+                else if chat.lines.isEmpty && !chat.hasStreaming { empty }
                 if historyPage == nil, chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
@@ -464,8 +465,7 @@ struct ChatPage: View {
     /// checks each one on its own instead of giving up on one long chain.
     private var composerBar: some View {
         composerWatched
-        .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
-        .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
+        .sheet(isPresented: $usageOpen) {
             UsageSheet(team: team, key: chat.key)
                 .presentationDetents([.medium, .large])
         }
@@ -499,9 +499,16 @@ struct ChatPage: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
         .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
-        .task { context = team.contextEstimate(chat.key) }
-        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
-        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
+        .task(id: estimateTrigger) {
+            guard chat.loaded, !working else { return }
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            let estimate = await team.contextEstimate(chat.key)
+            if !Task.isCancelled { context = estimate }
+        }
+    }
+
+    private var estimateTrigger: String {
+        "\(chat.loaded)|\(working)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(usageOpen)"
     }
 
     private var dockedForm: Asker.Form? {
