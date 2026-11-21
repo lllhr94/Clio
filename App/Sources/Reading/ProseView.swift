@@ -256,6 +256,10 @@ private struct CodeBlock: View {
     let text: String
     @State private var copied = false
     @State private var unfolded = false
+    @State private var contentWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+    /// A line is wider than the block: only then may it slide.
+    private var overflows: Bool { boxWidth > 0 && contentWidth > boxWidth + 1 }
 
     private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
     /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
@@ -304,14 +308,29 @@ private struct CodeBlock: View {
             .padding(.trailing, Ink.Space.xs)
             .frame(height: 34)
             Rectangle().fill(Ink.rule).frame(height: 0.5)
-            // Long lines wrap inside the block, as Open Minis does: nothing to slide sideways; the copy button copies them whole.
-            Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
-                .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
-                .font(Ink.code)
-                .lineSpacing(Pref.size * 0.3)
-                .padding(Ink.Space.l)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+            // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
+            // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
+            // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
+            ScrollView(.horizontal) {
+                Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
+                    .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
+                    .font(Ink.code)
+                    .lineSpacing(Pref.size * 0.3)
+                    .padding(Ink.Space.l)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+            }
+            .scrollIndicators(.hidden)
+            .scrollDisabled(!overflows)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+            .overlay(alignment: .trailing) {
+                if overflows {
+                    LinearGradient(colors: [Ink.mine.opacity(0), Ink.mine], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: Ink.Space.xl)
+                        .allowsHitTesting(false)
+                }
+            }
             if folds {
                 Button {
                     Haptics.tick(0.4)
