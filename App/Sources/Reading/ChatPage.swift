@@ -54,6 +54,15 @@ struct ChatPage: View {
     @State private var picking: ChatLine?
     /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
     @State private var jumpedTo: String?
+    @State private var jumpVisible = false
+    @State private var hideJumps: Task<Void, Never>?
+    @State private var viewport = ChatViewport()
+    @State private var selecting: Set<UUID> = []
+    @State private var sharing: ShareFile?
+    @State private var terminalOpen = false
+    @State private var chatSkillsOpen = false
+    @State private var chatConnectorsOpen = false
+    @State private var clearingChat = false
     /// The conversation is moving under the reader's finger or settling after it.
     @State private var scrolling = false
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
@@ -238,16 +247,19 @@ struct ChatPage: View {
                 if chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
-                ForEach(chat.lines.suffix(shownCount)) { line in
-                    turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
-                        // A turn starts with what you said: more room above it than between the parts of a reply.
-                        .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
-                        .id(line.id)
-                        // Only what just arrived rises into place; history loaded above stays still.
-                        .transition(chat.lines.suffix(2).contains(where: { $0.id == line.id })
-                                    ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
-                                    : .identity)
+                LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
+                    ForEach(chat.lines.suffix(shownCount)) { line in
+                        turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
+                            // A turn starts with what you said: more room above it than between the parts of a reply.
+                            .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
+                            .id(line.id)
+                            // Only what just arrived rises into place; history loaded above stays still.
+                            .transition(chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                                        ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
+                                        : .identity)
+                    }
                 }
+                .scrollTargetLayout()
                 if team.compressing.contains(chat.key) {
                     // Said once, quietly: it is happening behind, and you can go on talking.
                     Label("正在后台整理较早的聊天，不耽误你接着聊", systemImage: "text.append")
@@ -307,6 +319,8 @@ struct ChatPage: View {
             ScrollView {
                 conversationContent
             }
+            .environment(\.chatSelectionChanged, selectionChanged)
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
@@ -325,7 +339,7 @@ struct ChatPage: View {
                 if following { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                Self.below(geometry) > 320
+                Self.below(geometry) >= 80
             } action: { _, far in
                 withAnimation(Ink.Motion.settle) { farFromEnd = far }
             }
@@ -333,7 +347,7 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top < 240
             } action: { _, nearTop in
-                if nearTop, scrolling { loadEarlier() }
+                if nearTop, scrolling, selecting.isEmpty { loadEarlier() }
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
@@ -343,9 +357,15 @@ struct ChatPage: View {
                     Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
                 }
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
-                if phase == .interacting { following = false }
+                if phase == .interacting {
+                    following = false
+                    jumpedTo = nil
+                    hideJumps?.cancel()
+                    jumpVisible = true
+                }
                 if phase == .idle, old != .idle {
-                    following = Self.below(context.geometry) < 80
+                    following = selecting.isEmpty && Self.below(context.geometry) < 80
+                    if old == .interacting || old == .decelerating { lingerJumpButtons() }
                 }
             }
             .scrollIndicators(.hidden)
@@ -556,6 +576,8 @@ struct ChatPage: View {
             draftState.flush()
             chat.close()
             team.markSeen(chat.key)
+            hideJumps?.cancel()
+            selecting.removeAll()
             if dictation.listening { dictation.stop() }
         }
         .sheet(item: $noting) { note in
@@ -580,6 +602,19 @@ struct ChatPage: View {
         .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) }
         .sheet(isPresented: $careOpen) { CarePage(team: team) }
         .sheet(isPresented: $filesOpen) { StudyPage() }
+        .sheet(item: $sharing) { file in ChatShareSheet(url: file.url) }
+        .fullScreenCover(isPresented: $terminalOpen) { InkstonePage() }
+        .sheet(isPresented: $chatSkillsOpen) { SkillsPage() }
+        .sheet(isPresented: $chatConnectorsOpen) { ConnectorsPage() }
+        .confirmationDialog(L.t("chat.clearConfirm"), isPresented: $clearingChat, titleVisibility: .visible) {
+            Button(L.t("actions.clear"), role: .destructive) {
+                team.clearChat(chat.key)
+                jumpedTo = nil
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("errors.cannotUndo"))
+        }
         .sheet(isPresented: $detailOpen, onDismiss: {
             // Open what was asked for from the detail page once it is out of the way.
             if afterDetail == "card" { cardOpen = true }
@@ -717,6 +752,8 @@ struct ChatPage: View {
         }
     }
 
+    private struct ShareFile: Identifiable { let url: URL; var id: URL { url } }
+
     private struct Viewing: Identifiable { let id: String }
     private struct Noting: Identifiable { let id: String; let text: String }
 
@@ -827,70 +864,87 @@ struct ChatPage: View {
             typing = false
             detailOpen = true
         }
-        .contextMenu {
-            if working {
-                // A long job, phone set down: a black screen with just the step and the time, so it neither sleeps nor burns.
-                Button(L.t("alwaysOn.open"), systemImage: "moon.stars") { AlwaysOn.show(chat: chat.key) }
-            }
-            Button(L.t("chat.outline"), systemImage: "list.bullet.indent") {
-                Task {
-                    await loadEverything()
-                    outlinePairs = outline
-                    outlining = true
-                }
-            }
-            Button("在对话里找", systemImage: "magnifyingglass") { startFinding() }
-            Button("重命名对话", systemImage: "pencil") {
-                renameText = team.title(of: chat.key) ?? ""
-                renaming = true
-            }
-            if !isRoom { Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardOpen = true } }
-            if PetLibrary.shared.shown {
-                Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
-                    withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
-                }
-            } else {
-                Button("让\(L.t("nav.pet"))出来", systemImage: "eye") {
-                    withAnimation(Ink.Motion.settle) {
-                        PetLibrary.shared.hiddenUntil = nil
-                        PetLibrary.shared.visible = true
-                    }
-                }
-            }
-        }
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("点一下看对话详情")
     }
 
     private var headerControls: some View {
-        HStack(spacing: 0) {
-            RoamButton(browser: team.browser, bare: true) { open in
+        HStack(spacing: Ink.Space.xs) {
+            ChatBrowserIndicator(browser: team.browser) {
                 typing = false
-                roaming = open
+                roaming = true
             }
-            // The files the companion works on: 书案 (斗室 sees the same folder as /root/desk).
-            headerTool("folder", Words.t("书案里的文件")) { filesOpen = true }
-            headerTool("book.pages", Words.t("絮语页")) { leafing = true }
+            Menu {
+                Section {
+                    chatMenuButton("chat.newConversation", icon: "square.and.pencil") { team.turnLeaf(chat.key) }
+                    chatMenuButton("actions.share", icon: "square.and.arrow.up") {
+                        let title = team.title(of: chat.key) ?? bot.name
+                        sharing = ShareFile(url: team.exportChat(chat.key, title: title))
+                    }
+                    chatMenuButton("chat.find", icon: "magnifyingglass") { startFinding() }
+                }
+                Section {
+                    chatMenuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
+                        Task { _ = try? await team.compress(chat.key) }
+                    }
+                    Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {
+                        typing = false
+                        clearingChat = true
+                    }
+                }
+                Section {
+                    chatMenuButton("nav.terminal", icon: "terminal") { terminalOpen = true }
+                    chatMenuButton("nav.browser", icon: "safari") { roaming = true }
+                    chatMenuButton("chat.files", icon: "folder") { filesOpen = true }
+                }
+                Section {
+                    chatMenuButton("agent.skills", icon: "books.vertical") { chatSkillsOpen = true }
+                    chatMenuButton("chat.mcp", icon: "point.3.connected.trianglepath.dotted") { chatConnectorsOpen = true }
+                }
+                Section {
+                    chatMenuButton("chat.outline", icon: "list.bullet.indent") {
+                        Task {
+                            await loadEverything()
+                            outlinePairs = outline
+                            outlining = true
+                        }
+                    }
+                    chatMenuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
+                    chatMenuButton("chat.rename", icon: "pencil") {
+                        renameText = team.title(of: chat.key) ?? ""
+                        renaming = true
+                    }
+                    if !isRoom { chatMenuButton("chat.openCard", icon: "person.text.rectangle") { cardOpen = true } }
+                    if working { chatMenuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) } }
+                    if PetLibrary.shared.shown {
+                        chatMenuButton("pet.hideHour", icon: "eye.slash") {
+                            withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
+                        }
+                    } else {
+                        chatMenuButton("pet.showNow", icon: "eye") {
+                            withAnimation(Ink.Motion.settle) {
+                                PetLibrary.shared.hiddenUntil = nil
+                                PetLibrary.shared.visible = true
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: Ink.Size.body, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                    .glassFace(in: Circle())
+            }
+            .accessibilityLabel(L.t("chat.menu"))
         }
-        .padding(.horizontal, Ink.Space.xs)
-        .glassBacking(in: Capsule())
-        .animation(Ink.Motion.settle, value: team.browser.used)
     }
 
-    private func headerTool(_ symbol: String, _ label: String, _ run: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.light()
+    private func chatMenuButton(_ key: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(L.t(key), systemImage: icon) {
             typing = false
-            run()
-        } label: {
-            Image(systemName: symbol)
-                .font(.system(size: Ink.Size.body, weight: .medium))
-                .foregroundStyle(Ink.ink)
-                .frame(width: Ink.Bar.height * 0.9, height: Ink.Bar.height)
-                .contentShape(Rectangle())
+            action()
         }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(label)
     }
 
     // MARK: Composer chips
@@ -2156,45 +2210,59 @@ struct ChatPage: View {
         .animation(petDockMotion, value: waiting?.id)
         .task(id: suggestionSource) { await loadSuggestions(suggestionSource) }
         .overlay(alignment: .top) {
-            // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
-            HStack(spacing: Ink.Space.m) {
-                if showsBackToMine { backToMine }
-                if farFromEnd && !following { backToEnd }
+            HStack(spacing: Ink.Space.s) {
+                jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
+                    .opacity(jumpVisible ? 1 : 0)
+                    .allowsHitTesting(jumpVisible)
+                    .accessibilityHidden(!jumpVisible)
+                jumpButton("arrow.down", title: "chat.nextQuestion", earlier: false)
+                    .opacity(jumpVisible ? 1 : 0)
+                    .allowsHitTesting(jumpVisible)
+                    .accessibilityHidden(!jumpVisible)
+                backToEnd
+                    .opacity(farFromEnd && !following ? 1 : 0)
+                    .allowsHitTesting(farFromEnd && !following)
+                    .accessibilityHidden(!farFromEnd || following)
             }
-            .offset(y: -46)
-            .animation(Ink.Motion.settle, value: showsBackToMine)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .offset(y: -Ink.Bar.height)
+            .animation(Ink.Motion.settle, value: jumpVisible)
             .animation(Ink.Motion.settle, value: farFromEnd && !following)
         }
     }
 
-    /// 回到我上一句: shown when you are reading back, or under a long reply; each tap goes one of your messages further up.
-    private var showsBackToMine: Bool {
-        guard chat.lines.contains(where: { $0.kind == .user }) else { return false }
-        if farFromEnd && !following { return true }
-        guard let last = chat.lines.last, last.kind == .bot else { return false }
-        return last.text.count > 600 || chat.lines.suffix(6).contains(where: { $0.kind == .steps })
+    private func lingerJumpButtons() {
+        hideJumps?.cancel()
+        hideJumps = Task {
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            jumpVisible = false
+        }
     }
 
-    private var backToMine: some View {
+    private func jumpButton(_ symbol: String, title: String, earlier: Bool) -> some View {
         Button {
+            guard let target = question(earlier: earlier) else { return }
             Haptics.light()
-            let mine = chat.lines.suffix(shownCount).filter { $0.kind == .user }.map(\.id)
-            let target: String?
-            if let jumped = jumpedTo, let index = mine.firstIndex(of: jumped) {
-                target = index > 0 ? mine[index - 1] : mine.first
-            } else {
-                target = mine.last
-            }
-            guard let target else { return }
             following = false
             jumpedTo = target
+            lingerJumpButtons()
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
         } label: {
-            floating("arrow.up")
+            floating(symbol)
         }
         .buttonStyle(PressStyle())
-        .transition(.scale(scale: 0.6).combined(with: .opacity))
-        .accessibilityLabel("回到我上一句")
+        .accessibilityLabel(L.t(title))
+    }
+
+    private func question(earlier: Bool) -> String? {
+        let rows = chat.lines.suffix(shownCount)
+        let visible = Set(viewport.ids)
+        let center = jumpedTo.flatMap { id in rows.firstIndex { $0.id == id } }
+            ?? rows.firstIndex { visible.contains($0.id) }
+        guard let center else { return earlier ? rows.last(where: { $0.kind == .user })?.id : nil }
+        if earlier { return rows[..<center].last(where: { $0.kind == .user })?.id }
+        let after = rows.index(after: center)
+        return rows[after...].first(where: { $0.kind == .user })?.id
     }
 
     private func floating(_ symbol: String) -> some View {
@@ -2219,7 +2287,7 @@ struct ChatPage: View {
                 }
                 .buttonStyle(PressStyle())
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
-                .accessibilityLabel("回到最新")
+                .accessibilityLabel(L.t("chat.latest"))
     }
 
     private static let end = "foot-of-page"
@@ -2229,9 +2297,18 @@ struct ChatPage: View {
         geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY
     }
 
+    private func selectionChanged(_ id: UUID, _ started: Bool) {
+        if started {
+            selecting.insert(id)
+            followPending?.cancel()
+        } else {
+            selecting.remove(id)
+        }
+    }
+
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     private func followToEnd(settle: Bool = true) {
-        guard following else { return }
+        guard following, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
@@ -2243,7 +2320,7 @@ struct ChatPage: View {
     @State private var followPending: Task<Void, Never>?
 
     private func toEnd(animated: Bool = false) {
-        guard let scroller else { return }
+        guard selecting.isEmpty, let scroller else { return }
         if animated {
             withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
         } else {

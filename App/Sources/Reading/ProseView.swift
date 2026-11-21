@@ -882,6 +882,17 @@ enum ProseWords {
     }
 }
 
+private struct ChatSelectionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (UUID, Bool) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var chatSelectionChanged: (@MainActor (UUID, Bool) -> Void)? {
+        get { self[ChatSelectionKey.self] }
+        set { self[ChatSelectionKey.self] = newValue }
+    }
+}
+
 /// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
 private struct ProseText: UIViewRepresentable {
     let attributed: NSAttributedString
@@ -898,6 +909,7 @@ private struct ProseText: UIViewRepresentable {
 
     @MainActor private static var heights: [Length: CGFloat] = [:]
     @Environment(\.openURL) private var openURL
+    @Environment(\.chatSelectionChanged) private var selectionChanged
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -918,6 +930,7 @@ private struct ProseText: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.open = openURL
+        context.coordinator.selectionChanged = selectionChanged
         // Compared by its words only: the colours inside are made fresh on every redraw and never compare equal, so the
         // old check set the text again each time the chat redrew, and that wiped a selection the moment it was made.
         // A change of face, size or light/dark gives the whole block a new identity (see `SelectableProse`), so it is
@@ -936,8 +949,31 @@ private struct ProseText: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
+    static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) {
+        coordinator.publishSelection(false)
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         var open: OpenURLAction?
+        var selectionChanged: (@MainActor (UUID, Bool) -> Void)?
+        private let id = UUID()
+        private var selected = false
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            publishSelection(textView.selectedRange.length > 0)
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            publishSelection(false)
+        }
+
+        func publishSelection(_ active: Bool) {
+            guard active != selected else { return }
+            selected = active
+            let callback = selectionChanged
+            let id = self.id
+            DispatchQueue.main.async { callback?(id, active) }
+        }
 
         /// A tapped link goes where the rest of Clio sends links (the in-app browser, 书案 files …).
         func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
