@@ -9,7 +9,7 @@ struct FieldTitle: View {
     var note: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
             Text(text).font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.inkSoft)
                 .accessibilityAddTraits(.isHeader)
             if let note { Text(note).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint) }
