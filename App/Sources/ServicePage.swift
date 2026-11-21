@@ -600,7 +600,7 @@ extension TeamModel {
     func probeSight(_ endpoint: Endpoint, model: String) async -> (sees: Bool?, note: String) {
         let size = CGSize(width: 64, height: 64)
         let data = UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.9) { context in
-            UIColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1).setFill()
+            Ink.Artwork.badgeRed.setFill()
             context.fill(CGRect(origin: .zero, size: size))
         }
         do {
