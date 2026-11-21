@@ -72,7 +72,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 - **颜色**只用 `Ink`：`ink / inkSoft / inkFaint / paper / paperRaised / rule / accent / accentWash / ok / warn / stop`；朱红 `seal / sealInk` 只给朱印用。
 - **Clio 的标志元素**（主人定的，别再加别的）：侧边栏顶上的字标 `Clio`（`Ink.wordmark`，Hoefler Text 斜体）加朱印 `ClioSeal`（白字「克」，马善政毛笔字）；批准单落款盖 `ClioSeal`；空对话的题词 `Inscription`。题词、引导页标题、批准单 / 填表的标题用 `Ink.mark`，**按钮不用**。
 - **字体可以换，别写死**：正文用 `Ink.body` / `Ink.reading` / `Ink.serif`，标题和题词用 `Ink.mark`，它们按「外观 › 字体」（`FontPage`）里选的走（`Pref.face`、`Pref.mark`，存在 `Theme`）。可选：书卷、苹方、圆体、宋体、楷体（后两种是苹果的，`FontShelf` 第一次用时下载）、文楷（内置 Clio Kai）。代码、命令、路径、模型名、终端一律 `Ink.mono` / `Ink.uiMono`（Maple Mono 或系统等宽），**不要写 `design: .monospaced`**。不要直接写 `.custom("某字体")`，例外只有字标 `Ink.wordmark` 和朱印 `ClioSeal`。
-- **对齐、紧凑**（主人定）：同一列的东西左边对齐、数字和等宽内容按列对齐；行距、段距、卡片内边距宁紧勿松，不留无意义的空行和空白（代码块首尾空行去掉，段距约 0.65 倍字号，行高按「外观 › 字号与行距」的倍数走）。
+- **代码块、输出块要对齐、紧凑**（主人定）：等宽字按列对齐，行距紧（约 0.12 倍字号），上下内边距用 `Ink.Space.m`，首尾空行去掉。正文行高按「外观 › 字号与行距」的倍数走。
 - 浮在内容上的顶栏、输入框要垫纸色渐隐（见 `ChatPage` 的 header 和 composer），不要用系统的 hard scroll edge（会出现带横线的实心条）。
 
 ## 文字：称谓（日常 / 书卷）

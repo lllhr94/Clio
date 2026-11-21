@@ -119,7 +119,7 @@ private struct BlockView: View {
             }
         case .list(let items):
             // Items closer together than paragraphs, so a list reads as one thing.
-            VStack(alignment: .leading, spacing: Pref.size * 0.35) {
+            VStack(alignment: .leading, spacing: Pref.size * 0.25) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
                     HStack(alignment: .firstTextBaseline, spacing: Pref.size * 0.45) {
@@ -315,8 +315,8 @@ private struct CodeBlock: View {
             }
             .padding(.leading, Ink.Space.l)
             .padding(.trailing, Ink.Space.xs)
-            .frame(height: 34)
-            Rectangle().fill(Ink.rule).frame(height: 0.5)
+            // A low label row with no rule under it, as Open Minis sets it (28 points): the code starts right below.
+            .frame(height: 28 * UIScale.factor)
             // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
             // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
             // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
@@ -324,8 +324,11 @@ private struct CodeBlock: View {
                 Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
                     .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                     .font(Ink.code)
-                    .lineSpacing(Pref.size * 0.3)
-                    .padding(Ink.Space.l)
+                    // Close lines, as in a terminal: rows of output and code read as columns.
+                    .lineSpacing(4 * UIScale.factor)
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.top, Ink.Space.xs)
+                    .padding(.bottom, Ink.Space.m)
                     .fixedSize(horizontal: true, vertical: false)
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             }
@@ -838,7 +841,7 @@ enum ProseWords {
                 let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
                 let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
                 let last = index == items.count - 1
-                let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.35, indent: indent, hanging: hang)
+                let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.25, indent: indent, hanging: hang)
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
                     .font: Ink.uiFace(Pref.size), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
                 ]))
