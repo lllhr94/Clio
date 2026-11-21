@@ -423,9 +423,9 @@ struct PlacePicker: View {
                     } label: {
                         HStack {
                             Label {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(item.0.title).foregroundStyle(Ink.ink)
-                                    Text(item.1).font(.footnote).foregroundStyle(Ink.inkSoft)
+                                    Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
                             } icon: {
                                 Image(systemName: item.0.symbol).foregroundStyle(Ink.accent)
