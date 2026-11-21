@@ -8,20 +8,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TONE = Path("App/Sources/Tone")
 INK = Path("App/Sources/Design/Ink.swift")
+READING = Path("App/Sources/Reading")
+# Concurrent chat and pet work already owns its typography. The established
+# color, font-family and monospaced checks still apply to those files.
+SIZE_HANDOFF = {READING / "ChatPage.swift", READING / "ProseView.swift"}
 EXCEPTIONS = {
     "custom": {INK, Path("App/Sources/Design/Kit.swift")},
-    "color": {INK, Path("App/Sources/Reading/NoteSheet.swift"), Path("App/Sources/Photos.swift")},
+    "color": {INK},
 }
 MESSAGES = {
     "mono": "Use Ink.mono or Ink.uiMono for monospaced text",
     "custom": "Choose fonts through Ink",
     "color": "Use a color from Ink",
+    "size": "Choose one of the five Ink.Size values for UI text",
 }
 SWIFT_PATTERNS = re.compile(
     r'//[^\n]*|/\*[\s\S]*?\*/'
     r'|(?P<mono>\bdesign\s*:\s*\.\s*monospaced\b)'
     r'|(?P<custom>\.\s*custom\s*\(\s*(?=#*"))'
-    r'|(?P<color>\bColor\s*\(\s*(?:red|hex)\s*:)'
+    r'|(?P<color>\b(?:UI)?Color\s*\(\s*(?:red|white|hue|hex)\s*:)'
+    r'|(?P<size>(?:\.\s*system\s*\(\s*size\s*:\s*|\bInk\s*\.\s*(?:serif|mark|mono|uiMono)\s*\(\s*)[0-9])'
     r'|(?P<raw>#+)(?:"""[\s\S]*?"""|"[^\n]*?")(?P=raw)'
     r'|"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"'
 )
@@ -81,6 +87,8 @@ def swift_sources():
         text = full_path.read_text(encoding="utf-8")
         for match in SWIFT_PATTERNS.finditer(text):
             rule = match.lastgroup
+            if rule == "size" and (path in SIZE_HANDOFF or path.is_relative_to("App/Sources/Pet")):
+                continue
             if rule in MESSAGES and path not in EXCEPTIONS.get(rule, ()):
                 yield path, text.count("\n", 0, match.start()) + 1, MESSAGES[rule]
 
