@@ -45,7 +45,7 @@ struct OutfitSheet: View {
                             if chosen.contains(kit.0) { chosen.remove(kit.0) } else { chosen.insert(kit.0) }
                         } label: {
                             HStack {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(kit.0).foregroundStyle(Ink.ink)
                                     Text(kit.2).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                                 }
