@@ -54,37 +54,59 @@ public enum Turns {
     }
 
     /// Where a compression cuts: the index of the first line kept as it is. The cut falls just before a user message,
-    /// so the kept part starts a turn, and leaves at least `keep` real lines (never fewer than 4) after it.
+    /// so the kept part starts a turn, and leaves at least `keep` real lines (never fewer than 4) after it: the cut
+    /// moves earlier to a turn's start, never later past lines the setting says to keep (the review, #18).
     public static func foldCut<S: Said>(_ lines: [S], keep: Int) -> Result<Int, FoldProblem> {
         let real = lines.indices.filter { !lines[$0].isNote }
         let keep = max(4, keep)
         guard real.count > keep + 4 else { return .failure(.tooShort) }
         var cut = real[real.count - keep]
-        while cut < lines.count, !isUserTurn(lines[cut]) { cut += 1 }
-        guard cut < lines.count, cut > 0 else { return .failure(.noBreak) }
+        while cut > 0, !isUserTurn(lines[cut]) { cut -= 1 }
+        guard cut > 0, lines[..<cut].contains(where: { !$0.isNote }) else { return .failure(.noBreak) }
         return .success(cut)
     }
 
-    /// The folded part written out for the digest: 「用户：…」, 「<name>：…」, tools only as a mention; the newest `limit` characters.
-    /// `folded` counts the messages written out.
+    /// Moves a cut earlier, a whole turn at a time, until the part to fold fits in `limit` characters of transcript, so
+    /// everything marked as folded was really read by the model writing the digest. A first turn too long on its own
+    /// is folded anyway, cut short (`transcript` says so).
+    public static func fitCut<S: Said>(_ lines: [S], cut: Int, name: (S) -> String, label: (S) -> String?, limit: Int = 60_000) -> Int {
+        var cut = min(cut, lines.count)
+        var costs = lines[..<cut].map { line in piece(line, name: name, label: label).map { $0.count + 1 } ?? 0 }
+        var total = costs.reduce(0, +)
+        while total > limit {
+            var earlier = cut - 1
+            while earlier > 0, !isUserTurn(lines[earlier]) { earlier -= 1 }
+            guard earlier > 0 else { break }
+            total -= costs[earlier..<cut].reduce(0, +)
+            costs.removeSubrange(earlier..<cut)
+            cut = earlier
+        }
+        return cut
+    }
+
+    /// One line of the transcript, or nil for a line that adds nothing.
+    private static func piece<S: Said>(_ line: S, name: (S) -> String, label: (S) -> String?) -> String? {
+        guard !line.isNote else { return nil }
+        switch line.role {
+        case .user: return "用户：\(line.text)"
+        case .assistant: return line.text.isEmpty ? nil : "\(name(line))：\(line.text)"
+        case .tool: return label(line).map { "（用了工具：\($0)）" }
+        }
+    }
+
+    /// The folded part written out for the digest: 「用户：…」, 「<name>：…」, tools only as a mention. `folded` counts the
+    /// messages written out. Use `fitCut` first so it fits; only a single turn longer than `limit` is cut, and then
+    /// the transcript says so.
     public static func transcript<S: Said>(_ lines: some Collection<S>, name: (S) -> String, label: (S) -> String?, limit: Int = 60_000) -> (text: String, folded: Int) {
         var out: [String] = []
         var folded = 0
-        for line in lines where !line.isNote {
-            switch line.role {
-            case .user:
-                out.append("用户：\(line.text)")
-                folded += 1
-            case .assistant:
-                guard !line.text.isEmpty else { continue }
-                out.append("\(name(line))：\(line.text)")
-                folded += 1
-            case .tool:
-                if let label = label(line) { out.append("（用了工具：\(label)）") }
-            }
+        for line in lines {
+            guard let text = piece(line, name: name, label: label) else { continue }
+            out.append(text)
+            if line.role != .tool { folded += 1 }
         }
         var text = out.joined(separator: "\n")
-        if text.count > limit { text = "……\n" + String(text.suffix(limit)) }
+        if text.count > limit { text = "（下面这一段太长，只留了后半部分）……\n" + String(text.suffix(limit)) }
         return (text, folded)
     }
 

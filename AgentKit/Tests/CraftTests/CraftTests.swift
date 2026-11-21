@@ -597,7 +597,31 @@ final class TurnsTests: XCTestCase {
             lines += [user("u\(turn)"), bot("c\(turn)", ""), tool("t\(turn)"), bot("b\(turn)")]
         }
         guard case .success(let cut) = Turns.foldCut(lines, keep: 5) else { return XCTFail("should fold") }
-        XCTAssertEqual(lines[cut].id, "u6")
+        // Earlier to the turn's start, so at least 5 real lines stay as they are.
+        XCTAssertEqual(lines[cut].id, "u5")
+        XCTAssertGreaterThanOrEqual(lines.count - cut, 5)
+    }
+
+    func testFoldKeepsAtLeastWhatTheSettingSays() {
+        // The review's sample: keep 5, but a long last turn. Cutting later would have kept only 1 line.
+        var lines: [Line] = []
+        for turn in 1...4 { lines += [user("u\(turn)"), bot("b\(turn)")] }
+        lines += [user("u5"), bot("c1", ""), tool("t1"), bot("c2", ""), tool("t2"), bot("b5")]
+        guard case .success(let cut) = Turns.foldCut(lines, keep: 5) else { return XCTFail("should fold") }
+        XCTAssertEqual(lines[cut].id, "u5")
+        XCTAssertGreaterThanOrEqual(lines.count - cut, 5)
+    }
+
+    func testFitCutFoldsOnlyWhatTheDigestReads() {
+        var lines: [Line] = []
+        for turn in 1...6 { lines += [user("u\(turn)", String(repeating: "字", count: 30)), bot("b\(turn)", "好")] }
+        // Folding up to u6 would be about 170 characters; with room for 80 the cut moves back to whole turns.
+        let cut = Turns.fitCut(lines, cut: 10, name: { _ in "旅伴" }, label: { _ in nil }, limit: 80)
+        XCTAssertEqual(lines[cut].role, .user)
+        let written = Turns.transcript(lines[..<cut], name: { _ in "旅伴" }, label: { _ in nil }, limit: 80)
+        XCTAssertLessThanOrEqual(written.text.count, 80)
+        XCTAssertFalse(written.text.contains("太长"))
+        XCTAssertEqual(written.folded, cut)
     }
 
     func testFoldRefusesShortConversations() {
@@ -623,7 +647,7 @@ final class TurnsTests: XCTestCase {
     func testTranscriptKeepsTheNewestPartWhenLong() {
         let lines = [user("u1", String(repeating: "旧", count: 50)), bot("b1", String(repeating: "新", count: 50))]
         let written = Turns.transcript(lines, name: { _ in "旅伴" }, label: { _ in nil }, limit: 20)
-        XCTAssertTrue(written.text.hasPrefix("……\n"))
+        XCTAssertTrue(written.text.hasPrefix("（下面这一段太长，只留了后半部分）……\n"))
         XCTAssertTrue(written.text.hasSuffix(String(repeating: "新", count: 20)))
         XCTAssertFalse(written.text.contains("旧"))
     }

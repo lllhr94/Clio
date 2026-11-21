@@ -115,6 +115,9 @@ final class Asker: ObservableObject {
         /// What the form is for, so a secret saved from it gets a sensible kind.
         var kind: Secrets.Item.Kind = .note
         var site = ""
+        /// The conversation that asked, so its page shows it and stopping it puts it away; nil for the app's own
+        /// questions (a download, say).
+        var chat: String?
 
         /// A short slip with nothing secret is answered right in the conversation; the rest get the full sheet.
         var inline: Bool { kind == .note && fields.count <= 3 && !fields.contains(where: \.secret) }
@@ -123,33 +126,47 @@ final class Asker: ObservableObject {
     /// Filled values by key; nil when the user put the slip away.
     typealias Answer = [String: String]?
 
-    @Published var current: Form?
+    /// The slip on show; others wait their turn behind it.
+    @Published private(set) var current: Form?
     /// A conversation page is showing the current slip inline, so no sheet is needed.
     var inlineSeen = false
-    private var waiting: CheckedContinuation<Answer, Never>?
+    /// Every slip still waiting for the user, in the order asked. Two companions asking at once each get their own
+    /// answer: a new slip no longer pushes out the one before (the review, #21).
+    private var line: [(form: Form, continuation: CheckedContinuation<Answer, Never>)] = []
 
     func ask(_ form: Form) async -> Answer {
-        waiting?.resume(returning: nil)
+        await withCheckedContinuation { continuation in
+            line.append((form, continuation))
+            if current == nil { showNext() }
+        }
+    }
+
+    private func showNext() {
         inlineSeen = false
-        Haptics.tick(0.8)
-        current = form
-        return await withCheckedContinuation { waiting = $0 }
+        current = line.first?.form
+        if current != nil { Haptics.tick(0.8) }
     }
 
-    func answer(_ values: Answer) {
-        let continuation = waiting
-        waiting = nil
-        current = nil
-        continuation?.resume(returning: values)
+    /// Answers one slip by its id; an answer from a slip that is no longer waiting goes nowhere.
+    func answer(_ values: Answer, to id: UUID) {
+        guard let index = line.firstIndex(where: { $0.form.id == id }) else { return }
+        let item = line.remove(at: index)
+        if current?.id == id { showNext() }
+        item.continuation.resume(returning: values)
     }
 
-    func cancel() { answer(nil) }
+    func cancel(_ id: UUID) { answer(nil, to: id) }
+
+    /// Puts away the slips one conversation asked, and only those.
+    func cancel(chat: String) {
+        for id in line.filter({ $0.form.chat == chat }).map(\.form.id) { cancel(id) }
+    }
 }
 
 // MARK: Tools
 
 enum SecretTools {
-    static func all(botName: String) -> [AgentTool] {
+    static func all(botName: String, chat: String) -> [AgentTool] {
         [
             DeskTool(name: "ask_user", description: """
             递一张小笺请用户填写信息：比如地址、账号、日期、选项。用户填好你才拿到结果。
@@ -178,7 +195,7 @@ enum SecretTools {
                 guard !fields.isEmpty else { return ToolOutput("fields 是空的。", isError: true) }
                 let site = arguments["site"]?.string ?? ""
                 let form = Asker.Form(title: arguments["title"]?.string ?? "请填一下", reason: arguments["reason"]?.string ?? "", from: botName,
-                                      fields: fields, kind: site.hasPrefix("http") ? .web : .note, site: site)
+                                      fields: fields, kind: site.hasPrefix("http") ? .web : .note, site: site, chat: chat)
                 guard let values = await Asker.shared.ask(form) else { return ToolOutput("用户把笺收起来了，没有填。", isError: true) }
                 let lines = fields.map { field -> String in
                     let value = values[field.key] ?? ""
@@ -211,13 +228,14 @@ enum SecretTools {
                     fields: [
                         Asker.Field(key: "name", label: "称呼", placeholder: "比如：香港 VPS", value: arguments["name"]?.string ?? ""),
                         Asker.Field(key: "address", label: "地址", placeholder: "域名或 IP", value: arguments["address"]?.string ?? ""),
-                        Asker.Field(key: "port", label: "端口", placeholder: "22", value: arguments["port"]?.number.map { String(Int($0)) } ?? "22"),
+                        Asker.Field(key: "port", label: "端口", placeholder: "22", value: Whole.int(arguments["port"]).map(String.init) ?? "22"),
                         Asker.Field(key: "user", label: "用户名", placeholder: "root", value: arguments["user"]?.string ?? "root"),
                         Asker.Field(key: "auth", label: "登录方式", value: "密码", choices: ["密码", "钥匙"]),
                         Asker.Field(key: "password", label: "密码（用钥匙就留空）", secret: true),
                     ],
                     kind: .ssh,
-                    site: arguments["address"]?.string ?? ""
+                    site: arguments["address"]?.string ?? "",
+                    chat: chat
                 )
                 guard let values = await Asker.shared.ask(form) else { return ToolOutput("用户没有添主机。", isError: true) }
                 let address = (values["address"] ?? "").trimmingCharacters(in: .whitespaces)
@@ -243,15 +261,18 @@ enum SecretTools {
                     "submit": ["type": "boolean"],
                 ],
                 "required": ["ref", "id"],
-            ], label: { "远游：从信匣填入 [\(Int($0["ref"]?.number ?? 0))]" }, approval: { arguments in
+            ], label: { "远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]" }, approval: { arguments in
                 ApprovalAsk(title: "从信匣取出来填进网页", reason: "信匣编号 \(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")")
             }) { arguments in
                 let id = arguments["id"]?.string ?? ""
                 guard let item = await Secrets.shared.item(id) else { return ToolOutput("信匣里没有编号 \(id)。", isError: true) }
                 let wantsUser = arguments["field"]?.string == "user"
                 guard let value = wantsUser ? (item.user.isEmpty ? nil : item.user) : Secrets.secret(item.id) else { return ToolOutput("这一条没存\(wantsUser ? "用户名" : "密码")。", isError: true) }
-                let said = try await RoamTools.browser?.fillSecret(Int(arguments["ref"]?.number ?? 0), text: value, submit: arguments["submit"]?.bool ?? false) ?? "远游还没开。"
-                return ToolOutput(said)
+                guard let ref = Whole.int(arguments["ref"]) else { return ToolOutput("ref 要是 browser_read 给的编号。", isError: true) }
+                let submit = arguments["submit"]?.bool ?? false
+                guard let browser = await RoamTools.browser else { return ToolOutput("远游还没开。", isError: true) }
+                let done = try await browser.fillSecret(ref, text: value, submit: submit, for: chat)
+                return ToolOutput(done)
             },
         ]
     }

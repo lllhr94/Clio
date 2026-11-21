@@ -80,7 +80,7 @@ struct CalendarListTool: AgentTool {
         let organizer = Organizer.shared
         try await organizer.events()
         let start = Calendar.current.startOfDay(for: When.parse(arguments["from"]?.string)?.date ?? Date())
-        let days = max(1, min(62, Int(arguments["days"]?.number ?? 7)))
+        let days = max(1, min(62, (arguments["days"]?.int ?? 7)))
         let end = Calendar.current.date(byAdding: .day, value: days, to: start) ?? start
         let predicate = organizer.store.predicateForEvents(withStart: start, end: end, calendars: nil)
         let events = organizer.store.events(matching: predicate).sorted { $0.startDate < $1.startDate }

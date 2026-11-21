@@ -6,6 +6,8 @@
 
 ## 2026-11-21 交接：接手的人先看这一节
 
+**最新（11-21 深夜）**：0.34 全面审查（`docs/REVIEW-0.34-FULL.md`，32 条）里 Claude 那份已修完，逐条修法在该文件末尾「修复记录」。#22～27、#29～31 交给 Codex（`CODEX-NEXT.md` 第 8 节 C31），等 PR。
+
 **最新（11-21 晚）**：清单看 `docs/PLAN-NEXT.md`（Claude 马上做 / 接下来 / 交给 Codex）；给 Codex 的整份在 `docs/CODEX-NEXT.md`；Open Minis 65 条规则在 `docs/MINIS-RULES.md` 等主人勾选；多平台在 `docs/PLATFORMS.md`；浏览器和云端在 `docs/BROWSER-AND-CLOUD.md`。主人说「暂时先这样」，下一批等主人发话。
 
 **当前状态**

@@ -967,9 +967,9 @@ final class TeamModel: ObservableObject {
     func compress(_ key: String) async throws -> Int {
         guard !compressing.contains(key) else { return 0 }
         let all = Array(live(key))
-        let cut: Int
+        let firstCut: Int
         switch Turns.foldCut(all, keep: Pref.keepRecent) {
-        case .success(let found): cut = found
+        case .success(let found): firstCut = found
         case .failure(let problem): throw TeamError(message: problem.words)
         }
 
@@ -986,9 +986,10 @@ final class TeamModel: ObservableObject {
         defer { compressing.remove(key) }
 
         let crew = bots
-        let (transcript, folded) = Turns.transcript(all[..<cut], name: { entry in
-            entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name
-        }, label: \.label)
+        let speaker = { (entry: Entry) in entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name }
+        // Only what the model will read is marked as folded: a part too long moves the cut earlier.
+        let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
+        let (transcript, folded) = Turns.transcript(all[..<cut], name: speaker, label: \.label)
         let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
         let prompt = """
         \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
@@ -1135,6 +1136,7 @@ final class TeamModel: ObservableObject {
     func turnLeaf(_ key: String) {
         stop(key)
         epochs[key, default: 0] += 1
+        browser.release(key)
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else { return }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
@@ -1393,12 +1395,12 @@ final class TeamModel: ObservableObject {
     }
 
     func stop(_ key: String) {
-        if runs[key] != nil { Asker.shared.cancel() }
+        if runs[key] != nil { Asker.shared.cancel(chat: key) }
         for approval in approvals where approval.chat == key {
             if let waiter = waiters.removeValue(forKey: approval.id) { waiter.resume(returning: false) }
         }
         withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
-        if runs[key] != nil { browser.cancelHandoff() }
+        if runs[key] != nil { browser.cancelHandoff(for: key) }
         runs[key]?.task.cancel()
     }
 
@@ -1407,7 +1409,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
-        SiteBook.shared.clear()
+        SiteBook.shared.clear(key)
         streamed[key] = nil
         pulseSplitters[key] = nil
         var counted = options(key)
@@ -1847,13 +1849,16 @@ final class TeamModel: ObservableObject {
         Task {
             let result = await Snapshots.shared.restore(key, turns: turns)
             noteRestore(key, result)
-            start(key)
+            // Files that did not come back: the user decides whether to go on (the review, #14).
+            if result.failed.isEmpty { start(key) }
         }
     }
 
     private func noteRestore(_ key: String, _ result: (restored: Int, failed: [String])) {
         var words = "把这轮改过的 \(result.restored) 个文件还原了。"
-        if !result.failed.isEmpty { words += "没还原成的：" + result.failed.joined(separator: "、") }
+        if !result.failed.isEmpty {
+            words += "没还原成的：" + result.failed.joined(separator: "、") + "。它们的旧版本还留着，连上后再点一次重答会再试；所以这轮先没重新开始，不管它们也可以直接发一句「继续」。"
+        }
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(words), note: true), to: key)
     }
 
@@ -1875,7 +1880,8 @@ final class TeamModel: ObservableObject {
         Task {
             let result = await Snapshots.shared.restore(key, turns: turns)
             noteRestore(key, result)
-            start(key)
+            // Files that did not come back: the user decides whether to go on (the review, #14).
+            if result.failed.isEmpty { start(key) }
         }
     }
 
@@ -2019,7 +2025,7 @@ final class TeamModel: ObservableObject {
         all.append(LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: key) })
         all += RoutineTools.all(team: self, botId: botId)
         if !SkillShelf.enabled.isEmpty { all.append(UseSkillTool()) }
-        all += RoamTools.all(browser, canSee: canSee)
+        all += RoamTools.all(browser, canSee: canSee, chat: key)
         // The eight workspace tools work wherever this conversation is bound: 书案, 斗室 or a 远山 computer.
         let workplace = self.place(of: key)
         let code = workplace.code
@@ -2040,7 +2046,7 @@ final class TeamModel: ObservableObject {
         all += Hills.shared.tools()
         all += GoogleTools.all()
         all.append(Self.planTool(key: key, team: self))
-        all += SecretTools.all(botName: bot.name)
+        all += SecretTools.all(botName: bot.name, chat: key)
         all += HealthTools.all()
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }

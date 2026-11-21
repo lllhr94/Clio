@@ -134,7 +134,7 @@ public struct AnthropicProvider: ModelProvider {
                 return [.usage(input: Int(input + read + written), output: 0, cached: Int(read))]
             }
         case "content_block_start":
-            let index = Int(json["index"]?.number ?? 0)
+            let index = (json["index"]?.int ?? 0)
             let block = json["content_block"] ?? .null
             switch block["type"]?.string {
             case "tool_use":
@@ -144,7 +144,7 @@ public struct AnthropicProvider: ModelProvider {
             default: break
             }
         case "content_block_delta":
-            let index = Int(json["index"]?.number ?? 0)
+            let index = (json["index"]?.int ?? 0)
             let delta = json["delta"] ?? .null
             switch delta["type"]?.string {
             case "text_delta": if let text = delta["text"]?.string { return [.text(text)] }

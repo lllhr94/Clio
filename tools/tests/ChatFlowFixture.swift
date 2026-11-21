@@ -65,6 +65,11 @@ private final class Clock {
     }
 }
 
+/// Stands in for the app's draft store; the fixture only checks the composer empties.
+private enum DraftAttachments {
+    static func clear(_ chat: String) {}
+}
+
 @MainActor
 private final class FlowFixture {
     var pasteTask: Task<Void, Never>?
@@ -76,6 +81,7 @@ private final class FlowFixture {
     let chat = HistoryPause()
 
     final class HistoryPause {
+        let key = "chat"
         private(set) var browsing = false
         func setBrowsingHistory(_ active: Bool) { browsing = active }
     }

@@ -119,8 +119,8 @@ enum Workspace {
             guard let file = resolve(arguments["path"]?.string), let data = try? Data(contentsOf: file) else {
                 return ToolOutput("书案里没有这个文件：\(arguments["path"]?.string ?? "")", isError: true)
             }
-            let from = Int(arguments["from"]?.number ?? 1)
-            let count = min(40, max(1, Int(arguments["pages"]?.number ?? 15)))
+            let from = (arguments["from"]?.int ?? 1)
+            let count = min(40, max(1, (arguments["pages"]?.int ?? 15)))
             guard var reading = PDFText.read(data, from: from, count: count) else { return ToolOutput("\(relative(file)) 打不开，可能不是 PDF、坏了或加了密码。", isError: true) }
             // Pages that are only pictures: read the words off them, a few at a time.
             let blank = reading.blank.prefix(5)

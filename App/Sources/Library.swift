@@ -211,16 +211,51 @@ enum Disk {
     }
 
     /// A picture as a service will take it: JPEG or PNG as stored, anything else (HEIC, WebP…) drawn again as JPEG,
-    /// nil when it cannot be read at all. Remembered per picture, so a chat does not decode them on every send.
+    /// nil when it cannot be read at all. What was learned is remembered per picture, so a chat does not decode them
+    /// on every send — but only a little (the review, #11): a JPEG or PNG is remembered as 「send as stored」 and read
+    /// from disk again; only redrawn pictures are kept, up to a byte limit, oldest first out; failures are not kept.
     static func sendablePhoto(_ name: String) -> Data? {
-        if let known = checked.withLock({ $0[name] }) { return known.data }
-        let result = makeSendable(photo(name))
-        checked.withLock { $0[name] = Checked(data: result) }
+        _ = memoryWatch
+        switch photoCache.withLock({ $0.look(name) }) {
+        case .asStored: return photo(name)
+        case .redrawn(let data): return data
+        case nil: break
+        }
+        let stored = photo(name)
+        guard let result = makeSendable(stored) else { return nil }
+        photoCache.withLock { $0.keep(name, result == stored ? .asStored : .redrawn(result)) }
         return result
     }
 
-    private struct Checked { var data: Data? }
-    private static let checked = Mutex<[String: Checked]>([:])
+    /// Forgets what was learned about pictures (memory is short, a backup was restored).
+    static func forgetPhotos() { photoCache.withLock { $0 = PhotoCache() } }
+
+    private enum Ready { case asStored, redrawn(Data) }
+
+    private struct PhotoCache {
+        static let limit = 24 * 1024 * 1024
+        var known: [String: Ready] = [:]
+        var order: [String] = []
+        var bytes = 0
+
+        mutating func look(_ name: String) -> Ready? { known[name] }
+
+        mutating func keep(_ name: String, _ value: Ready) {
+            if known[name] != nil { return }
+            known[name] = value
+            order.append(name)
+            if case .redrawn(let data) = value { bytes += data.count }
+            while bytes > Self.limit || order.count > 2000, let oldest = order.first {
+                order.removeFirst()
+                if case .redrawn(let data)? = known.removeValue(forKey: oldest) { bytes -= data.count }
+            }
+        }
+    }
+
+    private static let photoCache = Mutex(PhotoCache())
+    private static let memoryWatch: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil
+    ) { _ in Disk.forgetPhotos() }
 
     private static func makeSendable(_ data: Data?) -> Data? {
         guard let data, data.count > 32 else { return nil }

@@ -57,7 +57,7 @@ struct ClioRoot: View {
         .clioScheme(scheme)
         .sheet(item: $sheetForm, onDismiss: {
             // Swiped away: the slip is put away, and the companion hears so.
-            if let shown = dismissedForm, asker.current?.id == shown { asker.cancel() }
+            if let shown = dismissedForm, asker.current?.id == shown { asker.cancel(shown) }
             dismissedForm = nil
         }) { form in
             FormSheet(form: form).onAppear { dismissedForm = form.id }
