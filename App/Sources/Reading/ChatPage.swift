@@ -494,6 +494,7 @@ struct ChatPage: View {
                     quiet: dictation.listening, enabled: PetLibrary.shared.visible
                 ) { petSettingsOpen = true }
                 .frame(height: 1)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }

@@ -39,9 +39,9 @@ final class PetLibrary {
         let oldSize = store.string(forKey: "pet.size")
         factor = savedScale.flatMap { $0.isFinite && $0 > 0 ? min(3, $0) : nil }
             ?? PetSize.migrated(oldSize, custom: store.object(forKey: "pet.custom") as? Double ?? 1, uiScale: UIScale.factor)
-        if savedScale == nil, oldSize != nil { store.set(factor, forKey: "pet.sizeScale") }
         quiet = store.bool(forKey: "pet.quiet")
         hiddenUntil = (store.object(forKey: "pet.hiddenUntil") as? Double).map(Date.init(timeIntervalSince1970:))
+        if savedScale == nil, oldSize != nil { store.set(factor, forKey: "pet.sizeScale") }
         reload()
     }
 

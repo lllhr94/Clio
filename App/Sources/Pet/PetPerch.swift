@@ -9,9 +9,11 @@ final class PetPerch {
     var mood: PetMood = .idle
     var face: String?
     var foot: CGFloat = 0
+    var chatOffset: CGFloat = 0
     var landing = 0
     var rising = false
     var suppressed = false
+    @ObservationIgnored var layoutChanged: () -> Void = {}
     @ObservationIgnored var openSettings: () -> Void = {}
     @ObservationIgnored var bodyHit = CGRect.null
     @ObservationIgnored var bubbleHit = CGRect.null
@@ -99,6 +101,7 @@ struct PetPerchAnchor: UIViewRepresentable {
             quiet = anchor.quiet
             enabled = anchor.enabled
             perch.openSettings = anchor.openSettings
+            perch.layoutChanged = { [weak self] in self?.wake() }
             // UIViewRepresentable can update in the middle of a SwiftUI body pass.
             // Publish to the other hosting controller on the display clock instead.
             pending = (anchor.mood, anchor.face)
@@ -191,8 +194,10 @@ struct PetPerchAnchor: UIViewRepresentable {
             let blocked = covered || (presented != nil && !isBottomSheet)
             if perch.suppressed != (quiet || blocked) { perch.suppressed = quiet || blocked }
 
-            let composer = top(of: marker, in: source)
-            let top = min(composer, isBottomSheet ? host.map { self.top(of: $0, in: source) } ?? composer : composer)
+            let markerOrigin = origin(of: marker, in: source)
+            let composer = markerOrigin.y
+            let top = min(composer, isBottomSheet ? host.map { self.origin(of: $0, in: source).y } ?? composer : composer)
+            if perch.chatOffset != markerOrigin.x { perch.chatOffset = markerOrigin.x }
             if source.isKeyWindow, composer > 0, !blocked {
                 move(to: max(0, top), at: now, calm: UIAccessibility.isReduceMotionEnabled)
                 if window.isHidden { window.isHidden = false }
@@ -221,11 +226,11 @@ struct PetPerchAnchor: UIViewRepresentable {
             return nil
         }
 
-        private func top(of view: UIView, in source: UIWindow) -> CGFloat {
+        private func origin(of view: UIView, in source: UIWindow) -> CGPoint {
             if let shown = view.layer.presentation(), let screen = source.layer.presentation() {
-                return shown.convert(.zero, to: screen).y
+                return shown.convert(.zero, to: screen)
             }
-            return view.convert(.zero, to: source).y
+            return view.convert(.zero, to: source)
         }
 
         private func move(to top: CGFloat, at now: CFTimeInterval, calm: Bool) {
@@ -275,7 +280,8 @@ struct PetPerchAnchor: UIViewRepresentable {
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard let perch else { return nil }
             if rootViewController?.presentedViewController != nil { return super.hitTest(point, with: event) }
-            guard !perch.suppressed, perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
+            guard !perch.suppressed, abs(perch.chatOffset) < 1,
+                  perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
             return super.hitTest(point, with: event)
         }
     }

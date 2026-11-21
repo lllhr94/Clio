@@ -74,7 +74,7 @@ struct PetStage: View {
                 ZStack(alignment: .topLeading) {
                     pet(pack, unit: unit, width: figureWidth, stand: stand)
                         .simultaneousGesture(dragGesture(width: width, height: height, margin: margin, foot: foot, stand: stand))
-                        .position(x: aligned(x, offset: figureWidth / 2), y: aligned(foot, offset: stand) - stand / 2)
+                        .position(x: aligned(x + perch.chatOffset, offset: figureWidth / 2), y: aligned(foot, offset: stand) - stand / 2)
                         .transition(.opacity)
                     if let bubble = news.bubble {
                         PetBubble(bubble: bubble)
@@ -82,7 +82,7 @@ struct PetStage: View {
                             .fixedSize()
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { perch.bubbleHit = $0 }
                             .onDisappear { perch.bubbleHit = .null }
-                            .position(x: min(max(x, min(120, width / 2)), max(width - 120, width / 2)),
+                            .position(x: min(max(x, min(120, width / 2)), max(width - 120, width / 2)) + perch.chatOffset,
                                       y: foot - stand - 26)
                             .transition(.opacity)
                     }
