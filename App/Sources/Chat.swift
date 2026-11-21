@@ -198,12 +198,9 @@ final class ChatModel {
         apply(build(team.history(key)))
     }
 
-    /// Everything kept, built once (for finding and the outline), instead of growing the window step by step.
-    func loadAll() {
-        guard hasEarlier else { return }
-        limit = .max
-        heldRows = nil
-        lines = build(team.history(key))
+    /// A read-only lookup snapshot. It must never enlarge the window used by live updates.
+    func lookupRows() -> [ChatLine] {
+        build(team.history(key), lookup: true)
     }
 
     func loadEarlier() async {
@@ -216,8 +213,9 @@ final class ChatModel {
     }
 
     /// The kept messages as rows: what the user said, what the Bot said, and the steps between.
-    private func build(_ all: [Entry]) -> [ChatLine] {
-        hasEarlier = all.count > limit
+    private func build(_ all: [Entry], lookup: Bool = false) -> [ChatLine] {
+        if !lookup { hasEarlier = all.count > limit }
+        let entries = lookup ? all[...] : all.suffix(limit)
         var out: [ChatLine] = []
         var open: Int?
         var openedAt: Double = 0
@@ -226,7 +224,7 @@ final class ChatModel {
         var calls: [String: String] = [:]
         var thought = ""
         var feltThisTurn: String?
-        for entry in all.suffix(limit) {
+        for entry in entries {
             let message = entry.message
             if entry.note == true {
                 var note = ChatLine(id: entry.id, kind: .note, text: message.text)
@@ -294,7 +292,7 @@ final class ChatModel {
             let count = out[index].tools.count
             out[index].text = out[index].live ? (count > 0 ? "正在干活，第 \(count) 步" : "正在干活") : "完成 \(count) 步"
         }
-        let stamps = Dictionary(all.suffix(limit).map { ($0.id, $0.at) }, uniquingKeysWith: { first, _ in first })
+        let stamps = Dictionary(entries.map { ($0.id, $0.at) }, uniquingKeysWith: { first, _ in first })
         for index in out.indices { out[index].at = stamps[out[index].id] }
         return out
     }

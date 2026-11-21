@@ -47,7 +47,9 @@ struct ChatPage: View {
     @State private var findAt = 0
     @State private var hits: [String] = []
     /// How many lines were on the page before finding or the outline opened everything; restored after.
-    @State private var shownBefore: Int?
+    @State private var lookupRows: [ChatLine] = []
+    @State private var historyPage: [ChatLine]?
+    private var displayedRows: [ChatLine] { historyPage ?? chat.lines }
     @State private var outlinePairs: [OutlineSheet.Pair] = []
     @FocusState private var findFocus: Bool
     /// A reply opened to pick any words from it.
@@ -244,22 +246,23 @@ struct ChatPage: View {
             // Keep distant replies unmounted when the keyboard, stream or window size changes.
             LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && !chat.hasStreaming { empty }
-                if chat.lines.count > shownCount { earlier }
+                if historyPage == nil, chat.lines.count > shownCount { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                    ForEach(chat.lines.suffix(shownCount)) { line in
+                    ForEach(historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows) { line in
                         turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
                             // A turn starts with what you said: more room above it than between the parts of a reply.
-                            .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
+                            .padding(.top, line.kind == .user && line.id != displayedRows.first?.id ? Ink.Space.l : 0)
                             .id(line.id)
                             // Only what just arrived rises into place; history loaded above stays still.
-                            .transition(chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                            .transition(historyPage == nil && chat.lines.suffix(2).contains(where: { $0.id == line.id })
                                         ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
                                         : .identity)
                     }
                 }
                 .scrollTargetLayout()
+                if historyPage == nil {
                 if team.compressing.contains(chat.key) {
                     // Said once, quietly: it is happening behind, and you can go on talking.
                     Label("正在后台整理较早的聊天，不耽误你接着聊", systemImage: "text.append")
@@ -283,6 +286,7 @@ struct ChatPage: View {
                 ForEach(team.queued[chat.key] ?? []) { item in
                     queuedRow(item)
                         .transition(.opacity.combined(with: .offset(y: 8)))
+                }
                 }
             }
             // The foot of the page, under the breathing room at the bottom: scrolling to it shows everything,
@@ -364,7 +368,7 @@ struct ChatPage: View {
                     jumpVisible = true
                 }
                 if phase == .idle, old != .idle {
-                    following = selecting.isEmpty && Self.below(context.geometry) < 80
+                    following = historyPage == nil && selecting.isEmpty && Self.below(context.geometry) < 80
                     if old == .interacting || old == .decelerating { lingerJumpButtons() }
                 }
             }
@@ -690,7 +694,7 @@ struct ChatPage: View {
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
         }
-        .sheet(isPresented: $outlining, onDismiss: { if shownBefore != nil, following { restoreWindow() } }) {
+        .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
             OutlineSheet(pairs: outlinePairs) { id in
                 outlining = false
                 reveal(id)
@@ -1437,7 +1441,7 @@ struct ChatPage: View {
     /// 问答目录: each thing you said, with how the answer began.
     private var outline: [OutlineSheet.Pair] {
         var pairs: [OutlineSheet.Pair] = []
-        let lines = chat.lines
+        let lines = lookupRows
         for (index, line) in lines.enumerated() where line.kind == .user && !line.text.isEmpty {
             let answer = lines[(index + 1)...].prefix { $0.kind != .user }.first { $0.kind == .bot && !$0.text.isEmpty }?.text
             pairs.append(.init(id: line.id, question: line.text, answer: answer.map { String(Pulse.split($0).rest.prefix(80)) }, at: line.at))
@@ -1452,7 +1456,7 @@ struct ChatPage: View {
     private func findHits() -> [String] {
         let wanted = findText.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty else { return [] }
-        return chat.lines.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
+        return lookupRows.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
     }
 
     private var currentHit: String? {
@@ -1471,8 +1475,7 @@ struct ChatPage: View {
 
     /// The whole conversation, built once, for finding and the outline. Rows are only put on the page when going there.
     private func loadEverything() async {
-        if shownBefore == nil { shownBefore = shownCount }
-        chat.loadAll()
+        lookupRows = chat.lookupRows()
     }
 
     private func stopFinding() {
@@ -1480,19 +1483,18 @@ struct ChatPage: View {
         findText = ""
         findAt = 0
         hits = []
-        restoreWindow()
+        lookupRows = []
     }
 
-    /// Widens the page just enough to hold this line (and what follows it), not the whole conversation.
+    /// Keep a bounded window around the result, without altering the live conversation's paging.
     private func reveal(_ id: String) {
-        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return }
-        shownCount = max(shownCount, chat.lines.count - index + 4)
-    }
-
-    /// Back to the window the page had before everything was opened, unless you have since scrolled to the end.
-    private func restoreWindow() {
-        if let before = shownBefore, following { shownCount = before }
-        shownBefore = nil
+        if chat.lines.suffix(shownCount).contains(where: { $0.id == id }) {
+            historyPage = nil
+            return
+        }
+        guard let index = lookupRows.firstIndex(where: { $0.id == id }) else { return }
+        let bounds = max(0, index - 30)..<min(lookupRows.count, index + 31)
+        historyPage = Array(lookupRows[bounds])
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1504,7 +1506,10 @@ struct ChatPage: View {
         reveal(target)
         following = false
         Haptics.tick(0.4)
-        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
+        }
     }
 
     /// Where the composer was, while looking: the words, how many places, older / newer, and 完成.
@@ -1564,7 +1569,7 @@ struct ChatPage: View {
     private var openers: Set<String> {
         var heads: Set<String> = []
         var last: String?
-        for line in chat.lines {
+        for line in displayedRows {
             guard let who = voice(line) else { continue }
             if who != last { heads.insert(line.id) }
             last = who
@@ -1631,8 +1636,8 @@ struct ChatPage: View {
     /// 「昨天 23:10」 over a line said more than half an hour after the one before it.
     private func timeGap(before line: ChatLine) -> String? {
         guard let at = line.at,
-              let index = chat.lines.firstIndex(where: { $0.id == line.id }), index > 0,
-              let before = chat.lines[..<index].last(where: { $0.at != nil })?.at,
+              let index = displayedRows.firstIndex(where: { $0.id == line.id }), index > 0,
+              let before = displayedRows[..<index].last(where: { $0.at != nil })?.at,
               at - before > 30 * 60 * 1000 else { return nil }
         let date = Date(timeIntervalSince1970: at / 1000)
         let calendar = Calendar.current
@@ -2220,9 +2225,9 @@ struct ChatPage: View {
                     .allowsHitTesting(jumpVisible)
                     .accessibilityHidden(!jumpVisible)
                 backToEnd
-                    .opacity(farFromEnd && !following ? 1 : 0)
-                    .allowsHitTesting(farFromEnd && !following)
-                    .accessibilityHidden(!farFromEnd || following)
+                    .opacity(historyPage != nil || farFromEnd && !following ? 1 : 0)
+                    .allowsHitTesting(historyPage != nil || farFromEnd && !following)
+                    .accessibilityHidden(historyPage == nil && (!farFromEnd || following))
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .offset(y: -Ink.Bar.height)
@@ -2255,7 +2260,7 @@ struct ChatPage: View {
     }
 
     private func question(earlier: Bool) -> String? {
-        let rows = chat.lines.suffix(shownCount)
+        let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
         let visible = Set(viewport.ids)
         let center = jumpedTo.flatMap { id in rows.firstIndex { $0.id == id } }
             ?? rows.firstIndex { visible.contains($0.id) }
@@ -2281,7 +2286,12 @@ struct ChatPage: View {
                     Haptics.light()
                     following = true
                     jumpedTo = nil
-                    toEnd(animated: true)
+                    if historyPage == nil {
+                        toEnd(animated: true)
+                    } else {
+                        historyPage = nil
+                        followToEnd()
+                    }
                 } label: {
                     floating("arrow.down")
                 }
@@ -2308,7 +2318,7 @@ struct ChatPage: View {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     private func followToEnd(settle: Bool = true) {
-        guard following, selecting.isEmpty else { return }
+        guard historyPage == nil, following, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
@@ -2320,7 +2330,7 @@ struct ChatPage: View {
     @State private var followPending: Task<Void, Never>?
 
     private func toEnd(animated: Bool = false) {
-        guard selecting.isEmpty, let scroller else { return }
+        guard historyPage == nil, selecting.isEmpty, let scroller else { return }
         if animated {
             withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
         } else {
