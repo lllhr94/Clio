@@ -114,10 +114,12 @@ public struct Agent: Sendable {
     public func ask(_ prompt: String) async throws -> String {
         var request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit, thinking: thinking)
         var text = ""
+        var finished: String?
         do {
             for try await event in provider.stream(request) {
                 try Task.checkCancellation()
                 if case .text(let piece) = event { text += piece }
+                if case .finish(let reason) = event, finished == nil { finished = reason }
             }
         } catch let failure as ProviderError where text.isEmpty && request.thinking != .auto && (failure.status == 400 || failure.status == 422) {
             // The model does not take the thinking setting: ask once more without it.
@@ -125,8 +127,15 @@ public struct Agent: Sendable {
             for try await event in provider.stream(request) {
                 try Task.checkCancellation()
                 if case .text(let piece) = event { text += piece }
+                if case .finish(let reason) = event, finished == nil { finished = reason }
             }
         }
+        // Half an answer is not an answer: a summary made from it would stand in for everything it covers
+        // (the review, #19).
+        if finished == nil { throw ProviderError("回答没收完：连接中途断了。") }
+        let reason = finished?.lowercased() ?? ""
+        if ["length", "max_tokens", "model_length"].contains(reason) { throw ProviderError("回答写到长度上限被截断了。") }
+        if ["content_filter", "sensitive", "safety", "refusal"].contains(reason) { throw ProviderError("回答被内容审核拦下了。") }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -201,7 +210,8 @@ public struct Agent: Sendable {
                         case .usage(let input, let output, let cached):
                             await emit(.usage(input: input, output: output, cached: cached))
                         case .finish(let reason):
-                            finished = reason
+                            // The first reason given counts (a later 「done」 must not hide 「length」).
+                            if finished == nil { finished = reason }
                         }
                     }
                     break
@@ -235,7 +245,11 @@ public struct Agent: Sendable {
                 let attachments = try await renderReplyImages(images)
                 if !attachments.isEmpty { text += (text.isEmpty ? "" : "\n\n") + attachments }
             }
-            let made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
+            var made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
+            // A stream that stopped without the service saying it was done may have cut a tool call short: its
+            // arguments can parse and still be half of what was meant. Nothing is run then (the review, #2).
+            let dropped = finished == nil && !made.isEmpty
+            if dropped { made = [] }
             var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
             if !signature.isEmpty { reply.reasoningSignature = signature }
             if !text.isEmpty || !made.isEmpty {
@@ -243,7 +257,9 @@ public struct Agent: Sendable {
                 await emit(.message(reply))
             }
             // Said after the reply, so the note sits under what did come.
-            if let short = Self.cutShort(text: text, reasoning: reasoning, images: images.count, calls: made.count, finish: finished) {
+            if dropped {
+                await emit(.cutShort(.dropped))
+            } else if let short = Self.cutShort(text: text, reasoning: reasoning, images: images.count, calls: made.count, finish: finished) {
                 await emit(.cutShort(short))
             }
             if made.isEmpty {
@@ -251,6 +267,8 @@ public struct Agent: Sendable {
                 return
             }
             for call in made {
+                // Stopped: no further step starts (the review, #2).
+                try Task.checkCancellation()
                 let same = call.name + "\u{1}" + call.arguments
                 let result: Message
                 if uncertain.contains(same) {
@@ -270,6 +288,10 @@ public struct Agent: Sendable {
     static func cutShort(text: String, reasoning: String, images: Int, calls: Int, finish: String?) -> CutShort? {
         let reason = finish?.lowercased()
         if calls == 0, ["length", "max_tokens", "model_length"].contains(reason ?? "") { return .truncated }
+        // Words came, then the stream stopped without the service closing it: what is there may be half an answer
+        // (the review, #19). A filtered answer that still sent words is said to be filtered.
+        if calls == 0, ["content_filter", "sensitive", "safety", "refusal"].contains(reason ?? ""), images == 0 { return .filtered }
+        if calls == 0, images == 0, finish == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .dropped }
         guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, images == 0, calls == 0 else { return nil }
         if ["content_filter", "sensitive", "safety", "refusal"].contains(reason ?? "") { return .filtered }
         if !reasoning.isEmpty { return .thoughtOnly(reasoning.count) }
@@ -320,6 +342,11 @@ public struct Agent: Sendable {
                 await emit(.toolFinished(id: call.id, ok: false))
                 return .toolResult("用户没有同意这次操作，什么都没做。除非用户再次要求，不要重试。", for: call, isError: true)
             }
+        }
+        // Stopped while the approval was open: nothing runs, even if it was approved.
+        if Task.isCancelled {
+            await emit(.toolFinished(id: call.id, ok: false))
+            return .toolResult("这一轮已经停下，这一步没有做。", for: call, isError: true)
         }
         do {
             let output = try await tool.run(arguments)

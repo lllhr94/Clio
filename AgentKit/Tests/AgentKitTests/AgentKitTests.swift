@@ -161,6 +161,10 @@ private final class ScriptedProvider: ModelProvider, @unchecked Sendable {
         lock.unlock()
         return AsyncThrowingStream { continuation in
             for event in reply { continuation.yield(event) }
+            // A scripted reply ends the way a service's does, saying it is done, unless it already said why.
+            if !reply.contains(where: { if case .finish = $0 { return true }; return false }) {
+                continuation.yield(.finish(reason: "stop"))
+            }
             continuation.finish()
         }
     }
@@ -409,6 +413,7 @@ private final class FlakyProvider: ModelProvider, @unchecked Sendable {
                 continuation.finish(throwing: error)
             } else {
                 continuation.yield(.text("到了"))
+                continuation.yield(.finish(reason: "stop"))
                 continuation.finish()
             }
         }
@@ -561,6 +566,7 @@ final class ThinkingTests: XCTestCase {
                         continuation.finish(throwing: ProviderError(status: 400, "reasoning_effort not supported"))
                     } else {
                         continuation.yield(.text("好"))
+                        continuation.yield(.finish(reason: "stop"))
                         continuation.finish()
                     }
                 }
@@ -657,6 +663,8 @@ final class CutShortTests: XCTestCase {
         XCTAssertEqual(Agent.cutShort(text: "", reasoning: "想", images: 0, calls: 0, finish: "stop"), .thoughtOnly(1))
         XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: "content_filter"), .filtered)
         XCTAssertEqual(Agent.cutShort(text: "写了一半", reasoning: "", images: 0, calls: 0, finish: "length"), .truncated)
+        XCTAssertEqual(Agent.cutShort(text: "写了一半", reasoning: "", images: 0, calls: 0, finish: nil), .dropped)
+        XCTAssertEqual(Agent.cutShort(text: "一点", reasoning: "", images: 0, calls: 0, finish: "content_filter"), .filtered)
         XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: "stop"), .empty)
     }
 }
@@ -669,5 +677,37 @@ final class ThinkingLevelsTests: XCTestCase {
         XCTAssertEqual(ThinkingStyle.minimax.levels(thinks: true), [.auto])
         XCTAssertEqual(ThinkingStyle.effort.levels(thinks: false), [.auto])
         XCTAssertEqual(ThinkingStyle.effort.levels(thinks: true), [.auto, .off, .low, .medium, .high, .max])
+    }
+}
+
+final class DroppedStreamTests: XCTestCase {
+    /// A stream that stops without the service saying it is done runs no tool, even one whose arguments parse.
+    func testDroppedStreamRunsNoTool() async throws {
+        final class Dropping: ModelProvider, @unchecked Sendable {
+            func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.toolCallStart(index: 0, id: "c1", name: "count"))
+                    continuation.yield(.toolCallArguments(index: 0, delta: "{}"))
+                    continuation.finish()
+                }
+            }
+            func models() async throws -> [String] { [] }
+        }
+        final class Counter: @unchecked Sendable { var runs = 0 }
+        let counter = Counter()
+        struct Count: AgentTool {
+            let counter: Counter
+            var spec: ToolSpec { ToolSpec(name: "count", description: "", parameters: ["type": "object"]) }
+            func label(for arguments: JSONValue) -> String { "数" }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput { counter.runs += 1; return ToolOutput("ok") }
+        }
+        let agent = Agent(provider: Dropping(), model: "m", system: "", tools: [Count(counter: counter)])
+        final class Seen: @unchecked Sendable { var shorts: [CutShort] = [] }
+        let seen = Seen()
+        try await agent.run(history: [.user("数一下")]) { event in
+            if case .cutShort(let short) = event { seen.shorts.append(short) }
+        }
+        XCTAssertEqual(counter.runs, 0)
+        XCTAssertEqual(seen.shorts, [.dropped])
     }
 }

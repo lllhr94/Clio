@@ -143,7 +143,9 @@ enum HTTP {
                     }
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
-                        guard let payload = SSE.payload(of: line), payload != "[DONE]" else { continue }
+                        guard let payload = SSE.payload(of: line) else { continue }
+                        // 「[DONE]」 is the service saying the answer is complete, for those that send no finish reason.
+                        if payload == "[DONE]" { continuation.yield(.finish(reason: "done")); continue }
                         for event in try decode(payload) { continuation.yield(event) }
                     }
                     continuation.finish()
