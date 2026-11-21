@@ -227,10 +227,24 @@ final class ChatModel {
     func loadEarlier() async {
         guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true
-        limit += 160
+        defer { loadingEarlier = false }
+        let nextLimit = limit + 160
+        let history = await team.loadHistory(key)
+        let working = team.isWorking(key)
+        let tool = running
+        let page = await Task.detached(priority: .userInitiated) {
+            Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
+        }.value
+        guard !Task.isCancelled else { return }
+        limit = nextLimit
         heldRows = nil
-        lines = build(team.history(key))
-        loadingEarlier = false
+        let newest = team.history(key)
+        if newest == history, working == team.isWorking(key), tool == running {
+            hasEarlier = newest.count > limit
+            lines = page
+        } else {
+            lines = build(newest)
+        }
     }
 
     /// The kept messages as rows: what the user said, what the Bot said, and the steps between.

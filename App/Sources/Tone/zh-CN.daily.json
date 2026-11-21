@@ -47,6 +47,7 @@
     "filesAndTerminal": "文件与终端"
   },
   "chat": {
+    "earlier": "更早的消息",
     "menu": "对话菜单",
     "find": "在对话里找",
     "files": "对话文件",

@@ -135,7 +135,7 @@ struct ChatPage: View {
             Haptics.light()
             loadEarlier()
         } label: {
-            Label("更早的 \(chat.lines.count - shownCount) 条", systemImage: "arrow.up")
+            Label(L.t("chat.earlier"), systemImage: "arrow.up")
                 .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.inkSoft)
                 .frame(maxWidth: .infinity, minHeight: 36)
@@ -145,20 +145,34 @@ struct ChatPage: View {
 
     /// Draws forty more older lines and keeps the one at the top of the screen where it was. Called by the button,
     /// and by itself when the reader scrolls near the top, so long conversations read on without stopping.
+    private var canLoadEarlier: Bool {
+        historyPage == nil && (chat.lines.count > shownCount || chat.hasEarlier)
+    }
+
     private func loadEarlier() {
-        guard chat.lines.count > shownCount, !loadingEarlier else { return }
-        loadingEarlier = true
-        let anchor = chat.lines.suffix(shownCount).first?.id
-        shownCount += 40
-        Task { @MainActor in
+        guard canLoadEarlier, earlierTask == nil, selecting.isEmpty else { return }
+        let previous = chat.lines.suffix(shownCount)
+        let visible = Set(viewport.ids)
+        let anchor = previous.first { visible.contains($0.id) }?.id ?? previous.first?.id
+        let first = previous.first?.id
+        let oldCount = previous.count
+        earlierTask = Task { @MainActor in
+            defer { earlierTask = nil }
+            if chat.lines.count <= shownCount {
+                await chat.loadEarlier()
+            }
+            guard !Task.isCancelled, historyPage == nil, selecting.isEmpty else { return }
+            let retained = first.flatMap { id in chat.lines.firstIndex { $0.id == id } }
+                .map { chat.lines.count - $0 } ?? oldCount
+            shownCount = min(chat.lines.count, retained + 40)
+            guard let anchor else { return }
             await Task.yield()
-            if let anchor { scroller?.scrollTo(anchor, anchor: .top) }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            loadingEarlier = false
+            guard !Task.isCancelled, historyPage == nil, selecting.isEmpty, !following else { return }
+            scroller?.scrollTo(anchor, anchor: .top)
         }
     }
 
-    @State private var loadingEarlier = false
+    @State private var earlierTask: Task<Void, Never>?
 
     /// A failure in the conversation: what went wrong, and a way to try again right there.
     private func failureCard(_ error: String) -> some View {
@@ -248,7 +262,7 @@ struct ChatPage: View {
             LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                 if !chat.loaded { ProgressView().frame(maxWidth: .infinity) }
                 else if chat.lines.isEmpty && !chat.hasStreaming { empty }
-                if historyPage == nil, chat.lines.count > shownCount { earlier }
+                if canLoadEarlier { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -607,6 +621,7 @@ struct ChatPage: View {
             chat.close()
             team.markSeen(chat.key)
             hideJumps?.cancel()
+            earlierTask?.cancel()
             selecting.removeAll()
             if dictation.listening { dictation.stop() }
         }
