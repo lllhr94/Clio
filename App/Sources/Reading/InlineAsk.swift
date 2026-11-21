@@ -93,7 +93,7 @@ private struct FlowChips: View {
 
 /// Lays its children out in rows, wrapping when a row is full.
 struct WrapLayout: Layout {
-    var spacing: CGFloat = 8
+    var spacing: CGFloat = Ink.Space.s
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
