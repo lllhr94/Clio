@@ -494,6 +494,8 @@ struct ModelSheet: View {
                     Text(footer)
                 }
                 Section {
+                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModelAll"), systemImage: "checklist") { testAll() }
+                        .disabled(working)
                     Button(working ? L.t("loading.testingModel") : L.t("actions.testModelVision"), systemImage: "eye") { testSight() }
                         .disabled(working)
                     Button(working ? L.t("loading.testingModel") : L.t("actions.testModel"), systemImage: "bolt.horizontal") { testReply() }
@@ -559,6 +561,37 @@ struct ModelSheet: View {
         }
     }
 
+    /// Every ability in one go: answers at all, sees a picture, calls a tool, thinks (and can stop). What it finds
+    /// is set on the switches above, as if the user had set them.
+    private func testAll() {
+        guard let endpoint else { return }
+        working = true
+        note = L.t("loading.testingModel")
+        Task {
+            var lines: [String] = []
+            let reply = await team.probe(endpoint, model: model)
+            lines.append(reply.note)
+            guard reply.ok else {
+                note = lines.joined(separator: "\n")
+                working = false
+                return
+            }
+            let sight = await team.probeSight(endpoint, model: model)
+            lines.append(sight.note)
+            let tools = await team.probeTools(endpoint, model: model)
+            lines.append(tools.note)
+            let thinking = await team.probeThinking(endpoint, model: model)
+            lines.append(thinking.note)
+            var found = traits
+            if let sees = sight.sees { found.sees = sees }
+            if let calls = tools.calls { found.tools = calls }
+            if let thinks = thinking.thinks { found.thinks = thinks }
+            if found != traits { traits = found }
+            note = lines.joined(separator: "\n")
+            working = false
+        }
+    }
+
     private func testReply() {
         guard let endpoint else { return }
         working = true
@@ -600,6 +633,61 @@ extension TeamModel {
             let advice = Explain.model(error, service: endpoint.name)
             return (false, "不通：\(advice.displayTitle)\n\(advice.detail)")
         }
+    }
+
+    /// Offers one tool and asks for something only it can give. `calls` is nil when the test itself failed.
+    func probeTools(_ endpoint: Endpoint, model: String) async -> (calls: Bool?, note: String) {
+        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试工具：没有密钥。") }
+        let tool = ToolSpec(name: "lucky_number", description: "返回今天的幸运数字。用户问幸运数字时必须调用它。",
+                            parameters: .object(["type": .string("object"), "properties": .object([:])]))
+        let request = ModelRequest(model: model, system: "", messages: [.user("今天的幸运数字是多少？请调用工具查。")],
+                                   tools: [tool], outputLimit: 200, thinking: .auto)
+        do {
+            for try await event in endpoint.provider(key: key).stream(request) {
+                if case .toolCallStart = event { return (true, "会用工具：给它一个工具，它主动调用了。") }
+            }
+            return (false, "好像不会用工具：给了工具，它直接回答了。已标成不会用工具。")
+        } catch let failure as ProviderError where failure.status == 400 || failure.status == 422 {
+            return (false, "服务不收工具：\(failure.message.prefix(80))。已标成不会用工具。")
+        } catch {
+            return (nil, "工具没试成：\(Explain.model(error, service: endpoint.name).displayTitle)")
+        }
+    }
+
+    /// Asks the same small question with thinking off and deep, and compares how much it thought.
+    /// `thinks` is nil when the test itself failed.
+    func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String) {
+        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试思考：没有密钥。") }
+        let provider = endpoint.provider(key: key)
+        func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
+            let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],
+                                       outputLimit: 2000, thinking: level)
+            var chars = 0
+            do {
+                for try await event in provider.stream(request) {
+                    if case .reasoning(let piece) = event { chars += piece.count }
+                }
+                return (chars, false, false)
+            } catch let failure as ProviderError where failure.status == 400 || failure.status == 422 {
+                return (0, true, false)
+            } catch {
+                return (0, false, true)
+            }
+        }
+        let deep = await thought(.high)
+        let off = await thought(.off)
+        if deep.failed && off.failed { return (nil, "思考没试成：连不上。") }
+        if deep.chars == 0 && off.chars == 0 {
+            if deep.refused { return (false, "不会思考：服务不接受思考设置。已标成不会思考。") }
+            return (false, "没看到思考内容：要么不会思考，要么这家服务不把思考发回来。已标成不会思考，思考菜单只留「默认」。")
+        }
+        if off.chars == 0 {
+            return (true, "会思考，也能关：「深想」想了 \(deep.chars) 字，「不想」直接回答。")
+        }
+        if deep.chars > off.chars * 2 {
+            return (true, "会思考，分得出档：「深想」想了 \(deep.chars) 字，「不想」也想了 \(off.chars) 字（关不掉，只能少想）。")
+        }
+        return (true, "会思考，但档位基本不管用：「深想」\(deep.chars) 字、「不想」\(off.chars) 字，差不多。")
     }
 
     /// Shows the model a red square and asks its colour. `sees` is nil when the test itself failed.

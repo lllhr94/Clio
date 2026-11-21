@@ -354,7 +354,12 @@
     "groundWhite": "纯白",
     "groundInk": "墨灰",
     "groundBlack": "纯黑",
-    "confirmStop": "停止前先问一句"
+    "confirmStop": "停止前先问一句",
+    "davBackup": "网盘备份（WebDAV）",
+    "davAddress": "网盘地址，如 https://dav.jianguoyun.com/dav/",
+    "davUser": "用户名",
+    "davPassword": "密码（坚果云填应用密码）",
+    "davNote": "备份会放在网盘里的 Clio 文件夹。换手机时填同样的网盘，点「从网盘恢复最新的」。密码只存在这台手机的钥匙串里，不进备份。备份格式写在仓库的 docs/BACKUP-FORMAT.md，以后别的设备上的 Clio 也能读。"
   },
   "styleSwitcher": {
     "title": "称谓",
@@ -439,7 +444,10 @@
     "testProviderConnections": "测试模型连接",
     "clearLogs": "清空记录",
     "quitApp": "关闭 Clio",
-    "signInWithProvider": "用 %@ 账号登录"
+    "signInWithProvider": "用 %@ 账号登录",
+    "testModelAll": "全面测一下（看图、工具、思考）",
+    "davUpload": "备份到网盘",
+    "davRestore": "从网盘恢复最新的"
   },
   "pet": {
     "showNow": "让宠物出来",
@@ -513,7 +521,8 @@
     "measuringMirrors": "正在测哪个源最快…",
     "recognizingScan": "正在识别扫描里的文字…",
     "checking": "在查…",
-    "testingModel": "正在测试…"
+    "testingModel": "正在测试…",
+    "working": "正在处理…"
   },
   "errors": {
     "imagePromptEmpty": "请先说明想画什么。",
