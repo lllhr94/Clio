@@ -341,7 +341,7 @@
     "editPermissionsNote": "下面每项还能单独改",
     "secretsStorageNote": "密码保存在钥匙串里，助手无法读取。",
     "backupIncludesKeys": "连模型密钥一起备份",
-    "backupPrivacy": "备份不包含密码保险箱和远程主机的密码。",
+    "backupPrivacy": "备份里有：旅伴、对话（含图片）、记忆、定时任务、远程主机和连接器的设置、外观等偏好。不含：密码保险箱和远程主机的密码、书案里的文件、自己导入的宠物包、还没发出去的草稿。书案的文件可以在「文件」App 里另外拷走。",
     "archivedRestoreNote": "恢复后，回到首页就能看到。",
     "noRecentErrors": "最近没有出错。",
     "recordHitches": "掉帧记录仪",
@@ -361,7 +361,7 @@
     "davAddress": "网盘地址，如 https://dav.jianguoyun.com/dav/",
     "davUser": "用户名",
     "davPassword": "密码（坚果云填应用密码）",
-    "davNote": "备份会放在网盘里的 Clio 文件夹。换手机时填同样的网盘，点「从网盘恢复最新的」。密码只存在这台手机的钥匙串里，不进备份。备份格式写在仓库的 docs/BACKUP-FORMAT.md，以后别的设备上的 Clio 也能读。",
+    "davNote": "备份会放在网盘里的 Clio 文件夹，只走 https（家里局域网的 NAS 可以用 http），不带模型密钥。换手机时填同样的网盘，点「从网盘恢复最新的」。密码只存在这台手机的钥匙串里。备份格式写在仓库的 docs/BACKUP-FORMAT.md。",
     "bubbleColor": "我的气泡颜色",
     "bubbleAuto": "随纸"
   },

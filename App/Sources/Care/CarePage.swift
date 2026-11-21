@@ -18,7 +18,10 @@ struct CarePage: View {
     @State private var probes: [String: String] = [:]
     @AppStorage(WebDAV.urlKey) private var davURL = ""
     @AppStorage(WebDAV.userKey) private var davUser = ""
-    @State private var davPassword = WebDAV.password
+    /// Read from the keychain once when the page opens, kept here while typing, saved when leaving the field or page
+    /// (the review, #28: reading and writing the keychain on every redraw and keystroke).
+    @State private var davPassword = ""
+    @State private var davPasswordLoaded = false
     @State private var davBusy = false
     @State private var probing = false
     @State private var copied = false
@@ -44,11 +47,14 @@ struct CarePage: View {
                     TextField(L.t("settings.davUser"), text: $davUser)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField(L.t("settings.davPassword"), text: $davPassword)
-                        .onChange(of: davPassword) { _, value in WebDAV.setPassword(value) }
+                        .onSubmit { WebDAV.setPassword(davPassword) }
+                    if let problem = WebDAV.addressProblem(davURL) {
+                        Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
+                    }
                     Button(davBusy ? L.t("loading.working") : L.t("actions.davUpload")) { davUpload() }
-                        .disabled(davBusy || !WebDAV.ready)
+                        .disabled(davBusy || !davReady)
                     Button(davBusy ? L.t("loading.working") : L.t("actions.davRestore")) { davRestore() }
-                        .disabled(davBusy || !WebDAV.ready)
+                        .disabled(davBusy || !davReady)
                 } header: { Text(L.t("settings.davBackup")) } footer: {
                     Text(L.t("settings.davNote"))
                 }
@@ -128,18 +134,28 @@ struct CarePage: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .task { await measureStorage() }
             .task {
+                guard !davPasswordLoaded else { return }
+                davPassword = await Task.detached { WebDAV.password }.value
+                davPasswordLoaded = true
+            }
+            .onDisappear { if davPasswordLoaded { WebDAV.setPassword(davPassword) } }
+            .task {
                 guard openRestore else { return }
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
                 restoring = true
             }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
                 guard case .success(let url) = result else { return }
-                do {
-                    let summary = try Backup.restore(from: url)
-                    restored = true
-                    notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效。"
-                } catch {
-                    notice = error.localizedDescription
+                Task {
+                    // Off the main thread: a large backup takes a while to check and write.
+                    let outcome = await Task.detached { Result { try Backup.restore(from: url) } }.value
+                    switch outcome {
+                    case .success(let summary):
+                        restored = true
+                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。"
+                    case .failure(let error):
+                        notice = error.localizedDescription
+                    }
                 }
             }
             .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
@@ -205,13 +221,19 @@ struct CarePage: View {
         return lines.joined(separator: "\n")
     }
 
+    /// Address, user and password are filled in and the address is allowed.
+    private var davReady: Bool {
+        !davURL.isEmpty && WebDAV.addressProblem(davURL) == nil && !davUser.isEmpty && !davPassword.isEmpty
+    }
+
     private func davUpload() {
         davBusy = true
+        WebDAV.setPassword(davPassword)
         let ids = team.settings.endpoints.map(\.id)
-        let keys = withKeys
         Task {
             do {
-                let (url, summary) = try await Task.detached { try Backup.make(withKeys: keys, endpoints: ids) }.value
+                // Never with the model keys: a file on a drive is out of the phone's keychain (the review, #4).
+                let (url, summary) = try await Task.detached { try Backup.make(withKeys: false, endpoints: ids) }.value
                 try await WebDAV.upload(url)
                 notice = "备份到网盘了：\(url.lastPathComponent)，\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。"
             } catch {
@@ -227,7 +249,7 @@ struct CarePage: View {
             do {
                 guard let newest = try await WebDAV.list().first else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
                 let file = try await WebDAV.download(newest)
-                let summary = try Backup.restore(from: file)
+                let summary = try await Task.detached { try Backup.restore(from: file) }.value
                 restored = true
                 notice = "从网盘恢复了「\(newest)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
             } catch {

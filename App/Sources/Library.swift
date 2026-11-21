@@ -177,13 +177,23 @@ enum Disk {
     }
 
     static func write<Value: Encodable>(_ value: Value, _ name: String) throws {
+        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
         let data = try JSONEncoder().encode(value)
         try data.write(to: url(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     static func remove(_ name: String) {
+        guard !frozen else { return }
         try? FileManager.default.removeItem(at: url(name))
     }
+
+    /// Set once a backup has been put back: what is in memory is the old state, and writing it out would undo the
+    /// restore. Until Clio is opened again nothing is written.
+    static var frozen: Bool {
+        get { frozenFlag.withLock { $0 } }
+        set { frozenFlag.withLock { $0 = newValue } }
+    }
+    private static let frozenFlag = Mutex(false)
 
     static func chatFile(_ key: String) -> String {
         "chats/\(key.replacingOccurrences(of: "/", with: "_")).json"

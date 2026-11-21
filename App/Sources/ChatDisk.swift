@@ -8,9 +8,29 @@ enum ChatDisk {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var pending: [String: UUID] = [:]
 
+    /// Conversations whose last save failed (a full disk, say). A backup refuses to go out while any is left,
+    /// since it would carry the older file; the next save of that conversation tries again.
+    nonisolated(unsafe) private static var failed: Set<String> = []
+
     static func save(_ entries: [Entry], chat: String) {
         let path = Disk.chatFile(chat)
-        schedule(path) { Disk.save(entries, path) }
+        schedule(path) {
+            do {
+                try Disk.write(entries, path)
+                lock.withLock { _ = failed.remove(path) }
+            } catch {
+                guard !Disk.frozen else { return }
+                lock.withLock { _ = failed.insert(path) }
+                let reason = error.localizedDescription
+                DispatchQueue.main.async { Diag.note("对话没存进手机：\(reason)") }
+            }
+        }
+    }
+
+    /// Waits for queued writes and tells how many conversations are still not on disk.
+    static func finishWritesReportingFailures() -> Int {
+        writer.sync {}
+        return lock.withLock { failed.count }
     }
 
     static func remove(_ chat: String) {

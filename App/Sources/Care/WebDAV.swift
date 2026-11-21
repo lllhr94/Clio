@@ -14,13 +14,32 @@ enum WebDAV {
     static var user: String { UserDefaults.standard.string(forKey: userKey) ?? "" }
     static var password: String { Vault.load(String.self, key: passwordKey) ?? "" }
     static func setPassword(_ value: String) { Vault.save(value, as: passwordKey) }
-    static var ready: Bool { base != nil && !user.isEmpty && !password.isEmpty }
+    /// Why an address cannot be used, or nil. Only HTTPS goes over the internet: a backup holds every conversation
+    /// and the password goes with each request (the review, #4). Plain HTTP is allowed only to a drive on the
+    /// home network (a NAS at 192.168.x.x, say).
+    static func addressProblem(_ address: String) -> String? {
+        let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        guard let url = URL(string: text), let host = url.host(), !host.isEmpty else { return "网址不对，要像 https://dav.jianguoyun.com/dav/ 这样。" }
+        switch url.scheme?.lowercased() {
+        case "https": return nil
+        case "http": return onHomeNetwork(host) ? nil : "只能用 https:// 开头的地址：备份里有全部对话，不能明文传。家里局域网的 NAS 可以用 http。"
+        default: return "要以 https:// 开头。"
+        }
+    }
+
+    private static func onHomeNetwork(_ host: String) -> Bool {
+        if host.hasSuffix(".local") || host == "localhost" { return true }
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        return parts[0] == 10 || (parts[0] == 192 && parts[1] == 168) || (parts[0] == 172 && (16...31).contains(parts[1]))
+    }
 
     private static var base: URL? {
         var text = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
+        guard !text.isEmpty, addressProblem(text) == nil else { return nil }
         if !text.hasSuffix("/") { text += "/" }
-        guard let url = URL(string: text), url.scheme == "https" || url.scheme == "http" else { return nil }
+        guard let url = URL(string: text) else { return nil }
         return url.appendingPathComponent(folder, isDirectory: true)
     }
 
@@ -46,7 +65,7 @@ enum WebDAV {
 
     /// Uploads a backup file into the drive's Clio folder.
     static func upload(_ file: URL) async throws {
-        guard let base else { throw TeamError(message: "还没填网盘地址。") }
+        guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
         // The folder may already be there (405) — that is fine.
         let (_, made) = try await URLSession.shared.data(for: request(base, method: "MKCOL"))
         try check(made, allowing: [405, 301])
