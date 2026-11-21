@@ -53,7 +53,7 @@ private struct SelectableText: UIViewRepresentable {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = CGFloat(Pref.leading)
         let font = Pref.face.postScript(bold: false).flatMap { UIFont(name: $0, size: CGFloat(Pref.size)) } ?? .systemFont(ofSize: CGFloat(Pref.size))
-        view.attributedText = NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: style, .foregroundColor: UIColor.label])
+        view.attributedText = NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: style, .foregroundColor: UIColor(Ink.ink)])
         return view
     }
 
