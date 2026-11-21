@@ -20,7 +20,7 @@ struct DenPage: View {
                 header
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
+                        LazyVStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                             intro
                             ForEach(den.log) { line in
                                 text(for: line)
@@ -55,21 +55,9 @@ struct DenPage: View {
 
     private var header: some View {
         HStack(spacing: Ink.Space.m) {
-            Button {
-                Haptics.light()
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: Ink.Size.sub, weight: .semibold))
-                    .foregroundStyle(Ink.ink)
-                    .frame(width: 36, height: 36)
-                    .glassFace(in: Circle())
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel("关闭终端")
             VStack(alignment: .leading, spacing: 0) {
-                Text(L.t("nav.terminal")).font(Ink.serif(19, bold: true)).foregroundStyle(Ink.ink)
-                HStack(spacing: 4) {
+                Text(L.t("nav.terminal")).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
+                HStack(spacing: Ink.Space.xs) {
                     Circle().fill(dot).frame(width: 6, height: 6)
                     Text(status).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
@@ -90,7 +78,7 @@ struct DenPage: View {
                 Image(systemName: "apple.terminal")
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .frame(width: 36, height: 36)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())
@@ -103,10 +91,15 @@ struct DenPage: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .frame(width: 36, height: 36)
+                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
                     .glassFace(in: Circle())
             }
             .accessibilityLabel("更多终端操作")
+            Button(L.t("actions.done")) {
+                Haptics.light()
+                dismiss()
+            }
+            .buttonStyle(PressStyle())
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s)
