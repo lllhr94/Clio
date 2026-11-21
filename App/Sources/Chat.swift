@@ -187,6 +187,13 @@ final class ChatModel: ObservableObject {
         apply(build(team.history(key)))
     }
 
+    /// Everything kept, built once (for finding and the outline), instead of growing the window step by step.
+    func loadAll() {
+        guard hasEarlier else { return }
+        limit = .max
+        lines = build(team.history(key))
+    }
+
     func loadEarlier() async {
         guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true

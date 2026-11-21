@@ -20,6 +20,7 @@
     "filesAndTerminal": "书案与斗室"
   },
   "chat": {
+    "outline": "问答目录",
     "conversation": "絮语",
     "newConversation": "另起一叶",
     "conversationHistory": "絮语录",

@@ -37,6 +37,10 @@ struct ChatPage: View {
     @State private var finding = false
     @State private var findText = ""
     @State private var findAt = 0
+    @State private var hits: [String] = []
+    /// How many lines were on the page before finding or the outline opened everything; restored after.
+    @State private var shownBefore: Int?
+    @State private var outlinePairs: [OutlineSheet.Pair] = []
     @FocusState private var findFocus: Bool
     /// A reply opened to pick any words from it.
     @State private var picking: ChatLine?
@@ -227,8 +231,9 @@ struct ChatPage: View {
                 if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
                 if chat.lines.count > shownCount { earlier }
                 let heads = openers
+                let lit = finding ? currentHit : nil
                 ForEach(chat.lines.suffix(shownCount)) { line in
-                    turnRow(line, opens: heads.contains(line.id))
+                    turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
                         // A turn starts with what you said: more room above it than between the parts of a reply.
                         .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
                         .id(line.id)
@@ -616,10 +621,10 @@ struct ChatPage: View {
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
         }
-        .sheet(isPresented: $outlining) {
-            OutlineSheet(pairs: outline) { id in
+        .sheet(isPresented: $outlining, onDismiss: { if shownBefore != nil, following { restoreWindow() } }) {
+            OutlineSheet(pairs: outlinePairs) { id in
                 outlining = false
-                shownCount = max(shownCount, chat.lines.count)
+                reveal(id)
                 following = false
                 Task {
                     try? await Task.sleep(nanoseconds: 350_000_000)
@@ -789,9 +794,12 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
-            Button("问答目录", systemImage: "list.bullet.indent") {
-                outlining = true
-                Task { await loadEverything() }
+            Button(L.t("chat.outline"), systemImage: "list.bullet.indent") {
+                Task {
+                    await loadEverything()
+                    outlinePairs = outline
+                    outlining = true
+                }
             }
             Button("在对话里找", systemImage: "magnifyingglass") { startFinding() }
             Button("重命名对话", systemImage: "pencil") {
@@ -1280,7 +1288,8 @@ struct ChatPage: View {
     // MARK: Finding
 
     /// The lines with what you look for, oldest first.
-    private var hits: [String] {
+    /// Worked out once per change of the words, not for every row.
+    private func findHits() -> [String] {
         let wanted = findText.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty else { return [] }
         return chat.lines.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
@@ -1300,20 +1309,30 @@ struct ChatPage: View {
         Task { await loadEverything() }
     }
 
-    /// The whole conversation on the page, for finding and the outline.
+    /// The whole conversation, built once, for finding and the outline. Rows are only put on the page when going there.
     private func loadEverything() async {
-        var rounds = 0
-        while chat.hasEarlier, rounds < 30 {
-            await chat.loadEarlier()
-            rounds += 1
-        }
-        shownCount = max(shownCount, chat.lines.count)
+        if shownBefore == nil { shownBefore = shownCount }
+        chat.loadAll()
     }
 
     private func stopFinding() {
         withAnimation(Ink.Motion.settle) { finding = false }
         findText = ""
         findAt = 0
+        hits = []
+        restoreWindow()
+    }
+
+    /// Widens the page just enough to hold this line (and what follows it), not the whole conversation.
+    private func reveal(_ id: String) {
+        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return }
+        shownCount = max(shownCount, chat.lines.count - index + 4)
+    }
+
+    /// Back to the window the page had before everything was opened, unless you have since scrolled to the end.
+    private func restoreWindow() {
+        if let before = shownBefore, following { shownCount = before }
+        shownBefore = nil
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1322,7 +1341,7 @@ struct ChatPage: View {
         guard !found.isEmpty else { return }
         findAt = (findAt + step + found.count) % found.count
         let target = found[findAt]
-        shownCount = max(shownCount, chat.lines.count)
+        reveal(target)
         following = false
         Haptics.tick(0.4)
         withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
@@ -1339,6 +1358,7 @@ struct ChatPage: View {
                 .submitLabel(.search)
                 .onSubmit { showHit(-1) }
                 .onChange(of: findText) {
+                    hits = findHits()
                     findAt = max(hits.count - 1, 0)
                     if hits.count > 0 { showHit(0) }
                 }
@@ -1394,8 +1414,7 @@ struct ChatPage: View {
 
     /// A line with its face: the companion's above its reply, yours beside your bubble, and the time when a while has passed.
     @ViewBuilder
-    private func turnRow(_ line: ChatLine, opens: Bool) -> some View {
-        let lit = finding && currentHit == line.id
+    private func turnRow(_ line: ChatLine, opens: Bool, lit: Bool) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             if faces, opens, let gap = timeGap(before: line) {
                 Text(gap)
@@ -2337,14 +2356,19 @@ private struct Trace: View {
 
     private func forget(_ fact: String, with unremember: (String) -> Bool) {
         Haptics.light()
-        _ = unremember(fact)
-        withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+        // Shown as taken back only if it was: an entry you wrote or edited stays, and so does this line.
+        if unremember(fact) {
+            withAnimation(Ink.Motion.settle) { _ = undone.insert(fact) }
+        } else {
+            Haptics.lock()
+        }
     }
 
     /// What these steps wrote into 拾遗, as the model wrote it.
     private var remembered: [String] {
         line.tools.enumerated().compactMap { index, tool in
-            guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count else { return nil }
+            guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count,
+                  line.details[index].output.hasPrefix("记下了") else { return nil }
             return JSONValue.parse(line.details[index].input)?["fact"]?.string
         }
     }
