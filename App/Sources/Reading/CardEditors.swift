@@ -90,7 +90,7 @@ struct BotEditor: View {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "称呼")
                             TextField("比如：团子", text: $name)
-                                .font(Ink.serif(18, bold: true))
+                                .font(Ink.serif(Ink.Size.body, bold: true))
                                 .focused($naming)
                                 .submitLabel(.done)
                                 .paperField()
@@ -169,7 +169,7 @@ struct BotEditor: View {
                                         withAnimation(Ink.Motion.press) { tint = item.key }
                                     } label: {
                                         Text(item.title)
-                                            .font(Ink.serif(16, bold: tint == item.key))
+                                            .font(Ink.serif(Ink.Size.sub, bold: tint == item.key))
                                             .foregroundStyle(Ink.ink)
                                             .frame(width: 44, height: 44)
                                             .background(item.color, in: .circle)
@@ -348,7 +348,7 @@ struct BotEditor: View {
                 .accessibilityLabel("换头像")
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(trimmed.isEmpty ? "未署名" : trimmed)
-                        .font(Ink.serif(24, bold: true))
+                        .font(Ink.serif(Ink.Size.title, bold: true))
                         .foregroundStyle(trimmed.isEmpty ? Ink.inkFaint : Ink.ink)
                         .lineLimit(1)
                     Text(role.isEmpty ? "一句话简介" : role)
@@ -366,7 +366,7 @@ struct BotEditor: View {
                     .foregroundStyle(Ink.inkFaint)
                     .lineLimit(2)
                 Spacer(minLength: Ink.Space.m)
-                Text(Words.t("Clio · 名帖")).font(Ink.serif(11)).foregroundStyle(Ink.inkFaint)
+                Text(Words.t("Clio · 名帖")).font(Ink.serif(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.m)
