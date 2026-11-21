@@ -15,7 +15,10 @@ struct NameCard: Codable {
     var seal: String?
     var pet: String?
     var photo: Data?
+    /// The pet held still, for a phone that doesn't have that pet: it becomes the face there.
+    var petStill: Data?
 
+    @MainActor
     init(_ bot: BotInfo) {
         version = 2
         name = bot.name
@@ -29,10 +32,12 @@ struct NameCard: Codable {
             photo = Avatars.image(bot.id)?.jpegData(compressionQuality: 0.8)
         } else if let face = bot.avatar, face.hasPrefix("pet:") {
             pet = face
+            petStill = LiveFace.png(for: bot, side: 256)
         }
     }
 
     /// Writes the card where it can be shared from, and returns the file.
+    @MainActor
     static func file(for bot: BotInfo) -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("名帖", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

@@ -8,6 +8,7 @@ struct NoteSheet: View {
     var question: String? = nil
     var bot: BotInfo? = nil
     @State private var withQuestion = true
+    @State private var shareImage: UIImage?
     @Environment(\.dismiss) private var dismiss
     @State private var theme: Theme = .paper
     @State private var title: String
@@ -113,11 +114,17 @@ struct NoteSheet: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button(saved ? "已存" : "存入相册", systemImage: saved ? "checkmark" : "square.and.arrow.down") { save() }
-                    if let image = rendered() {
+                    if let image = shareImage {
                         ShareLink(item: Image(uiImage: image), preview: SharePreview(title.isEmpty ? "笺" : title, image: Image(uiImage: image)))
                     }
                 }
             }
+        }
+        // Drawn once things settle, not on every redraw: a long reply at three times its size is heavy.
+        .task(id: "\(theme.rawValue)|\(title)|\(signed)|\(withQuestion)") {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            shareImage = rendered()
         }
     }
 
@@ -139,7 +146,7 @@ struct NoteSheet: View {
                     Text(question)
                         .font(Ink.serif(Ink.Size.sub))
                         .foregroundStyle(theme.words.opacity(0.75))
-                        .lineLimit(8)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(Ink.Space.m)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -169,7 +176,8 @@ struct NoteSheet: View {
     @MainActor
     private func rendered() -> UIImage? {
         let renderer = ImageRenderer(content: sheet)
-        renderer.scale = 3
+        // Very long pages at a lower scale, so the picture stays within what the phone can hold.
+        renderer.scale = (text.count + (question?.count ?? 0)) > 4000 ? 2 : 3
         return renderer.uiImage
     }
 

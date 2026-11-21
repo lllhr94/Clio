@@ -11,6 +11,8 @@ struct NameCardView: View {
     var remembers = 0
     /// The model it writes with, as shown (「deepseek-v4.1-flash」).
     var model: String?
+    /// A picture to hand to someone: nothing about you on it (no count of what it remembers).
+    var forSharing = false
 
     private var wash: Color { Ink.wash(for: bot) }
     private var corner: CGFloat { Ink.Radius.card * width / 330 }
@@ -71,7 +73,11 @@ struct NameCardView: View {
         HStack(spacing: 0) {
             field("性格", "\(Temper.of(bot).symbol) \(Temper.of(bot).title)\n\(SpeechStyle.of(bot) == .plain ? Temper.of(bot).line : SpeechStyle.of(bot).title + "体")")
             Rectangle().fill(Ink.rule.opacity(0.7)).frame(width: 0.5)
-            field("记得", remembers > 0 ? "关于你的 \(remembers) 件事" : "还没有")
+            if forSharing {
+                field("说话", SpeechStyle.of(bot).title)
+            } else {
+                field("记得", remembers > 0 ? "关于你的 \(remembers) 件事" : "还没有")
+            }
             Rectangle().fill(Ink.rule.opacity(0.7)).frame(width: 0.5)
             field("模型", model ?? "跟默认")
         }
@@ -232,7 +238,7 @@ struct NameCardSheet: View {
     @MainActor
     private func prepareShare() {
         let who = current
-        let renderer = ImageRenderer(content: NameCardView(bot: who, width: 330, remembers: remembers, model: model).padding(24).background(Ink.paper))
+        let renderer = ImageRenderer(content: NameCardView(bot: who, width: 330, model: model, forSharing: true).padding(24).background(Ink.paper))
         renderer.scale = 3
         var urls: [URL] = []
         if let image = renderer.uiImage, let data = image.pngData() {

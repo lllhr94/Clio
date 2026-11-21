@@ -176,7 +176,8 @@ enum HealthTools {
                     formatter.dateFormat = "M月d日 EEE"
                     formatter.locale = Locale(identifier: "zh_CN")
                     var lines: [String] = []
-                    for day in days {
+                    // Newest first: if the text is cut short, what goes is the oldest days, not today.
+                    for day in days.reversed() {
                         let parts = kinds.compactMap { kind in day.values[kind].map { "\(kind.title) \($0)" } }
                         lines.append(formatter.string(from: day.date) + "：" + (parts.isEmpty ? "没有记录" : parts.joined(separator: "；")))
                     }

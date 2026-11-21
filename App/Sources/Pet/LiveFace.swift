@@ -3,11 +3,9 @@ import UIKit
 /// The companion's face made tiny enough to ride along with its Live Activity (the island has no way to read Clio's files).
 @MainActor
 enum LiveFace {
-    private static let side: CGFloat = 40
-
-    static func png(for bot: BotInfo?) -> Data? {
+    static func png(for bot: BotInfo?, side: CGFloat = 40) -> Data? {
         if let bot, bot.avatar == "photo", let photo = Avatars.image(bot.id)?.cgImage {
-            return draw(photo, pixel: false, round: true)
+            return draw(photo, pixel: false, round: true, side: side)
         }
         var pack = PetLibrary.shared.pack
         if let face = bot?.avatar, face.hasPrefix("pet:"),
@@ -19,10 +17,10 @@ enum LiveFace {
               let animation = pack.animations[name],
               let first = animation.frames.first,
               let cell = PetSheets.cell(pack, animation, first.i) else { return nil }
-        return draw(cell, pixel: pack.pixelArt, round: false)
+        return draw(cell, pixel: pack.pixelArt, round: false, side: side)
     }
 
-    private static func draw(_ image: CGImage, pixel: Bool, round: Bool) -> Data? {
+    private static func draw(_ image: CGImage, pixel: Bool, round: Bool, side: CGFloat) -> Data? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let box = CGSize(width: side, height: side)

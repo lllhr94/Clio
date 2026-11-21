@@ -414,12 +414,14 @@ struct Desk: View {
                     do {
                         // A pet the phone doesn't have falls back to the default; a photo comes with the card.
                         let pet = card.pet.flatMap { face in PetLibrary.shared.packs.contains { "pet:\($0.id)" == face } ? face : nil }
-                        let picture = card.photo.flatMap(UIImage.init(data:))
+                        // A pet this phone doesn't have comes as its still picture, and you are told so.
+                        let missingPet = card.pet != nil && pet == nil
+                        let picture = (card.photo ?? (missingPet ? card.petStill : nil)).flatMap(UIImage.init(data:))
                         let id = try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions,
                                                         avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
                         if let picture { Avatars.save(picture, for: id) }
                         Haptics.thud()
-                        notice = Words.t("收下了\(name)的名帖。")
+                        notice = Words.t("收下了\(name)的名帖。") + (missingPet ? "它用的宠物你这里没有，头像先用它的定格画；导入那只宠物后可以在名帖里换回来。" : "")
                     } catch {
                         notice = "没收下：\(error.localizedDescription)"
                     }

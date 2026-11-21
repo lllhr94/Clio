@@ -3205,7 +3205,7 @@ struct HealthCard: View {
     private var days: [Day] {
         text.split(separator: "\n").enumerated().compactMap { index, row in
             let parts = row.split(separator: "：", maxSplits: 1).map(String.init)
-            guard parts.count == 2, !parts[0].hasPrefix("（") else { return nil }
+            guard parts.count == 2, !parts[0].hasPrefix("（"), index < text.split(separator: "\n").count - 1 || text.count < 2900 else { return nil }
             let values = parts[1].split(separator: "；").compactMap { item -> (String, String)? in
                 let piece = item.trimmingCharacters(in: .whitespaces)
                 guard let space = piece.firstIndex(of: " ") else { return nil }
@@ -3220,7 +3220,8 @@ struct HealthCard: View {
             Label("健康", systemImage: "heart.text.square")
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.Tile.yan)
-            ForEach(days.suffix(3)) { day in
+            // Newest first (see `health_read`); a last row cut off mid-number is left out.
+            ForEach(days.prefix(3)) { day in
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(day.date).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                     if day.values.isEmpty {

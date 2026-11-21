@@ -1789,9 +1789,11 @@ final class TeamModel: ObservableObject {
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
         parts.append("你是「\(bot.name)」\(role)。你住在用户的 iPhone 里，是用户的旅伴之一。")
         if let persona = Temper.of(bot).persona { parts.append(persona) }
+        // 白纸 with the default style adds no voice of its own: only what the person wrote.
+        if !(Temper.of(bot) == .blank && SpeechStyle.of(bot) == .plain) { parts.append(SpeechStyle.of(bot).prompt) }
         if let instructions = bot.instructions?.trimmingCharacters(in: .whitespacesAndNewlines), !instructions.isEmpty {
             // What the person wrote comes after the 性格, and wins where they differ.
-            parts.append("你的设定（和上面的性格有出入时，以这里为准）：\(instructions)")
+            parts.append("你的设定（和上面的性格、说话方式有出入时，以这里为准）：\(instructions)")
         }
         let others = bots.filter { $0.id != bot.id }.map { other in
             other.role?.isEmpty == false ? "\(other.name)（\(other.role!)）" : other.name
@@ -1815,7 +1817,6 @@ final class TeamModel: ObservableObject {
         if deepCount > 0 {
             parts.append("另有 \(deepCount) 件较早的旧事收在拾遗深处，不在上面。用户提到过去的人和事、而上面没有时，先用 recall 翻一翻。")
         }
-        parts.append(SpeechStyle.of(bot).prompt)
         parts.append("""
         做事：
         - 要最新的信息（新闻、价格、天气、事实），先用 web_search 搜，再用 web_read 读原文核实，回答末尾附上来源链接。

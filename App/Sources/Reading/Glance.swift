@@ -96,9 +96,10 @@ struct GlanceCard: View {
             }
         }
         .padding(Ink.Space.l)
-        .frame(width: 320)
+        .frame(width: min(340, UIScreen.main.bounds.width - Ink.Space.xl * 2))
         .background(Ink.paper)
-        .task { files = team.allChangedFiles(key) }
+        // Again when the work in progress ends, so what it just made shows.
+        .task(id: team.doing[key] == nil) { files = team.allChangedFiles(key) }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
