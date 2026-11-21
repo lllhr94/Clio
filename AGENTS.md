@@ -93,6 +93,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 
 ## 交接
 
+- **Claude 不在的期间（2026-11-23 起约一个月）先读 `docs/HANDOFF.md`**：那段时间由 Codex 临时合并。
 - **分工和分支规则见 `docs/TASKS.md`**：`batch-*` 只由 Claude 合并推送；Codex 在 `codex/<任务名>`、Antigravity 在 `antigravity/<任务名>` 分支上做，开 PR 合进去。
 
 - 做完一段工作，更新 `docs/STATUS.md`：做了什么、没做完什么、下一步、已知问题。
