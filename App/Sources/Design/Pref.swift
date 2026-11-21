@@ -34,7 +34,7 @@ enum Pref {
             case .rounded: "圆头，柔和"
             case .song: "苹果提供的宋体，第一次用要下载"
             case .kai: "苹果提供的楷体，第一次用要下载"
-            case .wenkai: "霞鹜文楷 GB，国标字形，带手写感，已内置"
+            case .wenkai: "霞鹜文楷屏幕阅读版的粗细，带手写感，已内置"
             }
         }
 
@@ -43,7 +43,9 @@ enum Pref {
             switch self {
             case .song: bold ? "STSongti-SC-Bold" : "STSongti-SC-Regular"
             case .kai: bold ? "STKaiti-SC-Bold" : "STKaiti-SC-Regular"
-            case .wenkai: bold ? "ClioKai-Medium" : "ClioKai-Regular"
+            // The screen-reading cut, as LXGW WenKai Screen does it: the Medium weight for reading, since Regular reads
+            // thin on a phone. Bold words are the same face with a thin outline (see `ProseText` inline).
+            case .wenkai: "ClioKai-Medium"
             default: nil
             }
         }

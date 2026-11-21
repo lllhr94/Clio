@@ -819,6 +819,11 @@ enum ProseWords {
                 font = UIFont(descriptor: slanted, size: size)
             }
             var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]
+            // 文楷 has one weight for reading and bold: bold words are drawn with a thin outline so they still stand out.
+            if Pref.face == .wenkai, bold || intent.contains(.stronglyEmphasized) {
+                attributes[.strokeWidth] = -3.0
+                attributes[.strokeColor] = ink
+            }
             if intent.contains(.code) {
                 attributes[.font] = Ink.uiMono(max(12, size - 2))
                 attributes[.backgroundColor] = UIColor(Ink.mine)
