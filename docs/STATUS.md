@@ -80,7 +80,7 @@
 
 ## 0.34 风格统一
 
-- C17 已开始逐页检查，改前清单在 `codex/c17-style` 的 PR。
+- C17 已逐页统一字号、间距、列表和关闭按钮。新增写死字号与直接色值检查。聊天主页面、正文和宠物目录继续由 Claude 处理。分支编译通过，见 [GitHub Actions](https://github.com/lllhr94/Clio/actions/runs/44855383786)。[PR #17](https://github.com/lllhr94/Clio/pull/17) 待合入，深浅配色和字号效果待集成包真机走查。
 
 ## 统一打磨清单
 
