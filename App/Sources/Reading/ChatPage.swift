@@ -789,7 +789,10 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
-            Button("问答目录", systemImage: "list.bullet.indent") { outlining = true }
+            Button("问答目录", systemImage: "list.bullet.indent") {
+                outlining = true
+                Task { await loadEverything() }
+            }
             Button("在对话里找", systemImage: "magnifyingglass") { startFinding() }
             Button("重命名对话", systemImage: "pencil") {
                 renameText = team.title(of: chat.key) ?? ""
@@ -1294,14 +1297,17 @@ struct ChatPage: View {
         Haptics.light()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
-        Task {
-            var rounds = 0
-            while chat.hasEarlier, rounds < 30 {
-                await chat.loadEarlier()
-                rounds += 1
-            }
-            shownCount = max(shownCount, chat.lines.count)
+        Task { await loadEverything() }
+    }
+
+    /// The whole conversation on the page, for finding and the outline.
+    private func loadEverything() async {
+        var rounds = 0
+        while chat.hasEarlier, rounds < 30 {
+            await chat.loadEarlier()
+            rounds += 1
         }
+        shownCount = max(shownCount, chat.lines.count)
     }
 
     private func stopFinding() {
