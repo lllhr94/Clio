@@ -1668,6 +1668,15 @@ final class TeamModel: ObservableObject {
         }
     }
 
+    private var toolTails: [String: ToolTail] = [:]
+
+    func toolTail(for key: String) -> ToolTail {
+        if let tail = toolTails[key] { return tail }
+        let tail = ToolTail()
+        toolTails[key] = tail
+        return tail
+    }
+
     private func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
         heard[key] = Date()
         switch event {
@@ -1695,7 +1704,7 @@ final class TeamModel: ObservableObject {
             BackgroundTurn.step(chat: key, doing: label)
             toolCount[key, default: 0] += 1
             doing[key] = label
-            ToolTail.shared.clear()
+            toolTail(for: key).clear()
             notify(key, .tool(label))
         case .retrying(let attempt):
             doing[key] = "连接不稳，正在重连（第 \(attempt) 次）"
@@ -1979,11 +1988,12 @@ final class TeamModel: ObservableObject {
         // The eight workspace tools work wherever this conversation is bound: 书案, 斗室 or a 远山 computer.
         let workplace = self.place(of: key)
         let code = workplace.code
+        let output = toolTail(for: key)
         let kit = WorkspaceKit(
             canSee: canSee,
             secrets: { Vault.allStrings() },
             beforeChange: { host, path in await Snapshots.shared.keep(key, place: code, host: host, path: path) },
-            tail: { ToolTail.shared.add($0) }
+            tail: { output.add($0) }
         )
         all += WorkspaceTools.all(host: workplace.host, kit: kit)
         all += Workspace.tools()

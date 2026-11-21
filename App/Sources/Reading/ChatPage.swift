@@ -294,7 +294,7 @@ struct ChatPage: View {
                 ChatSection { liveReply }
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
                 if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
-                    ToolTailView()
+                    ToolTailView(tail: team.toolTail(for: chat.key))
                         .id("live")
                         .transition(.opacity.combined(with: .offset(y: 8)))
                 }
