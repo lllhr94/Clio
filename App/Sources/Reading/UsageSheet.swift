@@ -260,7 +260,7 @@ struct ContextRing: View {
     var showsNumber = true
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Ink.Space.xs) {
             ZStack {
                 Circle().stroke(Ink.rule, lineWidth: 2.5)
                 Circle()
