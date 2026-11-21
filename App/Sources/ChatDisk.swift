@@ -33,6 +33,26 @@ enum ChatDisk {
         return lock.withLock { failed.count }
     }
 
+    /// Saves now and waits for it, for the few steps that delete something else right after (putting a leaf back,
+    /// undoing a compression): the other copy may only go once this one is surely on disk.
+    static func saveAndWait(_ entries: [Entry], chat: String) throws {
+        let path = Disk.chatFile(chat)
+        let id = UUID()
+        lock.withLock { pending[path] = id }
+        var failure: Error?
+        writer.sync {
+            guard lock.withLock({ pending[path] == id }) else { return }
+            do {
+                try Disk.write(entries, path)
+                lock.withLock { _ = failed.remove(path) }
+            } catch {
+                failure = error
+            }
+            lock.withLock { if pending[path] == id { pending[path] = nil } }
+        }
+        if let failure { throw failure }
+    }
+
     static func remove(_ chat: String) {
         let path = Disk.chatFile(chat)
         schedule(path) { Disk.remove(path) }

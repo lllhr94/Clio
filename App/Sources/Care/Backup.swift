@@ -9,6 +9,7 @@ enum Backup {
     private static var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
     /// Folders under Application Support that are ours to keep. 斗室's Linux is left out: it is large and rebuilt from the app.
     private static let folders = ["Team", "Portraits"]
+    private static let skipped = ["Team/snapshots/", "Team/doccache/"]
 
     struct Summary {
         var files: Int
@@ -22,52 +23,68 @@ enum Backup {
         if unsaved > 0 {
             throw TeamError(message: "有 \(unsaved) 段对话最近一次没存进手机（可能是空间满了），备份里会是旧的。先腾出空间、再发一条消息让它重存，然后再备份。")
         }
-        var out = Data()
-        out.append(magic)
+        // Written straight to a file as it goes: a backup with many photos would not fit in memory as one piece.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmm"
+        let stamp = formatter.string(from: Date())
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
+        let partial = url.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: partial)
+        guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw TeamError(message: "没能在手机上建备份文件。") }
+        let out = try FileHandle(forWritingTo: partial)
+        defer { try? out.close() }
+        try out.write(contentsOf: magic)
         var count = 0
-        func add(_ path: String, _ data: Data) {
+        var bytes = magic.count
+        var unreadable: [String] = []
+        func add(_ path: String, _ data: Data) throws {
             let name = Data(path.utf8)
             var nameLength = UInt32(name.count).bigEndian
             var dataLength = UInt64(data.count).bigEndian
-            out.append(Data(bytes: &nameLength, count: 4))
-            out.append(name)
-            out.append(Data(bytes: &dataLength, count: 8))
-            out.append(data)
+            try out.write(contentsOf: Data(bytes: &nameLength, count: 4))
+            try out.write(contentsOf: name)
+            try out.write(contentsOf: Data(bytes: &dataLength, count: 8))
+            try out.write(contentsOf: data)
+            bytes += 12 + name.count + data.count
             count += 1
         }
         let manager = FileManager.default
         for folder in folders {
             let base = support.appendingPathComponent(folder, isDirectory: true)
             guard let walker = manager.enumerator(at: base, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
-            for case let url as URL in walker {
-                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-                      let data = try? Data(contentsOf: url) else { continue }
-                let relative = String(url.standardizedFileURL.path.dropFirst(support.standardizedFileURL.path.count + 1))
-                add(relative, data)
+            for case let file as URL in walker {
+                guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let relative = String(file.standardizedFileURL.path.dropFirst(support.standardizedFileURL.path.count + 1))
+                // Copies kept for 「重来」 and a cache of read documents belong to this phone's work, not to a backup.
+                if skipped.contains(where: { relative.hasPrefix($0) }) { continue }
+                // One at a time, and a file that cannot be read is named, not silently left out.
+                guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { unreadable.append(relative); continue }
+                try autoreleasepool { try add(relative, data) }
             }
+        }
+        if !unreadable.isEmpty {
+            try? manager.removeItem(at: partial)
+            throw TeamError(message: "有 \(unreadable.count) 个文件读不出来，备份没做完：\(unreadable.prefix(3).joined(separator: "、"))")
         }
         var settings: [String: Any] = [:]
         for (key, value) in UserDefaults.standard.dictionaryRepresentation() where prefixes.contains(where: { key.hasPrefix($0) }) {
             settings[key] = value
         }
         if let data = try? PropertyListSerialization.data(fromPropertyList: settings, format: .binary, options: 0) {
-            add("#settings", data)
+            try add("#settings", data)
         }
         if withKeys {
             var keys: [String: String] = [:]
             for id in endpoints {
                 if let key = Vault.load(String.self, key: "key-\(id)") { keys[id] = key }
             }
-            if let data = try? JSONEncoder().encode(keys) { add("#keys", data) }
+            if let data = try? JSONEncoder().encode(keys) { try add("#keys", data) }
         }
-        // Date and time in the name, so backups sort and several a day do not replace each other on a drive.
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HHmm"
-        let stamp = formatter.string(from: Date())
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
-        try out.write(to: url, options: .atomic)
-        return (url, Summary(files: count, bytes: out.count))
+        try out.synchronize()
+        try? manager.removeItem(at: url)
+        try manager.moveItem(at: partial, to: url)
+        return (url, Summary(files: count, bytes: bytes))
     }
 
     /// One file in a backup: where it goes and where its bytes are in the archive.
@@ -132,9 +149,10 @@ enum Backup {
             count += 1
         }
 
-        // 3. Swap, folder by folder, putting the old one back if a step fails.
-        ChatDisk.finishWrites()
+        // 3. Swap, folder by folder, putting the old one back if a step fails. Saving stops first, then the last queued
+        // saves are let through (they find saving stopped), so none lands in the middle of the swap.
         Disk.frozen = true
+        ChatDisk.finishWrites()
         Disk.forgetPhotos()
         try manager.createDirectory(at: old, withIntermediateDirectories: true)
         var swapped: [String] = []

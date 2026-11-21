@@ -730,7 +730,7 @@ final class TeamModel: ObservableObject {
 
     func history(_ key: String) -> [Entry] {
         if let kept = entries[key] { return kept }
-        let loaded = keeping ? (Disk.load([Entry].self, Disk.chatFile(key)) ?? []) : []
+        let loaded = keeping ? Disk.loadChat(key) : []
         entries[key] = loaded
         return loaded
     }
@@ -739,7 +739,7 @@ final class TeamModel: ObservableObject {
         if let kept = entries[key] { return kept }
         guard keeping else { return [] }
         let loaded = await Task.detached(priority: .userInitiated) {
-            Disk.load([Entry].self, Disk.chatFile(key)) ?? []
+            Disk.loadChat(key)
         }.value
         if let newer = entries[key] { return newer }
         if !Task.isCancelled { entries[key] = loaded }
@@ -871,7 +871,7 @@ final class TeamModel: ObservableObject {
 
     // MARK: Searching
 
-    struct Hit: Identifiable {
+    struct Hit: Identifiable, Sendable {
         let id = UUID()
         var key: String
         var name: String
@@ -881,36 +881,44 @@ final class TeamModel: ObservableObject {
         var leaf: String?
     }
 
-    /// Finds the words in every conversation, now and put aside. Newest first.
-    func search(_ words: String) -> [Hit] {
+    /// Finds the words in every conversation, now and put aside. Newest first. The reading and matching happen off
+    /// the main thread, and conversations not open are read for this search only, not kept in memory.
+    func search(_ words: String) async -> [Hit] {
         let needle = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard needle.count >= 1 else { return [] }
         var chats: [(String, String)] = bots.map { (Self.key(bot: $0.id), $0.name) }
         chats += rooms.map { (Self.key(room: $0.id), $0.name) }
-        var hits: [Hit] = []
-        func scan(_ list: [Entry], key: String, name: String, leaf: String?) {
-            for entry in list.reversed() where entry.note != true && entry.message.role != .tool {
-                let text = entry.message.text
-                guard let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
-                let start = text.index(range.lowerBound, offsetBy: -24, limitedBy: text.startIndex) ?? text.startIndex
-                let end = text.index(range.upperBound, offsetBy: 60, limitedBy: text.endIndex) ?? text.endIndex
-                let snippet = (start == text.startIndex ? "" : "…") + text[start..<end].replacingOccurrences(of: "\n", with: " ") + (end == text.endIndex ? "" : "…")
-                hits.append(Hit(key: key, name: name, snippet: snippet, at: entry.at, leaf: leaf))
-                if hits.count > 200 { return }
-            }
+        let keeping = self.keeping
+        let sources = chats.map { key, name in
+            (key: key, name: name, open: entries[key], leaves: leaves(key).map { (id: $0.id, title: $0.title, at: $0.at) })
         }
-        for (key, name) in chats {
-            scan(history(key), key: key, name: name, leaf: nil)
-            for leaf in leaves(key) {
-                if leaf.title.localizedCaseInsensitiveContains(needle) {
-                    hits.append(Hit(key: key, name: name, snippet: leaf.title, at: leaf.at, leaf: leaf.id))
-                }
-                if keeping, let kept = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) {
-                    scan(kept, key: key, name: name, leaf: leaf.id)
+        return await Task.detached(priority: .userInitiated) {
+            var hits: [Hit] = []
+            func scan(_ list: [Entry], key: String, name: String, leaf: String?) {
+                for entry in list.reversed() where entry.note != true && entry.message.role != .tool {
+                    if Task.isCancelled || hits.count > 200 { return }
+                    let text = entry.message.text
+                    guard let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
+                    let start = text.index(range.lowerBound, offsetBy: -24, limitedBy: text.startIndex) ?? text.startIndex
+                    let end = text.index(range.upperBound, offsetBy: 60, limitedBy: text.endIndex) ?? text.endIndex
+                    let snippet = (start == text.startIndex ? "" : "…") + text[start..<end].replacingOccurrences(of: "\n", with: " ") + (end == text.endIndex ? "" : "…")
+                    hits.append(Hit(key: key, name: name, snippet: snippet, at: entry.at, leaf: leaf))
                 }
             }
-        }
-        return Array(hits.sorted { $0.at > $1.at }.prefix(80))
+            for source in sources {
+                if Task.isCancelled { break }
+                scan(source.open ?? (keeping ? Disk.loadChat(source.key) : []), key: source.key, name: source.name, leaf: nil)
+                for leaf in source.leaves {
+                    if leaf.title.localizedCaseInsensitiveContains(needle) {
+                        hits.append(Hit(key: source.key, name: source.name, snippet: leaf.title, at: leaf.at, leaf: leaf.id))
+                    }
+                    if keeping, let kept = Disk.load([Entry].self, Self.leafFile(source.key, leaf.id)) {
+                        scan(kept, key: source.key, name: source.name, leaf: leaf.id)
+                    }
+                }
+            }
+            return Array(hits.sorted { $0.at > $1.at }.prefix(80))
+        }.value
     }
 
     // MARK: Compressing
@@ -1046,7 +1054,7 @@ final class TeamModel: ObservableObject {
     }
 
     private static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
-    private static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
+    nonisolated private static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
 
     func entries(in leaf: Leaf, of key: String) -> [Entry] {
         Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []
@@ -1089,8 +1097,12 @@ final class TeamModel: ObservableObject {
         guard keeping, let marker = leaf.marker, let original = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) else { return }
         stop(key)
         let restored = Turns.unfolded(original: original, current: history(key), marker: marker)
+        // The kept original is deleted below: only once the restored conversation is surely saved.
+        do { try ChatDisk.saveAndWait(restored, chat: key) } catch {
+            fail(key, "没能还原：存不进手机（\(error.localizedDescription)）。原文还在，腾出空间后再试。")
+            return
+        }
         entries[key] = restored
-        ChatDisk.save(restored, chat: key)
         setSummary(key, Disk.load(String.self, Self.leafSummary(key, leaf.id)))
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
@@ -1132,24 +1144,33 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    /// Puts the current conversation aside and starts an empty one. Nothing happens to an empty chat.
-    func turnLeaf(_ key: String) {
+    /// Puts the current conversation aside and starts an empty one. Nothing happens to an empty chat. False when the
+    /// conversation could not be put aside (the disk is full, say): then it stays as it is.
+    @discardableResult
+    func turnLeaf(_ key: String) -> Bool {
         stop(key)
         epochs[key, default: 0] += 1
         browser.release(key)
         let current = history(key)
-        guard current.contains(where: { $0.note != true }) else { return }
+        guard current.contains(where: { $0.note != true }) else { return true }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
         let named = options(key).title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
         let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
+        if keeping {
+            // The page is emptied below: only once its copy is surely on disk. A failed copy leaves everything as it was.
+            do {
+                try Disk.write(current, Self.leafFile(key, leaf.id))
+                if let old = summary(key) { try Disk.write(old, Self.leafSummary(key, leaf.id)) }
+            } catch {
+                Disk.remove(Self.leafFile(key, leaf.id))
+                fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
+                return false
+            }
+        }
         var value = options(key)
         value.title = nil
         setOptions(key, value)
-        if keeping {
-            Disk.save(current, Self.leafFile(key, leaf.id))
-            if let old = summary(key) { Disk.save(old, Self.leafSummary(key, leaf.id)) }
-        }
         setSummary(key, nil)
         setLeaves(key, [leaf] + leaves(key))
         if named == nil { nameLeaf(key, leaf.id, from: current) }
@@ -1157,6 +1178,7 @@ final class TeamModel: ObservableObject {
         if keeping { ChatDisk.save([Entry](), chat: key) }
         clearPreview(key)
         notify(key, .changed)
+        return true
     }
 
     /// 从这里另起一叶: the conversation so far goes into a leaf, untouched, and a new one begins with everything
@@ -1165,7 +1187,7 @@ final class TeamModel: ObservableObject {
         let current = history(key)
         guard let index = current.firstIndex(where: { $0.id == id }) else { return }
         let kept = Array(current[...index]).filter { $0.note != true }
-        turnLeaf(key)
+        guard turnLeaf(key) else { return }
         let restarted = kept.map { entry -> Entry in
             var copy = entry
             copy.id = UUID().uuidString
@@ -1217,14 +1239,18 @@ final class TeamModel: ObservableObject {
             }
         }
         let keptSummary = keeping ? Disk.load(String.self, Self.leafSummary(key, leaf.id)) : nil
-        turnLeaf(key)
+        guard turnLeaf(key) else { return }
+        if keeping {
+            // The leaf's own file goes only once the page it became is surely saved.
+            do { try ChatDisk.saveAndWait(kept, chat: key) } catch {
+                fail(key, "没能翻回这一段：存不进手机（\(error.localizedDescription)）。它还在絮语页里。")
+                return
+            }
+        }
         setSummary(key, keptSummary)
         if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
         entries[key] = kept
-        if keeping {
-            ChatDisk.save(kept, chat: key)
-            Disk.remove(Self.leafFile(key, leaf.id))
-        }
+        if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
         touch(key, preview: last)

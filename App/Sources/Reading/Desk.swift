@@ -146,6 +146,7 @@ struct Desk: View {
     @State private var renameText = ""
     @State private var sideQuery = ""
     @State private var query = ""
+    @State private var searchHits: [TeamModel.Hit] = []
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
 
@@ -578,9 +579,17 @@ struct Desk: View {
                 .paperCard()
                 .padding(.bottom, Ink.Space.m)
                 .transition(.opacity)
+                // Looked up a moment after typing stops, off the main thread (it reads every conversation).
+                .task(id: query) {
+                    let words = query
+                    guard !words.trimmingCharacters(in: .whitespaces).isEmpty else { searchHits = []; return }
+                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                    let found = await team.search(words)
+                    if !Task.isCancelled, words == query { searchHits = found }
+                }
         }
         if searching && !query.trimmingCharacters(in: .whitespaces).isEmpty {
-            let hits = team.search(query)
+            let hits = searchHits
             if hits.isEmpty {
                 Text("没找到「\(query)」。").font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(.vertical, Ink.Space.l)
             }

@@ -173,7 +173,10 @@ enum Disk {
     }
 
     static func save<Value: Encodable>(_ value: Value, _ name: String) {
-        try? write(value, name)
+        do { try write(value, name) } catch {
+            // Settings, companions and memory are kept in memory and saved again on the next change; say it failed.
+            if !frozen { Diag.note("没存进手机：\(name)（\(error.localizedDescription)）") }
+        }
     }
 
     static func write<Value: Encodable>(_ value: Value, _ name: String) throws {
@@ -194,6 +197,27 @@ enum Disk {
         set { frozenFlag.withLock { $0 = newValue } }
     }
     private static let frozenFlag = Mutex(false)
+
+    /// A conversation's messages. A file that cannot be read as a whole is never taken for an empty conversation:
+    /// that would let the next message overwrite it. It is copied aside first (…broken-<time>.json, kept out of the
+    /// way), and every message that can still be read is kept.
+    static func loadChat(_ key: String) -> [Entry] {
+        let name = chatFile(key)
+        guard let data = try? Data(contentsOf: url(name)) else { return [] }
+        if let entries = try? JSONDecoder().decode([Entry].self, from: data) { return entries }
+        let aside = name.replacingOccurrences(of: ".json", with: ".broken-\(Int(Date().timeIntervalSince1970)).json")
+        if !frozen { try? data.write(to: url(aside), options: .atomic) }
+        let readable = ((try? JSONDecoder().decode([Lenient].self, from: data)) ?? []).compactMap(\.entry)
+        DispatchQueue.main.async {
+            Diag.note("对话文件 \(name) 有坏的地方：读出了 \(readable.count) 条，原文件另存为 \(aside)")
+        }
+        return readable
+    }
+
+    private struct Lenient: Decodable {
+        let entry: Entry?
+        init(from decoder: Decoder) throws { entry = try? Entry(from: decoder) }
+    }
 
     static func chatFile(_ key: String) -> String {
         "chats/\(key.replacingOccurrences(of: "/", with: "_")).json"
