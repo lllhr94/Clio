@@ -448,7 +448,7 @@ struct RoomEditor: View {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: Words.t("雅集的名字"), note: Words.t("不填就用旅伴们的名字"))
                             TextField("比如：周末去哪玩", text: $name)
-                                .font(Ink.serif(18, bold: true))
+                                .font(Ink.serif(Ink.Size.body, bold: true))
                                 .paperField()
                         }
 
