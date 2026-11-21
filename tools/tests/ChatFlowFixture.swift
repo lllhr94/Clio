@@ -38,19 +38,23 @@ private func check<T: Equatable>(_ actual: T, _ expected: T, _ name: String) thr
 @MainActor
 private final class Clock {
     private var sleepers: [(UInt64, CheckedContinuation<Void, Never>)] = []
+    private var observer: (count: Int, continuation: CheckedContinuation<Void, Never>)?
 
     func sleep(nanoseconds: UInt64) async throws {
         try Task.checkCancellation()
-        await withCheckedContinuation { sleepers.append((nanoseconds, $0)) }
+        await withCheckedContinuation { continuation in
+            sleepers.append((nanoseconds, continuation))
+            if let waiting = observer, sleepers.count >= waiting.count {
+                observer = nil
+                waiting.continuation.resume()
+            }
+        }
         try Task.checkCancellation()
     }
 
-    func waitForSleepers(_ count: Int) async throws {
-        for _ in 0..<1_000 {
-            if sleepers.count >= count { return }
-            await Task.yield()
-        }
-        throw Failure("Expected \(count) queued scroll sleeps, got \(sleepers.count)")
+    func waitForSleepers(_ count: Int) async {
+        guard sleepers.count < count else { return }
+        await withCheckedContinuation { observer = (count, $0) }
     }
 
     func advance(_ duration: UInt64) throws {
@@ -160,9 +164,9 @@ private enum ChatFlowTests {
         try check(flow.following, true, "Resume within 80 points including the composer inset")
 
         let scheduled = flow.requestFollow()
-        try await flow.clock.waitForSleepers(1)
+        await flow.clock.waitForSleepers(1)
         try flow.clock.advance(24_000_000)
-        try await flow.clock.waitForSleepers(1)
+        await flow.clock.waitForSleepers(1)
         flow.changePhase(from: .idle, to: .interacting, at: 300)
         try flow.clock.advance(350_000_000)
         await scheduled?.value
@@ -173,9 +177,9 @@ private enum ChatFlowTests {
     static func latestFollowWins() async throws {
         let flow = FlowFixture()
         let first = flow.requestFollow()
-        try await flow.clock.waitForSleepers(1)
+        await flow.clock.waitForSleepers(1)
         let latest = flow.requestFollow(settle: false)
-        try await flow.clock.waitForSleepers(2)
+        await flow.clock.waitForSleepers(2)
 
         try check(first?.isCancelled, true, "A new follow cancels the pending request")
         try flow.clock.advance(24_000_000)
@@ -195,16 +199,16 @@ private enum ChatFlowTests {
         try check(flow.photos, [], "Sending clears attached photos")
         try check(flow.files, [], "Sending clears attached files")
         try check(flow.following, true, "Sending resumes following")
-        try await flow.clock.waitForSleepers(1)
+        await flow.clock.waitForSleepers(1)
 
         // A new line sends another follow request as observed by ChatPage.
         let message = flow.requestFollow()
-        try await flow.clock.waitForSleepers(2)
+        await flow.clock.waitForSleepers(2)
         try flow.clock.advance(24_000_000)
         await send?.value
         try check(flow.scrolls, [], "Clearing the composer does not add a separate scroll")
         try flow.clock.advance(24_000_000)
-        try await flow.clock.waitForSleepers(1)
+        await flow.clock.waitForSleepers(1)
         try check(flow.scrolls, [false], "Send and line insertion share the first scroll")
         try flow.clock.advance(350_000_000)
         await message?.value

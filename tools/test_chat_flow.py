@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,19 @@ def fixture() -> str:
     return template
 
 
+def run(command: list[str], label: str, timeout: int) -> None:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"::error::{label} timed out after {timeout}s")
+    print(result.stdout, end="")
+    print(result.stderr, file=sys.stderr, end="")
+    if result.returncode:
+        # The check annotation is also available when the job log cannot be downloaded.
+        detail = (result.stderr or result.stdout).strip()[:1800].replace("\n", "%0A")
+        raise SystemExit(f"::error::{label} exited with {result.returncode}: {detail}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--swiftc", default="swiftc", help="Swift compiler path")
@@ -51,8 +65,8 @@ def main():
         source = Path(directory) / "ChatFlowTests.swift"
         binary = source.with_suffix("")
         source.write_text(fixture())
-        subprocess.run([args.swiftc, "-swift-version", "5", "-parse-as-library", str(source), "-o", str(binary)], check=True, timeout=90)
-        subprocess.run([str(binary)], check=True, timeout=30)
+        run([args.swiftc, "-swift-version", "5", "-parse-as-library", str(source), "-o", str(binary)], "Compile chat flow fixture", 90)
+        run([str(binary)], "Run chat flow fixture", 30)
 
 
 if __name__ == "__main__":
