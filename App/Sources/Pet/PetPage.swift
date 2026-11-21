@@ -7,6 +7,7 @@ struct PetPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var library = PetLibrary.shared
     @State private var importing = false
+    @State private var installing = false
     @State private var notice: String?
     @State private var deleting: PetPack?
 
@@ -22,10 +23,11 @@ struct PetPage: View {
                     }
 
                     Section {
+                        if library.loading || installing { ProgressView(L.t("loading.generic")) }
                         ForEach(library.packs) { pack in
                             choiceRow(id: pack.id, title: pack.name, line: [pack.author, pack.license].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .contextMenu {
-                                    if library.canDelete(pack) {
+                                    if !installing, library.canDelete(pack) {
                                         Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = pack }
                                     }
                                 }
@@ -35,6 +37,7 @@ struct PetPage: View {
                         } label: {
                             Label("导入宠物", systemImage: "square.and.arrow.down")
                         }
+                        .disabled(library.loading || installing)
                     } header: { Text(L.t("pet.choose")) } footer: {
                         Text("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。")
                     }
@@ -78,12 +81,16 @@ struct PetPage: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.zip, .png, .gif, .webP]) { result in
                 guard case .success(let url) = result else { return }
-                do {
-                    let pack = try library.install(url)
-                    library.choice = pack.id
-                    notice = "装好了：\(pack.name)"
-                } catch {
-                    notice = "没装上：\(error.localizedDescription)"
+                installing = true
+                Task {
+                    defer { installing = false }
+                    do {
+                        let pack = try await library.install(url)
+                        library.choice = pack.id
+                        notice = "装好了：\(pack.name)"
+                    } catch {
+                        notice = "没装上：\(error.localizedDescription)"
+                    }
                 }
             }
             .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {

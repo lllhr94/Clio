@@ -10,6 +10,8 @@ struct HillsPage: View {
     @State private var tested: [String: String] = [:]
     @State private var refreshing: String?
     @State private var copied = false
+    @State private var publicKey: String?
+    @State private var fingerprints: [String: String] = [:]
     @State private var terminalHost: Hills.Host?
     @State private var browserAsk: Hills.Host?
     /// Host id → what the browser installation is doing now.
@@ -40,13 +42,13 @@ struct HillsPage: View {
                             VStack(alignment: .leading, spacing: Ink.Space.m) {
                                 Text("用钥匙登录更安全。把下面这行加进服务器的 ~/.ssh/authorized_keys，主机里选「用钥匙」。")
                                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                Text(Hills.publicKey)
+                                Text(publicKey ?? L.t("loading.calculating"))
                                     .font(Ink.mono(Ink.Size.small))
                                     .foregroundStyle(Ink.ink)
                                     .textSelection(.enabled)
                                     .lineLimit(3)
                                 Button {
-                                    UIPasteboard.general.string = Hills.publicKey
+                                    UIPasteboard.general.string = publicKey
                                     Haptics.tick(0.6)
                                     copied = true
                                 } label: {
@@ -55,6 +57,7 @@ struct HillsPage: View {
                                         .foregroundStyle(Ink.accent)
                                 }
                                 .buttonStyle(PressStyle())
+                                .disabled(publicKey == nil)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(Ink.Space.l)
@@ -88,7 +91,11 @@ struct HillsPage: View {
             } message: {
                 Text("会装上 Node.js、Playwright 的 MCP 服务和 Chromium（大约 400 MB，要几分钟），让它只在那台电脑自己的 127.0.0.1:8931 上听，开机自启。手机经 SSH 隧道连过去，所以不用在安全组放行任何端口，网上也没人能直接连。\n\n需要 root 或免密 sudo。")
             }
-            .task { resumeInstalls() }
+            .task {
+                resumeInstalls()
+                publicKey = await Task.detached(priority: .userInitiated) { Hills.publicKey }.value
+            }
+            .task(id: hills.hosts) { await loadFingerprints() }
         }
     }
 
@@ -125,12 +132,13 @@ struct HillsPage: View {
                     .foregroundStyle(Ink.accent)
                     .disabled(testing != nil)
             }
-            if let key = HostKeyKeeper.known(host.address, host.port) {
+            if let fingerprint = fingerprints[host.id] {
                 HStack(spacing: Ink.Space.s) {
-                    Text("指纹 " + HostKeyKeeper.fingerprint(key)).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
+                    Text("指纹 " + fingerprint).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button("重新信任") {
                         HostKeyKeeper.forget(host.address, host.port)
+                        fingerprints[host.id] = nil
                         tested[host.id] = "已忘掉旧指纹，下次连接时记住新的。"
                     }
                     .font(.system(size: Ink.Size.small, weight: .medium))
@@ -273,6 +281,16 @@ struct HillsPage: View {
         }
     }
 
+    private func loadFingerprints() async {
+        let hosts = hills.hosts
+        let found = await Task.detached(priority: .utility) {
+            Dictionary(uniqueKeysWithValues: hosts.compactMap { host in
+                HostKeyKeeper.known(host.address, host.port).map { (host.id, HostKeyKeeper.fingerprint($0)) }
+            })
+        }.value
+        if !Task.isCancelled { fingerprints = found }
+    }
+
     private func test(_ host: Hills.Host) {
         testing = host.id
         tested[host.id] = nil
@@ -280,6 +298,7 @@ struct HillsPage: View {
             do {
                 let result = try await Hills.run("uname -a; uptime", on: host, timeout: 25)
                 tested[host.id] = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                await loadFingerprints()
                 Haptics.thud()
             } catch {
                 tested[host.id] = "连不上：\(error.localizedDescription)"
@@ -293,6 +312,7 @@ struct HillsPage: View {
 private struct HostEditor: View {
     @State var host: Hills.Host
     @State private var password = ""
+    @State private var hasPassword = false
     @State private var port = ""
     @Environment(\.dismiss) private var dismiss
 
@@ -313,7 +333,7 @@ private struct HostEditor: View {
                     }
                     .pickerStyle(.segmented)
                     if !host.useKey {
-                        SecureField(Vault.load(String.self, key: "hill.\(host.id)") == nil ? "密码" : "密码（已存，不改就留空）", text: $password)
+                        SecureField(hasPassword ? "密码（已存，不改就留空）" : "密码", text: $password)
                     }
                 } footer: {
                     Text(host.useKey ? Words.t("记得先把「远山」页里的公钥加到服务器上。") : "密码只存在这台手机的钥匙串里。")
@@ -337,6 +357,7 @@ private struct HostEditor: View {
                 }
             }
             .onAppear { port = String(host.port) }
+            .task(id: host.id) { hasPassword = await Vault.readString("hill.\(host.id)") != nil }
         }
     }
 }
@@ -344,6 +365,7 @@ private struct HostEditor: View {
 private struct ServerEditor: View {
     @State var server: Hills.Server
     @State private var token = ""
+    @State private var hasToken = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -372,7 +394,7 @@ private struct ServerEditor: View {
                 }
                 Section {
                     TextField(server.tunnelHost == nil ? "https://…/mcp" : Hills.browserAddress, text: $server.url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    SecureField(Vault.load(String.self, key: "mcp.\(server.id)") == nil ? "令牌（可不填）" : "令牌（已存，不改就留空）", text: $token)
+                    SecureField(hasToken ? "令牌（已存，不改就留空）" : "令牌（可不填）", text: $token)
                 } header: { Text(server.tunnelHost == nil ? L.t("remote.address") : L.t("remote.tunneledAddress")) } footer: {
                     Text("支持 Streamable HTTP 的 MCP 服务。令牌会作为 Authorization: Bearer 发送。")
                 }
@@ -393,6 +415,7 @@ private struct ServerEditor: View {
             }
             }
             .paperForm()
+            .task(id: server.id) { hasToken = await Vault.readString("mcp.\(server.id)") != nil }
             .navigationTitle(server.name.isEmpty ? L.t("remote.newService") : server.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

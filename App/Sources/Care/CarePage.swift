@@ -10,6 +10,7 @@ struct CarePage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
     @State private var made: URL?
+    @State private var sizeText = ""
     @State private var making = false
     @State private var restoring = false
     @State private var restored = false
@@ -67,7 +68,7 @@ struct CarePage: View {
                     row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
                     row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
                     row(Words.t("拾遗"), "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
-                    row("数据占用", sizeText)
+                    row("数据占用", sizeText.isEmpty ? L.t("loading.calculating") : sizeText)
                     row(Words.t("斗室"), denText)
                     row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
                 } header: { Text(L.t("settings.diagnosticInfo")) }
@@ -131,6 +132,7 @@ struct CarePage: View {
             .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .task { await measureStorage() }
             .task {
                 guard openRestore else { return }
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
@@ -175,22 +177,27 @@ struct CarePage: View {
         }
     }
 
-    private var sizeText: String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        var total: Int64 = 0
-        if let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) {
-            for case let url as URL in walker {
-                total += Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
+    private func measureStorage() async {
+        let work = Task.detached(priority: .utility) {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            var total: Int64 = 0
+            if let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) {
+                for case let url as URL in walker {
+                    if Task.isCancelled { break }
+                    total += Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
+                }
             }
+            return total
         }
-        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        let total = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if !Task.isCancelled { sizeText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file) }
     }
 
     private var report: String {
         var lines = ["Clio 诊断 \(Date().formatted())"]
         lines.append("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
         lines.append("\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-        lines.append("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText)")
+        lines.append("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)")
         lines.append("斗室：\(denText)")
         for endpoint in team.settings.endpoints {
             lines.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
@@ -227,7 +234,7 @@ struct CarePage: View {
         Task {
             for endpoint in team.settings.endpoints {
                 probes[endpoint.id] = "在试…"
-                guard let model = endpoint.models.first, let key = team.apiKey(for: endpoint.id), !key.isEmpty else {
+                guard let model = endpoint.models.first, let key = await Vault.readString("key-\(endpoint.id)"), !key.isEmpty else {
                     probes[endpoint.id] = "没有模型或密钥"
                     continue
                 }

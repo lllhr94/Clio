@@ -3,10 +3,10 @@ import UIKit
 
 /// A pet made of drawn frames, in the "schema 1" pet-pack format shared by DSH Go and Clawd on Desk themes:
 /// a `pack.json` and the sprite sheets it names. Read here on its own; nothing of their code is used.
-struct PetPack: Identifiable {
-    struct Box { var x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+struct PetPack: Identifiable, Sendable {
+    struct Box: Sendable { var x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
 
-    struct Anim {
+    struct Anim: Sendable {
         var sheet: String
         var frameW: Int
         var frameH: Int
