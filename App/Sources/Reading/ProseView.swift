@@ -905,7 +905,11 @@ private struct ProseText: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.open = openURL
-        if !view.attributedText.isEqual(to: attributed) { view.attributedText = attributed }
+        // Compared by its words only: the colours inside are made fresh on every redraw and never compare equal, so the
+        // old check set the text again each time the chat redrew, and that wiped a selection the moment it was made.
+        // A change of face, size or light/dark gives the whole block a new identity (see `SelectableProse`), so it is
+        // built anew then anyway.
+        if view.attributedText.string != attributed.string { view.attributedText = attributed }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
