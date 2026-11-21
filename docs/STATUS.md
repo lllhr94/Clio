@@ -2,6 +2,14 @@
 
 > **2026-11-23 起约一个月 Claude 不在**，交接见 `docs/HANDOFF.md`：Codex 临时合并和打包，Antigravity 照常领任务，正式发版仍只等主人说「发」。
 
+**11-22 夜（Claude）**：
+- 模拟器巡检截图：CI 的截图里新加了长对话、跳到底、正在出字、纯黑、大字号、小屏（iPhone SE）几组（`Shots.swift`、`build.yml`）。截图改成小 JPEG 推到 `shots/<run>` 分支。
+- 从截图里修的：回答写完那一下的重影（流式样式和定稿样式交叉淡入，两份同时可见）；筛选胶囊被硬切；设色页三个「设色」。
+- A1 改由 Claude 做完：字号、行高、明暗全局即时生效；字体下载后重画；称谓跟随；深色几处。
+- 列表 / 表格 / 引用中间隔一行，边写边显示不再断开（`StreamBlocks`，夹具测试已改成要求连着）。
+- 写了 `docs/releases/0.34.md` 草稿；交接见 `docs/HANDOFF.md`。
+- 仍未确认：29.593 秒卡顿的原因；真机上空白页是否彻底没了。
+
 最后更新：2026-11-21（Claude 交接，额度到期前写）。接手前先读 `AGENTS.md`，谁做什么见 `docs/TASKS.md`。
 
 更早的完整规划和执行手册在主人的 claude.ai 文档里（只有主人能打开）：https://claude.ai/artifact/UnCgDX6xF2ZfHytSFLRsVi 。仓库里以本文件为准。
