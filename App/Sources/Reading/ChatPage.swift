@@ -616,6 +616,18 @@ struct ChatPage: View {
         .sheet(item: $reading) { file in
             NavigationStack { StudyFile(url: file.url) }
         }
+        .sheet(isPresented: $outlining) {
+            OutlineSheet(pairs: outline) { id in
+                outlining = false
+                shownCount = max(shownCount, chat.lines.count)
+                following = false
+                Task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
         .sheet(item: $picking) { line in
             PickWords(text: line.text)
         }
@@ -777,6 +789,7 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
+            Button("问答目录", systemImage: "list.bullet.indent") { outlining = true }
             Button("在对话里找", systemImage: "magnifyingglass") { startFinding() }
             Button("重命名对话", systemImage: "pencil") {
                 renameText = team.title(of: chat.key) ?? ""
@@ -1246,6 +1259,19 @@ struct ChatPage: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+    }
+
+    // MARK: Outline
+
+    /// 问答目录: each thing you said, with how the answer began.
+    private var outline: [OutlineSheet.Pair] {
+        var pairs: [OutlineSheet.Pair] = []
+        let lines = chat.lines
+        for (index, line) in lines.enumerated() where line.kind == .user && !line.text.isEmpty {
+            let answer = lines[(index + 1)...].prefix { $0.kind != .user }.first { $0.kind == .bot && !$0.text.isEmpty }?.text
+            pairs.append(.init(id: line.id, question: line.text, answer: answer.map { String(Pulse.split($0).rest.prefix(80)) }, at: line.at))
+        }
+        return pairs
     }
 
     // MARK: Finding
@@ -2091,6 +2117,7 @@ struct ChatPage: View {
     @State private var workingSince: Date?
     @State private var cardOpen = false
     @State private var glancing = false
+    @State private var outlining = false
     @State private var renaming = false
     @State private var renameText = ""
     @State private var tuningOpen = false
@@ -3050,5 +3077,79 @@ private struct Selectable: UIViewRepresentable {
             .foregroundColor: UIColor(Ink.ink),
             .paragraphStyle: style,
         ])
+    }
+}
+
+
+/// 问答目录: the conversation as a list of what you asked and how each answer began; search it, tap to go there.
+/// After Kelivo's mini map (only the idea).
+struct OutlineSheet: View {
+    struct Pair: Identifiable {
+        let id: String
+        let question: String
+        let answer: String?
+        let at: Double?
+    }
+
+    let pairs: [Pair]
+    let go: (String) -> Void
+    @State private var query = ""
+    @Environment(\.dismiss) private var dismiss
+
+    private var shown: [Pair] {
+        let wanted = query.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return pairs }
+        return pairs.filter { $0.question.localizedCaseInsensitiveContains(wanted) || ($0.answer?.localizedCaseInsensitiveContains(wanted) ?? false) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(shown.enumerated()), id: \.element.id) { index, pair in
+                    Button {
+                        Haptics.light()
+                        go(pair.id)
+                    } label: {
+                        HStack(alignment: .top, spacing: Ink.Space.m) {
+                            Text("\(index + 1)")
+                                .font(Ink.footnote.monospacedDigit())
+                                .foregroundStyle(Ink.inkFaint)
+                                .frame(width: 24, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                                Text(pair.question)
+                                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                                    .foregroundStyle(Ink.ink)
+                                    .lineLimit(2)
+                                if let answer = pair.answer, !answer.isEmpty {
+                                    Text(answer)
+                                        .font(.system(size: Ink.Size.small))
+                                        .foregroundStyle(Ink.inkSoft)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .padding(.vertical, Ink.Space.xs)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Ink.paperRaised)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Ink.paper.ignoresSafeArea())
+            .overlay {
+                if shown.isEmpty {
+                    Text(pairs.isEmpty ? "还没有问答" : "没找到")
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkFaint)
+                }
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找问过的话")
+            .navigationTitle("问答目录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+            }
+        }
     }
 }
