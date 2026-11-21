@@ -48,6 +48,8 @@ struct ChatLine: Identifiable, Equatable {
     var next: Explain.Next?
     /// A compression line: drawn as a divider, the chat above it still there.
     var fold = false
+    /// When it was said (milliseconds), for the time between turns.
+    var at: Double?
 }
 
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
@@ -272,6 +274,8 @@ final class ChatModel: ObservableObject {
             let count = out[index].tools.count
             out[index].text = out[index].live ? (count > 0 ? "正在干活，第 \(count) 步" : "正在干活") : "完成 \(count) 步"
         }
+        let stamps = Dictionary(all.map { ($0.id, $0.at) }, uniquingKeysWith: { first, _ in first })
+        for index in out.indices { out[index].at = stamps[out[index].id] }
         return out
     }
 

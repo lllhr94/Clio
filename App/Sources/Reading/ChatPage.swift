@@ -215,8 +215,9 @@ struct ChatPage: View {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
                 if chat.lines.count > shownCount { earlier }
+                let heads = openers
                 ForEach(chat.lines.suffix(shownCount)) { line in
-                    row(line)
+                    turnRow(line, opens: heads.contains(line.id))
                         // A turn starts with what you said: more room above it than between the parts of a reply.
                         .padding(.top, line.kind == .user && line.id != chat.lines.first?.id ? Ink.Space.l : 0)
                         .id(line.id)
@@ -1149,12 +1150,6 @@ struct ChatPage: View {
             .padding(.leading, Ink.Space.huge)
         case .bot:
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                if isRoom, let speaker = team.bots.first(where: { $0.id == line.speaker }) {
-                    HStack(spacing: Ink.Space.s) {
-                        PetStill(size: 22, wash: Ink.wash(for: speaker), avatar: true, bot: speaker)
-                        Text(speaker.name).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
-                    }
-                }
                 if let reasoning = line.reasoning, Pref.showThinking {
                     ThinkingBox(text: reasoning)
                 }
@@ -1203,6 +1198,90 @@ struct ChatPage: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+    }
+
+    // MARK: Faces
+
+    private static let face: CGFloat = 32
+
+    /// Who said a line, for faces: you, or the companion (in a group, the one who spoke). Steps belong to the reply.
+    private func voice(_ line: ChatLine) -> String? {
+        switch line.kind {
+        case .user: return "me"
+        case .bot, .steps: return "bot:" + (line.speaker ?? bot.id)
+        case .note: return nil
+        }
+    }
+
+    /// The lines that open a run by one speaker: only they carry a face, so a reply in several parts shows it once.
+    private var openers: Set<String> {
+        var heads: Set<String> = []
+        var last: String?
+        for line in chat.lines {
+            guard let who = voice(line) else { continue }
+            if who != last { heads.insert(line.id) }
+            last = who
+        }
+        return heads
+    }
+
+    /// A line with its face: the companion's above its reply, yours beside your bubble, and the time when a while has passed.
+    @ViewBuilder
+    private func turnRow(_ line: ChatLine, opens: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            if opens, let gap = timeGap(before: line) {
+                Text(gap)
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, Ink.Space.xs)
+            }
+            switch line.kind {
+            case .user:
+                HStack(alignment: .top, spacing: Ink.Space.s) {
+                    row(line)
+                    if opens {
+                        MeAvatar(size: Self.face)
+                    } else {
+                        Color.clear.frame(width: Self.face, height: 1)
+                    }
+                }
+            case .bot, .steps:
+                if opens { speakerHead(line) }
+                row(line)
+            case .note:
+                row(line)
+            }
+        }
+    }
+
+    /// The companion's face and name, over what it says.
+    private func speakerHead(_ line: ChatLine) -> some View {
+        let speaker = line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)
+        return HStack(spacing: Ink.Space.s) {
+            PetStill(size: Self.face, wash: speaker.map { Ink.wash(for: $0) }, avatar: true, bot: speaker)
+            Text(speaker?.name ?? line.speakerName ?? bot.name)
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.inkSoft)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// 「昨天 23:10」 over a line said more than half an hour after the one before it.
+    private func timeGap(before line: ChatLine) -> String? {
+        guard let at = line.at,
+              let index = chat.lines.firstIndex(where: { $0.id == line.id }), index > 0,
+              let before = chat.lines[..<index].last(where: { $0.at != nil })?.at,
+              at - before > 30 * 60 * 1000 else { return nil }
+        let date = Date(timeIntervalSince1970: at / 1000)
+        let calendar = Calendar.current
+        let clock = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+        if calendar.isDateInToday(date) { return clock }
+        if calendar.isDateInYesterday(date) { return "昨天 " + clock }
+        if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return date.formatted(.dateTime.month(.defaultDigits).day()) + " " + clock
+        }
+        return date.formatted(.dateTime.year().month(.defaultDigits).day()) + " " + clock
     }
 
     /// Where a compression happened: a quiet divider. Above it everything is still here; tap to read the 前情提要.
