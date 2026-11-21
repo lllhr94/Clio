@@ -3,8 +3,8 @@ import Craft
 import Foundation
 
 /// A Bot as this phone keeps it.
-struct BotInfo: Codable, Identifiable, Equatable {
-    struct Blocked: Codable, Equatable { var code: String? }
+struct BotInfo: Codable, Identifiable, Equatable, Sendable {
+    struct Blocked: Codable, Equatable, Sendable { var code: String? }
 
     let id: String
     var name: String
@@ -31,7 +31,7 @@ struct BotInfo: Codable, Identifiable, Equatable {
     var avatar: String?
 }
 
-struct RoomInfo: Codable, Identifiable, Equatable {
+struct RoomInfo: Codable, Identifiable, Equatable, Sendable {
     let id: String
     var name: String
     var preview: String?
@@ -40,7 +40,7 @@ struct RoomInfo: Codable, Identifiable, Equatable {
 }
 
 /// One message of a chat, as kept on the phone. Photos live in their own files.
-struct Entry: Codable, Identifiable, Equatable {
+struct Entry: Codable, Identifiable, Equatable, Sendable {
     var id: String
     /// Milliseconds.
     var at: Double
@@ -64,7 +64,7 @@ struct Entry: Codable, Identifiable, Equatable {
 }
 
 /// A message a Bot set for later; it shows in the chat once its time has come.
-struct Later: Codable, Identifiable, Equatable {
+struct Later: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var chat: String
     var botId: String
@@ -74,8 +74,8 @@ struct Later: Codable, Identifiable, Equatable {
 }
 
 /// A model service the user added: its address and which models it has. The key is in the Vault.
-struct Endpoint: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case openai, anthropic }
+struct Endpoint: Codable, Identifiable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable { case openai, anthropic }
 
     var id: String
     var name: String
@@ -141,7 +141,7 @@ struct Endpoint: Codable, Identifiable, Equatable {
     }
 }
 
-struct TeamSettings: Codable, Equatable {
+struct TeamSettings: Codable, Equatable, Sendable {
     var endpoints: [Endpoint] = []
     /// `endpointId/modelId`.
     var defaultModel: String?

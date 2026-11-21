@@ -94,6 +94,8 @@ final class ChatModel: ObservableObject {
     private var limit = 160
     /// The tool running now, before its result is kept.
     private var running: String?
+    private var browsingHistory = false
+    private var heldRows: [ChatLine]?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
     private var target = ""
     private var shown = 0
@@ -143,6 +145,8 @@ final class ChatModel: ObservableObject {
     func close() {
         if let feed { team.unlisten(feed) }
         feed = nil
+        browsingHistory = false
+        heldRows = nil
         demoReply?.cancel()
         typing?.cancel()
         typing = nil
@@ -191,6 +195,7 @@ final class ChatModel: ObservableObject {
     func loadAll() {
         guard hasEarlier else { return }
         limit = .max
+        heldRows = nil
         lines = build(team.history(key))
     }
 
@@ -198,6 +203,7 @@ final class ChatModel: ObservableObject {
         guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true
         limit += 160
+        heldRows = nil
         lines = build(team.history(key))
         loadingEarlier = false
     }
@@ -286,7 +292,20 @@ final class ChatModel: ObservableObject {
         return out
     }
 
+    func setBrowsingHistory(_ browsing: Bool) {
+        guard browsingHistory != browsing else { return }
+        browsingHistory = browsing
+        if !browsing, let heldRows {
+            self.heldRows = nil
+            apply(heldRows)
+        }
+    }
+
     private func apply(_ next: [ChatLine]) {
+        if browsingHistory {
+            heldRows = next
+            return
+        }
         let grew = next.count > lines.count
         if lines != next {
             if loaded && grew && streaming.isEmpty {
@@ -332,6 +351,7 @@ final class ChatModel: ObservableObject {
                 target = ""
                 streaming = ""
                 pulse = ""
+                heldRows = nil
                 lines = next
                 if fresh?.shown != nil { type() }
                 Haptics.tick(0.6)

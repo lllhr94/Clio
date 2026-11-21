@@ -17,6 +17,7 @@ enum Backup {
 
     /// Writes the backup and returns where it is.
     static func make(withKeys: Bool, endpoints: [String]) throws -> (URL, Summary) {
+        ChatDisk.finishWrites()
         var out = Data()
         out.append(magic)
         var count = 0

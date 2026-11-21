@@ -228,11 +228,9 @@ struct ChatPage: View {
 
     /// The lines of the conversation, what is arriving, and what waits to be sent.
     private var conversationContent: some View {
-        VStack(spacing: 0) {
-            // A plain stack, not a lazy one: every line is measured, so "the bottom" is always exactly where it is.
-            // A lazy stack guesses the height of lines it has not drawn, and scrolling to the end could stop short.
-            // To keep that cheap, only the newest lines are drawn; older ones come in on request.
-            VStack(alignment: .leading, spacing: Ink.Space.m) {
+        LazyVStack(spacing: 0) {
+            // Keep distant replies unmounted when the keyboard, stream or window size changes.
+            LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                 if chat.lines.isEmpty && chat.streaming.isEmpty { empty }
                 if chat.lines.count > shownCount { earlier }
                 let heads = openers
@@ -302,6 +300,7 @@ struct ChatPage: View {
                 conversationContent
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
             // Nothing moves while the reader is up reading older lines.
             // How far the last line is from sitting just above the composer. The composer (and the bar over it
@@ -309,13 +308,13 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) > 2
             } action: { _, behind in
-                if behind, following { toEnd() }
+                if behind, following { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentSize.height
             } action: { _, _ in
                 // Every time what is on the page grows, keep to the bottom right away, not every 80 characters.
-                if following { toEnd() }
+                if following { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) > 320
@@ -330,6 +329,7 @@ struct ChatPage: View {
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
+                chat.setBrowsingHistory(phase == .interacting || phase == .decelerating)
                 if moving != scrolling {
                     scrolling = moving
                     Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
@@ -353,14 +353,10 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
-            .onChange(of: growth) { followToEnd(settle: false) }
             .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
         }
     }
-
-    /// Steps of what is arriving (the reply every 80 characters, the thinking every 120): each step follows the page down.
-    private var growth: Int { chat.streaming.count / 80 + (chat.thinking.count / 120) * 1_000_000 }
 
     /// A message written while the companion works: it waits for the turn to finish, or goes now, or comes back to the composer.
     private func queuedRow(_ item: TeamModel.Queued) -> some View {
@@ -2233,22 +2229,14 @@ struct ChatPage: View {
         geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY
     }
 
-    /// Back to the newest line, if the page is following: once as soon as what arrived is laid out,
-    /// and once more after the new row has settled in, since its height is only right by then.
-    /// Asks for one trip to the bottom. Sending fires several changes a moment apart (the composer empties, the new
-    /// line arrives, the reply starts): each used to scroll on its own and the page twitched. Now a new ask replaces the
-    /// one still waiting, so they land as a single move once the page has settled for a frame.
+    /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     private func followToEnd(settle: Bool = true) {
         guard following else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 24_000_000)
-            guard !Task.isCancelled, following else { return }
+            do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
+            guard following else { return }
             toEnd()
-            guard settle else { return }
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled, following else { return }
-            toEnd(animated: true)
         }
     }
 
