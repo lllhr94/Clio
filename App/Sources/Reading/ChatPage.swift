@@ -2153,9 +2153,8 @@ struct ChatPage: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                let suggestions = hints
-                if !suggestions.isEmpty { hintStrip(suggestions) }
-                if largeText { draftField }
+                ChatSection { composerSuggestions }
+                if largeText { ChatSection { draftField } }
                 // One row at rest, like any messaging app: add, write, speak or send.
                 HStack(alignment: .bottom, spacing: Ink.Space.s) {
                     Button {
@@ -2171,7 +2170,7 @@ struct ChatPage: View {
                     .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
-                    if !largeText { draftField }
+                    if !largeText { ChatSection { draftField } }
                     // While writing: what it goes out with, as small icons in the same row, not a row of their own.
                     if composing {
                         HStack(spacing: 2) {
@@ -2209,7 +2208,6 @@ struct ChatPage: View {
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
         .animation(petDockMotion, value: waiting?.id)
-        .task(id: suggestionSource) { await loadSuggestions(suggestionSource) }
         .overlay(alignment: .top) {
             HStack(spacing: Ink.Space.s) {
                 jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
@@ -2358,11 +2356,11 @@ struct ChatPage: View {
 
     /// Writing something: the row of chips shows under the text field.
     private var composing: Bool {
-        typing || !draft.isEmpty || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
+        typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty
+        draftState.hasSendableText || !photos.isEmpty || !files.isEmpty
     }
 
     private var action: some View {
@@ -2473,6 +2471,15 @@ struct ChatPage: View {
         let text = draft.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("/"), !text.contains("\n") { return .skills }
         return mention == nil ? nil : .files
+    }
+
+    private var composerSuggestions: some View {
+        let source = suggestionSource
+        let suggestions = source == nil ? [] : hints
+        return Group {
+            if !suggestions.isEmpty { hintStrip(suggestions) }
+        }
+        .task(id: source) { await loadSuggestions(source) }
     }
 
     private func loadSuggestions(_ source: SuggestionSource?) async {
@@ -3573,9 +3580,17 @@ private struct ChatSection<Content: View>: View {
 
 @MainActor @Observable
 private final class ChatDraft {
+    private(set) var hasText = false
+    private(set) var hasSendableText = false
+
     var text = "" {
         didSet {
-            guard oldValue != text, key != nil else { return }
+            guard oldValue != text else { return }
+            let hasText = !text.isEmpty
+            let hasSendableText = text.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
+            if self.hasText != hasText { self.hasText = hasText }
+            if self.hasSendableText != hasSendableText { self.hasSendableText = hasSendableText }
+            guard key != nil else { return }
             if text.isEmpty {
                 flush()
                 return

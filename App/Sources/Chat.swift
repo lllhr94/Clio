@@ -68,6 +68,8 @@ final class ChatModel {
     private(set) var hasStreaming = false
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
     private(set) var thinking = ""
+    @ObservationIgnored private var pendingThought = ""
+    @ObservationIgnored private var thoughtUpdate: Task<Void, Never>?
     /// The 心绪 being written before the reply in progress.
     private(set) var pulse = ""
     /// The reply that just finished: the row that took over from the streaming one.
@@ -155,6 +157,7 @@ final class ChatModel {
         browsingHistory = false
         heldRows = nil
         demoReply?.cancel()
+        clearThinking()
         typing?.cancel()
         typing = nil
     }
@@ -329,21 +332,45 @@ final class ChatModel {
 
     // MARK: Live
 
+    private func showThinking(_ piece: String) {
+        guard !piece.isEmpty else { return }
+        if thinking.isEmpty {
+            thinking = piece.count > 6000 ? String(piece.suffix(4000)) : piece
+            return
+        }
+        pendingThought += piece
+        guard thoughtUpdate == nil else { return }
+        thoughtUpdate = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            guard let self else { return }
+            let next = self.thinking + self.pendingThought
+            self.pendingThought = ""
+            self.thoughtUpdate = nil
+            self.thinking = next.count > 6000 ? String(next.suffix(4000)) : next
+        }
+    }
+
+    private func clearThinking() {
+        thoughtUpdate?.cancel()
+        thoughtUpdate = nil
+        pendingThought = ""
+        if !thinking.isEmpty { thinking = "" }
+    }
+
     private func hear(_ event: TurnEvent) {
         switch event {
         case .pulse(let piece):
             pulse += piece
         case .thinking(let piece):
-            thinking += piece
-            if thinking.count > 6000 { thinking = String(thinking.suffix(4000)) }
+            showThinking(piece)
         case .text(let piece):
-            if !thinking.isEmpty { thinking = "" }
+            clearThinking()
             if fresh?.shown != nil { fresh?.shown = nil }
             if target.isEmpty { shown = 0 }
             target += piece
             type()
         case .tool(let label):
-            thinking = ""
+            clearThinking()
             running = label
             apply(build(team.history(key)))
         case .changed:
@@ -370,7 +397,7 @@ final class ChatModel {
             }
         case .finished:
             running = nil
-            thinking = ""
+            clearThinking()
             pulse = ""
             if !target.isEmpty {
                 target = ""
@@ -378,7 +405,7 @@ final class ChatModel {
             }
             apply(build(team.history(key)))
         case .failed(let message):
-            thinking = ""
+            clearThinking()
             pulse = ""
             withAnimation(.smooth) { error = message }
             Haptics.lock()
