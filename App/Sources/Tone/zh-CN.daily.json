@@ -83,6 +83,16 @@
     "toEarlier": "移到较早",
     "newProfileCard": "新建资料卡"
   },
+  "memoryReview": {
+    "title": "整理记录",
+    "empty": "整理过后，这里会显示整理了哪段对话、记下了什么。",
+    "noChanges": "这次没有新增或合并记忆。",
+    "record": "对话日期 %@ · 整理于 %@",
+    "added": "新记下 %@",
+    "merged": "把「%@」更新为「%@」",
+    "model": "记忆整理模型",
+    "modelHelp": "可选一个费用较低的聊天模型，用来整理记忆和自动写日记。未选时用默认模型。"
+  },
   "settingsHome": {
     "modelsGroup": "模型",
     "companionsGroup": "旅伴",
@@ -92,7 +102,7 @@
     "drawerSettingsLine": "管理模型、旅伴、外观和更多偏好",
     "servicesLine": "管理已接服务、添加新服务",
     "models": "默认和备用模型",
-    "modelsLine": "选择聊天模型和失败时的备选",
+    "modelsLine": "选择聊天、备用和记忆整理模型",
     "imageLine": "选择 AI 画图用的模型",
     "companions": "旅伴列表",
     "companionsLine": "改名字、头像、性格和模型",
@@ -121,7 +131,7 @@
     "lockLine": "设置切回 App 时的面容验证",
     "care": "备份和诊断",
     "careLine": "备份、恢复、查看日志和版本",
-    "memoryLine": "查看、编辑或清理记住的内容",
+    "memoryLine": "管理记忆，查看夜间整理记录",
     "vaultLine": "查看、添加和管理账号密码",
     "addLine": "选择服务，填写密钥并启用模型",
     "noChatModels": "还没有可选的聊天模型。先到模型服务连接一家，或在已接的服务里启用模型。",

@@ -16,7 +16,7 @@ enum Opened: Identifiable, Hashable {
 
 /// The app's root: setting up a model first, then the desk.
 struct ClioRoot: View {
-    @StateObject private var team = TeamModel()
+    @ObservedObject private var team = TeamModel.shared
     @ObservedObject private var asker = Asker.shared
     @AppStorage("look.scheme") private var scheme = "system"
     @AppStorage("look.fps") private var fps = false
@@ -75,10 +75,13 @@ struct ClioRoot: View {
             if now == .active {
                 KeepAwake.stop()
                 team.wake()
+                MemoryNight.tick()
             }
             // Still on screen for a moment: the last chance to ask for time in the background.
             if now == .inactive { team.keepGoingInBackground() }
             if now == .background {
+                MemoryNight.cancelForeground()
+                MemoryNight.schedule()
                 team.leaving()
                 Hitches.shared.save()
                 WidgetFeed.publish(team)
@@ -86,11 +89,13 @@ struct ClioRoot: View {
         }
         .task {
             team.wake()
+            MemoryNight.tick()
             // Messages set for later land in their chats while the app is open too.
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
                 team.deliverDue()
                 team.routinesIfDue()
+                MemoryNight.tick()
             }
         }
     }
