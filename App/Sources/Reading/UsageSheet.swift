@@ -247,7 +247,7 @@ struct UsageSheet: View {
 /// Title first, then the icon: 「去充值 ↗」.
 private struct TrailingIcon: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Ink.Space.xs) {
             configuration.title
             configuration.icon
         }
