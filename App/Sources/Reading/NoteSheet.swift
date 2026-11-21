@@ -8,7 +8,11 @@ struct NoteSheet: View {
     var question: String? = nil
     var bot: BotInfo? = nil
     @State private var withQuestion = true
-    @State private var shareImage: (input: ShareInput, image: UIImage)?
+    private struct Artwork: Identifiable {
+        let id = UUID()
+        let image: UIImage
+    }
+    @State private var sharing: Artwork?
     @Environment(\.dismiss) private var dismiss
     @State private var theme: Theme = .paper
     @State private var title: String
@@ -54,17 +58,6 @@ struct NoteSheet: View {
         guard !title.isEmpty, let firstBreak = text.firstIndex(of: "\n") else { return text }
         let first = text[..<firstBreak].replacingOccurrences(of: "#", with: "").replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
         return first == title ? String(text[text.index(after: firstBreak)...]).trimmingCharacters(in: .whitespacesAndNewlines) : text
-    }
-
-    private struct ShareInput: Equatable {
-        let theme: String
-        let title: String
-        let signed: Bool
-        let withQuestion: Bool
-    }
-
-    private var shareInput: ShareInput {
-        ShareInput(theme: theme.rawValue, title: title, signed: signed, withQuestion: withQuestion)
     }
 
     var body: some View {
@@ -130,20 +123,13 @@ struct NoteSheet: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button(saved ? "已存" : "存入相册", systemImage: saved ? "checkmark" : "square.and.arrow.down") { save() }
-                    if let cache = shareImage, cache.input == shareInput {
-                        let image = cache.image
-                        ShareLink(item: Image(uiImage: image), preview: SharePreview(title.isEmpty ? "笺" : title, image: Image(uiImage: image)))
+                    Button(L.t("actions.share"), systemImage: "square.and.arrow.up") {
+                        if let image = rendered() { sharing = Artwork(image: image) }
                     }
                 }
             }
         }
-        // Drawn once things settle, not on every redraw: a long reply at three times its size is heavy.
-        .task(id: shareInput) {
-            let input = shareInput
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            guard !Task.isCancelled, input == shareInput, let image = rendered() else { return }
-            shareImage = (input, image)
-        }
+        .sheet(item: $sharing) { artwork in ChatShareSheet(image: artwork.image) }
     }
 
     private func sheet(width: CGFloat?) -> some View {

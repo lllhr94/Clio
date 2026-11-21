@@ -32,9 +32,15 @@ enum PetConvert {
            role(of: items[0]) == nil { root = items[0] }
 
         var anims: [String: [Frame]] = [:]
+        var pixelsLeft = 32 * 1024 * 1024
         for item in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) {
             guard let role = role(of: item) else { continue }
-            let frames = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true ? folderFrames(item) : fileFrames(item)
+            let frames: [Frame]
+            if (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                frames = try folderFrames(item, pixelsLeft: &pixelsLeft)
+            } else {
+                frames = try fileFrames(item, pixelsLeft: &pixelsLeft)
+            }
             if !frames.isEmpty { anims[role] = Array(frames.prefix(120)) }
         }
         guard anims["idle"] != nil else {
@@ -128,12 +134,12 @@ enum PetConvert {
         return roles[stem]
     }
 
-    private static func fileFrames(_ url: URL) -> [Frame] {
+    private static func fileFrames(_ url: URL, pixelsLeft: inout Int) throws -> [Frame] {
         guard ["gif", "png", "apng", "webp"].contains(url.pathExtension.lowercased()),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return [] }
         let count = CGImageSourceGetCount(source)
-        return (0..<min(count, 120)).compactMap { i in
-            guard let image = CGImageSourceCreateImageAtIndex(source, i, nil) else { return nil }
+        return try (0..<min(count, 120)).compactMap { i in
+            guard let image = try frameImage(source, at: i, pixelsLeft: &pixelsLeft) else { return nil }
             let props = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any]
             let gif = props?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
             let png = props?[kCGImagePropertyPNGDictionary] as? [CFString: Any]
@@ -141,20 +147,37 @@ enum PetConvert {
             let delays: [Any?] = [gif?[kCGImagePropertyGIFUnclampedDelayTime], gif?[kCGImagePropertyGIFDelayTime],
                                   png?[kCGImagePropertyAPNGUnclampedDelayTime], png?[kCGImagePropertyAPNGDelayTime],
                                   webp?[kCGImagePropertyWebPUnclampedDelayTime], webp?[kCGImagePropertyWebPDelayTime]]
-            let seconds = delays.compactMap { ($0 as? NSNumber)?.doubleValue }.first { $0 > 0.01 } ?? 0.1
+            let seconds = delays.compactMap { ($0 as? NSNumber)?.doubleValue }.first { $0.isFinite && $0 > 0.01 && $0 <= 60 } ?? 0.1
             return Frame(image: image, ms: max(20, Int(seconds * 1000)))
         }
     }
 
-    private static func folderFrames(_ url: URL) -> [Frame] {
+    private static func folderFrames(_ url: URL, pixelsLeft: inout Int) throws -> [Frame] {
         let files = ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension.lowercased() == "png" }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        return files.compactMap { file in
+        return try files.prefix(120).compactMap { file in
             guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+                  let image = try frameImage(source, at: 0, pixelsLeft: &pixelsLeft) else { return nil }
             return Frame(image: image, ms: 100)
         }
+    }
+
+    static func dimensions(_ source: CGImageSource, at index: Int) -> (width: Int, height: Int)? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
+    private static func frameImage(_ source: CGImageSource, at index: Int, pixelsLeft: inout Int) throws -> CGImage? {
+        try Task.checkCancellation()
+        guard let size = dimensions(source, at: index) else { return nil }
+        guard size.width <= 1024, size.height <= 1024 else { throw PetPack.Problem.bad("动图太大了（边长最多 1024）") }
+        let pixels = size.width * size.height
+        guard pixels <= pixelsLeft else { throw PetPack.Problem.bad("动图的总像素太多") }
+        pixelsLeft -= pixels
+        return CGImageSourceCreateImageAtIndex(source, index, nil)
     }
 
     /// The frame drawn bottom-centre on the shared canvas, with the box around what is not transparent

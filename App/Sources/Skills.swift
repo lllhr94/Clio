@@ -20,7 +20,7 @@ enum SkillShelf {
     }
 
     /// Paths of skills switched off.
-    static var off: Set<String> {
+    private static var off: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "skills.off") ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: "skills.off") }
     }
@@ -65,10 +65,13 @@ enum SkillShelf {
     static var enabled: [Item] { all().filter(\.on) }
 
     static func setOn(_ item: Item, _ on: Bool) {
-        var set = off
-        if on { set.remove(item.id) } else { set.insert(item.id) }
-        off = set
-        invalidate()
+        cacheLock.withLock {
+            var set = off
+            if on { set.remove(item.id) } else { set.insert(item.id) }
+            off = set
+            cache = nil
+            cacheVersion += 1
+        }
     }
 
     /// Writes a skill: over its own file, or as a new 技能/名字.md.

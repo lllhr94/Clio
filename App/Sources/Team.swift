@@ -140,11 +140,10 @@ final class TeamModel: ObservableObject {
         return "\n\n【连接器】用户还没连上的有：" + open.joined(separator: "、") + "。如果用户要做的事用其中一个会好办很多（比如查 Notion 页面、看 GitHub 仓库、规划国内路线用高德），可以一句话建议他去「" + Words.t("调弦") + " → 连接器」连上；别反复提，用户没兴趣就算了。"
     }
 
-    /// Clio is about to leave the screen: turns still running ask iOS to let them finish in the background.
+    /// Keep audio running on background entry when the person has opted in.
     func keepGoingInBackground() {
         guard !runs.isEmpty else { return }
         KeepAwake.start()
-        for key in runs.keys { BackgroundTurn.begin(chat: key, name: chatName(key)) }
     }
 
     func setPlan(_ key: String, _ steps: [PlanStep]) {
@@ -215,15 +214,7 @@ final class TeamModel: ObservableObject {
         } else {
             startup = Task.detached(priority: .userInitiated) { InitialData.read() }
         }
-        answering = NotificationCenter.default.addObserver(forName: .clioAnswerApproval, object: nil, queue: .main) { [weak self] note in
-            guard let id = note.object as? String else { return }
-            let allow = note.userInfo?["allow"] as? Bool ?? false
-            MainActor.assumeIsolated { self?.answerFromNotification(id, allow: allow) }
-        }
     }
-
-    /// Hears 同意 / 不同意 from notifications.
-    private var answering: NSObjectProtocol?
 
     nonisolated static func key(bot id: String) -> String { "bot-\(id)" }
     nonisolated static func key(room id: String) -> String { "room-\(id)" }
@@ -1395,6 +1386,7 @@ final class TeamModel: ObservableObject {
         var photos: [Data]
         /// 插话: handed to the companion between its steps, not after the turn.
         var interject = false
+        var userInitiated = true
     }
 
     /// Messages waiting for the turn in progress to finish, by chat.
@@ -1402,12 +1394,12 @@ final class TeamModel: ObservableObject {
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
     private var sendQueuedNow: Set<String> = []
 
-    func send(_ text: String, photos: [Data], to key: String) {
+    func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
         if archived.contains(key) { archive(key, false) }
         guard phase != .demo else { return }
         // Busy with its own turn, or helping another companion: the message waits its turn.
         if runs[key] != nil || helping.contains(key) {
-            withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos)) }
+            withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated)) }
             return
         }
         let names = keeping ? photos.map(Disk.keepPhoto) : []
@@ -1415,7 +1407,7 @@ final class TeamModel: ObservableObject {
         if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
         touch(key, preview: nil)
-        start(key)
+        start(key, userInitiated: userInitiated)
     }
 
     /// 插话: said while the companion works. It reaches the companion after the step in progress, without
@@ -1459,7 +1451,7 @@ final class TeamModel: ObservableObject {
         guard let waiting = queued[key], !waiting.isEmpty else { return }
         withAnimation(.smooth) { queued[key] = nil }
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        send(text, photos: waiting.flatMap(\.photos), to: key)
+        send(text, photos: waiting.flatMap(\.photos), to: key, userInitiated: waiting.contains(where: \.userInitiated))
     }
 
     func stop(_ key: String) {
@@ -1472,7 +1464,7 @@ final class TeamModel: ObservableObject {
         runs[key]?.task.cancel()
     }
 
-    private func start(_ key: String) {
+    private func start(_ key: String, userInitiated: Bool = true) {
         let previous = runs[key]?.task
         stop(key)
         let token = UUID()
@@ -1493,7 +1485,7 @@ final class TeamModel: ObservableObject {
         LiveTurns.begin(chat: key, name: chatName(key), face: LiveFace.png(for: bots.first { Self.key(bot: $0.id) == key }))
         let task = Task { [weak self] in
             await previous?.value
-            await self?.run(key, token: token)
+            await self?.run(key, token: token, userInitiated: userInitiated)
         }
         runs[key] = (token, task, Date(), nil)
     }
@@ -1588,10 +1580,13 @@ final class TeamModel: ObservableObject {
         guard runs[key] == nil else { return }
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user("接着做：刚才 app 在后台被系统暂停了，请从停下的地方继续，写过的不用重复。")), to: key)
         touch(key, preview: nil)
-        start(key)
+        start(key, userInitiated: false)
     }
 
-    private func run(_ key: String, token: UUID) async {
+    private func run(_ key: String, token: UUID, userInitiated: Bool) async {
+        if userInitiated, !Task.isCancelled, runs[key]?.token == token {
+            BackgroundTurn.begin(chat: key, name: chatName(key), token: token)
+        }
         // If the user leaves while it works, iOS gives a little time (about half a minute) to finish; see `leaving`.
         graces[token] = UIApplication.shared.beginBackgroundTask(withName: "clio-turn") { [weak self] in
             MainActor.assumeIsolated { self?.graceRunsOut(key, token: token) }
@@ -1644,11 +1639,11 @@ final class TeamModel: ObservableObject {
             }
         }
         notify(key, .finished)
+        BackgroundTurn.end(chat: key, token: token, ok: ok && !cancelled && !paused)
         if runs[key] == nil {
             let reply = history(key).last { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }?.message.text
             let line = paused ? "停在半路，回到 Clio 会自动接着做" : cancelled ? "被你叫停了" : ok ? reply : history(key).last?.message.text
             LiveTurns.end(chat: key, ok: ok && !cancelled && !paused, line: line)
-            BackgroundTurn.end(chat: key, ok: ok && !cancelled)
         }
         if runs.isEmpty { KeepAwake.stop() }
         // Tidy up while you read the reply, so the next turn starts light.
@@ -2461,7 +2456,7 @@ final class TeamModel: ObservableObject {
             var words = "【定时 · \(routine.title)】\(routine.prompt)"
             if now.timeIntervalSince(due.at) > 600 { words += "\n（本该 \(When.show(due.at)) 做，现在补上。）" }
             if due.missed > 0 { words += "\n（之前还错过了 \(due.missed) 次，没有补。）" }
-            send(words, photos: [], to: key)
+            send(words, photos: [], to: key, userInitiated: false)
             Diag.note("定时任务开始：\(routine.title)")
         }
     }
@@ -2469,7 +2464,10 @@ final class TeamModel: ObservableObject {
     /// Called when the app comes back to the front.
     func wake() {
         guard !loading else { return }
-        BackgroundTurn.stop = { [weak self] key in self?.stop(key) }
+        BackgroundTurn.stop = { [weak self] key, token in
+            guard let self, runs[key]?.token == token else { return }
+            stop(key)
+        }
         LiveTurns.sweep()
         deliverDue()
         routinesIfDue()
@@ -2501,7 +2499,7 @@ final class TeamModel: ObservableObject {
         // Busy (a routine, say): tried again on the next look, not marked done for the day.
         guard !isWorking(key) else { return }
         UserDefaults.standard.set(today, forKey: "morning.last")
-        send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key)
+        send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key, userInitiated: false)
     }
 
     /// The daily nudge, at the hour the user chose; opening it lets the letter be written.

@@ -24,7 +24,8 @@ struct ConnectorsPage: View {
                         suggestCard
                         if kind == "全部" { onDevice }
                     }
-                    if !mine.isEmpty && kind == "全部" { section(L.t("connectors.connected"), mine) }
+                    let connected = mine
+                    if !connected.isEmpty { section(L.t("connectors.connected"), connected) }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
                         let items = Connector.catalog.filter { $0.group == group && matches($0) && work.server(of: $0) == nil }
                         if !items.isEmpty { section(group, items) }
@@ -162,7 +163,7 @@ struct ConnectorsPage: View {
             return Connector(id: server.connector ?? server.id, name: server.name, icon: "point.3.connected.trianglepath.dotted",
                              line: URL(string: server.url)?.host ?? server.url, url: server.url, auth: .oauth, group: "自己加的", serverId: server.id)
         }
-        .filter(matches)
+        .filter { (kind == "全部" || $0.group == kind) && matches($0) }
     }
 
     private func matches(_ connector: Connector) -> Bool {

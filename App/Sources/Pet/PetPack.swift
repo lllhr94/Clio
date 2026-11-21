@@ -239,6 +239,7 @@ enum PetSheets {
 /// One drawn pet, playing `anim` since `since`, with a shared scale in points per canvas unit.
 /// Its feet (the pack's baseline) sit on the bottom edge of the view, its middle (anchor x) on the view's middle.
 struct SpritePet: View {
+    @Environment(\.scenePhase) private var scenePhase
     let pack: PetPack
     let anim: String
     let since: Date
@@ -247,11 +248,17 @@ struct SpritePet: View {
 
     var body: some View {
         let u = unit
-        // The view is as tall as the drawing down to its feet; what lies under the feet (a shadow) hangs below.
-        // Pixel frames hold for a tenth of a second or more: twelve looks a second is plenty, and keeps the phone
-        // from redrawing the pet thirty times a second for nothing.
-        TimelineView(.animation(minimumInterval: 1 / 12)) { timeline in
-            frame(at: timeline.date, unit: u)
+        Group {
+            if let animation = pack.animations[anim], scenePhase == .active,
+               let first = animation.frames.first, animation.frames.contains(where: { $0.i != first.i }) {
+                let sleeping = pack.states["sleeping"]?.contains(anim) == true
+                let interval = sleeping ? 1.0 / 4 : 1.0 / 12
+                TimelineView(.animation(minimumInterval: interval)) { timeline in
+                    frame(at: timeline.date, unit: u)
+                }
+            } else {
+                frame(at: since, unit: u)
+            }
         }
         .frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.baseline) * u, alignment: .top)
         .scaleEffect(x: mirrored ? -1 : 1, y: 1, anchor: UnitPoint(x: pack.anchorX / pack.canvasW, y: 0.5))

@@ -345,7 +345,9 @@ struct PlusSheet: View {
         request.isNetworkAccessAllowed = true
         for asset in assets {
             manager.requestImage(for: asset, targetSize: CGSize(width: 240, height: 240), contentMode: .aspectFill, options: request) { image, _ in
-                if let image { thumbs[asset.localIdentifier] = image }
+                if let image {
+                    Task { @MainActor in thumbs[asset.localIdentifier] = image }
+                }
             }
         }
     }

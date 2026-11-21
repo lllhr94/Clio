@@ -163,4 +163,4 @@
 
 - [ ] **A1（Antigravity）外观即时生效 + 深色 / 小屏 + 规范收口**：分支 `antigravity/a1-look`。
 - [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，A1 合了再开始。
-- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`。
+- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`。 分支实现见审核末尾的实施核对；后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
