@@ -395,6 +395,36 @@ struct Desk: View {
         }
     }
 
+    /// 收名帖: a card file picked from Files becomes a new companion, with its 性格, 风格, seal and face.
+    private func receiveCard(_ result: Result<URL, Error>) {
+        switch result {
+        case .failure(let error): notice = "没打开：\(error.localizedDescription)"
+        case .success(let url):
+            do {
+                let card = try NameCard.read(url)
+                let taken = Set(team.bots.map(\.name))
+                var name = card.name
+                if taken.contains(name) { name += "·二" }
+                Task {
+                    do {
+                        // A pet the phone doesn't have falls back to the default; a photo comes with the card.
+                        let pet = card.pet.flatMap { face in PetLibrary.shared.packs.contains { "pet:\($0.id)" == face } ? face : nil }
+                        let picture = card.photo.flatMap(UIImage.init(data:))
+                        let id = try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions,
+                                                        avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
+                        if let picture { Avatars.save(picture, for: id) }
+                        Haptics.thud()
+                        notice = Words.t("收下了\(name)的名帖。")
+                    } catch {
+                        notice = "没收下：\(error.localizedDescription)"
+                    }
+                }
+            } catch {
+                notice = error.localizedDescription
+            }
+        }
+    }
+
     private var archivedThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
         recent.filter { team.archived.contains($0.id.id) }
     }
@@ -611,34 +641,7 @@ struct Desk: View {
         .sheet(isPresented: $hilling) { HillsPage() }
         .sheet(isPresented: $vaulting) { SecretsPage() }
         .sheet(isPresented: $caring) { CarePage(team: team) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in
-            switch result {
-            case .failure(let error): notice = "没打开：\(error.localizedDescription)"
-            case .success(let url):
-                do {
-                    let card = try NameCard.read(url)
-                    let taken = Set(team.bots.map(\.name))
-                    var name = card.name
-                    if taken.contains(name) { name += "·二" }
-                    Task {
-                        do {
-                            // A pet the phone doesn't have falls back to the default; a photo comes with the card.
-                            let pet = card.pet.flatMap { face in PetLibrary.shared.packs.contains { "pet:\($0.id)" == face } ? face : nil }
-                            let picture = card.photo.flatMap(UIImage.init(data:))
-                            let id = try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions,
-                                                            avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
-                            if let picture { Avatars.save(picture, for: id) }
-                            Haptics.thud()
-                            notice = Words.t("收下了\(name)的名帖。")
-                        } catch {
-                            notice = "没收下：\(error.localizedDescription)"
-                        }
-                    }
-                } catch {
-                    notice = error.localizedDescription
-                }
-            }
-        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { receiveCard($0) }
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好", role: .cancel) { notice = nil }
         }
