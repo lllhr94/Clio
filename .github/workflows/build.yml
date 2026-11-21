@@ -151,7 +151,7 @@ jobs:
         if: inputs.shots
         # A failed picture is reported, but must not hold back the rest.
         continue-on-error: true
-        timeout-minutes: 35
+        timeout-minutes: 55
         env:
           SHOT_MODEL_ERROR: ${{ inputs.shot_model_error }}
           SWIFTTERM_BUILD_BRANCH: main
@@ -275,16 +275,25 @@ jobs:
         if: always() && inputs.shots
         run: |
           mkdir -p shots
-          cp simbuild.log shots/ 2>/dev/null || true
           ls shots | grep -q . || exit 0
           cd shots
+          # Smaller pictures push reliably (full-size PNGs timed out at 408): JPEG, 1000 points wide, enough to judge by.
+          for f in $(find . -name '*.png'); do
+            sips -s format jpeg -s formatOptions 80 -Z 1400 "$f" --out "${f%.png}.jpg" >/dev/null 2>&1 && rm -f "$f"
+          done
           git init -q -b shots
           git config user.name "clio-ci"
           git config user.email "clio-ci@users.noreply.github.com"
           git add -A
           git commit -qm "Screenshots of ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}"
-          git push -q "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/shots/${GITHUB_RUN_ID}"
-          echo "pushed shots/${GITHUB_RUN_ID}"
+          for attempt in 1 2 3; do
+            if git push -q "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/shots/${GITHUB_RUN_ID}"; then
+              echo "pushed shots/${GITHUB_RUN_ID}"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         if: always() && inputs.shots
