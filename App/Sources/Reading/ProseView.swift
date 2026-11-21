@@ -273,8 +273,17 @@ private struct CodeBlock: View {
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { lineCount > 20 }
     private var shown: String {
-        guard folds, !unfolded else { return text }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+        // Blank lines a model leaves at the top or bottom of a block are not shown (they read as a gap under the label).
+        let body = Self.trimmedLines(text)
+        guard folds, !unfolded else { return body }
+        return body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+    }
+
+    static func trimmedLines(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 
     var body: some View {
