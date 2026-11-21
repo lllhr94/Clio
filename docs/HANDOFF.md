@@ -15,8 +15,8 @@
 
 ## 现在排着的活（顺序）
 
-1. **C32（Codex）流畅度、并发、后台**和 **A1（Antigravity）外观即时生效 + 深色 / 小屏**：可以同时做，两边不碰同一个文件（清单见 `docs/REVIEW-ANTIGRAVITY.md`「派出去的活」）。
-2. **A2（Antigravity）网络安全 + 引擎细节 + 单测**：A1 合进去以后再开始。
+1. **C32（Codex）流畅度、并发、后台**和 **A2（Antigravity）网络安全 + 引擎细节 + 单测**：可以同时做，两边不碰同一个文件（清单见 `docs/REVIEW-ANTIGRAVITY.md`「派出去的活」）。A1 已由 Claude 做完。
+2. 留空。
 3. 主人在真机上新发现的问题：主人截图或描述发给其中一个，记进 `docs/FEEDBACK.md`，再按文件分给不撞车的一方。
 
 ## 不要碰、要等 Claude 的

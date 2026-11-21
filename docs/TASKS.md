@@ -161,6 +161,6 @@
 
 详细内容和不碰的文件见 `docs/REVIEW-ANTIGRAVITY.md`「派出去的活」。
 
-- [ ] **A1（Antigravity）外观即时生效 + 深色 / 小屏 + 规范收口**：分支 `antigravity/a1-look`。
-- [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，A1 合了再开始。
+- [x] **A1 外观即时生效 + 深色 / 小屏**：改由 Claude 做（11-22 夜），见 `REVIEW-ANTIGRAVITY.md`。
+- [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，现在就可以开始。
 - [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`。

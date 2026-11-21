@@ -45,7 +45,11 @@ Antigravity 交来的清单（32 条）是按 `main`（`62fac5e`）查的，比 
 
 ## 派出去的活（按文件分开，互不踩）
 
-### A1（Antigravity）外观即时生效 + 深色 / 小屏 + 规范收口
+### A1 已由 Claude 接手（11-22 夜）
+
+主人让 Claude 当晚接着干，A1 改由 Claude 做。已做：字号、行高、明暗改了马上全局生效（开着的弹出页也跟）；下载宋体 / 楷体后重画；抽屉和权限页的分组名跟称谓走；深色下图标底色、阴影白光、网页白闪、几个没垫纸色的表单；顶栏旅伴名不折行。还要靠模拟器截图核对（深色、纯黑、大字号、小屏的截图已加进 CI）。**Antigravity 直接做 A2。**
+
+### （原 A1 说明，留作对照）A1（Antigravity）外观即时生效 + 深色 / 小屏 + 规范收口
 
 分支 `antigravity/a1-look`，PR 合到 `batch-0.34`。
 
@@ -58,7 +62,7 @@ Antigravity 交来的清单（32 条）是按 `main`（`62fac5e`）查的，比 
 
 ### A2（Antigravity）网络安全 + AgentKit 细节 + 单测
 
-分支 `antigravity/a2-engine`，PR 合到 `batch-0.34`。A1 合了再开始，或者开两个分支但别同时改同一文件。
+分支 `antigravity/a2-engine`，PR 合到 `batch-0.34`。现在就可以开始。
 
 - #24：`LocalAddress` 认出 IPv6 展开写法、十六进制 / 十进制 IPv4，并对解析出的 IP 再查一次；`MCPAuth` 发现地址只认 https、不进内网；Google 登录加 `state`、撤销令牌不放网址里、去掉强制解包；Gmail 收件人去掉换行、批准单显示抄送、`id` 校验；`Vault.allStrings()` 补上 OAuth 令牌和 SSH 私钥；`WorkspaceTools` 先打码再截断，流式输出和 diff 也打码；`Grants` 未登记的工具默认问（不是默认放行）。
 - #29：`Provider` HTTP 200 却是错误 JSON；OpenAI 无 `id` 的片段丢工具名；Anthropic `redacted_thinking`；shell 命令加 `--`；`.clio-part` 并发写；`windowStart` 算上思考和图片；`Prose` / `Mend` 的边界情况；正则缓存和 ReDoS。

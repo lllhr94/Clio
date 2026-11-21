@@ -15,6 +15,7 @@ struct ChatDetail: View {
     @State private var tab = Tab.steps
     @State private var files: [Snapshots.Kept] = []
     @State private var usage = false
+    @State private var exported: URL?
     @State private var renaming = false
     @State private var renameText = ""
 
@@ -56,13 +57,17 @@ struct ChatDetail: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
+            .task(id: title) { exported = exportFile() }
             .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    ShareLink(item: exportFile(), preview: SharePreview("\(title).md")) {
-                        Label("导出", systemImage: "square.and.arrow.up")
+                    // Written once when the page opens, not on every redraw of it.
+                    if let exported {
+                        ShareLink(item: exported, preview: SharePreview("\(title).md")) {
+                            Label("导出", systemImage: "square.and.arrow.up")
+                        }
                     }
                 }
             }
