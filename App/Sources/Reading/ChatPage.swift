@@ -882,6 +882,7 @@ struct ChatPage: View {
                         sharing = ShareFile(url: team.exportChat(chat.key, title: title))
                     }
                     chatMenuButton("chat.find", icon: "magnifyingglass") { startFinding() }
+                    if !following { chatMenuButton("chat.latest", icon: "arrow.down.to.line") { returnToLatest() } }
                 }
                 Section {
                     chatMenuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
@@ -2220,9 +2221,9 @@ struct ChatPage: View {
                     .allowsHitTesting(jumpVisible)
                     .accessibilityHidden(!jumpVisible)
                 backToEnd
-                    .opacity(farFromEnd && !following ? 1 : 0)
-                    .allowsHitTesting(farFromEnd && !following)
-                    .accessibilityHidden(!farFromEnd || following)
+                    .opacity(jumpVisible && farFromEnd && !following ? 1 : 0)
+                    .allowsHitTesting(jumpVisible && farFromEnd && !following)
+                    .accessibilityHidden(!jumpVisible || !farFromEnd || following)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .offset(y: -Ink.Bar.height)
@@ -2276,18 +2277,19 @@ struct ChatPage: View {
             .contentShape(.circle)
     }
 
+    private func returnToLatest() {
+        Haptics.light()
+        following = true
+        jumpedTo = nil
+        toEnd(animated: true)
+    }
+
     private var backToEnd: some View {
-                Button {
-                    Haptics.light()
-                    following = true
-                    jumpedTo = nil
-                    toEnd(animated: true)
-                } label: {
-                    floating("arrow.down")
-                }
-                .buttonStyle(PressStyle())
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                .accessibilityLabel(L.t("chat.latest"))
+        Button(action: returnToLatest) {
+            floating("arrow.down.to.line")
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(L.t("chat.latest"))
     }
 
     private static let end = "foot-of-page"
