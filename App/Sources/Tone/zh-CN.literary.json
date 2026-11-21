@@ -2,11 +2,6 @@
   "companion": {
     "temper": "性情"
   },
-  "alwaysOn": {
-    "idle": "暂时空闲",
-    "waiting": "等你落款",
-    "exitHint": "轻触关闭常亮黑屏"
-  },
   "nav": {
     "home": "窗前",
     "files": "书案",
@@ -176,6 +171,11 @@
     "maxReply": "最长回复",
     "morningHour": "%lld 点以后第一次打开时写",
     "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel"
+  },
+  "alwaysOn": {
+    "idle": "暂时空闲",
+    "waiting": "等你落款",
+    "exitHint": "轻触关闭常亮黑屏"
   },
   "settings": {
     "imageModel": "生图模型",
