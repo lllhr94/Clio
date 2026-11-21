@@ -1,6 +1,8 @@
 import AgentKit
 import Craft
 import Foundation
+import Synchronization
+import UIKit
 
 /// A Bot as this phone keeps it.
 struct BotInfo: Codable, Identifiable, Equatable, Sendable {
@@ -196,6 +198,28 @@ enum Disk {
 
     static func photo(_ name: String) -> Data? {
         try? Data(contentsOf: url("media/\(name)"))
+    }
+
+    /// A picture as a service will take it: JPEG or PNG as stored, anything else (HEIC, WebP…) drawn again as JPEG,
+    /// nil when it cannot be read at all. Remembered per picture, so a chat does not decode them on every send.
+    static func sendablePhoto(_ name: String) -> Data? {
+        if let known = checked.withLock({ $0[name] }) { return known.data }
+        let result = makeSendable(photo(name))
+        checked.withLock { $0[name] = Checked(data: result) }
+        return result
+    }
+
+    private struct Checked { var data: Data? }
+    private static let checked = Mutex<[String: Checked]>([:])
+
+    private static func makeSendable(_ data: Data?) -> Data? {
+        guard let data, data.count > 32 else { return nil }
+        let head = [UInt8](data.prefix(8))
+        let jpeg = head.starts(with: [0xFF, 0xD8, 0xFF])
+        let png = head.starts(with: [0x89, 0x50, 0x4E, 0x47])
+        guard let image = UIImage(data: data) else { return nil }
+        if jpeg || png { return data }
+        return image.jpegData(compressionQuality: 0.85)
     }
 }
 

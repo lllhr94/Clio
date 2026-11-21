@@ -104,9 +104,12 @@ final class Den: ObservableObject {
         }
         if shown { note(.command, command) }
         var pid: Int32 = -1
+        // What it printed so far, handed back if the time runs out (so the model knows how far it got).
+        let printed = PrintedLines()
         let result: Outcome = await withCheckedContinuation { continuation in
             let once = Once(continuation)
             pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: { [weak self] line, isError in
+                printed.add(line)
                 onOutput?(line)
                 guard shown else { return }
                 MainActor.assumeIsolated { self?.note(isError ? .error : .out, line) }
@@ -121,7 +124,7 @@ final class Den: ObservableObject {
             let started = pid
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(max(1, timeout) * 1_000_000_000))
-                if once.finish(Outcome(code: -1, output: "", errorOutput: "", timedOut: true)) {
+                if once.finish(Outcome(code: -1, output: printed.value, errorOutput: "", timedOut: true)) {
                     DenKernel.kill(started)
                 }
             }
@@ -158,4 +161,13 @@ final class Den: ObservableObject {
             return waiting != nil
         }
     }
+}
+
+
+/// Lines a running command printed, kept for the timer that may stop it.
+private final class PrintedLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { if lines.count < 4000 { lines.append(line) } } }
+    var value: String { lock.withLock { lines.joined(separator: "\n") } }
 }
