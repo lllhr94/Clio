@@ -34,7 +34,7 @@ struct AppLock: ViewModifier {
             Ink.paper.ignoresSafeArea()
             VStack(spacing: Ink.Space.l) {
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 34, weight: .medium))
+                    .font(.system(size: Ink.Size.title, weight: .semibold))
                     .foregroundStyle(Ink.accent)
                 Text("Clio 已上锁")
                     .font(.system(size: Ink.Size.body, weight: .semibold))
