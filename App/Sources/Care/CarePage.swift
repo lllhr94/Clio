@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// 养护: backup and restore, and a diagnosis to paste when something goes wrong.
 struct CarePage: View {
     @ObservedObject var team: TeamModel
+    var openRestore = false
     @ObservedObject private var den = Den.shared
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
@@ -130,6 +131,11 @@ struct CarePage: View {
             .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .task {
+                guard openRestore else { return }
+                do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+                restoring = true
+            }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
                 guard case .success(let url) = result else { return }
                 do {

@@ -526,6 +526,7 @@ final class TeamModel: ObservableObject {
             settings.mainBotId = bots.first?.id
             saveSettings()
         }
+        if threadLabels[Self.key(bot: id)] != nil { setThreadLabel("", for: Self.key(bot: id)) }
         entries[Self.key(bot: id)] = nil
         if keeping { Disk.remove(Disk.chatFile(Self.key(bot: id))) }
         saveBots()
@@ -550,6 +551,7 @@ final class TeamModel: ObservableObject {
     func deleteRoom(_ id: String) {
         stop(Self.key(room: id))
         withAnimation(.smooth(duration: 0.35)) { rooms.removeAll { $0.id == id } }
+        if threadLabels[Self.key(room: id)] != nil { setThreadLabel("", for: Self.key(room: id)) }
         entries[Self.key(room: id)] = nil
         if keeping { Disk.remove(Disk.chatFile(Self.key(room: id))) }
         saveRooms()
@@ -678,6 +680,13 @@ final class TeamModel: ObservableObject {
 
     /// Conversations put away from the desk's list. Speaking in one brings it back.
     @Published private(set) var archived: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "desk.archived") ?? [])
+    @Published private(set) var threadLabels: [String: String] = UserDefaults.standard.dictionary(forKey: "desk.threadLabels") as? [String: String] ?? [:]
+
+    func setThreadLabel(_ label: String, for key: String) {
+        threadLabels[key] = label.isEmpty ? nil : label
+        UserDefaults.standard.set(threadLabels, forKey: "desk.threadLabels")
+    }
+
 
     /// Conversations kept at the top of the list, in the order they were pinned.
     @Published private(set) var pinned: [String] = UserDefaults.standard.stringArray(forKey: "desk.pinned") ?? []

@@ -22,8 +22,7 @@ struct ClioRoot: View {
     @AppStorage("look.fps") private var fps = false
     @AppStorage("care.hitches") private var hitches = false
     @Environment(\.scenePhase) private var scenePhase
-    /// Keeps the first-launch setup on screen through its last page, after the service is already connected.
-    @State private var holdingSetup = false
+    @AppStorage(SetupView.introSeen) private var introSeen = false
     @State private var sheetForm: Asker.Form?
     @State private var dismissedForm: UUID?
 
@@ -32,10 +31,9 @@ struct ClioRoot: View {
             Ink.paper.ignoresSafeArea()
             if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
                 ShotSettingsPage(name: shot, team: team)
-            } else if team.phase == .setup || holdingSetup {
-                SetupView(team: team, first: true) { holdingSetup = false }
+            } else if team.phase == .setup && !introSeen {
+                SetupView(team: team, first: true, welcomeOnly: true) { introSeen = true }
                     .transition(.blurReplace)
-                    .onAppear { holdingSetup = true }
             } else {
                 Desk(team: team)
                     .transition(.blurReplace)
@@ -52,7 +50,7 @@ struct ClioRoot: View {
         .onChange(of: fps, initial: true) { _, on in MeterWindow.set(on) }
         .onChange(of: hitches, initial: true) { _, on in Hitches.shared.set(on) }
         .animation(Ink.Motion.settle, value: team.phase)
-        .animation(Ink.Motion.settle, value: holdingSetup)
+        .animation(Ink.Motion.settle, value: introSeen)
         .tint(Ink.accent)
         .clioScheme(scheme)
         .sheet(item: $sheetForm, onDismiss: {
@@ -122,7 +120,16 @@ struct Desk: View {
     @State private var roomEditing: RoomInfo?
     @State private var searching = false
     @State private var showArchived = false
-    @State private var listFilter = 0
+    @AppStorage("desk.threadFilter") private var listFilter = 0
+    @AppStorage("desk.threadColorFilter") private var labelFilter = ""
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var addingService = false
+    @State private var archiveUndo: ArchiveUndo?
+
+    private struct ArchiveUndo: Equatable {
+        let key: String
+        let expires: Date
+    }
     /// How far a drag has moved the conversation (right to open the sidebar, left to close it).
     @State private var pull: CGFloat = 0
     /// The sidebar is out, the conversation pushed to the right.
@@ -167,42 +174,95 @@ struct Desk: View {
         return (bots + rooms).sorted { $0.3 > $1.3 }.map { (id: $0.0, name: $0.1, preview: $0.2, at: $0.3, bot: $0.4) }
     }
 
-    /// The conversations on the desk, without the ones put away.
-    private var shownThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
-        recent.filter { item in
-            guard !team.archived.contains(item.id.id) else { return false }
-            switch listFilter {
-            case 1: return team.isWorking(item.id.id)
-            case 2: return team.approvals.contains { $0.chat == item.id.id }
-            case 3: return team.isUnread(item.id.id, at: item.at)
-            default: return true
+    private typealias Thread = (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)
+
+    private var shownThreads: [Thread] { recent.filter(matchesFilter) }
+
+    private func matchesFilter(_ item: Thread) -> Bool {
+        let key = item.id.id
+        guard !team.archived.contains(key),
+              labelFilter.isEmpty || team.threadLabels[key] == labelFilter else { return false }
+        switch listFilter {
+        case 1: return team.isWorking(key)
+        case 2: return team.approvals.contains { $0.chat == key }
+        case 3: return team.isUnread(key, at: item.at)
+        default: return true
+        }
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Ink.Space.s) {
+                ForEach(["all", "working", "waiting", "unread"].enumerated().map { ($0.offset, $0.element) }, id: \.0) { index, label in
+                    Button {
+                        withAnimation(Ink.Motion.settle) { listFilter = index }
+                    } label: {
+                        Text(L.t("homeThreads." + label))
+                            .font(.system(size: Ink.Size.small, weight: listFilter == index ? .semibold : .regular))
+                            .foregroundStyle(listFilter == index ? Ink.accent : Ink.inkSoft)
+                            .padding(.horizontal, Ink.Space.m)
+                            .padding(.vertical, Ink.Space.s)
+                            .background(listFilter == index ? Ink.accentWash : Ink.mine, in: .capsule)
+                    }
+                    .buttonStyle(PressStyle())
+                    .accessibilityAddTraits(listFilter == index ? .isSelected : [])
+                }
+                Menu {
+                    labelChoices(selected: labelFilter, clearTitle: L.t("homeThreads.allColors")) { labelFilter = $0 }
+                } label: {
+                    Label(ThreadLabel(rawValue: labelFilter)?.title ?? L.t("homeThreads.colorFilter"), systemImage: "tag")
+                        .font(Ink.footnote)
+                        .foregroundStyle(labelFilter.isEmpty ? Ink.inkSoft : Ink.accent)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.s)
+                        .background(labelFilter.isEmpty ? Ink.mine : Ink.accentWash, in: .capsule)
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    @ViewBuilder
+    private func labelChoices(selected: String, clearTitle: String, pick: @escaping (String) -> Void) -> some View {
+        Button { pick("") } label: {
+            if selected.isEmpty { Label(clearTitle, systemImage: "checkmark") }
+            else { Text(clearTitle) }
+        }
+        ForEach(ThreadLabel.allCases) { label in
+            Button { pick(label.rawValue) } label: {
+                Label(label.title, systemImage: selected == label.rawValue ? "checkmark" : "circle.fill")
             }
         }
     }
 
-    /// 全部 / 在做 / 等批准, shown once there is something to filter.
-    @ViewBuilder
-    private var filterChips: some View {
-        let working = recent.filter { team.isWorking($0.id.id) }.count
-        let waiting = recent.filter { item in team.approvals.contains { $0.chat == item.id.id } }.count
-        let unread = recent.filter { team.isUnread($0.id.id, at: $0.at) }.count
-        if recent.count > 1 || listFilter != 0 {
-            HStack(spacing: Ink.Space.s) {
-                ForEach([(0, "全部"), (1, working > 0 ? "在做 \(working)" : "在做"), (2, waiting > 0 ? "等批准 \(waiting)" : "等批准"), (3, unread > 0 ? "未读 \(unread)" : "未读")], id: \.0) { item in
-                    Button {
-                        Haptics.tick(0.4)
-                        withAnimation(Ink.Motion.settle) { listFilter = item.0 }
-                    } label: {
-                        Text(item.1)
-                            .font(.system(size: Ink.Size.small, weight: listFilter == item.0 ? .semibold : .regular))
-                            .foregroundStyle(listFilter == item.0 ? Ink.accent : Ink.inkSoft)
-                            .padding(.horizontal, Ink.Space.m)
-                            .frame(height: 28)
-                            .background(listFilter == item.0 ? Ink.accentWash : Ink.mine, in: .capsule)
+    private func changeArchive(_ key: String, archived: Bool) {
+        withAnimation(Ink.Motion.settle) {
+            team.archive(key, archived)
+            if archived { archiveUndo = ArchiveUndo(key: key, expires: Date().addingTimeInterval(4)) }
+            else if archiveUndo?.key == key { archiveUndo = nil }
+        }
+    }
+
+    private var archiveBanner: some View {
+        Group {
+            if let undo = archiveUndo {
+                HStack(spacing: Ink.Space.m) {
+                    Text(L.t("homeThreads.archived")).font(Ink.secondary).foregroundStyle(Ink.ink)
+                    Spacer()
+                    Button(L.t("homeThreads.undo")) {
+                        guard Date() < undo.expires else { archiveUndo = nil; return }
+                        changeArchive(undo.key, archived: false)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressStyle())
                 }
-                Spacer()
+                .padding(Ink.Space.l)
+                .paperCard()
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.bottom, Ink.Space.s)
+                .task(id: undo.expires) {
+                    do { try await Task.sleep(for: .seconds(4)) } catch { return }
+                    if archiveUndo == undo { archiveUndo = nil }
+                }
             }
         }
     }
@@ -238,11 +298,11 @@ struct Desk: View {
         withAnimation(Ink.Motion.unfold) { opened = target }
     }
 
-    private var sideThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
-        let words = sideQuery.trimmingCharacters(in: .whitespaces).lowercased()
+    private var sideThreads: [Thread] {
+        let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else { return shownThreads }
         return recent.filter { item in
-            !team.archived.contains(item.id.id)
-                && (words.isEmpty || item.name.lowercased().contains(words) || item.preview.lowercased().contains(words))
+            [item.name, item.preview, team.title(of: item.id.id) ?? ""].contains { $0.localizedCaseInsensitiveContains(words) }
         }
     }
 
@@ -292,6 +352,10 @@ struct Desk: View {
             .frame(height: 42)
             .background(Ink.paperRaised, in: .capsule)
             .padding(Ink.Space.l)
+
+            filterChips
+                .padding(.horizontal, Ink.Space.l)
+                .padding(.bottom, Ink.Space.s)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
@@ -364,11 +428,16 @@ struct Desk: View {
     private func sideThread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
         let here = item.id == opened
         let key = item.id.id
-        return Button {
+        return SwipeRow(actions: [archiveSwipe(key)]) {
+        Button {
             Haptics.light()
             jump(item.id)
         } label: {
             HStack(spacing: Ink.Space.s) {
+                if let value = team.threadLabels[key], let label = ThreadLabel(rawValue: value) {
+                    Circle().fill(label.tint).frame(width: Ink.Space.s, height: Ink.Space.s)
+                        .accessibilityLabel(label.title)
+                }
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
                     // What the conversation is about (its title, which you can rename), else its last words.
@@ -378,7 +447,10 @@ struct Desk: View {
                     }
                 }
                 Spacer(minLength: Ink.Space.s)
-                if team.approvals.contains(where: { $0.chat == key }) {
+                if team.archived.contains(key) {
+                    Image(systemName: "archivebox").foregroundStyle(Ink.inkFaint)
+                        .accessibilityLabel(L.t("homeThreads.archived"))
+                } else if team.approvals.contains(where: { $0.chat == key }) {
                     Image(systemName: "exclamationmark.circle").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.warn)
                 } else if team.isWorking(key) {
                     ProgressView().controlSize(.mini)
@@ -397,6 +469,29 @@ struct Desk: View {
                 withAnimation(Ink.Motion.settle) { team.pin(key, !team.pinned.contains(key)) }
             }
             Button("重命名", systemImage: "pencil") { startRename(key) }
+            archiveMenu(key)
+            Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
+                labelChoices(selected: team.threadLabels[key] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
+                    team.setThreadLabel($0, for: key)
+                }
+            }
+        }
+        }
+    }
+
+    private func archiveSwipe(_ key: String) -> SwipeAction {
+        let archived = team.archived.contains(key)
+        return SwipeAction(title: L.t(archived ? "homeThreads.restore" : "homeThreads.archive"),
+                           symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.Tile.accent) {
+            changeArchive(key, archived: !archived)
+        }
+    }
+
+    private func archiveMenu(_ key: String) -> some View {
+        let archived = team.archived.contains(key)
+        return Button(L.t(archived ? "homeThreads.restore" : "homeThreads.archive"),
+                      systemImage: archived ? "tray.and.arrow.up" : "archivebox") {
+            changeArchive(key, archived: !archived)
         }
     }
 
@@ -434,124 +529,157 @@ struct Desk: View {
         recent.filter { team.archived.contains($0.id.id) }
     }
 
-    var body: some View {
+    @ViewBuilder
+    private var homeThreads: some View {
+        header
+        companions
+            // 看名帖 from anywhere on the desk; kept here so the long body stays quick to check.
+            .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
+        waitingCard
+        if let next = team.nextLetter { letter(next) }
+        HStack {
+            Text(Words.t("近来的絮语"))
+                .font(Ink.title)
+                .foregroundStyle(Ink.ink)
+            Spacer()
+            Button {
+                Haptics.light()
+                withAnimation(Ink.Motion.settle) {
+                    searching.toggle()
+                    if !searching { query = "" }
+                }
+            } label: {
+                Image(systemName: searching ? "xmark" : "magnifyingglass")
+                    .font(.system(size: Ink.Size.body, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(width: 36, height: 36)
+            }
+            .accessibilityLabel(searching ? "不找了" : "找一找")
+        }
+        .padding(.top, Ink.Space.xxl)
+        .padding(.bottom, Ink.Space.s)
+        if searching {
+            TextField("找过去聊过的话", text: $query)
+                .font(.system(size: Ink.Size.body))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .padding(.horizontal, Ink.Space.l)
+                .frame(height: 44)
+                .paperCard()
+                .padding(.bottom, Ink.Space.m)
+                .transition(.opacity)
+        }
+        if searching && !query.trimmingCharacters(in: .whitespaces).isEmpty {
+            let hits = team.search(query)
+            if hits.isEmpty {
+                Text("没找到「\(query)」。").font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(.vertical, Ink.Space.l)
+            }
+            ForEach(hits) { hit in
+                Button {
+                    Haptics.light()
+                    if let leaf = hit.leaf, let found = team.leaves(hit.key).first(where: { $0.id == leaf }) {
+                        team.openLeaf(hit.key, found)
+                    }
+                    if hit.key.hasPrefix("bot-") { opened = .companion(String(hit.key.dropFirst(4))) } else { opened = .gathering(String(hit.key.dropFirst(5))) }
+                } label: {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                        HStack {
+                            Text(hit.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
+                            if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint) }
+                            Spacer()
+                            Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                        }
+                        Text(hit.snippet).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
+                    }
+                    .padding(.vertical, Ink.Space.m)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .contextMenu { archiveMenu(hit.key) }
+                Kit.rule(inset: 0)
+            }
+        } else {
+            TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? Words.t("旅伴"))
+            filterChips
+            if shownThreads.isEmpty {
+                EmptyNote(
+                    symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
+                    words: recent.isEmpty ? L.t("empty.startConversation") : L.t("empty.activeConversations")
+                )
+            }
+            ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
+                Text(group.title)
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkFaint)
+                    .padding(.top, Ink.Space.m)
+                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                    thread(item)
+                    if index != group.items.count - 1 {
+                        Kit.rule(inset: 40)
+                    }
+                }
+            }
+            if !archivedThreads.isEmpty {
+                Button {
+                    Haptics.light()
+                    withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
+                } label: {
+                    HStack(spacing: Ink.Space.s) {
+                        Image(systemName: "archivebox").font(.system(size: Ink.Size.small))
+                        Text("已归档 \(archivedThreads.count) 段").font(.system(size: Ink.Size.sub, weight: .medium))
+                        Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold))
+                            .rotationEffect(.degrees(showArchived ? 180 : 0))
+                        Spacer()
+                    }
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.vertical, Ink.Space.l)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(TapStyle())
+                .padding(.top, Ink.Space.l)
+                if showArchived {
+                    ForEach(archivedThreads, id: \.id) { item in
+                        thread(item)
+                            .opacity(0.75)
+                        Kit.rule(inset: 40)
+                    }
+                }
+            }
+        }
+    }
+
+    private var setupChecklist: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.xl) {
+            Text(L.t("homeThreads.getStarted"))
+                .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title3))
+                .foregroundStyle(Ink.ink)
+            RowCard {
+                Button { addingService = true } label: {
+                    RowLabel("server.rack", title: L.t("homeThreads.connect"), line: L.t("homeThreads.connectHelp"))
+                }
+                .buttonStyle(PressStyle())
+                Button { settingsPage = "models"; tuning = true } label: {
+                    RowLabel("sparkles", title: L.t("settings.defaultModel"), line: L.t("homeThreads.defaultHelp"))
+                }
+                .buttonStyle(PressStyle())
+                Button { caring = true } label: {
+                    RowLabel("externaldrive", title: L.t("homeThreads.backup"), line: L.t("homeThreads.backupHelp"))
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .padding(.top, Ink.Space.xxl)
+    }
+
+    private var deskContent: some View {
         ZStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    header
-                    companions
-                        // 看名帖 from anywhere on the desk; kept here so the long body stays quick to check.
-                        .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
-                    waitingCard
-                    if let next = team.nextLetter { letter(next) }
-                    HStack {
-                        Text(Words.t("近来的絮语"))
-                            .font(Ink.title)
-                            .foregroundStyle(Ink.ink)
-                        Spacer()
-                        Button {
-                            Haptics.light()
-                            withAnimation(Ink.Motion.settle) {
-                                searching.toggle()
-                                if !searching { query = "" }
-                            }
-                        } label: {
-                            Image(systemName: searching ? "xmark" : "magnifyingglass")
-                                .font(.system(size: Ink.Size.body, weight: .medium))
-                                .foregroundStyle(Ink.inkSoft)
-                                .frame(width: 36, height: 36)
-                        }
-                        .accessibilityLabel(searching ? "不找了" : "找一找")
-                    }
-                    .padding(.top, Ink.Space.xxl)
-                    .padding(.bottom, Ink.Space.s)
-                    if searching {
-                        TextField("找过去聊过的话", text: $query)
-                            .font(.system(size: Ink.Size.body))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .submitLabel(.search)
-                            .padding(.horizontal, Ink.Space.l)
-                            .frame(height: 44)
-                            .paperCard()
-                            .padding(.bottom, Ink.Space.m)
-                            .transition(.opacity)
-                    }
-                    if searching && !query.trimmingCharacters(in: .whitespaces).isEmpty {
-                        let hits = team.search(query)
-                        if hits.isEmpty {
-                            Text("没找到「\(query)」。").font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(.vertical, Ink.Space.l)
-                        }
-                        ForEach(hits) { hit in
-                            Button {
-                                Haptics.light()
-                                if let leaf = hit.leaf, let found = team.leaves(hit.key).first(where: { $0.id == leaf }) {
-                                    team.openLeaf(hit.key, found)
-                                }
-                                if hit.key.hasPrefix("bot-") { opened = .companion(String(hit.key.dropFirst(4))) } else { opened = .gathering(String(hit.key.dropFirst(5))) }
-                            } label: {
-                                VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                                    HStack {
-                                        Text(hit.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
-                                        if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint) }
-                                        Spacer()
-                                        Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                                    }
-                                    Text(hit.snippet).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
-                                }
-                                .padding(.vertical, Ink.Space.m)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(PressStyle())
-                            Rectangle().fill(Ink.rule).frame(height: 1)
-                        }
+                    if team.phase == .setup {
+                        setupChecklist
                     } else {
-                    TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? Words.t("旅伴"))
-                    filterChips
-                    if shownThreads.isEmpty {
-                        EmptyNote(
-                            symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
-                            words: recent.isEmpty ? L.t("empty.startConversation") : L.t("empty.activeConversations")
-                        )
-                    }
-                    ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
-                        Text(group.title)
-                            .font(.system(size: Ink.Size.small, weight: .medium))
-                            .foregroundStyle(Ink.inkFaint)
-                            .padding(.top, Ink.Space.m)
-                        ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                            thread(item)
-                            if index != group.items.count - 1 {
-                                Kit.rule(inset: 40)
-                            }
-                        }
-                    }
-                    if !archivedThreads.isEmpty {
-                        Button {
-                            Haptics.light()
-                            withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
-                        } label: {
-                            HStack(spacing: Ink.Space.s) {
-                                Image(systemName: "archivebox").font(.system(size: Ink.Size.small))
-                                Text("已归档 \(archivedThreads.count) 段").font(.system(size: Ink.Size.sub, weight: .medium))
-                                Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold))
-                                    .rotationEffect(.degrees(showArchived ? 180 : 0))
-                                Spacer()
-                            }
-                            .foregroundStyle(Ink.inkSoft)
-                            .padding(.vertical, Ink.Space.l)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(TapStyle())
-                        .padding(.top, Ink.Space.l)
-                        if showArchived {
-                            ForEach(archivedThreads, id: \.id) { item in
-                                thread(item)
-                                    .opacity(0.75)
-                                Kit.rule(inset: 40)
-                            }
-                        }
-                    }
+                        homeThreads
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)
@@ -612,6 +740,15 @@ struct Desk: View {
                     )
             }
         }
+        .overlay(alignment: .bottom) { archiveBanner }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { archiveUndo = nil }
+        }
+        .sheet(isPresented: $addingService) { SetupView(team: team) { addingService = false } }
+    }
+
+    var body: some View {
+        deskContent
         .animation(Ink.Motion.unfold, value: opened)
         .onAppear { sideControl.open = { openSide() } }
         .alert("重命名对话", isPresented: Binding(get: { renamingKey != nil }, set: { if !$0 { renamingKey = nil } })) {
@@ -645,7 +782,7 @@ struct Desk: View {
         .sheet(isPresented: $granting) { GrantsPage(team: team) }
         .sheet(isPresented: $hilling) { HillsPage() }
         .sheet(isPresented: $vaulting) { SecretsPage() }
-        .sheet(isPresented: $caring) { CarePage(team: team) }
+        .sheet(isPresented: $caring) { CarePage(team: team, openRestore: team.phase == .setup) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { receiveCard($0) }
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好", role: .cancel) { notice = nil }
@@ -893,15 +1030,12 @@ struct Desk: View {
 
     private func swipes(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> [SwipeAction] {
         let key = item.id.id
-        let archived = team.archived.contains(key)
         let pinned = team.pinned.contains(key)
         return [
             SwipeAction(title: pinned ? "取消置顶" : "置顶", symbol: pinned ? "pin.slash" : "pin", tint: Ink.Tile.xiang) {
                 withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
             },
-            SwipeAction(title: archived ? "拿回来" : "归档", symbol: archived ? "tray.and.arrow.up" : "archivebox", tint: Ink.Tile.accent) {
-                withAnimation(Ink.Motion.settle) { team.archive(key, !archived) }
-            },
+            archiveSwipe(key),
             SwipeAction(title: item.bot == nil ? "散了" : "清空", symbol: "trash", tint: Ink.Tile.yan) {
                 clearing = item.id
             },
@@ -983,12 +1117,10 @@ struct Desk: View {
             } else {
                 Button("置顶", systemImage: "pin") { withAnimation(Ink.Motion.settle) { team.pin(item.id.id, true) } }
             }
-            if team.archived.contains(item.id.id) {
-                Button("从归档里拿回来", systemImage: "tray.and.arrow.up") { withAnimation(Ink.Motion.settle) { team.archive(item.id.id, false) } }
-            } else {
-                Button("归档", systemImage: "archivebox") {
-                    withAnimation(Ink.Motion.settle) { team.archive(item.id.id, true) }
-                    Haptics.tick(0.5)
+            archiveMenu(item.id.id)
+            Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
+                labelChoices(selected: team.threadLabels[item.id.id] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
+                    team.setThreadLabel($0, for: item.id.id)
                 }
             }
             if case .gathering(let id) = item.id, let room = team.rooms.first(where: { $0.id == id }) {
@@ -1039,4 +1171,21 @@ struct BreathingDot: View {
 @MainActor
 final class SideControl {
     var open: () -> Void = {}
+}
+
+private enum ThreadLabel: String, CaseIterable, Identifiable {
+    case dai, yan, xiang, teng, zhu
+
+    var id: String { rawValue }
+    var title: String { L.t("homeThreads." + rawValue) }
+
+    var tint: Color {
+        switch self {
+        case .dai: Ink.Tile.dai
+        case .yan: Ink.Tile.yan
+        case .xiang: Ink.Tile.xiang
+        case .teng: Ink.Tile.teng
+        case .zhu: Ink.Tile.zhu
+        }
+    }
 }
