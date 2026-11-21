@@ -225,6 +225,39 @@ jobs:
               capture "$shot" "shots/$mode-$shot.png" || status=1
             done
           done
+          # The conversation as it is used: long, jumped back to its foot, with a reply arriving; dark, pure black and
+          # large text. Each waits a little after it first draws (clioShotDelay) so what it does has happened.
+          for mode in light dark; do
+            xcrun simctl ui "$UDID" appearance "$mode"
+            capture chat-long "shots/$mode-chat-long.png" -clioShotDelay 1.5 || status=1
+            capture chat-latest "shots/$mode-chat-latest.png" -clioShotDelay 3.5 || status=1
+            capture chat-stream "shots/$mode-chat-stream.png" -clioShotDelay 2.6 || status=1
+          done
+          xcrun simctl ui "$UDID" appearance dark
+          capture chat-long shots/oled-chat-long.png -clioShotDelay 1.5 -look.oled YES || status=1
+          capture settings shots/oled-settings.png -look.oled YES || status=1
+          xcrun simctl ui "$UDID" appearance light
+          capture chat-long shots/large-chat-long.png -clioShotDelay 1.5 -look.typeset4 YES -look.size 21 -look.ui 1.08 || status=1
+          capture settings shots/large-settings.png -look.ui 1.08 || status=1
+
+          # A small phone (iPhone SE width, 375 points), if this Xcode has one.
+          RUNTIME="$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("platform")=="iOS" and x.get("isAvailable")]; print(r[-1]["identifier"] if r else "")')"
+          SMALL="$(xcrun simctl create clio-small com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation "$RUNTIME" 2>/dev/null || true)"
+          if [[ -n "$SMALL" ]]; then
+            xcrun simctl shutdown "$UDID" || true
+            UDID="$SMALL"
+            xcrun simctl boot "$UDID" || true
+            xcrun simctl bootstatus "$UDID" -b
+            xcrun simctl install "$UDID" "$APP"
+            DATA_DIR="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)"
+            xcrun simctl ui "$UDID" appearance light
+            for shot in desk chat-long settings; do
+              capture "$shot" "shots/small-$shot.png" -clioShotDelay 1 || status=1
+            done
+          else
+            echo "::warning::No iPhone SE simulator here; small-screen pictures skipped"
+          fi
+
           if [[ "$SHOT_MODEL_ERROR" == "true" ]]; then
             xcrun simctl ui "$UDID" appearance light
             capture model-error shots/model-error-daily.png -look.plainNames YES || status=1

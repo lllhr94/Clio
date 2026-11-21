@@ -78,7 +78,10 @@ struct StreamingProse: View {
 }
 
 /// Incremental blank-line scanner. The rendered tail includes the unfinished line, but the
-/// boundary scanner only sees it once its newline arrives.
+/// boundary scanner only sees it once its newline arrives. A blank line after a list item, a table row or a quote
+/// does not end the block at once: a list with loose items, or a table with a gap, often carries on, and sealing it
+/// early drew it as two pieces that jumped together when the reply finished. Such a block ends only when the next
+/// written line does not carry it on.
 struct StreamBlocks {
     private(set) var finished: [String] = []
     private(set) var receivedBytes = 0
@@ -86,6 +89,9 @@ struct StreamBlocks {
     private var line = ""
     private var fence: String?
     private var previousBlank = false
+    /// The last line with words in `pending`, and whether a blank came after it that may or may not end the block.
+    private var lastContent = ""
+    private var waiting = false
 
     var tail: String { pending + line }
 
@@ -97,6 +103,14 @@ struct StreamBlocks {
             line += String(decoding: bytes, as: UTF8.self)
             guard index < lines.count - 1 else { break }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let blank = trimmed.isEmpty
+            if !blank, waiting {
+                waiting = false
+                if !Self.continues(lastContent, line) {
+                    finished.append(pending)
+                    pending = ""
+                }
+            }
             if let marker = fence {
                 if trimmed.hasPrefix(marker) { fence = nil }
             } else if trimmed.hasPrefix("```") {
@@ -104,16 +118,42 @@ struct StreamBlocks {
             } else if trimmed.hasPrefix("~~~") {
                 fence = "~~~"
             }
-            let blank = trimmed.isEmpty
             let boundary = blank && !previousBlank && fence == nil && !pending.isEmpty
             pending += line + "\n"
             line = ""
             if boundary {
-                finished.append(pending)
-                pending = ""
+                if Self.mayContinue(lastContent) {
+                    waiting = true
+                } else {
+                    finished.append(pending)
+                    pending = ""
+                }
             }
+            if !blank { lastContent = trimmed }
             previousBlank = blank
         }
+    }
+
+    /// A list item, a table row or a quote: what may go on after a blank line.
+    private static func mayContinue(_ last: String) -> Bool {
+        listItem(last) || last.hasPrefix("|") || last.hasPrefix(">")
+    }
+
+    /// Whether `next` carries on the block whose last line was `last`.
+    private static func continues(_ last: String, _ next: String) -> Bool {
+        let trimmed = next.trimmingCharacters(in: .whitespaces)
+        if listItem(last) { return listItem(trimmed) || next.hasPrefix("  ") || next.hasPrefix("\t") }
+        if last.hasPrefix("|") { return trimmed.hasPrefix("|") }
+        if last.hasPrefix(">") { return trimmed.hasPrefix(">") }
+        return false
+    }
+
+    private static func listItem(_ text: String) -> Bool {
+        if text.hasPrefix("- ") || text.hasPrefix("* ") || text.hasPrefix("+ ") { return true }
+        let digits = text.prefix { $0.isASCII && $0.isNumber }
+        guard !digits.isEmpty, digits.count < 10 else { return false }
+        let rest = text.dropFirst(digits.count)
+        return rest.hasPrefix(". ") || rest.hasPrefix(") ")
     }
 }
 

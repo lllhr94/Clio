@@ -168,19 +168,18 @@ private enum ChatFlowTests {
         try check(accumulator.finished, ["前言\r\n\r\n"], "CRLF split across updates")
         try check(accumulator.tail, "👋🏽", "Combining scalars in the tail")
 
-        // Require the documented result or the exact known behavior in the
-        // protected renderer. Any new split point is a regression.
+        // A blank line inside a list, a table or a quote keeps the block live while it carries on.
         for (name, first, continuation) in [
-            ("list", "- 第一项\n\n", "- 第二项"),
-            ("table", "| 项目 | 值 |\n| --- | --- |\n| 甲 | 1 |\n\n", "| 乙 | 2 |"),
+            ("list", "- 第一项\n\n", "- 第二项\n"),
+            ("table", "| 项目 | 值 |\n| --- | --- |\n| 甲 | 1 |\n\n", "| 乙 | 2 |\n"),
+            ("numbered list", "1. 第一项\n\n", "2. 第二项\n"),
+            ("quote", "> 一句\n\n", "> 又一句\n"),
         ] {
-            let split = prefix(first + continuation)
-            if split == first {
-                print("Known gap: the renderer freezes a streaming \(name) on an internal blank line.")
-            } else {
-                try check(split, "", "Internal blank in \(name) stays live")
-            }
+            try check(prefix(first + continuation), "", "Internal blank in \(name) stays live")
         }
+        // And it does end once something else is written.
+        try check(prefix("- 第一项\n\n下一段\n"), "- 第一项\n\n", "A list ends at the next paragraph")
+        try check(prefix("| 甲 | 1 |\n\n下一段\n\n"), "| 甲 | 1 |\n\n下一段\n\n", "A table ends at the next paragraph")
     }
 
     static func draftInput() throws {
