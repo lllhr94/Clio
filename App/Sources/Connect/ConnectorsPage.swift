@@ -44,7 +44,7 @@ struct ConnectorsPage: View {
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     Text(L.t("connectors.usageNote"))
-                        .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.horizontal, 4)
+                        .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.horizontal, Ink.Space.xs)
                 }
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
@@ -77,7 +77,7 @@ struct ConnectorsPage: View {
     private var suggestCard: some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
             IconBadge(symbol: "square.grid.2x2", tint: Ink.Tile.mo)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(L.t("connectors.suggestions")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(L.t("connectors.suggestionsNote"))
                     .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
@@ -147,7 +147,7 @@ struct ConnectorsPage: View {
                         Text(name)
                             .font(.system(size: Ink.Size.sub, weight: kind == name ? .semibold : .regular))
                             .foregroundStyle(kind == name ? Ink.paper : Ink.ink)
-                            .padding(.horizontal, 14)
+                            .padding(.horizontal, Ink.Space.l)
                             .frame(height: 34)
                             .background(kind == name ? Ink.ink : Ink.paperRaised, in: .capsule)
                     }
