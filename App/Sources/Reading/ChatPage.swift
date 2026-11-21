@@ -794,6 +794,10 @@ struct ChatPage: View {
             detailOpen = true
         }
         .contextMenu {
+            if working {
+                // A long job, phone set down: a black screen with just the step and the time, so it neither sleeps nor burns.
+                Button(L.t("alwaysOn.open"), systemImage: "moon.stars") { AlwaysOn.show(chat: chat.key) }
+            }
             Button(L.t("chat.outline"), systemImage: "list.bullet.indent") {
                 Task {
                     await loadEverything()

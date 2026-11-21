@@ -199,6 +199,7 @@
     "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel"
   },
   "alwaysOn": {
+    "open": "常亮黑屏",
     "idle": "暂时空闲",
     "waiting": "等你落款",
     "exitHint": "轻触关闭常亮黑屏"
