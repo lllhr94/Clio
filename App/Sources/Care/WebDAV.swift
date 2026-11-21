@@ -89,7 +89,9 @@ enum WebDAV {
         let names = hrefs.compactMap { href -> String? in
             let last = href.split(separator: "/").last.map(String.init) ?? ""
             let name = last.removingPercentEncoding ?? last
-            return name.hasSuffix(".clio-backup") ? name : nil
+            // A name the drive sends back is only a file name: nothing that could reach another folder on the phone.
+            guard name.hasSuffix(".clio-backup"), !name.contains("/"), !name.contains(".."), !name.hasPrefix(".") else { return nil }
+            return name
         }
         return Array(Set(names)).sorted(by: >)
     }
@@ -97,6 +99,7 @@ enum WebDAV {
     /// Downloads one backup to a temporary file.
     static func download(_ name: String) async throws -> URL {
         guard let base else { throw TeamError(message: "还没填网盘地址。") }
+        guard !name.contains("/"), !name.contains("..") else { throw TeamError(message: "网盘上的文件名不对。") }
         let (temp, response) = try await URLSession.shared.download(for: request(base.appendingPathComponent(name), method: "GET"))
         try check(response)
         let target = FileManager.default.temporaryDirectory.appendingPathComponent(name)

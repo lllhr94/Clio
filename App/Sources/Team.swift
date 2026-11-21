@@ -579,8 +579,30 @@ final class TeamModel: ObservableObject {
             saveSettings()
         }
         if threadLabels[Self.key(bot: id)] != nil { setThreadLabel("", for: Self.key(bot: id)) }
-        entries[Self.key(bot: id)] = nil
-        if keeping { ChatDisk.remove(Self.key(bot: id)) }
+        let key = Self.key(bot: id)
+        // What it was set to do later goes with it: no routine or message fires for a companion that is gone.
+        for routine in routines where routine.botId == id { removeRoutine(routine.id) }
+        let letters = laters.filter { $0.botId == id || $0.chat == key }
+        if !letters.isEmpty {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: letters.map(\.id))
+            laters.removeAll { item in letters.contains { $0.id == item.id } }
+            saveLaters()
+        }
+        // And its conversation's other files: leaves put aside, the 前情提要, settings, copies kept for 「重来」.
+        if keeping {
+            for leaf in leaves(key) {
+                Disk.remove(Self.leafFile(key, leaf.id))
+                Disk.remove(Self.leafSummary(key, leaf.id))
+            }
+            Disk.remove(Self.leafList(key))
+            Disk.remove(Self.summaryFile(key))
+            Disk.remove(Self.optionsFile(key))
+        }
+        leafBook[key] = nil
+        optionBook[key] = nil
+        Snapshots.shared.forget(key)
+        entries[key] = nil
+        if keeping { ChatDisk.remove(key) }
         saveBots()
         saveRooms()
     }
@@ -604,8 +626,27 @@ final class TeamModel: ObservableObject {
         stop(Self.key(room: id))
         withAnimation(.smooth(duration: 0.35)) { rooms.removeAll { $0.id == id } }
         if threadLabels[Self.key(room: id)] != nil { setThreadLabel("", for: Self.key(room: id)) }
-        entries[Self.key(room: id)] = nil
-        if keeping { ChatDisk.remove(Self.key(room: id)) }
+        let key = Self.key(room: id)
+        let letters = laters.filter { $0.chat == key }
+        if !letters.isEmpty {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: letters.map(\.id))
+            laters.removeAll { $0.chat == key }
+            saveLaters()
+        }
+        if keeping {
+            for leaf in leaves(key) {
+                Disk.remove(Self.leafFile(key, leaf.id))
+                Disk.remove(Self.leafSummary(key, leaf.id))
+            }
+            Disk.remove(Self.leafList(key))
+            Disk.remove(Self.summaryFile(key))
+            Disk.remove(Self.optionsFile(key))
+        }
+        leafBook[key] = nil
+        optionBook[key] = nil
+        Snapshots.shared.forget(key)
+        entries[key] = nil
+        if keeping { ChatDisk.remove(key) }
         saveRooms()
     }
 

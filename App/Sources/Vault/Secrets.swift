@@ -188,7 +188,12 @@ enum SecretTools {
             ], label: { "递笺：\($0["title"]?.string ?? "")" }) { arguments in
                 let fields: [Asker.Field] = (arguments["fields"]?.array ?? []).compactMap { item in
                     guard let key = item["key"]?.string, !key.isEmpty else { return nil }
-                    return Asker.Field(key: key, label: item["label"]?.string ?? key, secret: item["secret"]?.bool ?? false,
+                    let label = item["label"]?.string ?? key
+                    // A field that asks for a password, a code or a card number is kept in 信匣 whatever the model said:
+                    // otherwise its answer would go back to the model as plain text.
+                    let words = (key + " " + label + " " + (item["placeholder"]?.string ?? "")).lowercased()
+                    let sensitive = ["密码", "口令", "password", "passwd", "验证码", "otp", "pin码", "pin code", "卡号", "安全码", "cvv", "token", "令牌", "密钥", "api key", "apikey", "secret"].contains { words.contains($0) }
+                    return Asker.Field(key: key, label: label, secret: (item["secret"]?.bool ?? false) || sensitive,
                                        placeholder: item["placeholder"]?.string ?? "", value: item["value"]?.string ?? "",
                                        choices: (item["choices"]?.array ?? []).compactMap(\.string))
                 }
