@@ -220,13 +220,9 @@ struct SkillsPage: View {
                             .foregroundStyle(Ink.accent)
                         }
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(items) { item in
-                                row(item)
-                                Kit.rule(inset: Ink.Space.l)
-                            }
+                        RowCard {
+                            ForEach(items) { item in row(item) }
                         }
-                        .paperCard()
                     }
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                 }
@@ -264,7 +260,7 @@ struct SkillsPage: View {
 
     private func row(_ item: SkillShelf.Item) -> some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(item.skill.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
                 Text(item.skill.description).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
                 Text(Words.t("书案/") + item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
