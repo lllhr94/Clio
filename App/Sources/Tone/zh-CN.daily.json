@@ -235,6 +235,7 @@
     "fadeReply": "回复逐字淡入",
     "showReplyStats": "回复下显示耗时和用量",
     "expandSteps": "默认展开步骤",
+    "chatFaces": "聊天里显示头像",
     "keepThinking": "回复上留着思考过程",
     "preReplyThought": "回复前先写一段思考",
     "showFrameRate": "角落显示帧率",

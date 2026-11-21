@@ -145,10 +145,12 @@ struct ChatDisplayPage: View {
     @AppStorage("look.traceOpen") private var traceOpen = false
     @AppStorage("look.thinking") private var showThinking = true
     @AppStorage("pulse.on") private var pulseOn = true
+    @AppStorage("chat.faces") private var faces = false
 
     var body: some View {
         PreferenceForm(L.t("settingsHome.display"), reset: reset) {
             Section {
+                Toggle(L.t("settings.chatFaces"), isOn: $faces)
                 Toggle(L.t("settings.keepThinking"), isOn: $showThinking)
                 Toggle(L.t("settings.expandSteps"), isOn: $traceOpen)
                 Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
@@ -166,6 +168,7 @@ struct ChatDisplayPage: View {
         traceOpen = false
         showThinking = true
         pulseOn = true
+        faces = false
     }
 }
 

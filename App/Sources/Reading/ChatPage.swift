@@ -31,6 +31,8 @@ struct ChatPage: View {
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
     @State private var following = true
+    /// 聊天里显示头像: off unless turned on (设置 › 对话 › 对话显示与反馈).
+    @AppStorage("chat.faces") private var faces = false
     /// 在对话里找: what is looked for, and which of the places found is in view.
     @State private var finding = false
     @State private var findText = ""
@@ -1331,7 +1333,7 @@ struct ChatPage: View {
     private func turnRow(_ line: ChatLine, opens: Bool) -> some View {
         let lit = finding && currentHit == line.id
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            if opens, let gap = timeGap(before: line) {
+            if faces, opens, let gap = timeGap(before: line) {
                 Text(gap)
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkFaint)
@@ -1340,16 +1342,21 @@ struct ChatPage: View {
             }
             switch line.kind {
             case .user:
-                HStack(alignment: .top, spacing: Ink.Space.s) {
-                    row(line)
-                    if opens {
-                        MeAvatar(size: Self.face)
-                    } else {
-                        Color.clear.frame(width: Self.face, height: 1)
+                if faces {
+                    HStack(alignment: .top, spacing: Ink.Space.s) {
+                        row(line)
+                        if opens {
+                            MeAvatar(size: Self.face)
+                        } else {
+                            Color.clear.frame(width: Self.face, height: 1)
+                        }
                     }
+                } else {
+                    row(line)
                 }
             case .bot, .steps:
-                if opens { speakerHead(line) }
+                // Without faces, a group still says who is speaking, small.
+                if opens, faces || isRoom { speakerHead(line) }
                 row(line)
             case .note:
                 row(line)
@@ -1370,7 +1377,7 @@ struct ChatPage: View {
     private func speakerHead(_ line: ChatLine) -> some View {
         let speaker = line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)
         return HStack(spacing: Ink.Space.s) {
-            PetStill(size: Self.face, wash: speaker.map { Ink.wash(for: $0) }, avatar: true, bot: speaker)
+            PetStill(size: faces ? Self.face : 22, wash: speaker.map { Ink.wash(for: $0) }, avatar: true, bot: speaker)
             Text(speaker?.name ?? line.speakerName ?? bot.name)
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.inkSoft)
