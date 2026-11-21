@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The globe in a chat's top bar. It shows once the browser has a page, and pulses while a companion is on it.
+/// The globe in a chat's top bar: always there, so the user can open 远游 without asking a companion; it pulses while one is on it.
 struct RoamButton: View {
     @ObservedObject var browser: BrowserSession
     /// Inside a group of buttons that share one glass: no glass of its own.
@@ -8,7 +8,7 @@ struct RoamButton: View {
     let open: (Bool) -> Void
 
     var body: some View {
-        if browser.used || browser.url != nil {
+        Group {
             Button {
                 Haptics.light()
                 open(true)

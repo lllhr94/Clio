@@ -2464,6 +2464,16 @@ private struct Trace: View {
     }
     @State private var diffing: DiffShow?
 
+    /// A file to read rather than code to review — a report, a page, a picture: a tap opens it to read, as other
+    /// agents do, instead of a comparison of lines.
+    private static func isDocument(_ item: Keepsake) -> Bool {
+        guard let url = item.url else { return false }
+        let kinds: Set<String> = ["md", "markdown", "txt", "pdf", "doc", "docx", "rtf", "pages", "xls", "xlsx", "csv", "numbers",
+                                  "ppt", "pptx", "key", "png", "jpg", "jpeg", "gif", "heic", "webp", "svg", "html", "htm",
+                                  "mp3", "m4a", "wav", "mp4", "mov"]
+        return kinds.contains(url.pathExtension.lowercased())
+    }
+
     /// The files these steps wrote or changed.
     private var changedFiles: [Keepsake] { keepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
 
@@ -2496,7 +2506,7 @@ private struct Trace: View {
                 Kit.rule(inset: Ink.Space.l)
                 Button {
                     Haptics.light()
-                    if let diff = item.diff, !diff.isEmpty {
+                    if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                         diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
                     } else if let url = item.url {
                         openFile(url)
@@ -2670,7 +2680,7 @@ private struct Trace: View {
                     Haptics.light()
                     switch item.kind {
                     case .file, .remoteFile:
-                        if let diff = item.diff, !diff.isEmpty {
+                        if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                             diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
                         } else if let url = item.url {
                             openFile(url)
@@ -2691,7 +2701,7 @@ private struct Trace: View {
                             Text(item.detail)
                                 .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
-                            if let diff = item.diff, !diff.isEmpty {
+                            if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                                 // The first few changed lines, so the card shows what changed at a glance.
                                 DiffText(hunk: DiffText.glance(diff), limit: 5)
                                     .padding(.top, 4)
