@@ -121,7 +121,7 @@ struct PhotoViewer: View {
 
 /// The system camera, for one photo.
 struct CameraPicker: UIViewControllerRepresentable {
-    let onDone: (Data?) -> Void
+    let onDone: (UIImage?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -142,7 +142,7 @@ struct CameraPicker: UIViewControllerRepresentable {
 
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
             let image = info[.originalImage] as? UIImage
-            parent.onDone(image?.jpegData(compressionQuality: 0.9))
+            parent.onDone(image)
             parent.dismiss()
         }
 

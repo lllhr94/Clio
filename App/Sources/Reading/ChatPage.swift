@@ -28,6 +28,8 @@ struct ChatPage: View {
     @State private var spokenBase = ""
     @State private var photos: [Data] = []
     @State private var picks: [PhotosPickerItem] = []
+    @State private var attachmentRevision = UUID()
+    @State private var pasteTask: Task<Void, Never>?
     @State private var takingPhoto = false
     @State private var approving: Approval?
     @State private var viewing: String?
@@ -47,6 +49,9 @@ struct ChatPage: View {
     @State private var findText = ""
     @State private var findAt = 0
     @State private var hits: [String] = []
+    @State private var findLoadTask: Task<Void, Never>?
+    @State private var findQueryTask: Task<Void, Never>?
+    @State private var findScrollTask: Task<Void, Never>?
     /// How many lines were on the page before finding or the outline opened everything; restored after.
     @State private var lookupRows: [ChatLine] = []
     @State private var historyPage: [ChatLine]?
@@ -135,7 +140,7 @@ struct ChatPage: View {
             Haptics.light()
             loadEarlier()
         } label: {
-            Label("更早的 \(chat.lines.count - shownCount) 条", systemImage: "arrow.up")
+            Label(L.t("chat.earlier"), systemImage: "arrow.up")
                 .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.inkSoft)
                 .frame(maxWidth: .infinity, minHeight: 36)
@@ -145,20 +150,34 @@ struct ChatPage: View {
 
     /// Draws forty more older lines and keeps the one at the top of the screen where it was. Called by the button,
     /// and by itself when the reader scrolls near the top, so long conversations read on without stopping.
+    private var canLoadEarlier: Bool {
+        historyPage == nil && (chat.lines.count > shownCount || chat.hasEarlier)
+    }
+
     private func loadEarlier() {
-        guard chat.lines.count > shownCount, !loadingEarlier else { return }
-        loadingEarlier = true
-        let anchor = chat.lines.suffix(shownCount).first?.id
-        shownCount += 40
-        Task { @MainActor in
+        guard canLoadEarlier, earlierTask == nil, selecting.isEmpty else { return }
+        let previous = chat.lines.suffix(shownCount)
+        let visible = Set(viewport.ids)
+        let anchor = previous.first { visible.contains($0.id) }?.id ?? previous.first?.id
+        let first = previous.first?.id
+        let oldCount = previous.count
+        earlierTask = Task { @MainActor in
+            defer { earlierTask = nil }
+            if chat.lines.count <= shownCount {
+                await chat.loadEarlier()
+            }
+            guard !Task.isCancelled, historyPage == nil, selecting.isEmpty else { return }
+            let retained = first.flatMap { id in chat.lines.firstIndex { $0.id == id } }
+                .map { chat.lines.count - $0 } ?? oldCount
+            shownCount = min(chat.lines.count, retained + 40)
+            guard let anchor else { return }
             await Task.yield()
-            if let anchor { scroller?.scrollTo(anchor, anchor: .top) }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            loadingEarlier = false
+            guard !Task.isCancelled, historyPage == nil, selecting.isEmpty, !following else { return }
+            scroller?.scrollTo(anchor, anchor: .top)
         }
     }
 
-    @State private var loadingEarlier = false
+    @State private var earlierTask: Task<Void, Never>?
 
     /// A failure in the conversation: what went wrong, and a way to try again right there.
     private func failureCard(_ error: String) -> some View {
@@ -246,8 +265,9 @@ struct ChatPage: View {
         LazyVStack(spacing: 0) {
             // Keep distant replies unmounted when the keyboard, stream or window size changes.
             LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                if chat.lines.isEmpty && !chat.hasStreaming { empty }
-                if historyPage == nil, chat.lines.count > shownCount { earlier }
+                if !chat.loaded { ProgressView().frame(maxWidth: .infinity) }
+                else if chat.lines.isEmpty && !chat.hasStreaming { empty }
+                if canLoadEarlier { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -276,7 +296,7 @@ struct ChatPage: View {
                 ChatSection { liveReply }
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
                 if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
-                    ToolTailView()
+                    ToolTailView(tail: team.toolTail(for: chat.key))
                         .id("live")
                         .transition(.opacity.combined(with: .offset(y: 8)))
                 }
@@ -314,6 +334,7 @@ struct ChatPage: View {
         }
         if chat.hasStreaming {
             StreamingProse(text: chat.streaming)
+                .id(chat.streamGeneration)
                 .id("streaming")
         }
     }
@@ -464,8 +485,7 @@ struct ChatPage: View {
     /// checks each one on its own instead of giving up on one long chain.
     private var composerBar: some View {
         composerWatched
-        .onChange(of: team.options(chat.key).model) { context = team.contextEstimate(chat.key) }
-        .sheet(isPresented: $usageOpen, onDismiss: { context = team.contextEstimate(chat.key) }) {
+        .sheet(isPresented: $usageOpen) {
             UsageSheet(team: team, key: chat.key)
                 .presentationDetents([.medium, .large])
         }
@@ -499,9 +519,16 @@ struct ChatPage: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
         .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
-        .task { context = team.contextEstimate(chat.key) }
-        .onChange(of: working) { _, now in if !now { context = team.contextEstimate(chat.key) } }
-        .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
+        .task(id: estimateTrigger) {
+            guard chat.loaded, !working else { return }
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            let estimate = await team.contextEstimate(chat.key)
+            if !Task.isCancelled { context = estimate }
+        }
+    }
+
+    private var estimateTrigger: String {
+        "\(chat.loaded)|\(working)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(usageOpen)"
     }
 
     private var dockedForm: Asker.Form? {
@@ -600,6 +627,9 @@ struct ChatPage: View {
             chat.close()
             team.markSeen(chat.key)
             hideJumps?.cancel()
+            earlierTask?.cancel()
+            cancelFindTasks()
+            pasteTask?.cancel()
             selecting.removeAll()
             if dictation.listening { dictation.stop() }
         }
@@ -656,11 +686,9 @@ struct ChatPage: View {
                 bring(kind)
             }
         }) {
+            let revision = attachmentRevision
             PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
-                guard photos.count < 4 else { say("最多带四张图。"); return nil }
-                guard let small = Self.shrink(data) else { return nil }
-                withAnimation(Ink.Motion.settle) { photos.append(small) }
-                return small
+                await addPhoto(data, revision: revision)
             }, removePhoto: { data in
                 if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
             }, pick: { attachPicked = $0 })
@@ -751,24 +779,32 @@ struct ChatPage: View {
             ApproveView(approval: approval, team: team)
         }
         .fullScreenCover(isPresented: $takingPhoto) {
-            CameraPicker { data in
-                if let data, let small = Self.shrink(data), photos.count < 4 { photos.append(small) }
+            let revision = attachmentRevision
+            CameraPicker { image in
+                guard let image else { return }
+                Task {
+                    let photo = await Task.detached(priority: .userInitiated) {
+                        image.jpegData(compressionQuality: 0.9)
+                    }.value
+                    if let photo { _ = await addPhoto(photo, revision: revision) }
+                }
             }
             .ignoresSafeArea()
         }
         .sheet(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
             PhotoViewer(chat: chat, attachmentId: item.id)
         }
-        .onChange(of: picks) { _, items in
+        .task(id: picks) {
+            let items = picks
+            let revision = attachmentRevision
             guard !items.isEmpty else { return }
-            Task {
-                for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self), let small = Self.shrink(data), photos.count < 4 {
-                        withAnimation(Ink.Motion.settle) { photos.append(small) }
-                    }
+            for item in items {
+                guard !Task.isCancelled, revision == attachmentRevision, picks == items, photos.count < 4 else { return }
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    _ = await addPhoto(data, revision: revision, selection: items)
                 }
-                picks = []
             }
+            if !Task.isCancelled, revision == attachmentRevision, picks == items { picks = [] }
         }
         .onChange(of: chat.lines.last?.id) { _, _ in
             if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
@@ -1147,26 +1183,45 @@ struct ChatPage: View {
     }
 
 
-    /// More than 2500 characters arriving at once (a paste) would make the box crawl: they go into 书案/收件 as a file,
-    /// shown as an attachment under the box, and the box keeps what was there before.
+    /// Keep the pasted text until its attachment is ready and the same draft is still on screen.
     private func keepLongPaste(_ old: String, _ new: String) {
-        guard new.count - old.count > 2500 else { return }
-        let start = zip(old, new).prefix { $0 == $1 }.count
-        let tail = zip(old.reversed(), new.reversed()).prefix { $0 == $1 }.count
-        let end = max(start, min(new.count - tail, new.count))
-        let pasted = String(new.dropFirst(start).prefix(end - start))
-        guard pasted.count > 2500 else { return }
-        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
-        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let file = inbox.appendingPathComponent("粘贴片段-\(formatter.string(from: Date())).txt")
-        guard (try? Data(pasted.utf8).write(to: file)) != nil else { return }
-        draft = old
-        withAnimation(Ink.Motion.settle) { files.append(Workspace.relative(file)) }
-        say(Words.t("粘进来的字太长（\(pasted.count) 字），存成文件带上了：书案/\(Workspace.relative(file))"))
+        pasteTask?.cancel()
+        guard new.utf8.count > DraftInput.pasteLimit else { return }
+        let largeChange = new.utf8.count - old.utf8.count > DraftInput.pasteLimit
+        let revision = attachmentRevision
+        pasteTask = Task {
+            if !largeChange {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            }
+            let worker = Task.detached(priority: .userInitiated) { () -> (URL, String, Int)? in
+                guard let pasted = DraftInput.longInsertion(from: old, to: new), !Task.isCancelled else { return nil }
+                let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+                let stamp = Date().formatted(.iso8601.year().month().day())
+                let id = UUID().uuidString.prefix(8)
+                let file = inbox.appendingPathComponent("粘贴片段-\(stamp)-\(id).txt")
+                do {
+                    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+                    try Data(pasted.utf8).write(to: file, options: .atomic)
+                    return (file, Workspace.relative(file), pasted.count)
+                } catch {
+                    return nil
+                }
+            }
+            let prepared = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let (url, path, count) = prepared else { return }
+            guard !Task.isCancelled, revision == attachmentRevision, draft == new else {
+                _ = await Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: url) }.value
+                return
+            }
+            draft = old
+            withAnimation(Ink.Motion.settle) { files.append(path) }
+            say(L.format("chat.pasteAttached", count, path))
+        }
     }
-
 
     /// Files picked from the Files app land in 书案/收件, and the companion is told where.
     private func receive(_ urls: [URL]) {
@@ -1473,14 +1528,6 @@ struct ChatPage: View {
 
     // MARK: Finding
 
-    /// The lines with what you look for, oldest first.
-    /// Worked out once per change of the words, not for every row.
-    private func findHits() -> [String] {
-        let wanted = findText.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return [] }
-        return lookupRows.filter { ($0.kind == .user || $0.kind == .bot) && $0.text.localizedCaseInsensitiveContains(wanted) }.map(\.id)
-    }
-
     private var currentHit: String? {
         let found = hits
         guard !found.isEmpty else { return nil }
@@ -1492,10 +1539,12 @@ struct ChatPage: View {
         Haptics.light()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
-        Task {
-            await loadEverything()
-            guard finding else { lookupRows = []; return }
-            if !findText.isEmpty { updateFindHits() }
+        findLoadTask?.cancel()
+        findLoadTask = Task {
+            let rows = await chat.lookupRows()
+            guard !Task.isCancelled, finding else { return }
+            lookupRows = rows
+            updateFindHits()
         }
     }
 
@@ -1504,7 +1553,14 @@ struct ChatPage: View {
         lookupRows = await chat.lookupRows()
     }
 
+    private func cancelFindTasks() {
+        findLoadTask?.cancel()
+        findQueryTask?.cancel()
+        findScrollTask?.cancel()
+    }
+
     private func stopFinding() {
+        cancelFindTasks()
         withAnimation(Ink.Motion.settle) { finding = false }
         findText = ""
         findAt = 0
@@ -1524,9 +1580,31 @@ struct ChatPage: View {
     }
 
     private func updateFindHits() {
-        hits = findHits()
-        findAt = max(hits.count - 1, 0)
-        if !hits.isEmpty { showHit(0) }
+        findQueryTask?.cancel()
+        findScrollTask?.cancel()
+        hits = []
+        findAt = 0
+        let wanted = findText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty, !lookupRows.isEmpty else { return }
+        let rows = lookupRows
+        findQueryTask = Task {
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            let search = Task.detached(priority: .userInitiated) {
+                var result: [String] = []
+                for row in rows {
+                    if Task.isCancelled { return [] as [String] }
+                    if (row.kind == .user || row.kind == .bot), row.text.localizedCaseInsensitiveContains(wanted) {
+                        result.append(row.id)
+                    }
+                }
+                return result
+            }
+            let found = await withTaskCancellationHandler { await search.value } onCancel: { search.cancel() }
+            guard !Task.isCancelled, finding else { return }
+            hits = found
+            findAt = max(found.count - 1, 0)
+            if !found.isEmpty { showHit(0) }
+        }
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1538,8 +1616,10 @@ struct ChatPage: View {
         reveal(target)
         following = false
         Haptics.tick(0.4)
-        Task { @MainActor in
+        findScrollTask?.cancel()
+        findScrollTask = Task { @MainActor in
             await Task.yield()
+            guard !Task.isCancelled, finding else { return }
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
         }
     }
@@ -2562,33 +2642,17 @@ struct ChatPage: View {
         let run: () -> Void
     }
 
-    /// The word being typed after 「@」, if the draft ends in one.
-    private var mention: String? {
-        guard let at = draft.lastIndex(of: "@") else { return nil }
-        let word = draft[draft.index(after: at)...]
-        guard !word.contains(where: { $0 == " " || $0 == "\n" }) else { return nil }
-        if at > draft.startIndex, let before = draft[..<at].last, !before.isWhitespace { return nil }
-        return String(word)
-    }
-
-    private enum SuggestionSource: Equatable { case files, skills }
-
-    private var suggestionSource: SuggestionSource? {
-        let text = draft.trimmingCharacters(in: .whitespaces)
-        if text.hasPrefix("/"), !text.contains("\n") { return .skills }
-        return mention == nil ? nil : .files
-    }
-
     private var composerSuggestions: some View {
-        let source = suggestionSource
-        let suggestions = source == nil ? [] : hints
+        let query = DraftInput.suggestion(in: draft)
+        let suggestions = query.map { hints($0) } ?? []
+        let source = query?.source
         return Group {
             if !suggestions.isEmpty { hintStrip(suggestions) }
         }
         .task(id: source) { await loadSuggestions(source) }
     }
 
-    private func loadSuggestions(_ source: SuggestionSource?) async {
+    private func loadSuggestions(_ source: DraftInput.Source?) async {
         switch source {
         case .skills:
             let skills = await Task.detached(priority: .userInitiated) { SkillShelf.enabled }.value
@@ -2607,10 +2671,9 @@ struct ChatPage: View {
         }
     }
 
-    private var hints: [Hint] {
-        let text = draft.trimmingCharacters(in: .whitespaces)
-        if text.hasPrefix("/"), !text.contains("\n") {
-            let typed = String(text.dropFirst()).lowercased()
+    private func hints(_ query: DraftInput.Suggestion) -> [Hint] {
+        let typed = query.text.lowercased()
+        if query.source == .skills {
             var list: [Hint] = [
                 Hint(id: "leaf", icon: "square.and.pencil", title: "/新对话", note: Words.t("另起一叶，眼下的收起来")) {
                     draft = ""
@@ -2635,9 +2698,8 @@ struct ChatPage: View {
                 })
             }
             return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
-        }
-        if let word = mention?.lowercased() {
-            let all = draftState.files.lazy.filter { word.isEmpty || $0.lowercased().contains(word) }.prefix(6)
+        } else {
+            let all = draftState.files.lazy.filter { typed.isEmpty || $0.lowercased().contains(typed) }.prefix(6)
             return all.map { file in
                 Hint(id: "file-" + file, icon: "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
                     if let at = draft.lastIndex(of: "@") { draft = String(draft[..<at]) }
@@ -2645,7 +2707,6 @@ struct ChatPage: View {
                 }
             }
         }
-        return []
     }
 
     private func hintStrip(_ hints: [Hint]) -> some View {
@@ -2683,6 +2744,8 @@ struct ChatPage: View {
     }
 
     private func clearComposer() {
+        pasteTask?.cancel()
+        invalidatePhotoSelection()
         historyPage = nil
         draft = ""
         photos = []
@@ -2692,15 +2755,20 @@ struct ChatPage: View {
         followToEnd()
     }
 
-    /// Smaller and as JPEG: quick to send and enough for a model to read.
-    static func shrink(_ data: Data) -> Data? {
-        guard let image = UIImage(data: data) else { return nil }
-        let scale = min(1, 1568 / max(1, max(image.size.width, image.size.height)))
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-            .jpegData(compressionQuality: 0.8)
+    private func invalidatePhotoSelection() {
+        attachmentRevision = UUID()
+        picks = []
+    }
+
+    private func addPhoto(_ data: Data, revision: UUID, selection: [PhotosPickerItem]? = nil) async -> Data? {
+        guard revision == attachmentRevision, photos.count < 4 else { return nil }
+        let small = await Task.detached(priority: .userInitiated) {
+            Picture.shrink(data, longest: 1568)?.data
+        }.value
+        guard !Task.isCancelled, revision == attachmentRevision, selection == nil || selection == picks,
+              photos.count < 4, let small else { return nil }
+        withAnimation(Ink.Motion.settle) { photos.append(small) }
+        return small
     }
 }
 
@@ -3747,6 +3815,41 @@ private final class ChatDraft {
         } else {
             UserDefaults.standard.set(text, forKey: key)
         }
+    }
+}
+
+
+enum DraftInput {
+    static let pasteLimit = 2500
+    private static let queryLimit = 128
+
+    enum Source: Equatable { case files, skills }
+
+    struct Suggestion: Equatable {
+        let source: Source
+        let text: String
+    }
+
+    static func suggestion(in draft: String) -> Suggestion? {
+        let start = draft.prefix(queryLimit + 1)
+        if start.endIndex == draft.endIndex {
+            let words = start.trimmingCharacters(in: .whitespaces)
+            if words.hasPrefix("/"), !words.contains(where: \.isNewline) {
+                return Suggestion(source: .skills, text: String(words.dropFirst()))
+            }
+        }
+        let token = draft.suffix(queryLimit + 1).reversed().prefix { !$0.isWhitespace }.reversed()
+        guard token.count <= queryLimit, token.first == "@" else { return nil }
+        let word = token.dropFirst()
+        guard !word.contains("@") else { return nil }
+        return Suggestion(source: .files, text: String(word))
+    }
+
+    static func longInsertion(from old: String, to new: String) -> String? {
+        guard new.count - old.count > pasteLimit else { return nil }
+        let start = zip(old, new).prefix { $0 == $1 }.count
+        let tail = zip(old.dropFirst(start).reversed(), new.dropFirst(start).reversed()).prefix { $0 == $1 }.count
+        return String(new.dropFirst(start).dropLast(tail))
     }
 }
 

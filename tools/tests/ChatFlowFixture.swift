@@ -2,9 +2,8 @@ import Foundation
 
 // Only the platform inputs and side effects are simulated. The runner fills in
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
-private enum StreamFixture {
-// RULE: SETTLED
-}
+// RULE: STREAM_BLOCKS
+// RULE: DRAFT_INPUT
 
 private enum ScrollPhase { case idle, interacting, decelerating }
 
@@ -73,6 +72,7 @@ private enum DraftAttachments {
 
 @MainActor
 private final class FlowFixture {
+    var pasteTask: Task<Void, Never>?
     var draft = "你好"
     var photos = ["photo"]
     var files = ["file"]
@@ -92,6 +92,7 @@ private final class FlowFixture {
     var historyPage: [String]?
 
     func lingerJumpButtons() {}
+    func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
     let clock = Clock()
@@ -131,6 +132,7 @@ private enum ChatFlowTests {
     static func main() async {
         do {
             try paragraphsAndFences()
+            try draftInput()
             try await followingTheReader()
             try await latestFollowWins()
             try await sendingCoalesces()
@@ -143,7 +145,9 @@ private enum ChatFlowTests {
 
     static func paragraphsAndFences() throws {
         func prefix(_ input: String) -> String {
-            String(input[..<StreamFixture.settled(input)])
+            var blocks = StreamBlocks()
+            for character in input { blocks.append(String(character)) }
+            return blocks.finished.joined()
         }
         try check(prefix("正在写 👋🏽"), "", "Incomplete paragraph")
         try check(prefix("第一段 👋🏽\n下一行\n\n正在写"), "第一段 👋🏽\n下一行\n\n", "Paragraph boundary")
@@ -155,6 +159,14 @@ private enum ChatFlowTests {
             let closed = intro + code + fence + "\n\n"
             try check(prefix(closed + "下面"), closed, "Closed fence can settle")
         }
+
+        var accumulator = StreamBlocks()
+        accumulator.append("前言\r")
+        accumulator.append("\n\r\n")
+        accumulator.append("👋")
+        accumulator.append("🏽")
+        try check(accumulator.finished, ["前言\r\n\r\n"], "CRLF split across updates")
+        try check(accumulator.tail, "👋🏽", "Combining scalars in the tail")
 
         // Require the documented result or the exact known behavior in the
         // protected renderer. Any new split point is a regression.
@@ -169,6 +181,17 @@ private enum ChatFlowTests {
                 try check(split, "", "Internal blank in \(name) stays live")
             }
         }
+    }
+
+    static func draftInput() throws {
+        let prefix = String(repeating: "正文", count: 2000)
+        try check(DraftInput.suggestion(in: prefix), nil, "A long draft without a command")
+        try check(DraftInput.suggestion(in: prefix + " @文件")?.text, "文件", "Mention at the end of a long draft")
+        try check(DraftInput.suggestion(in: "mail@file"), nil, "An email is not a mention")
+        try check(DraftInput.suggestion(in: " /技能 ")?.source, .skills, "Slash command")
+        let large = String(repeating: "👋🏽", count: 2501)
+        try check(DraftInput.longInsertion(from: "首尾", to: "首" + large + "尾"), large, "A large Unicode paste inside a draft")
+        try check(DraftInput.longInsertion(from: "首尾", to: "首👋🏽尾"), nil, "An ordinary edit is not a paste")
     }
 
     @MainActor

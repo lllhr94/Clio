@@ -41,7 +41,7 @@ struct UsageSheet: View {
         }
         .hitchPage("用量")
         .task {
-            estimate = team.contextEstimate(key)
+            estimate = await team.contextEstimate(key)
             if let endpoint { floor = TeamModel.balanceFloor(endpoint.id) }
             await loadBalance()
         }
@@ -108,7 +108,7 @@ struct UsageSheet: View {
                 let count = try await team.compress(key)
                 note = Words.t("压好了：较早的 \(count) 条写成了前情提要，原文都还在对话里，往上翻就有。")
                 Haptics.thud()
-                estimate = team.contextEstimate(key)
+                estimate = await team.contextEstimate(key)
             } catch {
                 note = error.localizedDescription
             }

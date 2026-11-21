@@ -194,7 +194,7 @@ struct PlusSheet: View {
     let name: String
     let isRoom: Bool
     /// A photo tapped in the strip, as JPEG data. Returns what was put in the composer (nil: not added).
-    let addPhoto: (Data) -> Data?
+    let addPhoto: (Data) async -> Data?
     /// A photo tapped again: taken back out of the composer.
     let removePhoto: (Data) -> Void
     /// Camera, files or the full photo picker: opened once the sheet is gone.
@@ -211,6 +211,7 @@ struct PlusSheet: View {
     @State private var added: Set<String> = []
     /// What each picked photo became in the composer, to take it back out.
     @State private var placed: [String: Data] = [:]
+    @State private var loadingPhotos: Set<String> = []
     @State private var access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var abilities = false
     @State private var skills = false
@@ -358,14 +359,18 @@ struct PlusSheet: View {
             _ = withAnimation(Ink.Motion.settle) { added.remove(id) }
             return
         }
+        guard loadingPhotos.insert(id).inserted else { return }
         Haptics.tick(0.6)
         let request = PHImageRequestOptions()
         request.deliveryMode = .highQualityFormat
         request.isNetworkAccessAllowed = true
         PHImageManager.default().requestImageDataAndOrientation(for: asset, options: request) { data, _, _, _ in
-            guard let data, let kept = addPhoto(data) else { return }
-            placed[id] = kept
-            _ = withAnimation(Ink.Motion.settle) { added.insert(id) }
+            Task { @MainActor in
+                defer { loadingPhotos.remove(id) }
+                guard let data, let kept = await addPhoto(data) else { return }
+                placed[id] = kept
+                _ = withAnimation(Ink.Motion.settle) { added.insert(id) }
+            }
         }
     }
 

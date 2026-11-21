@@ -59,8 +59,10 @@ final class ChatModel {
     private(set) var lines: [ChatLine] = []
     private(set) var pending: [ChatLine] = []
     /// The part of the reply being written that is on screen so far.
+    private(set) var streamGeneration = 0
     private(set) var streaming = "" {
         didSet {
+            if streaming.isEmpty && !oldValue.isEmpty { streamGeneration += 1 }
             let writing = !streaming.isEmpty
             if writing != hasStreaming { hasStreaming = writing }
         }
@@ -99,6 +101,7 @@ final class ChatModel {
 
     private let team: TeamModel
     private var feed: UUID?
+    private var opening: Task<Void, Never>?
     private var demoReply: Task<Void, Never>?
     /// How many kept messages are on screen.
     private var limit = 160
@@ -109,15 +112,16 @@ final class ChatModel {
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
     private var target = ""
     private var shown = 0
+    private var publishedShown = 0
     private var finalCount = 0
     /// When the text on the page last changed. Characters still come out every frame, but the page is redrawn at
     /// most `Self.redraws` times a second: redrawing a long reply sixty times a second is what made it stutter.
     private var published: TimeInterval = 0
     private static let redraws = 15.0
 
-    private func due(_ done: Bool) -> Bool {
-        let now = Date().timeIntervalSinceReferenceDate
-        guard done || now - published >= 1 / Self.redraws else { return false }
+    private func due() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - published >= 1 / Self.redraws else { return false }
         published = now
         return true
     }
@@ -141,18 +145,26 @@ final class ChatModel {
     }
 
     func open() {
-        guard feed == nil else { return }
+        guard feed == nil, opening == nil else { return }
         if demo {
             if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
             return
         }
-        feed = team.listen(key) { [weak self] event in self?.hear(event) }
-        lines = build(team.history(key))
-        loaded = true
+        opening = Task { [weak self] in
+            guard let self else { return }
+            let history = await team.loadHistory(key)
+            guard !Task.isCancelled else { return }
+            feed = team.listen(key) { [weak self] event in self?.hear(event) }
+            lines = build(history)
+            loaded = true
+            opening = nil
+        }
     }
 
     func close() {
+        opening?.cancel()
+        opening = nil
         if let feed { team.unlisten(feed) }
         feed = nil
         browsingHistory = false
@@ -184,15 +196,17 @@ final class ChatModel {
                 return false
             }
             shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
-            if due(shown >= finalCount) { fresh?.shown = shown }
+            if shown >= finalCount || due() { fresh?.shown = shown }
             return true
         }
         let goal = target.count
         if shown > goal { shown = goal }
-        guard shown < goal else { return false }
-        shown = min(goal, shown + max(1, (goal - shown) / 10))
-        if due(shown >= goal) { streaming = String(target.prefix(shown)) }
-        return true
+        if shown < goal { shown = min(goal, shown + max(1, (goal - shown) / 10)) }
+        if shown > publishedShown, due() {
+            streaming = String(target.prefix(shown))
+            publishedShown = shown
+        }
+        return shown < goal || publishedShown < shown
     }
 
     // MARK: Reading
@@ -204,7 +218,7 @@ final class ChatModel {
 
     /// A read-only lookup snapshot. It must never enlarge the window used by live updates.
     func lookupRows() async -> [ChatLine] {
-        let history = team.history(key)
+        let history = await team.loadHistory(key)
         return await Task.detached(priority: .userInitiated) {
             Self.buildRows(history[...], working: false, running: nil)
         }.value
@@ -213,10 +227,24 @@ final class ChatModel {
     func loadEarlier() async {
         guard hasEarlier, !loadingEarlier else { return }
         loadingEarlier = true
-        limit += 160
+        defer { loadingEarlier = false }
+        let nextLimit = limit + 160
+        let history = await team.loadHistory(key)
+        let working = team.isWorking(key)
+        let tool = running
+        let page = await Task.detached(priority: .userInitiated) {
+            Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
+        }.value
+        guard !Task.isCancelled else { return }
+        limit = nextLimit
         heldRows = nil
-        lines = build(team.history(key))
-        loadingEarlier = false
+        let newest = team.history(key)
+        if newest == history, working == team.isWorking(key), tool == running {
+            hasEarlier = newest.count > limit
+            lines = page
+        } else {
+            lines = build(newest)
+        }
     }
 
     /// The kept messages as rows: what the user said, what the Bot said, and the steps between.
@@ -371,7 +399,7 @@ final class ChatModel {
         case .text(let piece):
             clearThinking()
             if fresh?.shown != nil { fresh?.shown = nil }
-            if target.isEmpty { shown = 0 }
+            if target.isEmpty { shown = 0; publishedShown = 0 }
             target += piece
             type()
         case .tool(let label):
@@ -419,7 +447,7 @@ final class ChatModel {
 
     /// A kept photo. `preview` is ignored: the phone has the whole photo.
     func photo(_ name: String, preview: Bool) async -> Data? {
-        Disk.photo(name)
+        await Task.detached(priority: .userInitiated) { Disk.photo(name) }.value
     }
 
     // MARK: Sending
@@ -503,6 +531,7 @@ final class ChatModel {
             try? await Task.sleep(nanoseconds: 900_000_000)
             let reply = "这是演示，我还没有接上模型。到设置里填一个 DeepSeek 或 Claude 的密钥，我就能真的回答你：一边想一边写，像现在这样一个字一个字冒出来。"
             self?.shown = 0
+            self?.publishedShown = 0
             self?.fresh = nil
             var rest = Substring(reply)
             while !rest.isEmpty, !Task.isCancelled {

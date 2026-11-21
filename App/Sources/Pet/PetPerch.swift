@@ -62,11 +62,19 @@ struct PetPerchAnchor: UIViewRepresentable {
     }
 
     @MainActor
-    final class Tracker: NSObject {
+    final class Tracker: NSObject, UIGestureRecognizerDelegate {
         private let perch: PetPerch
         private weak var marker: Marker?
         private var window: Surface?
         private var link: CADisplayLink?
+        private lazy var sheetPan: UIPanGestureRecognizer = {
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(sheetMoved))
+            pan.delegate = self
+            pan.cancelsTouchesInView = false
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            return pan
+        }()
         private var awakeUntil: CFTimeInterval = 0
         private var showingSheet = false
         private var covered = false
@@ -136,6 +144,7 @@ struct PetPerchAnchor: UIViewRepresentable {
         }
 
         func detach() {
+            sheetPan.view?.removeGestureRecognizer(sheetPan)
             link?.invalidate()
             link = nil
             window?.isHidden = true
@@ -170,6 +179,20 @@ struct PetPerchAnchor: UIViewRepresentable {
 
         @objc private func windowChanged() { wake() }
 
+        @objc private func sheetMoved() { wake() }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        private func watchSheetDrag(in source: UIWindow, active: Bool) {
+            guard active else {
+                sheetPan.view?.removeGestureRecognizer(sheetPan)
+                return
+            }
+            if sheetPan.view !== source { source.addGestureRecognizer(sheetPan) }
+        }
+
         private func tick(_ clock: CADisplayLink) {
             guard let marker, let source = marker.window, let window else {
                 detach()
@@ -188,6 +211,7 @@ struct PetPerchAnchor: UIViewRepresentable {
             let host = (sheet?.presentedView).flatMap { $0.window === source ? $0 : nil }
             let isBottomSheet = showingSheet || sheet?.detents.contains(where: { $0.identifier == .medium }) == true
             let blocked = covered || (presented != nil && !isBottomSheet)
+            watchSheetDrag(in: source, active: host != nil && isBottomSheet && !blocked)
             if perch.suppressed != (quiet || blocked) { perch.suppressed = quiet || blocked }
 
             let markerOrigin = origin(of: marker, in: source)
@@ -204,9 +228,8 @@ struct PetPerchAnchor: UIViewRepresentable {
                 catchUp = nil
                 if perch.rising { perch.rising = false }
             }
-            // An interactive sheet can be grabbed again at any time. Away from a sheet, only
-            // sample while layout or the keyboard is moving.
-            if now > awakeUntil, !showingSheet, host == nil, catchUp == nil, travelStart == nil {
+            // A new drag, keyboard notification or layout change wakes the sampler from rest.
+            if now > awakeUntil, catchUp == nil, travelStart == nil {
                 clock.isPaused = true
             }
         }
