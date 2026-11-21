@@ -100,3 +100,18 @@
 7. **[P3] 问答目录只接了菜单项的称谓（原 #10）。** 切换书卷称谓后，页面标题仍写死「问答目录」，名帖性格栏也绕过词典，一眼卡的宽度现在已随屏幕变化。建议将上述标题走同一组词典键，字号继续沿用 App 的五档规则。[ChatPage.swift:801](https://github.com/lllhr94/Clio/blob/52081c02be4e309f87ec30101b5c0043c58587a0/App/Sources/Reading/ChatPage.swift#L801) · [ChatPage.swift:3189](https://github.com/lllhr94/Clio/blob/52081c02be4e309f87ec30101b5c0043c58587a0/App/Sources/Reading/ChatPage.swift#L3189) · [NameCardView.swift:74](https://github.com/lllhr94/Clio/blob/52081c02be4e309f87ec30101b5c0043c58587a0/App/Sources/Reading/NameCardView.swift#L74)
 
 原 #4 的默认口吻已修正。按处理表保留的两项行为仍可触发，白纸或关心绪时模型自行输出标签仍会折起来，群聊的「明」「活」仍可能先显示为「温」（原 #8）。[Team.swift:1657](https://github.com/lllhr94/Clio/blob/52081c02be4e309f87ec30101b5c0043c58587a0/App/Sources/Team.swift#L1657) · [ChatPage.swift:255](https://github.com/lllhr94/Clio/blob/52081c02be4e309f87ec30101b5c0043c58587a0/App/Sources/Reading/ChatPage.swift#L255)
+
+## Claude 审 Codex 第二轮（PR #25–#30，11-21 晚）
+
+合并顺序 #25 → #30，无冲突；lint 通过。审的重点和结论：
+
+| 处 | 看了什么 | 结论 |
+|---|---|---|
+| `ChatDisk.swift`（新） | 对话写盘挪到后台队列；同一文件后来的写盖掉排队中的；进后台前申请时间写完；备份前先等写完 | 可以。内存里的 `entries` 是读的来源，磁盘只在第一次打开时读，不会读到旧数据。风险：App 被杀前 0.3 秒内的最后一条可能没落盘，可接受 |
+| `Chat.swift` | `ChatModel` 改成 `@Observable`；思考内容 120 ms 合并一次再刷新；搜索 / 目录改成后台另建一份，不再撑大聊天窗口；翻历史时暂停自动回底 | 可以，正好对上 C25 #2 和掉帧记录 |
+| 草稿 | 挪进输入框自己的模型，停手 0.3 秒才存，键名沿用 `draft.<对话>` | 可以，老草稿照样读得到 |
+| 顶栏 ⋯ 菜单 | 原顶栏和菜单的项目（浏览器、名帖、问答目录、在对话里找、重命名、常亮黑屏、藏宠物）都还在，收进一个菜单 | 可以 |
+| 撤回记忆 | 按这次工具调用新建的条目 ID 撤回 | 可以（C25 #1） |
+| `Hills.key` 加锁 | 防两处同时第一次生成钥匙 | 可以 |
+| C27 排版 | 默认行高 1.5 → 1.65；标题改成正文字号加粗；二级列表小圆点；行内代码改圆角胶囊 | 按主人选的 Claude App 方向。行内代码原来是正文色，Claude 补成主色（brief 写的是主色字） |
+| 未逐行看 | `ChatPage.swift` +665 行里的跳转按钮淡出、选字暂停回底、屏幕适配各页 | 编译和真机为准；主人试用时重点看：长按选字复制、上下翻历史、顶栏 ⋯、小屏 / 大字号 |
