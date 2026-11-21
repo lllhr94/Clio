@@ -434,7 +434,7 @@ struct TraitChips: View {
     var corrected = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Ink.Space.xs) {
             tag(traits.sees ? L.t("settings.modelVision") : "不看图", traits.sees ? "eye" : "eye.slash", on: traits.sees)
             if traits.thinks { tag("思考", "brain", on: true) }
             if !traits.tools { tag("不用工具", "wrench.and.screwdriver", on: false) }
@@ -448,7 +448,7 @@ struct TraitChips: View {
             .labelStyle(.titleAndIcon)
             .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(on ? Ink.inkSoft : Ink.inkFaint)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, Ink.Space.s)
             .frame(height: 20)
             .background(on ? Ink.mine : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on ? Color.clear : Ink.rule, lineWidth: 1))
