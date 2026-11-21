@@ -55,6 +55,9 @@ public protocol WorkspaceHost: Sendable {
     var canBackground: Bool { get }
 
     func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult
+    /// A command the file verbs run for themselves: not shown in a terminal, and its whole output kept (a file read
+    /// comes back as up to 4 MB of base64). Defaults to `execStream`.
+    func execQuiet(_ command: String, timeout: Double) async throws -> ExecResult
     func readFile(_ path: String) async throws -> Data
     func writeFile(_ path: String, _ data: Data) async throws
     func removeFile(_ path: String) async throws
@@ -122,6 +125,10 @@ public enum HostEdit {
 
 extension WorkspaceHost {
     public func exec(_ command: String, timeout: Double = 120) async throws -> ExecResult {
+        try await execQuiet(command, timeout: timeout)
+    }
+
+    public func execQuiet(_ command: String, timeout: Double) async throws -> ExecResult {
         try await execStream(command, timeout: timeout, onOutput: { _ in })
     }
 

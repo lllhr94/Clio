@@ -254,6 +254,12 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         preferences.preferredContentMode = desktop ? .desktop : .mobile
+        // While a companion is at work on its own tab, a click or a redirect may not take it to the phone itself or
+        // the home network (a router's page, a NAS); the user can still go there by hand.
+        if actors > 0, owners[ObjectIdentifier(webView)] != nil, let target = navigationAction.request.url,
+           target.scheme?.hasPrefix("http") == true, LocalAddress.isLocal(target) {
+            return (.cancel, preferences)
+        }
         return (navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
 

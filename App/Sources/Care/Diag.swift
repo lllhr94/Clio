@@ -1,3 +1,4 @@
+import Craft
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -9,7 +10,8 @@ enum Diag {
     static func note(_ text: String) {
         var log = UserDefaults.standard.stringArray(forKey: key) ?? []
         let stamp = Date().formatted(.dateTime.month().day().hour().minute().second())
-        log.append("\(stamp)  \(text)")
+        // The log is copied out to share when something breaks: no kept secret goes with it.
+        log.append("\(stamp)  \(Shell.mask(text, secrets: Vault.allStrings()))")
         UserDefaults.standard.set(Array(log.suffix(60)), forKey: key)
     }
 

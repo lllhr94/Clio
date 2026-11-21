@@ -140,17 +140,20 @@ final class Hills: ObservableObject {
     private final class Gathered: @unchecked Sendable {
         private let lock = NSLock()
         private var text = ""
-        func add(_ piece: String) { lock.withLock { if text.utf8.count < Hills.keptOutput { text += piece } } }
+        private var size = 0
+        private let limit: Int
+        init(limit: Int) { self.limit = limit }
+        func add(_ piece: String) { lock.withLock { if size < limit { text += piece; size += piece.utf8.count } } }
         var value: String { lock.withLock { text } }
     }
 
     /// Runs one command on a kept connection. A connection that has dropped is made again, up to twice;
     /// a command that already started is never sent a second time. `onOutput` hears the output as it arrives.
-    nonisolated static func run(_ command: String, on host: Host, timeout: Double = 60, onOutput: (@Sendable (String) -> Void)? = nil) async throws -> Outcome {
+    nonisolated static func run(_ command: String, on host: Host, timeout: Double = 60, keep: Int = keptOutput, onOutput: (@Sendable (String) -> Void)? = nil) async throws -> Outcome {
         var attempt = 0
         while true {
             do {
-                return try await runOnce(command, on: host, timeout: timeout, fresh: attempt > 0, onOutput: onOutput)
+                return try await runOnce(command, on: host, timeout: timeout, keep: keep, fresh: attempt > 0, onOutput: onOutput)
             } catch is Stale {
                 attempt += 1
                 await HillPool.shared.drop(host)
@@ -160,8 +163,8 @@ final class Hills: ObservableObject {
         }
     }
 
-    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, fresh: Bool, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
-        let gathered = Gathered()
+    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, keep: Int, fresh: Bool, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
+        let gathered = Gathered(limit: keep)
         return try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
                 // A failure to log in is a real answer (wrong password, host down), never retried; only a kept connection
@@ -186,7 +189,7 @@ final class Hills: ObservableObject {
                             let piece = String(buffer: buffer)
                             // Past the limit the output is no longer kept, but the stream is still read to its end,
                             // so the command's real exit status comes back (the review, #8).
-                            if size < Self.keptOutput {
+                            if size < keep {
                                 output += piece
                                 gathered.add(piece)
                             } else {
@@ -485,6 +488,8 @@ struct MCPClient: Sendable {
     }
 
     private static let sessions = SessionBook()
+    /// The most one answer may be.
+    static let most = 12_000_000
 
     private final class SessionBook: @unchecked Sendable {
         private var ids: [String: String] = [:]
@@ -592,7 +597,11 @@ struct MCPClient: Sendable {
         let type = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
         if type.contains("text/event-stream") {
             var data = ""
+            var read = 0
             for try await line in bytes.lines {
+                // A service that keeps sending without ever answering, or answers with far too much, is cut off.
+                read += line.utf8.count
+                if read > Self.most { throw MCPError.rpc("服务器回的东西太多了（超过 \(Self.most / 1_000_000) MB），没收完。") }
                 if line.hasPrefix("data:") {
                     data += String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                     if let message = JSONValue.parse(data) {
@@ -606,7 +615,10 @@ struct MCPClient: Sendable {
             throw MCPError.rpc("服务器没给回音就断开了。")
         }
         var raw = Data()
-        for try await byte in bytes { raw.append(byte) }
+        for try await byte in bytes {
+            raw.append(byte)
+            if raw.count > Self.most { throw MCPError.rpc("服务器回的东西太多了（超过 \(Self.most / 1_000_000) MB），没收完。") }
+        }
         guard let message = JSONValue.parse(String(decoding: raw, as: UTF8.self)) else { throw MCPError.rpc("看不懂服务器的回复。") }
         if let list = message.array, let match = list.first(where: { $0["id"]?.number == Double(id) }) { return try unwrap(match) }
         return try unwrap(message)

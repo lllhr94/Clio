@@ -6,13 +6,19 @@ import Foundation
 public enum Taint {
     /// Tools whose results bring text from outside into the turn.
     public static func reads(_ tool: String) -> Bool {
-        ["browser_read", "browser_screenshot", "web_read", "web_search"].contains(tool) || tool.hasPrefix("mcp_")
+        // Web pages (and their titles), mail and shared documents, the clipboard, and any connector service.
+        ["browser_read", "browser_text", "browser_open", "browser_click", "browser_back", "browser_tabs", "browser_screenshot",
+         "web_read", "web_search", "gmail_read", "gmail_search", "drive_read", "drive_search", "clipboard_read"].contains(tool)
+            || tool.hasPrefix("mcp_")
     }
 
     /// Whether this step must be asked about after the turn read the web: commands, filling in a kept secret,
     /// anything on a far computer, and writing outside the workspace.
     public static func needsSeal(tool: String, arguments: JSONValue, isInside: (String) -> Bool) -> Bool {
         if tool == "shell" || tool == "browser_fill_secret" || tool.hasPrefix("ssh_") { return true }
+        // Things that last or go out: a memory, a routine, a message later, mail, the calendar, contacts, a link opened.
+        if ["remember", "forget", "schedule_task", "message_later", "gmail_send", "gmail_draft", "calendar_add", "reminder_add",
+            "contacts_add", "clipboard_write", "photos_save", "open_link", "browser_type"].contains(tool) { return true }
         if WorkspaceTools.writers.contains(tool) {
             guard let path = arguments["path"]?.string else { return true }
             return !isInside(path)
@@ -63,7 +69,9 @@ public struct TaintGuard: AgentTool {
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {
         let own = inner.approval(for: arguments)
-        guard book.isTainted(key), Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside) else { return own }
+        // Once outside text is in the turn, no standing permission ( 「以后都允许」「这段都放行」 ) covers a step that
+        // normally asks: a page could be steering it (sending mail, adding a routine, writing a memory).
+        guard book.isTainted(key), own != nil || Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside) else { return own }
         var ask = own ?? ApprovalAsk(title: "这一步要你点头", reason: inner.label(for: arguments))
         ask.forced = true
         ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")

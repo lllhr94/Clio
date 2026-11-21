@@ -1621,6 +1621,8 @@ final class TeamModel: ObservableObject {
         }.value
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
+        // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
+        if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         var agent = Agent(
@@ -1635,6 +1637,7 @@ final class TeamModel: ObservableObject {
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto
         agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
+        agent.screen = Self.screen
         pulseSplitters[key] = nil
         doing[key] = room == nil ? "已递出，等它开口" : "\(bot.name)：已递出，等它开口"
         heard[key] = Date()
@@ -1702,6 +1705,12 @@ final class TeamModel: ObservableObject {
         if Pref.notifyDone, UIApplication.shared.applicationState != .active {
             Notify.now("\(chatName(key))出了点问题", text.replacingOccurrences(of: "\n", with: "。"), chat: key)
         }
+    }
+
+    /// What every tool result goes through before a model reads it: kept secrets hidden, and nothing past 60,000
+    /// characters (an MCP service or a page can send far more than any model should be handed at once).
+    nonisolated static func screen(_ text: String) -> String {
+        Shell.mask(Shell.clip(text, max: 60_000), secrets: Vault.allStrings())
     }
 
     private var toolTails: [String: ToolTail] = [:]
@@ -2092,6 +2101,7 @@ final class TeamModel: ObservableObject {
             tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true) : [],
             approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key) ?? false }
         )
+        agent.screen = Self.screen
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }

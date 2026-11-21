@@ -83,7 +83,8 @@ final class Snapshots {
                     return true
                 } catch { return false }
             }.value
-            if stored { backup = name } else { return }
+            // No room for the copy: noted as having none, so undo says so instead of skipping it silently.
+            if stored { backup = name } else { unread = true }
         }
         turns = book(key)
         let kept = Kept(place: place, path: path, backup: backup, unread: unread ? true : nil,
@@ -110,11 +111,13 @@ final class Snapshots {
 
     /// 「No such file」 from any place: the desk's file system, 斗室 or a 远山 host over SFTP.
     nonisolated static func isMissing(_ error: Error) -> Bool {
+        if let error = error as? WorkspaceError, case .missing = error { return true }
         let error = error as NSError
         if error.domain == NSCocoaErrorDomain, [NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(error.code) { return true }
         if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOENT) { return true }
-        let words = error.localizedDescription.lowercased()
-        return ["no such file", "not found", "不存在", "找不到", "doesn’t exist", "does not exist"].contains { words.contains($0) }
+        // Only a plain 「no such file」: a broader match (「not found」) would count 「host not found」 as a new file,
+        // and putting back would then delete the real one.
+        return error.localizedDescription.lowercased().contains("no such file")
     }
 
     static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port)" }
@@ -133,20 +136,31 @@ final class Snapshots {
         var restored = 0
         var failed: [String] = []
         var left: [String: [Kept]] = [:]
+        // A file whose newer copy could not go back is not taken further back either: putting the older copy in now and
+        // the newer one on a later try would leave it in the wrong state.
+        var held: Set<String> = []
         for turn in turns {
             for kept in turn.files.reversed() {
                 let place = WorkPlace(code: kept.place)
+                let which = (kept.place ?? "") + "|" + kept.path
+                if held.contains(which) {
+                    failed.append("\(place.title)：\(kept.path)（较新的一步没还原成，这一步先不动）")
+                    left[turn.id, default: []].append(kept)
+                    continue
+                }
                 // The same place, or nowhere: a 远山 host that is gone or now points elsewhere is not written to,
                 // and nothing falls back to the phone's 书案.
                 if case .hill = place {
                     guard let found = place.hillHost, kept.hostIdentity == nil || kept.hostIdentity == Self.identity(found) else {
                         failed.append("\(place.title)：\(kept.path)（主机已删或改了地址，没动）")
                         left[turn.id, default: []].append(kept)
+                        held.insert(which)
                         continue
                     }
                 }
                 if kept.unread == true {
-                    failed.append("\(place.title)：\(kept.path)（改之前就读不出来，没有旧版本可还原，没动）")
+                    failed.append("\(place.title)：\(kept.path)（改之前没能留下旧版本，没动）")
+                    held.insert(which)
                     continue
                 }
                 let host = place.host
@@ -161,6 +175,7 @@ final class Snapshots {
                 } catch {
                     failed.append("\(host.title)：\(kept.path)")
                     left[turn.id, default: []].append(kept)
+                    held.insert(which)
                 }
             }
             if left[turn.id] == nil {

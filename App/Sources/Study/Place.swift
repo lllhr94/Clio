@@ -97,6 +97,10 @@ struct LocalDeskHost: WorkspaceHost {
         for prefix in ["/root/desk/", "书案/"] where trimmed.hasPrefix(prefix) { trimmed = String(trimmed.dropFirst(prefix.count)) }
         if trimmed == "/root/desk" || trimmed == "书案" { trimmed = "" }
         guard let url = Workspace.resolve(trimmed) else { throw WorkspaceError.cannot("路径不能跳出书案：\(path)") }
+        // A link made in 斗室 (`ln -s`) could point out of 书案 into the app's own data: where it really leads counts.
+        let real = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let base = Workspace.root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard real == base || real.hasPrefix(base + "/") else { throw WorkspaceError.cannot("这个路径是指向书案外面的链接，不能用：\(path)") }
         return url
     }
 
@@ -189,6 +193,14 @@ struct DenHost: WorkspaceHost {
         return ExecResult(code: Int(result.code), output: output, timedOut: result.timedOut)
     }
 
+    /// File reads and writes are not printed line by line into 斗室's terminal (a 4 MB file is 70,000 lines of base64).
+    func execQuiet(_ command: String, timeout: Double) async throws -> ExecResult {
+        let result = await Den.shared.run("cd /root/desk 2>/dev/null; " + command, timeout: timeout, shown: false)
+        var output = result.output
+        if !result.errorOutput.isEmpty { output += (output.isEmpty ? "" : "\n") + result.errorOutput }
+        return ExecResult(code: Int(result.code), output: output, timedOut: result.timedOut)
+    }
+
     func isInside(_ path: String) -> Bool { WorkspacePath.isInside(path, root: "/root/desk") }
 }
 
@@ -205,6 +217,16 @@ struct SSHHost: WorkspaceHost {
     func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
         do {
             let result = try await Hills.run(command, on: host, timeout: timeout, onOutput: onOutput)
+            return ExecResult(code: result.code, output: result.output)
+        } catch let late as Hills.TimedOut {
+            return ExecResult(code: -1, output: late.output, timedOut: true)
+        }
+    }
+
+    /// The file verbs keep the whole output: a read is up to 4 MB as base64, far past what a command's output keeps.
+    func execQuiet(_ command: String, timeout: Double) async throws -> ExecResult {
+        do {
+            let result = try await Hills.run(command, on: host, timeout: timeout, keep: 6_000_000)
             return ExecResult(code: result.code, output: result.output)
         } catch let late as Hills.TimedOut {
             return ExecResult(code: -1, output: late.output, timedOut: true)

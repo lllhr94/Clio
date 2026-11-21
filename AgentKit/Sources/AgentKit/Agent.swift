@@ -100,6 +100,9 @@ public struct Agent: Sendable {
     public var retryDelays: [Double] = [1, 3]
     /// What the person said while the turn was at work (插话): read between steps, before the model is asked again.
     public var inbox: (@Sendable () async -> [String])?
+    /// Applied to every tool result before the model reads it: hides kept secrets and trims what is far too long. One
+    /// place for every tool, so a web page, an MCP service or a browser field showing a password is covered too.
+    public var screen: (@Sendable (String) -> String)?
 
     public init(provider: ModelProvider, model: String, system: String, tools: [AgentTool] = [], maxSteps: Int = 16, approve: @escaping @Sendable (ApprovalAsk, String) async -> Bool = { _, _ in false }) {
         self.provider = provider
@@ -248,8 +251,10 @@ public struct Agent: Sendable {
             var made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
             // A stream that stopped without the service saying it was done may have cut a tool call short: its
             // arguments can parse and still be half of what was meant. Nothing is run then (the review, #2).
+            // Same for a reply stopped at the length limit in the middle of writing a call.
+            let lengthCut = ["length", "max_tokens", "model_length"].contains(finished?.lowercased() ?? "") && !made.isEmpty
             let dropped = finished == nil && !made.isEmpty
-            if dropped { made = [] }
+            if dropped || lengthCut { made = [] }
             var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
             if !signature.isEmpty { reply.reasoningSignature = signature }
             if !text.isEmpty || !made.isEmpty {
@@ -259,6 +264,8 @@ public struct Agent: Sendable {
             // Said after the reply, so the note sits under what did come.
             if dropped {
                 await emit(.cutShort(.dropped))
+            } else if lengthCut {
+                await emit(.cutShort(.truncated))
             } else if let short = Self.cutShort(text: text, reasoning: reasoning, images: images.count, calls: made.count, finish: finished) {
                 await emit(.cutShort(short))
             }
@@ -351,7 +358,7 @@ public struct Agent: Sendable {
         do {
             let output = try await tool.run(arguments)
             await emit(.toolFinished(id: call.id, ok: !output.isError))
-            var result = Message.toolResult(output.text, for: call, isError: output.isError)
+            var result = Message.toolResult(screen?(output.text) ?? output.text, for: call, isError: output.isError)
             result.images = output.images
             result.detail = output.detail
             return result
@@ -361,7 +368,8 @@ public struct Agent: Sendable {
             if asked, Self.unsure(error) {
                 return .toolResult(Self.unknownMark + "这一步可能已经做了，也可能没做（\(error.localizedDescription)）。不要直接再做一次：先查清现在的状态，查不清就问用户。", for: call, isError: true)
             }
-            return .toolResult("出错了：\(error.localizedDescription)", for: call, isError: true)
+            let words = "出错了：\(error.localizedDescription)"
+            return .toolResult(screen?(words) ?? words, for: call, isError: true)
         }
     }
 

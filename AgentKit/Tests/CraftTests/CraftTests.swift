@@ -491,6 +491,10 @@ final class TaintTests: XCTestCase {
         XCTAssertTrue(Taint.needsSeal(tool: "edit_file", arguments: ["path": "../../x"], isInside: inside))
         XCTAssertFalse(Taint.needsSeal(tool: "write_file", arguments: ["path": "notes/a.md"], isInside: inside))
         XCTAssertFalse(Taint.needsSeal(tool: "read_file", arguments: ["path": "/etc/hosts"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "remember", arguments: ["fact": "x"], isInside: inside), "a memory outlives the turn")
+        XCTAssertTrue(Taint.needsSeal(tool: "gmail_send", arguments: [:], isInside: inside))
+        XCTAssertTrue(Taint.reads("gmail_read"))
+        XCTAssertTrue(Taint.reads("browser_text"))
     }
 
     func testGuardForcesAskingOnlyAfterTheTurnReadTheWeb() async throws {

@@ -160,12 +160,37 @@ enum WebFetch {
         request.setValue(agent, forHTTPHeaderField: "User-Agent")
         request.setValue("zh-CN,zh;q=0.9,en;q=0.7", forHTTPHeaderField: "Accept-Language")
         request.setValue("text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        let (data, response) = try await HTTP.session.data(for: request)
+        // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to a
+        // local or home-network address is not followed (the request would already reach the router or the NAS).
+        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic())
         let http = response as? HTTPURLResponse
-        if let status = http?.statusCode, !(200..<400).contains(status) {
+        if let status = http?.statusCode, (300..<400).contains(status) {
+            throw ProviderError(status: status, "这个网址要跳到本机或局域网地址，没有跟过去。")
+        }
+        if let status = http?.statusCode, !(200..<300).contains(status) {
             throw ProviderError(status: status, "网页打不开（\(status)）")
         }
+        if response.expectedContentLength > limit {
+            throw ProviderError("这个文件太大了（\(ByteCountFormatter.string(fromByteCount: response.expectedContentLength, countStyle: .file))），不读。")
+        }
+        var data = Data()
+        if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
+        for try await byte in bytes {
+            data.append(byte)
+            if data.count > limit { throw ProviderError("这个文件太大了（超过 \(limit / 1_000_000) MB），不读。") }
+        }
         return (data, http?.mimeType, http?.textEncodingName, http?.url ?? url)
+    }
+
+    /// The most a page or file read from the web may be.
+    static let limit = 15_000_000
+
+    private final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let next = request.url, !LocalAddress.isLocal(next) else { return nil }
+            return request
+        }
     }
 }
 
