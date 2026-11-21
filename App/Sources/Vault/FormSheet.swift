@@ -50,7 +50,7 @@ struct FormSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button(L.t("actions.cancel")) {
                         Haptics.light()
-                        Asker.shared.cancel()
+                        Asker.shared.cancel(form.id)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -166,6 +166,6 @@ struct FormSheet: View {
             }
         }
         Haptics.thud()
-        Asker.shared.answer(out)
+        Asker.shared.answer(out, to: form.id)
     }
 }

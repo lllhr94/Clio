@@ -42,14 +42,14 @@ struct InlineAsk: View {
             HStack {
                 Button("不填") {
                     Haptics.light()
-                    Asker.shared.cancel()
+                    Asker.shared.cancel(form.id)
                 }
                 .foregroundStyle(Ink.inkSoft)
                 .buttonStyle(.plain)
                 Spacer()
                 Button("递回去") {
                     Haptics.grab()
-                    Asker.shared.answer(values)
+                    Asker.shared.answer(values, to: form.id)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Ink.accent)

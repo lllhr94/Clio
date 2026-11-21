@@ -505,7 +505,8 @@ struct ChatPage: View {
     }
 
     private var dockedForm: Asker.Form? {
-        guard let form = asker.current, form.inline, team.isWorking(chat.key) else { return nil }
+        // Only this conversation's own slip; another companion's question waits on its own page (the review, #21).
+        guard let form = asker.current, form.inline, form.chat == nil || form.chat == chat.key, team.isWorking(chat.key) else { return nil }
         return form
     }
 

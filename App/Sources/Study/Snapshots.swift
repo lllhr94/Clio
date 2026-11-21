@@ -12,8 +12,14 @@ final class Snapshots {
         /// `WorkPlace.code` of where the file lives; nil is 书案.
         var place: String?
         var path: String
-        /// Nil: the file did not exist before the turn.
+        /// Nil: the file did not exist before the turn (unless `unread`).
         var backup: String?
+        /// The file was there but could not be read, so no copy was kept: putting back must leave it alone, never
+        /// treat it as new and delete it (the review, #12).
+        var unread: Bool?
+        /// For a 远山 host: who it was then (user@address:port). A host deleted or pointed elsewhere since is not
+        /// written to (the review, #13).
+        var hostIdentity: String?
     }
 
     struct Turn: Codable, Equatable {
@@ -58,7 +64,14 @@ final class Snapshots {
         guard let turn = current[key] else { return }
         var turns = book(key)
         if let index = turns.firstIndex(where: { $0.id == turn }), turns[index].files.contains(where: { $0.place == place && $0.path == path }) { return }
-        let old = try? await host.readFile(path)
+        var old: Data?
+        var unread = false
+        do {
+            old = try await host.readFile(path)
+        } catch {
+            // Not there is fine (a new file); any other failure means there is no copy to put back.
+            unread = !Self.isMissing(error)
+        }
         var backup: String?
         if let old {
             let name = UUID().uuidString
@@ -73,7 +86,8 @@ final class Snapshots {
             if stored { backup = name } else { return }
         }
         turns = book(key)
-        let kept = Kept(place: place, path: path, backup: backup)
+        let kept = Kept(place: place, path: path, backup: backup, unread: unread ? true : nil,
+                        hostIdentity: WorkPlace(code: place).hillHost.map(Self.identity))
         if let index = turns.firstIndex(where: { $0.id == turn }) {
             guard !turns[index].files.contains(where: { $0.place == place && $0.path == path }) else {
                 if let backup {
@@ -94,6 +108,17 @@ final class Snapshots {
         save(key, turns)
     }
 
+    /// 「No such file」 from any place: the desk's file system, 斗室 or a 远山 host over SFTP.
+    nonisolated static func isMissing(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain, [NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(error.code) { return true }
+        if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOENT) { return true }
+        let words = error.localizedDescription.lowercased()
+        return ["no such file", "not found", "不存在", "找不到", "doesn’t exist", "does not exist"].contains { words.contains($0) }
+    }
+
+    static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port)" }
+
     /// The files these turns changed, for asking before putting them back.
     func files(_ key: String, turns ids: [String]) -> [Kept] {
         book(key).filter { ids.contains($0.id) }.flatMap(\.files)
@@ -101,13 +126,30 @@ final class Snapshots {
 
     /// Puts back every file these turns changed, newest turn first, and forgets them. Returns how many came back,
     /// and the ones that could not.
+    /// Only what was put back is forgotten: a file that failed keeps its copy, so it can be tried again once the
+    /// host is reachable (the review, #14).
     func restore(_ key: String, turns ids: [String]) async -> (restored: Int, failed: [String]) {
         let turns = book(key).filter { ids.contains($0.id) }.reversed()
         var restored = 0
         var failed: [String] = []
+        var left: [String: [Kept]] = [:]
         for turn in turns {
             for kept in turn.files.reversed() {
-                let host = WorkPlace(code: kept.place).host
+                let place = WorkPlace(code: kept.place)
+                // The same place, or nowhere: a 远山 host that is gone or now points elsewhere is not written to,
+                // and nothing falls back to the phone's 书案.
+                if case .hill = place {
+                    guard let found = place.hillHost, kept.hostIdentity == nil || kept.hostIdentity == Self.identity(found) else {
+                        failed.append("\(place.title)：\(kept.path)（主机已删或改了地址，没动）")
+                        left[turn.id, default: []].append(kept)
+                        continue
+                    }
+                }
+                if kept.unread == true {
+                    failed.append("\(place.title)：\(kept.path)（改之前就读不出来，没有旧版本可还原，没动）")
+                    continue
+                }
+                let host = place.host
                 do {
                     if let backup = kept.backup {
                         let data = try Data(contentsOf: Self.chatFolder(key).appendingPathComponent(turn.id).appendingPathComponent(backup))
@@ -118,11 +160,18 @@ final class Snapshots {
                     restored += 1
                 } catch {
                     failed.append("\(host.title)：\(kept.path)")
+                    left[turn.id, default: []].append(kept)
                 }
             }
-            try? FileManager.default.removeItem(at: Self.chatFolder(key).appendingPathComponent(turn.id, isDirectory: true))
+            if left[turn.id] == nil {
+                try? FileManager.default.removeItem(at: Self.chatFolder(key).appendingPathComponent(turn.id, isDirectory: true))
+            }
         }
-        save(key, book(key).filter { !ids.contains($0.id) })
+        var remaining = book(key).filter { !ids.contains($0.id) || left[$0.id] != nil }
+        for index in remaining.indices {
+            if let still = left[remaining[index].id] { remaining[index].files = still.reversed() }
+        }
+        save(key, remaining)
         return (restored, failed)
     }
 
