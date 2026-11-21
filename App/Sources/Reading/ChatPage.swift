@@ -1135,7 +1135,18 @@ struct ChatPage: View {
     /// The pages the steps right before this reply read or found, for a row of sources under it.
     /// A reply without the 「来源：」 (or 参考 / Sources) list of links some models write at the very end.
     static func withoutSourceList(_ text: String) -> String {
-        let lines = text.components(separatedBy: "\n")
+        var lines = text.components(separatedBy: "\n")
+        // One line at the end, 「来源：[甲](…)、[乙](…)」: only links after the colon.
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        if let last = lines.last?.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "*", with: ""),
+           let colon = last.firstIndex(where: { $0 == "：" || $0 == ":" }),
+           ["来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References"].contains(String(last[..<colon]).trimmingCharacters(in: .whitespaces)) {
+            let rest = last[last.index(after: colon)...]
+            let bare = rest.replacingOccurrences(of: #"\[[^\]]*\]\([^)]*\)|https?://\S+"#, with: "", options: .regularExpression)
+            if rest.contains("http"), bare.trimmingCharacters(in: CharacterSet(charactersIn: " 、，,;；。.")).isEmpty {
+                return lines.dropLast().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
         let heads = ["来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References"]
         guard let start = lines.lastIndex(where: { raw in
             let bare = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "*#：: "))

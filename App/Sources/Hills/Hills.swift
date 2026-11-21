@@ -80,14 +80,15 @@ final class Hills: ObservableObject {
         return key
     }
 
-    nonisolated static var publicKey: String {
+    /// Worked out once: it is drawn on every redraw of the 远山 page.
+    nonisolated static let publicKey: String = {
         func field(_ bytes: Data) -> Data {
             var length = UInt32(bytes.count).bigEndian
             return Data(bytes: &length, count: 4) + bytes
         }
         let blob = field(Data("ssh-ed25519".utf8)) + field(key.publicKey.rawRepresentation)
         return "ssh-ed25519 " + blob.base64EncodedString() + " clio@iphone"
-    }
+    }()
 
     struct Outcome: Sendable {
         var code: Int

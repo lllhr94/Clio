@@ -56,6 +56,7 @@ struct HillsPage: View {
                                 }
                                 .buttonStyle(PressStyle())
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(Ink.Space.l)
                             .paperCard()
                         }
