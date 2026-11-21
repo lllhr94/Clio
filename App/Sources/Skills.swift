@@ -5,7 +5,7 @@ import SwiftUI
 /// 技能: Markdown know-how in 书案/技能. Every conversation carries each skill's name and when to use it;
 /// the companion reads the whole page with `use_skill` when a task matches.
 enum SkillShelf {
-    struct Item: Identifiable, Equatable {
+    struct Item: Identifiable, Equatable, Sendable {
         /// The path in 书案.
         var id: String
         var skill: Skill
@@ -25,11 +25,21 @@ enum SkillShelf {
         set { UserDefaults.standard.set(Array(newValue), forKey: "skills.off") }
     }
 
-    private static var cache: (at: Date, items: [Item])?
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cache: (at: Date, items: [Item])?
+    nonisolated(unsafe) private static var cacheVersion = 0
+
+    private static func invalidate() {
+        cacheLock.withLock {
+            cache = nil
+            cacheVersion += 1
+        }
+    }
 
     /// Every skill: `技能/名字.md`, or a folder `技能/名字/` holding SKILL.md (with anything else it needs beside it).
     static func all(fresh: Bool = false) -> [Item] {
-        if !fresh, let cache, Date().timeIntervalSince(cache.at) < 5 { return cache.items }
+        let (saved, version) = cacheLock.withLock { (cache, cacheVersion) }
+        if !fresh, let saved, Date().timeIntervalSince(saved.at) < 5 { return saved.items }
         let manager = FileManager.default
         var items: [Item] = []
         let entries = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
@@ -48,7 +58,7 @@ enum SkillShelf {
             let path = Workspace.relative(file)
             items.append(Item(id: path, skill: Skill.parse(text, fallback: fallback), on: !switchedOff.contains(path), file: file))
         }
-        cache = (Date(), items)
+        cacheLock.withLock { if version == cacheVersion { cache = (Date(), items) } }
         return items
     }
 
@@ -58,7 +68,7 @@ enum SkillShelf {
         var set = off
         if on { set.remove(item.id) } else { set.insert(item.id) }
         off = set
-        cache = nil
+        invalidate()
     }
 
     /// Writes a skill: over its own file, or as a new 技能/名字.md.
@@ -73,7 +83,7 @@ enum SkillShelf {
             }
         }
         try? Data(skill.text.utf8).write(to: target, options: .atomic)
-        cache = nil
+        invalidate()
         return target
     }
 
@@ -82,7 +92,7 @@ enum SkillShelf {
         // A skill kept as a folder goes with its folder.
         let target = parent.standardizedFileURL == folder.standardizedFileURL ? item.file : parent
         try? FileManager.default.removeItem(at: target)
-        cache = nil
+        invalidate()
     }
 
     private static func safe(_ name: String) -> String {
@@ -193,6 +203,8 @@ struct UseSkillTool: AgentTool {
 struct SkillsPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var items: [SkillShelf.Item] = []
+    @State private var loading = true
+    @State private var scan = 0
     @State private var editing: Editing?
     @State private var note: String?
 
@@ -207,14 +219,13 @@ struct SkillsPage: View {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text(Words.t("书案/技能 里的做事说明，对得上就照做"))
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-                    if items.isEmpty {
+                    if loading {
+                        ProgressView(L.t("loading.generic"))
+                    } else if items.isEmpty {
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
                             EmptyNote(symbol: "books.vertical", words: L.t("empty.skills"))
                             Button("装几个示例：旅行规划、周报、读长文档、记账") {
-                                let count = SkillShelf.installSamples()
-                                note = "装好 \(count) 个，点开可以改成你的习惯。"
-                                reload()
-                                Haptics.thud()
+                                installSamples()
                             }
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
@@ -238,9 +249,7 @@ struct SkillsPage: View {
                     Menu {
                         Button("写一个新技能", systemImage: "square.and.pencil") { editing = Editing(item: nil) }
                         Button("装示例技能", systemImage: "tray.and.arrow.down") {
-                            let count = SkillShelf.installSamples()
-                            note = count > 0 ? "装好 \(count) 个示例。" : "示例都已经在了。"
-                            reload()
+                            installSamples(fromMenu: true)
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -250,13 +259,27 @@ struct SkillsPage: View {
             }
         }
         .hitchPage("技能")
-        .onAppear(perform: reload)
+        .task(id: scan) {
+            let found = await Task.detached(priority: .utility) { SkillShelf.all(fresh: true) }.value
+            guard !Task.isCancelled else { return }
+            items = found
+            loading = false
+        }
         .sheet(item: $editing, onDismiss: reload) { editing in
             SkillEditor(item: editing.item)
         }
     }
 
-    private func reload() { items = SkillShelf.all(fresh: true) }
+    private func reload() { scan += 1 }
+
+    private func installSamples(fromMenu: Bool = false) {
+        Task {
+            let count = await Task.detached(priority: .utility) { SkillShelf.installSamples() }.value
+            note = fromMenu ? (count > 0 ? "装好 \(count) 个示例。" : "示例都已经在了。") : "装好 \(count) 个，点开可以改成你的习惯。"
+            reload()
+            if !fromMenu { Haptics.thud() }
+        }
+    }
 
     private func row(_ item: SkillShelf.Item) -> some View {
         HStack(alignment: .top, spacing: Ink.Space.m) {
@@ -268,6 +291,7 @@ struct SkillsPage: View {
             Spacer(minLength: 0)
             Toggle("", isOn: Binding(get: { item.on }, set: { value in
                 SkillShelf.setOn(item, value)
+                if let index = items.firstIndex(where: { $0.id == item.id }) { items[index].on = value }
                 reload()
             }))
             .labelsHidden()

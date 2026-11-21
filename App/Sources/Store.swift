@@ -43,6 +43,11 @@ enum Vault {
         return try? JSONDecoder().decode(type, from: data)
     }
 
+    /// Security.framework and the fallback file can both block; use this from UI tasks.
+    static func readString(_ key: String) async -> String? {
+        await Task.detached(priority: .userInitiated) { load(String.self, key: key) }.value
+    }
+
     private static func forget() {
         lock.lock()
         cached = nil

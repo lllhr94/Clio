@@ -56,10 +56,6 @@ struct PetPerchAnchor: UIViewRepresentable {
             super.didMoveToWindow()
             changed?()
         }
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            changed?()
-        }
         override var frame: CGRect {
             didSet { if frame != oldValue { changed?() } }
         }

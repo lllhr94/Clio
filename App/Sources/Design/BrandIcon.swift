@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -42,6 +43,7 @@ actor BrandIcons {
     static let shared = BrandIcons()
     private var memory: [String: UIImage] = [:]
     private var misses: Set<String> = []
+    private var pending: [String: Task<UIImage?, Never>] = [:]
 
     private var folder: URL {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("brand-icons", isDirectory: true)
@@ -52,8 +54,17 @@ actor BrandIcons {
     func icon(for domain: String) async -> UIImage? {
         if let hit = memory[domain] { return hit }
         if misses.contains(domain) { return nil }
+        if let task = pending[domain] { return await task.value }
+        let task = Task { await load(domain) }
+        pending[domain] = task
+        let image = await task.value
+        pending[domain] = nil
+        return image
+    }
+
+    private func load(_ domain: String) async -> UIImage? {
         let file = folder.appendingPathComponent(domain.replacingOccurrences(of: "/", with: "_") + ".png")
-        if let data = try? Data(contentsOf: file), let image = UIImage(data: data) {
+        if let data = try? Data(contentsOf: file), let image = Self.decodedIcon(data) {
             memory[domain] = image
             return image
         }
@@ -94,8 +105,24 @@ actor BrandIcons {
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let image = UIImage(data: data), image.size.width >= 32 else { return nil }
+              let image = Self.decodedIcon(data), image.size.width >= 32 else { return nil }
         return image
+    }
+
+    private static func decodedIcon(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)?.preparingForDisplay()
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 256,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return UIImage(data: data)?.preparingForDisplay()
+        }
+        return UIImage(cgImage: image)
     }
 
     /// The icons a site's home page points to (`apple-touch-icon`, `icon`), largest first.

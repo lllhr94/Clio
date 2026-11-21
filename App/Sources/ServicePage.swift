@@ -19,6 +19,7 @@ struct ServicePage: View {
     @State private var address = ""
     @State private var style: ThinkingStyle?
     @State private var newKey = ""
+    @State private var keySuffix: String?
     @State private var reading: Balance.Reading?
     @State private var balanceNote: String?
 
@@ -55,6 +56,10 @@ struct ServicePage: View {
             style = endpoint.style
         }
         .task { await loadBalance() }
+        .task(id: id) {
+            let key = await Vault.readString("key-\(id)")
+            if !Task.isCancelled, let key, key.count > 8, keySuffix == nil { keySuffix = String(key.suffix(4)) }
+        }
         .sheet(item: Binding(get: { editing.map { Picked(model: $0) } }, set: { editing = $0?.model })) { picked in
             ModelSheet(team: team, endpointId: id, model: picked.model)
                 .presentationDetents([.large])
@@ -303,7 +308,7 @@ struct ServicePage: View {
                 Rectangle().fill(Ink.rule).frame(height: 1)
                 labeled("密钥") {
                     HStack(spacing: Ink.Space.s) {
-                        SecureField(maskedKey(endpoint), text: $newKey)
+                        SecureField(maskedKey, text: $newKey)
                             .font(Ink.mono(Ink.Size.sub))
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         if !newKey.isEmpty {
@@ -334,9 +339,9 @@ struct ServicePage: View {
         return base + (endpoint.kind == .anthropic ? "/v1/messages" : "/chat/completions")
     }
 
-    private func maskedKey(_ endpoint: Endpoint) -> String {
-        guard let key = team.apiKey(for: endpoint.id), key.count > 8 else { return "粘贴新的密钥来换掉" }
-        return "已存 ••••" + key.suffix(4) + "，粘贴新的来换"
+    private var maskedKey: String {
+        guard let keySuffix else { return "粘贴新的密钥来换掉" }
+        return "已存 ••••" + keySuffix + "，粘贴新的来换"
     }
 
     private func save(_ endpoint: Endpoint) {
@@ -347,6 +352,7 @@ struct ServicePage: View {
         let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
         team.replaceKey(endpoint.id, key)
+        keySuffix = key.count > 8 ? String(key.suffix(4)) : nil
         newKey = ""
         Haptics.thud()
         note = "密钥换好了。点「试连」看看通不通。"
