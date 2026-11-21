@@ -2,6 +2,11 @@
   "companion": {
     "temper": "性情"
   },
+  "alwaysOn": {
+    "idle": "暂时空闲",
+    "waiting": "等你落款",
+    "exitHint": "轻触关闭常亮黑屏"
+  },
   "nav": {
     "home": "窗前",
     "files": "书案",

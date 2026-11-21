@@ -106,7 +106,7 @@ final class TeamModel: ObservableObject {
     @Published private(set) var busyBots: Set<String> = []
 
     private var entries: [String: [Entry]] = [:]
-    private var runs: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    private var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
     private var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     private var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published private var laters: [Later] = []
@@ -1332,7 +1332,7 @@ final class TeamModel: ObservableObject {
             await previous?.value
             await self?.run(key, token: token)
         }
-        runs[key] = (token, task)
+        runs[key] = (token, task, Date(), nil)
     }
 
     /// Extra time iOS gives a turn after the app leaves the screen, by turn.
@@ -1504,6 +1504,7 @@ final class TeamModel: ObservableObject {
     /// One Bot speaks once. False when the group should not go on.
     @discardableResult
     private func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil) async -> Bool {
+        runs[key]?.companion = bot.id
         let picked = forced ?? options(key).model ?? bot.model ?? settings.defaultModel
         guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
             fail(key, "还没有可用的模型\n到调弦里添一家模型服务。", next: .tuning)
@@ -1978,6 +1979,13 @@ final class TeamModel: ObservableObject {
         guard let bot else { return nil }
         let picked = options(key).model ?? bot.model ?? settings.defaultModel
         return (bot, room, resolve(picked) ?? resolve(settings.defaultModel))
+    }
+
+    /// Minimal snapshot for the black status window, using the real turn start and speaker.
+    func alwaysOnTurn(_ key: String) -> (started: Date?, bot: BotInfo?) {
+        let run = runs[key]
+        let current = run?.companion.flatMap { id in bots.first { $0.id == id } }
+        return (run?.started, current ?? speaker(of: key)?.bot)
     }
 
     /// The model service a chat talks to.

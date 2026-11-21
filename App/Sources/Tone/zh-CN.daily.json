@@ -2,6 +2,11 @@
   "companion": {
     "temper": "性格"
   },
+  "alwaysOn": {
+    "idle": "暂时空闲",
+    "waiting": "等我确认",
+    "exitHint": "轻触关闭常亮黑屏"
+  },
   "nav": {
     "home": "首页",
     "files": "文件",
