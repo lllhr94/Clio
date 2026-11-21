@@ -1707,6 +1707,8 @@ final class TeamModel: ObservableObject {
             return false
         } catch {
             Diag.note("\(endpoint.name)：\(error.localizedDescription)")
+            // A page cleared or turned meanwhile hears nothing more from this turn.
+            guard epochs[key, default: 0] == epoch, !Task.isCancelled else { return false }
             // One switch to the backup model, said out loud, never a silent swap.
             let used = "\(endpoint.id)/\(found.model)"
             if forced == nil, let backup = settings.backupModel, backup != used, let other = resolve(backup) {

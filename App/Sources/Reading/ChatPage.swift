@@ -2044,7 +2044,8 @@ struct ChatPage: View {
     private var dockCards: [DockCard] {
         var cards: [DockCard] = []
         if waiting != nil { cards.append(.waiting) }
-        if team.browser.handoff != nil { cards.append(.roam) }
+        // Only the conversation that asked for the takeover shows it.
+        if team.browser.handoff != nil, team.browser.handoffChat == nil || team.browser.handoffChat == chat.key { cards.append(.roam) }
         if working, waiting == nil, liveWords != nil { cards.append(.working) }
         if !away.isEmpty, waiting == nil { cards.append(.away) }
         return cards

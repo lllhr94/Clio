@@ -164,7 +164,9 @@ struct ApproveView: View {
                     .disabled(busy)
                 if current.forced == true {
                     // Standing permission would not cover this step anyway: say why instead of offering it.
-                    Label(L.t("approval.webRequiresApproval"), systemImage: "exclamationmark.shield")
+                    // Forced because the turn read outside text, or because the step is one that always asks (a routine).
+                    Label(L.t(current.detail?.text?.contains("外部网页") == true ? "approval.webRequiresApproval" : "approval.alwaysAsks"),
+                          systemImage: "exclamationmark.shield")
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.warn)
                 } else {

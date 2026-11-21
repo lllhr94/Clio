@@ -104,7 +104,8 @@
     "waitingForUser": "%@ 在等你批准",
     "allowedNote": "%@ 已继续执行。",
     "refusedNote": "%@ 不会执行此操作。",
-    "signer": "落款"
+    "signer": "落款",
+    "alwaysAsks": "这类事每次都要你点头，不能设成以后都允许"
   },
   "agent": {
     "capabilities": "诸艺",

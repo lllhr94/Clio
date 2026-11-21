@@ -298,7 +298,13 @@ struct RoutineEditor: View {
     private func toggle(_ day: Int) {
         Haptics.tick(0.5)
         var days = routine.days.isEmpty ? Array(1...7) : routine.days
-        if days.contains(day) { days.removeAll { $0 == day } } else { days.append(day) }
+        if days.contains(day) {
+            // The last day left stays: none at all would read as 「every day」.
+            guard days.count > 1 else { return }
+            days.removeAll { $0 == day }
+        } else {
+            days.append(day)
+        }
         days.sort()
         routine.days = days.count == 7 || days.isEmpty ? [] : days
     }

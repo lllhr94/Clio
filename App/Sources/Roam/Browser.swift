@@ -36,7 +36,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     /// The address each conversation last read on its tab; clicking and typing check the page is still that one.
     private var readAt: [String: URL] = [:]
     /// The conversation that asked the user to take over, so stopping another one does not cancel it.
-    private var handoffChat: String?
+    @Published private(set) var handoffChat: String?
     private var givenBack: CheckedContinuation<Bool, Never>?
 
     static let mobileAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
