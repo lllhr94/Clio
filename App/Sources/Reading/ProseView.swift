@@ -939,7 +939,8 @@ private struct ProseText: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
-        let width = proposal.width ?? uiView.window?.windowScene?.screen.bounds.width ?? 360
+        guard let width = proposal.width ?? uiView.superview?.bounds.width ?? uiView.window?.bounds.width,
+              width > 0 else { return nil }
         let key = Length(text: text, part: part, format: format, width: width)
         if let height = Self.heights[key] { return CGSize(width: width, height: height) }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))

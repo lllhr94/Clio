@@ -39,6 +39,8 @@ struct GlanceCard: View {
     @ObservedObject var team: TeamModel
     let bot: BotInfo
     let key: String
+    let availableWidth: CGFloat
+    @Environment(\.dynamicTypeSize) private var typeSize
     var openCard: () -> Void
     var openDetail: () -> Void
     @State private var files: [Snapshots.Kept] = []
@@ -88,18 +90,26 @@ struct GlanceCard: View {
                 }
             }
 
-            HStack(spacing: Ink.Space.s) {
-                Button(Words.t("看名帖"), systemImage: "person.text.rectangle", action: openCard)
-                    .buttonStyle(WideButtonStyle(filled: false))
-                Button("这段对话", systemImage: "list.bullet.rectangle", action: openDetail)
-                    .buttonStyle(WideButtonStyle(filled: false))
+            if typeSize.isAccessibilitySize {
+                VStack(spacing: Ink.Space.s) { actions }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Ink.Space.s) { actions }
+                    VStack(spacing: Ink.Space.s) { actions }
+                }
             }
         }
         .padding(Ink.Space.l)
-        .frame(width: min(340, UIScreen.main.bounds.width - Ink.Space.xl * 2))
+        .frame(width: availableWidth > 0 ? min(availableWidth * 0.86, Ink.Size.body * 24) : nil)
         .background(Ink.paper)
-        // Again when the work in progress ends, so what it just made shows.
         .task(id: team.doing[key] == nil) { files = team.allChangedFiles(key) }
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button(Words.t("看名帖"), systemImage: "person.text.rectangle", action: openCard)
+            .buttonStyle(WideButtonStyle(filled: false))
+        Button("这段对话", systemImage: "list.bullet.rectangle", action: openDetail)
+            .buttonStyle(WideButtonStyle(filled: false))
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {

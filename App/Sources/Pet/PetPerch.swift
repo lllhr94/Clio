@@ -286,6 +286,7 @@ struct PetPerchAnchor: UIViewRepresentable {
 /// Keeps chat text out from behind the docked pet.
 struct PetPerchSpace: View {
     let face: String?
+    let viewport: CGSize
     @Environment(\.displayScale) private var displayScale
     @AppStorage("pet.pinnedY") private var pinnedY = -1.0
     @State private var now = Date()
@@ -295,9 +296,9 @@ struct PetPerchSpace: View {
         let hidden = library.hiddenUntil.map { $0 > now } ?? false
         Group {
             if library.visible, !hidden, pinnedY < 0, let pack = library.pack(for: face) {
-                let screen = UIScreen.main.bounds
                 let unit = PetSize.unit(for: pack, factor: library.factor, displayScale: displayScale,
-                                        maxWidth: screen.width - Ink.Space.page * 2, maxHeight: screen.height / 3)
+                                        maxWidth: viewport.width > 0 ? max(1, viewport.width - Ink.Space.page * 2) : .infinity,
+                                        maxHeight: viewport.height > 0 ? viewport.height / 3 : .infinity)
                 Color.clear.frame(height: CGFloat(pack.baseline) * unit)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -317,7 +318,8 @@ struct PetPerchSpace: View {
 /// the keyboard or changing the available height cannot replace the form mid-edit.
 struct PetDockSlip<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var calm
-    @State private var measured: CGFloat = 100
+    @State private var measured: CGFloat = Ink.Bar.height * 2
+    let availableHeight: CGFloat
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -327,7 +329,7 @@ struct PetDockSlip<Content: View>: View {
                     withAnimation(calm ? .easeInOut(duration: 0.22) : Ink.Motion.unfold) { measured = height }
                 }
         }
-        .frame(height: min(measured, UIScreen.main.bounds.height * 0.28))
+        .frame(height: min(measured, availableHeight > 0 ? availableHeight * 0.32 : measured))
         .scrollBounceBehavior(.basedOnSize)
     }
 }
