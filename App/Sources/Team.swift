@@ -99,6 +99,10 @@ final class TeamModel: ObservableObject {
     /// What each chat's Bot is doing now, by chat key.
     /// How the last answer in each conversation came back short, if it did (cleared at each turn's start).
     private var cutShort: [String: CutShort] = [:]
+    /// Goes up each time a conversation's page is replaced (cleared, put aside, another brought back). A turn
+    /// remembers the number it started with, and anything it says after the number has moved is dropped, so a
+    /// stopped turn's last words cannot land in the new page (the review, #16).
+    private var epochs: [String: Int] = [:]
     @Published private(set) var doing: [String: String] = [:] {
         // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
         didSet {
@@ -1119,6 +1123,7 @@ final class TeamModel: ObservableObject {
     /// Puts the current conversation aside and starts an empty one. Nothing happens to an empty chat.
     func turnLeaf(_ key: String) {
         stop(key)
+        epochs[key, default: 0] += 1
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else { return }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
@@ -1164,6 +1169,7 @@ final class TeamModel: ObservableObject {
     func clearChat(_ key: String) {
         queued[key] = nil
         stop(key)
+        epochs[key, default: 0] += 1
         if keeping {
             for leaf in leaves(key) {
                 Disk.remove(Self.leafFile(key, leaf.id))
@@ -1184,7 +1190,19 @@ final class TeamModel: ObservableObject {
 
     /// Brings an earlier conversation back to the front; the current one is put aside in its place.
     func openLeaf(_ key: String, _ leaf: Leaf) {
-        let kept = keeping ? (Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []) : []
+        // A leaf that is there but cannot be read stays where it is, untouched: opening it must not throw it away
+        // (the review, #15).
+        var kept: [Entry] = []
+        if keeping {
+            let file = Disk.url(Self.leafFile(key, leaf.id))
+            if FileManager.default.fileExists(atPath: file.path) {
+                guard let data = try? Data(contentsOf: file), let read = try? JSONDecoder().decode([Entry].self, from: data) else {
+                    fail(key, "这一段旧絮语读不出来，先留着没动。\n可能是格式不认识或文件坏了；先别删，备份一份。")
+                    return
+                }
+                kept = read
+            }
+        }
         let keptSummary = keeping ? Disk.load(String.self, Self.leafSummary(key, leaf.id)) : nil
         turnLeaf(key)
         setSummary(key, keptSummary)
@@ -1581,6 +1599,7 @@ final class TeamModel: ObservableObject {
         }
         let traits = endpoint.traits(found.model)
         let messages = context(for: key, bot: bot, room: room, vision: traits.sees)
+        let epoch = epochs[key, default: 0]
         guard messages.contains(where: { $0.role == .user }) else { return false }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
@@ -1615,7 +1634,8 @@ final class TeamModel: ObservableObject {
         cutShort[key] = nil
         do {
             try await agent.run(history: messages) { [weak self] event in
-                await self?.hear(event, chat: key, speaker: speaker)
+                guard let self, await self.epochs[key, default: 0] == epoch else { return }
+                await self.hear(event, chat: key, speaker: speaker)
             }
             // An answer that came back cut short is not 「done」: no 「做完了」, and what is waiting to be sent waits
             // for the user (the review, #19).
@@ -1632,7 +1652,7 @@ final class TeamModel: ObservableObject {
             }
             return true
         } catch is CancellationError {
-            if pausing[key] == nil {
+            if pausing[key] == nil, epochs[key, default: 0] == epoch {
                 append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("（被你叫停了）"), note: true), to: key)
             }
             return false
@@ -1648,6 +1668,7 @@ final class TeamModel: ObservableObject {
                 return await turn(bot, in: key, room: room, using: backup)
             }
             let advice = Explain.model(error, service: endpoint.name)
+            guard epochs[key, default: 0] == epoch else { return false }
             fail(key, advice.title + "\n" + advice.detail, next: advice.next)
             return false
         }
