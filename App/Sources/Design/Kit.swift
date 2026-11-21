@@ -177,7 +177,7 @@ struct WideButtonStyle: ButtonStyle {
             .font(.system(size: Ink.Size.body, weight: .semibold))
             // On the accent, the paper's color: dark on the pale accent of dark mode, light on the deep one of light mode.
             .foregroundStyle(filled ? Ink.paper : tint)
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: Kit.rowHeight)
             .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
