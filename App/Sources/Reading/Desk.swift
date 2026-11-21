@@ -405,6 +405,8 @@ struct Desk: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header
                     companions
+                        // 看名帖 from anywhere on the desk; kept here so the long body stays quick to check.
+                        .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
                     waitingCard
                     if let next = team.nextLetter { letter(next) }
                     HStack {
@@ -600,7 +602,6 @@ struct Desk: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
         .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
         .sheet(isPresented: $gathering) { RoomEditor(team: team) }
         .sheet(item: $roomEditing) { room in RoomEditor(team: team, room: room) }

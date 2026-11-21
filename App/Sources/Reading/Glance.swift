@@ -1,4 +1,5 @@
 import SwiftUI
+import Craft
 
 /// A ring around a companion's face that breathes while it works (in its own colour), and fades when it is done.
 /// Still at a steady brightness when Reduce Motion is on. After Cindy's presence ring (Apache-2.0).
