@@ -1186,20 +1186,11 @@ struct ChatPage: View {
                         roaming = true
                     }
                 }
-                if line.id == chat.lines.last(where: { $0.kind == .bot })?.id, !working {
-                    footer(line)
+                // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
+                let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
+                if newest ? !working : !(chat.fresh?.id == line.id) {
+                    footer(line, newest: newest)
                         .transition(.opacity)
-                } else if !(chat.fresh?.id == line.id) {
-                    // Older replies: the same menu, quietly.
-                    Menu { replyMenu(line) } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: Ink.Size.small, weight: .medium))
-                            .foregroundStyle(Ink.inkFaint)
-                            .frame(width: 28, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .padding(.leading, -6)
-                    .accessibilityLabel("这条回复的更多操作")
                 }
             }
         case .steps:
@@ -1520,11 +1511,8 @@ struct ChatPage: View {
 
     /// The same actions on every reply, by a long press: the footer only sits under the last one.
     @ViewBuilder
+    /// What ⋯ under a reply holds. Copying the whole reply is the icon beside it, so it is not here again.
     private func replyMenu(_ line: ChatLine) -> some View {
-        Button("复制", systemImage: "doc.on.doc") {
-            UIPasteboard.general.string = line.text
-            Haptics.tick(0.5)
-        }
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
         Button(Words.t("做成笺"), systemImage: "scroll") { noting = Noting(id: line.id, text: line.text) }
@@ -1534,16 +1522,18 @@ struct ChatPage: View {
         }
     }
 
-    private func footer(_ line: ChatLine) -> some View {
+    private func footer(_ line: ChatLine, newest: Bool = true) -> some View {
         HStack(spacing: 2) {
             icon("doc.on.doc", "复制") {
                 UIPasteboard.general.string = line.text
                 Haptics.tick(0.5)
                 say("复制好了。")
             }
-            icon("arrow.clockwise", "重来一次") {
-                Haptics.light()
-                redo()
+            if newest {
+                icon("arrow.clockwise", "重来一次") {
+                    Haptics.light()
+                    redo()
+                }
             }
             // The rest waits behind ⋯, so the row stays short like other apps'.
             Menu {
@@ -1557,7 +1547,7 @@ struct ChatPage: View {
             }
             .accessibilityLabel("更多")
             Spacer(minLength: Ink.Space.s)
-            if Pref.stats {
+            if newest, Pref.stats {
                 Text(Self.numbers(line))
                     .font(Ink.footnote.monospacedDigit())
                     .foregroundStyle(Ink.inkFaint)
