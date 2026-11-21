@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 /// quiet or not; importing your own, from a pet pack or a single picture.
 struct PetPage: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
+    @State private var previewSince = Date()
     @State private var library = PetLibrary.shared
     @State private var importing = false
     @State private var installing = false
@@ -16,10 +18,10 @@ struct PetPage: View {
             Form {
                 PaperRows {
                     Section {
-                        preview
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 120)
-                            .listRowBackground(Ink.paperRaised)
+                        sizePreview
+                        sizeSlider
+                    } header: { Text(L.t("pet.size")) } footer: {
+                        Text(L.t("pet.sizeStandard"))
                     }
 
                     Section {
@@ -41,26 +43,6 @@ struct PetPage: View {
                     } header: { Text(L.t("pet.choose")) } footer: {
                         Text("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。")
                     }
-
-                    Section {
-                        Picker("大小", selection: $library.size) {
-                            Text("小").tag("small")
-                            Text("标准").tag("standard")
-                            Text("大").tag("large")
-                            Text("自定义").tag("custom")
-                        }
-                        .pickerStyle(.segmented)
-                        if library.size == "custom" {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(L.t("pet.sizeReference"))
-                                    Spacer()
-                                    Text("\(Int(library.custom * 100))%").foregroundStyle(Ink.inkSoft).monospacedDigit()
-                                }
-                                Slider(value: $library.custom, in: 0.5...3, step: 0.05)
-                            }
-                        }
-                    } header: { Text(L.t("pet.size")) }
 
                     Section {
                         Toggle(L.t("pet.showOnComposer"), isOn: $library.visible)
@@ -105,11 +87,45 @@ struct PetPage: View {
         }
     }
 
-    @ViewBuilder
-    private var preview: some View {
-        if let pack = library.pack {
-            SpritePet(pack: pack, anim: pack.anim(for: "idle") ?? "", since: Date(), bodyHeight: CGFloat(30 * library.factor) * UIScale.factor)
+    private var levels: [Double] { PetSize.levels(for: library.pack, displayScale: displayScale) }
+
+    private var sizeSlider: some View {
+        let marks = levels
+        let selection = PetSize.nearest(library.factor, in: marks)
+        let percent = Int((marks[selection] * 100).rounded())
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack {
+                Text(L.t("pet.sizeReference")).foregroundStyle(Ink.ink)
+                Spacer()
+                Text("\(percent)%").monospacedDigit().foregroundStyle(Ink.inkSoft)
+                    .accessibilityHidden(true)
+            }
+            if marks.count > 1 {
+                Slider(value: Binding(
+                    get: { Double(PetSize.nearest(library.factor, in: marks)) },
+                    set: { library.factor = marks[Int($0.rounded())] }
+                ), in: 0...Double(marks.count - 1), step: 1) {
+                    Text(L.t("pet.size"))
+                }
+                .tint(Ink.accent)
+                .accessibilityValue("\(percent)%")
+            }
         }
+    }
+
+    private var sizePreview: some View {
+        GeometryReader { proxy in
+            if let pack = library.pack {
+                let mark = levels[PetSize.nearest(library.factor, in: levels)]
+                let unit = PetSize.unit(for: pack, factor: mark, displayScale: displayScale,
+                                        maxWidth: proxy.size.width, maxHeight: proxy.size.height)
+                SpritePet(pack: pack, anim: pack.anim(for: "idle") ?? "", since: previewSince, unit: unit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(height: PetSize.standardHeight * 3 + Ink.Space.m)
+        .accessibilityHidden(true)
+        .onChange(of: library.choice) { previewSince = Date() }
     }
 
     private func choiceRow(id: String, title: String, line: String?) -> some View {

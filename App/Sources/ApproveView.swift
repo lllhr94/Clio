@@ -67,7 +67,7 @@ struct ApproveView: View {
                     if waiting > 0 && !largeText {
                         SlipShape()
                             .fill(Ink.paperRaised)
-                            .frame(width: 300, height: 300)
+                            .frame(width: min(300, UIScreen.main.bounds.width * 0.72), height: min(300, UIScreen.main.bounds.width * 0.72))
                             .rotationEffect(.degrees(5))
                             .offset(x: 14, y: 12)
                             .blur(radius: 1.5)

@@ -256,11 +256,19 @@ private struct CodeBlock: View {
     let text: String
     @State private var copied = false
     @State private var unfolded = false
+    @State private var contentWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+    /// A line is wider than the block: only then may it slide.
+    private var overflows: Bool { boxWidth > 0 && contentWidth > boxWidth + 1 }
 
     private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
     /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
     private var isOutput: Bool {
-        ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased())
+        if ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased()) { return true }
+        // No language given, and nothing that reads as code: a log or what a command printed.
+        guard language.isEmpty else { return false }
+        let marks = ["{", "}", ";", " = ", "=>", "->", "def ", "func ", "function ", "import ", "return ", "const ", "let ", "class "]
+        return !marks.contains { text.contains($0) }
     }
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { lineCount > 20 }
@@ -300,6 +308,9 @@ private struct CodeBlock: View {
             .padding(.trailing, Ink.Space.xs)
             .frame(height: 34)
             Rectangle().fill(Ink.rule).frame(height: 0.5)
+            // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
+            // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
+            // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
             ScrollView(.horizontal) {
                 Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
                     .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
@@ -307,8 +318,19 @@ private struct CodeBlock: View {
                     .lineSpacing(Pref.size * 0.3)
                     .padding(Ink.Space.l)
                     .fixedSize(horizontal: true, vertical: false)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             }
             .scrollIndicators(.hidden)
+            .scrollDisabled(!overflows)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+            .overlay(alignment: .trailing) {
+                if overflows {
+                    LinearGradient(colors: [Ink.mine.opacity(0), Ink.mine], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: Ink.Space.xl)
+                        .allowsHitTesting(false)
+                }
+            }
             if folds {
                 Button {
                     Haptics.tick(0.4)
@@ -325,32 +347,54 @@ private struct CodeBlock: View {
                 .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 0.5) }
             }
         }
-        .inkBlock()
+        // Set apart from the words around it: a warmer, deeper ground and a firmer edge, so what is to be copied
+        // reads as something to copy.
+        .background(Ink.mine, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.inkFaint.opacity(0.45), lineWidth: 0.8))
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 }
 
 /// A table that scrolls sideways when it is wider than the page.
-/// Each column gets a width measured from its words (up to 260 points, then they wrap), and each row is as tall
+/// Each column's width is planned for the room the table has (see `spread`), and each row is as tall
 /// as its tallest cell, so a cell that wraps onto several lines pushes the line under it down instead of
 /// running over it.
 private struct TableBlock: View {
     let table: Prose.Table
 
-    private static let widest: CGFloat = 260
     /// Table text, two points under the reading size.
     private static var cellSize: CGFloat { CGFloat(max(12, Pref.size - 2)) }
     private static let gap: CGFloat = 20
     /// How wide the block is on the page, so a narrow table can spread across it.
     @State private var room: CGFloat = 0
 
-    /// The measured widths, with any room left over shared out between the columns: a table of short cells
-    /// fills its card instead of sitting in the left half of it.
+    /// Column widths planned for the width the table really has, on any phone, the way reading apps lay out tables
+    /// (after Open Minis' planner, written anew): a column with more text is never narrower than one with less.
+    /// 1. Everything fits on one line: the leftover room is shared in proportion to each column's text.
+    /// 2. Each column at a comfortable width (at most 35% of the room) fits: they fill the room, the wordier ones
+    ///    getting more, and cells wrap.
+    /// 3. Otherwise the table slides sideways, no column wider than 70% of the room, so the next one peeks in.
     private func spread(_ natural: [CGFloat]) -> [CGFloat] {
         guard !natural.isEmpty, room > 0 else { return natural }
-        let used = natural.reduce(0, +) + Self.gap * CGFloat(natural.count - 1) + Ink.Space.l * 2
-        let extra = room - used
-        guard extra > 1 else { return natural }
-        return natural.map { $0 + extra / CGFloat(natural.count) }
+        let count = CGFloat(natural.count)
+        let available = room - Self.gap * (count - 1) - Ink.Space.l * 2
+        guard available > 0 else { return natural }
+        let floor = min(80, available / count)
+        let total = natural.reduce(0, +)
+        if total <= available {
+            let extra = available - total
+            return natural.map { $0 + extra * $0 / max(1, total) }
+        }
+        let comfortable = natural.map { max(floor, min($0, available * 0.35)) }
+        let snug = comfortable.reduce(0, +)
+        if snug <= available {
+            // The rest goes to the columns that still want more, in proportion to how much more.
+            let wants = zip(natural, comfortable).map { max(0, $0 - $1) }
+            let wanted = wants.reduce(0, +)
+            let extra = available - snug
+            return zip(comfortable, wants).map { $0 + (wanted > 0 ? extra * $1 / wanted : extra / count) }
+        }
+        return natural.map { max(floor, min($0, available * 0.7)) }
     }
 
     private var widths: [CGFloat] {
@@ -363,7 +407,7 @@ private struct TableBlock: View {
             for row in table.rows where column < row.count {
                 natural = max(natural, Self.measure(row[column], font: body))
             }
-            return min(Self.widest, max(28, ceil(natural) + 4))
+            return max(28, ceil(natural) + 4)
         }
     }
 
@@ -815,6 +859,11 @@ enum ProseWords {
                 font = UIFont(descriptor: slanted, size: size)
             }
             var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]
+            // 文楷 has one weight for reading and bold: bold words are drawn with a thin outline so they still stand out.
+            if Pref.face == .wenkai, bold || intent.contains(.stronglyEmphasized) {
+                attributes[.strokeWidth] = -3.0
+                attributes[.strokeColor] = ink
+            }
             if intent.contains(.code) {
                 attributes[.font] = Ink.uiMono(max(12, size - 2))
                 attributes[.backgroundColor] = UIColor(Ink.mine)
@@ -856,7 +905,11 @@ private struct ProseText: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.open = openURL
-        if !view.attributedText.isEqual(to: attributed) { view.attributedText = attributed }
+        // Compared by its words only: the colours inside are made fresh on every redraw and never compare equal, so the
+        // old check set the text again each time the chat redrew, and that wiped a selection the moment it was made.
+        // A change of face, size or light/dark gives the whole block a new identity (see `SelectableProse`), so it is
+        // built anew then anyway.
+        if view.attributedText.string != attributed.string { view.attributedText = attributed }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {

@@ -95,7 +95,26 @@ enum Words {
 
     /// The text with every old name replaced by its current one, in one pass, so a replacement is never replaced again.
     static func t(_ text: String) -> String {
-        _ = Theme.shared.plain
+        let plain = Theme.shared.plain
+        // Remembered per text: views call this on every redraw, and a streamed reply redraws many times a second
+        // (Open Minis found its own per-redraw word lookups taking a fifth of the main thread while typing).
+        let key = (plain ? "1" : "0") + text
+        cacheLock.lock()
+        let known = cache[key]
+        cacheLock.unlock()
+        if let known { return known }
+        let out = swap(text)
+        cacheLock.lock()
+        if cache.count > 2000 { cache.removeAll() }
+        cache[key] = out
+        cacheLock.unlock()
+        return out
+    }
+
+    nonisolated(unsafe) private static var cache: [String: String] = [:]
+    private static let cacheLock = NSLock()
+
+    private static func swap(_ text: String) -> String {
         var out = ""
         var rest = Substring(text)
         outer: while !rest.isEmpty {

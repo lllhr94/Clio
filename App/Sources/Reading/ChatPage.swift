@@ -13,6 +13,8 @@ struct ChatPage: View {
     @StateObject private var chat: ChatModel
     @StateObject private var dictation = Dictation()
     @ObservedObject private var asker = Asker.shared
+    @State private var petPerch = PetPerch()
+    @Environment(\.accessibilityReduceMotion) private var calmPetMotion
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
     /// desk made SwiftUI think the whole page had changed, and redraw all of it for every frame the sidebar slid.
     let side: SideControl
@@ -33,6 +35,9 @@ struct ChatPage: View {
     @State private var following = true
     /// 聊天里显示头像: off unless turned on (设置 › 对话 › 对话显示与反馈).
     @AppStorage("chat.faces") private var faces = false
+    /// The stop button asks first (as Open Minis does): a long task lost to a thumb that slipped is worse than one more tap.
+    @AppStorage("chat.confirmStop") private var confirmStop = true
+    @State private var askingStop = false
     /// 在对话里找: what is looked for, and which of the places found is in view.
     @State private var finding = false
     @State private var findText = ""
@@ -275,11 +280,6 @@ struct ChatPage: View {
                     failureCard(error)
                         .transition(.opacity.combined(with: .offset(y: 6)))
                 }
-                if let form = asker.current, form.inline, team.isWorking(chat.key) {
-                    InlineAsk(form: form)
-                        .id(form.id)
-                        .transition(.opacity.combined(with: .offset(y: 8)))
-                }
                 ForEach(team.queued[chat.key] ?? []) { item in
                     queuedRow(item)
                         .transition(.opacity.combined(with: .offset(y: 8)))
@@ -470,17 +470,38 @@ struct ChatPage: View {
         .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
     }
 
-    /// The pet, then the composer (or the find bar), on paper that fades up into the page.
+    private var dockedForm: Asker.Form? {
+        guard let form = asker.current, form.inline, team.isWorking(chat.key) else { return nil }
+        return form
+    }
+
+    /// The floating pet follows the top of this stack, including the keyboard safe area.
     private var bottomStack: some View {
         VStack(spacing: 0) {
-        // The pet stands on the composer's top edge (or the plan card's, when that is showing).
-        PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
-            .opacity(dictation.listening || finding ? 0 : 1)
-        Group {
-            if finding { findBar } else { composerBar }
-        }
-            // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
-            // no longer reads through the glass.
+            PetPerchSpace(face: isRoom ? nil : bot.avatar)
+            VStack(spacing: 0) {
+                if let form = dockedForm {
+                    PetDockSlip { InlineAsk(form: form).id(form.id) }
+                        .padding(.horizontal, Ink.Bar.edge)
+                        .padding(.bottom, Ink.Space.s)
+                        .transition(.opacity)
+                }
+                if finding { findBar } else { composerBar }
+            }
+            .background(alignment: .top) {
+                PetPerchAnchor(
+                    perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
+                    showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil
+                        || (asker.current.map { !$0.inline } ?? false),
+                    covered: petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
+                    quiet: dictation.listening, enabled: PetLibrary.shared.visible
+                ) { petSettingsOpen = true }
+                .frame(height: 1)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            // Paper behind the composer and the plan card, fading up into the page.
             .background(alignment: .bottom) {
                 LinearGradient(stops: [
                     .init(color: Ink.paper.opacity(0), location: 0),
@@ -492,6 +513,12 @@ struct ChatPage: View {
                 .allowsHitTesting(false)
             }
         }
+        .animation(petDockMotion, value: dockedForm?.id)
+        .animation(petDockMotion, value: finding)
+    }
+
+    private var petDockMotion: Animation {
+        calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
     }
 
     var body: some View {
@@ -516,7 +543,9 @@ struct ChatPage: View {
         .onAppear {
             chat.open()
             PetNews.shared.focused = chat.key
+            if draft.isEmpty, let kept = Self.keptDraft(chat.key) { draft = kept }
         }
+        .onChange(of: draft) { _, text in Self.keepDraft(text, for: chat.key) }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
@@ -951,8 +980,14 @@ struct ChatPage: View {
     private var thinkingChoices: some View {
         let level = options.thinking ?? .auto
         let now = isRoom ? nil : team.current(chat.key, bot: bot)
+        // Only the levels this model's service really tells apart (the one chosen stays visible).
+        let offered: [Thinking] = {
+            guard let now, now.endpoint.kind == .openai else { return Thinking.allCases }
+            let levels = now.endpoint.thinkingStyle.levels(thinks: now.traits.thinks)
+            return Thinking.allCases.filter { levels.contains($0) || $0 == level }
+        }()
         Section(Words.t("这段絮语想多深")) {
-            ForEach(Thinking.allCases, id: \.self) { option in
+            ForEach(offered, id: \.self) { option in
                 Button {
                     Haptics.tick(0.5)
                     team.setThinking(option, in: chat.key)
@@ -1134,7 +1169,17 @@ struct ChatPage: View {
 
     /// The pages the steps right before this reply read or found, for a row of sources under it.
     /// A reply without the 「来源：」 (or 参考 / Sources) list of links some models write at the very end.
-    static func withoutSourceList(_ text: String) -> String {
+    @MainActor private static var trimmedCache: [String: String] = [:]
+
+    @MainActor static func withoutSourceList(_ text: String) -> String {
+        if let known = trimmedCache[text] { return known }
+        let trimmed = trimSourceList(text)
+        if trimmedCache.count > 400 { trimmedCache.removeAll() }
+        trimmedCache[text] = trimmed
+        return trimmed
+    }
+
+    private static func trimSourceList(_ text: String) -> String {
         var lines = text.components(separatedBy: "\n")
         // One line at the end, 「来源：[甲](…)、[乙](…)」: only links after the colon.
         while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
@@ -1162,9 +1207,26 @@ struct ChatPage: View {
         return lines[..<start].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Worked out once per reply: the steps before a reply do not change after it, and every reply asked on every
+    /// redraw (twice), walking back through the chat each time.
+    private final class SourcesMemo {
+        var found: [String: [URL]] = [:]
+    }
+    @State private var sourcesMemo = SourcesMemo()
+
     private func sources(for line: ChatLine) -> [URL] {
+        let memoKey = line.id + "|\(line.text.count)"
+        if let known = sourcesMemo.found[memoKey] { return known }
+        let found = findSources(for: line)
+        if sourcesMemo.found.count > 600 { sourcesMemo.found.removeAll() }
+        sourcesMemo.found[memoKey] = found
+        return found
+    }
+
+    private func findSources(for line: ChatLine) -> [URL] {
         guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
-        var urls: [URL] = []
+        // The pages the answer itself names come first: they are what it rests on.
+        var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
         var cursor = index - 1
         while cursor >= 0, chat.lines[cursor].kind == .steps {
             let step = chat.lines[cursor]
@@ -1173,12 +1235,12 @@ struct ChatPage: View {
                 // Pages it read count first; then what a search brought back.
                 let text = label.hasPrefix("搜索") ? step.details[position].output : step.details[position].input
                 for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
-                    if let url = URL(string: String(match.output)), url.host != nil, !urls.contains(url) { urls.append(url) }
+                    if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
                 }
             }
             cursor -= 1
         }
-        return Array(urls.prefix(5))
+        return Array(urls.prefix(8))
     }
 
     /// What this conversation can reach, in one line: 「在书案干活 · 能联网 · 远山 jp-1」.
@@ -1264,12 +1326,16 @@ struct ChatPage: View {
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
                     // When the sources row is under it, a 「来源：」 list the model wrote at the end is not shown twice.
-                    SelectableProse(text: sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text))
+                    let shown = sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text)
+                    let looked = Self.lookback(shown)
+                    // 「回望：…」 the companion wrote after its steps: a quiet line of its own, like 心绪, not body text.
+                    if let note = looked.note { LookbackLine(text: note) }
+                    SelectableProse(text: looked.rest)
                         .equatable()
                 }
                 let found = sources(for: line)
                 if !found.isEmpty, !(chat.fresh?.id == line.id) {
-                    SourcesRow(urls: found) { url in
+                    SourcesRow(urls: found, titles: SourcesRow.titles(in: line.text)) { url in
                         typing = false
                         Task { await team.browser.open(url) }
                         roaming = true
@@ -1277,7 +1343,8 @@ struct ChatPage: View {
                 }
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
                 let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
-                if newest ? !working : !(chat.fresh?.id == line.id) {
+                // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
+                if newest ? !working : (!(chat.fresh?.id == line.id) && endsTurn(line)) {
                     footer(line, newest: newest)
                         .transition(.opacity)
                 }
@@ -1618,6 +1685,45 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    /// A first line 「回望：…」 taken off the reply, and the rest.
+    static func lookback(_ text: String) -> (note: String?, rest: String) {
+        let trimmed = text.drop { $0 == "\n" || $0 == " " }
+        guard let first = trimmed.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else { return (nil, text) }
+        let line = first.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+        for head in ["回望：", "回望:"] where line.hasPrefix(head) {
+            let note = String(line.dropFirst(head.count)).trimmingCharacters(in: .whitespaces)
+            let rest = trimmed.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (note.isEmpty ? nil : note, rest)
+        }
+        return (nil, text)
+    }
+
+    /// What was typed and not sent stays with the conversation — a new one too — across leaving it and relaunching
+    /// (Open Minis lost a new chat's draft on going back).
+    private static func keepDraft(_ text: String, for key: String) {
+        let name = "draft." + key
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserDefaults.standard.removeObject(forKey: name)
+        } else {
+            UserDefaults.standard.set(text, forKey: name)
+        }
+    }
+
+    private static func keptDraft(_ key: String) -> String? {
+        UserDefaults.standard.string(forKey: "draft." + key)
+    }
+
+    /// No more of the companion's words follow before the user speaks again.
+    private func endsTurn(_ line: ChatLine) -> Bool {
+        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return true }
+        for later in chat.lines[(index + 1)...] {
+            // In a group, another companion speaking ends this one's turn.
+            if later.kind == .bot { return later.speaker != line.speaker }
+            if later.kind == .user { return true }
+        }
+        return true
     }
 
     private func fork(at line: ChatLine) {
@@ -2052,7 +2158,7 @@ struct ChatPage: View {
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
-        .animation(Ink.Motion.unfold, value: waiting?.id)
+        .animation(petDockMotion, value: waiting?.id)
         .overlay(alignment: .top) {
             // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
             HStack(spacing: Ink.Space.m) {
@@ -2202,8 +2308,13 @@ struct ChatPage: View {
                 Haptics.light()
                 dictation.stop()
             case 1:
-                Haptics.lock()
-                chat.stop()
+                if confirmStop {
+                    Haptics.light()
+                    askingStop = true
+                } else {
+                    Haptics.lock()
+                    chat.stop()
+                }
             case 2:
                 Haptics.grab()
                 if let editing {
@@ -2239,6 +2350,15 @@ struct ChatPage: View {
             .frame(width: 34, height: 34)
         }
         .buttonStyle(PressStyle(haptic: false))
+        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
+            Button(L.t("chat.stopNow"), role: .destructive) {
+                Haptics.lock()
+                if working { chat.stop() }
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("chat.stopAskNote"))
+        }
         .animation(Ink.Motion.press, value: mode)
         .accessibilityLabel(["说完了", "让它停下", working ? "插话" : "发送", "说话"][mode])
         .contextMenu {
@@ -2429,6 +2549,16 @@ private struct Trace: View {
     }
     @State private var diffing: DiffShow?
 
+    /// A file to read rather than code to review — a report, a page, a picture: a tap opens it to read, as other
+    /// agents do, instead of a comparison of lines.
+    private static func isDocument(_ item: Keepsake) -> Bool {
+        guard let url = item.url else { return false }
+        let kinds: Set<String> = ["md", "markdown", "txt", "pdf", "doc", "docx", "rtf", "pages", "xls", "xlsx", "csv", "numbers",
+                                  "ppt", "pptx", "key", "png", "jpg", "jpeg", "gif", "heic", "webp", "svg", "html", "htm",
+                                  "mp3", "m4a", "wav", "mp4", "mov"]
+        return kinds.contains(url.pathExtension.lowercased())
+    }
+
     /// The files these steps wrote or changed.
     private var changedFiles: [Keepsake] { keepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
 
@@ -2461,7 +2591,7 @@ private struct Trace: View {
                 Kit.rule(inset: Ink.Space.l)
                 Button {
                     Haptics.light()
-                    if let diff = item.diff, !diff.isEmpty {
+                    if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                         diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
                     } else if let url = item.url {
                         openFile(url)
@@ -2635,7 +2765,7 @@ private struct Trace: View {
                     Haptics.light()
                     switch item.kind {
                     case .file, .remoteFile:
-                        if let diff = item.diff, !diff.isEmpty {
+                        if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                             diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
                         } else if let url = item.url {
                             openFile(url)
@@ -2656,7 +2786,7 @@ private struct Trace: View {
                             Text(item.detail)
                                 .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
-                            if let diff = item.diff, !diff.isEmpty {
+                            if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                                 // The first few changed lines, so the card shows what changed at a glance.
                                 DiffText(hunk: DiffText.glance(diff), limit: 5)
                                     .padding(.top, 4)
@@ -2997,6 +3127,8 @@ private struct Dots: View {
 /// 出处: the pages behind an answer, as small cards with the site's name; a tap opens the page in 远游.
 struct SourcesRow: View {
     let urls: [URL]
+    /// What the answer called each page, where it linked one: 「中国天气网」 rather than 「weather.com.cn」.
+    var titles: [URL: String] = [:]
     let open: (URL) -> Void
     @State private var listing = false
 
@@ -3033,12 +3165,45 @@ struct SourcesRow: View {
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("\(urls.count) 个来源，点开看")
         .sheet(isPresented: $listing) {
-            SourcesSheet(urls: urls) { url in
+            SourcesSheet(urls: urls, titles: titles) { url in
                 listing = false
                 open(url)
             }
             .presentationDetents([.medium, .large])
         }
+    }
+
+    /// The links written in an answer, 「[名字](网址)」, in order.
+    /// Worked out once per reply text: the chat redraws often, and every reply asks on each redraw.
+    @MainActor private static var citedCache: [String: [(title: String, url: URL)]] = [:]
+
+    @MainActor static func cited(in text: String) -> [(title: String, url: URL)] {
+        if let known = citedCache[text] { return known }
+        let found = findCited(in: text)
+        if citedCache.count > 400 { citedCache.removeAll() }
+        citedCache[text] = found
+        return found
+    }
+
+    private static func findCited(in text: String) -> [(title: String, url: URL)] {
+        var found: [(title: String, url: URL)] = []
+        for match in text.matches(of: #/\[([^\]\n]+)\]\((https?://[^)\s]+)\)/#) {
+            guard let url = URL(string: String(match.output.2)), url.host != nil, !isSearchPage(url),
+                  !found.contains(where: { $0.url == url }) else { continue }
+            found.append((String(match.output.1).trimmingCharacters(in: .whitespaces), url))
+        }
+        return found
+    }
+
+    @MainActor static func titles(in text: String) -> [URL: String] {
+        Dictionary(cited(in: text).map { ($0.url, $0.title) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// A search engine's list of results is how the pages were found, not a source.
+    static func isSearchPage(_ url: URL) -> Bool {
+        let host = site(url), path = url.path()
+        let engines = ["bing.com", "cn.bing.com", "google.com", "baidu.com", "sogou.com", "so.com", "duckduckgo.com", "search.yahoo.com"]
+        return engines.contains(host) && (path.hasPrefix("/search") || path == "/s" || path == "/web" || path == "/" || path.isEmpty)
     }
 
     /// 「zhihu.com」 from 「https://www.zhihu.com/question/…」.
@@ -3054,6 +3219,7 @@ struct SourcesRow: View {
 /// The sources of a reply, one per row: the site's icon, the page's address, and where it leads.
 private struct SourcesSheet: View {
     let urls: [URL]
+    var titles: [URL: String] = [:]
     let open: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -3070,8 +3236,9 @@ private struct SourcesSheet: View {
                             HStack(spacing: Ink.Space.m) {
                                 BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 32)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(Self.path(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                                    // The name the answer gave it, when it gave one; then the site.
+                                    Text(titles[url] ?? SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                                    Text(titles[url] == nil ? Self.path(url) : SourcesRow.site(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                                 }
                                 Spacer(minLength: 0)
                                 Image(systemName: "arrow.up.right").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
@@ -3277,5 +3444,32 @@ struct HealthCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .paperCard()
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+/// 回望: what the steps changed in the companion's mind, in the 心绪 colour, one line, opened by a tap.
+struct LookbackLine: View {
+    let text: String
+    @State private var open = false
+
+    var body: some View {
+        Button {
+            Haptics.tick(0.4)
+            withAnimation(Ink.Motion.settle) { open.toggle() }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: Ink.Size.micro, weight: .semibold))
+                Text("回望 · " + text)
+                    .font(Ink.footnote)
+                    .lineLimit(open ? nil : 1)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Ink.accent.opacity(0.85))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("回望：" + text)
     }
 }

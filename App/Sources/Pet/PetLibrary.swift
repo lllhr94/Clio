@@ -15,10 +15,8 @@ final class PetLibrary {
     var choice: String { didSet { UserDefaults.standard.set(choice, forKey: "pet.choice") } }
     /// Stands on the composer. Off, it still appears in portraits and illustrations.
     var visible: Bool { didSet { UserDefaults.standard.set(visible, forKey: "pet.visible") } }
-    /// "small", "standard", "large" or "custom".
-    var size: String { didSet { UserDefaults.standard.set(size, forKey: "pet.size") } }
-    /// Custom size, as a share of standard: 0.5…3.
-    var custom: Double { didSet { UserDefaults.standard.set(custom, forKey: "pet.custom") } }
+    /// Requested size relative to the 48-point standard, rounded for the current sprite and screen when drawn.
+    var factor: Double { didSet { UserDefaults.standard.set(factor, forKey: "pet.sizeScale") } }
     /// Moves, but never speaks up in a bubble.
     var quiet: Bool { didSet { UserDefaults.standard.set(quiet, forKey: "pet.quiet") } }
     /// Put away until then.
@@ -38,10 +36,13 @@ final class PetLibrary {
         } else {
             visible = !(stored == "none" || store.object(forKey: "mascot.shown") as? Bool == false)
         }
-        size = store.string(forKey: "pet.size") ?? "standard"
-        custom = store.object(forKey: "pet.custom") as? Double ?? 1
+        let savedScale = store.object(forKey: "pet.sizeScale") as? Double
+        let oldSize = store.string(forKey: "pet.size")
+        factor = savedScale.flatMap { $0.isFinite && $0 > 0 ? min(3, $0) : nil }
+            ?? PetSize.migrated(oldSize, custom: store.object(forKey: "pet.custom") as? Double ?? 1, uiScale: UIScale.factor)
         quiet = store.bool(forKey: "pet.quiet")
         hiddenUntil = (store.object(forKey: "pet.hiddenUntil") as? Double).map(Date.init(timeIntervalSince1970:))
+        if savedScale == nil, oldSize != nil { store.set(factor, forKey: "pet.sizeScale") }
         Task { await reload() }
     }
 
@@ -53,14 +54,10 @@ final class PetLibrary {
     /// Yours; 小克 if yours cannot be read.
     var pack: PetPack? { packs.first { $0.id == choice } ?? packs.first { $0.id == Self.standard } ?? packs.first }
 
-    /// How much bigger than standard.
-    var factor: Double {
-        switch size {
-        case "small": 0.75
-        case "large": 1.35
-        case "custom": min(3, max(0.5, custom))
-        default: 1
-        }
+    func pack(for face: String?) -> PetPack? {
+        if let face, face.hasPrefix("pet:"),
+           let own = packs.first(where: { $0.id == String(face.dropFirst(4)) }) { return own }
+        return pack
     }
 
     nonisolated private static func packsFolder() -> URL {

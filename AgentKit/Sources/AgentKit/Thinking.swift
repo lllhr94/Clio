@@ -97,6 +97,23 @@ public enum ThinkingStyle: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// The levels this service really tells apart, for a model that thinks: a level that sends exactly what an
+    /// earlier one sends is the same level under another name (DeepSeek's 想一想 and 深想 both ask for "high"),
+    /// and 不想 is left out where the model cannot stop thinking. 默认 is always there.
+    public func levels(thinks: Bool) -> [Thinking] {
+        guard thinks, self != .none else { return [.auto] }
+        var offered: [Thinking] = [.auto]
+        var sent: [NSDictionary] = []
+        for level in [Thinking.off, .low, .medium, .high, .max] {
+            if level == .off, !canStop { continue }
+            let fields = fields(level) as NSDictionary
+            guard fields.count > (self == .minimax ? 1 : 0), !sent.contains(where: { $0.isEqual(fields) }) else { continue }
+            sent.append(fields)
+            offered.append(level)
+        }
+        return offered
+    }
+
     /// The body fields that ask for `thinking`. Empty for `.auto`, except where a field is always wanted.
     public func fields(_ thinking: Thinking) -> [String: Any] {
         var fields: [String: Any] = [:]

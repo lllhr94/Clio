@@ -305,12 +305,22 @@ final class TeamModel: ObservableObject {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
         guard let key = await Vault.readString("key-\(id)"), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
-        let raw = try await endpoint.provider(key: key).models()
+        let provider = endpoint.provider(key: key)
+        var reported: [String: Int] = [:]
+        let raw: [String]
+        if let openAI = provider as? OpenAIProvider {
+            let catalog = try await openAI.catalog()
+            raw = catalog.ids
+            reported = catalog.windows
+        } else {
+            raw = try await provider.models()
+        }
         let listed = Self.keep(raw, for: endpoint)
         storeImageModels(raw, for: endpoint)
         guard !listed.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
         guard let again = settings.endpoints.firstIndex(where: { $0.id == id }) else { return listed.count }
         settings.endpoints[again].listed = listed
+        settings.endpoints[again].windows = reported.isEmpty ? nil : reported
         if settings.endpoints[again].models.isEmpty { settings.endpoints[again].models = Self.firstPicks(listed, service: Service.of(endpoint)) }
         saveSettings()
         return listed.count
@@ -1636,6 +1646,17 @@ final class TeamModel: ObservableObject {
             notify(key, .tool(label))
         case .retrying(let attempt):
             doing[key] = "连接不稳，正在重连（第 \(attempt) 次）"
+        case .cutShort(let short):
+            let words: String
+            switch short {
+            case .dropped: words = "连接中途断了，这次没收到回答。可以点「重来」。"
+            case .thoughtOnly(let count): words = "它想了 \(count) 字，但没写出回答。可以点「重来」，或换个说法再问。"
+            case .filtered: words = "这次的回答被模型服务的内容审核拦下了。换个说法再问试试。"
+            case .truncated: words = "回答写到长度上限，被截断了。说「继续」它会接着写；也可以在设置里调大「最长回复」。"
+            case .empty: words = "模型这次什么也没回。可以点「重来」。"
+            }
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(words), note: true), to: key)
+            Diag.note("回答不完整：\(short)")
         case .thinkingRefused(let level, let reason):
             var kept = options(key)
             kept.thinking = nil
@@ -1830,6 +1851,8 @@ final class TeamModel: ObservableObject {
         parts.append("""
         做事：
         - 要最新的信息（新闻、价格、天气、事实），先用 web_search 搜，再用 web_read 读原文核实。你看过的网页 App 会在回答下面自动列成「来源」，所以回答里不要再另写一段「来源：」列表；正文里某句话需要指明出处时，用行内链接 [名字](网址) 就好。
+        - 你写进或改过的文件，App 会自动列成能点开预览的卡片，所以回答里不用再另列文件清单或路径；说到某个文件时提一下文件名就好。
+        - 排版照手机屏幕来：表格最多 3～4 列、每格写短；内容多、列多时改用列表，或放进代码块里对齐。要用户复制去执行的命令、配置、路径、密钥格式，一律放进带语言名的代码块（```bash、```json 等），不要只写在正文或行内代码里。
         - 用户说起关于自己的、以后用得上的事，用 remember 记下；一次性的小事不记。
         - 日程、提醒、到点找用户，用对应的工具，时间都用本地时间。
         - 一件事里有一块交给团队里更擅长的旅伴更好时（查资料、写稿、算账），用 ask_companion 请它做，把要求写完整；它的结果回来后，由你整理好告诉用户。不要为了小事请人。

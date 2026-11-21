@@ -89,6 +89,8 @@ struct Endpoint: Codable, Identifiable, Equatable {
     var imageModels: [String]?
     /// What the user set right about a model; the rest is guessed from its name.
     var overrides: [String: ModelTraits]?
+    /// Context windows the service reported in its model list (tokens), by model.
+    var windows: [String: Int]?
     /// How to ask it for thinking; nil: as its service does.
     var style: ThinkingStyle?
     /// The listed service it came from (`Service.id`).
@@ -104,7 +106,15 @@ struct Endpoint: Codable, Identifiable, Equatable {
     }
 
     /// What a model can do: as the user set it, or else as its name suggests.
-    func traits(_ model: String) -> ModelTraits { overrides?[model] ?? ModelTraits.guess(model) }
+    /// What `model` can do: the user's correction, else what the service reported and the models.dev catalog
+    /// say, else the guess from the name.
+    func traits(_ model: String, ignoringCorrection: Bool = false) -> ModelTraits {
+        if !ignoringCorrection, let corrected = overrides?[model] { return corrected }
+        var guessed = ModelTraits.known(model)
+        // What the service itself said about the window beats a guess from the name.
+        if let reported = windows?[model] { guessed.window = reported }
+        return guessed
+    }
 
     /// The user changed what this model can do (true), or it is still the guess.
     func corrected(_ model: String) -> Bool { overrides?[model] != nil }

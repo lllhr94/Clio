@@ -72,6 +72,16 @@ struct PetPack: Identifiable, Sendable {
         reactions[name]?.filter { animations[$0] != nil }.randomElement()
     }
 
+    /// Optional motion frames keep their own names in imported packs.
+    func motionAnimation(_ names: [String]) -> String? {
+        for name in names {
+            if let named = states[name]?.first(where: { animations[$0] != nil }) { return named }
+            if animations[name] != nil { return name }
+            if let reaction = reaction(name) { return reaction }
+        }
+        return nil
+    }
+
     // MARK: Reading pack.json
 
     static func parse(_ data: Data, dir: URL, id: String) throws -> PetPack {
@@ -81,11 +91,12 @@ struct PetPack: Identifiable, Sendable {
             guard let dict = any as? [String: Any], let w = num(dict["w"]), let h = num(dict["h"]), w > 0, h > 0 else { return nil }
             return Box(x: num(dict["x"]) ?? 0, y: num(dict["y"]) ?? 0, w: w, h: h)
         }
-        guard let canvas = root["canvas"] as? [String: Any], let cw = num(canvas["w"]), let ch = num(canvas["h"]) else {
+        guard let canvas = root["canvas"] as? [String: Any], let cw = num(canvas["w"]), let ch = num(canvas["h"]), cw.isFinite, ch.isFinite, cw > 0, ch > 0 else {
             throw Problem.bad("pack.json 里没有 canvas")
         }
         guard let rawAnims = root["animations"] as? [String: Any], !rawAnims.isEmpty else { throw Problem.bad("pack.json 里没有动画") }
-        let scale = num(root["scale"]) ?? 1
+        let declaredScale = num(root["scale"]) ?? 1
+        let scale = declaredScale.isFinite && declaredScale > 0 ? declaredScale : 1
         var animations: [String: Anim] = [:]
         for (name, value) in rawAnims {
             guard let dict = value as? [String: Any], let sheet = dict["sheet"] as? String,
@@ -221,22 +232,14 @@ enum PetSheets {
     }
 }
 
-/// One drawn pet, playing `anim` since `since`, scaled so its body is `bodyHeight` points tall.
+/// One drawn pet, playing `anim` since `since`, with a shared scale in points per canvas unit.
 /// Its feet (the pack's baseline) sit on the bottom edge of the view, its middle (anchor x) on the view's middle.
 struct SpritePet: View {
     let pack: PetPack
     let anim: String
     let since: Date
-    let bodyHeight: CGFloat
+    let unit: CGFloat
     var mirrored = false
-    @Environment(\.displayScale) private var displayScale
-
-    /// Points per drawing pixel. Pixel art keeps whole device pixels per drawing pixel, so its edges stay sharp.
-    var unit: CGFloat {
-        let raw = bodyHeight / CGFloat(pack.content.h)
-        guard pack.pixelArt else { return raw }
-        return max(1, (raw * displayScale).rounded()) / displayScale
-    }
 
     var body: some View {
         let u = unit

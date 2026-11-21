@@ -648,3 +648,26 @@ final class TurnSafetyTests: XCTestCase {
         XCTAssertEqual(provider.requests[1].messages.last?.text, "换成二")
     }
 }
+
+final class CutShortTests: XCTestCase {
+    func testReasons() {
+        XCTAssertNil(Agent.cutShort(text: "好", reasoning: "", images: 0, calls: 0, finish: "stop"))
+        XCTAssertNil(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 1, finish: "tool_calls"))
+        XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: nil), .dropped)
+        XCTAssertEqual(Agent.cutShort(text: "", reasoning: "想", images: 0, calls: 0, finish: "stop"), .thoughtOnly(1))
+        XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: "content_filter"), .filtered)
+        XCTAssertEqual(Agent.cutShort(text: "写了一半", reasoning: "", images: 0, calls: 0, finish: "length"), .truncated)
+        XCTAssertEqual(Agent.cutShort(text: "", reasoning: "", images: 0, calls: 0, finish: "stop"), .empty)
+    }
+}
+
+final class ThinkingLevelsTests: XCTestCase {
+    func testDistinctLevels() {
+        XCTAssertEqual(ThinkingStyle.deepseek.levels(thinks: true), [.auto, .off, .low, .medium, .max])
+        XCTAssertEqual(ThinkingStyle.kimi.levels(thinks: true), [.auto, .low, .medium, .max])
+        XCTAssertEqual(ThinkingStyle.grok.levels(thinks: true), [.auto, .low, .medium])
+        XCTAssertEqual(ThinkingStyle.minimax.levels(thinks: true), [.auto])
+        XCTAssertEqual(ThinkingStyle.effort.levels(thinks: false), [.auto])
+        XCTAssertEqual(ThinkingStyle.effort.levels(thinks: true), [.auto, .off, .low, .medium, .high, .max])
+    }
+}

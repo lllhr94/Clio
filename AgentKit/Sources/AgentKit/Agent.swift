@@ -59,9 +59,26 @@ public enum AgentEvent: Equatable, Sendable {
     /// The service refused the thinking setting; the rest of this turn goes without it.
     case thinkingRefused(Thinking, reason: String)
     case toolFinished(id: String, ok: Bool)
+    /// The model's turn ended without a full answer, and why: worth a word to the user, not to the model.
+    case cutShort(CutShort)
     /// A finished message, to keep.
     case message(Message)
     case usage(input: Int, output: Int, cached: Int = 0)
+}
+
+/// Why an answer came back missing or short (after Open Minis, which found users reading every one of these as
+/// "the model said nothing").
+public enum CutShort: Equatable, Sendable {
+    /// The stream ended without the service closing it: the connection dropped.
+    case dropped
+    /// It thought (this many characters) but wrote no answer.
+    case thoughtOnly(Int)
+    /// The service's content filter stopped it.
+    case filtered
+    /// The answer reached the length limit and stops mid-way.
+    case truncated
+    /// Nothing at all, and the service said it was done.
+    case empty
 }
 
 /// One Bot's turn: asks the model, runs the tools it calls, and asks again until it answers.
@@ -149,6 +166,7 @@ public struct Agent: Sendable {
             let clock = ContinuousClock()
             var lastWriting = clock.now
             var attempt = 0
+            var finished: String?
             while true {
                 do {
                     for try await event in provider.stream(request) {
@@ -182,8 +200,8 @@ public struct Agent: Sendable {
                             }
                         case .usage(let input, let output, let cached):
                             await emit(.usage(input: input, output: output, cached: cached))
-                        case .finish:
-                            break
+                        case .finish(let reason):
+                            finished = reason
                         }
                     }
                     break
@@ -224,6 +242,10 @@ public struct Agent: Sendable {
                 messages.append(reply)
                 await emit(.message(reply))
             }
+            // Said after the reply, so the note sits under what did come.
+            if let short = Self.cutShort(text: text, reasoning: reasoning, images: images.count, calls: made.count, finish: finished) {
+                await emit(.cutShort(short))
+            }
             if made.isEmpty {
                 if Task.isCancelled { throw CancellationError() }
                 return
@@ -243,6 +265,15 @@ public struct Agent: Sendable {
             }
         }
         await emit(.message(.assistant("（这件事步骤太多，我先停在这里。要我接着做就说一声。）")))
+    }
+
+    static func cutShort(text: String, reasoning: String, images: Int, calls: Int, finish: String?) -> CutShort? {
+        let reason = finish?.lowercased()
+        if calls == 0, ["length", "max_tokens", "model_length"].contains(reason ?? "") { return .truncated }
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, images == 0, calls == 0 else { return nil }
+        if ["content_filter", "sensitive", "safety", "refusal"].contains(reason ?? "") { return .filtered }
+        if !reasoning.isEmpty { return .thoughtOnly(reasoning.count) }
+        return reason == nil ? .dropped : .empty
     }
 
     /// Every tool takes one more, optional argument: a short line in the model's words for what this step does.

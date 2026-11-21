@@ -40,13 +40,17 @@ struct ThinkingBox: View {
                 Text(tail)
                     .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
-                    .lineLimit(3, reservesSpace: false)
+                    // Always three lines tall while it streams: a window that grew and shrank by a line with each
+                    // token moved everything above it, since the chat keeps its bottom still.
+                    .lineLimit(3, reservesSpace: true)
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
                     .background(Ink.rule.opacity(0.25), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
                     .mask(LinearGradient(colors: [.black.opacity(0.35), .black], startPoint: .top, endPoint: .center))
-                    .animation(.easeOut(duration: 0.2), value: tail)
+                    // No animation on the text: thinking streams many times a second, and each fade stacked
+                    // on the last left three blurred copies sliding about, and the chat stuttered under it.
+                    .transaction { $0.animation = nil }
             } else if open {
                 Text(text)
                     .font(.system(size: Ink.Size.small))
