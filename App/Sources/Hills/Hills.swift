@@ -60,11 +60,22 @@ final class Hills: ObservableObject {
         if let index = hosts.firstIndex(where: { $0.id == host.id }) { hosts[index] = host } else { hosts.append(host) }
         if let password, !password.isEmpty { Vault.save(password, as: "hill.\(host.id)") }
         Disk.save(hosts, "hills.json")
+        // Kept connections and tunnels were to the host as it was: close them, so the next command goes to the
+        // address, account and password just saved (the review, #5).
+        Self.forget(host)
     }
 
     func remove(_ host: Host) {
         hosts.removeAll { $0.id == host.id }
         Disk.save(hosts, "hills.json")
+        Self.forget(host)
+    }
+
+    private static func forget(_ host: Host) {
+        Task {
+            await HillPool.shared.drop(host)
+            await Tunnels.shared.close(host: host.id)
+        }
     }
 
     func host(named name: String) -> Host? {
@@ -122,11 +133,14 @@ final class Hills: ObservableObject {
         var errorDescription: String? { "超过 \(seconds) 秒没跑完。长任务可以放到后台跑。" }
     }
 
+    /// How much of a command's output is kept, in bytes.
+    nonisolated static let keptOutput = 200_000
+
     /// Output gathered while a command runs, readable by the timer that may cut it short.
     private final class Gathered: @unchecked Sendable {
         private let lock = NSLock()
         private var text = ""
-        func add(_ piece: String) { lock.withLock { if text.count < 200_000 { text += piece } } }
+        func add(_ piece: String) { lock.withLock { if text.utf8.count < Hills.keptOutput { text += piece } } }
         var value: String { lock.withLock { text } }
     }
 
@@ -154,6 +168,8 @@ final class Hills: ObservableObject {
                 // that will not open a channel any more counts as stale.
                 let client = try await HillPool.shared.client(for: host, fresh: fresh)
                 var output = ""
+                var size = 0
+                var dropped = 0
                 var code = 0
                 let stream: AsyncThrowingStream<ExecCommandOutput, Error>
                 do {
@@ -168,18 +184,27 @@ final class Hills: ObservableObject {
                         switch chunk {
                         case .stdout(let buffer), .stderr(let buffer):
                             let piece = String(buffer: buffer)
-                            output += piece
-                            gathered.add(piece)
+                            // Past the limit the output is no longer kept, but the stream is still read to its end,
+                            // so the command's real exit status comes back (the review, #8).
+                            if size < Self.keptOutput {
+                                output += piece
+                                gathered.add(piece)
+                            } else {
+                                dropped += piece.utf8.count
+                            }
+                            size += piece.utf8.count
                             if let onOutput {
                                 for line in piece.split(separator: "\n", omittingEmptySubsequences: true) { onOutput(String(line)) }
                             }
                         }
-                        if output.count > 200_000 { break }
                     }
                 } catch let failed as SSHClient.CommandFailed {
                     code = failed.exitCode
                 }
                 await HillPool.shared.touch(host)
+                if dropped > 0 {
+                    output += "\n……（输出太长，后面约 \(ByteCountFormatter.string(fromByteCount: Int64(dropped), countStyle: .file)) 没有留下；命令已经跑完）"
+                }
                 return Outcome(code: code, output: output)
             }
             group.addTask {
@@ -355,7 +380,7 @@ final class Hills: ObservableObject {
             tools.append(DeskTool(name: "ssh_job_check", description: "看远山后台任务的进度：还在不在跑、退出码、最后几十行输出。", parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string", "description": "ssh_job_start 给的编号"], "lines": ["type": "number", "description": "看最后几行，默认 40"]], "required": ["host", "job"]], label: { "远山：看后台任务 \($0["job"]?.string ?? "")" }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
-                    let state = try await Hills.checkJob(arguments["job"]?.string ?? "", on: host, lines: min(400, max(5, Int(arguments["lines"]?.number ?? 40))))
+                    let state = try await Hills.checkJob(arguments["job"]?.string ?? "", on: host, lines: min(400, max(5, (arguments["lines"]?.int ?? 40))))
                     let head = state.running ? "还在跑。" : "跑完了，退出码 \(state.exit.map(String.init) ?? "不明")。"
                     return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : Shell.mask(Shell.clip(state.tail), secrets: Vault.allStrings())))
                 } catch {
@@ -637,23 +662,27 @@ final class HostKeyKeeper: NIOSSHClientServerAuthenticationDelegate, @unchecked 
 actor HillPool {
     static let shared = HillPool()
 
-    private var open: [String: (client: SSHClient, used: Date)] = [:]
+    /// Each kept connection with who it was made to; a host edited since gets a new one.
+    private var open: [String: (client: SSHClient, used: Date, to: String)] = [:]
+
+    private static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port) key=\(host.useKey)" }
     /// A connection left alone this long is closed and made again.
     private let idle: TimeInterval = 600
 
     func client(for host: Hills.Host, fresh: Bool) async throws -> SSHClient {
-        if !fresh, let kept = open[host.id], kept.client.isConnected, Date().timeIntervalSince(kept.used) < idle {
-            open[host.id] = (kept.client, Date())
+        let to = Self.identity(host)
+        if !fresh, let kept = open[host.id], kept.to == to, kept.client.isConnected, Date().timeIntervalSince(kept.used) < idle {
+            open[host.id] = (kept.client, Date(), to)
             return kept.client
         }
         if let kept = open.removeValue(forKey: host.id) { try? await kept.client.close() }
         let client = try await Hills.connect(host)
-        open[host.id] = (client, Date())
+        open[host.id] = (client, Date(), to)
         return client
     }
 
     func touch(_ host: Hills.Host) {
-        if let kept = open[host.id] { open[host.id] = (kept.client, Date()) }
+        if let kept = open[host.id] { open[host.id] = (kept.client, Date(), kept.to) }
     }
 
     func drop(_ host: Hills.Host) async {

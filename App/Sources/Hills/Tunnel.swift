@@ -28,7 +28,8 @@ actor Tunnels {
         guard var parts = URLComponents(string: remote) else { throw ProviderError("看不懂这个远端地址：\(remote)") }
         let remotePort = parts.port ?? (parts.scheme == "https" ? 443 : 80)
         let target = parts.host ?? "127.0.0.1"
-        let key = "\(host.id)|\(target):\(remotePort)"
+        // Who the host is now is part of the key: an edited host never reuses a tunnel to where it used to point.
+        let key = "\(host.id)|\(host.user)@\(host.address):\(host.port)|\(target):\(remotePort)"
         let local = try await localPort(key: key, host: host, targetHost: target, targetPort: remotePort)
         parts.scheme = "http"
         parts.host = "127.0.0.1"
@@ -44,6 +45,15 @@ actor Tunnels {
             try? await tunnel.client?.close()
         }
         open = [:]
+    }
+
+    /// Closes the tunnels through one host (it was edited or removed).
+    func close(host id: String) async {
+        for (key, tunnel) in open where key.hasPrefix(id + "|") {
+            tunnel.listener.cancel()
+            try? await tunnel.client?.close()
+            open[key] = nil
+        }
     }
 
     private func localPort(key: String, host: Hills.Host, targetHost: String, targetPort: Int) async throws -> Int {
