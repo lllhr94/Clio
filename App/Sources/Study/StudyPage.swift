@@ -297,8 +297,8 @@ private struct TableGrid: View {
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(3)
                                 .frame(minWidth: 60, maxWidth: 220, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
+                                .padding(.horizontal, Ink.Space.s)
+                                .padding(.vertical, Ink.Space.s)
                                 .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
                                 .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
                         }
