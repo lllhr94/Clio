@@ -242,12 +242,12 @@ struct PetPerchAnchor: UIViewRepresentable {
             let delta = abs(top - prior)
             if delta > 0.25 {
                 if travelStart == nil { travelStart = perch.foot }
-                if delta > 36, now - lastMove > 0.08 {
+                if delta > 36, catchUp != nil || now - lastMove > 0.08 {
                     // Some SwiftUI changes supply a final layout in one step. Keep the pet
                     // continuous even there. Native, interactive movement is sampled directly.
                     catchUp = (perch.foot, top, now)
-                } else if let catchUp, abs(catchUp.to - top) > 0.25 {
-                    self.catchUp = nil
+                } else if let catchUp {
+                    self.catchUp = (catchUp.from, top, catchUp.start)
                 }
                 lastMove = now
             }
