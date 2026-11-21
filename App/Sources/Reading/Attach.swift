@@ -44,9 +44,7 @@ struct DeskPicker: View {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 if all.isEmpty {
-                    Text(Words.t("书案还空着。"))
-                        .font(Ink.secondary)
-                        .foregroundStyle(Ink.inkSoft)
+                    EmptyNote(symbol: "books.vertical", words: Words.t("书案还空着。"))
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
@@ -55,23 +53,18 @@ struct DeskPicker: View {
                                     Haptics.tick(0.4)
                                     if chosen.contains(item.path) { chosen.remove(item.path) } else { chosen.insert(item.path) }
                                 } label: {
-                                    HStack(spacing: Ink.Space.m) {
+                                    RowLabel(title: (item.path as NSString).lastPathComponent,
+                                             line: Words.t("书案/\(item.path) · \(Workspace.size(item.size))"),
+                                             end: .none) {
                                         Image(systemName: chosen.contains(item.path) ? "checkmark.circle.fill" : "circle")
                                             .font(.system(size: Ink.Size.title))
                                             .foregroundStyle(chosen.contains(item.path) ? Ink.accent : Ink.inkFaint)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text((item.path as NSString).lastPathComponent).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                                            Text(Words.t("书案/\(item.path) · \(Workspace.size(item.size))"))
-                                                .font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(1)
-                                        }
-                                        Spacer(minLength: 0)
+                                            .frame(width: Kit.badge)
                                     }
-                                    .padding(.horizontal, Ink.Space.l)
-                                    .padding(.vertical, Ink.Space.m)
-                                    .contentShape(Rectangle())
+                                    .accessibilityAddTraits(chosen.contains(item.path) ? .isSelected : [])
                                 }
                                 .buttonStyle(TapStyle())
-                                Kit.rule(inset: 48)
+                                Kit.divider
                             }
                         }
                         .paperCard()
