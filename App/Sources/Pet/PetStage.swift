@@ -21,43 +21,35 @@ enum PetMood: Equatable {
 /// naps when nothing does, wanders a little, answers a poke, and speaks up in a bubble when another conversation
 /// finishes or waits for you. Only its body takes touches; everything around it passes through.
 struct PetStage: View {
-    var mood: PetMood
-    /// The companion's own face ("pet:<id>"), when it has one: that pet stands here instead of the one picked in 宠物设置.
-    var face: String? = nil
-    /// Opens 宠物设置.
-    var openSettings: () -> Void
+    let perch: PetPerch
 
     @State private var library = PetLibrary.shared
     @State private var news = PetNews.shared
     @AppStorage("pet.x") private var restX = 0.22
-    /// How far above the composer it was left, in points: dragged up, it stays up there over the conversation.
-    @AppStorage("pet.lift") private var lift = 0.0
+    @AppStorage("pet.lift") private var legacyLift = 0.0
+    /// A fraction of the scene height, independent of the composer and keyboard. Negative means docked.
+    @AppStorage("pet.pinnedY") private var pinnedY = -1.0
     @Environment(\.accessibilityReduceMotion) private var calm
+    @Environment(\.displayScale) private var displayScale
 
     @State private var drag: CGFloat = 0
     @State private var dragUp: CGFloat = 0
-    @State private var dragging = false
+    @State private var dragStart: CGFloat?
+    private var dragging: Bool { dragStart != nil }
     @State private var wander: CGFloat = 0
     @State private var facingRight = false
     /// A one-off: a reaction, a moment of joy, a stumble. Plays over the state until `until`.
     @State private var oneOff: (anim: String, until: Date)?
+    @State private var landingAnim: String?
+    @State private var landingCount = 0
+    @State private var handledLanding = 0
     @State private var since = Date()
-    @State private var shownAnim = ""
     @State private var lastTouch = Date()
     @State private var now = Date()
     @State private var nextIdle = Date().addingTimeInterval(.random(in: 45...150))
     @State private var taps: [Date] = []
 
-    private var bodyHeight: CGFloat { CGFloat(30 * library.factor) * UIScale.factor }
-    private var figureWidth: CGFloat {
-        guard let pack = pack else { return bodyHeight }
-        return bodyHeight * CGFloat(pack.canvasW / pack.content.h)
-    }
-    /// From the feet to the top of the drawing.
-    private var standHeight: CGFloat {
-        guard let pack = pack else { return bodyHeight }
-        return bodyHeight * CGFloat(pack.baseline / pack.content.h)
-    }
+    private var mood: PetMood { perch.mood }
 
     private var asleep: Bool {
         guard mood == .idle, oneOff == nil, !dragging else { return false }
@@ -65,43 +57,45 @@ struct PetStage: View {
         return now.timeIntervalSince(lastTouch) > after
     }
 
-    private var pack: PetPack? {
-        if let face, face.hasPrefix("pet:"),
-           let own = library.packs.first(where: { $0.id == String(face.dropFirst(4)) }) { return own }
-        return library.pack
-    }
+    private var pack: PetPack? { library.pack(for: perch.face) }
 
     var body: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
-            let margin = standHeight * 0.6 + Ink.Space.page
-            let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), width - margin)
-            let height = min(max(CGFloat(lift) + dragUp, 0), maxLift)
-            ZStack(alignment: .bottomLeading) {
-                Color.clear
-                if library.shown, pack != nil {
-                    figure
-                        .frame(width: figureWidth, height: standHeight, alignment: .bottom)
-                        .contentShape(Rectangle())
-                        .gesture(tapGesture(width: figureWidth))
-                        .simultaneousGesture(dragGesture(width: width, margin: margin))
-                        .contextMenu { menu }
-                        .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，拖动换位置，长按有菜单")
-                        .position(x: x, y: proxy.size.height - standHeight / 2 - height)
-                        .transition(.scale(scale: 0.5, anchor: .bottom).combined(with: .opacity))
+            let height = proxy.size.height
+            if library.shown, !perch.suppressed, let pack, width > 0, height > 0 {
+                let unit = PetSize.unit(for: pack, factor: library.factor, displayScale: displayScale,
+                                        maxWidth: max(1, width - Ink.Space.page * 2), maxHeight: height / 3)
+                let figureWidth = CGFloat(pack.canvasW) * unit
+                let stand = CGFloat(pack.baseline) * unit
+                let margin = min(width / 2, figureWidth / 2 + Ink.Space.page)
+                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), width - margin)
+                let foot = foot(in: height, stand: stand)
+                ZStack(alignment: .topLeading) {
+                    pet(pack, unit: unit, width: figureWidth, stand: stand)
+                        .simultaneousGesture(dragGesture(width: width, height: height, margin: margin, foot: foot, stand: stand))
+                        .position(x: aligned(x, offset: figureWidth / 2), y: aligned(foot, offset: stand) - stand / 2)
+                        .transition(.opacity)
                     if let bubble = news.bubble {
                         PetBubble(bubble: bubble)
-                            .frame(maxWidth: width - Ink.Space.page * 2)
+                            .frame(maxWidth: max(1, width - Ink.Space.page * 2))
                             .fixedSize()
-                            .position(x: min(max(x, 120), width - 120), y: proxy.size.height - standHeight - 26 - height)
-                            .transition(.opacity.combined(with: .offset(y: 6)))
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { perch.bubbleHit = $0 }
+                            .onDisappear { perch.bubbleHit = .null }
+                            .position(x: min(max(x, min(120, width / 2)), max(width - 120, width / 2)),
+                                      y: foot - stand - 26)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(width: width, height: height)
+                .onChange(of: legacyLift > 0 ? perch.foot : 0, initial: true) {
+                    if legacyLift > 0, perch.foot > 0 {
+                        if pinnedY < 0 { pinnedY = Double(min(max(perch.foot - legacyLift, stand), height) / height) }
+                        legacyLift = 0
                     }
                 }
             }
         }
-        .frame(height: library.shown ? standHeight : 0)
-        .animation(Ink.Motion.settle, value: news.bubble)
-        .animation(Ink.Motion.settle, value: library.shown)
         .task(id: "clock") {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -120,19 +114,57 @@ struct PetStage: View {
         .onChange(of: mood) { _, _ in touch() }
     }
 
+    private func foot(in height: CGFloat, stand: CGFloat) -> CGFloat {
+        if let dragStart { return min(max(dragStart - dragUp, stand), height) }
+        if pinnedY >= 0 { return min(max(CGFloat(pinnedY) * height, stand), height) }
+        return perch.foot
+    }
+
+    private func aligned(_ point: CGFloat, offset: CGFloat) -> CGFloat {
+        ((point - offset) * displayScale).rounded() / displayScale + offset
+    }
+
     // MARK: What is drawn
 
-    @ViewBuilder
-    private var figure: some View {
-        if let pack = pack {
-            let anim = currentAnim(pack)
-            SpritePet(pack: pack, anim: anim, since: since, bodyHeight: bodyHeight, mirrored: mirrored(pack))
-                .onChange(of: anim) { _, _ in since = Date() }
-        }
+    private func pet(_ pack: PetPack, unit: CGFloat, width: CGFloat, stand: CGFloat) -> some View {
+        let anim = currentAnim(pack)
+        return SpritePet(pack: pack, anim: anim, since: since, unit: unit, mirrored: mirrored(pack))
+            .keyframeAnimator(initialValue: CGFloat(1), trigger: landingCount) { pet, height in
+                pet.scaleEffect(x: 2 - height, y: height, anchor: .bottom)
+            } keyframes: { _ in
+                KeyframeTrack(\.self) {
+                    LinearKeyframe(0.92, duration: 0.045)
+                    CubicKeyframe(1.035, duration: 0.09)
+                    CubicKeyframe(1, duration: 0.1)
+                }
+            }
+            .frame(width: width, height: stand, alignment: .bottom)
+            .contentShape(Rectangle())
+            .gesture(tapGesture(width: width))
+            .contextMenu { menu }
+            .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，拖动换位置，长按有菜单")
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { perch.bodyHit = $0 }
+            .onDisappear { perch.bodyHit = .null }
+            .onChange(of: anim) { since = Date() }
+            .task(id: perch.landing) {
+                guard perch.landing != handledLanding else { return }
+                handledLanding = perch.landing
+                guard !calm, pinnedY < 0, !dragging else { return }
+                landingCount += 1
+                landingAnim = pack.motionAnimation(["land", "landing", "jump-land", "jump_land", "jump"])
+                    ?? pack.anim(for: "idle")
+                since = Date()
+                try? await Task.sleep(for: .milliseconds(pack.animations[landingAnim ?? ""]?.total ?? 230))
+                if !Task.isCancelled { landingAnim = nil }
+            }
     }
 
     private func currentAnim(_ pack: PetPack) -> String {
         if dragging, let drag = pack.reaction("drag") { return drag }
+        if !calm, pinnedY < 0 {
+            if perch.rising, let jump = pack.motionAnimation(["jump", "jump-up", "jump_up"]) { return jump }
+            if let landingAnim, pack.animations[landingAnim] != nil { return landingAnim }
+        }
         if let one = oneOff, pack.animations[one.anim] != nil { return one.anim }
         if asleep { return pack.anim(for: "sleeping") ?? "" }
         if wander != 0, mood == .idle, let roam = pack.roamAnim, abs(wanderTarget - wander) > 1 { return roam }
@@ -182,19 +214,16 @@ struct PetStage: View {
         }
     }
 
-    /// The highest it can be lifted: well up the conversation, below the top bar.
-    private var maxLift: CGFloat { max(0, UIScreen.main.bounds.height * 0.62) }
-
-    /// Any direction. While the finger is down it follows with no animation at all: an animation trailing each
-    /// move is what left ghost copies behind it. Where it is let go, it stays.
-    private func dragGesture(width: CGFloat, margin: CGFloat) -> some Gesture {
+    /// A drag detaches from the dock even if it was only horizontal. Its vertical
+    /// origin is captured when the gesture starts, so a moving keyboard can't tug on it.
+    private func dragGesture(width: CGFloat, height: CGFloat, margin: CGFloat, foot: CGFloat, stand: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
                 var still = Transaction()
                 still.disablesAnimations = true
                 withTransaction(still) {
-                    if !dragging {
-                        dragging = true
+                    if dragStart == nil {
+                        dragStart = foot
                         touch()
                         Haptics.tick(0.4)
                     }
@@ -209,12 +238,12 @@ struct PetStage: View {
                 still.disablesAnimations = true
                 withTransaction(still) {
                     restX = min(max((landed - margin) / span, 0), 1)
-                    lift = Double(min(max(CGFloat(lift) - value.translation.height, 0), maxLift))
+                    pinnedY = Double(min(max((dragStart ?? foot) + value.translation.height, stand), height) / height)
                     wander = 0
                     wanderTarget = 0
                     drag = 0
                     dragUp = 0
-                    dragging = false
+                    dragStart = nil
                 }
                 Haptics.tick(0.6)
             }
@@ -228,12 +257,12 @@ struct PetStage: View {
         Button(L.t("pet.hideHour"), systemImage: "eye.slash") {
             withAnimation(Ink.Motion.settle) { library.hideForAnHour() }
         }
-        if lift > 0 {
-            Button("回到输入框上", systemImage: "arrow.down.to.line") {
-                withAnimation(Ink.Motion.unfold) { lift = 0 }
+        if pinnedY >= 0 {
+            Button(L.t("pet.returnToComposer"), systemImage: "arrow.down.to.line") {
+                withAnimation(calm ? .easeInOut(duration: 0.22) : Ink.Motion.unfold) { pinnedY = -1 }
             }
         }
-        Button(L.t("pet.settings"), systemImage: "gearshape") { openSettings() }
+        Button(L.t("pet.settings"), systemImage: "gearshape") { perch.openSettings() }
     }
 
     // MARK: Moving
@@ -262,7 +291,7 @@ struct PetStage: View {
     private func tick() {
         now = Date()
         if let one = oneOff, one.until < now { oneOff = nil }
-        guard !calm, library.shown, mood == .idle, !dragging, oneOff == nil, !asleep, news.bubble == nil, now > nextIdle else { return }
+        guard !calm, library.shown, pinnedY < 0, mood == .idle, !dragging, oneOff == nil, !asleep, news.bubble == nil, now > nextIdle else { return }
         let pack = self.pack
         let every: (mean: Int, min: Int, max: Int) = pack?.idleEvery ?? (mean: 120_000, min: 45_000, max: 300_000)
         nextIdle = now.addingTimeInterval(Double(Int.random(in: every.min...Swift.max(every.min, every.max))) / 1000 * 0.6)
