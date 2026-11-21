@@ -75,7 +75,7 @@ struct SetupView: View {
                 dots
                 introButtons
             }
-            .padding(.horizontal, Ink.Space.page + 4)
+            .padding(.horizontal, Ink.Space.xl)
             .padding(.bottom, Ink.Space.xl)
         }
     }
@@ -94,7 +94,7 @@ struct SetupView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text(L.t("onboarding.page\(n).title"))
-                    .font(Ink.mark((28 * UIScale.factor).rounded(), bold: true, relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
+                    .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(L.t("onboarding.page\(n).subtitle"))
                     .font(Ink.reading).foregroundStyle(Ink.inkSoft)
@@ -103,7 +103,7 @@ struct SetupView: View {
             extra()
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Ink.Space.page + 4)
+        .padding(.horizontal, Ink.Space.xl)
     }
 
     private var dots: some View {
@@ -358,7 +358,7 @@ struct SetupView: View {
                             HStack(spacing: Ink.Space.m) {
                                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
                                     Text(ModelTraits.guess(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                                 }
@@ -429,8 +429,8 @@ struct SetupView: View {
         } label: {
             HStack(spacing: Ink.Space.m) {
                 ServiceIcon(service: item, size: Kit.badge)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    HStack(spacing: Ink.Space.s) {
                         Text(item.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                         if added { Text("已接").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.ok) }
                     }
@@ -483,7 +483,7 @@ struct SetupView: View {
             }
             .buttonStyle(PressStyle(haptic: false))
         }
-        .padding(.horizontal, Ink.Space.page + 4)
+        .padding(.horizontal, Ink.Space.xl)
         .padding(.vertical, Ink.Space.xl)
     }
 
