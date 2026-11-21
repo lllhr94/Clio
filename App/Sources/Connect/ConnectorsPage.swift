@@ -682,21 +682,23 @@ private struct CustomSheet: View {
                 } footer: {
                     Text(result ?? L.t("connectors.customTransportNote"))
                 }
-                Section {
-                    Button {
-                        Task { await add() }
-                    } label: {
-                        HStack {
-                            Text(L.t("actions.connect"))
-                            if busy { Spacer(); ProgressView() }
-                        }
-                    }
-                    .disabled(busy || !url.hasPrefix("http") || url.count < 12)
-                }
             }
+            .paperForm()
             .navigationTitle(L.t("connectors.customAddress"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if busy {
+                        ProgressView()
+                    } else {
+                        Button(L.t("actions.connect")) { Task { await add() } }
+                            .disabled(!url.hasPrefix("http") || url.count < 12)
+                    }
+                }
+            }
         }
     }
 
