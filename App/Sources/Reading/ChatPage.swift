@@ -1133,6 +1133,24 @@ struct ChatPage: View {
     }
 
     /// The pages the steps right before this reply read or found, for a row of sources under it.
+    /// A reply without the 「来源：」 (or 参考 / Sources) list of links some models write at the very end.
+    static func withoutSourceList(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let heads = ["来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References"]
+        guard let start = lines.lastIndex(where: { raw in
+            let bare = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "*#：: "))
+            return heads.contains(bare)
+        }) else { return text }
+        // Only if everything after it is links (or blank): otherwise it is part of the answer.
+        let rest = lines[(start + 1)...]
+        let onlyLinks = rest.allSatisfy { row in
+            let bare = row.trimmingCharacters(in: .whitespaces)
+            return bare.isEmpty || bare.contains("http") || bare.contains("](")
+        }
+        guard onlyLinks, rest.contains(where: { $0.contains("http") || $0.contains("](") }) else { return text }
+        return lines[..<start].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func sources(for line: ChatLine) -> [URL] {
         guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
         var urls: [URL] = []
@@ -1234,7 +1252,8 @@ struct ChatPage: View {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
-                    SelectableProse(text: line.text)
+                    // When the sources row is under it, a 「来源：」 list the model wrote at the end is not shown twice.
+                    SelectableProse(text: sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text))
                         .equatable()
                 }
                 let found = sources(for: line)

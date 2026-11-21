@@ -119,6 +119,8 @@ struct RoamThumb: View {
                 .clipped()
                 .overlay(Ink.Artwork.white.opacity(0.001))
             }
+            // As wide as the shrunk page: without this the title row's spacer stretched it across the chat.
+            .frame(width: page.width * scale)
             .background(Ink.paperRaised)
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(browser.handoff != nil ? Ink.warn : Ink.rule, lineWidth: browser.handoff != nil ? 2 : 1))
