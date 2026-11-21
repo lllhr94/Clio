@@ -83,7 +83,7 @@ struct RoamThumb: View {
     var body: some View {
         if browser.used && !browser.thumbHidden && browser.url != nil {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
+                HStack(spacing: Ink.Space.xs) {
                     if browser.loading { ProgressView().controlSize(.mini) } else { Image(systemName: "safari").font(.system(size: Ink.Size.micro, weight: .semibold)) }
                     Text(browser.url?.host() ?? Words.t("远游")).font(.system(size: Ink.Size.micro, weight: .medium)).lineLimit(1)
                     Spacer(minLength: 0)
@@ -97,7 +97,7 @@ struct RoamThumb: View {
                     .accessibilityLabel("收起小窗")
                 }
                 .foregroundStyle(Ink.inkSoft)
-                .padding(.horizontal, 6)
+                .padding(.horizontal, Ink.Space.s)
                 .frame(height: 22)
                 // Live only while a browser tool works; otherwise a still picture of the page, which costs nothing to draw.
                 // Either way a tap anywhere on it opens 远游 full screen.
@@ -117,7 +117,7 @@ struct RoamThumb: View {
                 }
                 .frame(width: page.width * scale, height: page.height * scale, alignment: .topLeading)
                 .clipped()
-                .overlay(Color.white.opacity(0.001))
+                .overlay(Ink.Artwork.white.opacity(0.001))
             }
             .background(Ink.paperRaised)
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
