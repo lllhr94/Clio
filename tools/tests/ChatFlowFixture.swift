@@ -42,7 +42,8 @@ private final class Clock {
     private var sleepers: [(UInt64, CheckedContinuation<Void, Never>)] = []
     private var observer: (count: Int, continuation: CheckedContinuation<Void, Never>)?
 
-    func sleep(nanoseconds: UInt64) async throws {
+    func sleep(for duration: Duration) async throws {
+        let nanoseconds = UInt64(duration.components.attoseconds / 1_000_000_000)
         try Task.checkCancellation()
         await withCheckedContinuation { continuation in
             sleepers.append((nanoseconds, continuation))
@@ -72,6 +73,19 @@ private final class FlowFixture {
     var files = ["file"]
     var following = true
     var scrolling = false
+    let chat = HistoryPause()
+
+    final class HistoryPause {
+        private(set) var browsing = false
+        func setBrowsingHistory(_ active: Bool) { browsing = active }
+    }
+    var jumpedTo: String?
+    var hideJumps: Task<Void, Never>?
+    var jumpVisible = false
+    var selecting: Set<UUID> = []
+    var historyPage: [String]?
+
+    func lingerJumpButtons() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
     let clock = Clock()
@@ -156,6 +170,7 @@ private enum ChatFlowTests {
         let flow = FlowFixture()
         flow.changePhase(from: .idle, to: .interacting, at: 0)
         try check(flow.following, false, "Dragging pauses following even at the bottom")
+        try check(flow.chat.browsing, true, "Holding off row refresh during the drag")
         flow.changePhase(from: .interacting, to: .idle, at: 80)
         try check(flow.following, false, "At the threshold, keep the reader's position")
         try check(flow.requestFollow() == nil, true, "Arriving text does not restart following")
@@ -164,15 +179,17 @@ private enum ChatFlowTests {
         try check(flow.following, false, "Wait for the user's fling to stop")
         flow.changePhase(from: .decelerating, to: .idle, at: 79)
         try check(flow.following, true, "Resume within 80 points including the composer inset")
+        try check(flow.chat.browsing, false, "Resume row refresh when scrolling stops")
+        flow.selecting.insert(UUID())
+        try check(flow.requestFollow() == nil, true, "A selection prevents auto-follow")
+        flow.selecting = []
 
         let scheduled = flow.requestFollow()
         await flow.clock.waitForSleepers(1)
-        try flow.clock.advance(24_000_000)
-        await flow.clock.waitForSleepers(1)
         flow.changePhase(from: .idle, to: .interacting, at: 300)
-        try flow.clock.advance(350_000_000)
+        try flow.clock.advance(32_000_000)
         await scheduled?.value
-        try check(flow.scrolls, [false], "A new drag stops the delayed animated scroll")
+        try check(flow.scrolls, [], "A drag stops the scheduled follow")
     }
 
     @MainActor
@@ -184,10 +201,10 @@ private enum ChatFlowTests {
         await flow.clock.waitForSleepers(2)
 
         try check(first?.isCancelled, true, "A new follow cancels the pending request")
-        try flow.clock.advance(24_000_000)
+        try flow.clock.advance(32_000_000)
         await first?.value
         try check(flow.scrolls, [], "A cancelled request cannot scroll")
-        try flow.clock.advance(24_000_000)
+        try flow.clock.advance(16_000_000)
         await latest?.value
         try check(flow.scrolls, [false], "Streaming growth scrolls once without the delayed animation")
     }
@@ -206,14 +223,11 @@ private enum ChatFlowTests {
         // A new line sends another follow request as observed by ChatPage.
         let message = flow.requestFollow()
         await flow.clock.waitForSleepers(2)
-        try flow.clock.advance(24_000_000)
+        try flow.clock.advance(32_000_000)
         await send?.value
         try check(flow.scrolls, [], "Clearing the composer does not add a separate scroll")
-        try flow.clock.advance(24_000_000)
-        await flow.clock.waitForSleepers(1)
-        try check(flow.scrolls, [false], "Send and line insertion share the first scroll")
-        try flow.clock.advance(350_000_000)
+        try flow.clock.advance(32_000_000)
         await message?.value
-        try check(flow.scrolls, [false, true], "Sending keeps a single delayed settling scroll")
+        try check(flow.scrolls, [false], "Send and line insertion share one scroll")
     }
 }

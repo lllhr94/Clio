@@ -48,6 +48,7 @@ struct SetupView: View {
             case .done: done.transition(.blurReplace)
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { onboardingSize = $0 }
         .animation(Ink.Motion.unfold, value: step)
         .onAppear { step = first && !UserDefaults.standard.bool(forKey: Self.introSeen) ? .welcome : .service }
     }
@@ -55,6 +56,7 @@ struct SetupView: View {
     // MARK: Welcome: four pages, then the service
 
     @State private var page = 0
+    @State private var onboardingSize = CGSize.zero
     /// Once the four pages are through (to the service, or to the demo and back), they are not shown again.
     static let introSeen = "intro.seen"
 
@@ -84,27 +86,36 @@ struct SetupView: View {
     private func introPage(_ n: Int) -> some View { introPage(n) { EmptyView() } }
 
     private func introPage<Extra: View>(_ n: Int, @ViewBuilder extra: () -> Extra) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xl) {
-            Spacer(minLength: 0)
-            Image("onboarding-\(artist)-\(n)")
-                .resizable()
-                .interpolation(.none)
-                .aspectRatio(1, contentMode: .fit)
-                .frame(width: 192 * UIScale.factor, height: 192 * UIScale.factor)
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text(L.t("onboarding.page\(n).title"))
-                    .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(L.t("onboarding.page\(n).subtitle"))
-                    .font(Ink.reading).foregroundStyle(Ink.inkSoft)
-                    .fixedSize(horizontal: false, vertical: true)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                Image("onboarding-\(artist)-\(n)")
+                    .resizable()
+                    .interpolation(.none)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(width: introArtSide, height: introArtSide)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    Text(L.t("onboarding.page\(n).title"))
+                        .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .largeTitle)).foregroundStyle(Ink.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L.t("onboarding.page\(n).subtitle"))
+                        .font(Ink.reading).foregroundStyle(Ink.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                extra()
             }
-            extra()
-            Spacer(minLength: 0)
+            .frame(maxWidth: Ink.Size.body * 35)
+            .padding(.horizontal, Ink.Space.xl)
+            .padding(.vertical, Ink.Space.m)
+            .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, Ink.Space.xl)
+        .defaultScrollAnchor(.center, for: .alignment)
+    }
+
+    private var introArtSide: CGFloat {
+        guard onboardingSize.width > 0, onboardingSize.height > 0 else { return Ink.Size.body * 11 }
+        return min(onboardingSize.width * 0.52, onboardingSize.height * 0.28, Ink.Size.body * 17)
     }
 
     private var dots: some View {
@@ -456,7 +467,7 @@ struct SetupView: View {
     private var done: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xl) {
             Spacer(minLength: 0)
-            PetStill(size: 110, state: "working")
+            PetStill(size: introArtSide * 0.58, state: "working")
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("接好了").font(Ink.display).foregroundStyle(Ink.ink)
                 if let connected {

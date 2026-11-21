@@ -71,7 +71,7 @@ struct NameCardView: View {
     /// Three small fields side by side, thin lines between them, as on a collector's card.
     private var fields: some View {
         HStack(spacing: 0) {
-            field("性格", "\(Temper.of(bot).symbol) \(Temper.of(bot).title)\n\(SpeechStyle.of(bot) == .plain ? Temper.of(bot).line : SpeechStyle.of(bot).title + "体")")
+            field(L.t("companion.temper"), "\(Temper.of(bot).symbol) \(Temper.of(bot).title)\n\(SpeechStyle.of(bot) == .plain ? Temper.of(bot).line : SpeechStyle.of(bot).title + "体")")
             Rectangle().fill(Ink.rule.opacity(0.7)).frame(width: 0.5)
             if forSharing {
                 field("说话", SpeechStyle.of(bot).title)

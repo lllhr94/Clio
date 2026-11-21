@@ -73,7 +73,11 @@ final class Hills: ObservableObject {
     }
 
     /// The phone's own SSH key, made once. Its public half goes into a server's ~/.ssh/authorized_keys.
+    private nonisolated static let keyCreation = NSLock()
+
     nonisolated static var key: Curve25519.Signing.PrivateKey {
+        keyCreation.lock()
+        defer { keyCreation.unlock() }
         if let raw = Vault.load(Data.self, key: "hill.key"), let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: raw) { return key }
         let key = Curve25519.Signing.PrivateKey()
         Vault.save(key.rawRepresentation, as: "hill.key")

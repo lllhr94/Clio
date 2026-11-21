@@ -31,6 +31,8 @@ struct ClioRoot: View {
             Ink.paper.ignoresSafeArea()
             if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
                 ShotSettingsPage(name: shot, team: team)
+            } else if team.loading {
+                ProgressView(L.t("loading.generic"))
             } else if team.phase == .setup && !introSeen {
                 SetupView(team: team, first: true, welcomeOnly: true) { introSeen = true }
                     .transition(.blurReplace)
@@ -81,11 +83,13 @@ struct ClioRoot: View {
                 MemoryNight.cancelForeground()
                 MemoryNight.schedule()
                 team.leaving()
+                ChatDisk.finishBeforeSuspension()
                 Hitches.shared.save()
                 WidgetFeed.publish(team)
             }
         }
         .task {
+            await team.prepare()
             team.wake()
             MemoryNight.tick()
             // Messages set for later land in their chats while the app is open too.
@@ -102,6 +106,7 @@ struct ClioRoot: View {
 /// 案头: the companions, the gatherings, and the latest of each conversation.
 struct Desk: View {
     @ObservedObject var team: TeamModel
+    @State private var deskWidth: CGFloat = 0
     @State private var opened: Opened? = Shots.startsInChat ? .companion("chief") : nil
     @State private var editing: EditTarget?
     @State private var tuning = false
@@ -270,8 +275,7 @@ struct Desk: View {
     // MARK: Sidebar
 
     private var sideWidth: CGFloat {
-        let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen.bounds.width ?? 390
-        return min(340, screen * 0.82)
+        min(deskWidth * 0.82, Ink.Size.body * 21)
     }
 
     /// How far right the conversation sits.
@@ -516,7 +520,10 @@ struct Desk: View {
                                                         avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
                         if let picture { Avatars.save(picture, for: id) }
                         Haptics.thud()
-                        notice = Words.t("收下了\(name)的名帖。") + (missingPet ? "它用的宠物你这里没有，头像先用它的定格画；导入那只宠物后可以在名帖里换回来。" : "")
+                        notice = Words.t("收下了\(name)的名帖。")
+                        if missingPet {
+                            notice = (notice ?? "") + (picture == nil ? L.t("companion.missingPetDefault") : L.t("companion.missingPetStill"))
+                        }
                     } catch {
                         notice = "没收下：\(error.localizedDescription)"
                     }
@@ -696,7 +703,7 @@ struct Desk: View {
                 sidebar
                     .frame(width: sideWidth)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(min(1, shift / sideWidth * 1.3))
+                    .opacity(sideWidth > 0 ? min(1, shift / sideWidth * 1.3) : 0)
             }
 
             if let opened {
@@ -731,17 +738,18 @@ struct Desk: View {
                                 }
                             }
                             .onEnded { value in
-                                guard pull != 0 else { return }
+                                guard pull != 0, sideWidth > 0 else { return }
                                 let fling = value.predictedEndTranslation.width
                                 if sideOpen {
                                     if -pull > sideWidth * 0.3 || fling < -180 { closeSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
                                 } else {
-                                    if pull > sideWidth * 0.35 || fling > 220 { openSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
+                                    if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 { openSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
                                 }
                             }
                     )
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { deskWidth = $0 }
         .overlay(alignment: .bottom) { archiveBanner }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { archiveUndo = nil }

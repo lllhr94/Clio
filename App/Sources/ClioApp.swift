@@ -44,6 +44,7 @@ struct ClioApp: App {
 
     init() {
         Pref.settleType()
+        L.prepare()
         FontShelf.shared.prepare()
         // What models can do, from the open catalog; at most once a day, in the background.
         Task.detached(priority: .background) { await ModelsDev.refreshIfStale() }

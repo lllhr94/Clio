@@ -63,14 +63,25 @@ final class Snapshots {
         if let old {
             let name = UUID().uuidString
             let folder = Self.chatFolder(key).appendingPathComponent(turn, isDirectory: true)
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            if (try? old.write(to: folder.appendingPathComponent(name), options: .atomic)) != nil { backup = name }
-            else { return }
+            let stored = await Task.detached(priority: .utility) {
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try old.write(to: folder.appendingPathComponent(name), options: .atomic)
+                    return true
+                } catch { return false }
+            }.value
+            if stored { backup = name } else { return }
         }
         turns = book(key)
         let kept = Kept(place: place, path: path, backup: backup)
         if let index = turns.firstIndex(where: { $0.id == turn }) {
-            guard !turns[index].files.contains(where: { $0.place == place && $0.path == path }) else { return }
+            guard !turns[index].files.contains(where: { $0.place == place && $0.path == path }) else {
+                if let backup {
+                    let duplicate = Self.chatFolder(key).appendingPathComponent(turn).appendingPathComponent(backup)
+                    try? FileManager.default.removeItem(at: duplicate)
+                }
+                return
+            }
             turns[index].files.append(kept)
         } else {
             turns.append(Turn(id: turn, files: [kept]))

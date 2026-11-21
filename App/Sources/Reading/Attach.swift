@@ -38,16 +38,19 @@ struct DeskPicker: View {
     @State private var all: [(path: String, date: Date, size: Int)] = []
     @State private var chosen: Set<String> = []
     @State private var query = ""
+    @State private var loadingDesk = true
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Ink.paper.ignoresSafeArea()
-                if all.isEmpty {
+                if loadingDesk {
+                    ProgressView(L.t("loading.generic"))
+                } else if all.isEmpty {
                     EmptyNote(symbol: "books.vertical", words: Words.t("书案还空着。"))
                 } else {
                     ScrollView {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(shown, id: \.path) { item in
                                 Button {
                                     Haptics.tick(0.4)
@@ -85,7 +88,12 @@ struct DeskPicker: View {
                 }
             }
         }
-        .onAppear(perform: load)
+        .task {
+            let files = await Task.detached(priority: .utility) { Self.readFiles() }.value
+            guard !Task.isCancelled else { return }
+            all = files
+            loadingDesk = false
+        }
     }
 
     private var shown: [(path: String, date: Date, size: Int)] {
@@ -93,7 +101,7 @@ struct DeskPicker: View {
         return words.isEmpty ? all : all.filter { $0.path.localizedCaseInsensitiveContains(words) }
     }
 
-    private func load() {
+    nonisolated private static func readFiles() -> [(path: String, date: Date, size: Int)] {
         let root = Workspace.root
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         var found: [(path: String, date: Date, size: Int)] = []
@@ -104,7 +112,7 @@ struct DeskPicker: View {
                 if found.count > 2000 { break }
             }
         }
-        all = found.sorted { $0.date > $1.date }
+        return found.sorted { $0.date > $1.date }
     }
 }
 
@@ -193,6 +201,12 @@ struct PlusSheet: View {
     let pick: (AttachKind) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var recent: [PHAsset] = []
+    @State private var sheetSize = CGSize.zero
+
+    private var thumbnailSide: CGFloat {
+        guard sheetSize.width > 0, sheetSize.height > 0 else { return Ink.Bar.height * 2 }
+        return max(Ink.Bar.height, min(sheetSize.width * 0.28, sheetSize.height * 0.36))
+    }
     @State private var thumbs: [String: UIImage] = [:]
     @State private var added: Set<String> = []
     /// What each picked photo became in the composer, to take it back out.
@@ -260,6 +274,7 @@ struct PlusSheet: View {
                 }
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { sheetSize = $0 }
         .sheet(isPresented: $abilities) { AbilitiesSheet(team: team, key: key, name: name) }
         .sheet(isPresented: $skills) { SkillsPage() }
         .task { loadRecent() }
@@ -279,7 +294,7 @@ struct PlusSheet: View {
                                 Group {
                                     if let image = thumbs[id] { Image(uiImage: image).resizable().scaledToFill() } else { Ink.paperRaised }
                                 }
-                                .frame(width: 110, height: 110)
+                                .frame(width: thumbnailSide, height: thumbnailSide)
                                 .clipped()
                                 if added.contains(id) {
                                     Image(systemName: "checkmark.circle.fill")
@@ -296,7 +311,7 @@ struct PlusSheet: View {
             }
             .scrollIndicators(.hidden)
             .clipShape(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
-            .frame(height: 110)
+            .frame(height: thumbnailSide)
         } else {
             Button {
                 Task {

@@ -17,6 +17,7 @@ enum Backup {
 
     /// Writes the backup and returns where it is.
     static func make(withKeys: Bool, endpoints: [String]) throws -> (URL, Summary) {
+        ChatDisk.finishWrites()
         var out = Data()
         out.append(magic)
         var count = 0
@@ -63,6 +64,7 @@ enum Backup {
 
     /// Reads a backup and puts every file back in place. Existing files with the same name are replaced.
     static func restore(from url: URL) throws -> Summary {
+        ChatDisk.finishWrites()
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)

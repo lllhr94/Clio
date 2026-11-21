@@ -43,7 +43,8 @@ final class Hitches: ObservableObject {
     private var link: CADisplayLink?
     private var last: CFTimeInterval = 0
     private var watchers: [NSObjectProtocol] = []
-    private static let storeKey = "diag.hitches"
+    private nonisolated static let storeKey = "diag.hitches"
+    private let writes = DispatchQueue(label: "clio.hitches.storage", qos: .utility)
 
     private init() {
         if let data = UserDefaults.standard.data(forKey: Self.storeKey), let kept = try? JSONDecoder().decode([Hitch].self, from: data) {
@@ -89,11 +90,14 @@ final class Hitches: ObservableObject {
 
     func clear() {
         recent = []
-        UserDefaults.standard.removeObject(forKey: Self.storeKey)
+        writes.async { UserDefaults.standard.removeObject(forKey: Self.storeKey) }
     }
 
     func save() {
-        if let data = try? JSONEncoder().encode(recent) { UserDefaults.standard.set(data, forKey: Self.storeKey) }
+        let snapshot = recent
+        writes.async {
+            if let data = try? JSONEncoder().encode(snapshot) { UserDefaults.standard.set(data, forKey: Self.storeKey) }
+        }
     }
 
     /// For pasting: a line of totals, then every hitch, newest first.

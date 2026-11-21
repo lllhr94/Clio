@@ -1,5 +1,7 @@
 {
   "companion": {
+    "missingPetDefault": "这台手机还没有它用的宠物，头像先用默认宠物。导入那只宠物后，可以点头像手动换回。",
+    "missingPetStill": "这台手机还没有它用的宠物，头像先用名帖附带的定格图。导入那只宠物后，可以点头像手动换回。",
     "temper": "性情"
   },
   "homeThreads": {
@@ -45,6 +47,16 @@
     "filesAndTerminal": "书案与斗室"
   },
   "chat": {
+    "menu": "絮语菜单",
+    "find": "在絮语里找",
+    "files": "絮语文件",
+    "rename": "重命名絮语",
+    "mcp": "港湾（MCP）",
+    "openCard": "看名帖",
+    "clearConfirm": "清空这段絮语及其历史记录？",
+    "previousQuestion": "上一句",
+    "nextQuestion": "下一句",
+    "latest": "到最新",
     "outline": "问答目录",
     "conversation": "絮语",
     "newConversation": "另起一叶",
@@ -432,6 +444,7 @@
     "signInWithProvider": "用 %@ 账号登录"
   },
   "pet": {
+    "showNow": "让宠物出来",
     "done": "写好了",
     "failed": "出了岔子",
     "needsApproval": "等你落款",
@@ -495,6 +508,7 @@
     "approval": "此事待签，你落款后再动手。",
     "writingDiary": "正在写手札…",
     "fetchingModels": "正在拿模型列表…",
+    "calculating": "计算中…",
     "preparingBackup": "正在打包…",
     "testingModels": "正在测试各家模型…",
     "requestingPermissions": "正在一项项请求系统权限…",
