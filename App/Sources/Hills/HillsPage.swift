@@ -114,7 +114,7 @@ struct HillsPage: View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: "server.rack")
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(host.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                     Text("\(host.user)@\(host.address):\(host.port) · \(host.useKey ? "钥匙" : "密码")").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
@@ -138,7 +138,7 @@ struct HillsPage: View {
                 .padding(.leading, Kit.badge + Ink.Space.m)
             }
             if let result = tested[host.id] {
-                Text(result).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, 32)
+                Text(result).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(4).padding(.leading, Kit.textInset)
             }
             HStack(spacing: Ink.Space.s) {
                 Button {
@@ -159,8 +159,8 @@ struct HillsPage: View {
                 .tint(Ink.accent)
                 .disabled(installing[host.id] != nil)
             }
-            .padding(.leading, 32)
-            .padding(.top, 2)
+            .padding(.leading, Kit.textInset)
+            .padding(.top, Ink.Space.xs / 2)
             if let status = installing[host.id] {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
                     ProgressView().controlSize(.mini)
@@ -180,7 +180,7 @@ struct HillsPage: View {
         return VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: "point.3.connected.trianglepath.dotted")
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(server.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                     Text(server.url).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
@@ -197,10 +197,10 @@ struct HillsPage: View {
                 .disabled(refreshing != nil)
             }
             if let error = hills.lastError[server.id] {
-                Text(error).font(Ink.footnote).foregroundStyle(Ink.stop).padding(.leading, 32)
+                Text(error).font(Ink.footnote).foregroundStyle(Ink.stop).padding(.leading, Kit.textInset)
             } else if !tools.isEmpty {
                 Text("借来 \(tools.count) 件工具：" + tools.prefix(8).map(\.name).joined(separator: "、") + (tools.count > 8 ? "…" : ""))
-                    .font(Ink.footnote).foregroundStyle(Ink.inkSoft).padding(.leading, 32)
+                    .font(Ink.footnote).foregroundStyle(Ink.inkSoft).padding(.leading, Kit.textInset)
             }
         }
         .padding(Ink.Space.l)
