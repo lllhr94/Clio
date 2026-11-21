@@ -1,6 +1,6 @@
 # AGENTS.md
 
-写给所有动手改 Clio 的人和 AI（Claude、Codex、Gemini……）。`CLAUDE.md` 是指向本文件的链接，两者是同一份。
+写给所有动手改 Clio 的人和 AI（Claude、Codex、Antigravity、Gemini……）。`CLAUDE.md` 是指向本文件的链接，两者是同一份。
 先读完本文件，再读 `docs/STATUS.md`。
 
 ## 这是什么
@@ -93,7 +93,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 
 ## 交接
 
-- **分工和分支规则见 `docs/TASKS.md`**：`batch-*` 只由 Claude 合并推送；Codex 在 `codex/<任务名>` 分支上做，开 PR 合进去。
+- **分工和分支规则见 `docs/TASKS.md`**：`batch-*` 只由 Claude 合并推送；Codex 在 `codex/<任务名>`、Antigravity 在 `antigravity/<任务名>` 分支上做，开 PR 合进去。
 
 - 做完一段工作，更新 `docs/STATUS.md`：做了什么、没做完什么、下一步、已知问题。
 - 主人提的每个问题记进 `docs/FEEDBACK.md`（总账），做完打勾、写明哪一包。
