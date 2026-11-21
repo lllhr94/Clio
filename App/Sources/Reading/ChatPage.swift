@@ -1158,7 +1158,17 @@ struct ChatPage: View {
 
     /// The pages the steps right before this reply read or found, for a row of sources under it.
     /// A reply without the 「来源：」 (or 参考 / Sources) list of links some models write at the very end.
-    static func withoutSourceList(_ text: String) -> String {
+    @MainActor private static var trimmedCache: [String: String] = [:]
+
+    @MainActor static func withoutSourceList(_ text: String) -> String {
+        if let known = trimmedCache[text] { return known }
+        let trimmed = trimSourceList(text)
+        if trimmedCache.count > 400 { trimmedCache.removeAll() }
+        trimmedCache[text] = trimmed
+        return trimmed
+    }
+
+    private static func trimSourceList(_ text: String) -> String {
         var lines = text.components(separatedBy: "\n")
         // One line at the end, 「来源：[甲](…)、[乙](…)」: only links after the colon.
         while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
@@ -3069,7 +3079,18 @@ struct SourcesRow: View {
     }
 
     /// The links written in an answer, 「[名字](网址)」, in order.
-    static func cited(in text: String) -> [(title: String, url: URL)] {
+    /// Worked out once per reply text: the chat redraws often, and every reply asks on each redraw.
+    @MainActor private static var citedCache: [String: [(title: String, url: URL)]] = [:]
+
+    @MainActor static func cited(in text: String) -> [(title: String, url: URL)] {
+        if let known = citedCache[text] { return known }
+        let found = findCited(in: text)
+        if citedCache.count > 400 { citedCache.removeAll() }
+        citedCache[text] = found
+        return found
+    }
+
+    private static func findCited(in text: String) -> [(title: String, url: URL)] {
         var found: [(title: String, url: URL)] = []
         for match in text.matches(of: #/\[([^\]\n]+)\]\((https?://[^)\s]+)\)/#) {
             guard let url = URL(string: String(match.output.2)), url.host != nil, !isSearchPage(url),
@@ -3079,7 +3100,7 @@ struct SourcesRow: View {
         return found
     }
 
-    static func titles(in text: String) -> [URL: String] {
+    @MainActor static func titles(in text: String) -> [URL: String] {
         Dictionary(cited(in: text).map { ($0.url, $0.title) }, uniquingKeysWith: { first, _ in first })
     }
 
