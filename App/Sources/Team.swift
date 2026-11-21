@@ -304,7 +304,7 @@ final class TeamModel: ObservableObject {
     func refreshModels(_ id: String) async throws -> Int {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
-        guard let key = apiKey(for: id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
+        guard let key = await Vault.readString("key-\(id)"), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
         var reported: [String: Int] = [:]
         let raw: [String]
@@ -329,7 +329,7 @@ final class TeamModel: ObservableObject {
     /// Refreshes a service's images candidates without changing its chat model selection.
     func refreshImageModels(_ id: String) async throws {
         guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.kind == .openai }),
-              let key = apiKey(for: id), !key.isEmpty else {
+              let key = await Vault.readString("key-\(id)"), !key.isEmpty else {
             throw TeamError(message: L.t("errors.invalidApiKey"))
         }
         let listed = try await endpoint.provider(key: key).models()

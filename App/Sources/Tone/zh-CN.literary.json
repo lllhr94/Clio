@@ -503,6 +503,7 @@
     "approval": "此事待签，你落款后再动手。",
     "writingDiary": "正在写手札…",
     "fetchingModels": "正在拿模型列表…",
+    "calculating": "计算中…",
     "preparingBackup": "正在打包…",
     "testingModels": "正在测试各家模型…",
     "requestingPermissions": "正在一项项请求系统权限…",

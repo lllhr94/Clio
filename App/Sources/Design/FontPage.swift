@@ -31,9 +31,15 @@ final class FontShelf {
     func fetch(_ face: Pref.Face) {
         guard face.downloads, loading[face] == nil, state(face) != .ready else { return }
         let names = [face.postScript(bold: false), face.postScript(bold: true)].compactMap { $0 }
-        let descriptors = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, 0) } as CFArray
         loading[face] = 0
         failed.remove(face)
+        Task.detached(priority: .utility) {
+            Self.download(names, face: face)
+        }
+    }
+
+    nonisolated private static func download(_ names: [String], face: Pref.Face) {
+        let descriptors = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, 0) } as CFArray
         CTFontDescriptorMatchFontDescriptorsWithProgressHandler(descriptors, nil) { state, info in
             let values = info as NSDictionary
             let percent = (values[kCTFontDescriptorMatchingPercentage] as? Double) ?? 0

@@ -45,17 +45,13 @@ struct PetStage: View {
     @State private var handledLanding = 0
     @State private var since = Date()
     @State private var lastTouch = Date()
-    @State private var now = Date()
+    @State private var sleeping = false
     @State private var nextIdle = Date().addingTimeInterval(.random(in: 45...150))
     @State private var taps: [Date] = []
 
     private var mood: PetMood { perch.mood }
 
-    private var asleep: Bool {
-        guard mood == .idle, oneOff == nil, !dragging else { return false }
-        let after = Double(pack?.sleepAfter ?? 60_000) / 1000
-        return now.timeIntervalSince(lastTouch) > after
-    }
+    private var asleep: Bool { sleeping && mood == .idle && oneOff == nil && !dragging }
 
     private var pack: PetPack? { library.pack(for: perch.face) }
 
@@ -269,7 +265,7 @@ struct PetStage: View {
 
     private func touch() {
         lastTouch = Date()
-        now = lastTouch
+        if sleeping { sleeping = false }
     }
 
     private func react(_ name: String, fallback: String?) {
@@ -289,7 +285,10 @@ struct PetStage: View {
 
     /// Once a second: one-offs run out, naps begin, and now and then a little wander or an idle flourish.
     private func tick() {
-        now = Date()
+        let now = Date()
+        let after = Double(pack?.sleepAfter ?? 60_000) / 1000
+        let shouldSleep = now.timeIntervalSince(lastTouch) > after
+        if sleeping != shouldSleep { sleeping = shouldSleep }
         if let one = oneOff, one.until < now { oneOff = nil }
         guard !calm, library.shown, pinnedY < 0, mood == .idle, !dragging, oneOff == nil, !asleep, news.bubble == nil, now > nextIdle else { return }
         let pack = self.pack

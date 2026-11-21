@@ -503,6 +503,7 @@
     "approval": "需要你确认才能继续。",
     "writingDiary": "正在写日记…",
     "fetchingModels": "正在拿模型列表…",
+    "calculating": "计算中…",
     "preparingBackup": "正在打包…",
     "testingModels": "正在测试各家模型…",
     "requestingPermissions": "正在一项项请求系统权限…",

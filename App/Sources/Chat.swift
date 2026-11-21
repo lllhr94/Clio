@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Observation
 import SwiftUI
 
 /// One step of a trace, opened up.
@@ -53,31 +54,37 @@ struct ChatLine: Identifiable, Equatable {
 }
 
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
-@MainActor
-final class ChatModel: ObservableObject {
-    @Published private(set) var lines: [ChatLine] = []
-    @Published private(set) var pending: [ChatLine] = []
+@MainActor @Observable
+final class ChatModel {
+    private(set) var lines: [ChatLine] = []
+    private(set) var pending: [ChatLine] = []
     /// The part of the reply being written that is on screen so far.
-    @Published private(set) var streaming = ""
+    private(set) var streaming = "" {
+        didSet {
+            let writing = !streaming.isEmpty
+            if writing != hasStreaming { hasStreaming = writing }
+        }
+    }
+    private(set) var hasStreaming = false
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
-    @Published private(set) var thinking = ""
+    private(set) var thinking = ""
     /// The 心绪 being written before the reply in progress.
-    @Published private(set) var pulse = ""
+    private(set) var pulse = ""
     /// The reply that just finished: the row that took over from the streaming one.
-    @Published private(set) var fresh: Fresh?
+    private(set) var fresh: Fresh?
 
     struct Fresh: Equatable {
         var id: String
         /// How many characters are out so far; nil once the whole reply is.
         var shown: Int?
     }
-    @Published private(set) var loaded = false
-    @Published private(set) var demoWorking = false
-    @Published var error: String?
+    private(set) var loaded = false
+    private(set) var demoWorking = false
+    var error: String?
 
-    @Published private(set) var earlier: [ChatLine] = []
-    @Published private(set) var hasEarlier = false
-    @Published private(set) var loadingEarlier = false
+    private(set) var earlier: [ChatLine] = []
+    private(set) var hasEarlier = false
+    private(set) var loadingEarlier = false
 
     /// The Bot this chat is with. For a group: a stand-in that carries the group's name.
     let bot: BotInfo
@@ -281,7 +288,7 @@ final class ChatModel: ObservableObject {
             let count = out[index].tools.count
             out[index].text = out[index].live ? (count > 0 ? "正在干活，第 \(count) 步" : "正在干活") : "完成 \(count) 步"
         }
-        let stamps = Dictionary(all.map { ($0.id, $0.at) }, uniquingKeysWith: { first, _ in first })
+        let stamps = Dictionary(all.suffix(limit).map { ($0.id, $0.at) }, uniquingKeysWith: { first, _ in first })
         for index in out.indices { out[index].at = stamps[out[index].id] }
         return out
     }
@@ -324,8 +331,7 @@ final class ChatModel: ObservableObject {
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
             let next = build(all)
-            let known = Set(lines.map(\.id))
-            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !known.contains(reply.id), Self.same(reply.text, target) {
+            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }), Self.same(reply.text, target) {
                 // The kept row takes over exactly where the streaming one stood.
                 finalCount = reply.text.count
                 fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)

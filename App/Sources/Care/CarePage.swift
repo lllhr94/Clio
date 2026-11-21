@@ -10,6 +10,7 @@ struct CarePage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
     @State private var made: URL?
+    @State private var sizeText = ""
     @State private var making = false
     @State private var restoring = false
     @State private var restored = false
@@ -21,10 +22,6 @@ struct CarePage: View {
     @State private var davBusy = false
     @State private var probing = false
     @State private var copied = false
-    @State private var hitchesCopied = false
-    @AppStorage("look.fps") private var fps = false
-    @AppStorage("care.hitches") private var recordingHitches = false
-    @ObservedObject private var hitches = Hitches.shared
 
     var body: some View {
         NavigationStack {
@@ -86,7 +83,7 @@ struct CarePage: View {
                     row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
                     row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
                     row(Words.t("拾遗"), "常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)")
-                    row("数据占用", sizeText)
+                    row("数据占用", sizeText.isEmpty ? L.t("loading.calculating") : sizeText)
                     row(Words.t("斗室"), denText)
                     row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
                 } header: { Text(L.t("settings.diagnosticInfo")) }
@@ -109,28 +106,7 @@ struct CarePage: View {
                     }
                 } header: { Text(L.t("settings.recentErrors")) }
 
-                Section {
-                    Toggle(L.t("settings.showFrameRate"), isOn: $fps)
-                    Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
-                    if hitches.recent.isEmpty {
-                        Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
-                    } else {
-                        ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
-                            Text(hitch.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
-                        }
-                        Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
-                            UIPasteboard.general.string = hitches.report
-                            hitchesCopied = true
-                            Haptics.tick(0.6)
-                        }
-                        Button("清空掉帧记录", role: .destructive) {
-                            hitches.clear()
-                            hitchesCopied = false
-                        }
-                    }
-                } header: { Text(L.t("settings.frameDrops")) } footer: {
-                    Text(L.t("settings.recordHitchesNote"))
-                }
+                HitchSettings()
 
                 Section {
                     Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
@@ -150,6 +126,7 @@ struct CarePage: View {
             .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .task { await measureStorage() }
             .task {
                 guard openRestore else { return }
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
@@ -194,22 +171,27 @@ struct CarePage: View {
         }
     }
 
-    private var sizeText: String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        var total: Int64 = 0
-        if let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) {
-            for case let url as URL in walker {
-                total += Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
+    private func measureStorage() async {
+        let work = Task.detached(priority: .utility) {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            var total: Int64 = 0
+            if let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) {
+                for case let url as URL in walker {
+                    if Task.isCancelled { break }
+                    total += Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
+                }
             }
+            return total
         }
-        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        let total = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if !Task.isCancelled { sizeText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file) }
     }
 
     private var report: String {
         var lines = ["Clio 诊断 \(Date().formatted())"]
         lines.append("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
         lines.append("\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-        lines.append("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText)")
+        lines.append("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)")
         lines.append("斗室：\(denText)")
         for endpoint in team.settings.endpoints {
             lines.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
@@ -218,6 +200,7 @@ struct CarePage: View {
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)
+        let hitches = Hitches.shared
         if !hitches.recent.isEmpty { lines.append(hitches.report.split(separator: "\n").prefix(21).joined(separator: "\n")) }
         return lines.joined(separator: "\n")
     }
@@ -278,7 +261,7 @@ struct CarePage: View {
         Task {
             for endpoint in team.settings.endpoints {
                 probes[endpoint.id] = "在试…"
-                guard let model = endpoint.models.first, let key = team.apiKey(for: endpoint.id), !key.isEmpty else {
+                guard let model = endpoint.models.first, let key = await Vault.readString("key-\(endpoint.id)"), !key.isEmpty else {
                     probes[endpoint.id] = "没有模型或密钥"
                     continue
                 }
@@ -304,6 +287,39 @@ struct CarePage: View {
                 }
             }
             probing = false
+        }
+    }
+}
+
+
+private struct HitchSettings: View {
+    @State private var hitchesCopied = false
+    @AppStorage("look.fps") private var fps = false
+    @AppStorage("care.hitches") private var recordingHitches = false
+    @ObservedObject private var hitches = Hitches.shared
+
+    var body: some View {
+        Section {
+            Toggle(L.t("settings.showFrameRate"), isOn: $fps)
+            Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
+            if hitches.recent.isEmpty {
+                Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
+            } else {
+                ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
+                    Text(hitch.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
+                }
+                Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
+                    UIPasteboard.general.string = hitches.report
+                    hitchesCopied = true
+                    Haptics.tick(0.6)
+                }
+                Button("清空掉帧记录", role: .destructive) {
+                    hitches.clear()
+                    hitchesCopied = false
+                }
+            }
+        } header: { Text(L.t("settings.frameDrops")) } footer: {
+            Text(L.t("settings.recordHitchesNote"))
         }
     }
 }

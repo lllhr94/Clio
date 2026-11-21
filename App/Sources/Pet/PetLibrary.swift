@@ -22,6 +22,7 @@ final class PetLibrary {
     /// Put away until then.
     var hiddenUntil: Date? { didSet { UserDefaults.standard.set(hiddenUntil?.timeIntervalSince1970, forKey: "pet.hiddenUntil") } }
     private(set) var packs: [PetPack] = []
+    private(set) var loading = true
 
     private init() {
         let store = UserDefaults.standard
@@ -42,11 +43,11 @@ final class PetLibrary {
         quiet = store.bool(forKey: "pet.quiet")
         hiddenUntil = (store.object(forKey: "pet.hiddenUntil") as? Double).map(Date.init(timeIntervalSince1970:))
         if savedScale == nil, oldSize != nil { store.set(factor, forKey: "pet.sizeScale") }
-        reload()
+        Task { await reload() }
     }
 
     /// 小克: the pet every phone starts with, and the one that stands in if yours is gone.
-    static let standard = "builtin-xiaoke"
+    nonisolated static let standard = "builtin-xiaoke"
 
     /// On the composer now.
     var shown: Bool { visible && (hiddenUntil.map { $0 < Date() } ?? true) }
@@ -59,22 +60,27 @@ final class PetLibrary {
         return pack
     }
 
-    var folder: URL {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pets", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
+    nonisolated private static let packsFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("pets", isDirectory: true)
 
-    func reload() {
-        let bundledRoot = Bundle.main.resourceURL?.appendingPathComponent("Pets", isDirectory: true)
-        let bundled = bundledRoot.map { loadPacks(in: $0, idPrefix: "builtin-") } ?? []
-        // The bundled ones first, 小克 at the top; then yours by name.
-        packs = bundled.sorted { ($0.id == Self.standard ? 0 : 1, $0.name) < ($1.id == Self.standard ? 0 : 1, $1.name) }
-            + loadPacks(in: folder).sorted { $0.name < $1.name }
+    private func reload() async {
+        let found = await Task.detached(priority: .utility) {
+            let bundled = Bundle.main.resourceURL.map { Self.loadPacks(in: $0.appendingPathComponent("Pets", isDirectory: true), idPrefix: "builtin-") } ?? []
+            return bundled + Self.loadPacks(in: Self.packsFolder)
+        }.value
+        packs = Self.ordered(found)
         if !packs.isEmpty, !packs.contains(where: { $0.id == choice }) { choice = Self.standard }
+        loading = false
     }
 
-    private func loadPacks(in root: URL, idPrefix: String = "") -> [PetPack] {
+    private static func ordered(_ packs: [PetPack]) -> [PetPack] {
+        packs.sorted {
+            func rank(_ pack: PetPack) -> Int { pack.id == standard ? 0 : (pack.id.hasPrefix("builtin-") ? 1 : 2) }
+            return (rank($0), $0.name) < (rank($1), $1.name)
+        }
+    }
+
+    nonisolated private static func loadPacks(in root: URL, idPrefix: String = "") -> [PetPack] {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)) ?? []
         return dirs.compactMap { dir in
@@ -101,15 +107,15 @@ final class PetLibrary {
     }
 
     func canDelete(_ pack: PetPack) -> Bool {
-        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent() == folder
+        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent() == Self.packsFolder
     }
 
     func delete(_ id: String) {
         guard let pack = packs.first(where: { $0.id == id }), canDelete(pack) else { return }
-        try? FileManager.default.removeItem(at: pack.dir)
+        do { try FileManager.default.removeItem(at: pack.dir) } catch { return }
         PetSheets.forget(id)
         if choice == id { choice = Self.standard }
-        reload()
+        packs.removeAll { $0.id == id }
     }
 
     // MARK: Importing a pack
@@ -117,7 +123,14 @@ final class PetLibrary {
     /// Takes a pet-pack zip (schema 1: `pack.json` and its PNG sheets, at the top or in one folder),
     /// checks everything it names, and keeps only those files. The same pack imported again replaces the old one.
     /// A single picture or animation (PNG, GIF, APNG, WebP) becomes a pet that only has its idle state.
-    func install(_ zip: URL) throws -> PetPack {
+    func install(_ zip: URL) async throws -> PetPack {
+        let pack = try await Task.detached(priority: .userInitiated) { try Self.unpack(zip) }.value
+        PetSheets.forget(pack.id)
+        packs = Self.ordered(packs.filter { $0.id != pack.id } + [pack])
+        return pack
+    }
+
+    nonisolated private static func unpack(_ zip: URL) throws -> PetPack {
         let fm = FileManager.default
         let scratch = fm.temporaryDirectory.appendingPathComponent("pet-\(UUID().uuidString)", isDirectory: true)
         defer { try? fm.removeItem(at: scratch) }
@@ -192,6 +205,7 @@ final class PetLibrary {
         }
 
         // Only pack.json and its sheets are kept; the old version is swapped out in one step.
+        let folder = packsFolder
         let staging = folder.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         try data.write(to: staging.appendingPathComponent("pack.json"))
@@ -202,14 +216,11 @@ final class PetLibrary {
         } else {
             try fm.moveItem(at: staging, to: final)
         }
-        PetSheets.forget(id)
-        reload()
-        guard let installed = packs.first(where: { $0.id == id }) else { throw PetPack.Problem.bad("装好了却读不出来") }
-        return installed
+        return try PetPack.parse(data, dir: final, id: id)
     }
 
     /// A folder name from the pack's id: lowercase letters, digits and dashes, with `user-` in front.
-    private static func folderName(_ raw: String) -> String {
+    nonisolated private static func folderName(_ raw: String) -> String {
         let cleaned = raw.lowercased().map { ch -> Character in (ch.isASCII && (ch.isLetter || ch.isNumber)) ? ch : "-" }
         var name = String(cleaned).split(separator: "-").joined(separator: "-")
         if name.isEmpty || name.count > 40 {

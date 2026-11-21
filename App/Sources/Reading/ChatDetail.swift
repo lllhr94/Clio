@@ -5,7 +5,7 @@ import SwiftUI
 /// changed; below, the steps in order, the files, and how full the context is.
 struct ChatDetail: View {
     @ObservedObject var team: TeamModel
-    @ObservedObject var chat: ChatModel
+    let chat: ChatModel
     let title: String
     /// The companion this conversation is with; nil for a gathering.
     var bot: BotInfo? = nil
