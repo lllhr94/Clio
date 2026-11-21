@@ -45,6 +45,16 @@
     "filesAndTerminal": "文件与终端"
   },
   "chat": {
+    "menu": "对话菜单",
+    "find": "在对话里找",
+    "files": "对话文件",
+    "rename": "重命名对话",
+    "mcp": "连接器（MCP）",
+    "openCard": "看名帖",
+    "clearConfirm": "清空这段对话及其历史记录？",
+    "previousQuestion": "上一句",
+    "nextQuestion": "下一句",
+    "latest": "到最新",
     "outline": "问答目录",
     "conversation": "对话",
     "newConversation": "新对话",
@@ -440,6 +450,7 @@
     "davRestore": "从网盘恢复最新的"
   },
   "pet": {
+    "showNow": "让宠物出来",
     "done": "做完了",
     "failed": "出错了",
     "needsApproval": "等你确认",

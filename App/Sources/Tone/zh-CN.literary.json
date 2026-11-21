@@ -45,6 +45,16 @@
     "filesAndTerminal": "书案与斗室"
   },
   "chat": {
+    "menu": "絮语菜单",
+    "find": "在絮语里找",
+    "files": "絮语文件",
+    "rename": "重命名絮语",
+    "mcp": "港湾（MCP）",
+    "openCard": "看名帖",
+    "clearConfirm": "清空这段絮语及其历史记录？",
+    "previousQuestion": "上一句",
+    "nextQuestion": "下一句",
+    "latest": "到最新",
     "outline": "问答目录",
     "conversation": "絮语",
     "newConversation": "另起一叶",
@@ -440,6 +450,7 @@
     "davRestore": "从网盘恢复最新的"
   },
   "pet": {
+    "showNow": "让宠物出来",
     "done": "写好了",
     "failed": "出了岔子",
     "needsApproval": "等你落款",
