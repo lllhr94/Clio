@@ -17,7 +17,7 @@ struct ThinkingBox: View {
                 withAnimation(Ink.Motion.settle) { open.toggle() }
                 Haptics.tick(0.4)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Ink.Space.s) {
                     Image(systemName: "brain")
                         .font(.system(size: Ink.Size.small, weight: .medium))
                         .symbolEffect(.pulse, isActive: live)
