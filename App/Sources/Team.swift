@@ -811,17 +811,36 @@ final class TeamModel: ObservableObject {
 
     private func summaryBlock(_ key: String) -> String {
         guard let summary = summary(key) else { return "" }
-        return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文用户收在絮语页里）：\n" + summary
+        return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文还在对话里，用户能往上翻到）：\n" + summary
     }
 
     /// How long the conversation is, in characters.
-    func size(of key: String) -> Int { Turns.size(history(key)) }
+    func size(of key: String) -> Int { Turns.size(Array(live(key))) }
+
+    /// The part of the chat the model reads word for word: after the newest compression line. Everything before it
+    /// stays in the conversation for you to scroll back to; the model has it as the 前情提要.
+    func live(_ key: String) -> ArraySlice<Entry> {
+        let all = history(key)
+        let start = all.lastIndex(where: { $0.fold == true }).map { $0 + 1 } ?? 0
+        return all[start...]
+    }
+
+    /// When to tidy up: before the model's window starts dropping the oldest lines, so nothing slips out unsummarised.
+    private var foldAt: Int { Pref.contextChars > 0 ? min(Pref.compressAt, Pref.contextChars * 4 / 5) : Pref.compressAt }
+
+    /// Compresses quietly, never in the way: it waits for nothing, and a turn goes on meanwhile with the chat as it is.
+    func foldQuietly(_ key: String) {
+        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt else { return }
+        Task { [weak self] in _ = try? await self?.compress(key) }
+    }
+
+    private static func foldSummary(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary.json" }
 
     /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
     @discardableResult
     func compress(_ key: String) async throws -> Int {
         guard !compressing.contains(key) else { return 0 }
-        let all = history(key)
+        let all = Array(live(key))
         let cut: Int
         switch Turns.foldCut(all, keep: Pref.keepRecent) {
         case .success(let found): cut = found
@@ -857,22 +876,21 @@ final class TeamModel: ObservableObject {
         let digest = try await agent.ask(prompt)
         guard !digest.isEmpty else { throw TeamError(message: "模型没给出提要。") }
 
-        // Keep the full text as a leaf, so nothing is lost.
-        let current = history(key)
-        let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
-        let markerId = UUID().uuidString
-        let leaf = Leaf(id: UUID().uuidString, title: "压缩前的原文 · " + String(first.replacingOccurrences(of: "\n", with: " ").prefix(20)), at: current.last?.at ?? Now.ms,
-                        count: current.filter { $0.note != true && $0.message.role != .tool }.count, marker: markerId)
-        if keeping {
-            Disk.save(current, Self.leafFile(key, leaf.id))
-            if let old = summary(key) { Disk.save(old, Self.leafSummary(key, leaf.id)) }
+        // Nothing is taken away: a line goes in before the first message kept word for word. The chat may have
+        // moved on while the summary was written; a turn still running is left to finish first.
+        let firstKept = all[cut].id
+        while runs[key] != nil { try? await Task.sleep(nanoseconds: 500_000_000) }
+        var current = history(key)
+        guard let at = current.firstIndex(where: { $0.id == firstKept }) else {
+            throw TeamError(message: "整理的时候聊天变了，下次再整理。")
         }
-        setLeaves(key, [leaf] + leaves(key))
-
-        let marker = Entry(id: markerId, at: (current[cut].at) - 1, message: .assistant("前情提要：较早的 \(folded) 条已压缩成摘要，原文收在絮语页"), note: true)
-        let kept = [marker] + Array(current[current.index(current.startIndex, offsetBy: min(cut, current.count))...])
-        entries[key] = kept
-        if keeping { Disk.save(kept, Disk.chatFile(key)) }
+        let markerId = UUID().uuidString
+        if keeping, let old = summary(key) { Disk.save(old, Self.foldSummary(key, markerId)) }
+        let marker = Entry(id: markerId, at: current[at].at - 1,
+                           message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)
+        current.insert(marker, at: at)
+        entries[key] = current
+        if keeping { Disk.save(current, Disk.chatFile(key)) }
         setSummary(key, digest)
         notify(key, .changed)
         return folded
@@ -910,7 +928,25 @@ final class TeamModel: ObservableObject {
         if keeping { Disk.save(list, Self.leafList(key)) }
     }
 
-    /// The newest leaf made by compressing, while its 「前情提要」 note is still in the conversation: the one fold that can be undone.
+    /// The newest compression line, which can be taken out again (the 前情提要 goes back to what it was before).
+    func undoableLine(_ key: String) -> Entry? { history(key).last { $0.fold == true } }
+
+    /// Takes the newest compression line out: the model reads those lines word for word again.
+    func unfoldLine(_ key: String) {
+        guard let line = undoableLine(key) else { return }
+        let rest = history(key).filter { $0.id != line.id }
+        entries[key] = rest
+        if keeping {
+            Disk.save(rest, Disk.chatFile(key))
+            setSummary(key, Disk.load(String.self, Self.foldSummary(key, line.id)))
+            Disk.remove(Self.foldSummary(key, line.id))
+        } else {
+            setSummary(key, nil)
+        }
+        notify(key, .changed)
+    }
+
+    /// The newest leaf made by compressing (the old way, which took the text out), while its note is still in the conversation.
     func undoableFold(_ key: String) -> Leaf? {
         guard let leaf = leaves(key).first(where: { $0.marker != nil }), let marker = leaf.marker,
               history(key).contains(where: { $0.id == marker }) else { return nil }
@@ -1347,10 +1383,8 @@ final class TeamModel: ObservableObject {
         graces[token] = UIApplication.shared.beginBackgroundTask(withName: "clio-turn") { [weak self] in
             MainActor.assumeIsolated { self?.graceRunsOut(key, token: token) }
         }
-        if Pref.autoCompress, size(of: key) > Pref.compressAt {
-            doing[key] = "正在压缩前文"
-            _ = try? await compress(key)
-        }
+        // Never waits on a compression: it runs alongside, and this turn reads the chat as it is.
+        foldQuietly(key)
         var ok = true
         if key.hasPrefix("room-") {
             if let room = rooms.first(where: { Self.key(room: $0.id) == key }) {
@@ -1404,6 +1438,8 @@ final class TeamModel: ObservableObject {
             BackgroundTurn.end(chat: key, ok: ok && !cancelled)
         }
         if runs.isEmpty { KeepAwake.stop() }
+        // Tidy up while you read the reply, so the next turn starts light.
+        foldQuietly(key)
         nameChatIfNew(key)
         watchBalance(key)
         endGrace(token)
@@ -1659,7 +1695,7 @@ final class TeamModel: ObservableObject {
 
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
     private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> [Message] {
-        let all = history(key).filter { $0.note != true }
+        let all = live(key).filter { $0.note != true }
         let start = Conversation.windowStart(all.map(\.message), maxChars: Pref.contextChars, maxCount: Pref.contextCount)
         let recent = Array(all[start...])
         let photoEntries = Set(recent.filter { !$0.photos.isEmpty }.suffix(3).map(\.id))

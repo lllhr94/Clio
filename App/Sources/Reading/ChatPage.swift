@@ -222,6 +222,15 @@ struct ChatPage: View {
                         .id(line.id)
                         .transition(.opacity.combined(with: .offset(y: 12)))
                 }
+                if team.compressing.contains(chat.key) {
+                    // Said once, quietly: it is happening behind, and you can go on talking.
+                    Label("正在后台整理较早的聊天，不耽误你接着聊", systemImage: "text.append")
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkFaint)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .id("folding")
+                        .transition(.opacity)
+                }
                 if !chat.pulse.isEmpty {
                     PulseBox(text: chat.pulse, live: chat.streaming.isEmpty)
                         .id("pulse")
@@ -1183,7 +1192,9 @@ struct ChatPage: View {
                 team.unremember(fact)
             })
         case .note:
-            if let next = line.next {
+            if line.fold {
+                foldLine(line)
+            } else if let next = line.next {
                 trouble(line, next: next)
             } else {
                 Text(line.text)
@@ -1192,6 +1203,28 @@ struct ChatPage: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+    }
+
+    /// Where a compression happened: a quiet divider. Above it everything is still here; tap to read the 前情提要.
+    private func foldLine(_ line: ChatLine) -> some View {
+        Button {
+            Haptics.light()
+            leafing = true
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Rectangle().fill(Ink.rule).frame(height: 1)
+                Label(line.text, systemImage: "text.append")
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+                    .lineLimit(1)
+                    .fixedSize()
+                Rectangle().fill(Ink.rule).frame(height: 1)
+            }
+            .padding(.vertical, Ink.Space.s)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel(line.text + "，点开看前情提要")
     }
 
     /// A failure, said plainly, with the one thing to do about it. Only the latest one keeps its button.

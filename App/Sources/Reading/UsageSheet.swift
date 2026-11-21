@@ -106,7 +106,7 @@ struct UsageSheet: View {
         Task {
             do {
                 let count = try await team.compress(key)
-                note = Words.t("压好了：较早的 \(count) 条写成了前情提要，原文收在絮语页。")
+                note = Words.t("压好了：较早的 \(count) 条写成了前情提要，原文都还在对话里，往上翻就有。")
                 Haptics.thud()
                 estimate = team.contextEstimate(key)
             } catch {

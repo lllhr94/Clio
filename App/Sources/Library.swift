@@ -53,6 +53,8 @@ struct Entry: Codable, Identifiable, Equatable {
     var next: String?
     /// On a reply: the companion's 心绪 before it spoke (see `Pulse`).
     var pulse: String?
+    /// The line a compression leaves: what is above it the model now reads as the 前情提要; it all stays here to scroll back to.
+    var fold: Bool?
 }
 
 /// Something the user told a Bot to remember about them.

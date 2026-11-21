@@ -159,7 +159,13 @@ struct LeavesSheet: View {
                                                 digestDraft = digest
                                                 withAnimation(Ink.Motion.settle) { editingDigest = true }
                                             }
-                                            if let fold = team.undoableFold(key) {
+                                            if team.undoableLine(key) != nil {
+                                                Button("撤销最近一次整理", systemImage: "arrow.uturn.backward") {
+                                                    withAnimation(Ink.Motion.unfold) { team.unfoldLine(key) }
+                                                    Haptics.thud()
+                                                    note = "撤销了：那几条又按原文交给旅伴，前情提要退回之前的样子。"
+                                                }
+                                            } else if let fold = team.undoableFold(key) {
                                                 Button("拆开此叶，撤销压缩", systemImage: "arrow.uturn.backward") { unfolding = fold }
                                             }
                                         }

@@ -46,6 +46,8 @@ struct ChatLine: Identifiable, Equatable {
     var pulse: String?
     /// A note about a failure: what to do next.
     var next: Explain.Next?
+    /// A compression line: drawn as a divider, the chat above it still there.
+    var fold = false
 }
 
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
@@ -207,6 +209,7 @@ final class ChatModel: ObservableObject {
             if entry.note == true {
                 var note = ChatLine(id: entry.id, kind: .note, text: message.text)
                 note.next = entry.next.flatMap(Explain.Next.init(rawValue:))
+                note.fold = entry.fold == true
                 out.append(note)
                 open = nil
                 continue
