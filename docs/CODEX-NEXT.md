@@ -49,6 +49,6 @@ Minis 的做法 → Clio 怎么学（保留纸墨风格，不照抄）：
 - Claude 已改：回复里的表格按实际宽度分配列宽（`ProseView` `TableBlock.spread`，学 Minis 的列宽规划思路：内容多的列不会更窄；一行放得下就按内容比例分；放不下就每列最多 35% 宽、格内换行铺满；还放不下才横滑，每列最多 70% 宽让下一列露头）；代码块长行在块里换行。
 - 顺带查：Minis 的代码块是「放得下就不能滑、不抢列表的上下拖动，只有真放不下才横滑」。Claude 已按这个规则做了（主人定：不换行，横放更省高度）。
 
-## 6. C29 系统地把 Open Minis 的手感规则过一遍（最重要的学习方法）
+## 6. C29 Open Minis 手感规则（Claude 已过完一遍，表在 `docs/MINIS-RULES.md`，等主人勾选后按表做）
 之前只看了 Minis 的功能和更新说明，漏掉了它真正好用的细节。它的每条界面规则都写在测试文件开头，带 `[T-…]` 标签和「主人怎么反馈的、为什么这样定」，在本机 `/home/claude/OpenMinis/OpenMinis/src/ios/MinisTests/Standalone/`（322 个文件，233 条规则；GitHub 上是 Open Minis 公开仓库同路径）。
 做法：逐条读开头注释（只读注释学思路，GPL 代码不抄），挑出和聊天手感、排版、滚动、输入框、表格、代码、图片、弹窗、掉帧有关的，在 `docs/MINIS-RULES.md` 列一张表：规则 / Minis 为什么这样做 / Clio 现在怎样 / 要不要学 / 怎么学（按纸墨风格）。先交表给主人勾选，再分批做。已学的：`[T-table-width-by-content]`（表格列宽）、`[T-codeblock-hide-idle-scrollbars]`（代码块放得下就不能滑）。
