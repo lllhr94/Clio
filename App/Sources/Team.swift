@@ -1765,7 +1765,9 @@ final class TeamModel: ObservableObject {
     func allChangedFiles(_ key: String) -> [Snapshots.Kept] {
         guard let first = history(key).first(where: { $0.message.role == .user && $0.note != true }) else { return [] }
         var seen = Set<String>()
-        return changedFiles(key, from: first.id).filter { seen.insert("\($0.place ?? "")|\($0.path)").inserted }
+        return changedFiles(key, from: first.id).reversed()
+            .filter { seen.insert("\($0.place ?? "")|\($0.path)").inserted }
+            .reversed()
     }
 
     /// Files those turns changed.
