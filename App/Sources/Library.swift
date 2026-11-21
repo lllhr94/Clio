@@ -63,18 +63,6 @@ struct Entry: Codable, Identifiable, Equatable {
     var fold: Bool?
 }
 
-/// Something the user told a Bot to remember about them.
-struct Memory: Codable, Identifiable, Equatable {
-    var id: String
-    var text: String
-    var at: Double
-    var by: String?
-    /// 旧事: kept, but not in every conversation; found again with `recall`.
-    var deep: Bool?
-    /// Milliseconds: when it was last recalled or written.
-    var used: Double?
-}
-
 /// A message a Bot set for later; it shows in the chat once its time has come.
 struct Later: Codable, Identifiable, Equatable {
     var id: String
@@ -151,6 +139,7 @@ struct TeamSettings: Codable, Equatable {
     var backupModel: String?
     /// Optional OpenAI-compatible images model, using the existing endpoint/model reference.
     var imageModel: String?
+    var memoryModel: String?
     var mainBotId: String?
 }
 
@@ -172,8 +161,12 @@ enum Disk {
     }
 
     static func save<Value: Encodable>(_ value: Value, _ name: String) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
-        try? data.write(to: url(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try? write(value, name)
+    }
+
+    static func write<Value: Encodable>(_ value: Value, _ name: String) throws {
+        let data = try JSONEncoder().encode(value)
+        try data.write(to: url(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     static func remove(_ name: String) {

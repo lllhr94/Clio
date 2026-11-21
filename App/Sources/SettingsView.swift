@@ -142,7 +142,10 @@ struct SettingsView: View {
         case .services:
             subpage(page) { services; overview }
         case .models:
-            subpage(page) { defaultModel }
+            subpage(page) {
+                defaultModel
+                if !team.models.isEmpty { memoryModel }
+            }
         case .image:
             ImageModelPage(team: team)
         case .companions:
@@ -310,6 +313,27 @@ struct SettingsView: View {
         }
     }
 
+    private var memoryModel: some View {
+        RowCard(note: L.t("memoryReview.modelHelp")) {
+            Menu {
+                Button {
+                    team.setMemoryModel(nil)
+                } label: {
+                    if team.settings.memoryModel == nil {
+                        Label(L.t("settings.defaultModel"), systemImage: "checkmark")
+                    } else {
+                        Text(L.t("settings.defaultModel"))
+                    }
+                }
+                ModelChoices(team: team, current: team.settings.memoryModel) { team.setMemoryModel($0) }
+            } label: {
+                RowLabel("moon.stars", tint: Ink.Tile.dai, title: L.t("memoryReview.model"),
+                         line: team.settings.memoryModel.map { team.modelTitle($0) } ?? L.t("settings.defaultModel"),
+                         end: .none)
+            }
+        }
+    }
+
     private var memory: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             FieldTitle(text: L.t("nav.memory"), note: L.format("settings.memoryCounts", team.surfaceMemories.count, team.deepMemories.count))
@@ -362,6 +386,7 @@ struct SettingsView: View {
             .paperCard()
             Text(team.memories.isEmpty ? L.t("settings.memoryEmptyNote") : L.format("settingsHome.memoryEditNote", TeamModel.surfaceLimit))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
+            MemoryReviewHistory(records: team.memoryReviews)
         }
     }
 
@@ -502,7 +527,7 @@ private enum SettingsPage: String, Identifiable {
     var keywords: String {
         switch self {
         case .services: "添一家 添加模型服务 密钥 key api deepseek kimi claude openai ollama lm studio 本地 中转"
-        case .models: "默认 备用 换模型 兜底 出错 失败"
+        case .models: "默认 备用 换模型 兜底 出错 失败 记忆整理模型 小模型"
         case .image: "画图 绘图 生图 图像 generate_image"
         case .companions: "人物 角色 改名 头像 性格"
         case .rooms: "群聊 雅集 开一场 成员"
