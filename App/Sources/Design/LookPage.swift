@@ -29,9 +29,9 @@ struct LookPage: View {
                         Haptics.tick(0.5)
                         withAnimation(Ink.Motion.settle) { Theme.shared.pick(palette.key) }
                     } label: {
-                        VStack(spacing: 4) {
+                        VStack(spacing: Ink.Space.xs) {
                             Circle().fill(palette.accent).frame(width: 28, height: 28)
-                                .padding(3)
+                                .padding(Ink.Space.xs)
                                 .overlay(Circle().strokeBorder(picked ? palette.accent : Color.clear, lineWidth: 2))
                             Text(palette.title).font(.system(size: Ink.Size.small, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
                         }
