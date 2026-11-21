@@ -892,6 +892,7 @@ struct ChatPage: View {
                         sharing = ShareFile(url: team.exportChat(chat.key, title: title))
                     }
                     chatMenuButton("chat.find", icon: "magnifyingglass") { startFinding() }
+                    if !following { chatMenuButton("chat.latest", icon: "arrow.down.to.line") { returnToLatest() } }
                 }
                 Section {
                     chatMenuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
@@ -2237,9 +2238,9 @@ struct ChatPage: View {
                     .allowsHitTesting(jumpVisible)
                     .accessibilityHidden(!jumpVisible)
                 backToEnd
-                    .opacity(historyPage != nil || farFromEnd && !following ? 1 : 0)
-                    .allowsHitTesting(historyPage != nil || farFromEnd && !following)
-                    .accessibilityHidden(historyPage == nil && (!farFromEnd || following))
+                    .opacity(latestIsFloating ? 1 : 0)
+                    .allowsHitTesting(latestIsFloating)
+                    .accessibilityHidden(!latestIsFloating)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .offset(y: -Ink.Bar.height)
@@ -2293,23 +2294,28 @@ struct ChatPage: View {
             .contentShape(.circle)
     }
 
+    private var latestIsFloating: Bool {
+        jumpVisible && (historyPage != nil || farFromEnd && !following)
+    }
+
+    private func returnToLatest() {
+        Haptics.light()
+        following = true
+        jumpedTo = nil
+        if historyPage == nil {
+            toEnd(animated: true)
+        } else {
+            historyPage = nil
+            followToEnd()
+        }
+    }
+
     private var backToEnd: some View {
-                Button {
-                    Haptics.light()
-                    following = true
-                    jumpedTo = nil
-                    if historyPage == nil {
-                        toEnd(animated: true)
-                    } else {
-                        historyPage = nil
-                        followToEnd()
-                    }
-                } label: {
-                    floating("arrow.down")
-                }
-                .buttonStyle(PressStyle())
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                .accessibilityLabel(L.t("chat.latest"))
+        Button(action: returnToLatest) {
+            floating("arrow.down.to.line")
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(L.t("chat.latest"))
     }
 
     private static let end = "foot-of-page"
