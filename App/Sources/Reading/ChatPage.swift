@@ -2346,6 +2346,9 @@ struct ChatPage: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .offset(y: -Ink.Bar.height)
+            .onChange(of: jumpVisible || latestIsFloating, initial: true) { _, shown in
+                withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = shown ? Ink.Bar.height * 3 + Ink.Space.s * 3 : 0 }
+            }
             .animation(Ink.Motion.settle, value: jumpVisible)
             .animation(Ink.Motion.settle, value: farFromEnd && !following)
         }

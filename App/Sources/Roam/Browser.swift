@@ -372,18 +372,31 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     /// Fills a field with something from 信匣. Unlike `type`, password fields are allowed; the text is never logged.
-    func fillSecret(_ ref: Int, text: String, submit: Bool, on page: WKWebView? = nil) async throws -> String {
-        let page = page ?? view
-        let result = try await page.callAsyncJavaScript(Self.secretScript, arguments: ["ref": ref, "text": text, "submit": submit], in: nil, contentWorld: .page)
-        if submit { await settle(page, timeout: 12) }
-        return (result as? String) ?? ""
-    }
 
     /// Fills from 信匣 on a conversation's own tab, after checking it is still the page that was read.
-    func fillSecret(_ ref: Int, text: String, submit: Bool, for chat: String) async throws -> String {
+    func fillSecret(_ ref: Int, text: String, submit: Bool, for chat: String, site: String, password: Bool, entry: String) async throws -> String {
         let tab = page(for: chat)
         if let problem = changed(tab, for: chat) { throw ProviderError(problem) }
-        return try await fillSecret(ref, text: text, submit: submit, on: tab)
+        guard let host = tab.url?.host()?.lowercased() else { throw ProviderError("这一页没有网址，不填。") }
+        let wanted = Self.host(of: site)
+        guard !wanted.isEmpty else {
+            throw ProviderError("信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。")
+        }
+        guard host == wanted || host.hasSuffix("." + wanted) || wanted.hasSuffix("." + host) else {
+            throw ProviderError("这一页是 \(host)，信匣里「\(entry)」是给 \(wanted) 用的，不填。")
+        }
+        let result = try await tab.callAsyncJavaScript(Self.secretScript, arguments: ["ref": ref, "text": text, "submit": submit, "password": password],
+                                                        in: nil, contentWorld: .defaultClient)
+        if submit { await settle(tab, timeout: 12) }
+        return (result as? String) ?? "填好了"
+    }
+
+    /// 「https://accounts.example.com/login」「example.com」 → the host, lower case.
+    private static func host(of site: String) -> String {
+        let text = site.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let host = URL(string: text)?.host(), !host.isEmpty { return host }
+        if let host = URL(string: "https://" + text)?.host(), !host.isEmpty { return host }
+        return ""
     }
 
     func scroll(down: Bool, on page: WKWebView? = nil) async throws {
@@ -472,6 +485,10 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     private static let secretScript = """
     const el = document.querySelector('[data-clio-ref="' + ref + '"]');
     if (!el) return '找不到编号 ' + ref + '，页面可能变了，请先 browser_read。';
+    if (!(el instanceof HTMLInputElement)) return '[' + ref + '] 不是输入框，不填。';
+    const kind = (el.getAttribute('type') || 'text').toLowerCase();
+    if (password && kind !== 'password') return '[' + ref + '] 不是密码框（密码只填进密码框），不填。';
+    if (!password && !['text', 'email', 'tel', ''].includes(kind)) return '[' + ref + '] 不是填用户名的框，不填。';
     el.scrollIntoView({block: 'center', behavior: 'instant'});
     el.focus();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -525,7 +542,8 @@ extension BrowserSession: WKDownloadDelegate {
             kind: .note
         )
         let answer = await Asker.shared.ask(form)
-        guard answer?["keep"] == "存进书案" else { return nil }
+        // Compared with the same word the choice was written in (日常 says 「存进文件」).
+        guard answer?["keep"] == Words.t("存进书案") else { return nil }
         let folder = Workspace.root.appendingPathComponent("收件", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var target = folder.appendingPathComponent(suggestedFilename)

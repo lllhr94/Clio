@@ -276,7 +276,10 @@ enum SecretTools {
                 guard let ref = Whole.int(arguments["ref"]) else { return ToolOutput("ref 要是 browser_read 给的编号。", isError: true) }
                 let submit = arguments["submit"]?.bool ?? false
                 guard let browser = await RoamTools.browser else { return ToolOutput("远游还没开。", isError: true) }
-                let done = try await browser.fillSecret(ref, text: value, submit: submit, for: chat)
+                // Only on the site the entry is for, and a password only into a password box: otherwise a page (or a
+                // model steered by one) could have a kept password typed where it can read it back.
+                let done = try await browser.fillSecret(ref, text: value, submit: submit, for: chat,
+                                                        site: item.site, password: !wantsUser, entry: item.title)
                 return ToolOutput(done)
             },
         ]

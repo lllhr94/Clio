@@ -44,7 +44,7 @@ struct ProseView: View {
         // Paragraphs a little under one line apart, as in the reading apps that read best.
         VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                BlockView(block: block, fading: fade && streaming && index == blocks.count - 1)
+                BlockView(block: block, fading: fade && streaming && index == blocks.count - 1, live: streaming && index == blocks.count - 1)
             }
         }
         // Changes to reading typography rebuild blocks that do not observe those preferences themselves.
@@ -120,6 +120,9 @@ struct StreamBlocks {
 private struct BlockView: View {
     let block: Prose.Block
     let fading: Bool
+    /// The last block of a reply still being written, whether or not text fades in: a formula is not typeset and
+    /// long code is not folded until it is complete.
+    var live = false
 
     var body: some View {
         switch block {
@@ -156,18 +159,18 @@ private struct BlockView: View {
                 Capsule().fill(Ink.rule).frame(width: 3)
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
-                        BlockView(block: inner, fading: fading && index == blocks.count - 1)
+                        BlockView(block: inner, fading: fading && index == blocks.count - 1, live: live && index == blocks.count - 1)
                     }
                 }
                 .foregroundStyle(Ink.inkSoft)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let text, _):
-            CodeBlock(language: language, text: text)
+            CodeBlock(language: language, text: text, live: live)
         case .table(let table):
             TableBlock(table: table)
         case .math(let text):
-            FormulaBlock(latex: text, streaming: fading)
+            FormulaBlock(latex: text, streaming: fading || live)
         case .rule:
             Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.vertical, Pref.size * 0.5)
         }
@@ -280,6 +283,8 @@ struct TailFade: TextRenderer {
 private struct CodeBlock: View {
     let language: String
     let text: String
+    /// Still being written: it grows in full, and folds only once complete (folding at line 21 jumped the page).
+    var live = false
     @State private var copied = false
     @State private var unfolded = false
     @State private var contentWidth: CGFloat = 0
@@ -297,7 +302,7 @@ private struct CodeBlock: View {
         return !marks.contains { text.contains($0) }
     }
     /// Long code shows its first lines; the rest opens on a tap.
-    private var folds: Bool { lineCount > 20 }
+    private var folds: Bool { !live && lineCount > 20 }
     private var shown: String {
         // Blank lines a model leaves at the top or bottom of a block are not shown (they read as a gap under the label).
         let body = Self.trimmedLines(text)

@@ -86,7 +86,11 @@ struct PetPack: Identifiable, Sendable {
 
     static func parse(_ data: Data, dir: URL, id: String) throws -> PetPack {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Problem.bad("pack.json 不是一个对象") }
-        func num(_ any: Any?) -> Double? { (any as? NSNumber)?.doubleValue }
+        // Only sensible numbers: NaN, infinity or 1e20 from a pack would stop the app when made into a whole number.
+        func num(_ any: Any?) -> Double? {
+            guard let value = (any as? NSNumber)?.doubleValue, value.isFinite, abs(value) < 10_000_000 else { return nil }
+            return value
+        }
         func box(_ any: Any?) -> Box? {
             guard let dict = any as? [String: Any], let w = num(dict["w"]), let h = num(dict["h"]), w > 0, h > 0 else { return nil }
             return Box(x: num(dict["x"]) ?? 0, y: num(dict["y"]) ?? 0, w: w, h: h)

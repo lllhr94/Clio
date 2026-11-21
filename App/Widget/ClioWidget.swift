@@ -25,6 +25,11 @@ struct CompanionProvider: TimelineProvider {
 }
 
 struct CompanionWidgetView: View {
+    /// Resting unless the app said it is working or waiting: the resting word itself differs between 日常 and 书卷.
+    static func idle(_ snapshot: WidgetSnapshot) -> Bool {
+        snapshot.status != "在干活" && snapshot.status != "等你批准"
+    }
+
     let entry: CompanionEntry
     @Environment(\.widgetFamily) private var family
 
@@ -38,7 +43,7 @@ struct CompanionWidgetView: View {
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
-                Image(systemName: entry.snapshot?.status == "闲坐" || entry.snapshot == nil ? "bubble.left" : "ellipsis")
+                Image(systemName: (entry.snapshot.map(Self.idle) ?? true) ? "bubble.left" : "ellipsis")
                     .font(.system(size: 20, weight: .semibold))
             }
             .widgetURL(URL(string: "clio://ask"))
@@ -71,7 +76,7 @@ struct CompanionWidgetView: View {
                         Spacer(minLength: 0)
                     }
                     HStack(spacing: 4) {
-                        Circle().fill(snapshot.status == "闲坐" ? Color.green.opacity(0.7) : accent).frame(width: 6, height: 6)
+                        Circle().fill(Self.idle(snapshot) ? Color.green.opacity(0.7) : accent).frame(width: 6, height: 6)
                         Text(snapshot.status).font(.system(size: 12)).foregroundStyle(soft)
                     }
                     Text(snapshot.line.isEmpty ? "还没说话" : snapshot.line)

@@ -11,14 +11,15 @@ struct AppLock: ViewModifier {
     /// Only coming back from the background asks by itself; dismissing the Face ID sheet does not ask again.
     @State private var wasAway = false
 
+    private var covering: Bool { on && (locked || phase != .active) }
+
     func body(content: Content) -> some View {
         content
-            .overlay {
-                if on && (locked || phase != .active) {
-                    cover.transition(.opacity)
-                }
+            // The cover is a window of its own above everything, sheets included: drawn as an overlay it sat under
+            // any open sheet (信匣 with a password shown, say), which then showed in the app switcher and stayed usable.
+            .onChange(of: "\(covering)|\(locked)|\(asking)", initial: true) {
+                if covering { LockCurtain.shared.show(AnyView(cover)) } else { LockCurtain.shared.hide() }
             }
-            .animation(.easeOut(duration: 0.2), value: locked)
             .onChange(of: phase) { _, now in
                 if now == .background, on { locked = true; wasAway = true }
                 if now == .active, on, locked, wasAway {
@@ -70,4 +71,33 @@ struct AppLock: ViewModifier {
 
 extension View {
     func appLock() -> some View { modifier(AppLock()) }
+}
+
+/// The window the lock cover is drawn in, above alerts and sheets.
+@MainActor
+final class LockCurtain {
+    static let shared = LockCurtain()
+    private var window: UIWindow?
+
+    func show(_ content: AnyView) {
+        if let window, let host = window.rootViewController as? UIHostingController<AnyView> {
+            host.rootView = content
+            window.isHidden = false
+            return
+        }
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState != .unattached }) else { return }
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .alert + 1
+        let host = UIHostingController(rootView: content)
+        host.view.backgroundColor = .clear
+        window.rootViewController = host
+        window.isHidden = false
+        self.window = window
+    }
+
+    func hide() {
+        window?.isHidden = true
+        window = nil
+    }
 }

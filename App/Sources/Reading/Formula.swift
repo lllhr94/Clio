@@ -22,13 +22,15 @@ struct FormulaBlock: View {
                     .foregroundStyle(Ink.inkFaint)
                     .lineLimit(1)
                     .padding(.horizontal, Ink.Space.m)
-                    .frame(maxWidth: .infinity, minHeight: Self.heights[latex] ?? 58, maxHeight: Self.heights[latex] ?? 58)
+                    .frame(maxWidth: .infinity, minHeight: Self.heights["\(Pref.size)|" + latex] ?? 58, maxHeight: Self.heights["\(Pref.size)|" + latex] ?? 58)
             } else if streaming || failed {
                 Text(latex)
                     .font(Ink.code)
                     .foregroundStyle(Ink.ink)
                     .padding(Ink.Space.m)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // A formula that changed (a reply finished writing it) gets another try at being typeset.
+                    .onChange(of: latex) { failed = false }
             } else {
                 ScrollView(.horizontal) {
                     FormulaLabel(latex: latex, size: CGFloat(Pref.size) + 2, color: UIColor(Ink.ink), failed: $failed)
@@ -86,7 +88,11 @@ private struct FormulaLabel: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: MTMathUILabel, context: Context) -> CGSize? {
         let size = uiView.intrinsicContentSize
-        if uiView.error == nil, size.height > 0 { FormulaBlock.heights[latex] = size.height + Ink.Space.m * 2 }
+        if uiView.error == nil, size.height > 0 {
+            // Keyed by text size too; kept small.
+            if FormulaBlock.heights.count > 400 { FormulaBlock.heights.removeAll() }
+            FormulaBlock.heights["\(Pref.size)|" + latex] = size.height + Ink.Space.m * 2
+        }
         return size
     }
 }

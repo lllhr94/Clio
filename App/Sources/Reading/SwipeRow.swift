@@ -48,12 +48,14 @@ struct SwipeRow<Content: View>: View {
 
             content()
                 .background(Ink.paper)
-                .offset(x: offset)
+                // The tap that closes the row covers the row itself and moves with it: placed after the offset it
+                // stayed over the revealed buttons and swallowed their taps.
                 .overlay {
                     if settled < 0 {
                         Color.clear.contentShape(Rectangle()).onTapGesture { close() }
                     }
                 }
+                .offset(x: offset)
         }
         .gesture(SidewaysPan(changed: { moved in
             let target = settled + moved

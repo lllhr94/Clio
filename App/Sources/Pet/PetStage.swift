@@ -68,7 +68,9 @@ struct PetStage: View {
                 let figureWidth = CGFloat(pack.canvasW) * unit
                 let stand = CGFloat(pack.baseline) * unit
                 let margin = min(width / 2, figureWidth / 2 + Ink.Space.page)
-                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), width - margin)
+                // It never stands under the jump buttons while they show (they would be hidden and untappable).
+                let right = max(margin, width - margin - perch.keepOutRight)
+                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), right)
                 let foot = foot(in: height, stand: stand)
                 ZStack(alignment: .topLeading) {
                     pet(pack, unit: unit, width: figureWidth, stand: stand)

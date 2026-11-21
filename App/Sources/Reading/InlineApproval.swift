@@ -55,7 +55,7 @@ struct InlineApproval: View {
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.stop)
             }
             HStack(spacing: Ink.Space.s) {
-                if approval.toolName != nil {
+                if approval.toolName != nil, approval.forced != true {
                     Button("以后都允许") { decide(true, always: true) }
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)

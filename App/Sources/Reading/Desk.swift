@@ -326,7 +326,8 @@ struct Desk: View {
                 Spacer()
                 Button {
                     Haptics.light()
-                    if case .companion(let id) = opened { team.turnLeaf("bot-" + id) }
+                    // A gathering starts a fresh page too, not only a companion.
+                    if let opened { team.turnLeaf(opened.id) }
                     closeSide()
                 } label: {
                     Label("新对话", systemImage: "square.and.pencil")
@@ -1144,7 +1145,8 @@ struct Desk: View {
             }
             if case .gathering(let id) = item.id, let room = team.rooms.first(where: { $0.id == id }) {
                 Button(Words.t("改雅集"), systemImage: "pencil") { roomEditing = room }
-                Button(Words.t("散了这个雅集"), systemImage: "trash", role: .destructive) { team.deleteRoom(id) }
+                // Asks first, like the swipe does: it cannot be undone.
+                Button(Words.t("散了这个雅集"), systemImage: "trash", role: .destructive) { clearing = item.id }
             } else if let bot = item.bot {
                 Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardBot = bot }
                 Button(Words.t("清空这段絮语"), systemImage: "trash", role: .destructive) { clearing = item.id }

@@ -13,6 +13,8 @@ final class PetPerch {
     var landing = 0
     var rising = false
     var suppressed = false
+    /// Room on the right the pet keeps clear of: the jump buttons over the composer while they show.
+    var keepOutRight: CGFloat = 0
     @ObservationIgnored var layoutChanged: () -> Void = {}
     @ObservationIgnored var openSettings: () -> Void = {}
     @ObservationIgnored var bodyHit = CGRect.null

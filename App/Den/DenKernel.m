@@ -426,6 +426,7 @@ static dispatch_queue_t readers;
 // MARK: 笔砚 — a pseudo-terminal whose screen is a view in the app
 
 @interface DenTerminal ()
+- (void)releaseTTY;
 @property (nonatomic, copy) void (^output)(NSData *);
 @property (nonatomic, copy) void (^exited)(void);
 @property (nonatomic) struct tty *tty;
@@ -450,10 +451,9 @@ static int den_tty_write(struct tty *tty, const void *buf, size_t len, bool bloc
 }
 
 static void den_tty_cleanup(struct tty *tty) {
-    if (tty->data != NULL) {
-        DenTerminal *terminal = CFBridgingRelease(tty->data);
-        terminal.tty = NULL;
-    }
+    // Runs when the last reference goes, which is after the terminal let go of its own: it no longer points here.
+    if (tty->data != NULL)
+        CFBridgingRelease(tty->data);
     tty->data = NULL;
 }
 
@@ -489,23 +489,24 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
         return nil;
     }
     tty->data = (void *) CFBridgingRetain(terminal);
+    // The terminal keeps the reference it opened until the shell is gone: the screen may still type or resize
+    // while the shell exits on another thread, and a released tty would be freed under it.
     terminal.tty = tty;
     NSString *stdioFile = [NSString stringWithFormat:@"/dev/pts/%d", tty->num];
     err = create_stdio(stdioFile.fileSystemRepresentation, TTY_PSEUDO_SLAVE_MAJOR, tty->num);
     if (err < 0) {
         current = saved;
+        [terminal releaseTTY];
         if (error) *error = err;
         return nil;
     }
-    lock(&ttys_lock);
-    tty_release(tty);
-    unlock(&ttys_lock);
 
     const char argv[] = "/bin/sh\0-c\0cd /root 2>/dev/null; exec /bin/sh -l\0";
     const char envp[] = "TERM=xterm-256color\0HOME=/root\0LANG=C.UTF-8\0PYTHONMALLOC=malloc\0PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
     err = do_execve("/bin/sh", 3, argv, envp);
     if (err < 0) {
         current = saved;
+        [terminal releaseTTY];
         if (error) *error = err;
         return nil;
     }
@@ -523,24 +524,47 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
         return;
     self.gone = YES;
     [NSNotificationCenter.defaultCenter removeObserver:self];
+    [self releaseTTY];
     if (self.exited)
         self.exited();
 }
 
+/// Lets go of the terminal's own reference, once. Typing and resizing hold the same lock, so they never use a tty
+/// that is being let go.
+- (void)releaseTTY {
+    @synchronized (self) {
+        struct tty *tty = self.tty;
+        if (tty == NULL)
+            return;
+        self.tty = NULL;
+        lock(&ttys_lock);
+        tty_release(tty);
+        unlock(&ttys_lock);
+    }
+}
+
 - (void)send:(NSData *)data {
-    struct tty *tty = self.tty;
-    if (tty == NULL || self.gone || data.length == 0)
+    if (data.length == 0)
         return;
-    tty_input(tty, data.bytes, data.length, 0);
+    @synchronized (self) {
+        struct tty *tty = self.tty;
+        if (tty == NULL || self.gone)
+            return;
+        tty_input(tty, data.bytes, data.length, 0);
+    }
 }
 
 - (void)resizeColumns:(int)columns rows:(int)rows {
-    struct tty *tty = self.tty;
-    if (tty == NULL || self.gone || columns <= 0 || rows <= 0)
+    if (columns <= 0 || rows <= 0)
         return;
-    lock(&tty->lock);
-    tty_set_winsize(tty, (struct winsize_) {.col = (word_t) columns, .row = (word_t) rows});
-    unlock(&tty->lock);
+    @synchronized (self) {
+        struct tty *tty = self.tty;
+        if (tty == NULL || self.gone)
+            return;
+        lock(&tty->lock);
+        tty_set_winsize(tty, (struct winsize_) {.col = (word_t) columns, .row = (word_t) rows});
+        unlock(&tty->lock);
+    }
 }
 
 - (void)close {

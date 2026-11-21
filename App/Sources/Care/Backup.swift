@@ -9,7 +9,11 @@ enum Backup {
     private static var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
     /// Folders under Application Support that are ours to keep. 斗室's Linux is left out: it is large and rebuilt from the app.
     private static let folders = ["Team", "Portraits"]
-    private static let skipped = ["Team/snapshots/", "Team/doccache/"]
+    /// Left out: copies kept for 「重来」, a document cache, and 信匣's list (names, user names, sites) — 备份不含信匣.
+    private static let skipped = ["Team/snapshots/", "Team/doccache/", "Team/secrets.json"]
+    /// Settings a backup may bring back. Permissions (「以后都允许」, 应许) and the lock are not among them: a backup
+    /// file from elsewhere must not be able to loosen them.
+    private static let restorable = ["look.", "chat.", "mascot.", "persona"]
 
     struct Summary {
         var files: Int
@@ -28,7 +32,13 @@ enum Backup {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HHmm"
         let stamp = formatter.string(from: Date())
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
+        // Earlier backups left in the temporary folder (one may hold keys) go first.
+        let temp = FileManager.default.temporaryDirectory
+        for old in (try? FileManager.default.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)) ?? []
+        where old.lastPathComponent.hasPrefix("Clio 备份 ") {
+            try? FileManager.default.removeItem(at: old)
+        }
+        let url = temp.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
         let partial = url.appendingPathExtension("part")
         try? FileManager.default.removeItem(at: partial)
         guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw TeamError(message: "没能在手机上建备份文件。") }
@@ -143,6 +153,7 @@ enum Backup {
         for item in items where !item.path.hasPrefix("#") {
             let parts = item.path.split(separator: "/").map(String.init)
             guard parts.count >= 2, folders.contains(parts[0]), !parts.contains(".."), !parts.contains(".") else { continue }
+            if skipped.contains(where: { item.path.hasPrefix($0) }) { continue }
             let target = staging.appendingPathComponent(item.path)
             try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.subdata(in: item.range).write(to: target, options: .atomic)
@@ -187,7 +198,7 @@ enum Backup {
             switch item.path {
             case "#settings":
                 if let settings = try? PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] {
-                    for (key, value) in settings where prefixes.contains(where: { key.hasPrefix($0) }) {
+                    for (key, value) in settings where restorable.contains(where: { key.hasPrefix($0) }) {
                         UserDefaults.standard.set(value, forKey: key)
                     }
                     count += 1

@@ -64,6 +64,10 @@ struct ServicePage: View {
             ModelSheet(team: team, endpointId: id, model: picked.model)
                 .presentationDetents([.large])
         }
+        // A name or address typed and left without pressing return is kept, not lost.
+        .onDisappear {
+            if let endpoint, !removing, !name.isEmpty, !address.isEmpty, name != endpoint.name || address != endpoint.baseURL { save(endpoint) }
+        }
         .confirmationDialog(Words.t("删掉 \(endpoint?.name ?? "")？用它的旅伴会改用默认模型，密钥也一起删掉。"), isPresented: $removing, titleVisibility: .visible) {
             Button(L.t("actions.delete"), role: .destructive) {
                 team.removeEndpoint(id)

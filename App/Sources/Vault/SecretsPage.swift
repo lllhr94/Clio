@@ -6,6 +6,7 @@ struct SecretsPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editing: Secrets.Item?
     @State private var revealed: [String: String] = [:]
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         NavigationStack {
@@ -43,6 +44,8 @@ struct SecretsPage: View {
             }
             .sheet(item: $editing) { item in SecretEditor(item: item) }
         }
+        // A password shown stays shown only while the app is in front: never in the app switcher.
+        .onChange(of: phase) { _, now in if now != .active { revealed = [:] } }
     }
 
     private func row(_ item: Secrets.Item) -> some View {

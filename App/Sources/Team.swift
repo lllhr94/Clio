@@ -1405,7 +1405,8 @@ final class TeamModel: ObservableObject {
     func send(_ text: String, photos: [Data], to key: String) {
         if archived.contains(key) { archive(key, false) }
         guard phase != .demo else { return }
-        if runs[key] != nil {
+        // Busy with its own turn, or helping another companion: the message waits its turn.
+        if runs[key] != nil || helping.contains(key) {
             withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos)) }
             return
         }
@@ -1783,6 +1784,8 @@ final class TeamModel: ObservableObject {
     }
 
     private var toolTails: [String: ToolTail] = [:]
+    /// Companions working for another one right now (请别的旅伴帮忙): their own chat waits.
+    private var helping: Set<String> = []
 
     func toolTail(for key: String) -> ToolTail {
         if let tail = toolTails[key] { return tail }
@@ -2159,6 +2162,15 @@ final class TeamModel: ObservableObject {
         }
         let words = task.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else { return ToolOutput("要说清楚请它做什么。", isError: true) }
+        // What the asking turn has read from outside goes with the request: the helper must not do unasked what the
+        // asker could not (a page could otherwise steer the work through a second companion).
+        taint.clear(helperKey)
+        if taint.isTainted(key) { taint.mark(helperKey) }
+        helping.insert(helperKey)
+        defer {
+            helping.remove(helperKey)
+            flushQueue(helperKey)
+        }
         let asked = "【\(asker.name)请你帮忙，这不是用户本人的话】\(words)"
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(asked)), to: helperKey)
         touch(helperKey, preview: nil)
@@ -2358,8 +2370,10 @@ final class TeamModel: ObservableObject {
 
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
     func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false) async throws {
-        if allow, always, let name = approval.toolName { allowAlways(name) }
-        if allow, trustChat, let chat = approval.chat { trust(chat, true) }
+        // A step that must be asked every time can be allowed once, never for good.
+        let lasting = approval.forced != true
+        if allow, always, lasting, let name = approval.toolName { allowAlways(name) }
+        if allow, trustChat, lasting, let chat = approval.chat { trust(chat, true) }
         if phase == .demo {
             try? await Task.sleep(nanoseconds: 250_000_000)
             approvals.removeAll { $0.id == approval.id }
@@ -2483,9 +2497,10 @@ final class TeamModel: ObservableObject {
         guard Calendar.current.component(.hour, from: now) >= Pref.morningHour else { return }
         let today = now.formatted(.iso8601.year().month().day())
         guard UserDefaults.standard.string(forKey: "morning.last") != today else { return }
-        UserDefaults.standard.set(today, forKey: "morning.last")
         let key = Self.key(bot: main)
+        // Busy (a routine, say): tried again on the next look, not marked done for the day.
         guard !isWorking(key) else { return }
+        UserDefaults.standard.set(today, forKey: "morning.last")
         send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key)
     }
 
