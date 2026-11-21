@@ -1840,7 +1840,12 @@ final class TeamModel: ObservableObject {
             }
             if !entry.photos.isEmpty, message.role != .tool {
                 if vision, photoEntries.contains(entry.id) {
-                    message.images = entry.photos.compactMap { Disk.photo($0).map { ImagePart(data: $0) } }
+                    // A picture that cannot be read (gone, broken, a format the service refuses) becomes a line of
+                    // text, so it does not make every later message fail (Open Minis does the same).
+                    let readable = entry.photos.compactMap { Disk.sendablePhoto($0) }
+                    message.images = readable.map { ImagePart(data: $0) }
+                    let lost = entry.photos.count - readable.count
+                    if lost > 0 { message.text += "\n［有 \(lost) 张图片读不了，已经略过］" }
                 } else {
                     let ids = entry.photos.joined(separator: "、")
                     message.text += "\n［发了 \(entry.photos.count) 张图片，编号 \(ids)" + (vision ? "，已经看过" : "；你现在用的模型看不了图，要读图上的字就用 photo_text") + "］"
@@ -1916,7 +1921,7 @@ final class TeamModel: ObservableObject {
 
     private func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
         let botId = bot.id
-        var all: [AgentTool] = [WebSearchTool(), WebReadTool()]
+        var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
         if !helping, !key.hasPrefix("room-"), !others.isEmpty {
