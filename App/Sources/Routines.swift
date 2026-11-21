@@ -242,7 +242,7 @@ struct RoutineEditor: View {
                 }
                 Section(L.t("routines.schedule")) {
                     DatePicker("几点", selection: $time, displayedComponents: .hourAndMinute)
-                    HStack(spacing: 6) {
+                    HStack(spacing: Ink.Space.s) {
                         ForEach(1...7, id: \.self) { day in
                             let on = routine.days.isEmpty || routine.days.contains(day)
                             Button(Self.names[day - 1]) { toggle(day) }
@@ -253,7 +253,7 @@ struct RoutineEditor: View {
                                 .buttonStyle(.plain)
                         }
                     }
-                    Text(preview.when).font(.footnote).foregroundStyle(.secondary)
+                    Text(preview.when).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
                 Section(L.t("routines.assignee")) {
                     Picker(Words.t("旅伴"), selection: $routine.botId) {
