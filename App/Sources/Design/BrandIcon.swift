@@ -16,7 +16,7 @@ struct BrandIcon: View {
         ZStack {
             if let image {
                 RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
-                    .fill(Color.white)
+                    .fill(Ink.Artwork.white)
                 Image(uiImage: image)
                     .resizable()
                     .interpolation(.high)
@@ -29,7 +29,7 @@ struct BrandIcon: View {
             }
         }
         .frame(width: size, height: size)
-        .overlay(RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous).strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous).strokeBorder(Ink.Artwork.black.opacity(0.08), lineWidth: 0.5))
         .task(id: domain) {
             guard let domain else { return }
             image = await BrandIcons.shared.icon(for: domain)
