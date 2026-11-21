@@ -209,7 +209,11 @@
     "temperature": "温度",
     "maxReply": "最长回复",
     "morningHour": "%lld 点以后第一次打开时写",
-    "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel"
+    "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel",
+    "lineHeight0": "紧凑",
+    "lineHeight1": "适中",
+    "lineHeight2": "舒展",
+    "lineHeight3": "宽松"
   },
   "alwaysOn": {
     "open": "常亮黑屏",

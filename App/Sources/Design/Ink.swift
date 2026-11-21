@@ -338,6 +338,8 @@ enum Ink {
 
     /// The space between the lines of reading text.
     static var leading: CGFloat { Pref.leading }
+    /// Between paragraphs: two-thirds of a line, kept close as Open Minis does (it was 0.8 of the size).
+    static var paragraphGap: CGFloat { CGFloat(Pref.size) * 0.65 }
 
     // MARK: Space and corners
 
