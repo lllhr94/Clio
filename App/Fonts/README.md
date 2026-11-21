@@ -6,7 +6,7 @@
 |---|---|---|
 | `ClioKai-Regular.ttf`、`ClioKai-Medium.ttf`（字体名 Clio Kai） | 霞鹜文楷 GB 1.530 Regular、Medium（LXGW WenKai GB，按中国大陆国家标准字形修订的版本，https://github.com/lxgw/LxgwWenkaiGB） | GB2312 全部（简体 6763 字）+ 英文数字 + 常用标点，各约 3.5 MB |
 | `MapleMono-Regular.ttf`、`MapleMono-SemiBold.ttf` | Maple Mono 7.9（https://github.com/subframe7536/maple-font），从可变字体取出常规、半粗两档 | 只有英文数字符号；去掉了连字（`=>` 不会变成箭头），各约 130 KB |
-| `ClioSeal-Regular.ttf`（字体名 Clio Seal） | 马善政毛笔楷书（Ma Shan Zheng，https://github.com/google/fonts/tree/main/ofl/mashanzheng） | 只有一个「克」字，朱印用 |
+| `ClioSeal-Regular.ttf`（字体名 Clio Seal） | 马善政毛笔楷书（Ma Shan Zheng，https://github.com/google/fonts/tree/main/ofl/mashanzheng） | GB2312 一级常用字 3755 个（约 3 MB），朱印用：每位旅伴盖自己名字的第一个字；字体里没有的字退回 Clio Kai |
 
 - 霞鹜文楷 GB 的授权里「霞鹜」「LXGW」等是保留字体名：裁小后的字体**不能用这些名字**，所以改名 Clio Kai。版权、作者信息照原样保留。
 - Maple Mono 的授权没有保留字体名，沿用原名。

@@ -69,19 +69,13 @@ struct NameCardView: View {
     /// Three small fields side by side, thin lines between them, as on a collector's card.
     private var fields: some View {
         HStack(spacing: 0) {
-            field("性格", personality)
+            field("性格", "\(Temper.of(bot).symbol) \(Temper.of(bot).title)\n\(SpeechStyle.of(bot) == .plain ? Temper.of(bot).line : SpeechStyle.of(bot).title + "体")")
             Rectangle().fill(Ink.rule.opacity(0.7)).frame(width: 0.5)
             field("记得", remembers > 0 ? "关于你的 \(remembers) 件事" : "还没有")
             Rectangle().fill(Ink.rule.opacity(0.7)).frame(width: 0.5)
             field("模型", model ?? "跟默认")
         }
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var personality: String {
-        let text = (bot.instructions ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = text.split(whereSeparator: \.isNewline).first else { return "随性" }
-        return String(first)
     }
 
     private func field(_ label: String, _ value: String) -> some View {
@@ -114,7 +108,7 @@ struct NameCardView: View {
                     .font(.system(size: Ink.Size.micro))
                     .foregroundStyle(Ink.inkFaint)
             }
-            ClioSeal(size: 20, tilt: -4)
+            ClioSeal(size: 20, tilt: -4, character: ClioSeal.character(for: bot))
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.bottom, Ink.Space.m)
@@ -137,16 +131,17 @@ struct NameCardBack: View {
     var body: some View {
         ZStack {
             LinearGradient(colors: [Ink.wash(for: bot).opacity(0.8), Ink.wash(for: bot).opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            TemperPattern(temper: Temper.of(bot), ink: Ink.ink.opacity(0.07))
             RoundedRectangle(cornerRadius: corner * 0.7, style: .continuous)
                 .strokeBorder(Ink.paper.opacity(0.7), lineWidth: 1)
                 .padding(Ink.Space.l)
             VStack(spacing: Ink.Space.l) {
-                ClioSeal(size: width * 0.26, tilt: -3)
-                Text("Clio")
-                    .font(Ink.wordmark(width * 0.12))
-                    .foregroundStyle(Ink.ink.opacity(0.8))
+                ClioSeal(size: width * 0.26, tilt: -3, character: ClioSeal.character(for: bot))
                 Text(bot.name)
-                    .font(Ink.mark(Ink.Size.sub))
+                    .font(Ink.mark(Ink.Size.title))
+                    .foregroundStyle(Ink.ink.opacity(0.85))
+                Text("\(Temper.of(bot).symbol) \(Temper.of(bot).title) · Clio")
+                    .font(Ink.wordmark(Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
             }
         }
@@ -248,5 +243,112 @@ struct NameCardSheet: View {
         }
         urls.append(NameCard.file(for: who))
         shared = urls
+    }
+}
+
+/// The pattern on the back of a 名帖, by 性格: 云纹 for 温, 回纹 for 明, 竹影 for 活, 素笺 for 白纸.
+/// Drawn in the companion's own colour, faint, so the seal stays the thing you see.
+struct TemperPattern: View {
+    let temper: Temper
+    var ink: Color
+
+    var body: some View {
+        Canvas { context, size in
+            switch temper {
+            case .warm: clouds(&context, size)
+            case .clear: fret(&context, size)
+            case .lively: bamboo(&context, size)
+            case .blank: lines(&context, size)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// 云纹: rows of small curling clouds, every other row shifted.
+    private func clouds(_ context: inout GraphicsContext, _ size: CGSize) {
+        let step: CGFloat = 44
+        var row = 0
+        var y: CGFloat = 14
+        while y < size.height + step {
+            var x: CGFloat = row.isMultiple(of: 2) ? 8 : 8 + step / 2
+            while x < size.width + step {
+                var cloud = Path()
+                cloud.addArc(center: CGPoint(x: x, y: y), radius: 7, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+                cloud.addArc(center: CGPoint(x: x + 12, y: y), radius: 5, startAngle: .degrees(180), endAngle: .degrees(20), clockwise: false)
+                cloud.move(to: CGPoint(x: x - 7, y: y))
+                cloud.addQuadCurve(to: CGPoint(x: x + 17, y: y + 2), control: CGPoint(x: x + 5, y: y + 8))
+                context.stroke(cloud, with: .color(ink), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+                x += step
+            }
+            y += step * 0.62
+            row += 1
+        }
+    }
+
+    /// 回纹: a square spiral, repeated in a grid.
+    private func fret(_ context: inout GraphicsContext, _ size: CGSize) {
+        let cell: CGFloat = 30
+        var y: CGFloat = 0
+        while y < size.height {
+            var x: CGFloat = 0
+            while x < size.width {
+                var spiral = Path()
+                spiral.move(to: CGPoint(x: x + 4, y: y + 26))
+                spiral.addLine(to: CGPoint(x: x + 4, y: y + 4))
+                spiral.addLine(to: CGPoint(x: x + 26, y: y + 4))
+                spiral.addLine(to: CGPoint(x: x + 26, y: y + 22))
+                spiral.addLine(to: CGPoint(x: x + 10, y: y + 22))
+                spiral.addLine(to: CGPoint(x: x + 10, y: y + 10))
+                spiral.addLine(to: CGPoint(x: x + 20, y: y + 10))
+                spiral.addLine(to: CGPoint(x: x + 20, y: y + 16))
+                context.stroke(spiral, with: .color(ink), lineWidth: 1)
+                x += cell
+            }
+            y += cell
+        }
+    }
+
+    /// 竹影: slanted stalks with joints and a few leaves.
+    private func bamboo(_ context: inout GraphicsContext, _ size: CGSize) {
+        var x: CGFloat = 18
+        var index = 0
+        while x < size.width + 40 {
+            let lean: CGFloat = index.isMultiple(of: 2) ? 14 : -10
+            var stalk = Path()
+            stalk.move(to: CGPoint(x: x, y: size.height + 10))
+            stalk.addLine(to: CGPoint(x: x + lean, y: -10))
+            context.stroke(stalk, with: .color(ink), lineWidth: 2.2)
+            var joint: CGFloat = size.height - 30 - CGFloat(index % 3) * 12
+            while joint > 0 {
+                let t = (size.height + 10 - joint) / (size.height + 20)
+                let jx = x + lean * t
+                var mark = Path()
+                mark.move(to: CGPoint(x: jx - 3, y: joint))
+                mark.addLine(to: CGPoint(x: jx + 3, y: joint - 1))
+                context.stroke(mark, with: .color(ink), lineWidth: 1.4)
+                if Int(joint) % 3 == 0 {
+                    var leaf = Path()
+                    leaf.move(to: CGPoint(x: jx, y: joint))
+                    leaf.addQuadCurve(to: CGPoint(x: jx + 22, y: joint - 10), control: CGPoint(x: jx + 12, y: joint - 12))
+                    leaf.addQuadCurve(to: CGPoint(x: jx, y: joint), control: CGPoint(x: jx + 10, y: joint - 2))
+                    context.fill(leaf, with: .color(ink))
+                }
+                joint -= 54
+            }
+            x += 46
+            index += 1
+        }
+    }
+
+    /// 素笺: the ruled lines of letter paper.
+    private func lines(_ context: inout GraphicsContext, _ size: CGSize) {
+        var x: CGFloat = 22
+        while x < size.width {
+            var line = Path()
+            line.move(to: CGPoint(x: x, y: 18))
+            line.addLine(to: CGPoint(x: x, y: size.height - 18))
+            context.stroke(line, with: .color(ink), lineWidth: 0.8)
+            x += 26
+        }
     }
 }

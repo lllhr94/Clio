@@ -56,14 +56,17 @@ enum Pulse {
         return (pulse.isEmpty ? nil : pulse, rest)
     }
 
-    /// The first line of 感受, for the folded line.
+    /// The first thing it wrote, for the folded line: 感受 / 第一反应 on its own line, or the first item (沉思's 前提).
     static func vibe(_ pulse: String) -> String? {
         for line in pulse.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            for head in ["感受：", "感受:", "Vibe:", "Vibe："] where trimmed.hasPrefix(head) {
-                let said = trimmed.dropFirst(head.count).trimmingCharacters(in: .whitespaces)
-                return said.isEmpty ? nil : said
+            var trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("- ") { trimmed = String(trimmed.dropFirst(2)) }
+            if let colon = trimmed.firstIndex(where: { $0 == "：" || $0 == ":" }) {
+                let said = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                if !said.isEmpty { return said }
+                continue
             }
+            if !trimmed.isEmpty { return trimmed }
         }
         return nil
     }

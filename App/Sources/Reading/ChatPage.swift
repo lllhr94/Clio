@@ -244,7 +244,7 @@ struct ChatPage: View {
                         .transition(.opacity)
                 }
                 if !chat.pulse.isEmpty {
-                    PulseBox(text: chat.pulse, live: chat.streaming.isEmpty)
+                    PulseBox(text: chat.pulse, live: chat.streaming.isEmpty, temper: Temper.of(isRoom ? nil : bot))
                         .id("pulse")
                         .transition(.opacity)
                 }
@@ -1177,7 +1177,7 @@ struct ChatPage: View {
                     ThinkingBox(text: reasoning)
                 }
                 if let felt = line.pulse {
-                    PulseBox(text: felt)
+                    PulseBox(text: felt, temper: Temper.of(line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)))
                 }
                 if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
                     StreamingProse(text: String(line.text.prefix(shown)))

@@ -20,6 +20,12 @@ struct BotInfo: Codable, Identifiable, Equatable {
     var lastAt: Double?
     var blocked: Blocked?
     var createdAt: Double?
+    /// 性格 (`Temper`): warm / clear / lively / blank; nil is 温.
+    var temper: String?
+    /// 说话风格 (`SpeechStyle`); nil is 默认.
+    var style: String?
+    /// The character on its seal; nil is the first character of its name.
+    var seal: String?
     /// Its face: nil follows the pet picked in 宠物设置; "pet:<pack id>" one particular pet; "photo" a picture
     /// from the album, kept on this phone (`Avatars`).
     var avatar: String?

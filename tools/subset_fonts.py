@@ -28,6 +28,18 @@ def simplified():
     return chars
 
 
+def common():
+    """GB2312 一级常用字（3755 个）。"""
+    chars = set()
+    for b1 in range(0xB0, 0xD8):
+        for b2 in range(0xA1, 0xFF):
+            try:
+                chars.add(bytes([b1, b2]).decode("gb2312"))
+            except UnicodeDecodeError:
+                pass
+    return chars
+
+
 def make(src, out, family, style, text):
     opts = subset.Options()
     opts.layout_features = ["*"]
@@ -59,4 +71,5 @@ if __name__ == "__main__":
     chars = simplified()
     make(sys.argv[1], os.path.join(OUT, "ClioKai-Regular.ttf"), "Clio Kai", "Regular", chars)
     make(sys.argv[2], os.path.join(OUT, "ClioKai-Medium.ttf"), "Clio Kai", "Medium", chars)
-    make(sys.argv[3], os.path.join(OUT, "ClioSeal-Regular.ttf"), "Clio Seal", "Regular", {"克"})
+    # 朱印：每位旅伴盖自己名字的第一个字，收 GB2312 一级常用字 3755 个（约 3 MB）；没有的字退回 Clio Kai。
+    make(sys.argv[3], os.path.join(OUT, "ClioSeal-Regular.ttf"), "Clio Seal", "Regular", common())

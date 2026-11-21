@@ -460,7 +460,7 @@ final class TeamModel: ObservableObject {
     /// Saves a companion and returns its id. `avatar`: nil leaves it as it is, "" goes back to the default pet.
     @discardableResult
     func saveBot(id: String?, name: String, role: String, color: String, model: String? = nil, instructions: String? = nil,
-                 avatar: String? = nil) async throws -> String {
+                 avatar: String? = nil, temper: String? = nil, style: String? = nil, seal: String? = nil) async throws -> String {
         let saved: String
         if let id, let index = bots.firstIndex(where: { $0.id == id }) {
             bots[index].name = name
@@ -469,11 +469,16 @@ final class TeamModel: ObservableObject {
             if let model { bots[index].model = model.isEmpty ? nil : model }
             if let instructions { bots[index].instructions = instructions }
             if let avatar { bots[index].avatar = avatar.isEmpty ? nil : avatar }
+            if let temper { bots[index].temper = temper.isEmpty ? nil : temper }
+            if let style { bots[index].style = style.isEmpty ? nil : style }
+            if let seal { bots[index].seal = seal.isEmpty ? nil : seal }
             saved = id
         } else {
             saved = UUID().uuidString
             bots.append(BotInfo(id: saved, name: name, role: role, color: color, instructions: instructions,
                                 model: model?.isEmpty == false ? model : nil, createdAt: Now.ms,
+                                temper: temper?.isEmpty == false ? temper : nil, style: style?.isEmpty == false ? style : nil,
+                                seal: seal?.isEmpty == false ? seal : nil,
                                 avatar: avatar?.isEmpty == false ? avatar : nil))
         }
         withAnimation(.smooth(duration: 0.35)) { sortBots() }
@@ -1472,7 +1477,7 @@ final class TeamModel: ObservableObject {
         var agent = Agent(
             provider: endpoint.provider(key: apiKey),
             model: found.model,
-            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine + (Pulse.on ? Pulse.prompt : "") + connectorHint,
+            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine + (Pulse.on ? (Temper.of(bot).pulsePrompt ?? "") : "") + connectorHint,
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
@@ -1732,8 +1737,10 @@ final class TeamModel: ObservableObject {
         var parts: [String] = []
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
         parts.append("你是「\(bot.name)」\(role)。你住在用户的 iPhone 里，是用户的旅伴之一。")
+        if let persona = Temper.of(bot).persona { parts.append(persona) }
         if let instructions = bot.instructions?.trimmingCharacters(in: .whitespacesAndNewlines), !instructions.isEmpty {
-            parts.append("你的设定：\(instructions)")
+            // What the person wrote comes after the 性格, and wins where they differ.
+            parts.append("你的设定（和上面的性格有出入时，以这里为准）：\(instructions)")
         }
         let others = bots.filter { $0.id != bot.id }.map { other in
             other.role?.isEmpty == false ? "\(other.name)（\(other.role!)）" : other.name
@@ -1757,8 +1764,8 @@ final class TeamModel: ObservableObject {
         if deepCount > 0 {
             parts.append("另有 \(deepCount) 件较早的旧事收在拾遗深处，不在上面。用户提到过去的人和事、而上面没有时，先用 recall 翻一翻。")
         }
+        parts.append(SpeechStyle.of(bot).prompt)
         parts.append("""
-        说话：中文，口语，亲切自然，像熟悉的朋友聊天。先说结论，能短就短；内容多时再分点。不说客套话。
         做事：
         - 要最新的信息（新闻、价格、天气、事实），先用 web_search 搜，再用 web_read 读原文核实，回答末尾附上来源链接。
         - 用户说起关于自己的、以后用得上的事，用 remember 记下；一次性的小事不记。

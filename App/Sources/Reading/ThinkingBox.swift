@@ -73,6 +73,10 @@ struct ThinkingBox: View {
 struct PulseBox: View {
     let text: String
     var live = false
+    /// Whose: its 性格 names the block (心绪 / 沉思 / 念头) and gives the mark.
+    var temper: Temper = .warm
+
+    private var name: String { temper.blockName ?? "心绪" }
     @State private var open = false
 
     var body: some View {
@@ -83,8 +87,8 @@ struct PulseBox: View {
                 Haptics.tick(0.4)
             } label: {
                 HStack(spacing: Ink.Space.s) {
-                    Text("✿").font(.system(size: Ink.Size.small))
-                    Text(live ? "心绪" : (Pulse.vibe(text).map { "心绪 · \($0)" } ?? "心绪"))
+                    Text(temper.symbol).font(.system(size: Ink.Size.small))
+                    Text(live ? name : (Pulse.vibe(text).map { "\(name) · \($0)" } ?? name))
                         .font(Ink.footnote)
                         .lineLimit(1)
                     if !live {
@@ -98,7 +102,7 @@ struct PulseBox: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(live ? "正在写心绪" : "心绪，点开看")
+            .accessibilityLabel(live ? "正在写\(name)" : "\(name)，点开看")
 
             if live || open {
                 Text(live ? tail : text)

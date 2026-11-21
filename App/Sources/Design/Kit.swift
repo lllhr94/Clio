@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 
 // The few pieces every page is built from, so a row in 设置 and a row in 连接器 are the same row.
@@ -222,10 +223,30 @@ extension View {
 struct ClioSeal: View {
     var size: CGFloat = 22
     var tilt: Double = 0
+    /// The character cut into it: Clio's 「克」, or a companion's own (`ClioSeal.character(for:)`).
+    var character = "克"
+
+    /// A companion's seal character: the one picked, or the first of its name.
+    static func character(for bot: BotInfo) -> String {
+        if let picked = bot.seal?.trimmingCharacters(in: .whitespaces), let first = picked.first { return String(first) }
+        return bot.name.trimmingCharacters(in: .whitespaces).first.map(String.init) ?? "克"
+    }
+
+    /// The brush font has the 3755 common characters; others are cut in 文楷.
+    private static func brushHas(_ character: String) -> Bool {
+        guard let font = UIFont(name: "ClioSeal-Regular", size: 12) else { return false }
+        let units = Array(character.utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: units.count)
+        return CTFontGetGlyphsForCharacters(font as CTFont, units, &glyphs, units.count)
+    }
+
+    private var face: Font {
+        Self.brushHas(character) ? .custom("ClioSeal-Regular", size: size * 0.76) : Ink.face(.wenkai, size * 0.66, bold: true)
+    }
 
     var body: some View {
-        Text("克")
-            .font(.custom("ClioSeal-Regular", size: size * 0.76))
+        Text(character)
+            .font(face)
             .foregroundStyle(Ink.sealInk)
             .frame(width: size, height: size)
             .background(Ink.seal, in: .rect(cornerRadius: size * 0.12, style: .continuous))
