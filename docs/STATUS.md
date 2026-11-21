@@ -135,6 +135,11 @@
 
 - C12：已提交调研 `docs/C12-PET-PIP.md`。等待产品决定，原型、自签实测和能耗测量尚未开始。
 
+## 0.34 常亮黑屏
+
+- C20 的常亮窗口已提供 `AlwaysOn.show(chat:)` 和 `hide()`。显示宠物像、当前步骤和真实耗时，每 15 秒微移。触摸或离开前台会关闭并恢复原锁屏设置。
+- 分支 iOS CI 通过，截图关闭。待 Claude 接入聊天按钮后，在真机确认亮屏、微移和恢复。[GitHub Actions](https://github.com/lllhr94/Clio/actions/runs/44869904430)
+
 ## 协作分工建议
 
 - **Claude / Codex**：写代码、修 bug、跑 CI、截图核对。一次只一个人在 `batch-*` 分支上推，开工前 `git pull`，收工更新本文件。

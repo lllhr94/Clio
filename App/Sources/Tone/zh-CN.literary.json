@@ -198,6 +198,11 @@
     "morningHour": "%lld 点以后第一次打开时写",
     "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel"
   },
+  "alwaysOn": {
+    "idle": "暂时空闲",
+    "waiting": "等你落款",
+    "exitHint": "轻触关闭常亮黑屏"
+  },
   "settings": {
     "imageModel": "生图模型",
     "imageModelNone": "不使用生图模型",
