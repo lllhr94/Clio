@@ -1882,7 +1882,7 @@ final class TeamModel: ObservableObject {
 
     private func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
         let botId = bot.id
-        var all: [AgentTool] = [WebSearchTool(), WebReadTool()]
+        var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
         if !helping, !key.hasPrefix("room-"), !others.isEmpty {

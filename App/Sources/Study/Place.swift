@@ -206,8 +206,8 @@ struct SSHHost: WorkspaceHost {
         do {
             let result = try await Hills.run(command, on: host, timeout: timeout, onOutput: onOutput)
             return ExecResult(code: result.code, output: result.output)
-        } catch is Hills.TimedOut {
-            return ExecResult(code: -1, output: "", timedOut: true)
+        } catch let late as Hills.TimedOut {
+            return ExecResult(code: -1, output: late.output, timedOut: true)
         }
     }
 
