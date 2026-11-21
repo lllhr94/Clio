@@ -97,6 +97,8 @@ final class TeamModel: ObservableObject {
     private var diaryReviewAttempt: Date?
     @Published private(set) var settings = TeamSettings()
     /// What each chat's Bot is doing now, by chat key.
+    /// How the last answer in each conversation came back short, if it did (cleared at each turn's start).
+    private var cutShort: [String: CutShort] = [:]
     @Published private(set) var doing: [String: String] = [:] {
         // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
         didSet {
@@ -1610,13 +1612,22 @@ final class TeamModel: ObservableObject {
             }
         }
         defer { watch.cancel() }
+        cutShort[key] = nil
         do {
             try await agent.run(history: messages) { [weak self] event in
                 await self?.hear(event, chat: key, speaker: speaker)
             }
+            // An answer that came back cut short is not 「done」: no 「做完了」, and what is waiting to be sent waits
+            // for the user (the review, #19).
+            if let short = cutShort.removeValue(forKey: key), short != .truncated {
+                if Pref.notifyDone, UIApplication.shared.applicationState != .active {
+                    Notify.now("\(bot.name)没答完", "回答不完整，回 Clio 看看，可以点「重来」。", chat: key)
+                }
+                return false
+            }
             PetNews.shared.post(.done, chat: key, title: chatName(key))
             if Pref.notifyDone, UIApplication.shared.applicationState != .active,
-               let last = history(key).last(where: { $0.message.role == .assistant && !$0.message.text.isEmpty }) {
+               let last = history(key).last(where: { $0.message.role == .assistant && !$0.message.text.isEmpty && $0.note != true }) {
                 Notify.now(bot.name, last.message.text, chat: key)
             }
             return true
@@ -1684,6 +1695,7 @@ final class TeamModel: ObservableObject {
         case .retrying(let attempt):
             doing[key] = "连接不稳，正在重连（第 \(attempt) 次）"
         case .cutShort(let short):
+            cutShort[key] = short
             let words: String
             switch short {
             case .dropped: words = "连接中途断了，这次没收到回答。可以点「重来」。"
