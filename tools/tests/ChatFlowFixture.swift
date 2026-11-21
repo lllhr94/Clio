@@ -67,6 +67,11 @@ private final class Clock {
 }
 
 @MainActor
+/// Stands in for the app's draft store; the fixture only checks the composer empties.
+private enum DraftAttachments {
+    static func clear(_ chat: String) {}
+}
+
 private final class FlowFixture {
     var draft = "你好"
     var photos = ["photo"]
@@ -76,6 +81,7 @@ private final class FlowFixture {
     let chat = HistoryPause()
 
     final class HistoryPause {
+        let key = "chat"
         private(set) var browsing = false
         func setBrowsingHistory(_ active: Bool) { browsing = active }
     }
