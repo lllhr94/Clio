@@ -54,7 +54,7 @@ struct RoamSlip: View {
             } label: {
                 HStack(spacing: Ink.Space.m) {
                     Image(systemName: "hand.raised").foregroundStyle(Ink.warn)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                         Text(Words.t("远游 · 请你接手")).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
                         Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
                     }
