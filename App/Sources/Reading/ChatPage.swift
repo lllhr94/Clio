@@ -383,7 +383,10 @@ struct ChatPage: View {
             .onChange(of: working, initial: true) { _, now in
                 workingSince = now ? (workingSince ?? Date()) : nil
             }
-            .onChange(of: chat.lines.last?.id) { followToEnd() }
+            .onChange(of: chat.lines.last?.id) {
+                if chat.lines.isEmpty { historyPage = nil; lookupRows = [] }
+                followToEnd()
+            }
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
@@ -766,8 +769,8 @@ struct ChatPage: View {
 
     /// What you asked just before a reply, for the picture of the exchange.
     private func askedBefore(_ id: String) -> String? {
-        guard let index = chat.lines.firstIndex(where: { $0.id == id }) else { return nil }
-        return chat.lines[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
+        guard let index = displayedRows.firstIndex(where: { $0.id == id }) else { return nil }
+        return displayedRows[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
     }
     @State private var noting: Noting?
     @State private var quoting: Noting?
@@ -1290,12 +1293,12 @@ struct ChatPage: View {
     }
 
     private func findSources(for line: ChatLine) -> [URL] {
-        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
+        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return [] }
         // The pages the answer itself names come first: they are what it rests on.
         var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
         var cursor = index - 1
-        while cursor >= 0, chat.lines[cursor].kind == .steps {
-            let step = chat.lines[cursor]
+        while cursor >= 0, displayedRows[cursor].kind == .steps {
+            let step = displayedRows[cursor]
             for (position, label) in step.tools.enumerated() where label.hasPrefix("读网页") || label.hasPrefix("搜索") || label.hasPrefix("远游") {
                 guard position < step.details.count else { continue }
                 // Pages it read count first; then what a search brought back.
@@ -1473,12 +1476,16 @@ struct ChatPage: View {
         Haptics.light()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
-        Task { await loadEverything() }
+        Task {
+            await loadEverything()
+            guard finding else { lookupRows = []; return }
+            if !findText.isEmpty { updateFindHits() }
+        }
     }
 
     /// The whole conversation, built once, for finding and the outline. Rows are only put on the page when going there.
     private func loadEverything() async {
-        lookupRows = chat.lookupRows()
+        lookupRows = await chat.lookupRows()
     }
 
     private func stopFinding() {
@@ -1498,6 +1505,12 @@ struct ChatPage: View {
         guard let index = lookupRows.firstIndex(where: { $0.id == id }) else { return }
         let bounds = max(0, index - 30)..<min(lookupRows.count, index + 31)
         historyPage = Array(lookupRows[bounds])
+    }
+
+    private func updateFindHits() {
+        hits = findHits()
+        findAt = max(hits.count - 1, 0)
+        if !hits.isEmpty { showHit(0) }
     }
 
     /// Goes to the place found, newest first; the arrows step older or newer.
@@ -1525,11 +1538,7 @@ struct ChatPage: View {
                 .focused($findFocus)
                 .submitLabel(.search)
                 .onSubmit { showHit(-1) }
-                .onChange(of: findText) {
-                    hits = findHits()
-                    findAt = max(hits.count - 1, 0)
-                    if hits.count > 0 { showHit(0) }
-                }
+                .onChange(of: findText) { updateFindHits() }
             if !findText.isEmpty {
                 Text(found == 0 ? "没找到" : "\(min(findAt + 1, found))/\(found)")
                     .font(Ink.footnote.monospacedDigit())
@@ -1769,8 +1778,8 @@ struct ChatPage: View {
 
     /// No more of the companion's words follow before the user speaks again.
     private func endsTurn(_ line: ChatLine) -> Bool {
-        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return true }
-        for later in chat.lines[(index + 1)...] {
+        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return true }
+        for later in displayedRows[(index + 1)...] {
             // In a group, another companion speaking ends this one's turn.
             if later.kind == .bot { return later.speaker != line.speaker }
             if later.kind == .user { return true }
@@ -2581,6 +2590,7 @@ struct ChatPage: View {
     }
 
     private func clearComposer() {
+        historyPage = nil
         draft = ""
         photos = []
         files = []
@@ -2612,8 +2622,9 @@ private struct Trace: View {
     private func forget(_ memory: Remembered, with unremember: (String, String) -> Bool) {
         Haptics.light()
         // Shown as taken back only if it was: an entry you wrote or edited stays, and so does this line.
-        if unremember(memory.id, memory.fact) {
-            withAnimation(Ink.Motion.settle) { _ = undone.insert(memory.id) }
+        guard let id = memory.memoryID else { return }
+        if unremember(id, memory.fact) {
+            withAnimation(Ink.Motion.settle) { _ = undone.insert(id) }
         } else {
             Haptics.lock()
         }
@@ -2621,7 +2632,8 @@ private struct Trace: View {
 
     /// What these steps wrote into 拾遗, as the model wrote it.
     private struct Remembered: Identifiable {
-        let id: String
+        let id: Int
+        let memoryID: String?
         let fact: String
     }
 
@@ -2629,9 +2641,9 @@ private struct Trace: View {
         line.tools.enumerated().compactMap { index, tool in
             guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count,
                   line.details[index].output.hasPrefix("记下了"),
-                  let id = line.details[index].full, UUID(uuidString: id) != nil,
                   let fact = JSONValue.parse(line.details[index].input)?["fact"]?.string else { return nil }
-            return Remembered(id: id, fact: fact.trimmingCharacters(in: .whitespacesAndNewlines))
+            let id = line.details[index].full.flatMap { UUID(uuidString: $0) == nil ? nil : $0 }
+            return Remembered(id: index, memoryID: id, fact: fact.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -2919,7 +2931,7 @@ private struct Trace: View {
             // 「记下了」: one quiet line per thing remembered, as Cindy's learning footer; 撤回 right there, or long-press.
             ForEach(remembered) { memory in
                 let fact = memory.fact
-                let gone = undone.contains(memory.id)
+                let gone = memory.memoryID.map(undone.contains) ?? false
                 HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
                     Image(systemName: gone ? "bookmark.slash" : "bookmark")
                         .font(.system(size: Ink.Size.micro))
@@ -2928,7 +2940,7 @@ private struct Trace: View {
                         .strikethrough(gone)
                         .lineLimit(2)
                     Spacer(minLength: Ink.Space.s)
-                    if !gone {
+                    if !gone, memory.memoryID != nil {
                         Button("撤回") { forget(memory, with: unremember) }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(Ink.accent)
@@ -2939,7 +2951,7 @@ private struct Trace: View {
                 .padding(.top, Ink.Space.xs)
                 .contentShape(Rectangle())
                 .contextMenu {
-                    if !gone {
+                    if !gone, memory.memoryID != nil {
                         Button("撤回这条", systemImage: "bookmark.slash") { forget(memory, with: unremember) }
                     }
                     Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = fact }

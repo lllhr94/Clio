@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 
 /// One step of a trace, opened up.
-struct StepDetail: Equatable {
+struct StepDetail: Equatable, Sendable {
     var input: String
     var output: String
     var seconds: Int?
@@ -15,9 +15,9 @@ struct StepDetail: Equatable {
 }
 
 /// One row of a chat.
-struct ChatLine: Identifiable, Equatable {
-    enum Kind { case user, bot, steps, note }
-    enum Local { case sending, failed }
+struct ChatLine: Identifiable, Equatable, Sendable {
+    enum Kind: Sendable { case user, bot, steps, note }
+    enum Local: Sendable { case sending, failed }
 
     var id: String
     var kind: Kind
@@ -200,8 +200,11 @@ final class ChatModel {
     }
 
     /// A read-only lookup snapshot. It must never enlarge the window used by live updates.
-    func lookupRows() -> [ChatLine] {
-        build(team.history(key), lookup: true)
+    func lookupRows() async -> [ChatLine] {
+        let history = team.history(key)
+        return await Task.detached(priority: .userInitiated) {
+            Self.buildRows(history[...], working: false, running: nil)
+        }.value
     }
 
     func loadEarlier() async {
@@ -214,9 +217,12 @@ final class ChatModel {
     }
 
     /// The kept messages as rows: what the user said, what the Bot said, and the steps between.
-    private func build(_ all: [Entry], lookup: Bool = false) -> [ChatLine] {
-        if !lookup { hasEarlier = all.count > limit }
-        let entries = lookup ? all[...] : all.suffix(limit)
+    private func build(_ all: [Entry]) -> [ChatLine] {
+        hasEarlier = all.count > limit
+        return Self.buildRows(all.suffix(limit), working: team.isWorking(key), running: running)
+    }
+
+    nonisolated private static func buildRows(_ entries: ArraySlice<Entry>, working: Bool, running: String?) -> [ChatLine] {
         var out: [ChatLine] = []
         var open: Int?
         var openedAt: Double = 0
@@ -284,7 +290,6 @@ final class ChatModel {
                 out[open!].seconds = max(1, Int((entry.at - openedAt) / 1000))
             }
         }
-        let working = team.isWorking(key)
         if working, let open, open == out.count - 1 {
             out[open].live = true
             if let running { out[open].tools.append(running) }
