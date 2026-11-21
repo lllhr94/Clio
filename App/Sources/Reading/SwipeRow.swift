@@ -31,7 +31,7 @@ struct SwipeRow<Content: View>: View {
                         close()
                         action.act()
                     } label: {
-                        VStack(spacing: 4) {
+                        VStack(spacing: Ink.Space.xs) {
                             Image(systemName: action.symbol).font(.system(size: Ink.Size.body, weight: .medium))
                             Text(action.title).font(.system(size: Ink.Size.small, weight: .medium))
                         }
