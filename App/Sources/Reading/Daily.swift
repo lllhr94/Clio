@@ -288,7 +288,7 @@ struct DiarySheet: View {
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     ForEach(pages) { page in
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
-                            Text(TideSheet.when(page.day)).font(Ink.serif(15, bold: true)).foregroundStyle(Ink.inkSoft)
+                            Text(TideSheet.when(page.day)).font(Ink.serif(Ink.Size.sub, bold: true)).foregroundStyle(Ink.inkSoft)
                             Text(page.text).font(Ink.reading).foregroundStyle(Ink.ink).lineSpacing(6)
                             if let reply = page.reply {
                                 Text("你回：\(reply)").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -320,7 +320,7 @@ struct DiarySheet: View {
             .navigationTitle("\(bot.name)的" + L.t("nav.diary"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     if !pages.isEmpty { Button("写今天的") { write() }.disabled(writing) }
                 }
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
