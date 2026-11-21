@@ -72,7 +72,8 @@ enum Pref {
     static var size: Double { double("look.size", 17) }
     /// How tall a line is, as a multiple of the reading size: 紧凑 1.35 · 适中 1.5 · 舒展 1.65 · 宽松 1.8.
     static let lineHeights: [Double] = [1.35, 1.5, 1.65, 1.8]
-    static var lineHeight: Double { double("look.lineHeight", 1.5) }
+    static let defaultLineHeight = 1.65
+    static var lineHeight: Double { double("look.lineHeight", defaultLineHeight) }
 
     /// The space added between lines, worked out so a line is `lineHeight` × the size tall whatever the face:
     /// each face carries its own built-in gap (文楷's is large), which used to swallow the setting, so moving it

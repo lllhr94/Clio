@@ -117,8 +117,6 @@ enum Ink {
 
     /// Code in a reply, from the same pigments as everything else; lighter in dark mode so they read on dark paper.
     enum Code {
-        /// Code inside a sentence (a path, a name).
-        static let inline = pair(0xA4504A, 0xE0958C)
         static let keyword = pair(0x6F5C96, 0xB3A3D6)
         static let function = pair(0x4A6A8A, 0x8FB0CF)
         static let string = pair(0x4F7A5A, 0x8DBB97)

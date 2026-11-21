@@ -27,7 +27,7 @@ struct ProseView: View {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.lineHeight") private var leading = 1.5
+    @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
     @AppStorage("look.fade") private var fade = true
     var text: String
     /// True while more is coming: the tail of the last block fades.
@@ -102,8 +102,7 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            // Headings in the reading face, a step or two larger: never a different family from the text under them.
-            Inline(text: text, font: headingFont(level), fading: fading, tight: true)
+            Inline(text: text, font: Ink.body(Pref.size, bold: true), fading: fading, tight: true)
                 // Much more air above a heading than below it, so it plainly belongs to what follows.
                 .padding(.top, level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
                 .padding(.bottom, -Pref.size * 0.3)
@@ -152,15 +151,6 @@ private struct BlockView: View {
         }
     }
 
-    /// Headings in the reading face, a step or two larger: never a different family from the text under them.
-    private func headingFont(_ level: Int) -> Font {
-        switch level {
-        case ...1: Ink.body(Pref.size + 6, bold: true)
-        case 2: Ink.body(Pref.size + 3, bold: true)
-        default: Ink.body(Pref.size + 1, bold: true)
-        }
-    }
-
     @ViewBuilder
     private func marker(_ item: Prose.Item) -> some View {
         if let checked = item.checked {
@@ -173,8 +163,8 @@ private struct BlockView: View {
                 .font(Ink.body(Pref.size, bold: false).monospacedDigit())
                 .foregroundStyle(Ink.inkSoft)
         } else {
-            Text(item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪"))
-                .font(.system(size: Pref.size * (item.depth == 0 ? 1 : 0.85), weight: .bold))
+            Text(item.depth <= 1 ? "•" : "▪")
+                .font(.system(size: Pref.size * (item.depth == 0 ? 1 : 0.72), weight: .bold))
                 .foregroundStyle(Ink.inkFaint)
         }
     }
@@ -189,15 +179,12 @@ private struct Inline: View {
     var tight = false
     @Environment(\.noteInk) private var noteInk
 
-    private var styled: AttributedString {
+    private var styled: Text {
         var out = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
         for run in out.runs {
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
-                // Code in a sentence: the code face a little smaller, on a warm tint, in the accent's ink.
                 out[run.range].font = Ink.mono(CGFloat(max(12, Pref.size - 2)))
-                out[run.range].backgroundColor = Ink.mine
-                out[run.range].foregroundColor = Ink.Code.inline
             }
             if intent.contains(.stronglyEmphasized), noteInk == nil {
                 out[run.range].foregroundColor = Ink.ink
@@ -207,11 +194,18 @@ private struct Inline: View {
             out[run.range].foregroundColor = Ink.accent
             out[run.range].underlineStyle = .single
         }
-        return out
+        guard out.runs.contains(where: { $0.inlinePresentationIntent?.contains(.code) == true }) else {
+            return Text(out)
+        }
+        return out.runs.reduce(Text("")) { text, run in
+            let part = Text(AttributedString(out[run.range]))
+            return text + (run.inlinePresentationIntent?.contains(.code) == true
+                ? part.customAttribute(InlineCodeBadge()) : part)
+        }
     }
 
     var body: some View {
-        Text(styled)
+        styled
             .font(font)
             .lineSpacing(tight ? Ink.leading * 0.5 : Ink.leading)
             .foregroundStyle(noteInk ?? Ink.ink)
@@ -220,12 +214,20 @@ private struct Inline: View {
     }
 }
 
+private struct InlineCodeBadge: TextAttribute {}
+
 /// The last glyphs of text still arriving fade from clear to full: as the text grows, each glyph fades in.
 struct TailFade: TextRenderer {
     var on: Bool
     var tail = 12
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            for run in line where run[InlineCodeBadge.self] != nil {
+                let rect = run.typographicBounds.rect.insetBy(dx: -1, dy: 0)
+                context.fill(Path(roundedRect: rect, cornerRadius: rect.height / 2), with: .color(Ink.mine))
+            }
+        }
         guard on else {
             for line in layout { context.draw(line) }
             return
@@ -737,7 +739,7 @@ struct SelectableProse: View, Equatable {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.lineHeight") private var leading = 1.5
+    @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
     /// Native text takes its colours when set: a change of light and dark sets it again.
     @Environment(\.colorScheme) private var scheme
     let text: String
@@ -824,9 +826,8 @@ enum ProseWords {
         let ink = quoteDepth > 0 ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
         switch block {
         case .heading(let level, let text):
-            let grow: CGFloat = level <= 1 ? 6 : (level == 2 ? 3 : 1)
             let before: CGFloat = first ? 0 : (level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
-            return inline(text, size: Pref.size + grow, bold: true, ink: ink,
+            return inline(text, size: Pref.size, bold: true, ink: ink,
                           paragraph: style(spacing: Pref.size * 0.5, before: before, indent: quote, tight: true))
         case .paragraph(let text):
             return inline(text, size: Pref.size, bold: false, ink: ink, paragraph: style(indent: quote))
@@ -837,13 +838,15 @@ enum ProseWords {
                 let marker: String
                 if let checked = item.checked { marker = checked ? "☑︎" : "☐" }
                 else if let number = item.number { marker = "\(number)." }
-                else { marker = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪") }
+                else { marker = item.depth <= 1 ? "•" : "▪" }
                 let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
                 let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
                 let last = index == items.count - 1
                 let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.25, indent: indent, hanging: hang)
+                let smallBullet = item.depth > 0 && item.checked == nil && item.number == nil
+                let markerSize = smallBullet ? Pref.size * 0.72 : Pref.size
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
-                    .font: Ink.uiFace(Pref.size), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
+                    .font: Ink.uiFace(markerSize), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
                 ]))
                 out.append(inline(item.text, size: Pref.size, bold: false, ink: ink, paragraph: paragraph))
             }
@@ -879,8 +882,7 @@ enum ProseWords {
             }
             if intent.contains(.code) {
                 attributes[.font] = Ink.uiMono(max(12, size - 2))
-                attributes[.backgroundColor] = UIColor(Ink.mine)
-                attributes[.foregroundColor] = UIColor(Ink.Code.inline)
+                attributes[.clioInlineCode] = true
             }
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let link = run.link {
@@ -905,6 +907,53 @@ extension EnvironmentValues {
     }
 }
 
+private extension NSAttributedString.Key {
+    static let clioInlineCode = Self("ClioInlineCode")
+}
+
+/// Draw code backgrounds from the same native text ranges that selection uses.
+private final class InlineCodeTextView: UITextView {
+    private var codeRanges: [NSRange] = []
+    private var paintedWidth: CGFloat?
+    private let codeBackground = CAShapeLayer()
+
+    func replaceWords(with words: NSAttributedString) {
+        attributedText = words
+        codeRanges.removeAll()
+        words.enumerateAttribute(.clioInlineCode, in: NSRange(location: 0, length: words.length)) { value, range, _ in
+            if value != nil { codeRanges.append(range) }
+        }
+        if codeRanges.isEmpty { codeBackground.removeFromSuperlayer() }
+        paintedWidth = nil
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !codeRanges.isEmpty, bounds.width > 0, paintedWidth != bounds.width else { return }
+        let path = CGMutablePath()
+        for range in codeRanges {
+            guard let start = position(from: beginningOfDocument, offset: range.location),
+                  let end = position(from: start, offset: range.length),
+                  let textRange = textRange(from: start, to: end) else { continue }
+            for fragment in selectionRects(for: textRange) {
+                guard fragment.rect.width > 0, fragment.rect.height > 0 else { continue }
+                let rect = fragment.rect.insetBy(dx: -1, dy: fragment.rect.height * 0.1)
+                path.addRoundedRect(in: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2)
+            }
+        }
+        // The new width may arrive before TextKit has produced selection rectangles.
+        guard !path.isEmpty else { return }
+        paintedWidth = bounds.width
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        codeBackground.path = path
+        codeBackground.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).cgColor
+        if codeBackground.superlayer == nil { layer.insertSublayer(codeBackground, at: 0) }
+        CATransaction.commit()
+    }
+}
+
 /// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
 private struct ProseText: UIViewRepresentable {
     let attributed: NSAttributedString
@@ -925,8 +974,8 @@ private struct ProseText: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView(usingTextLayoutManager: true)
+    func makeUIView(context: Context) -> InlineCodeTextView {
+        let view = InlineCodeTextView(usingTextLayoutManager: true)
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = false
@@ -940,17 +989,17 @@ private struct ProseText: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: UITextView, context: Context) {
+    func updateUIView(_ view: InlineCodeTextView, context: Context) {
         context.coordinator.open = openURL
         context.coordinator.selectionChanged = selectionChanged
         // Compared by its words only: the colours inside are made fresh on every redraw and never compare equal, so the
         // old check set the text again each time the chat redrew, and that wiped a selection the moment it was made.
         // A change of face, size or light/dark gives the whole block a new identity (see `SelectableProse`), so it is
         // built anew then anyway.
-        if view.attributedText.string != attributed.string { view.attributedText = attributed }
+        if view.attributedText.string != attributed.string { view.replaceWords(with: attributed) }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: InlineCodeTextView, context: Context) -> CGSize? {
         guard let width = proposal.width ?? uiView.superview?.bounds.width ?? uiView.window?.bounds.width,
               width > 0 else { return nil }
         let key = Length(text: text, part: part, format: format, width: width)
@@ -962,7 +1011,7 @@ private struct ProseText: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) {
+    static func dismantleUIView(_ view: InlineCodeTextView, coordinator: Coordinator) {
         coordinator.publishSelection(false)
     }
 
