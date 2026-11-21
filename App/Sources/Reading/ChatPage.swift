@@ -35,6 +35,9 @@ struct ChatPage: View {
     @State private var following = true
     /// 聊天里显示头像: off unless turned on (设置 › 对话 › 对话显示与反馈).
     @AppStorage("chat.faces") private var faces = false
+    /// The stop button asks first (as Open Minis does): a long task lost to a thumb that slipped is worse than one more tap.
+    @AppStorage("chat.confirmStop") private var confirmStop = true
+    @State private var askingStop = false
     /// 在对话里找: what is looked for, and which of the places found is in view.
     @State private var finding = false
     @State private var findText = ""
@@ -540,7 +543,9 @@ struct ChatPage: View {
         .onAppear {
             chat.open()
             PetNews.shared.focused = chat.key
+            if draft.isEmpty, let kept = Self.keptDraft(chat.key) { draft = kept }
         }
+        .onChange(of: draft) { _, text in Self.keepDraft(text, for: chat.key) }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
@@ -1196,7 +1201,23 @@ struct ChatPage: View {
         return lines[..<start].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Worked out once per reply: the steps before a reply do not change after it, and every reply asked on every
+    /// redraw (twice), walking back through the chat each time.
+    private final class SourcesMemo {
+        var found: [String: [URL]] = [:]
+    }
+    @State private var sourcesMemo = SourcesMemo()
+
     private func sources(for line: ChatLine) -> [URL] {
+        let memoKey = line.id + "|\(line.text.count)"
+        if let known = sourcesMemo.found[memoKey] { return known }
+        let found = findSources(for: line)
+        if sourcesMemo.found.count > 600 { sourcesMemo.found.removeAll() }
+        sourcesMemo.found[memoKey] = found
+        return found
+    }
+
+    private func findSources(for line: ChatLine) -> [URL] {
         guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return [] }
         // The pages the answer itself names come first: they are what it rests on.
         var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
@@ -1654,6 +1675,21 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    /// What was typed and not sent stays with the conversation — a new one too — across leaving it and relaunching
+    /// (Open Minis lost a new chat's draft on going back).
+    private static func keepDraft(_ text: String, for key: String) {
+        let name = "draft." + key
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserDefaults.standard.removeObject(forKey: name)
+        } else {
+            UserDefaults.standard.set(text, forKey: name)
+        }
+    }
+
+    private static func keptDraft(_ key: String) -> String? {
+        UserDefaults.standard.string(forKey: "draft." + key)
     }
 
     /// No more of the companion's words follow before the user speaks again.
@@ -2249,8 +2285,13 @@ struct ChatPage: View {
                 Haptics.light()
                 dictation.stop()
             case 1:
-                Haptics.lock()
-                chat.stop()
+                if confirmStop {
+                    Haptics.light()
+                    askingStop = true
+                } else {
+                    Haptics.lock()
+                    chat.stop()
+                }
             case 2:
                 Haptics.grab()
                 if let editing {
@@ -2286,6 +2327,15 @@ struct ChatPage: View {
             .frame(width: 34, height: 34)
         }
         .buttonStyle(PressStyle(haptic: false))
+        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
+            Button(L.t("chat.stopNow"), role: .destructive) {
+                Haptics.lock()
+                if working { chat.stop() }
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("chat.stopAskNote"))
+        }
         .animation(Ink.Motion.press, value: mode)
         .accessibilityLabel(["说完了", "让它停下", working ? "插话" : "发送", "说话"][mode])
         .contextMenu {

@@ -26,11 +26,32 @@ public struct OpenAIProvider: ModelProvider {
         }
     }
 
-    public func models() async throws -> [String] {
+    public func models() async throws -> [String] { try await catalog().ids }
+
+    /// The models a service lists, and the context window it reports for each where it says (relays such as
+    /// OpenRouter or one-api write it under different names). A reported window beats Clio's guess from the name.
+    public func catalog() async throws -> (ids: [String], windows: [String: Int]) {
         var http = URLRequest(url: try HTTP.endpoint(baseURL, "/models"))
         http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let list = try await HTTP.get(http)
-        return (list["data"]?.array ?? []).compactMap { $0["id"]?.string }.sorted()
+        var windows: [String: Int] = [:]
+        var ids: [String] = []
+        for entry in list["data"]?.array ?? [] {
+            guard let id = entry["id"]?.string else { continue }
+            ids.append(id)
+            if let window = Self.reportedWindow(entry) { windows[id] = window }
+        }
+        return (ids.sorted(), windows)
+    }
+
+    static func reportedWindow(_ entry: JSONValue) -> Int? {
+        let names = ["context_length", "context_window", "max_context_length", "max_model_len", "max_input_tokens",
+                     "input_token_limit", "inputTokenLimit", "max_context_tokens"]
+        for name in names {
+            if let value = entry[name]?.number, value >= 1024 { return Int(value) }
+        }
+        if let value = entry["top_provider"]?["context_length"]?.number, value >= 1024 { return Int(value) }
+        return nil
     }
 
     /// Moves thoughts written between <think> tags out of the answer.

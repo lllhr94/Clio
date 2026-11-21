@@ -66,7 +66,10 @@
     "addToConversation": "添加到絮语",
     "workLocation": "在哪里干活",
     "details": "絮语详情",
-    "newGroup": "开一场雅集"
+    "newGroup": "开一场雅集",
+    "stopAsk": "停下这件事？",
+    "stopNow": "停下",
+    "stopAskNote": "已经做完的部分会留下。不想每次都问，可以在设置里关掉。"
   },
   "approval": {
     "pending": "待签",
@@ -336,7 +339,8 @@
     "groundPaper": "素纸",
     "groundWhite": "纯白",
     "groundInk": "墨灰",
-    "groundBlack": "纯黑"
+    "groundBlack": "纯黑",
+    "confirmStop": "停止前先问一句"
   },
   "styleSwitcher": {
     "title": "称谓",

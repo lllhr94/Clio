@@ -305,12 +305,22 @@ final class TeamModel: ObservableObject {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
         guard let key = apiKey(for: id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
-        let raw = try await endpoint.provider(key: key).models()
+        let provider = endpoint.provider(key: key)
+        var reported: [String: Int] = [:]
+        let raw: [String]
+        if let openAI = provider as? OpenAIProvider {
+            let catalog = try await openAI.catalog()
+            raw = catalog.ids
+            reported = catalog.windows
+        } else {
+            raw = try await provider.models()
+        }
         let listed = Self.keep(raw, for: endpoint)
         storeImageModels(raw, for: endpoint)
         guard !listed.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
         guard let again = settings.endpoints.firstIndex(where: { $0.id == id }) else { return listed.count }
         settings.endpoints[again].listed = listed
+        settings.endpoints[again].windows = reported.isEmpty ? nil : reported
         if settings.endpoints[again].models.isEmpty { settings.endpoints[again].models = Self.firstPicks(listed, service: Service.of(endpoint)) }
         saveSettings()
         return listed.count
@@ -1636,6 +1646,17 @@ final class TeamModel: ObservableObject {
             notify(key, .tool(label))
         case .retrying(let attempt):
             doing[key] = "连接不稳，正在重连（第 \(attempt) 次）"
+        case .cutShort(let short):
+            let words: String
+            switch short {
+            case .dropped: words = "连接中途断了，这次没收到回答。可以点「重来」。"
+            case .thoughtOnly(let count): words = "它想了 \(count) 字，但没写出回答。可以点「重来」，或换个说法再问。"
+            case .filtered: words = "这次的回答被模型服务的内容审核拦下了。换个说法再问试试。"
+            case .truncated: words = "回答写到长度上限，被截断了。说「继续」它会接着写；也可以在设置里调大「最长回复」。"
+            case .empty: words = "模型这次什么也没回。可以点「重来」。"
+            }
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(words), note: true), to: key)
+            Diag.note("回答不完整：\(short)")
         case .thinkingRefused(let level, let reason):
             var kept = options(key)
             kept.thinking = nil
