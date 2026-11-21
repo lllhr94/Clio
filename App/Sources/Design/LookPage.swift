@@ -99,7 +99,7 @@ struct LookPage: View {
 
 struct ReadingSizePage: View {
     @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.lineHeight") private var lineHeight = 1.5
+    @AppStorage("look.lineHeight") private var lineHeight = Pref.defaultLineHeight
 
     private static let sizes = [15.0, 16, 17, 19, 21, 24]
 
@@ -135,7 +135,7 @@ struct ReadingSizePage: View {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     Text(L.t("settingsHome.lineSpacing"))
                     Picker(L.t("settingsHome.lineSpacing"), selection: Binding(
-                        get: { Pref.lineHeights.indices.min { abs(Pref.lineHeights[$0] - lineHeight) < abs(Pref.lineHeights[$1] - lineHeight) } ?? 1 },
+                        get: { Pref.lineHeights.indices.min { abs(Pref.lineHeights[$0] - lineHeight) < abs(Pref.lineHeights[$1] - lineHeight) } ?? 2 },
                         set: { lineHeight = Pref.lineHeights[$0]; Haptics.tick(0.5) }
                     )) {
                         ForEach(Pref.lineHeights.indices, id: \.self) { index in
@@ -163,7 +163,7 @@ struct ReadingSizePage: View {
 
     private func reset() {
         size = 17
-        lineHeight = 1.5
+        lineHeight = Pref.defaultLineHeight
         UIScale.shared.value = 1
     }
 }
