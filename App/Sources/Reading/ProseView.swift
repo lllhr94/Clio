@@ -185,6 +185,8 @@ private struct Inline: View {
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
                 out[run.range].font = Ink.mono(CGFloat(max(12, Pref.size - 2)))
+                // In the accent, on its pill, as the Claude app sets inline code (the owner's reference).
+                out[run.range].foregroundColor = Ink.accent
             }
             if intent.contains(.stronglyEmphasized), noteInk == nil {
                 out[run.range].foregroundColor = Ink.ink
@@ -882,6 +884,7 @@ enum ProseWords {
             }
             if intent.contains(.code) {
                 attributes[.font] = Ink.uiMono(max(12, size - 2))
+                attributes[.foregroundColor] = UIColor(Ink.accent)
                 attributes[.clioInlineCode] = true
             }
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
