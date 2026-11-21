@@ -1326,7 +1326,11 @@ struct ChatPage: View {
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
                     // When the sources row is under it, a 「来源：」 list the model wrote at the end is not shown twice.
-                    SelectableProse(text: sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text))
+                    let shown = sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text)
+                    let looked = Self.lookback(shown)
+                    // 「回望：…」 the companion wrote after its steps: a quiet line of its own, like 心绪, not body text.
+                    if let note = looked.note { LookbackLine(text: note) }
+                    SelectableProse(text: looked.rest)
                         .equatable()
                 }
                 let found = sources(for: line)
@@ -1681,6 +1685,19 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    /// A first line 「回望：…」 taken off the reply, and the rest.
+    static func lookback(_ text: String) -> (note: String?, rest: String) {
+        let trimmed = text.drop { $0 == "\n" || $0 == " " }
+        guard let first = trimmed.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else { return (nil, text) }
+        let line = first.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+        for head in ["回望：", "回望:"] where line.hasPrefix(head) {
+            let note = String(line.dropFirst(head.count)).trimmingCharacters(in: .whitespaces)
+            let rest = trimmed.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (note.isEmpty ? nil : note, rest)
+        }
+        return (nil, text)
     }
 
     /// What was typed and not sent stays with the conversation — a new one too — across leaving it and relaunching
@@ -3427,5 +3444,32 @@ struct HealthCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .paperCard()
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+/// 回望: what the steps changed in the companion's mind, in the 心绪 colour, one line, opened by a tap.
+struct LookbackLine: View {
+    let text: String
+    @State private var open = false
+
+    var body: some View {
+        Button {
+            Haptics.tick(0.4)
+            withAnimation(Ink.Motion.settle) { open.toggle() }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: Ink.Size.micro, weight: .semibold))
+                Text("回望 · " + text)
+                    .font(Ink.footnote)
+                    .lineLimit(open ? nil : 1)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Ink.accent.opacity(0.85))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("回望：" + text)
     }
 }

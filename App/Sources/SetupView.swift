@@ -361,7 +361,7 @@ struct SetupView: View {
                                     .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
                                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(ModelTraits.guess(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                                    Text(ModelTraits.known(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)
                             }

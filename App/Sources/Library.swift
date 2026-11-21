@@ -106,9 +106,11 @@ struct Endpoint: Codable, Identifiable, Equatable {
     }
 
     /// What a model can do: as the user set it, or else as its name suggests.
-    func traits(_ model: String) -> ModelTraits {
-        if let corrected = overrides?[model] { return corrected }
-        var guessed = ModelTraits.guess(model)
+    /// What `model` can do: the user's correction, else what the service reported and the models.dev catalog
+    /// say, else the guess from the name.
+    func traits(_ model: String, ignoringCorrection: Bool = false) -> ModelTraits {
+        if !ignoringCorrection, let corrected = overrides?[model] { return corrected }
+        var guessed = ModelTraits.known(model)
         // What the service itself said about the window beats a guess from the name.
         if let reported = windows?[model] { guessed.window = reported }
         return guessed

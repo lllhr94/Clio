@@ -510,7 +510,7 @@ struct ModelSheet: View {
                     if endpoint?.corrected(model) == true {
                         Button(L.t("actions.resetModelCapabilities"), systemImage: "arrow.uturn.backward") {
                             team.setTraits(endpointId, model: model, nil)
-                            traits = ModelTraits.guess(model)
+                            traits = endpoint.map { $0.traits(model, ignoringCorrection: true) } ?? ModelTraits.known(model)
                         }
                     }
                     Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
@@ -525,10 +525,10 @@ struct ModelSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
-        .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.guess(model) }
+        .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.known(model) }
         .onChange(of: traits) { _, value in
             guard value != endpoint?.traits(model) else { return }
-            team.setTraits(endpointId, model: model, value == ModelTraits.guess(model) ? nil : value)
+            team.setTraits(endpointId, model: model, value == (endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)) ? nil : value)
         }
     }
 
