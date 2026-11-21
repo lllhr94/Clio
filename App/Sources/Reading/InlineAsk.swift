@@ -75,14 +75,14 @@ private struct FlowChips: View {
     let pick: (String) -> Void
 
     var body: some View {
-        WrapLayout(spacing: 8) {
+        WrapLayout(spacing: Ink.Space.s) {
             ForEach(choices, id: \.self) { choice in
                 Button { pick(choice) } label: {
                     Text(choice)
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(choice == picked ? Ink.paper : Ink.ink)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.s)
                         .background(choice == picked ? Ink.accent : Ink.mine, in: .capsule)
                 }
                 .buttonStyle(.plain)
