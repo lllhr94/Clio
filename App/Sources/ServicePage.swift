@@ -493,7 +493,7 @@ struct ModelSheet: View {
                     Button(working ? L.t("loading.testingModel") : L.t("actions.testModel"), systemImage: "bolt.horizontal") { testReply() }
                         .disabled(working)
                     if let note {
-                        Text(note).font(.footnote).foregroundStyle(.secondary)
+                        Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                     }
                 } footer: {
                     Text(L.t("settings.visionTestNote"))
