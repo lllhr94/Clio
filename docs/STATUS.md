@@ -6,6 +6,8 @@
 
 ## 2026-11-21 交接：接手的人先看这一节
 
+**最新（11-21 夜里，全项目彻查）**：主人要求从头到尾查一遍，结果和修法在 `docs/AUDIT-FULL.md`（安全 10 条、数据 10 条、引擎 3 条，另有「已知没改」一节）。
+
 **最新（11-21 深夜）**：0.34 全面审查（`docs/REVIEW-0.34-FULL.md`，32 条）里 Claude 那份已修完，逐条修法在该文件末尾「修复记录」。#22～27、#29～31 是 Codex 的 C31，PR #31 已合入。仍未确认：之前 29.593 秒卡住的根因；流式列表和表格遇到内部空行的已知问题。
 
 **最新（11-21 晚）**：清单看 `docs/PLAN-NEXT.md`（Claude 马上做 / 接下来 / 交给 Codex）；给 Codex 的整份在 `docs/CODEX-NEXT.md`；Open Minis 65 条规则在 `docs/MINIS-RULES.md` 等主人勾选；多平台在 `docs/PLATFORMS.md`；浏览器和云端在 `docs/BROWSER-AND-CLOUD.md`。主人说「暂时先这样」，下一批等主人发话。
