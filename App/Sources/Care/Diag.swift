@@ -17,7 +17,7 @@ enum Diag {
     static func clear() { UserDefaults.standard.removeObject(forKey: key) }
 }
 
-/// 掉帧记录仪: every frame that took longer than 16 ms, with the page on screen and what was going on,
+/// 掉帧记录仪: gaps longer than the scheduled display interval, with the current page and activity,
 /// for 养护 to show and copy. It runs only while switched on: its clock keeps the screen at its full rate, which costs a little battery.
 @MainActor
 final class Hitches: ObservableObject {
@@ -28,9 +28,12 @@ final class Hitches: ObservableObject {
         var ms: Int
         var page: String
         var action: String
+        var refreshHz: Int? = nil
 
         var line: String {
-            "\(at.formatted(.dateTime.month().day().hour().minute().second()))  \(ms) ms  \(page)" + (action.isEmpty ? "" : "  · \(action)")
+            let cadence = refreshHz.map { " @ \($0) Hz" } ?? ""
+            return "\(at.formatted(.dateTime.month().day().hour().minute().second()))  \(ms) ms\(cadence)  \(page)"
+                + (action.isEmpty ? "" : "  · \(action)")
         }
     }
 
@@ -42,6 +45,8 @@ final class Hitches: ObservableObject {
     private var actions: [String: String] = [:]
     private var link: CADisplayLink?
     private var last: CFTimeInterval = 0
+    private var lastInterval: CFTimeInterval = 0
+    private var newSinceSave = 0
     private var watchers: [NSObjectProtocol] = []
     private nonisolated static let storeKey = "diag.hitches"
     private let writes = DispatchQueue(label: "clio.hitches.storage", qos: .utility)
@@ -90,10 +95,12 @@ final class Hitches: ObservableObject {
 
     func clear() {
         recent = []
+        newSinceSave = 0
         writes.async { UserDefaults.standard.removeObject(forKey: Self.storeKey) }
     }
 
     func save() {
+        newSinceSave = 0
         let snapshot = recent
         writes.async {
             if let data = try? JSONEncoder().encode(snapshot) { UserDefaults.standard.set(data, forKey: Self.storeKey) }
@@ -102,7 +109,7 @@ final class Hitches: ObservableObject {
 
     /// For pasting: a line of totals, then every hitch, newest first.
     var report: String {
-        guard !recent.isEmpty else { return "掉帧记录：没有超过 16 ms 的帧。" }
+        guard !recent.isEmpty else { return "掉帧记录：没有记录到漏刷新。" }
         let worst = recent.map(\.ms).max() ?? 0
         var byPage: [String: Int] = [:]
         for hitch in recent { byPage[hitch.page, default: 0] += 1 }
@@ -110,23 +117,30 @@ final class Hitches: ObservableObject {
         return (["掉帧记录：共 \(recent.count) 次，最长 \(worst) ms；\(pages)"] + recent.reversed().map(\.line)).joined(separator: "\n")
     }
 
-    fileprivate func tick(_ time: CFTimeInterval) {
-        defer { last = time }
+    fileprivate func tick(_ time: CFTimeInterval, interval: CFTimeInterval) {
+        let nextInterval = interval.isFinite && interval > 0 ? interval : 1.0 / 60
+        defer { last = time; lastInterval = nextInterval }
         guard last > 0 else { return }
-        let gap = Int(((time - last) * 1000).rounded())
-        // A frame at 60 Hz is 16.7 ms; anything past 17 ms missed at least one refresh.
-        guard gap > 17 else { return }
+        // Use the longer scheduled interval during a cadence change to avoid false reports.
+        let expected = max(lastInterval, nextInterval)
+        let elapsed = time - last
+        guard elapsed > expected * 1.5 else { return }
+        let gap = Int((elapsed * 1000).rounded())
+        let hz = Int((1 / expected).rounded())
         let now = Date()
         let page = pages.last ?? Words.t("案头")
         let action = actions.sorted { $0.key < $1.key }.map(\.value).joined(separator: "，")
         // Slow frames in a row are one stutter: keep its worst frame.
         if let previous = recent.last, now.timeIntervalSince(previous.at) < 0.3, previous.page == page {
-            if gap > previous.ms { recent[recent.count - 1].ms = gap }
+            if gap > previous.ms {
+                recent[recent.count - 1] = Hitch(at: previous.at, ms: gap, page: page, action: action, refreshHz: hz)
+            }
             return
         }
-        recent.append(Hitch(at: now, ms: gap, page: page, action: action))
+        recent.append(Hitch(at: now, ms: gap, page: page, action: action, refreshHz: hz))
         if recent.count > 200 { recent.removeFirst(recent.count - 200) }
-        if recent.count % 20 == 0 { save() }
+        newSinceSave += 1
+        if newSinceSave >= 20 { save() }
     }
 
     /// CADisplayLink holds its target strongly; this keeps the recorder free to go.
@@ -135,7 +149,8 @@ final class Hitches: ObservableObject {
         init(_ hitches: Hitches) { self.hitches = hitches }
         @objc func tick(_ link: CADisplayLink) {
             let time = link.timestamp
-            MainActor.assumeIsolated { hitches?.tick(time) }
+            let interval = link.targetTimestamp - time
+            MainActor.assumeIsolated { hitches?.tick(time, interval: interval) }
         }
     }
 }
