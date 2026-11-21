@@ -1312,7 +1312,8 @@ struct ChatPage: View {
                 }
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
                 let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
-                if newest ? !working : !(chat.fresh?.id == line.id) {
+                // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
+                if newest ? !working : (!(chat.fresh?.id == line.id) && endsTurn(line)) {
                     footer(line, newest: newest)
                         .transition(.opacity)
                 }
@@ -1653,6 +1654,17 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    /// No more of the companion's words follow before the user speaks again.
+    private func endsTurn(_ line: ChatLine) -> Bool {
+        guard let index = chat.lines.firstIndex(where: { $0.id == line.id }) else { return true }
+        for later in chat.lines[(index + 1)...] {
+            // In a group, another companion speaking ends this one's turn.
+            if later.kind == .bot { return later.speaker != line.speaker }
+            if later.kind == .user { return true }
+        }
+        return true
     }
 
     private func fork(at line: ChatLine) {
