@@ -531,6 +531,7 @@ struct ModelSheet: View {
                     }
                 }
             }
+            .paperForm()
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(model)

@@ -56,11 +56,12 @@ enum DrawerItem: String, Identifiable, CaseIterable {
         }
     }
 
-    static let groups: [(String, [DrawerItem])] = [
+    /// Worked out each time: the names follow 称谓 when it changes.
+    static var groups: [(String, [DrawerItem])] { [
         (Words.t("旅伴"), [.newCompanion, .gathering, .importCard]),
         ("器物", [.study, .den, .hills, .vault]),
         ("调理", [.tuning, .look, .grants, .care]),
-    ]
+    ] }
 }
 
 /// The drawer itself: three groups of cards, two to a row.

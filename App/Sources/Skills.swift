@@ -341,6 +341,7 @@ struct SkillEditor: View {
                     Text("Markdown：步骤、格式、注意事项")
                 }
             }
+            .paperForm()
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(item == nil ? L.t("skills.new") : L.t("skills.edit"))

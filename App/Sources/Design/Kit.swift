@@ -104,7 +104,7 @@ struct RowLabel<Leading: View>: View {
 }
 
 extension RowLabel where Leading == IconBadge {
-    init(_ symbol: String, tint: Color = Ink.accent, title: String, hint: String? = nil, line: String? = nil, end: RowEnd = .chevron) {
+    init(_ symbol: String, tint: Color = Ink.Tile.accent, title: String, hint: String? = nil, line: String? = nil, end: RowEnd = .chevron) {
         self.init(title: title, hint: hint, line: line, end: end) { IconBadge(symbol: symbol, tint: tint) }
     }
 }

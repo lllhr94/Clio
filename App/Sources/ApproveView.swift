@@ -83,7 +83,7 @@ struct ApproveView: View {
                             .offset(x: 14, y: 12)
                             .blur(radius: 1.5)
                             .opacity(0.8)
-                            .shadow(color: Ink.ink.opacity(0.10), radius: 14, y: 14)
+                            .shadow(color: Color.black.opacity(0.10), radius: 14, y: 14)
                             .transition(.opacity)
                     }
                     slip
@@ -278,7 +278,7 @@ struct ApproveView: View {
             .padding(.trailing, Ink.Space.l)
             .padding(.bottom, Ink.Space.l)
         }
-        .shadow(color: Ink.ink.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
+        .shadow(color: Color.black.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
     }
 
     private static func clock(_ date: Date, _ format: String) -> String {
@@ -440,7 +440,7 @@ private struct SlideTrack: View {
                             .foregroundStyle(Ink.paper)
                     }
                     .frame(width: knob, height: knob)
-                    .shadow(color: Ink.ink.opacity(0.18), radius: 6, y: 4)
+                    .shadow(color: Color.black.opacity(0.18), radius: 6, y: 4)
                     .scaleEffect(1 + 0.06 * progress)
                     .offset(x: 5 + travel * progress)
                     .gesture(

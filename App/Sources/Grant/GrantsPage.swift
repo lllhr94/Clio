@@ -9,13 +9,13 @@ struct GrantsPage: View {
     @State private var policies: [Grant: Grant.Policy] = [:]
     @State private var systems: [Grant: Grant.System] = [:]
 
-    private let groups: [(String, [Grant])] = [
+    private var groups: [(String, [Grant])] { [
         (L.t("permissions.web"), [.web, .browser, .links]),
         (L.t("permissions.connections"), [.hills, .mcp, .google, .vault]),
         (L.t("nav.filesAndTerminal"), [.desk, .den, .memory, .letters]),
         (L.t("permissions.onPhone"), [.calendar, .reminders, .contacts, .photos, .clipboard]),
         (L.t("permissions.personal"), [.location, .motion, .health, .device]),
-    ]
+    ] }
 
     var body: some View {
         NavigationStack {

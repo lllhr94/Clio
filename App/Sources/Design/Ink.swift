@@ -76,6 +76,49 @@ final class Theme {
     }
 
     var palette: Ink.Palette { Ink.palettes.first { $0.key == key } ?? Ink.palettes[0] }
+
+    // Reading size, line height and light / dark: set from several pages with `@AppStorage`, read everywhere through
+    // `Pref`. Kept here so every view that read them is drawn again the moment they change — before, only the reply
+    // text followed a new size, and other sheets kept the old light or dark until reopened.
+    private(set) var size: Double = Theme.number("look.size", 17)
+    private(set) var lineHeight: Double = Theme.number("look.lineHeight", Pref.defaultLineHeight)
+    private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
+    @ObservationIgnored private var watching: NSObjectProtocol?
+    /// Bumped when 宋体 or 楷体 finishes downloading, so text already drawn in the stand-in face is drawn again in it.
+    private(set) var fontsArrived = 0
+    func fontArrived() { fontsArrived += 1 }
+
+    init() {
+        watching = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    private static func number(_ key: String, _ fallback: Double) -> Double {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.double(forKey: key)
+    }
+
+    private func refresh() {
+        let size = Self.number("look.size", 17)
+        if size != self.size { self.size = size }
+        let line = Self.number("look.lineHeight", Pref.defaultLineHeight)
+        if line != lineHeight { lineHeight = line }
+        let scheme = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
+        if scheme != self.scheme {
+            self.scheme = scheme
+            applyScheme()
+        }
+    }
+
+    /// Light or dark for every window at once, so sheets already open (and the lock cover) change too.
+    func applyScheme() {
+        let style: UIUserInterfaceStyle = scheme == "light" ? .light : (scheme == "dark" ? .dark : .unspecified)
+        MainActor.assumeIsolated {
+            for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+                for window in scene.windows where window.overrideUserInterfaceStyle != style { window.overrideUserInterfaceStyle = style }
+            }
+        }
+    }
 }
 
 /// Clio's design system: every color, type size, space and corner comes from here.
@@ -284,6 +327,7 @@ enum Ink {
 
     /// Any face at any size; a face not on the phone yet stands in as the system serif.
     static func face(_ face: Pref.Face, _ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
+        if face.downloads { _ = Theme.shared.fontsArrived }
         if let name = face.postScript(bold: bold), has(name) {
             return .custom(name, size: size, relativeTo: style)
         }

@@ -273,6 +273,7 @@ struct RoutineEditor: View {
                     }
                 }
             }
+            .paperForm()
             .scrollContentBackground(.hidden)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(isNew ? L.t("routines.new") : L.t("agent.scheduledJobs"))

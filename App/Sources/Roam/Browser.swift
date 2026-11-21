@@ -60,6 +60,10 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func prepare(_ page: WKWebView) {
+        // Paper behind a page that has not drawn yet: a blank web view is white, and flashed in dark mode.
+        page.isOpaque = false
+        page.backgroundColor = UIColor(Ink.paper)
+        page.scrollView.backgroundColor = UIColor(Ink.paper)
         page.customUserAgent = desktop ? Self.desktopAgent : Self.mobileAgent
         page.allowsBackForwardNavigationGestures = true
         page.navigationDelegate = self
