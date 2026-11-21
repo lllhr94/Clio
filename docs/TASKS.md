@@ -49,7 +49,7 @@
 - [ ] **C12 宠物画中画（先调研）**：分支 `codex/c12-pet-pip`。切出 App 后，宠物能不能用 iPhone 的画中画小窗继续显示（`AVPictureInPictureController` + 把序列帧画进 `AVSampleBufferDisplayLayer`）。先交一份调研：可行性、耗电、要不要额外权限、自签安装有没有限制；主人点头再写代码，做成「宠物设置」里的开关，默认关。
 - [x] **C13 无障碍**：分支 `codex/c13-a11y`。只有图标的按钮都要有 `accessibilityLabel`（中文）；系统字号调到最大时，设置、聊天、批准单不能截断或重叠（必要时换行或缩小间距）。列出改了哪些地方。
 
-- [ ] **C14 聊天手感的规则测试**（第一批 A～D 已做完，可以开始）：给分段规则、跟随规则、发送补位写单元测试（见该文 E 条）。
+- [x] **C14 聊天手感的规则测试**（第一批 A～D 已做完，可以开始）：给分段规则、跟随规则、发送补位写单元测试（见该文 E 条）。
 
 - [x] **C15 生图**：分支 `codex/c15-image-gen`，PR 合到 `batch-0.34`。
   1. **设置**：「模型服务」里加一项「生图模型」：从已接的服务里选一个模型（名字含 image、dall-e、flux、seedream、imagen 的排前面，也能手填模型名），可以不选。存在 `settings` 里，备份要带上（密钥照旧不进备份）。
@@ -91,7 +91,7 @@
 - 称谓词表已定稿（见 `AGENTS.md`）。
 - 界面小图标继续用 SF Symbols。
 
-- [ ] **C17 全 App 风格统一**：分支 `codex/c17-style`，PR 合到 `batch-0.34`。主人：「别每个地方的审美、风格、排版都不一样。」（`docs/FEEDBACK.md` #21）
+- [x] **C17 全 App 风格统一**：分支 `codex/c17-style`，PR 合到 `batch-0.34`。主人：「别每个地方的审美、风格、排版都不一样。」（`docs/FEEDBACK.md` #21）
   1. **范围**：`App/Sources` 下所有页面，**除了** `Reading/ChatPage.swift`、`Reading/ProseView.swift`、`Pet/`（Claude 同时在改聊天页，别碰，免得冲突）。
   2. 逐页对照 `AGENTS.md`「设计系统」：字号只用五档（不许 `.system(size: 数字)`）、间距只用 `Ink.Space`、圆角三种且 `.continuous`、颜色只用 `Ink`、列表用 `RowLabel` + `paperCard()` + `SectionTitle`、弹出页按钮（看的「好了」右上，填的「取消」左上「保存」右上）、搜索框常驻标题下、玻璃顶栏下垫纸色不透字、字体不写死（`Ink.mono` 不写 `design: .monospaced`）。
   3. **先查后改**：先在 PR 里交一张表（页面 / 不合规的地方 / 怎么改），再按表改，一页一个提交。只改样子，不改功能和文字意思。
