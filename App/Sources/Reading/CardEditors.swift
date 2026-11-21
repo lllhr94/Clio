@@ -53,6 +53,10 @@ struct BotEditor: View {
     @State private var photo: UIImage?
     @State private var photoItem: PhotosPickerItem?
     @State private var choosingPhoto = false
+    @State private var temper: Temper
+    @State private var style: SpeechStyle
+    /// "" is the first character of its name.
+    @State private var seal: String
 
     /// Ways to begin a card, for when a blank page is hard.
     private static let samples: [(title: String, role: String, words: String)] = [
@@ -72,6 +76,9 @@ struct BotEditor: View {
         _model = State(initialValue: bot?.model ?? "")
         _instructions = State(initialValue: bot?.instructions ?? "")
         _face = State(initialValue: bot?.avatar)
+        _temper = State(initialValue: Temper.of(bot))
+        _style = State(initialValue: SpeechStyle.of(bot))
+        _seal = State(initialValue: bot?.seal ?? "")
     }
 
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -104,8 +111,14 @@ struct BotEditor: View {
                                 .paperField()
                         }
 
+                        temperPicker
+
+                        stylePicker
+
+                        sealField
+
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            FieldTitle(text: "设定", note: "它是谁、怎么说话、擅长什么。写得越具体，越像它自己")
+                            FieldTitle(text: "设定", note: "它是谁、怎么说话、擅长什么。写得越具体，越像它自己；和性格有出入时以这里为准")
                             ScrollView(.horizontal) {
                                 HStack(spacing: Ink.Space.s) {
                                     ForEach(Self.samples, id: \.title) { sample in
@@ -236,6 +249,110 @@ struct BotEditor: View {
             }
         }
         .onAppear { if bot == nil { naming = true } }
+    }
+
+    /// 性格: four cards, two by two, each with its mark and one line.
+    private var temperPicker: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: L.t("companion.temper"), note: "决定它怎么想、开口前心里写什么")
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: Ink.Space.s), GridItem(.flexible(), spacing: Ink.Space.s)], spacing: Ink.Space.s) {
+                ForEach(Temper.allCases) { option in
+                    let picked = temper == option
+                    Button {
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.press) { temper = option }
+                    } label: {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                            HStack(spacing: Ink.Space.s) {
+                                Text(option.symbol).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent)
+                                Text(option.title).font(Ink.mark(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
+                                Spacer(minLength: 0)
+                                if picked { Image(systemName: "checkmark").font(.system(size: Ink.Size.small, weight: .bold)).foregroundStyle(Ink.accent) }
+                            }
+                            Text(option.line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(2)
+                            if let block = option.blockName {
+                                Text("开口前写「\(block)」").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                            } else {
+                                Text("不写心里话").font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                            }
+                        }
+                        .padding(Ink.Space.m)
+                        .frame(maxWidth: .infinity, minHeight: 88, alignment: .topLeading)
+                        .background(picked ? Ink.accentWash : Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 1.5 : 1))
+                    }
+                    .buttonStyle(TapStyle())
+                    .accessibilityLabel("\(option.title)，\(option.line)")
+                    .accessibilityAddTraits(picked ? .isSelected : [])
+                }
+            }
+        }
+    }
+
+    /// 说话风格: four capsules and a bubble saying the same thing in the chosen way.
+    private var stylePicker: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: "说话风格", note: "长短和口气，和性格叠在一起")
+            HStack(spacing: Ink.Space.s) {
+                ForEach(SpeechStyle.allCases) { option in
+                    let picked = style == option
+                    Button {
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { style = option }
+                    } label: {
+                        Text(option.title)
+                            .font(.system(size: Ink.Size.small, weight: picked ? .semibold : .medium))
+                            .foregroundStyle(picked ? Ink.paper : Ink.ink)
+                            .padding(.horizontal, Ink.Space.m)
+                            .frame(height: 32)
+                            .background(picked ? Ink.ink : Ink.paperRaised, in: .capsule)
+                            .overlay(Capsule().strokeBorder(picked ? .clear : Ink.rule, lineWidth: 1))
+                    }
+                    .buttonStyle(TapStyle())
+                    .accessibilityAddTraits(picked ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, Ink.Space.xs)
+            // The same news, as this companion would say it.
+            HStack(alignment: .top, spacing: Ink.Space.s) {
+                PetStill(size: 28, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
+                Text(style.sample)
+                    .font(Ink.reading)
+                    .foregroundStyle(Ink.ink)
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
+                    .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .contentTransition(.opacity)
+                    .id(style)
+                    .transition(.opacity)
+            }
+            .padding(.horizontal, Ink.Space.xs)
+        }
+    }
+
+    /// 朱印: the character on its seal, first of its name unless another is written.
+    private var sealField: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: "朱印", note: "盖在名帖落款上；默认是名字的第一个字")
+            HStack(spacing: Ink.Space.m) {
+                ClioSeal(size: 44, tilt: -3, character: sealShown)
+                TextField(String(trimmed.first.map(String.init) ?? "克"), text: $seal)
+                    .font(Ink.mark(Ink.Size.title))
+                    .frame(width: 60)
+                    .paperField()
+                    .onChange(of: seal) { _, typed in
+                        if typed.count > 1 { seal = String(typed.suffix(1)) }
+                    }
+                Text("只取一个字").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Ink.Space.xs)
+        }
+    }
+
+    private var sealShown: String {
+        if let first = seal.trimmingCharacters(in: .whitespaces).first { return String(first) }
+        return trimmed.first.map(String.init) ?? "克"
     }
 
     /// 头像: the default pet, a pet of its own, or a photo.
@@ -392,7 +509,8 @@ struct BotEditor: View {
                 let chosen = face
                 if chosen == "photo", let photo, let known = bot?.id { Avatars.save(photo, for: known) }
                 let id = try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: tint, model: model,
-                                                instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), avatar: chosen ?? "")
+                                                instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), avatar: chosen ?? "",
+                                                temper: temper.rawValue, style: style.rawValue, seal: seal.trimmingCharacters(in: .whitespaces))
                 if chosen == "photo", let photo, bot == nil { Avatars.save(photo, for: id) }
                 if chosen != "photo", bot?.avatar == "photo" { Avatars.forget(id) }
                 Haptics.thud()

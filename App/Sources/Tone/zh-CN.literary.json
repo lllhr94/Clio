@@ -1,4 +1,7 @@
 {
+  "companion": {
+    "temper": "性情"
+  },
   "nav": {
     "home": "窗前",
     "files": "书案",

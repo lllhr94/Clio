@@ -621,7 +621,12 @@ struct Desk: View {
                     if taken.contains(name) { name += "·二" }
                     Task {
                         do {
-                            try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions)
+                            // A pet the phone doesn't have falls back to the default; a photo comes with the card.
+                            let pet = card.pet.flatMap { face in PetLibrary.shared.packs.contains { "pet:\($0.id)" == face } ? face : nil }
+                            let picture = card.photo.flatMap(UIImage.init(data:))
+                            let id = try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions,
+                                                            avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
+                            if let picture { Avatars.save(picture, for: id) }
                             Haptics.thud()
                             notice = Words.t("收下了\(name)的名帖。")
                         } catch {

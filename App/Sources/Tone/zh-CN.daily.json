@@ -1,4 +1,7 @@
 {
+  "companion": {
+    "temper": "性格"
+  },
   "nav": {
     "home": "首页",
     "files": "文件",

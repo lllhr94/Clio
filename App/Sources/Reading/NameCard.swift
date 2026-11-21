@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// 名帖: a companion as a small file — who it is and how it talks — to keep, or to hand to someone.
 struct NameCard: Codable {
@@ -8,12 +9,27 @@ struct NameCard: Codable {
     var role: String?
     var instructions: String?
     var color: String?
+    /// Version 2: 性格, 说话风格, 朱印字 and the face (a pet id, or a small photo). Never anything it remembers.
+    var temper: String?
+    var style: String?
+    var seal: String?
+    var pet: String?
+    var photo: Data?
 
     init(_ bot: BotInfo) {
+        version = 2
         name = bot.name
         role = bot.role
         instructions = bot.instructions
         color = bot.color
+        temper = bot.temper
+        style = bot.style
+        seal = bot.seal
+        if bot.avatar == "photo" {
+            photo = Avatars.image(bot.id)?.jpegData(compressionQuality: 0.8)
+        } else if let face = bot.avatar, face.hasPrefix("pet:") {
+            pet = face
+        }
     }
 
     /// Writes the card where it can be shared from, and returns the file.
