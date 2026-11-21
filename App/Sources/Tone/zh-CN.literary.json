@@ -429,7 +429,9 @@
     "size": "大小",
     "showOnComposer": "站在输入框上",
     "quietMode": "安静模式",
-    "sizeReference": "标准的"
+    "sizeReference": "预览大小",
+    "returnToComposer": "回到输入框上",
+    "sizeStandard": "100% 是标准大小。像素宠物按清晰的整像素档位变化。"
   },
   "empty": {
     "home": "窗前清净，新纸已铺，随时落笔。",

@@ -13,6 +13,8 @@ struct ChatPage: View {
     @StateObject private var chat: ChatModel
     @StateObject private var dictation = Dictation()
     @ObservedObject private var asker = Asker.shared
+    @State private var petPerch = PetPerch()
+    @Environment(\.accessibilityReduceMotion) private var calmPetMotion
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
     /// desk made SwiftUI think the whole page had changed, and redraw all of it for every frame the sidebar slid.
     let side: SideControl
@@ -275,11 +277,6 @@ struct ChatPage: View {
                     failureCard(error)
                         .transition(.opacity.combined(with: .offset(y: 6)))
                 }
-                if let form = asker.current, form.inline, team.isWorking(chat.key) {
-                    InlineAsk(form: form)
-                        .id(form.id)
-                        .transition(.opacity.combined(with: .offset(y: 8)))
-                }
                 ForEach(team.queued[chat.key] ?? []) { item in
                     queuedRow(item)
                         .transition(.opacity.combined(with: .offset(y: 8)))
@@ -470,17 +467,38 @@ struct ChatPage: View {
         .onChange(of: chat.lines.count) { if !working { context = team.contextEstimate(chat.key) } }
     }
 
-    /// The pet, then the composer (or the find bar), on paper that fades up into the page.
+    private var dockedForm: Asker.Form? {
+        guard let form = asker.current, form.inline, team.isWorking(chat.key) else { return nil }
+        return form
+    }
+
+    /// The floating pet follows the top of this stack, including the keyboard safe area.
     private var bottomStack: some View {
         VStack(spacing: 0) {
-        // The pet stands on the composer's top edge (or the plan card's, when that is showing).
-        PetStage(mood: petMood, face: isRoom ? nil : bot.avatar) { petSettingsOpen = true }
-            .opacity(dictation.listening || finding ? 0 : 1)
-        Group {
-            if finding { findBar } else { composerBar }
-        }
-            // Paper behind the composer and the plan card, fading up into the page: text scrolling under them
-            // no longer reads through the glass.
+            PetPerchSpace(face: isRoom ? nil : bot.avatar)
+            VStack(spacing: 0) {
+                if let form = dockedForm {
+                    PetDockSlip { InlineAsk(form: form).id(form.id) }
+                        .padding(.horizontal, Ink.Bar.edge)
+                        .padding(.bottom, Ink.Space.s)
+                        .transition(.opacity)
+                }
+                if finding { findBar } else { composerBar }
+            }
+            .background(alignment: .top) {
+                PetPerchAnchor(
+                    perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
+                    showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil
+                        || (asker.current.map { !$0.inline } ?? false),
+                    covered: petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
+                    quiet: dictation.listening, enabled: PetLibrary.shared.visible
+                ) { petSettingsOpen = true }
+                .frame(height: 1)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            // Paper behind the composer and the plan card, fading up into the page.
             .background(alignment: .bottom) {
                 LinearGradient(stops: [
                     .init(color: Ink.paper.opacity(0), location: 0),
@@ -492,6 +510,12 @@ struct ChatPage: View {
                 .allowsHitTesting(false)
             }
         }
+        .animation(petDockMotion, value: dockedForm?.id)
+        .animation(petDockMotion, value: finding)
+    }
+
+    private var petDockMotion: Animation {
+        calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
     }
 
     var body: some View {
@@ -2053,7 +2077,7 @@ struct ChatPage: View {
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
-        .animation(Ink.Motion.unfold, value: waiting?.id)
+        .animation(petDockMotion, value: waiting?.id)
         .overlay(alignment: .top) {
             // Floats above the composer instead of standing in it: coming and going, it must not change the page's height.
             HStack(spacing: Ink.Space.m) {
