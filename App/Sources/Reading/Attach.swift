@@ -236,8 +236,10 @@ struct PlusSheet: View {
             .navigationTitle(L.t("chat.addToConversation"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关上")
+                if added.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L.t("actions.done")) { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Picked from the strip: the corner is where you say you're done, like any photo picker.
@@ -269,7 +271,7 @@ struct PlusSheet: View {
     private var strip: some View {
         if access == .authorized || access == .limited {
             ScrollView(.horizontal) {
-                HStack(spacing: 4) {
+                HStack(spacing: Ink.Space.xs) {
                     ForEach(recent, id: \.localIdentifier) { asset in
                         let id = asset.localIdentifier
                         Button { take(asset) } label: {
@@ -283,7 +285,7 @@ struct PlusSheet: View {
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: Ink.Size.title))
                                         .foregroundStyle(.white, Ink.accent)
-                                        .padding(6)
+                                        .padding(Ink.Space.s)
                                 }
                             }
                         }
@@ -386,7 +388,7 @@ struct PlusSheet: View {
     private func toggle(_ icon: String, _ title: String, note: String, isOn: Bool, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(spacing: Ink.Space.m) {
             Image(systemName: icon).font(.system(size: Ink.Size.title)).foregroundStyle(Ink.ink).frame(width: 28)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
             }
