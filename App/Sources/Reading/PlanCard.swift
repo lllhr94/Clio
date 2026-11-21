@@ -33,7 +33,7 @@ struct PlanCard: View {
                         .rotationEffect(.degrees(open ? 180 : 0))
                 }
                 .padding(.horizontal, Ink.Space.l)
-                .padding(.vertical, Ink.Space.s + 1)
+                .padding(.vertical, Ink.Space.s)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
