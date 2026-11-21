@@ -15,6 +15,10 @@ struct CarePage: View {
     @State private var restored = false
     @State private var notice: String?
     @State private var probes: [String: String] = [:]
+    @AppStorage(WebDAV.urlKey) private var davURL = ""
+    @AppStorage(WebDAV.userKey) private var davUser = ""
+    @State private var davPassword = WebDAV.password
+    @State private var davBusy = false
     @State private var probing = false
     @State private var copied = false
     @State private var hitchesCopied = false
@@ -35,6 +39,21 @@ struct CarePage: View {
                     Button(L.t("actions.restoreBackup")) { restoring = true }
                 } header: { Text(L.t("settings.backup")) } footer: {
                     Text(L.t("settings.backupPrivacy"))
+                }
+
+                Section {
+                    TextField(L.t("settings.davAddress"), text: $davURL)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    TextField(L.t("settings.davUser"), text: $davUser)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField(L.t("settings.davPassword"), text: $davPassword)
+                        .onChange(of: davPassword) { _, value in WebDAV.setPassword(value) }
+                    Button(davBusy ? L.t("loading.working") : L.t("actions.davUpload")) { davUpload() }
+                        .disabled(davBusy || !WebDAV.ready)
+                    Button(davBusy ? L.t("loading.working") : L.t("actions.davRestore")) { davRestore() }
+                        .disabled(davBusy || !WebDAV.ready)
+                } header: { Text(L.t("settings.davBackup")) } footer: {
+                    Text(L.t("settings.davNote"))
                 }
 
                 Section {
@@ -201,6 +220,38 @@ struct CarePage: View {
         lines += Diag.log.suffix(20)
         if !hitches.recent.isEmpty { lines.append(hitches.report.split(separator: "\n").prefix(21).joined(separator: "\n")) }
         return lines.joined(separator: "\n")
+    }
+
+    private func davUpload() {
+        davBusy = true
+        let ids = team.settings.endpoints.map(\.id)
+        let keys = withKeys
+        Task {
+            do {
+                let (url, summary) = try await Task.detached { try Backup.make(withKeys: keys, endpoints: ids) }.value
+                try await WebDAV.upload(url)
+                notice = "备份到网盘了：\(url.lastPathComponent)，\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。"
+            } catch {
+                notice = "没备份成：\(error.localizedDescription)"
+            }
+            davBusy = false
+        }
+    }
+
+    private func davRestore() {
+        davBusy = true
+        Task {
+            do {
+                guard let newest = try await WebDAV.list().first else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
+                let file = try await WebDAV.download(newest)
+                let summary = try Backup.restore(from: file)
+                restored = true
+                notice = "从网盘恢复了「\(newest)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
+            } catch {
+                notice = "没恢复成：\(error.localizedDescription)"
+            }
+            davBusy = false
+        }
     }
 
     private func make() {

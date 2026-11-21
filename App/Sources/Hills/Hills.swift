@@ -113,7 +113,17 @@ final class Hills: ObservableObject {
     /// A command ran past its time.
     struct TimedOut: LocalizedError {
         let seconds: Int
+        /// What it printed before the time ran out: handed back, so the model knows how far it got (Open Minis).
+        var output: String = ""
         var errorDescription: String? { "超过 \(seconds) 秒没跑完。长任务可以放到后台跑。" }
+    }
+
+    /// Output gathered while a command runs, readable by the timer that may cut it short.
+    private final class Gathered: @unchecked Sendable {
+        private let lock = NSLock()
+        private var text = ""
+        func add(_ piece: String) { lock.withLock { if text.count < 200_000 { text += piece } } }
+        var value: String { lock.withLock { text } }
     }
 
     /// Runs one command on a kept connection. A connection that has dropped is made again, up to twice;
@@ -133,7 +143,8 @@ final class Hills: ObservableObject {
     }
 
     private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, fresh: Bool, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
-        try await withThrowingTaskGroup(of: Outcome.self) { group in
+        let gathered = Gathered()
+        return try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
                 // A failure to log in is a real answer (wrong password, host down), never retried; only a kept connection
                 // that will not open a channel any more counts as stale.
@@ -154,6 +165,7 @@ final class Hills: ObservableObject {
                         case .stdout(let buffer), .stderr(let buffer):
                             let piece = String(buffer: buffer)
                             output += piece
+                            gathered.add(piece)
                             if let onOutput {
                                 for line in piece.split(separator: "\n", omittingEmptySubsequences: true) { onOutput(String(line)) }
                             }
@@ -168,7 +180,7 @@ final class Hills: ObservableObject {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw TimedOut(seconds: Int(timeout))
+                throw TimedOut(seconds: Int(timeout), output: gathered.value)
             }
             let first = try await group.next()!
             group.cancelAll()

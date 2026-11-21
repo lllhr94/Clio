@@ -379,6 +379,9 @@ enum Notify {
         content.body = String(body.prefix(180))
         content.sound = .default
         content.userInfo = ["chat": chat]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        // One notification per conversation, replaced in place: a companion finishing several times while you are
+        // away leaves one up-to-date line, not a stack (Open Minis found scheduled runs filling the list).
+        content.threadIdentifier = "chat-\(chat)"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "done-\(chat)", content: content, trigger: nil))
     }
 }

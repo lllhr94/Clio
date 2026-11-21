@@ -55,7 +55,11 @@ enum Backup {
             }
             if let data = try? JSONEncoder().encode(keys) { add("#keys", data) }
         }
-        let stamp = Date().formatted(.iso8601.year().month().day())
+        // Date and time in the name, so backups sort and several a day do not replace each other on a drive.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmm"
+        let stamp = formatter.string(from: Date())
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
         try out.write(to: url, options: .atomic)
         return (url, Summary(files: count, bytes: out.count))
