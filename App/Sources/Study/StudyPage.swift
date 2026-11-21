@@ -197,6 +197,11 @@ struct StudyFile: View {
     private var ext: String { url.pathExtension.lowercased() }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
+    private var longPlainText: String? {
+        // Keep the formatted preview for short snippets. A large TXT can create thousands of prose views.
+        guard ext == "txt", let text, text.utf8.count >= 64 * 1024 else { return nil }
+        return text
+    }
 
     var body: some View {
         ZStack {
@@ -208,6 +213,10 @@ struct StudyFile: View {
                         .scaledToFit()
                         .containerRelativeFrame(.horizontal)
                 }
+            } else if let longPlainText {
+                LongTextPreview(text: longPlainText)
+                    .id(url)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let text, table, !plain {
                 TableGrid(rows: CSV.rows(text, separator: ext == "tsv" ? "\t" : ","))
             } else if let text {
@@ -237,11 +246,12 @@ struct StudyFile: View {
                 }
             }
         }
+        .hitchPage("书案")
         .navigationTitle(url.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if (markdown || table) && text != nil {
+                if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
                 ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
@@ -267,6 +277,27 @@ struct StudyFile: View {
               let data = try? Data(contentsOf: url), data.count < 2_000_000 else { return (nil, nil) }
         return (nil, String(data: data, encoding: .utf8))
     }
+}
+
+/// The text view owns scrolling so TextKit 2 can lay out the visible range without sizing the whole document.
+private struct LongTextPreview: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(usingTextLayoutManager: true)
+        view.isEditable = false
+        view.isSelectable = true
+        view.backgroundColor = .clear
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainerInset = UIEdgeInsets(top: Ink.Space.l, left: Ink.Space.page,
+                                              bottom: Ink.Space.l, right: Ink.Space.page)
+        view.font = Ink.uiMono(max(12, Pref.size - 3))
+        view.textColor = UIColor(Ink.ink)
+        view.text = text
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {}
 }
 
 /// Comma- or tab-separated text as rows of cells. Quotes may hold separators, line breaks and doubled quotes.
