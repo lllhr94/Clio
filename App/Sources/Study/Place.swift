@@ -104,34 +104,34 @@ struct LocalDeskHost: WorkspaceHost {
         try await DenHost().execStream(command, timeout: timeout, onOutput: onOutput)
     }
 
-    func readFile(_ path: String) async throws -> Data {
+    nonisolated func readFile(_ path: String) async throws -> Data {
         let url = try file(path)
         var isFolder: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue else { throw WorkspaceError.missing(path) }
         return try Data(contentsOf: url)
     }
 
-    func writeFile(_ path: String, _ data: Data) async throws {
+    nonisolated func writeFile(_ path: String, _ data: Data) async throws {
         let url = try file(path)
         guard Workspace.relative(url) != "/" else { throw WorkspaceError.cannot("要写到哪个文件？") }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
     }
 
-    func removeFile(_ path: String) async throws {
+    nonisolated func removeFile(_ path: String) async throws {
         let url = try file(path)
         guard Workspace.relative(url) != "/" else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
-    func listDir(_ path: String, depth: Int) async throws -> String {
+    nonisolated func listDir(_ path: String, depth: Int) async throws -> String {
         let folder = try file(path)
         guard FileManager.default.fileExists(atPath: folder.path) else { throw WorkspaceError.missing(path) }
         let name = Workspace.relative(folder)
         return "书案/" + (name == "/" ? "" : name) + "\n" + Workspace.listing(folder, depth: max(1, min(depth, 4)))
     }
 
-    func glob(_ pattern: String, in path: String) async throws -> [String] {
+    nonisolated func glob(_ pattern: String, in path: String) async throws -> [String] {
         let folder = try file(path)
         guard let regex = Glob.regex(pattern) else { throw WorkspaceError.cannot("看不懂这个通配符：\(pattern)") }
         let byName = !pattern.contains("/")
@@ -144,7 +144,7 @@ struct LocalDeskHost: WorkspaceHost {
         .map(\.path)
     }
 
-    func grep(_ pattern: String, in path: String, include: String?, ignoreCase: Bool) async throws -> [String] {
+    nonisolated func grep(_ pattern: String, in path: String, include: String?, ignoreCase: Bool) async throws -> [String] {
         let place = try file(path)
         let options: NSRegularExpression.Options = ignoreCase ? [.caseInsensitive] : []
         let regex = (try? NSRegularExpression(pattern: pattern, options: options)) ?? (try! NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: pattern), options: options))
@@ -165,7 +165,7 @@ struct LocalDeskHost: WorkspaceHost {
         return hits
     }
 
-    func viewImage(_ path: String) async throws -> (image: ImagePart, width: Int, height: Int) {
+    nonisolated func viewImage(_ path: String) async throws -> (image: ImagePart, width: Int, height: Int) {
         let url = try file(path)
         guard FileManager.default.fileExists(atPath: url.path) else { throw WorkspaceError.missing(path) }
         guard let shot = Workspace.picture(url) else { throw WorkspaceError.cannot("\(path) 打不开，可能不是图片。") }

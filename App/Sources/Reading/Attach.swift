@@ -38,16 +38,19 @@ struct DeskPicker: View {
     @State private var all: [(path: String, date: Date, size: Int)] = []
     @State private var chosen: Set<String> = []
     @State private var query = ""
+    @State private var loadingDesk = true
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Ink.paper.ignoresSafeArea()
-                if all.isEmpty {
+                if loadingDesk {
+                    ProgressView(L.t("loading.generic"))
+                } else if all.isEmpty {
                     EmptyNote(symbol: "books.vertical", words: Words.t("书案还空着。"))
                 } else {
                     ScrollView {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(shown, id: \.path) { item in
                                 Button {
                                     Haptics.tick(0.4)
@@ -85,7 +88,12 @@ struct DeskPicker: View {
                 }
             }
         }
-        .onAppear(perform: load)
+        .task {
+            let files = await Task.detached(priority: .utility) { Self.readFiles() }.value
+            guard !Task.isCancelled else { return }
+            all = files
+            loadingDesk = false
+        }
     }
 
     private var shown: [(path: String, date: Date, size: Int)] {
@@ -93,7 +101,7 @@ struct DeskPicker: View {
         return words.isEmpty ? all : all.filter { $0.path.localizedCaseInsensitiveContains(words) }
     }
 
-    private func load() {
+    nonisolated private static func readFiles() -> [(path: String, date: Date, size: Int)] {
         let root = Workspace.root
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         var found: [(path: String, date: Date, size: Int)] = []
@@ -104,7 +112,7 @@ struct DeskPicker: View {
                 if found.count > 2000 { break }
             }
         }
-        all = found.sorted { $0.date > $1.date }
+        return found.sorted { $0.date > $1.date }
     }
 }
 

@@ -29,7 +29,7 @@ def fixture() -> str:
     # Keep the source's Task and cancellation checks. Substitute only the sleep
     # call so tests can advance each delay without racing the runner's clock.
     schedule, sleeps = re.subn(r"\bTask\.sleep\(", "clock.sleep(", member(chat, "followToEnd"))
-    if sleeps != 2:
+    if sleeps != 1:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     fragments = {

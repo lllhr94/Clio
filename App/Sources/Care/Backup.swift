@@ -64,6 +64,7 @@ enum Backup {
 
     /// Reads a backup and puts every file back in place. Existing files with the same name are replaced.
     static func restore(from url: URL) throws -> Summary {
+        ChatDisk.finishWrites()
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)

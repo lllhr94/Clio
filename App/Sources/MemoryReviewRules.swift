@@ -22,12 +22,12 @@ struct MemoryReviewLog: Codable, Identifiable, Sendable {
     var added: [Addition]
     var merged: [Change]
 
-    struct Addition: Codable {
+    struct Addition: Codable, Sendable {
         var memoryID: String
         var text: String
     }
 
-    struct Change: Codable {
+    struct Change: Codable, Sendable {
         var memoryID: String
         var before: String
         var after: String
