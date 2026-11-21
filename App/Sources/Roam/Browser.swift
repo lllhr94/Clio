@@ -77,8 +77,11 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
                 if let image { continuation.resume(returning: image) } else { continuation.resume(throwing: error ?? ProviderError("截不了图")) }
             }
         }
-        guard let full = image.jpegData(compressionQuality: 0.9), let shot = Picture.shrink(full, longest: 1280) else { throw ProviderError("截图没存下来") }
-        return shot.data
+        let jpeg = await Task.detached(priority: .userInitiated) {
+            image.jpegData(compressionQuality: 0.9).flatMap { Picture.shrink($0, longest: 1280)?.data }
+        }.value
+        guard let jpeg else { throw ProviderError("截图没存下来") }
+        return jpeg
     }
 
     func back() async {
@@ -169,6 +172,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         }
         let configuration = WKSnapshotConfiguration()
         configuration.snapshotWidth = 180
+        configuration.afterScreenUpdates = false
         view.takeSnapshot(with: configuration) { [weak self] image, _ in
             MainActor.assumeIsolated {
                 if let image { self?.still = image }

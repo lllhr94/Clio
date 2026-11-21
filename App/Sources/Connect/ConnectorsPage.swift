@@ -55,11 +55,8 @@ struct ConnectorsPage: View {
                     categories
                         .padding(.horizontal, Ink.Space.page)
                         .padding(.vertical, Ink.Space.s)
-                        .background {
-                            LinearGradient(stops: [.init(color: Ink.paper, location: 0.75), .init(color: Ink.paper.opacity(0), location: 1)],
-                                           startPoint: .top, endPoint: .bottom)
-                                .ignoresSafeArea(edges: .top)
-                        }
+                        .frame(maxWidth: .infinity)
+                        .background { Ink.paper.ignoresSafeArea(edges: .top) }
                 }
             }
             .background(Ink.paper.ignoresSafeArea())

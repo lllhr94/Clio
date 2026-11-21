@@ -140,15 +140,19 @@ struct RoutinesPage: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if team.routines.isEmpty {
                         EmptyNote(symbol: "alarm", words: L.t("empty.createScheduledJob"))
                     } else {
-                        RowCard {
-                            ForEach(team.routines) { routine in row(routine) }
+                        LazyVStack(spacing: 0) {
+                            ForEach(team.routines) { routine in
+                                row(routine)
+                                if routine.id != team.routines.last?.id { Kit.divider }
+                            }
                         }
+                        .paperCard()
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)

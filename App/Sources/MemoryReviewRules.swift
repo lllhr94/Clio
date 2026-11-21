@@ -1,7 +1,7 @@
 import Foundation
 
 /// Something the user told a Bot to remember about them.
-struct Memory: Codable, Identifiable, Equatable {
+struct Memory: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var text: String
     var at: Double
@@ -14,7 +14,7 @@ struct Memory: Codable, Identifiable, Equatable {
     var editedByUser: Bool?
 }
 
-struct MemoryReviewLog: Codable, Identifiable {
+struct MemoryReviewLog: Codable, Identifiable, Sendable {
     var id: UUID
     var at: Date
     var day: String
@@ -22,12 +22,12 @@ struct MemoryReviewLog: Codable, Identifiable {
     var added: [Addition]
     var merged: [Change]
 
-    struct Addition: Codable {
+    struct Addition: Codable, Sendable {
         var memoryID: String
         var text: String
     }
 
-    struct Change: Codable {
+    struct Change: Codable, Sendable {
         var memoryID: String
         var before: String
         var after: String
@@ -35,7 +35,7 @@ struct MemoryReviewLog: Codable, Identifiable {
 }
 
 /// Written atomically with the memories so a restart cannot replay half an update.
-struct MemoryBook: Codable {
+struct MemoryBook: Codable, Sendable {
     var memories: [Memory] = []
     var reviews: [MemoryReviewLog] = []
     var processed: [String: Set<String>] = [:]

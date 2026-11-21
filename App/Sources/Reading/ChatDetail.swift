@@ -5,7 +5,7 @@ import SwiftUI
 /// changed; below, the steps in order, the files, and how full the context is.
 struct ChatDetail: View {
     @ObservedObject var team: TeamModel
-    @ObservedObject var chat: ChatModel
+    let chat: ChatModel
     let title: String
     /// The companion this conversation is with; nil for a gathering.
     var bot: BotInfo? = nil
@@ -212,15 +212,17 @@ struct ChatDetail: View {
 extension ChatDetail {
     /// The conversation as a Markdown file in the temporary folder: what was said, what was done; notes and
     /// tool output stay out. Never the vault.
-    func exportFile() -> URL {
-        let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
-        try? team.markdown(chat.key, title: title).write(to: url, atomically: true, encoding: .utf8)
-        return url
-    }
+    func exportFile() -> URL { team.exportChat(chat.key, title: title) }
 }
 
 extension TeamModel {
+    func exportChat(_ key: String, title: String) -> URL {
+        let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
+        try? markdown(key, title: title).write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
     func markdown(_ key: String, title: String) -> String {
         let when = DateFormatter()
         when.dateFormat = "yyyy-MM-dd HH:mm"

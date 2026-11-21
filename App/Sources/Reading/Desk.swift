@@ -31,6 +31,8 @@ struct ClioRoot: View {
             Ink.paper.ignoresSafeArea()
             if let shot = Shots.name, ShotSettingsPage.names.contains(shot) {
                 ShotSettingsPage(name: shot, team: team)
+            } else if team.loading {
+                ProgressView(L.t("loading.generic"))
             } else if team.phase == .setup && !introSeen {
                 SetupView(team: team, first: true, welcomeOnly: true) { introSeen = true }
                     .transition(.blurReplace)
@@ -81,11 +83,13 @@ struct ClioRoot: View {
                 MemoryNight.cancelForeground()
                 MemoryNight.schedule()
                 team.leaving()
+                ChatDisk.finishBeforeSuspension()
                 Hitches.shared.save()
                 WidgetFeed.publish(team)
             }
         }
         .task {
+            await team.prepare()
             team.wake()
             MemoryNight.tick()
             // Messages set for later land in their chats while the app is open too.
