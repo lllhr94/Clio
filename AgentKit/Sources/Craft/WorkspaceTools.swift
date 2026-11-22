@@ -94,7 +94,7 @@ public enum WorkspaceTools {
                     }
                     let state = try await host.checkJob(job, lines: min(400, max(5, (arguments["lines"]?.int ?? 40))))
                     let head = state.running ? "还在跑。" : "跑完了，退出码 \(state.exit.map(String.init) ?? "不明")。"
-                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : hide(Shell.clip(state.tail))))
+                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : Shell.clip(hide(state.tail))))
                 } catch {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
@@ -111,8 +111,8 @@ public enum WorkspaceTools {
             }
             let timeout = min(600, max(5, arguments["timeout"]?.number ?? 120))
             do {
-                let result = try await host.execStream(command, timeout: timeout, onOutput: kit.tail)
-                let text = hide(Shell.clip(result.output))
+                let result = try await host.execStream(command, timeout: timeout, onOutput: { kit.tail(hide($0)) })
+                let text = Shell.clip(hide(result.output))
                 if result.timedOut {
                     let hint = host.canBackground ? "要跑很久的命令可以带 background: true 放到后台。" : ""
                     return ToolOutput((text.isEmpty ? "" : text + "\n") + "（超过 \(Int(timeout)) 秒没跑完，已经停掉。\(hint)）", isError: true)
@@ -143,7 +143,7 @@ public enum WorkspaceTools {
                 if slice.isEmpty { return ToolOutput("文件只有 \(all.count) 行。", isError: true) }
                 let numbered = slice.enumerated().map { "\(start + $0.offset)\t\($0.element)" }.joined(separator: "\n")
                 let more = start - 1 + slice.count < all.count ? "\n……共 \(all.count) 行，后面还有。" : ""
-                return ToolOutput(Shell.mask(Shell.clip(numbered), secrets: kit.secrets()) + more)
+                return ToolOutput(Shell.clip(Shell.mask(numbered, secrets: kit.secrets())) + more)
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
@@ -160,12 +160,15 @@ public enum WorkspaceTools {
                 let before = (try? await host.readFile(target)).flatMap { String(data: $0, encoding: .utf8) }
                 try await host.writeFile(target, Data(content.utf8))
                 let change = FileChange(before: before, after: content)
+                let secrets = kit.secrets()
+                let maskedFull = Shell.mask(change.diff.full, secrets: secrets)
                 if before == nil {
                     let lines = content.components(separatedBy: "\n").count
-                    return ToolOutput("新建了 \(target)：−0 +\(lines) 行（\(HostEdit.size(content.utf8.count))）", detail: change.diff.full)
+                    return ToolOutput("新建了 \(target)：−0 +\(lines) 行（\(HostEdit.size(content.utf8.count))）", detail: maskedFull)
                 }
                 if change.diff.text.isEmpty { return ToolOutput("\(target) 内容没变。") }
-                return ToolOutput("改写了 \(target)：−\(change.diff.removed) +\(change.diff.added) 行\n" + change.diff.text, detail: change.diff.full)
+                let maskedText = Shell.mask(change.diff.text, secrets: secrets)
+                return ToolOutput("改写了 \(target)：−\(change.diff.removed) +\(change.diff.added) 行\n" + maskedText, detail: maskedFull)
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
@@ -178,7 +181,8 @@ public enum WorkspaceTools {
             do {
                 await kit.beforeChange(host, target)
                 let change = try await host.editFile(target, old: arguments["old"]?.string ?? "", new: arguments["new"]?.string ?? "")
-                return ToolOutput("改好了 \(target)：−\(change.diff.removed) +\(change.diff.added) 行\n" + change.diff.text, detail: change.diff.full)
+                let secrets = kit.secrets()
+                return ToolOutput("改好了 \(target)：−\(change.diff.removed) +\(change.diff.added) 行\n" + Shell.mask(change.diff.text, secrets: secrets), detail: Shell.mask(change.diff.full, secrets: secrets))
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
@@ -218,7 +222,7 @@ public enum WorkspaceTools {
                 guard !hits.isEmpty else { return ToolOutput("没搜到「\(pattern)」。") }
                 let lines = hits.prefix(300).map { $0.count > 240 ? String($0.prefix(240)) + "…" : $0 }
                 let text = "搜到 \(hits.count) 处\(hits.count >= 300 ? "（只列前 300 处）" : "")：\n" + lines.joined(separator: "\n")
-                return ToolOutput(Shell.mask(Shell.clip(text), secrets: kit.secrets()))
+                return ToolOutput(Shell.clip(Shell.mask(text, secrets: kit.secrets())))
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }

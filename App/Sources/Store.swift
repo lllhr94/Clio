@@ -62,9 +62,10 @@ enum Vault {
         ]
         SecItemDelete(query as CFDictionary)
         try? FileManager.default.removeItem(at: file(key))
+        forget()
     }
 
-    /// Every secret kept here that is a plain string (passwords, API keys, tokens), for hiding them from what a model reads.
+    /// Every secret kept here (passwords, API keys, OAuth tokens, SSH private keys), for hiding them from what a model reads.
     /// Read again at most every few seconds.
     nonisolated static func allStrings() -> [String] {
         lock.lock()
@@ -79,20 +80,39 @@ enum Vault {
         ]
         var found: CFTypeRef?
         if SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let list = found as? [Data] {
-            for data in list {
-                if let text = try? JSONDecoder().decode(String.self, from: data), !text.isEmpty { values.append(text) }
-            }
+            for data in list { extractSecrets(from: data, into: &values) }
         }
         // Secrets that fell back to files when the Keychain refused them.
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         if let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) {
             for name in names where name.hasPrefix("link-") && name.hasSuffix(".json") {
-                if let data = try? Data(contentsOf: folder.appendingPathComponent(name)),
-                   let text = try? JSONDecoder().decode(String.self, from: data), !text.isEmpty { values.append(text) }
+                if let data = try? Data(contentsOf: folder.appendingPathComponent(name)) {
+                    extractSecrets(from: data, into: &values)
+                }
             }
         }
         cached = (Date(), values)
         return values
+    }
+
+    nonisolated private static func extractSecrets(from data: Data, into values: inout [String]) {
+        if let text = try? JSONDecoder().decode(String.self, from: data), !text.isEmpty {
+            values.append(text)
+            return
+        }
+        if let raw = try? JSONDecoder().decode(Data.self, from: data), !raw.isEmpty {
+            // OAuth blobs (e.g. MCPAuth.Saved) are stored as JSON-encoded Data.
+            if let object = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] {
+                for key in ["access", "refresh", "clientSecret", "access_token", "refresh_token", "client_secret"] {
+                    if let secret = object[key] as? String, !secret.isEmpty { values.append(secret) }
+                }
+                return
+            }
+            // Binary secrets such as the Ed25519 SSH private key (`hill.key`).
+            let b64 = raw.base64EncodedString()
+            if !b64.isEmpty { values.append(b64) }
+            if let text = String(data: raw, encoding: .utf8), !text.isEmpty { values.append(text) }
+        }
     }
 
     private static let lock = NSLock()

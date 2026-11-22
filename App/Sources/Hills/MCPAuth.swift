@@ -123,9 +123,22 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
 
     // MARK: Finding the sign-in server
 
+    nonisolated private static func requirePublicHTTPS(_ urlString: String, label: String = "地址") async throws -> URL {
+        guard let target = URL(string: urlString),
+              target.scheme?.lowercased() == "https",
+              let host = target.host, !host.isEmpty else {
+            throw ProviderError("\(label)必须是 https 公网地址。")
+        }
+        if LocalAddress.isLocal(target) || await LocalAddress.resolvesToLocal(target) {
+            throw ProviderError("\(label)指向本机或局域网，已拒绝。")
+        }
+        return target
+    }
+
     nonisolated private static func discover(_ url: String) async throws -> Ends {
-        guard let target = URL(string: url), let host = target.host else { throw ProviderError("地址不对。") }
-        let origin = "\(target.scheme ?? "https")://\(host)\(target.port.map { ":\($0)" } ?? "")"
+        let target = try await requirePublicHTTPS(url, label: "服务地址")
+        guard let host = target.host else { throw ProviderError("地址不对。") }
+        let origin = "https://\(host)\(target.port.map { ":\($0)" } ?? "")"
         let path = target.path == "/" ? "" : target.path
 
         // 1. The service says where its sign-in server is: in the 401's header, or at its well-known address.
@@ -137,15 +150,20 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
         let scopes = metadata?["scopes_supported"]?.array?.compactMap(\.string) ?? []
 
         // 2. The sign-in server's own description.
-        guard let issuerURL = URL(string: issuer), let issuerHost = issuerURL.host else { throw ProviderError("登录服务器地址不对：\(issuer)") }
-        let issuerOrigin = "\(issuerURL.scheme ?? "https")://\(issuerHost)\(issuerURL.port.map { ":\($0)" } ?? "")"
+        let issuerURL = try await requirePublicHTTPS(issuer, label: "登录服务器地址")
+        guard let issuerHost = issuerURL.host else { throw ProviderError("登录服务器地址不对：\(issuer)") }
+        let issuerOrigin = "https://\(issuerHost)\(issuerURL.port.map { ":\($0)" } ?? "")"
         let issuerPath = issuerURL.path == "/" ? "" : issuerURL.path
         var candidates = [issuerOrigin + "/.well-known/oauth-authorization-server" + issuerPath,
                           issuerOrigin + "/.well-known/openid-configuration" + issuerPath]
         if !issuerPath.isEmpty { candidates.append(issuer + "/.well-known/openid-configuration") }
         for candidate in candidates {
             if let found = await getJSON(candidate), let authorize = found["authorization_endpoint"]?.string, let token = found["token_endpoint"]?.string {
-                return Ends(authorize: authorize, token: token, register: found["registration_endpoint"]?.string, scopes: scopes)
+                _ = try await requirePublicHTTPS(authorize, label: "授权地址")
+                _ = try await requirePublicHTTPS(token, label: "令牌地址")
+                let register = found["registration_endpoint"]?.string
+                if let register { _ = try await requirePublicHTTPS(register, label: "登记地址") }
+                return Ends(authorize: authorize, token: token, register: register, scopes: scopes)
             }
         }
         // 3. Older services: the usual paths on the service itself.
@@ -154,7 +172,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
 
     /// `WWW-Authenticate: Bearer resource_metadata="…"` from an unsigned request.
     nonisolated private static func resourcePointer(_ url: String) async -> String? {
-        guard let target = URL(string: url) else { return nil }
+        guard let target = try? await requirePublicHTTPS(url) else { return nil }
         var request = URLRequest(url: target, timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -170,7 +188,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
 
     /// Dynamic client registration: Clio introduces itself and gets a client id of its own.
     nonisolated private static func register(at endpoint: String) async throws -> Client {
-        guard let target = URL(string: endpoint) else { throw ProviderError("登记地址不对。") }
+        let target = try await requirePublicHTTPS(endpoint, label: "登记地址")
         var request = URLRequest(url: target, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -192,7 +210,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
     }
 
     nonisolated private static func getJSON(_ url: String) async -> JSONValue? {
-        guard let target = URL(string: url) else { return nil }
+        guard let target = try? await requirePublicHTTPS(url) else { return nil }
         var request = URLRequest(url: target, timeoutInterval: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
@@ -204,7 +222,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
     }
 
     nonisolated private static func post(_ url: String, form: [String: String]) async throws -> JSONValue {
-        guard let target = URL(string: url) else { throw ProviderError("地址不对。") }
+        let target = try await requirePublicHTTPS(url, label: "令牌地址")
         var request = URLRequest(url: target, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

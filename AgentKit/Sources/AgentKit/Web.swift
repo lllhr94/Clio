@@ -1,5 +1,10 @@
 import Foundation
 import NaturalLanguage
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Turns web pages into text a model can read, and search result pages into a list.
 public enum WebText {
@@ -14,9 +19,22 @@ public enum WebText {
         public var snippet: String
     }
 
+    private static let regexLock = NSLock()
+    nonisolated(unsafe) private static var regexCache: [String: NSRegularExpression] = [:]
+
     private static func regex(_ pattern: String) -> NSRegularExpression {
+        regexLock.lock()
+        if let cached = regexCache[pattern] {
+            regexLock.unlock()
+            return cached
+        }
+        regexLock.unlock()
         // swiftlint:disable:next force_try
-        try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        let compiled = try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        regexLock.lock()
+        regexCache[pattern] = compiled
+        regexLock.unlock()
+        return compiled
     }
 
     private static func replace(_ text: String, _ pattern: String, with template: String) -> String {
@@ -46,11 +64,24 @@ public enum WebText {
         for (name, value) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&ensp;", " "), ("&emsp;", " "), ("&mdash;", "—"), ("&ndash;", "–"), ("&hellip;", "…"), ("&middot;", "·"), ("&ldquo;", "“"), ("&rdquo;", "”"), ("&lsquo;", "‘"), ("&rsquo;", "’"), ("&copy;", "©")] {
             out = out.replacingOccurrences(of: name, with: value)
         }
-        for match in all(out, "&#(x?)([0-9a-f]+);").reversed() {
-            let value = match[1].isEmpty ? UInt32(match[2]) : UInt32(match[2], radix: 16)
-            if let value, let scalar = Unicode.Scalar(value) {
-                out = out.replacingOccurrences(of: match[0], with: String(Character(scalar)))
+        let numeric = regex("&#(?:x([0-9a-f]+)|([0-9]+));")
+        let matches = numeric.matches(in: out, range: NSRange(out.startIndex..., in: out))
+        if !matches.isEmpty {
+            let mutable = NSMutableString(string: out)
+            for match in matches.reversed() {
+                let value: UInt32?
+                if match.range(at: 1).location != NSNotFound, let r = Range(match.range(at: 1), in: out) {
+                    value = UInt32(out[r], radix: 16)
+                } else if match.range(at: 2).location != NSNotFound, let r = Range(match.range(at: 2), in: out) {
+                    value = UInt32(out[r], radix: 10)
+                } else {
+                    value = nil
+                }
+                if let value, let scalar = Unicode.Scalar(value) {
+                    mutable.replaceCharacters(in: match.range, with: String(Character(scalar)))
+                }
             }
+            out = mutable as String
         }
         return out.replacingOccurrences(of: "&amp;", with: "&")
     }
@@ -61,12 +92,49 @@ public enum WebText {
         return bare.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
+    /// Linear-time removal of `<tag ...>...</tag>` blocks, immune to quadratic regex backtracking on unclosed tags.
+    private static func stripBlock(_ html: String, tag: String) -> String {
+        let openToken = "<" + tag
+        let closeToken = "</" + tag
+        var out = ""
+        out.reserveCapacity(html.count)
+        var cursor = html.startIndex
+        while cursor < html.endIndex {
+            guard let openRange = html.range(of: openToken, options: .caseInsensitive, range: cursor..<html.endIndex) else {
+                out.append(contentsOf: html[cursor...])
+                break
+            }
+            let afterName = openRange.upperBound
+            let isWordBoundary = afterName == html.endIndex || !html[afterName].isLetter && !html[afterName].isNumber
+            guard isWordBoundary else {
+                out.append(contentsOf: html[cursor..<afterName])
+                cursor = afterName
+                continue
+            }
+            guard let openEnd = html.range(of: ">", range: afterName..<html.endIndex) else {
+                out.append(contentsOf: html[cursor...])
+                break
+            }
+            guard let closeRange = html.range(of: closeToken, options: .caseInsensitive, range: openEnd.upperBound..<html.endIndex),
+                  let closeEnd = html.range(of: ">", range: closeRange.upperBound..<html.endIndex) else {
+                out.append(contentsOf: html[cursor..<openRange.lowerBound])
+                out.append(" ")
+                cursor = openEnd.upperBound
+                continue
+            }
+            out.append(contentsOf: html[cursor..<openRange.lowerBound])
+            out.append(" ")
+            cursor = closeEnd.upperBound
+        }
+        return out
+    }
+
     /// The readable text of a page, its paragraphs kept apart.
     public static func page(_ html: String) -> Page {
         let title = first(html, "<title[^>]*>(.*?)</title>").map(plain) ?? ""
         var body = first(html, "<body[^>]*>(.*)</body>") ?? html
         for tag in ["script", "style", "noscript", "svg", "template", "nav", "footer", "iframe", "form", "button", "select"] {
-            body = replace(body, "<\(tag)\\b[^>]*>.*?</\(tag)>", with: " ")
+            body = stripBlock(body, tag: tag)
         }
         body = replace(body, "<!--.*?-->", with: " ")
         body = replace(body, "<li\\b[^>]*>", with: "\n• ")
@@ -160,6 +228,9 @@ enum WebFetch {
         request.setValue(agent, forHTTPHeaderField: "User-Agent")
         request.setValue("zh-CN,zh;q=0.9,en;q=0.7", forHTTPHeaderField: "Accept-Language")
         request.setValue("text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        if LocalAddress.isLocal(url) || await LocalAddress.resolvesToLocal(url) {
+            throw ProviderError(LocalAddress.refusal)
+        }
         // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to a
         // local or home-network address is not followed (the request would already reach the router or the NAS).
         let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic())
@@ -189,6 +260,7 @@ enum WebFetch {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
             guard let next = request.url, !LocalAddress.isLocal(next) else { return nil }
+            if await LocalAddress.resolvesToLocal(next) { return nil }
             return request
         }
     }
@@ -307,27 +379,79 @@ public struct WebSearchTool: AgentTool {
 }
 
 /// Addresses on this phone or its local network. Tools the model drives do not go there: a page could use them
-/// to reach the router, a printer, or a service on the phone. Only the address as written is checked, not what a name resolves to.
+/// to reach the router, a printer, or a service on the phone.
 public enum LocalAddress {
     public static let refusal = "这是本机或局域网里的地址，网页工具不去这种地方，只开公网网址。真要看，请用户自己在远游的地址栏里打开。"
 
     public static func isLocal(_ url: URL) -> Bool {
         guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
         if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+        if let zone = host.firstIndex(of: "%") { host = String(host[..<zone]) }
         if host.hasSuffix(".") { host.removeLast() }
         if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") || host.hasSuffix(".lan")
-            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || !host.contains(".") && !host.contains(":") {
+            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || (!host.contains(".") && !host.contains(":")) {
             return true
         }
         if host.contains(":") { return isLocalV6(host) }
-        // Numbers only (1.2.3.4, but also 2130706433 or 0x7f.1, which browsers read as addresses too).
-        let lastIsNumber = host.split(separator: ".").last?.allSatisfy(\.isNumber) == true
-        let numeric = lastIsNumber && host.first?.isNumber == true
-            && host.allSatisfy { $0.isNumber || $0 == "." || $0 == "x" || ("a"..."f").contains($0) }
-        guard numeric else { return false }
-        let bytes = host.split(separator: ".", omittingEmptySubsequences: false).compactMap { UInt8($0) }
-        guard bytes.count == 4, host.split(separator: ".", omittingEmptySubsequences: false).count == 4 else { return true }
-        return isLocalV4(bytes)
+        // Standard dotted-quad, shorthand (127.1), decimal integer (2130706433), hex (0x7f.0x1), octal (0177.0.0.1).
+        var addr4 = in_addr()
+        if inet_aton(host, &addr4) != 0 {
+            let bytes = withUnsafeBytes(of: &addr4) { Array($0) }
+            return bytes.count == 4 ? isLocalV4(bytes) : true
+        }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let numeric = !parts.isEmpty && parts.allSatisfy { part in
+            guard !part.isEmpty else { return false }
+            if part.hasPrefix("0x") {
+                let hex = part.dropFirst(2)
+                return !hex.isEmpty && hex.allSatisfy(\.isHexDigit)
+            }
+            return part.allSatisfy(\.isNumber)
+        }
+        return numeric
+    }
+
+    /// Resolves `url.host` via DNS and checks whether any resolved IPv4/IPv6 address is local or private.
+    public static func resolvesToLocal(_ url: URL) async -> Bool {
+        if isLocal(url) { return true }
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+        if let zone = host.firstIndex(of: "%") { host = String(host[..<zone]) }
+        if host.hasSuffix(".") { host.removeLast() }
+        // Literal public IPs do not need DNS lookup.
+        var a4 = in_addr()
+        if inet_aton(host, &a4) != 0 { return false }
+        var a6 = in6_addr()
+        if inet_pton(AF_INET6, host, &a6) == 1 { return false }
+        return await Task.detached(priority: .utility) {
+            Self.resolvesHostToLocal(host)
+        }.value
+    }
+
+    static func resolvesHostToLocal(_ host: String) -> Bool {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let head = result else { return false }
+        defer { freeaddrinfo(head) }
+        var cursor: UnsafeMutablePointer<addrinfo>? = head
+        while let current = cursor {
+            let info = current.pointee
+            if let sa = info.ai_addr {
+                if info.ai_family == AF_INET {
+                    var sin = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                    let bytes = withUnsafeBytes(of: &sin) { Array($0) }
+                    if bytes.count == 4, isLocalV4(bytes) { return true }
+                } else if info.ai_family == AF_INET6 {
+                    var sin6 = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+                    let bytes = withUnsafeBytes(of: &sin6) { Array($0) }
+                    if bytes.count == 16, isLocalV6Bytes(bytes) { return true }
+                }
+            }
+            cursor = info.ai_next
+        }
+        return false
     }
 
     static func isLocalV4(_ b: [UInt8]) -> Bool {
@@ -341,12 +465,30 @@ public enum LocalAddress {
     }
 
     static func isLocalV6(_ host: String) -> Bool {
-        if host == "::1" || host == "::" { return true }
-        if host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") { return true }
-        if host.hasPrefix("::ffff:") {
-            let tail = host.dropFirst("::ffff:".count)
-            let bytes = tail.split(separator: ".").compactMap { UInt8($0) }
-            return bytes.count != 4 || isLocalV4(bytes)
+        var addr6 = in6_addr()
+        if inet_pton(AF_INET6, host, &addr6) == 1 {
+            let bytes = withUnsafeBytes(of: &addr6) { Array($0) }
+            return bytes.count == 16 ? isLocalV6Bytes(bytes) : true
+        }
+        return true
+    }
+
+    static func isLocalV6Bytes(_ b: [UInt8]) -> Bool {
+        guard b.count == 16 else { return true }
+        // :: (unspecified) and ::1 (loopback)
+        let prefixZero = b[0..<15].allSatisfy { $0 == 0 }
+        if prefixZero && (b[15] == 0 || b[15] == 1) { return true }
+        // fc00::/7 (unique local)
+        if (b[0] & 0xfe) == 0xfc { return true }
+        // fe80::/10 (link-local: fe80..febf)
+        if b[0] == 0xfe && (b[1] & 0xc0) == 0x80 { return true }
+        // ::ffff:0:0/96 (IPv4-mapped IPv6)
+        if b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xff && b[11] == 0xff {
+            return isLocalV4(Array(b[12..<16]))
+        }
+        // 64:ff9b::/96 (NAT64 well-known prefix)
+        if b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && b[4..<12].allSatisfy({ $0 == 0 }) {
+            return isLocalV4(Array(b[12..<16]))
         }
         return false
     }
@@ -355,8 +497,17 @@ public enum LocalAddress {
 /// Reads one page as text.
 public struct WebReadTool: AgentTool {
     public var limit: Int
+    private let fetch: @Sendable (URL) async throws -> (data: Data, type: String?, encoding: String?, url: URL)
 
-    public init(limit: Int = 14000) { self.limit = limit }
+    public init(limit: Int = 14000) {
+        self.limit = limit
+        self.fetch = { try await WebFetch.get($0) }
+    }
+
+    init(limit: Int = 14000, fetch: @escaping @Sendable (URL) async throws -> (data: Data, type: String?, encoding: String?, url: URL)) {
+        self.limit = limit
+        self.fetch = fetch
+    }
 
     public var spec: ToolSpec {
         ToolSpec(
@@ -385,7 +536,7 @@ public struct WebReadTool: AgentTool {
             return ToolOutput("网址不对：\(address)", isError: true)
         }
         if LocalAddress.isLocal(url) { return ToolOutput(LocalAddress.refusal, isError: true) }
-        let page = try await WebFetch.get(url)
+        let page = try await fetch(url)
         // A public address can send us on to a local one; what came back from there is not handed over.
         if LocalAddress.isLocal(page.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
         let type = page.type ?? ""

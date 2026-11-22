@@ -44,7 +44,7 @@ enum GoogleTools {
         "properties": ["id": ["type": "string"]],
         "required": ["id"],
     ], label: { _ in "Gmail：读一封邮件" }) { arguments in
-        guard let id = arguments["id"]?.string, !id.isEmpty else { return ToolOutput("缺邮件 id。", isError: true) }
+        guard let id = arguments["id"]?.string, validID(id) else { return ToolOutput("邮件 id 不对。", isError: true) }
         let one = try await Google.get(gmail + "/messages/\(id)?format=full")
         let headers = header(one)
         var body = text(of: one["payload"] ?? .null, want: "text/plain")
@@ -59,7 +59,7 @@ enum GoogleTools {
     static let gmailDraft = DeskTool(name: "gmail_draft", description: "在用户的 Gmail 里存一封草稿（不发出去）。用户说「帮我写封邮件 / 回一下」时优先存草稿，让用户自己检查后发送。", parameters: compose, label: { arguments in
         "Gmail：存草稿「\(arguments["subject"]?.string ?? "")」"
     }, approval: { arguments in
-        ApprovalAsk(title: "在 Gmail 存草稿", reason: "给 \(arguments["to"]?.string ?? "")：\(arguments["subject"]?.string ?? "")", detail: arguments["body"]?.string)
+        ApprovalAsk(title: "在 Gmail 存草稿", reason: mailReason(arguments), detail: arguments["body"]?.string)
     }) { arguments in
         let raw = try mime(arguments)
         let data = try await Google.call(gmail + "/drafts", method: "POST", body: ["message": ["raw": .string(raw)]])
@@ -71,7 +71,7 @@ enum GoogleTools {
         "Gmail：发信给 \(arguments["to"]?.string ?? "")"
     }, approval: { arguments in
         // Sending can't be taken back: always asked, even where the person said 「以后都允许」.
-        ApprovalAsk(title: "用 Gmail 发信", reason: "给 \(arguments["to"]?.string ?? "")：\(arguments["subject"]?.string ?? "")", detail: arguments["body"]?.string, forced: true)
+        ApprovalAsk(title: "用 Gmail 发信", reason: mailReason(arguments), detail: arguments["body"]?.string, forced: true)
     }) { arguments in
         let raw = try mime(arguments)
         _ = try await Google.call(gmail + "/messages/send", method: "POST", body: ["raw": .string(raw)])
@@ -90,13 +90,30 @@ enum GoogleTools {
         "required": ["to", "subject", "body"],
     ]
 
+    private static func validID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 256 && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    private static func cleanHeader(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "").trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func mailReason(_ arguments: JSONValue) -> String {
+        let to = cleanHeader(arguments["to"]?.string ?? "")
+        let cc = cleanHeader(arguments["cc"]?.string ?? "")
+        let subject = cleanHeader(arguments["subject"]?.string ?? "")
+        return cc.isEmpty ? "给 \(to)：\(subject)" : "给 \(to)（抄送 \(cc)）：\(subject)"
+    }
+
     /// The email as Gmail wants it: RFC 2822, base64url.
     private static func mime(_ arguments: JSONValue) throws -> String {
-        guard let to = arguments["to"]?.string, to.contains("@") else { throw ProviderError("收件人不对。") }
+        let to = cleanHeader(arguments["to"]?.string ?? "")
+        guard to.contains("@") else { throw ProviderError("收件人不对。") }
         func encoded(_ text: String) -> String { "=?UTF-8?B?" + Data(text.utf8).base64EncodedString() + "?=" }
         var lines = ["To: \(to)"]
-        if let cc = arguments["cc"]?.string, !cc.isEmpty { lines.append("Cc: \(cc)") }
-        lines.append("Subject: " + encoded(arguments["subject"]?.string ?? ""))
+        let cc = cleanHeader(arguments["cc"]?.string ?? "")
+        if !cc.isEmpty { lines.append("Cc: \(cc)") }
+        lines.append("Subject: " + encoded(cleanHeader(arguments["subject"]?.string ?? "")))
         lines += ["MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", ""]
         let body = Data((arguments["body"]?.string ?? "").utf8).base64EncodedString(options: .lineLength76Characters)
         return Data((lines.joined(separator: "\r\n") + "\r\n" + body).utf8).base64URL
@@ -177,7 +194,7 @@ enum GoogleTools {
         "properties": ["id": ["type": "string"]],
         "required": ["id"],
     ], label: { _ in "云端硬盘：读一个文件" }) { arguments in
-        guard let id = arguments["id"]?.string, !id.isEmpty else { return ToolOutput("缺文件 id。", isError: true) }
+        guard let id = arguments["id"]?.string, validID(id) else { return ToolOutput("文件 id 不对。", isError: true) }
         let base = "https://www.googleapis.com/drive/v3/files/\(id)"
         let meta = try await Google.get(base + "?fields=name,mimeType,size")
         let name = meta["name"]?.string ?? "文件"
