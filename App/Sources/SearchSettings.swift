@@ -163,7 +163,7 @@ struct SearchSettingsPage: View {
             testResult = nil
         } label: {
             HStack(spacing: Ink.Space.m) {
-                IconBadge(providerIcon(provider), tint: isSelected ? Ink.Tile.xiang : Ink.Tile.mo)
+                IconBadge(symbol: providerIcon(provider), tint: isSelected ? Ink.Tile.xiang : Ink.Tile.mo)
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     HStack(spacing: Ink.Space.s) {
                         Text(provider.name)
