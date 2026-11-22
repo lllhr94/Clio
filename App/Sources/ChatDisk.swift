@@ -74,6 +74,28 @@ enum ChatDisk {
         }
     }
 
+    /// Synchronously removes a chat file through the writer queue (used for rolling back an uncommitted leaf open).
+    static func removeAndWait(_ chat: String) {
+        let path = Disk.chatFile(chat)
+        let id = UUID()
+        lock.withLock { pending[path] = id }
+        var waiters: [@Sendable (Bool) -> Void] = []
+        writer.sync {
+            let taken: [@Sendable (Bool) -> Void]? = lock.withLock {
+                guard pending[path] == id else { return nil }
+                return callbacks.removeValue(forKey: path) ?? []
+            }
+            guard let taken else { return }
+            waiters = taken
+            Disk.remove(path)
+            lock.withLock {
+                _ = failed.remove(path)
+                if pending[path] == id { pending[path] = nil }
+            }
+        }
+        for callback in waiters { callback(false) }
+    }
+
     private static func schedule(
         _ file: String,
         onSaved: (@Sendable (Bool) -> Void)?,

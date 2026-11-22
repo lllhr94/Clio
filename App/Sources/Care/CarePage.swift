@@ -177,6 +177,7 @@ struct CarePage: View {
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
                 guard case .success(let url) = result else { return }
                 restoringBusy = true
+                team.beginBackupRestore()
                 Task {
                     defer { restoringBusy = false }
                     await stopCleanBeforeRestore()
@@ -184,18 +185,17 @@ struct CarePage: View {
                     let outcome = await StorageMaintenance.run {
                         Result {
                             let summary = try Backup.restore(from: url)
-                            let isolated = QueuedStore.isolatePreRestoreQueues()
-                            return (summary, isolated)
+                            let report = QueuedStore.isolatePreRestoreQueues()
+                            return (summary, report)
                         }
                     }
                     switch outcome {
-                    case .success(let (summary, isolated)):
+                    case .success(let (summary, report)):
+                        team.finishBackupRestoreSucceeded()
                         restored = true
-                        let queueNote = isolated > 0
-                            ? Words.t("\n恢复前有 \(isolated) 条未发出的排队消息，已另存到书案「恢复前排队」文件夹，不会混进恢复后的对话。")
-                            : ""
-                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。" + queueNote
+                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。" + Self.isolationNotice(report)
                     case .failure(let error):
+                        team.finishBackupRestoreFailed()
                         notice = error.localizedDescription
                     }
                 }
@@ -408,6 +408,7 @@ struct CarePage: View {
         davChoices = []
         davBusy = true
         restoringBusy = true
+        team.beginBackupRestore()
         Task {
             defer {
                 davBusy = false
@@ -416,20 +417,34 @@ struct CarePage: View {
             do {
                 let file = try await WebDAV.download(name)
                 await stopCleanBeforeRestore()
-                let (summary, isolated) = try await StorageMaintenance.runThrowing {
+                let (summary, report) = try await StorageMaintenance.runThrowing {
                     let summary = try Backup.restore(from: file)
-                    let isolated = QueuedStore.isolatePreRestoreQueues()
-                    return (summary, isolated)
+                    let report = QueuedStore.isolatePreRestoreQueues()
+                    return (summary, report)
                 }
+                team.finishBackupRestoreSucceeded()
                 restored = true
-                let queueNote = isolated > 0
-                    ? Words.t("\n恢复前有 \(isolated) 条未发出的排队消息，已另存到书案「恢复前排队」文件夹，不会混进恢复后的对话。")
-                    : ""
-                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + queueNote
+                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + Self.isolationNotice(report)
             } catch {
+                team.finishBackupRestoreFailed()
                 notice = "没恢复成：\(error.localizedDescription)"
             }
         }
+    }
+
+    private static func isolationNotice(_ report: IsolationReport) -> String {
+        var notes: [String] = []
+        if report.isolatedMessages > 0 {
+            if report.readableExportSucceeded {
+                notes.append(Words.t("恢复前有 \(report.isolatedMessages) 条未发出的排队消息，已移出活跃队列并另存到书案「恢复前排队」文件夹，不会混进恢复后的对话。"))
+            } else {
+                notes.append(Words.t("恢复前有 \(report.isolatedMessages) 条未发出的排队消息已移出活跃队列（不会混进恢复后的对话），但导出到书案「恢复前排队」失败，原始副本保留在应用隔离目录。"))
+            }
+        }
+        if report.failedMessages > 0 {
+            notes.append("注意：恢复前另有 \(report.failedMessages) 条排队消息暂时未能移出磁盘目录，已记录拦截标记，重启后会自动重试隔离且不会发进恢复后的对话。")
+        }
+        return notes.isEmpty ? "" : "\n" + notes.joined(separator: "\n")
     }
 
     /// 「Clio 备份 2026-11-22 0730.clio」 → 「2026-11-22 07:30」.

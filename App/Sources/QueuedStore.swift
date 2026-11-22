@@ -95,20 +95,90 @@ enum QueuedStore {
         }
     }
 
+    private static let blockedDefaultsKey = "clio.blockedPreRestoreQueues"
+
     /// Isolates all pre-restore queued messages out of active `ClioQueued` right after `Backup.restore` succeeds
     /// so pre-restore queues can never attach to or auto-send into a restored backup's conversations.
     @discardableResult
-    nonisolated static func isolatePreRestoreQueues() -> Int {
+    nonisolated static func isolatePreRestoreQueues() -> IsolationReport {
         writer.sync {
-            QueuedMessageStore.isolateAll(from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+            let report = QueuedMessageStore.isolateAll(from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+            recordBlockedSlotsInDefaults(report.failedSlots)
+            return report
         }
     }
 
-    /// Isolates a single slot whose conversation anchor no longer matches the chat on disk.
+    /// Isolates a single slot whose conversation anchor no longer matches the chat on disk, or retries a blocked slot.
     @discardableResult
-    nonisolated static func isolateSlot(_ chatKey: String) -> Int {
+    nonisolated static func isolateSlot(_ chatKey: String) -> IsolationReport {
         writer.sync {
-            QueuedMessageStore.isolateSlot(chatKey, from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+            let report = QueuedMessageStore.isolateSlot(chatKey, from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+            if report.failedMessages == 0 {
+                removeBlockedSlotFromDefaults(chatKey)
+            } else {
+                recordBlockedSlotsInDefaults(report.failedSlots)
+            }
+            return report
+        }
+    }
+
+    /// Returns all slot keys persistently blocked from auto-restoring (union of marker file and UserDefaults fallback).
+    nonisolated static func loadBlockedSlots() -> Set<String> {
+        writer.sync {
+            let fromFile = QueuedMessageStore.loadBlockedSlots(from: root)
+            let fromDefaults = Set(UserDefaults.standard.stringArray(forKey: blockedDefaultsKey) ?? [])
+            return fromFile.union(fromDefaults)
+        }
+    }
+
+    nonisolated static func clearBlockedSlot(_ chatKey: String) {
+        writer.sync {
+            var fromFile = QueuedMessageStore.loadBlockedSlots(from: root)
+            if fromFile.remove(chatKey) != nil {
+                QueuedMessageStore.saveBlockedSlots(fromFile, under: root)
+            }
+            removeBlockedSlotFromDefaults(chatKey)
+        }
+    }
+
+    nonisolated static func savePendingLeafOpen(_ tx: PendingLeafOpen) throws {
+        var failure: Error?
+        writer.sync {
+            do {
+                try QueuedMessageStore.savePendingLeafOpen(tx, under: root)
+            } catch {
+                failure = error
+            }
+        }
+        if let failure { throw failure }
+    }
+
+    nonisolated static func clearPendingLeafOpen(for chatKey: String) {
+        writer.sync {
+            QueuedMessageStore.clearPendingLeafOpen(for: chatKey, under: root)
+        }
+    }
+
+    nonisolated static func reconcilePendingLeafOpens(teamRoot: URL) {
+        writer.sync {
+            QueuedMessageStore.reconcilePendingLeafOpens(teamRoot: teamRoot, queuedRoot: root)
+        }
+    }
+
+    private nonisolated static func recordBlockedSlotsInDefaults(_ slots: [String]) {
+        guard !slots.isEmpty else { return }
+        var current = Set(UserDefaults.standard.stringArray(forKey: blockedDefaultsKey) ?? [])
+        current.formUnion(slots)
+        UserDefaults.standard.set(current.sorted(), forKey: blockedDefaultsKey)
+    }
+
+    private nonisolated static func removeBlockedSlotFromDefaults(_ chatKey: String) {
+        var current = Set(UserDefaults.standard.stringArray(forKey: blockedDefaultsKey) ?? [])
+        guard current.remove(chatKey) != nil else { return }
+        if current.isEmpty {
+            UserDefaults.standard.removeObject(forKey: blockedDefaultsKey)
+        } else {
+            UserDefaults.standard.set(current.sorted(), forKey: blockedDefaultsKey)
         }
     }
 

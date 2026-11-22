@@ -17,6 +17,7 @@ extension TeamModel {
         let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
+            QueuedStore.reconcilePendingLeafOpens(teamRoot: Disk.root)
             let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
             let botsIndex = loadIndex([BotInfo].self, "bots.json")
             let roomsIndex = loadIndex([RoomInfo].self, "rooms.json")
@@ -26,9 +27,11 @@ extension TeamModel {
             let laters = Disk.load([Later].self, "later.json") ?? []
             let routines = Disk.load([Routine].self, "routines.json") ?? []
             let rawSlots = QueuedStore.loadAllSlots()
+            let blockedSlots = QueuedStore.loadBlockedSlots()
 
             let queued = reconcileQueued(
                 rawSlots,
+                blockedSlots: blockedSlots,
                 bots: bots,
                 rooms: rooms,
                 botsReadable: botsIndex.readable,
@@ -60,11 +63,16 @@ extension TeamModel {
 
         private nonisolated static func reconcileQueued(
             _ raw: [String: StoredQueuedSlot],
+            blockedSlots: Set<String>,
             bots: [BotInfo],
             rooms: [RoomInfo],
             botsReadable: Bool,
             roomsReadable: Bool
         ) -> [String: [StoredQueuedMessage]] {
+            // Clear stale blocked markers whose slot folders are already gone.
+            for slotKey in blockedSlots where raw[slotKey] == nil {
+                QueuedStore.clearBlockedSlot(slotKey)
+            }
             guard !raw.isEmpty else { return [:] }
             let baseKeys = bots.map { TeamModel.key(bot: $0.id) } + rooms.map { TeamModel.key(room: $0.id) }
             let validBaseKeys = Set(baseKeys)
@@ -116,12 +124,31 @@ extension TeamModel {
                     indexReadable: indexReadable,
                     chatFileExists: chatFileExists,
                     anchor: slot.anchor,
-                    chatEntryIds: loadedEntries?.map(\.id)
+                    chatEntryIds: loadedEntries?.map(\.id),
+                    isBlockedByRestore: blockedSlots.contains(chatKey)
                 )
 
                 switch disposition {
                 case .deleteOrphan:
                     QueuedStore.saveDetached([], for: chatKey)
+                    continue
+                case .retryIsolation:
+                    let report = QueuedStore.isolateSlot(chatKey)
+                    if report.failedMessages == 0 {
+                        QueuedStore.clearBlockedSlot(chatKey)
+                        if report.isolatedMessages > 0 {
+                            let exportHint = report.readableExportSucceeded
+                                ? Words.t("并另存到书案「恢复前排队」")
+                                : Words.t("（导出到书案失败，原始副本留在应用隔离目录）")
+                            DispatchQueue.main.async {
+                                Diag.note("启动检查：已完成 \(chatKey) 恢复前 \(report.isolatedMessages) 条排队消息的隔离\(exportHint)。")
+                            }
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            Diag.note("启动检查：\(chatKey) 的 \(report.failedMessages) 条恢复前排队消息仍未能移出，已继续拦截不会自动发出。")
+                        }
+                    }
                     continue
                 case .preserveUnreadable:
                     DispatchQueue.main.async {
@@ -149,10 +176,17 @@ extension TeamModel {
                         QueuedStore.saveDetached([], for: chatKey)
                         continue
                     }
-                    let isolated = QueuedStore.isolateSlot(chatKey)
-                    if isolated > 0 {
+                    let report = QueuedStore.isolateSlot(chatKey)
+                    if report.isolatedMessages > 0 {
+                        let exportHint = report.readableExportSucceeded
+                            ? Words.t("已隔离到书案「恢复前排队」")
+                            : Words.t("已移出活跃队列（导出到书案失败，原始副本保留在隔离目录）")
                         DispatchQueue.main.async {
-                            Diag.note(Words.t("启动检查：\(chatKey) 的 \(isolated) 条排队消息不属于当前对话（可能恢复了旧备份），已隔离到书案「恢复前排队」。"))
+                            Diag.note("启动检查：\(chatKey) 的 \(report.isolatedMessages) 条排队消息不属于当前对话（可能恢复了旧备份），\(exportHint)。")
+                        }
+                    } else if report.failedMessages > 0 {
+                        DispatchQueue.main.async {
+                            Diag.note("启动检查：\(chatKey) 的 \(report.failedMessages) 条不匹配排队消息未能移出，已标记拦截不会自动发出。")
                         }
                     }
                     continue

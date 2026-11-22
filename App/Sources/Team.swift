@@ -576,21 +576,63 @@ final class TeamModel: ObservableObject {
         guard shelveCurrent(key) else { return }
         let leafKey = Self.threadKey(key, leaf: leaf.id)
         let leafQueued = queued[leafKey] ?? []
+        let priorEntries = entries[key] ?? []
+        let priorQueued = allPersistableQueued(key)
+        let priorAnchor = priorQueued.isEmpty ? nil : ConversationAnchor.from(entryIds: priorEntries.map(\.id))
         let persistSnapshot = allPersistableQueued(key, extra: leafQueued)
         let remainingLeaves = leaves(key).filter { $0.id != leaf.id }
         let targetAnchor = ConversationAnchor.from(entryIds: kept.map(\.id))
         if keeping {
             // The leaf's own files (and its queued messages) go only once the restored page, queue, and leaf index are surely saved.
+            // A PendingLeafOpen marker guards against crashes between writes; any failure rolls back active writes immediately.
             let toSave = kept
             let saveQueue = !persistSnapshot.isEmpty
             let listPath = Self.leafList(key)
+            let tx = PendingLeafOpen(
+                chatKey: key,
+                leafId: leaf.id,
+                leafKey: leafKey,
+                priorActiveQueuedIds: priorQueued.map(\.id)
+            )
             let saved: Error? = await Task.detached(priority: .userInitiated) {
+                var wroteChat = false
+                var wroteQueue = false
                 do {
+                    try QueuedStore.savePendingLeafOpen(tx)
                     try ChatDisk.saveAndWait(toSave, chat: key)
-                    if saveQueue { try QueuedStore.saveAndWait(persistSnapshot, for: key, anchor: targetAnchor) }
+                    wroteChat = true
+                    if saveQueue {
+                        try QueuedStore.saveAndWait(persistSnapshot, for: key, anchor: targetAnchor)
+                        wroteQueue = true
+                    }
                     try Disk.write(remainingLeaves, listPath)
                     return nil
                 } catch {
+                    var rollbackClean = true
+                    if wroteQueue {
+                        do {
+                            try QueuedStore.saveAndWait(priorQueued, for: key, anchor: priorAnchor)
+                        } catch {
+                            rollbackClean = false
+                        }
+                    }
+                    if wroteChat {
+                        if priorEntries.isEmpty {
+                            ChatDisk.removeAndWait(key)
+                            if FileManager.default.fileExists(atPath: Disk.url(Disk.chatFile(key)).path) {
+                                rollbackClean = false
+                            }
+                        } else {
+                            do {
+                                try ChatDisk.saveAndWait(priorEntries, chat: key)
+                            } catch {
+                                rollbackClean = false
+                            }
+                        }
+                    }
+                    if rollbackClean {
+                        QueuedStore.clearPendingLeafOpen(for: key)
+                    }
                     return error
                 }
             }.value
@@ -611,7 +653,10 @@ final class TeamModel: ObservableObject {
             inFlightQueued[leafKey] = nil
             if keeping { QueuedStore.clear(leafKey) }
         }
-        if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
+        if keeping {
+            Disk.remove(Self.leafFile(key, leaf.id))
+            QueuedStore.clearPendingLeafOpen(for: key)
+        }
         objectWillChange.send()
         leafBook[key] = remainingLeaves
         if leaf.marker == nil {
@@ -750,6 +795,33 @@ final class TeamModel: ObservableObject {
     var pendingInterjects: [String: [(id: UUID, text: String)]] = [:]
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
     var sendQueuedNow: Set<String> = []
+    /// True while a backup restore is running or after it succeeded until relaunch: blocks all queue dispatch and new turns.
+    var queueDispatchSuspended = false
+
+    private var canDispatchQueue: Bool {
+        QueuedMessageStore.canDispatchQueue(isFrozen: Disk.frozen, isRestoring: queueDispatchSuspended)
+    }
+
+    func beginBackupRestore() {
+        queueDispatchSuspended = true
+    }
+
+    func finishBackupRestoreSucceeded() {
+        queueDispatchSuspended = true
+        for key in Array(runs.keys) {
+            stop(key)
+        }
+        sendQueuedNow.removeAll()
+        pendingInterjects.removeAll()
+        inFlightQueued.removeAll()
+        queued.removeAll()
+    }
+
+    func finishBackupRestoreFailed() {
+        if !Disk.frozen {
+            queueDispatchSuspended = false
+        }
+    }
 
     func allPersistableQueued(_ key: String, extra: [Queued] = []) -> [Queued] {
         var seen: Set<UUID> = []
@@ -805,7 +877,7 @@ final class TeamModel: ObservableObject {
 
     func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
         if archived.contains(key) { archive(key, false) }
-        guard phase != .demo else { return }
+        guard phase != .demo, canDispatchQueue else { return }
         // Busy with its own turn, or helping another companion: the message waits its turn.
         if runs[key] != nil || helping.contains(key) {
             withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated)) }
@@ -823,6 +895,7 @@ final class TeamModel: ObservableObject {
     /// 插话: said while the companion works. It reaches the companion after the step in progress, without
     /// stopping it; if the turn ends first, it goes out as the next message like anything queued.
     func interject(_ text: String, to key: String) {
+        guard canDispatchQueue else { return }
         guard runs[key] != nil else { send(text, photos: [], to: key); return }
         withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: [], interject: true)) }
         persistQueued(key)
@@ -830,6 +903,7 @@ final class TeamModel: ObservableObject {
 
     /// What was said in passing, taken out of the queue for the companion to read now.
     func takeInbox(_ key: String) -> [String] {
+        guard canDispatchQueue else { return [] }
         guard let list = queued[key], list.contains(where: \.interject) else { return [] }
         let taken = list.filter(\.interject)
         let rest = list.filter { !$0.interject }
@@ -846,6 +920,7 @@ final class TeamModel: ObservableObject {
 
     /// 「立即发送」: stop the turn in progress and send what is queued now.
     func sendQueueNow(_ key: String) {
+        guard canDispatchQueue else { return }
         guard queued[key]?.isEmpty == false else { return }
         if runs[key] != nil {
             sendQueuedNow.insert(key)
@@ -872,7 +947,7 @@ final class TeamModel: ObservableObject {
 
     /// Everything queued goes out as one message, as if written at once.
     func flushQueue(_ key: String) {
-        guard phase != .demo else { return }
+        guard phase != .demo, canDispatchQueue else { return }
         guard runs[key] == nil, !helping.contains(key) else { return }
         guard let waiting = queued[key], !waiting.isEmpty else { return }
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -924,6 +999,7 @@ final class TeamModel: ObservableObject {
     }
 
     func start(_ key: String, userInitiated: Bool = true) {
+        guard canDispatchQueue else { return }
         let previous = runs[key]?.task
         stop(key)
         let token = UUID()
@@ -1114,6 +1190,7 @@ final class TeamModel: ObservableObject {
         // Told in the other conversations when the user comes back to them (你不在时).
         if !cancelled { record(ok ? .done : .failed, in: key) }
         // If a turn stopped after `takeInbox` before `hear` received its user message, return it to the queue.
+        guard canDispatchQueue else { return }
         if runs[key] == nil { restoreUnemittedInterjects(for: key) }
         // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
         // A turn that failed or was stopped leaves the queue for the user to send or take back.
