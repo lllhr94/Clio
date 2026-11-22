@@ -181,11 +181,20 @@ struct CarePage: View {
                     defer { restoringBusy = false }
                     await stopCleanBeforeRestore()
                     // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
-                    let outcome = await StorageMaintenance.run { Result { try Backup.restore(from: url) } }
+                    let outcome = await StorageMaintenance.run {
+                        Result {
+                            let summary = try Backup.restore(from: url)
+                            let isolated = QueuedStore.isolatePreRestoreQueues()
+                            return (summary, isolated)
+                        }
+                    }
                     switch outcome {
-                    case .success(let summary):
+                    case .success(let (summary, isolated)):
                         restored = true
-                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。"
+                        let queueNote = isolated > 0
+                            ? Words.t("\n恢复前有 \(isolated) 条未发出的排队消息，已另存到书案「恢复前排队」文件夹，不会混进恢复后的对话。")
+                            : ""
+                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。" + queueNote
                     case .failure(let error):
                         notice = error.localizedDescription
                     }
@@ -407,9 +416,16 @@ struct CarePage: View {
             do {
                 let file = try await WebDAV.download(name)
                 await stopCleanBeforeRestore()
-                let summary = try await StorageMaintenance.runThrowing { try Backup.restore(from: file) }
+                let (summary, isolated) = try await StorageMaintenance.runThrowing {
+                    let summary = try Backup.restore(from: file)
+                    let isolated = QueuedStore.isolatePreRestoreQueues()
+                    return (summary, isolated)
+                }
                 restored = true
-                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
+                let queueNote = isolated > 0
+                    ? Words.t("\n恢复前有 \(isolated) 条未发出的排队消息，已另存到书案「恢复前排队」文件夹，不会混进恢复后的对话。")
+                    : ""
+                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + queueNote
             } catch {
                 notice = "没恢复成：\(error.localizedDescription)"
             }

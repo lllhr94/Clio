@@ -263,7 +263,7 @@ final class TeamModel: ObservableObject {
     // MARK: Leaves
 
     /// An earlier conversation put aside, so the current one can start fresh.
-    struct Leaf: Codable, Identifiable, Equatable {
+    struct Leaf: Codable, Identifiable, Equatable, Sendable {
         var id: String
         var title: String
         /// Milliseconds: when it was last spoken in.
@@ -350,6 +350,7 @@ final class TeamModel: ObservableObject {
         } else {
             setSummary(key, nil)
         }
+        if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
     }
 
@@ -375,6 +376,7 @@ final class TeamModel: ObservableObject {
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
     }
 
@@ -440,16 +442,20 @@ final class TeamModel: ObservableObject {
         let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
         let leafKey = Self.threadKey(key, leaf: leaf.id)
         let waiting = queued[key] ?? []
+        let nextLeaves = [leaf] + leaves(key)
+        let leafAnchor = ConversationAnchor.from(entryIds: current.map(\.id))
         if keeping {
-            // The page is emptied below: only once its copy (and any queued messages) is surely on disk. A failed copy leaves everything as it was.
+            // The page is emptied below: only once its copy, queued messages, and leaf index are all surely on disk.
+            // Any failure rolls back the new leaf files and leaves the current conversation and active queue intact.
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
                 if let old = summary(key) { try Disk.write(old, Self.leafSummary(key, leaf.id)) }
-                if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey) }
+                if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey, anchor: leafAnchor) }
+                try Disk.write(nextLeaves, Self.leafList(key))
             } catch {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
-                if !waiting.isEmpty { QueuedStore.clear(leafKey) }
+                if !waiting.isEmpty { try? QueuedStore.saveAndWait([], for: leafKey) }
                 fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
                 return false
             }
@@ -458,7 +464,8 @@ final class TeamModel: ObservableObject {
         value.title = nil
         setOptions(key, value)
         setSummary(key, nil)
-        setLeaves(key, [leaf] + leaves(key))
+        objectWillChange.send()
+        leafBook[key] = nextLeaves
         moveThread(key, to: leafKey)
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
@@ -570,14 +577,18 @@ final class TeamModel: ObservableObject {
         let leafKey = Self.threadKey(key, leaf: leaf.id)
         let leafQueued = queued[leafKey] ?? []
         let persistSnapshot = allPersistableQueued(key, extra: leafQueued)
+        let remainingLeaves = leaves(key).filter { $0.id != leaf.id }
+        let targetAnchor = ConversationAnchor.from(entryIds: kept.map(\.id))
         if keeping {
-            // The leaf's own files (and its queued messages) go only once the page it became is surely saved.
+            // The leaf's own files (and its queued messages) go only once the restored page, queue, and leaf index are surely saved.
             let toSave = kept
-            let saveQueue = !leafQueued.isEmpty
+            let saveQueue = !persistSnapshot.isEmpty
+            let listPath = Self.leafList(key)
             let saved: Error? = await Task.detached(priority: .userInitiated) {
                 do {
                     try ChatDisk.saveAndWait(toSave, chat: key)
-                    if saveQueue { try QueuedStore.saveAndWait(persistSnapshot, for: key) }
+                    if saveQueue { try QueuedStore.saveAndWait(persistSnapshot, for: key, anchor: targetAnchor) }
+                    try Disk.write(remainingLeaves, listPath)
                     return nil
                 } catch {
                     return error
@@ -601,7 +612,8 @@ final class TeamModel: ObservableObject {
             if keeping { QueuedStore.clear(leafKey) }
         }
         if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
-        setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        objectWillChange.send()
+        leafBook[key] = remainingLeaves
         if leaf.marker == nil {
             moveThread(leafKey, to: key)
             rename(key, to: leaf.title)
@@ -750,7 +762,9 @@ final class TeamModel: ObservableObject {
 
     func persistQueued(_ key: String) {
         guard keeping else { return }
-        QueuedStore.save(allPersistableQueued(key), for: key)
+        let items = allPersistableQueued(key)
+        let anchor = items.isEmpty ? nil : ConversationAnchor.from(entryIds: history(key).map(\.id))
+        QueuedStore.save(items, for: key, anchor: anchor)
     }
 
     func confirmQueuedRemoved(_ ids: Set<UUID>, for key: String) {
@@ -1420,6 +1434,7 @@ final class TeamModel: ObservableObject {
         guard let list = Turns.retried(history(key)) else { return }
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
+        if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
         Task {
@@ -1451,6 +1466,7 @@ final class TeamModel: ObservableObject {
         }) else { return }
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
+        if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
         Task {

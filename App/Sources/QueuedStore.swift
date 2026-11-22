@@ -14,6 +14,15 @@ enum QueuedStore {
             .appendingPathComponent("ClioQueued", isDirectory: true)
     }
 
+    private static var quarantineRoot: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ClioQueuedIsolated", isDirectory: true)
+    }
+
+    private static var readableExportRoot: URL {
+        Workspace.root.appendingPathComponent("恢复前排队", isDirectory: true)
+    }
+
     private nonisolated static func snapshot(_ items: [TeamModel.Queued]) -> [StoredQueuedMessage] {
         items.map {
             StoredQueuedMessage(
@@ -26,13 +35,17 @@ enum QueuedStore {
         }
     }
 
-    nonisolated static func loadAll() -> [String: [StoredQueuedMessage]] {
+    nonisolated static func loadAllSlots() -> [String: StoredQueuedSlot] {
         writer.sync {}
-        return QueuedMessageStore.loadAll(from: root)
+        return QueuedMessageStore.loadAllSlots(from: root)
+    }
+
+    nonisolated static func loadAll() -> [String: [StoredQueuedMessage]] {
+        loadAllSlots().mapValues(\.items)
     }
 
     @MainActor
-    static func save(_ items: [TeamModel.Queued], for chatKey: String) {
+    static func save(_ items: [TeamModel.Queued], for chatKey: String, anchor: ConversationAnchor? = nil) {
         guard !Disk.frozen else { return }
         let snapshots = snapshot(items)
         let base = root
@@ -41,7 +54,7 @@ enum QueuedStore {
             defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
             guard !Disk.frozen else { return }
             do {
-                try QueuedMessageStore.save(snapshots, for: chatKey, under: base)
+                try QueuedMessageStore.save(snapshots, for: chatKey, anchor: anchor, under: base)
             } catch {
                 let reason = error.localizedDescription
                 DispatchQueue.main.async {
@@ -53,7 +66,7 @@ enum QueuedStore {
 
     /// Saves synchronously and throws on error, used when moving queued messages to a new storage slot
     /// so the source slot is only cleared once the destination is surely on disk.
-    nonisolated static func saveAndWait(_ items: [TeamModel.Queued], for chatKey: String) throws {
+    nonisolated static func saveAndWait(_ items: [TeamModel.Queued], for chatKey: String, anchor: ConversationAnchor? = nil) throws {
         let snapshots = snapshot(items)
         let base = root
         var failure: Error?
@@ -63,7 +76,7 @@ enum QueuedStore {
                 return
             }
             do {
-                try QueuedMessageStore.save(snapshots, for: chatKey, under: base)
+                try QueuedMessageStore.save(snapshots, for: chatKey, anchor: anchor, under: base)
             } catch {
                 failure = error
             }
@@ -72,13 +85,30 @@ enum QueuedStore {
     }
 
     /// Background helper for startup deduplication cleanup.
-    nonisolated static func saveDetached(_ items: [StoredQueuedMessage], for chatKey: String) {
+    nonisolated static func saveDetached(_ items: [StoredQueuedMessage], for chatKey: String, anchor: ConversationAnchor? = nil) {
         let base = root
         lock.withLock { pendingCount += 1 }
         writer.async {
             defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
             guard !Disk.frozen else { return }
-            try? QueuedMessageStore.save(items, for: chatKey, under: base)
+            try? QueuedMessageStore.save(items, for: chatKey, anchor: anchor, under: base)
+        }
+    }
+
+    /// Isolates all pre-restore queued messages out of active `ClioQueued` right after `Backup.restore` succeeds
+    /// so pre-restore queues can never attach to or auto-send into a restored backup's conversations.
+    @discardableResult
+    nonisolated static func isolatePreRestoreQueues() -> Int {
+        writer.sync {
+            QueuedMessageStore.isolateAll(from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+        }
+    }
+
+    /// Isolates a single slot whose conversation anchor no longer matches the chat on disk.
+    @discardableResult
+    nonisolated static func isolateSlot(_ chatKey: String) -> Int {
+        writer.sync {
+            QueuedMessageStore.isolateSlot(chatKey, from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
         }
     }
 
