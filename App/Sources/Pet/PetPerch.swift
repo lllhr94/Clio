@@ -18,10 +18,13 @@ final class PetPerch {
     /// The newest reply’s buttons, measured in the same window coordinates as the dock.
     @ObservationIgnored var replyActions = CGRect.null { didSet { updateReplyClearance() } }
     @ObservationIgnored var replyStand: CGFloat = 0 { didSet { updateReplyClearance() } }
+    /// Only while the page rests at its foot: scrolling up from there carried the reply's buttons through the pet's
+    /// height for a moment, and the pet jumped aside and back on every scroll.
+    @ObservationIgnored var avoidsReplies = true { didSet { updateReplyClearance() } }
     private(set) var replyActionsRight: CGFloat?
 
     private func updateReplyClearance() {
-        let visible = replyStand > 0 && !replyActions.isNull && replyActions.minY < foot && replyActions.maxY > foot - replyStand
+        let visible = avoidsReplies && replyStand > 0 && !replyActions.isNull && replyActions.minY < foot && replyActions.maxY > foot - replyStand
         let edge = visible ? replyActions.maxX : nil
         if replyActionsRight != edge { replyActionsRight = edge }
     }

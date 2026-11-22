@@ -80,6 +80,8 @@ struct PetStage: View {
                     pet(pack, unit: unit, width: figureWidth, stand: stand)
                         .simultaneousGesture(dragGesture(width: width, margin: margin, right: right, x: x))
                         .position(x: aligned(x + perch.chatOffset, offset: figureWidth / 2), y: aligned(foot, offset: stand) - stand / 2)
+                        // Stepping aside for a reply's buttons (and back) walks, never jumps.
+                        .animation(dragging ? nil : Ink.Motion.settle, value: perch.replyActionsRight)
                         .transition(.opacity)
                     if let bubble = news.bubble {
                         PetBubble(bubble: bubble)
