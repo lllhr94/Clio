@@ -712,7 +712,7 @@ final class DroppedStreamTests: XCTestCase {
     }
 }
 
-final class LocalAddressTests: XCTestCase {
+final class LocalAddressHardeningTests: XCTestCase {
     func testExpandedIPv6AndSpecialIPv4() {
         let blocked = [
             "http://localhost/test",
