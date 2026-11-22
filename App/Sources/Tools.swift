@@ -354,8 +354,13 @@ enum Notify {
     /// A companion waits for a yes. Asks that came after reading the web open the app instead, so the details are seen first.
     static func approval(_ approval: Approval, from name: String) {
         let content = UNMutableNotificationContent()
-        content.title = "\(name)在等你批准"
-        content.body = String("\(approval.tool ?? "")：\(approval.reason ?? "")".prefix(180))
+        content.title = "\(name) · \(L.t("pet.needsApproval"))"
+        let tool = approval.tool?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reason = approval.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let summary = [tool.isEmpty ? nil : Words.t(tool), reason.isEmpty ? nil : Words.t(reason)]
+            .compactMap { $0 }
+            .joined(separator: "：")
+        content.body = String((summary.isEmpty ? L.t("approval.requestedAction") : summary).prefix(180))
         content.sound = .default
         content.userInfo = ["chat": approval.chat ?? "", "approval": approval.id]
         if approval.forced != true, approval.detail?.code == nil {
