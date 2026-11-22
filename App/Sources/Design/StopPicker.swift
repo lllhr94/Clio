@@ -72,22 +72,26 @@ struct StopRuler<Value: Hashable>: View {
     var name: String? = nil
 
     /// Long rulers (a pet's ten sizes, a model's eight windows) use shorter stops so the card stays on screen.
-    private var step: CGFloat { (stops.count > 6 ? 34 : 40) * UIScale.factor }
-    private var width: CGFloat { 52 * UIScale.factor }
+    private var step: CGFloat { (stops.count > 6 ? 28 : 32) * UIScale.factor }
+    /// A slim bar: the names do the telling, the bar is what the thumb runs along.
+    private var width: CGFloat { 26 * UIScale.factor }
     private var index: Int { stops.firstIndex { $0.value == value } ?? 0 }
 
+    // 主人定: names on the left, the bar on the right where the right thumb is; a small card with room around the
+    // bar, so it never touches the card's edges.
     var body: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.m) {
+        VStack(alignment: .trailing, spacing: Ink.Space.s) {
             if let title {
                 Text(title).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
             }
-            HStack(alignment: .top, spacing: Ink.Space.l) {
-                capsule
+            HStack(alignment: .top, spacing: Ink.Space.m) {
                 names
+                capsule
             }
         }
-        .padding(Ink.Space.l)
-        .frame(minWidth: 180 * UIScale.factor, alignment: .leading)
+        .padding(.vertical, Ink.Space.l)
+        .padding(.leading, Ink.Space.l)
+        .padding(.trailing, Ink.Space.m)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title ?? name ?? "")
         .accessibilityValue(stops.indices.contains(index) ? stops[index].name : "")
@@ -102,26 +106,21 @@ struct StopRuler<Value: Hashable>: View {
 
     private var capsule: some View {
         let height = step * CGFloat(stops.count)
-        let filled = step * CGFloat(index + 1)
+        let filled = step * (CGFloat(index) + 0.5) + width / 2
         return ZStack(alignment: .bottom) {
-            Capsule(style: .continuous).fill(Ink.paperRaised)
+            Capsule(style: .continuous).fill(Ink.rule.opacity(0.55))
             Capsule(style: .continuous)
                 .fill(Ink.accent)
-                .frame(height: max(width, filled))
-            VStack(spacing: 0) {
-                ForEach(stops.indices.reversed(), id: \.self) { at in
-                    Circle()
-                        .fill(at <= index ? Ink.paper.opacity(0.7) : Ink.inkFaint.opacity(0.5))
-                        .frame(width: 5, height: 5)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(height: min(height, max(width, filled)))
+                .overlay(alignment: .top) {
+                    // The handle: a short pale line at the top of the ink, where the thumb holds it.
+                    Capsule().fill(Ink.paper.opacity(0.85)).frame(width: width * 0.45, height: 3).padding(.top, width * 0.35)
                 }
-            }
         }
         .frame(width: width, height: height)
-        .overlay(Capsule(style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
         .clipShape(.capsule(style: .continuous))
         .animation(Ink.Motion.settle, value: index)
-        .contentShape(.capsule)
+        .contentShape(.rect.inset(by: -Ink.Space.s))
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { drag in
@@ -132,21 +131,21 @@ struct StopRuler<Value: Hashable>: View {
     }
 
     private var names: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .trailing, spacing: 0) {
             ForEach(stops.indices.reversed(), id: \.self) { at in
                 Button {
                     pick(at)
                 } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(stops[at].name)
-                            .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
-                            .foregroundStyle(at == index ? Ink.ink : Ink.inkSoft)
+                    HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
                         if let detail = stops[at].detail {
                             Text(detail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                         }
+                        Text(stops[at].name)
+                            .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
+                            .foregroundStyle(at == index ? Ink.accent : Ink.inkSoft)
                     }
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: step, maxHeight: step, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: step, maxHeight: step, alignment: .trailing)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
