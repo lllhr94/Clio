@@ -328,7 +328,13 @@ struct LocalDeskHost: WorkspaceHost {
         }
     }
 
-    func isInside(_ path: String) -> Bool { (try? Workspace.parse(path)) != nil }
+    /// Inside 书案 itself. A mounted outside folder (Obsidian, iCloud) holds the person's own files elsewhere, so
+    /// after outside text (a web page, an email) a write there is asked about, like any write outside 书案.
+    func isInside(_ path: String) -> Bool {
+        guard let parsed = try? Workspace.parse(path) else { return false }
+        if case .desk = parsed { return true }
+        return false
+    }
 }
 
 /// 斗室: everything through its shell, starting in /root/desk.
