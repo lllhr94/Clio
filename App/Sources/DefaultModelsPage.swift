@@ -1,0 +1,328 @@
+import AgentKit
+import Craft
+import SwiftUI
+
+/// Unified global model assignment page: default chat, fallback backup, memory/diary review, and image generation.
+struct DefaultModelsPage: View {
+    @ObservedObject var team: TeamModel
+    var openServices: () -> Void
+    @State private var picking: Role?
+
+    enum Role: String, Identifiable {
+        case chat, backup, memory
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .chat: L.t("settings.defaultChatModel")
+            case .backup: L.t("settings.backupModelTitle")
+            case .memory: L.t("settings.memoryModelTitle")
+            }
+        }
+
+        var noneTitle: String? {
+            switch self {
+            case .chat: nil
+            case .backup: L.t("settings.noBackupModel")
+            case .memory: L.t("settings.followDefault")
+            }
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                if team.settings.endpoints.isEmpty {
+                    emptyCard
+                } else {
+                    chatGroup
+                    moreGroup
+                }
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(L.t("settingsHome.models"))
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $picking) { role in
+            ModelPickerSheet(
+                team: team,
+                role: role,
+                current: current(for: role),
+                pick: { apply($0, for: role) },
+                openServices: {
+                    picking = nil
+                    openServices()
+                }
+            )
+        }
+    }
+
+    private var emptyCard: some View {
+        RowCard(note: L.t("settingsHome.noChatModels")) {
+            Button {
+                Haptics.light()
+                openServices()
+            } label: {
+                RowLabel("server.rack", tint: Ink.Tile.dai, title: L.t("settings.modelService"), line: L.t("settingsHome.servicesLine"))
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+    }
+
+    private var chatGroup: some View {
+        RowCard(
+            title: L.t("settings.defaultModelsChatGroup"),
+            note: team.models.isEmpty ? L.t("settingsHome.noChatModels") : nil
+        ) {
+            Button {
+                Haptics.light()
+                picking = .chat
+            } label: {
+                RowLabel(
+                    "sparkle",
+                    tint: Ink.Tile.dai,
+                    title: L.t("settings.defaultChatModel"),
+                    line: L.t("settings.defaultChatModelLine"),
+                    end: .valueChevron(defaultLabel)
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+
+            Button {
+                Haptics.light()
+                picking = .backup
+            } label: {
+                RowLabel(
+                    "arrow.triangle.branch",
+                    tint: Ink.Tile.dai,
+                    title: L.t("settings.backupModelTitle"),
+                    line: L.t("settings.backupModelLine"),
+                    end: .valueChevron(backupLabel)
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+    }
+
+    private var moreGroup: some View {
+        RowCard(title: L.t("settings.defaultModelsMoreGroup")) {
+            Button {
+                Haptics.light()
+                picking = .memory
+            } label: {
+                RowLabel(
+                    "moon.stars",
+                    tint: Ink.Tile.dai,
+                    title: L.t("settings.memoryModelTitle"),
+                    line: L.t("settings.memoryModelLine"),
+                    end: .valueChevron(memoryLabel)
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+
+            NavigationLink {
+                ImageModelPage(team: team)
+            } label: {
+                RowLabel(
+                    "photo.badge.plus",
+                    tint: Ink.Tile.dai,
+                    title: L.t("settings.imageModel"),
+                    line: L.t("settings.imageModelLine"),
+                    end: .valueChevron(imageLabel)
+                )
+            }
+            .buttonStyle(PressStyle())
+        }
+    }
+
+    private var defaultLabel: String {
+        guard let ref = team.settings.defaultModel, team.resolve(ref) != nil else { return L.t("settings.unset") }
+        return team.modelShort(ref)
+    }
+
+    private var backupLabel: String {
+        guard let ref = team.settings.backupModel, team.resolve(ref) != nil else { return L.t("settings.unset") }
+        return team.modelShort(ref)
+    }
+
+    private var memoryLabel: String {
+        guard let ref = team.settings.memoryModel, team.resolve(ref) != nil else { return L.t("settings.followDefault") }
+        return team.modelShort(ref)
+    }
+
+    private var imageLabel: String {
+        guard team.imageModelSelection != nil else { return L.t("settings.unset") }
+        return team.modelShort(team.settings.imageModel)
+    }
+
+    private func current(for role: Role) -> String? {
+        switch role {
+        case .chat: team.settings.defaultModel
+        case .backup: team.settings.backupModel
+        case .memory: team.settings.memoryModel
+        }
+    }
+
+    private func apply(_ ref: String?, for role: Role) {
+        switch role {
+        case .chat:
+            if let ref { team.setDefaultModel(ref) }
+        case .backup:
+            team.setBackupModel(ref)
+        case .memory:
+            team.setMemoryModel(ref)
+        }
+    }
+}
+
+/// Unified picker sheet for selecting one enabled chat model across connected services.
+private struct ModelPickerSheet: View {
+    @ObservedObject var team: TeamModel
+    let role: DefaultModelsPage.Role
+    let current: String?
+    let pick: (String?) -> Void
+    let openServices: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var filteredEndpoints: [(endpoint: Endpoint, models: [String])] {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return team.settings.endpoints.compactMap { endpoint in
+            let models = search.isEmpty
+                ? endpoint.models
+                : endpoint.models.filter { $0.lowercased().contains(search) || endpoint.name.lowercased().contains(search) }
+            return models.isEmpty ? nil : (endpoint, models)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    if let noneTitle = role.noneTitle {
+                        noneCard(noneTitle)
+                    }
+                    if filteredEndpoints.isEmpty {
+                        RowCard {
+                            Text(team.models.isEmpty ? L.t("settingsHome.noChatModels") : "没有名字里带「\(query)」的模型。")
+                                .font(Ink.secondary)
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Ink.Space.l)
+                        }
+                    } else {
+                        ForEach(filteredEndpoints, id: \.endpoint.id) { group in
+                            endpointCard(group.endpoint, models: group.models)
+                        }
+                    }
+                    manageServicesCard
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(role.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L.t("settings.imageModelSearch"))
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func noneCard(_ title: String) -> some View {
+        RowCard {
+            Button {
+                Haptics.tick(0.6)
+                pick(nil)
+                dismiss()
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Text(title)
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.ink)
+                    Spacer(minLength: Ink.Space.s)
+                    if current == nil {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
+                            .foregroundStyle(Ink.accent)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(TapStyle())
+            .accessibilityAddTraits(current == nil ? .isSelected : [])
+        }
+    }
+
+    private func endpointCard(_ endpoint: Endpoint, models: [String]) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(endpoint.name)
+            VStack(spacing: 0) {
+                ForEach(Array(models.enumerated()), id: \.element) { index, model in
+                    if index > 0 { Kit.rule(inset: Ink.Space.l) }
+                    modelRow(endpoint, model)
+                }
+            }
+            .paperCard()
+        }
+    }
+
+    private func modelRow(_ endpoint: Endpoint, _ model: String) -> some View {
+        let ref = "\(endpoint.id)/\(model)"
+        let selected = current == ref
+        return Button {
+            Haptics.tick(0.6)
+            pick(ref)
+            dismiss()
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                ModelIcon(model: model, service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(model)
+                        .font(Ink.mono(Ink.Size.sub, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                    TraitChips(traits: endpoint.traits(model), corrected: endpoint.corrected(model))
+                }
+                Spacer(minLength: Ink.Space.s)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var manageServicesCard: some View {
+        RowCard {
+            Button {
+                Haptics.light()
+                openServices()
+            } label: {
+                RowLabel("server.rack", tint: Ink.Tile.dai, title: L.t("settings.manageServicesShortcut"))
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+    }
+}

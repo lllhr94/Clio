@@ -7,8 +7,6 @@ struct ImageModelPage: View {
     @State private var query = ""
     @State private var serviceID = ""
     @State private var modelName = ""
-    @State private var refreshing = false
-    @State private var refreshNote: String?
 
     private struct Choice: Identifiable {
         let id: String
@@ -38,35 +36,29 @@ struct ImageModelPage: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                Button {
-                    pick(nil)
-                } label: {
-                    option(L.t("settings.imageModelNone"), detail: nil, selected: team.imageModelSelection == nil)
-                }
-            } footer: {
-                Text(L.t("settings.imageModelNote"))
-            }
-
-            if let endpoint {
-                manual(endpoint)
-                if !choices.isEmpty {
-                    Section(L.t("settings.imageModelAvailable")) {
-                        ForEach(choices) { choice in
-                            Button {
-                                pick(choice.id)
-                            } label: {
-                                option(choice.model, detail: choice.service, selected: choice.id == team.settings.imageModel)
-                            }
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                noneCard
+                if let endpoint {
+                    manualCard(endpoint)
+                    if !choices.isEmpty {
+                        availableCard
+                    }
+                } else {
+                    RowCard {
+                        Text(L.t("settings.imageModelNoService"))
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Ink.Space.l)
                     }
                 }
-            } else {
-                Section { Text(L.t("settings.imageModelNoService")).foregroundStyle(Ink.inkSoft) }
             }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
         }
-        .paperForm()
+        .scrollDismissesKeyboard(.interactively)
+        .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t("settings.imageModel"))
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L.t("settings.imageModelSearch"))
@@ -75,36 +67,123 @@ struct ImageModelPage: View {
         }
     }
 
-    private func manual(_ endpoint: Endpoint) -> some View {
-        Section(L.t("settings.imageModelManual")) {
-            Picker(L.t("settings.modelService"), selection: Binding(
-                get: { self.endpoint?.id ?? "" },
-                set: { serviceID = $0; refreshNote = nil }
-            )) {
-                ForEach(endpoints) { Text($0.name).tag($0.id) }
+    private var noneCard: some View {
+        RowCard(note: L.t("settings.imageModelNote")) {
+            Button {
+                pick(nil)
+            } label: {
+                option(L.t("settings.imageModelNone"), detail: nil, selected: team.imageModelSelection == nil)
             }
-            TextField(L.t("settings.imageModelPlaceholder"), text: $modelName)
-                .font(Ink.mono(Ink.Size.body))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onSubmit { if !typed.isEmpty { pick("\(endpoint.id)/\(typed)") } }
-            Button(L.t("actions.save")) { pick("\(endpoint.id)/\(typed)") }
-                .disabled(typed.isEmpty)
-            Button(L.t("settings.refreshImageModels")) { Task { await refresh(endpoint.id) } }
-                .disabled(refreshing)
-            if let refreshNote { Text(refreshNote).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
+            .buttonStyle(TapStyle())
+        }
+    }
+
+    private func manualCard(_ endpoint: Endpoint) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.imageModelManual"))
+            VStack(spacing: 0) {
+                HStack(spacing: Ink.Space.m) {
+                    Text(L.t("settings.modelService"))
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.ink)
+                    Spacer(minLength: Ink.Space.s)
+                    Menu {
+                        ForEach(endpoints) { item in
+                            Button {
+                                serviceID = item.id
+                            } label: {
+                                if item.id == endpoint.id {
+                                    Label(item.name, systemImage: "checkmark")
+                                } else {
+                                    Text(item.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: Ink.Space.xs) {
+                            Text(endpoint.name)
+                                .font(.system(size: Ink.Size.sub, weight: .medium))
+                                .foregroundStyle(Ink.accent)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.inkFaint)
+                        }
+                    }
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+
+                Kit.rule(inset: Ink.Space.l)
+
+                HStack(spacing: Ink.Space.s) {
+                    TextField(L.t("settings.imageModelPlaceholder"), text: $modelName)
+                        .font(Ink.mono(Ink.Size.sub))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .onSubmit { if !typed.isEmpty { pick("\(endpoint.id)/\(typed)") } }
+                    Button(L.t("actions.save")) { pick("\(endpoint.id)/\(typed)") }
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
+                        .foregroundStyle(typed.isEmpty ? Ink.inkFaint : Ink.accent)
+                        .disabled(typed.isEmpty)
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+            }
+            .paperCard()
+        }
+    }
+
+    private var availableCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.imageModelAvailable"))
+            VStack(spacing: 0) {
+                ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
+                    if index > 0 { Kit.rule(inset: Ink.Space.l) }
+                    Button {
+                        pick(choice.id)
+                    } label: {
+                        option(choice.model, detail: choice.service, selected: choice.id == team.settings.imageModel)
+                    }
+                    .buttonStyle(TapStyle())
+                }
+            }
+            .paperCard()
+            Text(L.t("settings.imageModelFromServicesNote"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func option(_ title: String, detail: String?, selected: Bool) -> some View {
         HStack(spacing: Ink.Space.m) {
-            VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                Text(title).font(detail == nil ? Ink.label : Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
-                if let detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                Text(title)
+                    .font(detail == nil ? .system(size: Ink.Size.body) : Ink.mono(Ink.Size.sub))
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(1)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(1)
+                }
             }
-            Spacer(minLength: 0)
-            if selected { Image(systemName: "checkmark").foregroundStyle(Ink.accent).accessibilityHidden(true) }
+            Spacer(minLength: Ink.Space.s)
+            if selected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .accessibilityHidden(true)
+            }
         }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, detail == nil ? 0 : Ink.Space.xs)
+        .frame(minHeight: Kit.rowHeight)
+        .contentShape(Rectangle())
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -112,17 +191,5 @@ struct ImageModelPage: View {
         Haptics.tick(0.6)
         team.setImageModel(ref)
         dismiss()
-    }
-
-    private func refresh(_ id: String) async {
-        refreshing = true
-        refreshNote = nil
-        defer { refreshing = false }
-        do {
-            try await team.refreshImageModels(id)
-            if endpoint?.id == id { refreshNote = L.t("settings.imageModelsRefreshed") }
-        } catch {
-            if endpoint?.id == id { refreshNote = L.t("errors.imageModelList") }
-        }
     }
 }
