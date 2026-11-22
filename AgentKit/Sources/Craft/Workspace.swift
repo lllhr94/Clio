@@ -147,22 +147,32 @@ extension WorkspaceHost {
     /// In pieces, into a side file first, then moved into place, so a half-written file never stands under the real name.
     public func writeFile(_ path: String, _ data: Data) async throws {
         let quoted = Shell.quote(path)
-        let part = Shell.quote(path + ".clio-part")
+        let part = Shell.quote("\(path).clio-part-\(UUID().uuidString.prefix(8))")
         let text = data.base64EncodedString()
-        _ = try await exec("mkdir -p \"$(dirname \(quoted))\" && : > \(part)", timeout: 30)
+        let prep = try await exec("mkdir -p -- \"$(dirname -- \(quoted))\" && : > \(part)", timeout: 30)
+        guard prep.code == 0 else {
+            throw WorkspaceError.cannot("写 \(path) 前建文件失败：\(prep.output.prefix(300))")
+        }
         var index = text.startIndex
         while index < text.endIndex {
             let end = text.index(index, offsetBy: 60_000, limitedBy: text.endIndex) ?? text.endIndex
             let result = try await exec("printf '%s' '\(text[index..<end])' | base64 -d >> \(part)", timeout: 60)
-            if result.code != 0 { throw WorkspaceError.cannot("写 \(path) 时出错：\(result.output.prefix(300))") }
+            if result.code != 0 {
+                _ = try? await exec("rm -f -- \(part)", timeout: 15)
+                throw WorkspaceError.cannot("写 \(path) 时出错：\(result.output.prefix(300))")
+            }
             index = end
         }
-        let done = try await exec("mv -f \(part) \(quoted) && echo CLIO_OK", timeout: 30)
-        guard done.output.contains("CLIO_OK") else { throw WorkspaceError.cannot("写好了但没能放到 \(path)：\(done.output.prefix(300))") }
+        let done = try await exec("mv -f -- \(part) \(quoted) && echo CLIO_OK", timeout: 30)
+        guard done.output.contains("CLIO_OK") else {
+            _ = try? await exec("rm -f -- \(part)", timeout: 15)
+            throw WorkspaceError.cannot("写好了但没能放到 \(path)：\(done.output.prefix(300))")
+        }
     }
 
     public func removeFile(_ path: String) async throws {
-        _ = try await exec("rm -f \(Shell.quote(path))", timeout: 30)
+        let result = try await exec("rm -f -- \(Shell.quote(path))", timeout: 30)
+        if result.code != 0 { throw WorkspaceError.cannot("删不掉 \(path)：\(result.output.prefix(300))") }
     }
 
     public func editFile(_ path: String, old: String, new: String) async throws -> FileChange {
@@ -178,7 +188,7 @@ extension WorkspaceHost {
 
     public func listDir(_ path: String, depth: Int) async throws -> String {
         let folder = Shell.quote(path.isEmpty ? "." : path)
-        let result = try await exec("cd \(folder) 2>/dev/null || { echo CLIO_NODIR; exit 3; }; find . -maxdepth \(max(1, min(depth, 4))) -not -path '*/.*' -not -path '*/node_modules/*' | sort | head -400", timeout: 60)
+        let result = try await exec("cd -- \(folder) 2>/dev/null || { echo CLIO_NODIR; exit 3; }; find . -maxdepth \(max(1, min(depth, 4))) -not -path '*/.*' -not -path '*/node_modules/*' | sort | head -400", timeout: 60)
         if result.output.hasPrefix("CLIO_NODIR") { throw WorkspaceError.missing(path) }
         return result.output.isEmpty ? "（空文件夹）" : result.output
     }
@@ -187,7 +197,7 @@ extension WorkspaceHost {
     public func glob(_ pattern: String, in path: String) async throws -> [String] {
         guard let regex = Glob.regex(pattern) else { throw WorkspaceError.cannot("看不懂这个通配符：\(pattern)") }
         let folder = Shell.quote(path.isEmpty ? "." : path)
-        let result = try await exec("cd \(folder) 2>/dev/null || { echo CLIO_NODIR; exit 3; }; find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null | head -20000", timeout: 120)
+        let result = try await exec("cd -- \(folder) 2>/dev/null || { echo CLIO_NODIR; exit 3; }; find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null | head -20000", timeout: 120)
         if result.output.hasPrefix("CLIO_NODIR") { throw WorkspaceError.missing(path) }
         let byName = !pattern.contains("/")
         return result.output.split(separator: "\n").map { String($0.hasPrefix("./") ? $0.dropFirst(2) : $0) }.filter { found in
@@ -199,7 +209,7 @@ extension WorkspaceHost {
     public func grep(_ pattern: String, in path: String, include: String?, ignoreCase: Bool) async throws -> [String] {
         let folder = Shell.quote(path.isEmpty ? "." : path)
         let includeFlag = include.map { "--include=\(Shell.quote($0)) " } ?? ""
-        let result = try await exec("grep -rnIE \(ignoreCase ? "-i " : "")\(includeFlag)--exclude-dir=.git --exclude-dir=node_modules -e \(Shell.quote(pattern)) \(folder) 2>/dev/null | head -300", timeout: 120)
+        let result = try await exec("grep -rnIE \(ignoreCase ? "-i " : "")\(includeFlag)--exclude-dir=.git --exclude-dir=node_modules -e \(Shell.quote(pattern)) -- \(folder) 2>/dev/null | head -300", timeout: 120)
         return result.output.split(separator: "\n").map(String.init)
     }
 

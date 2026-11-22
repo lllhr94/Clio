@@ -54,12 +54,13 @@ public struct OpenAIProvider: ModelProvider {
         return nil
     }
 
-    /// Moves thoughts written between <think> tags out of the answer.
+    /// Moves thoughts written between <think> tags out of the answer, and merges split tool call headers.
     static func splittingThoughts(_ events: AsyncThrowingStream<StreamEvent, Error>) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 var splitter = ThinkSplitter()
                 var images = ReplyImageText()
+                var toolHeaders: [Int: (id: String, name: String)] = [:]
                 func send(_ event: StreamEvent) {
                     if case .text(let text) = event {
                         for piece in images.feed(text) { continuation.yield(piece) }
@@ -69,9 +70,16 @@ public struct OpenAIProvider: ModelProvider {
                 }
                 do {
                     for try await event in events {
-                        if case .text(let piece) = event {
+                        switch event {
+                        case .text(let piece):
                             for split in splitter.feed(piece) { send(split) }
-                        } else {
+                        case .toolCallStart(let index, let id, let name):
+                            let existing = toolHeaders[index]
+                            let mergedId = !id.isEmpty ? id : (existing?.id ?? "call_\(index)")
+                            let mergedName = !name.isEmpty ? name : (existing?.name ?? "")
+                            toolHeaders[index] = (mergedId, mergedName)
+                            continuation.yield(.toolCallStart(index: index, id: mergedId, name: mergedName))
+                        default:
                             continuation.yield(event)
                         }
                     }
@@ -173,8 +181,10 @@ public struct OpenAIProvider: ModelProvider {
             for (position, call) in (delta["tool_calls"]?.array ?? []).enumerated() {
                 let index = call["index"]?.int ?? position
                 let function = call["function"] ?? .null
-                if let id = call["id"]?.string, !id.isEmpty {
-                    events.append(.toolCallStart(index: index, id: id, name: function["name"]?.string ?? ""))
+                let id = call["id"]?.string ?? ""
+                let name = function["name"]?.string ?? ""
+                if !id.isEmpty || !name.isEmpty {
+                    events.append(.toolCallStart(index: index, id: id, name: name))
                 }
                 if let arguments = function["arguments"]?.string, !arguments.isEmpty {
                     events.append(.toolCallArguments(index: index, delta: arguments))

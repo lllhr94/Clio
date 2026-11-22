@@ -57,8 +57,14 @@ public struct AnthropicProvider: ModelProvider {
                 add("user", blocks)
             case .assistant:
                 var blocks: [[String: Any]] = []
-                if thinking, let thought = message.reasoning, let signature = message.reasoningSignature, !signature.isEmpty {
-                    blocks.append(["type": "thinking", "thinking": thought, "signature": signature])
+                if thinking, let rawSignature = message.reasoningSignature, !rawSignature.isEmpty {
+                    let unpacked = Self.unpackSignature(rawSignature)
+                    if let thought = message.reasoning, !unpacked.signature.isEmpty {
+                        blocks.append(["type": "thinking", "thinking": thought, "signature": unpacked.signature])
+                    }
+                    for data in unpacked.redacted {
+                        blocks.append(["type": "redacted_thinking", "data": data])
+                    }
                 }
                 if !message.text.isEmpty { blocks.append(["type": "text", "text": message.text]) }
                 for call in message.toolCalls {
@@ -139,6 +145,10 @@ public struct AnthropicProvider: ModelProvider {
             switch block["type"]?.string {
             case "tool_use":
                 return [.toolCallStart(index: index, id: block["id"]?.string ?? "", name: block["name"]?.string ?? "")]
+            case "redacted_thinking":
+                if let data = block["data"]?.string, !data.isEmpty {
+                    return [.reasoningSignature(Self.redactedPrefix + data + Self.redactedSuffix)]
+                }
             case "text":
                 if let text = block["text"]?.string, !text.isEmpty { return [.text(text)] }
             default: break
@@ -164,5 +174,29 @@ public struct AnthropicProvider: ModelProvider {
             break
         }
         return []
+    }
+
+    private static let redactedPrefix = "\u{1E}redacted:"
+    private static let redactedSuffix = "\u{1E}"
+
+    static func unpackSignature(_ raw: String) -> (signature: String, redacted: [String]) {
+        var plain = ""
+        var redacted: [String] = []
+        var cursor = raw.startIndex
+        while cursor < raw.endIndex {
+            guard let start = raw.range(of: redactedPrefix, range: cursor..<raw.endIndex) else {
+                plain.append(contentsOf: raw[cursor...])
+                break
+            }
+            plain.append(contentsOf: raw[cursor..<start.lowerBound])
+            guard let end = raw.range(of: redactedSuffix, range: start.upperBound..<raw.endIndex) else {
+                plain.append(contentsOf: raw[start.lowerBound...])
+                break
+            }
+            let data = String(raw[start.upperBound..<end.lowerBound])
+            if !data.isEmpty { redacted.append(data) }
+            cursor = end.upperBound
+        }
+        return (plain, redacted)
     }
 }

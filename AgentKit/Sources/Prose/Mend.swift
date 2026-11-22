@@ -8,12 +8,49 @@ public extension Prose {
     static func mend(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         var lines = text.components(separatedBy: "\n")
-        // Inside an open code fence nothing is markdown: leave it.
-        let fences = lines.filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }.count
-        if fences % 2 == 1 {
+        // Track open code fences (``` and ~~~) and open display math blocks ($$).
+        var openFence: (char: Character, count: Int)?
+        var inMath = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let fence = openFence {
+                let run = trimmed.prefix { $0 == fence.char }.count
+                if run >= fence.count, trimmed.dropFirst(run).trimmingCharacters(in: .whitespaces).isEmpty {
+                    openFence = nil
+                }
+                continue
+            }
+            if inMath {
+                if trimmed.hasSuffix("$$") { inMath = false }
+                continue
+            }
+            if let first = trimmed.first, first == "`" || first == "~" {
+                let run = trimmed.prefix { $0 == first }.count
+                if run >= 3 {
+                    let rest = trimmed.dropFirst(run).trimmingCharacters(in: .whitespaces)
+                    if !(first == "`" && rest.contains("`")) {
+                        openFence = (first, run)
+                        continue
+                    }
+                }
+            }
+            if trimmed.hasPrefix("$$") {
+                let rest = trimmed.dropFirst(2)
+                if !(rest.hasSuffix("$$") && rest.count >= 2) {
+                    inMath = true
+                }
+            }
+        }
+        if let fence = openFence {
             // A fence whose language is still being typed shows nothing yet.
-            if let last = lines.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("```") { lines.removeLast() }
+            if let last = lines.last {
+                let trimmed = last.trimmingCharacters(in: .whitespaces)
+                if trimmed.prefix(while: { $0 == fence.char }).count >= fence.count { lines.removeLast() }
+            }
             return lines.joined(separator: "\n")
+        }
+        if inMath {
+            return text
         }
         guard var last = lines.popLast() else { return text }
         let bare = last.trimmingCharacters(in: .whitespaces)
@@ -69,10 +106,16 @@ public extension Prose {
                 if out.hasSuffix(mark) { out.removeLast(mark.count) } else { tail = mark + tail }
             }
         }
-        let singles = outside.replacingOccurrences(of: "**", with: "").filter { $0 == "*" }.count
-        // A list bullet is not emphasis.
-        let bullet = outside.trimmingCharacters(in: .whitespaces).hasPrefix("* ") ? 1 : 0
-        if (singles - bullet) % 2 == 1 {
+        let noBold = outside.replacingOccurrences(of: "**", with: "")
+        let chars = Array(noBold)
+        var emphasisStars = 0
+        for i in chars.indices where chars[i] == "*" {
+            let leftSpace = i == 0 || chars[i - 1].isWhitespace
+            let rightSpace = i == chars.count - 1 || chars[i + 1].isWhitespace
+            if leftSpace && rightSpace { continue }
+            emphasisStars += 1
+        }
+        if emphasisStars % 2 == 1 {
             if out.hasSuffix("*") && !out.hasSuffix("**") { out.removeLast() } else { tail = "*" + tail }
         }
         // Marks right before the closing ones would leave `** **`: trim the space they would wrap.

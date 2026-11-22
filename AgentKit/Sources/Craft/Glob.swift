@@ -13,15 +13,21 @@ public enum Glob {
             switch char {
             case "*":
                 if index + 1 < chars.count, chars[index + 1] == "*" {
-                    if index + 2 < chars.count, chars[index + 2] == "/" {
-                        out += "(?:.*/)?"
-                        index += 3
-                    } else {
-                        out += ".*"
+                    var trailingSlash = false
+                    while index + 1 < chars.count, chars[index] == "*", chars[index + 1] == "*" {
                         index += 2
+                        while index < chars.count, chars[index] == "*" { index += 1 }
+                        if index < chars.count, chars[index] == "/" {
+                            trailingSlash = true
+                            index += 1
+                        } else {
+                            trailingSlash = false
+                        }
                     }
+                    out += trailingSlash ? "(?:.*/)?" : ".*"
                     continue
                 }
+                while index + 1 < chars.count, chars[index + 1] == "*" { index += 1 }
                 out += "[^/]*"
             case "?":
                 out += "[^/]"

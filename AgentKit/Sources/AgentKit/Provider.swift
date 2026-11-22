@@ -127,7 +127,7 @@ enum HTTP {
     }
 
     /// Runs a streaming request and passes each SSE data line to `decode`.
-    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
+    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, session: URLSession = HTTP.session, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -141,12 +141,30 @@ enum HTTP {
                         continuation.finish()
                         return
                     }
+                    var sawSSE = false
+                    var plain = ""
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
-                        guard let payload = SSE.payload(of: line) else { continue }
-                        // 「[DONE]」 is the service saying the answer is complete, for those that send no finish reason.
-                        if payload == "[DONE]" { continuation.yield(.finish(reason: "done")); continue }
-                        for event in try decode(payload) { continuation.yield(event) }
+                        if let payload = SSE.payload(of: line) {
+                            sawSSE = true
+                            // 「[DONE]」 is the service saying the answer is complete, for those that send no finish reason.
+                            if payload == "[DONE]" { continuation.yield(.finish(reason: "done")); continue }
+                            for event in try decode(payload) { continuation.yield(event) }
+                        } else if !sawSSE, plain.utf8.count < 16_000 {
+                            if !plain.isEmpty { plain.append("\n") }
+                            plain.append(line)
+                        }
+                    }
+                    if !sawSSE {
+                        let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed.hasPrefix("{"), let json = JSONValue.parse(trimmed) {
+                            let events = try decode(trimmed)
+                            if !events.isEmpty {
+                                for event in events { continuation.yield(event) }
+                            } else if json["error"] != nil || json["message"]?.string != nil || json["msg"]?.string != nil {
+                                throw failure(status: 200, data: Data(trimmed.utf8))
+                            }
+                        }
                     }
                     continuation.finish()
                 } catch {
