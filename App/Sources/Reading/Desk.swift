@@ -1295,7 +1295,8 @@ struct Desk: View {
     }
 
     private var sideSections: [SideSection] {
-        sections(sideThreads, past: pastLeaves(matching: sideQuery), byDate: false)
+        // 主人定：侧边栏也按 置顶 / 最近 / 更早。
+        sections(sideThreads, past: pastLeaves(matching: sideQuery), byDate: true)
     }
 
     private func sections(_ threads: [Thread], past: [PastLeaf], byDate: Bool) -> [SideSection] {
