@@ -17,15 +17,106 @@ extension TeamModel {
         let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
-            Self(
-                settings: Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings(),
-                bots: Disk.load([BotInfo].self, "bots.json") ?? [],
-                rooms: Disk.load([RoomInfo].self, "rooms.json") ?? [],
-                memory: Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? []),
-                laters: Disk.load([Later].self, "later.json") ?? [],
-                routines: Disk.load([Routine].self, "routines.json") ?? [],
-                queued: QueuedStore.loadAll()
+            let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
+            let bots = Disk.load([BotInfo].self, "bots.json") ?? []
+            let rooms = Disk.load([RoomInfo].self, "rooms.json") ?? []
+            let memory = Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
+            let laters = Disk.load([Later].self, "later.json") ?? []
+            let routines = Disk.load([Routine].self, "routines.json") ?? []
+            let rawQueued = QueuedStore.loadAll()
+
+            let queued = reconcileQueued(rawQueued, bots: bots, rooms: rooms)
+
+            return Self(
+                settings: settings,
+                bots: bots,
+                rooms: rooms,
+                memory: memory,
+                laters: laters,
+                routines: routines,
+                queued: queued
             )
+        }
+
+        private struct LeafID: Decodable { let id: String }
+
+        private nonisolated static func reconcileQueued(
+            _ raw: [String: [StoredQueuedMessage]],
+            bots: [BotInfo],
+            rooms: [RoomInfo]
+        ) -> [String: [StoredQueuedMessage]] {
+            guard !raw.isEmpty else { return [:] }
+            let baseKeys = bots.map { TeamModel.key(bot: $0.id) } + rooms.map { TeamModel.key(room: $0.id) }
+            var validKeys = Set(baseKeys)
+            var leavesByBase: [String: [String]] = [:]
+            for base in baseKeys {
+                let ids = (Disk.load([LeafID].self, TeamModel.leafList(base)) ?? []).map(\.id)
+                leavesByBase[base] = ids
+                for leafId in ids {
+                    validKeys.insert(TeamModel.threadKey(base, leaf: leafId))
+                }
+            }
+
+            var kept: [String: [StoredQueuedMessage]] = [:]
+            for (chatKey, items) in raw {
+                guard validKeys.contains(chatKey) else {
+                    QueuedStore.saveDetached([], for: chatKey)
+                    continue
+                }
+                var persistedInChat = Set(Disk.loadChat(chatKey).flatMap { $0.queuedIds ?? [] })
+                let isLeafSlot = chatKey.contains("~")
+                if !isLeafSlot, let leafIds = leavesByBase[chatKey] {
+                    // If a crash occurred right after shelving an entry whose queued IDs had not yet been cleared,
+                    // also check shelved leaves under this conversation so we never duplicate it.
+                    for leafId in leafIds {
+                        let leafKey = TeamModel.threadKey(chatKey, leaf: leafId)
+                        for entry in Disk.loadChat(leafKey) {
+                            if let ids = entry.queuedIds { persistedInChat.formUnion(ids) }
+                        }
+                    }
+                }
+                let persistedInDraftText = isLeafSlot ? Set<UUID>() : ChatDraft.storedQueuedIds(for: chatKey)
+                let persistedInDraftAttachments = isLeafSlot ? Set<UUID>() : DraftAttachments.storedQueuedIds(for: chatKey)
+                let cleaned = QueuedMessageStore.deduplicated(
+                    items,
+                    persistedInChat: persistedInChat,
+                    persistedInDraftText: persistedInDraftText,
+                    persistedInDraftAttachments: persistedInDraftAttachments
+                )
+                if cleaned != items {
+                    QueuedStore.saveDetached(cleaned, for: chatKey)
+                }
+                if !cleaned.isEmpty {
+                    kept[chatKey] = cleaned
+                }
+            }
+            // If a crash happened after writing a destination slot during shelve/openLeaf and before clearing the source slot,
+            // deduplicate any ID appearing in both `base` and `base~leaf`.
+            for (base, leafIds) in leavesByBase {
+                guard let activeItems = kept[base], !activeItems.isEmpty else { continue }
+                let activeIsEmptyOnDisk = Disk.loadChat(base).isEmpty
+                var activeFiltered = activeItems
+                for leafId in leafIds {
+                    let leafKey = TeamModel.threadKey(base, leaf: leafId)
+                    guard let leafItems = kept[leafKey], !leafItems.isEmpty else { continue }
+                    let leafIdsSet = Set(leafItems.map(\.id))
+                    let activeIdsSet = Set(activeFiltered.map(\.id))
+                    let overlap = activeIdsSet.intersection(leafIdsSet)
+                    guard !overlap.isEmpty else { continue }
+                    if activeIsEmptyOnDisk {
+                        activeFiltered.removeAll { overlap.contains($0.id) }
+                    } else {
+                        let dedupedLeaf = leafItems.filter { !overlap.contains($0.id) }
+                        QueuedStore.saveDetached(dedupedLeaf, for: leafKey)
+                        kept[leafKey] = dedupedLeaf.isEmpty ? nil : dedupedLeaf
+                    }
+                }
+                if activeFiltered != activeItems {
+                    QueuedStore.saveDetached(activeFiltered, for: base)
+                    kept[base] = activeFiltered.isEmpty ? nil : activeFiltered
+                }
+            }
+            return kept
         }
     }
 
@@ -57,18 +148,15 @@ extension TeamModel {
         modelInputLog.reset()
         approvals = []
         phase = settings.endpoints.isEmpty ? .setup : .ready
-        let validKeys = Set(bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) })
         var restored: [String: [Queued]] = [:]
         for (chatKey, stored) in data.queued {
-            if validKeys.contains(chatKey) {
-                restored[chatKey] = stored.map {
-                    Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
-                }
-            } else {
-                QueuedStore.clear(chatKey)
+            restored[chatKey] = stored.map {
+                Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
             }
         }
         queued = restored
+        inFlightQueued = [:]
+        pendingInterjects = [:]
         sortBots()
         deliverDue()
     }

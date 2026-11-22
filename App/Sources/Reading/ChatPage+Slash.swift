@@ -128,6 +128,7 @@ extension ChatPage {
         draft = ""
         photos = []
         files = []
+        draftAttachmentQueuedIds = []
         DraftAttachments.clear(chat.key)
         following = true
         followToEnd()

@@ -68,8 +68,9 @@ extension TeamModel {
             saveLaters()
         }
         // And its conversation's other files: leaves put aside, the 前情提要, settings, copies kept for 「重来」.
+        let botLeaves = leaves(key)
         if keeping {
-            for leaf in leaves(key) {
+            for leaf in botLeaves {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
             }
@@ -77,10 +78,12 @@ extension TeamModel {
             Disk.remove(Self.summaryFile(key))
             Disk.remove(Self.optionsFile(key))
         }
+        for leaf in botLeaves {
+            clearQueuedSlot(Self.threadKey(key, leaf: leaf.id))
+        }
         leafBook[key] = nil
         optionBook[key] = nil
-        queued[key] = nil
-        persistQueued(key)
+        clearQueuedSlot(key)
         Snapshots.shared.forget(key)
         entries[key] = nil
         modelInputLog.clear(key)
@@ -115,8 +118,9 @@ extension TeamModel {
             laters.removeAll { $0.chat == key }
             saveLaters()
         }
+        let roomLeaves = leaves(key)
         if keeping {
-            for leaf in leaves(key) {
+            for leaf in roomLeaves {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
             }
@@ -124,10 +128,12 @@ extension TeamModel {
             Disk.remove(Self.summaryFile(key))
             Disk.remove(Self.optionsFile(key))
         }
+        for leaf in roomLeaves {
+            clearQueuedSlot(Self.threadKey(key, leaf: leaf.id))
+        }
         leafBook[key] = nil
         optionBook[key] = nil
-        queued[key] = nil
-        persistQueued(key)
+        clearQueuedSlot(key)
         Snapshots.shared.forget(key)
         entries[key] = nil
         modelInputLog.clear(key)

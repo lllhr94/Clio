@@ -63,6 +63,9 @@ struct Entry: Codable, Identifiable, Equatable, Sendable {
     var pulse: String?
     /// The line a compression leaves: what is above it the model now reads as the 前情提要; it all stays here to scroll back to.
     var fold: Bool?
+    /// Original queued message IDs transferred into this user entry, used to deduplicate on restart if a crash
+    /// occurred after the chat saved but before the queued store removed them.
+    var queuedIds: [UUID]?
 }
 
 /// A message a Bot set for later; it shows in the chat once its time has come.
@@ -227,6 +230,14 @@ enum Disk {
     static func keepPhoto(_ data: Data) -> String {
         let name = UUID().uuidString + ".jpg"
         try? data.write(to: url("media/\(name)"), options: .atomic)
+        return name
+    }
+
+    /// Writes a photo atomically and throws on failure so callers transferring queued photos can abort before deleting the source.
+    static func writePhoto(_ data: Data) throws -> String {
+        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
+        let name = UUID().uuidString + ".jpg"
+        try data.write(to: url("media/\(name)"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return name
     }
 

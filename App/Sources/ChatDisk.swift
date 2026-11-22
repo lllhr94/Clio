@@ -11,18 +11,23 @@ enum ChatDisk {
     /// Conversations whose last save failed (a full disk, say). A backup refuses to go out while any is left,
     /// since it would carry the older file; the next save of that conversation tries again.
     nonisolated(unsafe) private static var failed: Set<String> = []
+    /// Completion callbacks waiting for the next write of a given chat file to land (or fail).
+    /// Coalesced superseded writes transfer their callbacks to the winning write so no waiter is dropped.
+    nonisolated(unsafe) private static var callbacks: [String: [@Sendable (Bool) -> Void]] = [:]
 
-    static func save(_ entries: [Entry], chat: String) {
+    static func save(_ entries: [Entry], chat: String, onSaved: (@Sendable (Bool) -> Void)? = nil) {
         let path = Disk.chatFile(chat)
-        schedule(path) {
+        schedule(path, onSaved: onSaved) {
             do {
                 try Disk.write(entries, path)
                 lock.withLock { _ = failed.remove(path) }
+                return true
             } catch {
-                guard !Disk.frozen else { return }
+                guard !Disk.frozen else { return false }
                 lock.withLock { _ = failed.insert(path) }
                 let reason = error.localizedDescription
                 DispatchQueue.main.async { Diag.note("对话没存进手机：\(reason)") }
+                return false
             }
         }
     }
@@ -40,8 +45,14 @@ enum ChatDisk {
         let id = UUID()
         lock.withLock { pending[path] = id }
         var failure: Error?
+        var waiters: [@Sendable (Bool) -> Void] = []
         writer.sync {
-            guard lock.withLock({ pending[path] == id }) else { return }
+            let taken: [@Sendable (Bool) -> Void]? = lock.withLock {
+                guard pending[path] == id else { return nil }
+                return callbacks.removeValue(forKey: path) ?? []
+            }
+            guard let taken else { return }
+            waiters = taken
             do {
                 try Disk.write(entries, path)
                 lock.withLock { _ = failed.remove(path) }
@@ -50,21 +61,40 @@ enum ChatDisk {
             }
             lock.withLock { if pending[path] == id { pending[path] = nil } }
         }
+        let ok = failure == nil
+        for callback in waiters { callback(ok) }
         if let failure { throw failure }
     }
 
     static func remove(_ chat: String) {
         let path = Disk.chatFile(chat)
-        schedule(path) { Disk.remove(path) }
+        schedule(path, onSaved: nil) {
+            Disk.remove(path)
+            return false
+        }
     }
 
-    private static func schedule(_ file: String, write: @escaping @Sendable () -> Void) {
+    private static func schedule(
+        _ file: String,
+        onSaved: (@Sendable (Bool) -> Void)?,
+        write: @escaping @Sendable () -> Bool
+    ) {
         let id = UUID()
-        lock.withLock { pending[file] = id }
+        lock.withLock {
+            pending[file] = id
+            if let onSaved {
+                callbacks[file, default: []].append(onSaved)
+            }
+        }
         writer.async {
-            guard lock.withLock({ pending[file] == id }) else { return }
-            write()
+            let waiters: [@Sendable (Bool) -> Void]? = lock.withLock {
+                guard pending[file] == id else { return nil }
+                return callbacks.removeValue(forKey: file) ?? []
+            }
+            guard let waiters else { return }
+            let ok = write()
             lock.withLock { if pending[file] == id { pending[file] = nil } }
+            for callback in waiters { callback(ok) }
         }
     }
 

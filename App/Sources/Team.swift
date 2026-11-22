@@ -282,7 +282,7 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
-    static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
+    nonisolated static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
     nonisolated static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile(threadKey(key, leaf: id)) }
 
     func entries(in leaf: Leaf, of key: String) -> [Entry] {
@@ -313,7 +313,9 @@ final class TeamModel: ObservableObject {
         let list = leaves(key)
         guard list.contains(where: { $0.id == id && $0.marker == nil }),
               writeEditedLeaves(key, list.filter { $0.id != id }) else { return false }
-        forgetThreads(Self.threadKey(key, leaf: id))
+        let leafKey = Self.threadKey(key, leaf: id)
+        forgetThreads(leafKey)
+        clearQueuedSlot(leafKey)
         if keeping {
             Disk.remove(Self.leafFile(key, id))
             Disk.remove(Self.leafSummary(key, id))
@@ -422,12 +424,12 @@ final class TeamModel: ObservableObject {
 
     private func shelveCurrent(_ key: String) -> Bool {
         stop(key)
+        restoreUnemittedInterjects(for: key)
         epochs[key, default: 0] += 1
         browser.release(key)
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else {
-            queued[key] = nil
-            persistQueued(key)
+            // Leave unsent queued messages untouched when there is no conversation to shelve.
             modelInputLog.clear(key)
             forgetThreads(key)
             return true
@@ -436,13 +438,18 @@ final class TeamModel: ObservableObject {
         let named = options(key).title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
         let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
+        let leafKey = Self.threadKey(key, leaf: leaf.id)
+        let waiting = queued[key] ?? []
         if keeping {
-            // The page is emptied below: only once its copy is surely on disk. A failed copy leaves everything as it was.
+            // The page is emptied below: only once its copy (and any queued messages) is surely on disk. A failed copy leaves everything as it was.
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
                 if let old = summary(key) { try Disk.write(old, Self.leafSummary(key, leaf.id)) }
+                if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey) }
             } catch {
                 Disk.remove(Self.leafFile(key, leaf.id))
+                Disk.remove(Self.leafSummary(key, leaf.id))
+                if !waiting.isEmpty { QueuedStore.clear(leafKey) }
                 fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
                 return false
             }
@@ -452,9 +459,18 @@ final class TeamModel: ObservableObject {
         setOptions(key, value)
         setSummary(key, nil)
         setLeaves(key, [leaf] + leaves(key))
-        moveThread(key, to: Self.threadKey(key, leaf: leaf.id))
+        moveThread(key, to: leafKey)
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
+        // In-flight queued items already merged into `current` are now durably on disk inside `leafFile`.
+        let persistedIds = Set(current.flatMap { $0.queuedIds ?? [] })
+        if !persistedIds.isEmpty {
+            inFlightQueued[key]?.removeAll { persistedIds.contains($0.id) }
+            if inFlightQueued[key]?.isEmpty == true { inFlightQueued[key] = nil }
+        }
+        if !waiting.isEmpty {
+            queued[leafKey] = waiting
+        }
         queued[key] = nil
         persistQueued(key)
         modelInputLog.clear(key)
@@ -487,17 +503,20 @@ final class TeamModel: ObservableObject {
     @discardableResult
     func clearChat(_ key: String, includingLeaves: Bool = true) -> Bool {
         guard !openingLeaves.contains(key) else { return false }
-        queued[key] = nil
-        persistQueued(key)
+        clearQueuedSlot(key)
         stop(key)
         epochs[key, default: 0] += 1
         modelInputLog.clear(key)
         if includingLeaves {
+            let oldLeaves = leaves(key)
             if keeping {
-                for leaf in leaves(key) {
+                for leaf in oldLeaves {
                     Disk.remove(Self.leafFile(key, leaf.id))
                     Disk.remove(Self.leafSummary(key, leaf.id))
                 }
+            }
+            for leaf in oldLeaves {
+                clearQueuedSlot(Self.threadKey(key, leaf: leaf.id))
             }
             setLeaves(key, [])
             Snapshots.shared.forget(key)
@@ -548,11 +567,21 @@ final class TeamModel: ObservableObject {
         }
         guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
         guard shelveCurrent(key) else { return }
+        let leafKey = Self.threadKey(key, leaf: leaf.id)
+        let leafQueued = queued[leafKey] ?? []
+        let persistSnapshot = allPersistableQueued(key, extra: leafQueued)
         if keeping {
-            // The leaf's own file goes only once the page it became is surely saved.
+            // The leaf's own files (and its queued messages) go only once the page it became is surely saved.
             let toSave = kept
+            let saveQueue = !leafQueued.isEmpty
             let saved: Error? = await Task.detached(priority: .userInitiated) {
-                do { try ChatDisk.saveAndWait(toSave, chat: key); return nil } catch { return error }
+                do {
+                    try ChatDisk.saveAndWait(toSave, chat: key)
+                    if saveQueue { try QueuedStore.saveAndWait(persistSnapshot, for: key) }
+                    return nil
+                } catch {
+                    return error
+                }
             }.value
             if let saved {
                 fail(key, "没能翻回这一段：存不进手机（\(saved.localizedDescription)）。它还在絮语页里。")
@@ -562,10 +591,19 @@ final class TeamModel: ObservableObject {
         setSummary(key, keptSummary)
         if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
         entries[key] = kept
+        if !leafQueued.isEmpty {
+            var merged = queued[key] ?? []
+            let existing = Set(merged.map(\.id))
+            merged.append(contentsOf: leafQueued.filter { !existing.contains($0.id) })
+            queued[key] = merged.isEmpty ? nil : merged
+            queued[leafKey] = nil
+            inFlightQueued[leafKey] = nil
+            if keeping { QueuedStore.clear(leafKey) }
+        }
         if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         if leaf.marker == nil {
-            moveThread(Self.threadKey(key, leaf: leaf.id), to: key)
+            moveThread(leafKey, to: key)
             rename(key, to: leaf.title)
         }
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
@@ -613,7 +651,9 @@ final class TeamModel: ObservableObject {
             Disk.remove(Self.leafSummary(key, leaf.id))
         }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
-        forgetThreads(Self.threadKey(key, leaf: leaf.id))
+        let leafKey = Self.threadKey(key, leaf: leaf.id)
+        forgetThreads(leafKey)
+        clearQueuedSlot(leafKey)
     }
 
     func clearPreview(_ key: String) {
@@ -628,11 +668,15 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    func append(_ entry: Entry, to key: String) {
+    func append(_ entry: Entry, to key: String, onSaved: (@Sendable (Bool) -> Void)? = nil) {
         var list = history(key)
         list.append(entry)
         entries[key] = list
-        if keeping { ChatDisk.save(list, chat: key) }
+        if keeping {
+            ChatDisk.save(list, chat: key, onSaved: onSaved)
+        } else {
+            onSaved?(true)
+        }
         notify(key, .changed)
     }
 
@@ -685,14 +729,64 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    /// Messages waiting for the turn in progress to finish, by chat.
+    /// Messages waiting for the turn in progress to finish, by chat (and by shelved leaf key `base~leafId`).
     @Published var queued: [String: [Queued]] = [:]
+    /// Items already removed from UI while their destination (chat entry or draft) is still confirming on disk.
+    /// Kept in `QueuedStore` until confirmation so a crash or write failure never drops them from both sides.
+    var inFlightQueued: [String: [Queued]] = [:]
+    /// Interjections handed to `Agent.inbox` awaiting their `.message(.user)` event in `hear`.
+    var pendingInterjects: [String: [(id: UUID, text: String)]] = [:]
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
     var sendQueuedNow: Set<String> = []
 
+    func allPersistableQueued(_ key: String, extra: [Queued] = []) -> [Queued] {
+        var seen: Set<UUID> = []
+        var combined: [Queued] = []
+        for item in (inFlightQueued[key] ?? []) + (queued[key] ?? []) + extra where seen.insert(item.id).inserted {
+            combined.append(item)
+        }
+        return combined
+    }
+
     func persistQueued(_ key: String) {
         guard keeping else { return }
-        QueuedStore.save(queued[key] ?? [], for: key)
+        QueuedStore.save(allPersistableQueued(key), for: key)
+    }
+
+    func confirmQueuedRemoved(_ ids: Set<UUID>, for key: String) {
+        guard var items = inFlightQueued[key] else { return }
+        let before = items.count
+        items.removeAll { ids.contains($0.id) }
+        guard items.count != before else { return }
+        inFlightQueued[key] = items.isEmpty ? nil : items
+        persistQueued(key)
+    }
+
+    func restoreInFlightQueued(_ ids: Set<UUID>, to key: String) {
+        guard var items = inFlightQueued[key] else { return }
+        let restored = items.filter { ids.contains($0.id) }
+        guard !restored.isEmpty else { return }
+        items.removeAll { ids.contains($0.id) }
+        inFlightQueued[key] = items.isEmpty ? nil : items
+        let current = queued[key] ?? []
+        let existing = Set(current.map(\.id))
+        let toPrepend = restored.filter { !existing.contains($0.id) }
+        if !toPrepend.isEmpty {
+            withAnimation(.smooth) { queued[key] = toPrepend + current }
+        }
+        persistQueued(key)
+    }
+
+    func restoreUnemittedInterjects(for key: String) {
+        guard let leftover = pendingInterjects.removeValue(forKey: key), !leftover.isEmpty else { return }
+        restoreInFlightQueued(Set(leftover.map(\.id)), to: key)
+    }
+
+    func clearQueuedSlot(_ key: String) {
+        queued[key] = nil
+        inFlightQueued[key] = nil
+        pendingInterjects[key] = nil
+        if keeping { QueuedStore.clear(key) }
     }
 
     func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
@@ -723,11 +817,17 @@ final class TeamModel: ObservableObject {
     /// What was said in passing, taken out of the queue for the companion to read now.
     func takeInbox(_ key: String) -> [String] {
         guard let list = queued[key], list.contains(where: \.interject) else { return [] }
-        let taken = list.filter(\.interject).map(\.text)
+        let taken = list.filter(\.interject)
         let rest = list.filter { !$0.interject }
+        let deliverable = taken.filter { !$0.text.isEmpty }
+        if !deliverable.isEmpty {
+            inFlightQueued[key, default: []].append(contentsOf: deliverable)
+            pendingInterjects[key, default: []].append(contentsOf: deliverable.map { (id: $0.id, text: $0.text) })
+        }
         withAnimation(.smooth) { queued[key] = rest.isEmpty ? nil : rest }
+        // Deliverable interjects stay on disk via `inFlightQueued` until `hear(.message(.user))` confirms ChatDisk.save.
         persistQueued(key)
-        return taken
+        return deliverable.map(\.text)
     }
 
     /// 「立即发送」: stop the turn in progress and send what is queued now.
@@ -742,24 +842,60 @@ final class TeamModel: ObservableObject {
     }
 
     /// 「撤回」: a queued message comes back out of the queue, for the composer.
-    func unqueue(_ key: String, _ id: UUID) -> Queued? {
+    /// Pass `deferRemoval: true` when the caller must persist the draft first and then call `confirmQueuedRemoved`.
+    func unqueue(_ key: String, _ id: UUID, deferRemoval: Bool = false) -> Queued? {
         guard let index = queued[key]?.firstIndex(where: { $0.id == id }) else { return nil }
         var list = queued[key] ?? []
         let item = list.remove(at: index)
         withAnimation(.smooth) { queued[key] = list.isEmpty ? nil : list }
-        persistQueued(key)
+        if deferRemoval {
+            inFlightQueued[key, default: []].append(item)
+        } else {
+            persistQueued(key)
+        }
         return item
     }
 
     /// Everything queued goes out as one message, as if written at once.
     func flushQueue(_ key: String) {
+        guard phase != .demo else { return }
+        guard runs[key] == nil, !helping.contains(key) else { return }
         guard let waiting = queued[key], !waiting.isEmpty else { return }
-        withAnimation(.smooth) { queued[key] = nil }
-        persistQueued(key)
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
         let allPhotos = waiting.flatMap(\.photos)
-        guard !text.isEmpty || !allPhotos.isEmpty else { return }
-        send(text, photos: allPhotos, to: key, userInitiated: waiting.contains(where: \.userInitiated))
+        let ids = waiting.map(\.id)
+        guard !text.isEmpty || !allPhotos.isEmpty else {
+            withAnimation(.smooth) { queued[key] = nil }
+            persistQueued(key)
+            return
+        }
+        withAnimation(.smooth) { queued[key] = nil }
+        inFlightQueued[key, default: []].append(contentsOf: waiting)
+        var names: [String] = []
+        if keeping, !allPhotos.isEmpty {
+            do {
+                for photo in allPhotos {
+                    names.append(try Disk.writePhoto(photo))
+                }
+            } catch {
+                for name in names { Disk.remove("media/\(name)") }
+                restoreInFlightQueued(Set(ids), to: key)
+                Diag.note("排队照片没存进手机，原消息已留在排队里：\(error.localizedDescription)")
+                return
+            }
+        }
+        if archived.contains(key) { archive(key, false) }
+        if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
+        let entry = Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names, queuedIds: ids)
+        let idSet = Set(ids)
+        append(entry, to: key) { [weak self] ok in
+            guard ok else { return }
+            Task { @MainActor [weak self] in
+                self?.confirmQueuedRemoved(idSet, for: key)
+            }
+        }
+        touch(key, preview: nil)
+        start(key, userInitiated: waiting.contains(where: \.userInitiated))
     }
 
     func stop(_ key: String, keepSendNow: Bool = false) {
@@ -963,6 +1099,8 @@ final class TeamModel: ObservableObject {
         endGrace(token)
         // Told in the other conversations when the user comes back to them (你不在时).
         if !cancelled { record(ok ? .done : .failed, in: key) }
+        // If a turn stopped after `takeInbox` before `hear` received its user message, return it to the queue.
+        if runs[key] == nil { restoreUnemittedInterjects(for: key) }
         // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
         // A turn that failed or was stopped leaves the queue for the user to send or take back.
         let now = sendQueuedNow.remove(key) != nil
@@ -1207,9 +1345,33 @@ final class TeamModel: ObservableObject {
             }
             // Pictures a tool brought back are kept as photos for the trace, not inside the saved message.
             kept.images = []
-            var entry = Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: message.role == .user ? nil : speaker, photos: shots, label: label)
+            var matchedInterjectId: UUID?
+            if message.role == .user,
+               var waitingInterjects = pendingInterjects[key],
+               let matchIndex = waitingInterjects.firstIndex(where: { $0.text == kept.text }) {
+                matchedInterjectId = waitingInterjects.remove(at: matchIndex).id
+                pendingInterjects[key] = waitingInterjects.isEmpty ? nil : waitingInterjects
+            }
+            var entry = Entry(
+                id: UUID().uuidString,
+                at: Now.ms,
+                message: kept,
+                speaker: message.role == .user ? nil : speaker,
+                photos: shots,
+                label: label,
+                queuedIds: matchedInterjectId.map { [$0] }
+            )
             entry.pulse = felt
-            append(entry, to: key)
+            if let interjectId = matchedInterjectId {
+                append(entry, to: key) { [weak self] ok in
+                    guard ok else { return }
+                    Task { @MainActor [weak self] in
+                        self?.confirmQueuedRemoved([interjectId], for: key)
+                    }
+                }
+            } else {
+                append(entry, to: key)
+            }
             if message.role == .user { doing[key] = "收到插话，接着做" }
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
         case .usage(let input, let output, let cached):

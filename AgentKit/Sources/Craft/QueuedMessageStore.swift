@@ -153,6 +153,25 @@ public enum QueuedMessageStore {
         return loaded
     }
 
+    /// Filters out queued items whose transfer to a persisted chat entry or persisted draft already landed on disk.
+    /// Items carrying photos are only deduplicated when confirmed in `persistedInChat` or `persistedInDraftAttachments`
+    /// (never by text-only draft markers alone), preventing photo loss if text flushed before attachment write succeeded.
+    public static func deduplicated(
+        _ items: [StoredQueuedMessage],
+        persistedInChat: Set<UUID>,
+        persistedInDraftText: Set<UUID> = [],
+        persistedInDraftAttachments: Set<UUID> = []
+    ) -> [StoredQueuedMessage] {
+        items.filter { item in
+            if persistedInChat.contains(item.id) { return false }
+            if item.photos.isEmpty {
+                return !persistedInDraftText.contains(item.id) && !persistedInDraftAttachments.contains(item.id)
+            } else {
+                return !persistedInDraftAttachments.contains(item.id)
+            }
+        }
+    }
+
     private static var fileWriteOptions: Data.WritingOptions {
         #if os(iOS)
         return [.atomic, .completeFileProtectionUntilFirstUserAuthentication]

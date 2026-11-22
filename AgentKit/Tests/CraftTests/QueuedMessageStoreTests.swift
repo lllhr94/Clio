@@ -80,4 +80,23 @@ final class QueuedMessageStoreTests: XCTestCase {
         XCTAssertEqual(loaded["bot-keep"], [valid])
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
     }
+
+    func testDeduplicatedDropsConfirmedTransfersAndProtectsUnwrittenPhotos() {
+        let sentFirst = StoredQueuedMessage(text: "已写入聊天 1")
+        let sentSecond = StoredQueuedMessage(text: "已写入聊天 2", photos: [Data([0xFF, 0xD8])])
+        let textUnqueued = StoredQueuedMessage(text: "纯文字已撤回草稿")
+        let photoUnqueuedTextOnly = StoredQueuedMessage(text: "带图撤回但图未落盘", photos: [Data([0x89, 0x50])])
+        let photoUnqueuedSaved = StoredQueuedMessage(text: "带图撤回且图已落盘", photos: [Data([0x89, 0x50, 0x4E])])
+        let stillPending = StoredQueuedMessage(text: "新排队的")
+
+        let all = [sentFirst, sentSecond, textUnqueued, photoUnqueuedTextOnly, photoUnqueuedSaved, stillPending]
+        let remaining = QueuedMessageStore.deduplicated(
+            all,
+            persistedInChat: [sentFirst.id, sentSecond.id],
+            persistedInDraftText: [textUnqueued.id, photoUnqueuedTextOnly.id, photoUnqueuedSaved.id],
+            persistedInDraftAttachments: [photoUnqueuedSaved.id]
+        )
+
+        XCTAssertEqual(remaining, [photoUnqueuedTextOnly, stillPending])
+    }
 }
