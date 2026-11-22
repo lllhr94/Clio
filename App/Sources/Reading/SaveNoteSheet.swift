@@ -124,7 +124,7 @@ struct SaveNoteSheet: View {
             errorText = nil
         } label: {
             HStack(spacing: Ink.Space.m) {
-                IconBadge(dest.icon, tint: dest.tint)
+                IconBadge(symbol: dest.icon, tint: dest.tint)
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(dest.title)
                         .font(.system(size: Ink.Size.body, weight: isSelected ? .semibold : .regular))

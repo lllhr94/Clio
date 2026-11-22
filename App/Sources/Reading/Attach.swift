@@ -102,7 +102,7 @@ struct DeskPicker: View {
     }
 
     nonisolated static func readFiles(capPerMount: Int = 400, totalCap: Int = 1600) -> [(path: String, date: Date, size: Int)] {
-        var found: [(path: String, date: Date, size: Int)] = Workspace.files(under: Workspace.root, root: Workspace.root, prefix: "", cap: 800)
+        var found: [(path: String, date: Date, size: Int)] = Workspace.files(under: Workspace.root, cap: 800, root: Workspace.root, prefix: "")
             .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
             .map { (path: $0.path, date: $0.date, size: $0.size) }
 
@@ -112,7 +112,7 @@ struct DeskPicker: View {
             let remaining = min(capPerMount, totalCap - found.count)
             guard remaining > 0 else { break }
             if let mountedItems = try? MountedFolders.withAccess(mount, body: { rootURL, target in
-                Workspace.files(under: target, root: rootURL, prefix: prefix, cap: remaining)
+                Workspace.files(under: target, cap: remaining, root: rootURL, prefix: prefix)
             }) {
                 for item in mountedItems where !item.path.hasSuffix(".pdf.txt") {
                     found.append((path: item.path, date: item.date, size: item.size))
