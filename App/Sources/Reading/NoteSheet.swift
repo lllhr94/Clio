@@ -102,7 +102,7 @@ struct NoteSheet: View {
                                 .frame(minHeight: Ink.Bar.height)
                                 .paperCard()
                         }
-                        Toggle("落款写上\(from)", isOn: $signed)
+                        Toggle("署上\(from)的名字", isOn: $signed)
                             .font(Ink.label)
                             .tint(Ink.accent)
                             .padding(.horizontal, Ink.Space.l)

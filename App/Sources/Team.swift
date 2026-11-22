@@ -210,7 +210,6 @@ final class TeamModel: ObservableObject {
                 fillDemoError()
             } else {
                 fillDemoChat()
-                if shot.hasPrefix("chat-") { fillDemoLong() }
             }
         } else {
             startup = Task.detached(priority: .userInitiated) { InitialData.read() }
@@ -993,11 +992,33 @@ final class TeamModel: ObservableObject {
     }
 
     /// When to tidy up: before the model's window starts dropping the oldest lines, so nothing slips out unsummarised.
-    private var foldAt: Int { Pref.contextChars > 0 ? min(Pref.compressAt, Pref.contextChars * 4 / 5) : Pref.compressAt }
+    func foldAt(_ key: String) -> Int {
+        let total = window(of: key)
+        return min(Int(Double(total) * Pref.compressShare), Self.budget(window: total, share: Pref.contextShare) * 9 / 10)
+    }
+
+    /// The window of the model this chat talks to, in tokens.
+    func window(of key: String) -> Int {
+        speaker(of: key)?.found.map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
+    }
+
+    /// The default model's window, for the settings page to say what each share comes to.
+    var defaultWindow: Int {
+        resolve(settings.defaultModel).map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
+    }
+
+    /// How much of the chat goes with a request, counted in characters (a character is about a token or less, so
+    /// it errs short): the share of the window the user picked, always leaving room for the instructions, the tools
+    /// and the reply, so a full window never leaves the model nothing to answer with.
+    static func budget(window: Int, share: Double) -> Int {
+        let reply = Pref.maxOutput > 0 ? max(Pref.maxOutput, 8_192) : 16_384
+        let room = window - reply - 16_000
+        return max(8_000, min(Int(Double(window) * share), room))
+    }
 
     /// Compresses quietly, never in the way: it waits for nothing, and a turn goes on meanwhile with the chat as it is.
     func foldQuietly(_ key: String) {
-        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt else { return }
+        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt(key) else { return }
         Task { [weak self] in _ = try? await self?.compress(key) }
     }
 
@@ -1226,7 +1247,7 @@ final class TeamModel: ObservableObject {
             copy.id = UUID().uuidString
             return copy
         }
-        var marker = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("从这里另起了一叶，原来的那段收在絮语页，随时能翻回去。"))
+        var marker = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(Words.t("从这里另起了一叶，原来的那段收在絮语页，随时能翻回去。")))
         marker.note = true
         entries[key] = restarted + [marker]
         if keeping { ChatDisk.save(entries[key] ?? [], chat: key) }
@@ -1763,7 +1784,8 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private func fail(_ key: String, _ text: String, next: Explain.Next? = nil) {
+    private func fail(_ key: String, _ raw: String, next: Explain.Next? = nil) {
+        let text = Words.t(raw)
         Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
@@ -1990,7 +2012,7 @@ final class TeamModel: ObservableObject {
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
     private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
         let all = live(key).filter { $0.note != true }
-        let start = Conversation.windowStart(all.map(\.message), maxChars: Pref.contextChars, maxCount: Pref.contextCount)
+        let start = Conversation.windowStart(all.map(\.message), maxChars: Self.budget(window: window(of: key), share: Pref.contextShare), maxCount: Pref.contextCount)
         let recent = Array(all[start...])
         let photoEntries = Set(recent.filter { !$0.photos.isEmpty }.suffix(3).map(\.id))
         var context = RequestContext()
@@ -2510,8 +2532,8 @@ final class TeamModel: ObservableObject {
         guard Pref.morningOn else { return }
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         let content = UNMutableNotificationContent()
-        content.title = "晨信"
-        content.body = "新的一天，打开看看旅伴给你写了什么。"
+        content.title = L.t("agent.morningBrief")
+        content.body = Words.t("新的一天，打开看看旅伴给你写了什么。")
         content.sound = .default
         var parts = DateComponents()
         parts.hour = Pref.morningHour
@@ -2549,48 +2571,6 @@ final class TeamModel: ObservableObject {
 
     /// For screenshots: one conversation with every kind of thing a reply can hold (steps, sources, 心绪,
     /// thinking, a heading, a list, a table, code, files written), and a checklist under way.
-    /// For the screenshots of a long conversation: many more turns with every kind of block a reply can have.
-    func fillDemoLong() {
-        let key = Self.key(bot: "chief")
-        var at = Now.ms - 200_000
-        func add(_ message: Message) {
-            at += 3_000
-            append(Entry(id: UUID().uuidString, at: at, message: message, speaker: message.role == .user ? nil : "chief"), to: key)
-        }
-        let code = (1...26).map { "    print(\"第 \($0) 行\")" }.joined(separator: "\n")
-        for round in 1...6 {
-            add(.user("第 \(round) 个问题：帮我把这些整理一下，顺便写段代码"))
-            add(.assistant("""
-            好，分三块说。
-
-            - **先说结论**：第 \(round) 轮的要点在下面
-
-            - 中间隔了一行的列表项，也要连在一起
-
-            - 第三项，带一点 `行内代码`
-
-            | 项目 | 数量 | 备注 |
-            | :-- | --: | :-- |
-            | 甲 | 12 | 第一行 |
-            | 乙 | 7 | 第二行 |
-
-            > 引用一句：慢慢来，比较快。
-
-            ```swift
-            func greet() {
-            \(code)
-            }
-            ```
-
-            公式也试一下：
-
-            $$E = mc^2$$
-
-            最后一段正文，长一点，看换行和行距是不是舒服：路线、天气、要带的东西，我都写进书案了，想改哪一段直接告诉我。
-            """))
-        }
-    }
-
     func fillDemoChat() {
         let key = Self.key(bot: "chief")
         guard history(key).isEmpty else { return }

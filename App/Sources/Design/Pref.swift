@@ -105,8 +105,8 @@ enum Pref {
 
     // MARK: 絮语 — how conversations behave
 
-    /// How much of the conversation goes to the model, in characters.
-    static var contextChars: Int { int("chat.contextChars", 48_000) }
+    /// How much of the conversation goes to the model: this share of the model's own window (0.2 to 0.9).
+    static var contextShare: Double { min(max(double("chat.contextShare", 0.8), 0.1), 0.9) }
     /// At most this many recent messages; 0 for no limit.
     static var contextCount: Int { int("chat.contextCount", 0) }
     /// Below 0: the model's own default.
@@ -114,8 +114,8 @@ enum Pref {
     /// 0: the model's own default.
     static var maxOutput: Int { int("chat.maxOutput", 0) }
     static var autoCompress: Bool { bool("chat.autoCompress", true) }
-    /// Compress once the conversation passes this many characters.
-    static var compressAt: Int { int("chat.compressAt", 60_000) }
+    /// Compress once the conversation passes this share of the model's window (always below `contextShare`).
+    static var compressShare: Double { min(max(double("chat.compressShare", 0.6), 0.1), 0.9) }
     /// How many recent messages stay word for word after compressing.
     static var keepRecent: Int { int("chat.keepRecent", 12) }
 

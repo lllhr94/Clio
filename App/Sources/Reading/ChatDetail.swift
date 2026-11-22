@@ -236,7 +236,7 @@ extension TeamModel {
     func exportChat(_ key: String, title: String) async -> URL? {
         let entries = history(key)
         let names = Dictionary(bots.map { ($0.id, Words.t($0.name)) }, uniquingKeysWith: { first, _ in first })
-        let fallback = Words.t("旅伴")
+        let fallback = L.t("nav.assistant")
         return await Task.detached(priority: .userInitiated) {
             let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

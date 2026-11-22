@@ -196,18 +196,10 @@ struct UsageSheet: View {
                 }
             }
             Rectangle().fill(Ink.rule).frame(height: 1)
-            HStack {
-                Text("低余额提醒").foregroundStyle(Ink.ink)
-                Spacer()
-                Picker("低余额提醒", selection: $floor) {
-                    Text("不提醒").tag(0.0)
-                    ForEach([1.0, 5, 10, 20, 50], id: \.self) { value in
-                        Text("低于 \(reading?.symbol ?? "¥")\(Int(value))").tag(value)
-                    }
-                }
-                .pickerStyle(.menu)
-                .tint(Ink.inkSoft)
-            }
+            StopRow(title: "低余额提醒", value: Stops.snapped($floor, to: [0.0, 1, 5, 10, 20, 50]),
+                    stops: [0.0, 1, 5, 10, 20, 50].map { value in
+                        Stop(value: value, name: value == 0 ? "不提醒" : "低于 \(reading?.symbol ?? "¥")\(Int(value))")
+                    })
             .font(.system(size: Ink.Size.sub))
             Text("低于这条线就发通知，半天一次")
                 .font(Ink.footnote)

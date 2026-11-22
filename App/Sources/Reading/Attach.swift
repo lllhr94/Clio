@@ -241,7 +241,7 @@ struct PlusSheet: View {
                     group {
                         line("books.vertical", "技能", value: "\(SkillShelf.enabled.count) 个") { skills = true }
                         divider
-                        toggle("brain", "拾遗", note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
+                        toggle("brain", L.t("nav.memory"), note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)

@@ -91,6 +91,8 @@ struct Desk: View {
     @State private var opened: Opened? = Shots.startsInChat ? .companion("chief") : nil
     @State private var editing: EditTarget?
     @State private var tuning = false
+    /// 新对话 asks first, like HanaAgent: with whom, and whether this one looks at memory.
+    @State private var startingFresh = false
     @State private var settingsPage: String?
     @State private var gathering = false
     @State private var studying = false
@@ -207,6 +209,13 @@ struct Desk: View {
             }
         }
         .scrollIndicators(.hidden)
+        // The last chip fades out at the edge instead of being cut by a hard line, so it reads as 「more this way」.
+        .mask {
+            HStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: Ink.Space.xl)
+            }
+        }
     }
 
     @ViewBuilder
@@ -308,8 +317,8 @@ struct Desk: View {
                 Button {
                     Haptics.light()
                     // A gathering starts a fresh page too, not only a companion.
-                    if let opened { team.turnLeaf(opened.id) }
                     closeSide()
+                    startFresh()
                 } label: {
                     Label("新对话", systemImage: "square.and.pencil")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -362,7 +371,19 @@ struct Desk: View {
                             sideThread(item)
                         }
                     }
-                    if sideThreads.isEmpty {
+                    if !pastLeaves.isEmpty {
+                        // Put-aside conversations follow on under 对话, after the ones open with each companion.
+                        if !sideThreads.contains(where: { !team.pinned.contains($0.id.id) }) {
+                            Text("对话")
+                                .font(.system(size: Ink.Size.small, weight: .semibold))
+                                .foregroundStyle(Ink.inkFaint)
+                                .padding(.horizontal, Ink.Space.l)
+                                .padding(.top, Ink.Space.l)
+                                .padding(.bottom, Ink.Space.xs)
+                        }
+                        ForEach(pastLeaves) { past in pastRow(past) }
+                    }
+                    if sideThreads.isEmpty && pastLeaves.isEmpty {
                         Text(sideQuery.isEmpty ? "还没有对话。" : "没找到「\(sideQuery)」。")
                             .font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(Ink.Space.l)
                     }
@@ -393,6 +414,72 @@ struct Desk: View {
             .buttonStyle(PressStyle(haptic: false))
         }
         .background(Ink.paper.ignoresSafeArea())
+    }
+
+    /// 新对话: asks with whom and whether memory is on, then a fresh page; what was there stays in the sidebar.
+    /// The companion talked with last, picked already in 新对话.
+    private var lastCompanion: String? {
+        recent.compactMap(\.bot).first?.id ?? team.bots.first?.id
+    }
+
+    private func startFresh() {
+        guard !team.bots.isEmpty else { return }
+        startingFresh = true
+    }
+
+    /// The chosen companion on a fresh page; what was there goes to its 对话记录 (listed in the sidebar).
+    private func begin(_ target: Opened, memory: Bool) {
+        team.turnLeaf(target.id)
+        team.setAbility(.memory, on: memory, in: target.id)
+        withAnimation(Ink.Motion.unfold) { opened = target }
+    }
+
+    /// A conversation put aside by 新对话: kept in its companion's 对话记录. Listed here one by one, newest first,
+    /// so starting afresh never looks like losing the old ones.
+    private struct PastLeaf: Identifiable {
+        let owner: Opened
+        let ownerName: String
+        let leaf: TeamModel.Leaf
+        var id: String { owner.id + "/" + leaf.id }
+    }
+
+    private var pastLeaves: [PastLeaf] {
+        let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let all = recent.flatMap { item in
+            team.leaves(item.id.id)
+                .filter { $0.marker == nil && $0.count > 0 }
+                .map { PastLeaf(owner: item.id, ownerName: item.name, leaf: $0) }
+        }
+        let found = words.isEmpty ? all : all.filter { $0.leaf.title.localizedCaseInsensitiveContains(words) || $0.ownerName.localizedCaseInsensitiveContains(words) }
+        return Array(found.sorted { $0.leaf.at > $1.leaf.at }.prefix(60))
+    }
+
+    private func pastRow(_ past: PastLeaf) -> some View {
+        Button {
+            Haptics.light()
+            jump(past.owner)
+            team.openLeaf(past.owner.id, past.leaf)
+        } label: {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                Text(past.leaf.title.isEmpty ? "没有标题的对话" : past.leaf.title)
+                    .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
+                Text("\(past.ownerName) · \(Self.dayName(past.leaf.at)) · \(past.leaf.count) 条")
+                    .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, Ink.Space.s)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+    }
+
+    private static func dayName(_ at: Double) -> String {
+        let date = Date(timeIntervalSince1970: at / 1000)
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "今天" }
+        if calendar.isDateInYesterday(date) { return "昨天" }
+        return date.formatted(.dateTime.month().day())
     }
 
     private func sideNav(_ icon: String, _ title: String, _ run: @escaping () -> Void) -> some View {
@@ -746,6 +833,12 @@ struct Desk: View {
             if phase != .active { archiveUndo = nil }
         }
         .sheet(isPresented: $addingService) { SetupView(team: team) { addingService = false } }
+        .sheet(isPresented: $startingFresh) {
+            NewChatSheet(team: team, first: lastCompanion) { id, memory in
+                startingFresh = false
+                begin(.companion(id), memory: memory)
+            }
+        }
     }
 
     var body: some View {
@@ -922,6 +1015,20 @@ struct Desk: View {
             }
             Spacer()
             HStack(spacing: Ink.Space.s) {
+                if !team.bots.isEmpty {
+                    Button {
+                        Haptics.light()
+                        startFresh()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: Ink.Size.body, weight: .semibold))
+                            .foregroundStyle(Ink.ink)
+                            .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                            .glassFace(in: Circle())
+                    }
+                    .buttonStyle(PressStyle(haptic: false))
+                    .accessibilityLabel("新对话")
+                }
                 Menu {
                     Button(Words.t("新旅伴"), systemImage: "person.badge.plus") { open(.newCompanion) }
                     Button(Words.t("开一场雅集"), systemImage: "person.3") { open(.gathering) }
@@ -1000,7 +1107,7 @@ struct Desk: View {
     @ViewBuilder
     private var waitingCard: some View {
         if let first = team.approvals.first, let chat = first.chat {
-            let name = team.bots.first { $0.id == first.botId }?.name ?? "旅伴"
+            let name = team.bots.first { $0.id == first.botId }?.name ?? L.t("nav.assistant")
             Button {
                 Haptics.tick(0.6)
                 if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else { opened = .companion(String(chat.dropFirst(4))) }
@@ -1060,30 +1167,13 @@ struct Desk: View {
         ]
     }
 
-    /// 今天 / 昨天 / 本周 / 更早, newest first, empty groups left out.
-    /// 已置顶 first (in the order pinned), then the rest by day.
+    /// 置顶 first (in the order pinned), then the rest.
     static func grouped(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)], pinned: [String]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
         let top = pinned.compactMap { key in items.first { $0.id.id == key } }
-        let rest = byDay(items.filter { !pinned.contains($0.id.id) })
-        return top.isEmpty ? rest : [("已置顶", top)] + rest
-    }
-
-    static func byDay(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
-        let calendar = Calendar.current
-        let now = Date()
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: now)) ?? now
-        func title(_ at: Double) -> String {
-            let date = Date(timeIntervalSince1970: at / 1000)
-            if calendar.isDateInToday(date) { return "今天" }
-            if calendar.isDateInYesterday(date) { return "昨天" }
-            return date >= weekAgo ? "本周" : "更早"
-        }
-        var groups: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = []
-        for item in items {
-            let name = title(item.at)
-            if let index = groups.firstIndex(where: { $0.title == name }) { groups[index].items.append(item) } else { groups.append((name, [item])) }
-        }
-        return groups
+        // 主人定: no 今天 / 昨天 / 本周 — just 置顶 (when there is any) and the rest, newest first.
+        let others = items.filter { !pinned.contains($0.id.id) }
+        let rest: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = others.isEmpty ? [] : [("对话", others)]
+        return top.isEmpty ? rest : [("置顶", top)] + rest
     }
 
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
@@ -1206,5 +1296,68 @@ private enum ThreadLabel: String, CaseIterable, Identifiable {
         case .teng: Ink.Tile.teng
         case .zhu: Ink.Tile.zhu
         }
+    }
+}
+
+/// 新对话, the HanaAgent way: pick who to talk with and whether this conversation looks at memory, then start.
+/// Turning memory off is cheaper too (the model's cache hits more often) and keeps this one out of what is remembered.
+private struct NewChatSheet: View {
+    @ObservedObject var team: TeamModel
+    let start: (String, Bool) -> Void
+    @State private var pick: String
+    @State private var memory = true
+    @Environment(\.dismiss) private var dismiss
+
+    init(team: TeamModel, first: String?, start: @escaping (String, Bool) -> Void) {
+        self.team = team
+        self.start = start
+        _pick = State(initialValue: first ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                PaperRows {
+                    Section {
+                        ForEach(team.bots) { bot in
+                            Button {
+                                Haptics.tick(0.5)
+                                pick = bot.id
+                            } label: {
+                                HStack(spacing: Ink.Space.m) {
+                                    PetStill(size: 32, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                                    Text(bot.name).foregroundStyle(Ink.ink)
+                                    Spacer()
+                                    if pick == bot.id {
+                                        Image(systemName: "checkmark").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)
+                                    }
+                                }
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: { Text(Words.t("跟哪位旅伴聊")) }
+                    Section {
+                        Toggle(Words.t("这次参考拾遗"), isOn: $memory).tint(Ink.accent)
+                    } footer: {
+                        Text(Words.t("关掉后，这段对话里旅伴不翻拾遗、也不往里记；更省钱。之前的对话还在侧边栏里。"))
+                    }
+                }
+            }
+            .paperForm()
+            .navigationTitle(L.t("chat.newConversation"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("开始") {
+                        Haptics.light()
+                        start(pick, memory)
+                    }
+                    .disabled(!team.bots.contains { $0.id == pick })
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

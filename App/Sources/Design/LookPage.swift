@@ -1,3 +1,4 @@
+import Craft
 import SwiftUI
 
 struct LookPage: View {
@@ -5,7 +6,8 @@ struct LookPage: View {
 
     var body: some View {
         PreferenceForm(L.t("settingsHome.theme"), reset: reset) {
-            Section(L.t("settingsHome.theme")) {
+            // No section title: the page is already called 设色, and three of the same word in a row read as a stutter.
+            Section {
                 Picker(L.t("settingsHome.lightMode"), selection: $scheme) {
                     Text(L.t("settings.followSystem")).tag("system")
                     Text(L.t("settings.lightAppearance")).tag("light")
@@ -135,20 +137,10 @@ struct ReadingSizePage: View {
 
     private static let sizes = [15.0, 16, 17, 19, 21, 24]
 
-    private var sizeStep: Binding<Int> {
+    private var density: Binding<Double> {
         Binding(
-            get: { Self.sizes.indices.min { abs(Self.sizes[$0] - size) < abs(Self.sizes[$1] - size) } ?? 2 },
-            set: { size = Self.sizes[$0]; Haptics.tick(0.5) }
-        )
-    }
-
-    private var density: Binding<Int> {
-        Binding(
-            get: { UIScale.levels.firstIndex { abs($0.factor - UIScale.shared.value) < 0.01 } ?? 2 },
-            set: { step in
-                Haptics.tick(0.5)
-                withAnimation(Ink.Motion.settle) { UIScale.shared.value = UIScale.levels[step].factor }
-            }
+            get: { Stops.nearest(UIScale.shared.value, in: UIScale.levels.map(\.factor)) },
+            set: { factor in withAnimation(Ink.Motion.settle) { UIScale.shared.value = factor } }
         )
     }
 
@@ -158,34 +150,18 @@ struct ReadingSizePage: View {
                 ProseView(text: L.t("settingsHome.readingSample"))
                     .padding(.vertical, Ink.Space.s)
                     .animation(Ink.Motion.settle, value: size)
-                Picker(L.t("settingsHome.fontSize"), selection: sizeStep) {
-                    ForEach(Self.sizes.indices, id: \.self) { index in
-                        Text(L.t("settingsHome.textSize\(index)")).tag(index)
-                    }
-                }
-                .pickerStyle(.segmented)
-                VStack(alignment: .leading, spacing: Ink.Space.s) {
-                    Text(L.t("settingsHome.lineSpacing"))
-                    Picker(L.t("settingsHome.lineSpacing"), selection: Binding(
-                        get: { Pref.lineHeights.indices.min { abs(Pref.lineHeights[$0] - lineHeight) < abs(Pref.lineHeights[$1] - lineHeight) } ?? 2 },
-                        set: { lineHeight = Pref.lineHeights[$0]; Haptics.tick(0.5) }
-                    )) {
-                        ForEach(Pref.lineHeights.indices, id: \.self) { index in
-                            Text(L.t("settingsHome.lineHeight\(index)")).tag(index)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .animation(Ink.Motion.settle, value: lineHeight)
+                StopRow(title: L.t("settingsHome.fontSize"), value: Stops.snapped($size, to: Self.sizes), stops: Self.sizes.indices.map {
+                    Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
+                })
+                StopRow(title: L.t("settingsHome.lineSpacing"), value: Stops.snapped($lineHeight, to: Pref.lineHeights), stops: Pref.lineHeights.indices.map {
+                    Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
+                })
             } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
 
             Section {
-                Picker(L.t("settings.uiDensity"), selection: density) {
-                    ForEach(UIScale.levels.indices, id: \.self) { index in
-                        Text(L.t("settingsHome.density\(index)")).tag(index)
-                    }
-                }
-                .pickerStyle(.segmented)
+                StopRow(title: L.t("settings.uiDensity"), value: density, stops: UIScale.levels.indices.map {
+                    Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
+                })
                 RowLabel("textformat.size", title: L.t("settings.densitySampleTitle"), line: L.t("settings.densitySampleLine"), end: .valueChevron(L.t("settings.sample")))
                     .padding(.horizontal, -Ink.Space.l)
                     .allowsHitTesting(false)
@@ -260,50 +236,77 @@ struct ChatDisplayPage: View {
 
 struct ChatContextPage: View {
     @AppStorage("chat.autoCompress") private var autoCompress = true
-    @AppStorage("chat.compressAt") private var compressAt = 60_000
+    @AppStorage("chat.contextShare") private var contextShare = 0.8
+    @AppStorage("chat.compressShare") private var compressShare = 0.6
     @AppStorage("chat.keepRecent") private var keepRecent = 12
-    @AppStorage("chat.contextChars") private var contextChars = 48_000
     @AppStorage("chat.contextCount") private var contextCount = 0
     @AppStorage("chat.temperature") private var temperature = -1.0
     @AppStorage("chat.maxOutput") private var maxOutput = 0
 
+    private static let shares = [0.2, 0.4, 0.6, 0.7, 0.8, 0.9]
+    private static let compressShares = [0.5, 0.6, 0.7, 0.8]
+    private static let keeps = [6, 12, 24, 48]
+    private static let counts = [20, 50, 100, 200, 0]
+    private static let outputs = [4_096, 8_192, 16_384, 32_768, 65_536, 0]
+    private static let temperatures = [-1.0, 0.2, 0.7, 1.0, 1.3]
+
+    /// The default model's window: what each share comes to is said in tokens of that model.
+    private var window: Int { TeamModel.shared.defaultWindow }
+
     var body: some View {
         PreferenceForm(L.t("settingsHome.context"), reset: reset) {
             Section {
+                StopRow(title: L.t("settingsHome.contextShare"), value: Stops.snapped($contextShare, to: Self.shares),
+                        stops: Self.shares.map { Stop(value: $0, name: Self.times($0), detail: L.format("settingsHome.aboutTokens", Tokens.short(Int(Double(window) * $0)))) },
+                        line: L.format("settingsHome.modelWindow", Tokens.short(window)))
+                StopRow(title: L.t("settingsHome.countLimit"), value: Stops.snapped($contextCount, to: Self.counts),
+                        stops: Self.counts.map { Stop(value: $0, name: $0 == 0 ? L.t("settingsHome.unlimitedMessages") : L.format("settingsHome.messages", $0)) })
+            } header: { Text(L.t("settings.modelContext")) } footer: {
+                Text(L.t("settings.contextLimitNote"))
+            }
+
+            Section {
                 Toggle(L.t("settings.autoCompress"), isOn: $autoCompress)
                 if autoCompress {
-                    Stepper(L.format("settingsHome.compressAt", compressAt / 1000), value: $compressAt, in: 20_000...300_000, step: 10_000)
+                    StopRow(title: L.t("settingsHome.compressShare"), value: compressBinding,
+                            stops: Self.compressShares.map { Stop(value: $0, name: Self.times($0), detail: L.format("settingsHome.aboutTokens", Tokens.short(Int(Double(window) * $0)))) },
+                            line: compressShare >= contextShare ? L.t("settingsHome.compressBelowNote") : nil)
+                    StopRow(title: L.t("settingsHome.keepRecentTitle"), value: Stops.snapped($keepRecent, to: Self.keeps),
+                            stops: Self.keeps.map { Stop(value: $0, name: L.format("settingsHome.messages", $0)) })
                 }
-                Stepper(L.format("settingsHome.keepRecent", keepRecent), value: $keepRecent, in: 4...40, step: 2)
             } header: { Text(L.t("settings.contextCompaction")) } footer: {
                 Text(L.t("settings.autoCompressNote"))
             }
 
             Section {
-                Stepper(L.format("settingsHome.contextChars", contextChars / 1000), value: $contextChars, in: 8_000...400_000, step: 8_000)
-                Stepper(contextCount == 0 ? L.t("settingsHome.unlimitedMessages") : L.format("settingsHome.contextCount", contextCount),
-                        value: $contextCount, in: 0...200, step: 10)
-                Toggle(L.t("settings.customTemperature"), isOn: Binding(get: { temperature >= 0 }, set: { temperature = $0 ? 0.7 : -1 }))
-                if temperature >= 0 {
-                    LabeledSlider(title: L.t("settingsHome.temperature"), value: $temperature, range: 0...2, step: 0.1) { String(format: "%.1f", $0) }
-                }
-                Picker(L.t("settingsHome.maxReply"), selection: $maxOutput) {
-                    Text(L.t("settings.modelDefault")).tag(0)
-                    ForEach([2048, 4096, 8192, 16_384, 32_768], id: \.self) { count in
-                        Text(count.formatted()).tag(count)
-                    }
-                }
-            } header: { Text(L.t("settings.modelContext")) } footer: {
-                Text(L.t("settings.contextLimitNote"))
-            }
+                StopRow(title: L.t("settingsHome.temperature"), value: Stops.snapped($temperature, to: Self.temperatures),
+                        stops: Self.temperatures.indices.map { Stop(value: Self.temperatures[$0], name: L.t("settingsHome.temperature\($0)"),
+                                                                    detail: Self.temperatures[$0] < 0 ? nil : String(format: "%.1f", Self.temperatures[$0])) })
+                StopRow(title: L.t("settingsHome.maxReply"), value: Stops.snapped($maxOutput, to: Self.outputs),
+                        stops: Self.outputs.map { Stop(value: $0, name: $0 == 0 ? L.t("settings.modelDefault") : Tokens.short($0) + " token") })
+            } header: { Text(L.t("settingsHome.replyGroup")) }
         }
     }
 
+    /// The compression line always sits below how much goes with a request; past it, older lines would drop
+    /// before being summarised. A line set at or above it shows as one stop lower.
+    private var compressBinding: Binding<Double> {
+        Binding(
+            get: {
+                let below = Self.compressShares.filter { $0 < contextShare }
+                return Stops.nearest(compressShare, in: below.isEmpty ? [Self.compressShares[0]] : below)
+            },
+            set: { compressShare = $0 }
+        )
+    }
+
+    private static func times(_ share: Double) -> String { String(format: "%.1f 倍", share) }
+
     private func reset() {
         autoCompress = true
-        compressAt = 60_000
+        contextShare = 0.8
+        compressShare = 0.6
         keepRecent = 12
-        contextChars = 48_000
         contextCount = 0
         temperature = -1
         maxOutput = 0
@@ -349,7 +352,9 @@ struct MorningSettingsPage: View {
             Section {
                 Toggle(L.t("settings.dailyBrief"), isOn: $morningOn)
                 if morningOn {
-                    Stepper(L.format("settingsHome.morningHour", morningHour), value: $morningHour, in: 5...11)
+                    StopRow(title: L.t("settingsHome.morningTime"), value: Stops.snapped($morningHour, to: Array(5...11)),
+                            stops: (5...11).map { Stop(value: $0, name: L.format("settingsHome.hourShort", $0)) },
+                            line: L.format("settingsHome.morningHour", morningHour))
                 }
             } header: { Text(L.t("agent.morningBrief")) } footer: {
                 Text(L.t("settings.dailyBriefNote"))
@@ -416,21 +421,3 @@ private struct PreferenceForm<Content: View>: View {
     }
 }
 
-private struct LabeledSlider: View {
-    let title: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let shown: (Double) -> String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(shown(value)).foregroundStyle(Ink.inkSoft).monospacedDigit()
-            }
-            Slider(value: $value, in: range, step: step).accessibilityLabel(title)
-        }
-    }
-}

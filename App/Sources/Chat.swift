@@ -192,7 +192,9 @@ final class ChatModel {
     private func step() -> Bool {
         if let settling = fresh, settling.shown != nil {
             guard shown < finalCount else {
-                withAnimation(.easeOut(duration: 0.45)) { fresh?.shown = nil }
+                // Straight over, no crossfade: the writing layout and the finished one differ a little (list spacing,
+                // a table drawn whole), and fading one into the other showed both at once, a line apart.
+                fresh?.shown = nil
                 return false
             }
             shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
@@ -410,9 +412,13 @@ final class ChatModel {
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
             let next = build(all)
-            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }), Self.same(reply.text, target) {
-                // The kept row takes over exactly where the streaming one stood.
+            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
+                // The kept row takes over exactly where the streaming one stood. Not only when the words match to
+                // the letter: the kept text can differ a little (a 心绪 taken out, trailing spaces, a sources list
+                // tidied), and waiting for an exact match left both rows up, then dropped the streaming one, so the
+                // answer seemed to vanish and come back.
                 finalCount = reply.text.count
+                if !Self.same(reply.text, target) { shown = min(shown, finalCount) }
                 fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
                 target = ""
                 streaming = ""
@@ -534,7 +540,6 @@ final class ChatModel {
     | 东西 | 谁带 |
     | :-- | :-- |
     | 雨伞 | 你 |
-
     | 零食 | 朋友 |
     | 水 | 都带 |
 
@@ -560,7 +565,7 @@ final class ChatModel {
                 rest = rest.dropFirst(burst.count)
                 self?.target.append(contentsOf: burst)
                 self?.type()
-                try? await Task.sleep(nanoseconds: shot ? 50_000_000 : 260_000_000)
+                try? await Task.sleep(nanoseconds: shot ? 120_000_000 : 260_000_000)
             }
             guard let self else { return }
             let said = Task.isCancelled ? self.streaming : self.target
@@ -585,6 +590,44 @@ final class ChatModel {
             ChatLine(id: "d1", kind: .user, text: "这周六想和朋友去磁器口，帮我看看天气，顺便记进日历"),
             ChatLine(id: "d2", kind: .steps, text: "完成 3 步", tools: ["搜索：重庆 周六 天气", "读网页：weather.com.cn", "新建日程：去磁器口"]),
             ChatLine(id: "d3", kind: .bot, text: "周六重庆**多云转小雨**，14–19 度，记得带伞 ☂️\n\n- 日程已经加好：周六 10:00 磁器口\n- 出门前一小时提醒你\n\n来源：中国天气网"),
-        ]
+        ] + (Shots.name?.hasPrefix("chat-") == true ? longDemo : [])
+    }
+
+    /// For the screenshots of a long conversation: many more turns, with every kind of block a reply can have.
+    private static var longDemo: [ChatLine] {
+        let code = (1...26).map { "    print(\"第 \($0) 行\")" }.joined(separator: "\n")
+        return (1...6).flatMap { round -> [ChatLine] in
+            [
+                ChatLine(id: "long-u\(round)", kind: .user, text: "第 \(round) 个问题：帮我把这些整理一下，顺便写段代码"),
+                ChatLine(id: "long-b\(round)", kind: .bot, text: """
+                好，分三块说。
+
+                - **先说结论**：第 \(round) 轮的要点在下面
+
+                - 中间隔了一行的列表项，也要连在一起
+
+                - 第三项，带一点 `行内代码`
+
+                | 项目 | 数量 | 备注 |
+                | :-- | --: | :-- |
+                | 甲 | 12 | 第一行 |
+                | 乙 | 7 | 第二行 |
+
+                > 引用一句：慢慢来，比较快。
+
+                ```swift
+                func greet() {
+                \(code)
+                }
+                ```
+
+                公式也试一下：
+
+                $$E = mc^2$$
+
+                最后一段正文，长一点，看换行和行距是不是舒服：路线、天气、要带的东西，我都写进书案了，想改哪一段直接告诉我。
+                """),
+            ]
+        }
     }
 }

@@ -161,6 +161,37 @@
 
 详细内容和不碰的文件见 `docs/REVIEW-ANTIGRAVITY.md`「派出去的活」。
 
-- [ ] **A1（Antigravity）外观即时生效 + 深色 / 小屏 + 规范收口**：分支 `antigravity/a1-look`。
-- [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，A1 合了再开始。
-- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`。 分支实现见审核末尾的实施核对；后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
+- [x] **A1 外观即时生效 + 深色 / 小屏**：改由 Claude 做（11-22 夜），见 `REVIEW-ANTIGRAVITY.md`。
+- [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，现在就可以开始。
+- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`，[PR #33](https://github.com/lllhr94/Clio/pull/33) 待复核。后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
+
+## 0.34 第四轮（11-22 深夜，Claude 交接前排好）
+
+主人 11-22 夜里提的问题，Claude 已做：调数值统一成竖向胶囊档位（`StopRow`）、上下文按模型上限倍数、连接器去掉自带 Client ID 和本机权限块、终端页「笔砚」→「终端」、「好了」→「完成」、日常模式去书卷词、侧边栏只分「置顶 / 对话」并列出收起的旧对话、新对话先选助手和记不记忆（学 HanaAgent）、回复写完不再消失重画、思考档位逐档探测。明细见 `docs/FEEDBACK.md` R40。
+
+**两边不碰同一个文件。** Codex 管聊天页和侧边栏；Antigravity 管引擎、文案扫尾和方案文档。
+
+### Codex：C33 聊天页和侧边栏收尾（分支 `codex/c33-chat-side`，先把 C32 交完）
+
+- [ ] 1. **聊天页 ⋯ 里的「新对话」也先问**：和主页、侧边栏一样弹 `NewChatSheet`（选助手、这次参考不参考记忆）。`NewChatSheet` 在 `Desk.swift` 末尾，挪成公用的，别复制一份。
+- [ ] 2. **侧边栏的旧对话行**（`Desk.swift` 的 `pastRow`）：左滑「删除」（先确认，后果用 `errors.cannotUndo`）、长按「重命名」。删除和改名在 `Team.swift` 加最小的函数（`deleteLeaf` / `renameLeaf`），只动 leaves 那几个函数，不碰 `ask` / `answer` / 污点。
+- [ ] 3. **流式时的轻微抖动**：回复正在写时用 `StreamBlocks`，写完换成 `ProseView` 定稿排版，两者的列表间距、表格、代码块高度差一点，换的那一下会跳。让两边的排版一致（同一套间距和高度），用 CI 截图 `chat-stream` 对比「写到一半」和「写完」两张，贴进 PR。
+- [ ] 4. **截图巡检加三个场景**：`stops`（设置 › 字号与行距，打开字号的档位卡）、`newchat`（新对话页）、`sidebar-past`（侧边栏里有置顶、有收起的旧对话）。深色、大字号各跑一次，看档位卡有没有出屏、文字有没有截断。
+- [ ] 5. 交 PR 前在自己分支跑 CI（shots=true 跑一次新场景）。
+
+### Antigravity：A3 文案扫尾 + 模型服务方案（分支 `antigravity/a3-words`，和 A2 可以同时做）
+
+- [ ] 1. **书卷词扫尾**：界面上看得到的中文里，还有书卷词没走词典的（扫描脚本思路：找 Swift 字符串里的「旅伴、书案、斗室、远山、远游、信匣、拾遗、絮语、名帖、晨信、笺、落款」等，跳过已包在 `Words.t(...)` / `L.t(...)` 里的）。范围：`App/Sources/Study/`、`Hills/`、`Roam/`、`Connect/`、`Grant/`、`Reading/NameCard*.swift`、`Reading/CardEditors.swift`、`Care/CarePage.swift`。界面文字包进 `Words.t(...)` 或换成 `L.t("键")`；**给模型看的工具说明不改**（模型认那些名字）。不碰 `Desk.swift`、`ChatPage.swift`、`Chat.swift`、`ProseView.swift`（Codex 在改），不碰 `Vault/`、`Team.swift`、`Backup.swift`（等 Claude）。把扫描脚本加进 `tools/lint.py` 当警告（不挡编译）。
+- [ ] 2. **模型服务这一块的整理方案（只写文档，不写代码）**：主人说「又杂又乱，逻辑不对」。写 `docs/PROPOSAL-MODELS.md`：
+  - 先按第一次用的人走一遍现状：添加服务（`SetupView`）→ 服务页（`ServicePage`）→ 模型详情（`ModelSheet`）→ 默认 / 备用 / 记忆整理模型 → 生图模型 → 聊天里换模型、选思考档位。每一步截图或写清楚看到什么，列出哪里重复、哪里找不到、哪里叫法不一致。
+  - 对照 Cherry Studio、ChatGPT / Claude App、HanaAgent（Apache，可以借鉴写法，要致谢）、Open Minis（GPL，只学思路）各自怎么组织「服务商 → 模型 → 能力 / 思考档位 → 默认模型」。
+  - 给出新结构：几页、每页放什么、从哪进；用 Markdown 画草图。列出要删、要合、要挪的东西。
+  - **交给主人定**，主人点头后再派人写代码。
+- [ ] 3. A2 的单测里加上思考档位：每种 `ThinkingStyle` 对每个 `Thinking` 档发出去的字段对不对（`AgentKit/Sources/AgentKit/Thinking.swift`）。
+
+### 等主人定的
+
+- 「项目」分组：项目里放什么（几段对话 + 一个文件夹？）、和助手怎么对应。
+- 模型服务页：看了 A3 的方案再定。
+- SwiftNIOSSH 要不要锁死版本。
+- 0.34 什么时候「发」。

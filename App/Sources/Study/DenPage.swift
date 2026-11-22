@@ -84,7 +84,6 @@ struct DenPage: View {
             .buttonStyle(PressStyle())
             .accessibilityLabel(L.t("terminal.tools"))
             Menu {
-                Button(L.t("actions.openInteractiveTerminal"), systemImage: "apple.terminal") { inkstone = true }
                 Button(L.t("actions.installCommonPackages"), systemImage: "shippingbox") { outfitting = true }
                 Button(L.t("actions.clearTerminal"), systemImage: "eraser") { den.clear() }
             } label: {
@@ -99,7 +98,8 @@ struct DenPage: View {
                 Haptics.light()
                 dismiss()
             }
-            .buttonStyle(PressStyle())
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.s)
@@ -115,10 +115,10 @@ struct DenPage: View {
 
     private var status: String {
         switch den.state {
-        case .asleep: "睡着"
-        case .unpacking: "第一次打开，正在铺陈（要一会儿）"
-        case .waking: "正在醒来"
-        case .awake: den.running.isEmpty ? "Alpine Linux · 醒着" : "在跑"
+        case .asleep: "未启动"
+        case .unpacking: "第一次打开，正在准备（要一会儿）"
+        case .waking: "正在启动"
+        case .awake: den.running.isEmpty ? "Alpine Linux · 就绪" : "正在运行"
         case .broken(let why): why
         }
     }

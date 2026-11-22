@@ -930,7 +930,9 @@ struct ChatPage: View {
                         .presentationCompactAdaptation(.popover)
                 }
             VStack(alignment: .leading, spacing: 0) {
+                // One line: a long name wrapping pushed the status line out of the capsule.
                 Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
+                    .lineLimit(1)
                 HStack(spacing: 4) {
                     Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
                     Text(headerLine)
@@ -1013,18 +1015,6 @@ struct ChatPage: View {
                     }
                     if !isRoom { chatMenuButton("chat.openCard", icon: "person.text.rectangle") { cardOpen = true } }
                     if working { chatMenuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) } }
-                    if PetLibrary.shared.shown {
-                        chatMenuButton("pet.hideHour", icon: "eye.slash") {
-                            withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
-                        }
-                    } else {
-                        chatMenuButton("pet.showNow", icon: "eye") {
-                            withAnimation(Ink.Motion.settle) {
-                                PetLibrary.shared.hiddenUntil = nil
-                                PetLibrary.shared.visible = true
-                            }
-                        }
-                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -1138,7 +1128,12 @@ struct ChatPage: View {
         let now = isRoom ? nil : team.current(chat.key, bot: bot)
         // Only the levels this model's service really tells apart (the one chosen stays visible).
         let offered: [Thinking] = {
-            guard let now, now.endpoint.kind == .openai else { return Thinking.allCases }
+            guard let now else { return Thinking.allCases }
+            // Tested in 模型 › 试一试: exactly the levels the service took.
+            if let tested = now.traits.levels {
+                return Thinking.allCases.filter { $0 == .auto || tested.contains($0.rawValue) || $0 == level }
+            }
+            guard now.endpoint.kind == .openai else { return Thinking.allCases }
             let levels = now.endpoint.thinkingStyle.levels(thinks: now.traits.thinks)
             return Thinking.allCases.filter { levels.contains($0) || $0 == level }
         }()

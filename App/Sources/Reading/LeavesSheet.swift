@@ -79,7 +79,7 @@ struct LeavesSheet: View {
                                     Text(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                     Text(Words.t("较早的话写成提要，原文收进絮语页"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                    Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(Pref.compressAt / 1000) 千字会自动压缩" : ""))
+                                    Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(team.foldAt(key) / 1000) 千字会自动压缩" : ""))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)
@@ -163,7 +163,7 @@ struct LeavesSheet: View {
                                                 Button("撤销最近一次整理", systemImage: "arrow.uturn.backward") {
                                                     withAnimation(Ink.Motion.unfold) { team.unfoldLine(key) }
                                                     Haptics.thud()
-                                                    note = "撤销了：那几条又按原文交给旅伴，前情提要退回之前的样子。"
+                                                    note = Words.t("撤销了：那几条又按原文交给旅伴，前情提要退回之前的样子。")
                                                 }
                                             } else if let fold = team.undoableFold(key) {
                                                 Button("拆开此叶，撤销压缩", systemImage: "arrow.uturn.backward") { unfolding = fold }

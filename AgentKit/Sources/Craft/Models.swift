@@ -10,6 +10,9 @@ public struct ModelTraits: Codable, Equatable, Hashable, Sendable {
     public var thinks: Bool
     /// Context window in tokens.
     public var window: Int
+    /// The thinking levels (raw values of `Thinking`) a test found this model's service takes; nil until tested.
+    /// The chat's thinking menu offers only these.
+    public var levels: [String]?
 
     public init(sees: Bool, tools: Bool = true, thinks: Bool = false, window: Int = 131_072) {
         self.sees = sees

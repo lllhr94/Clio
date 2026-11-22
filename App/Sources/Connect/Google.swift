@@ -162,7 +162,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     /// A fresh access token, renewed with the long-lived one when it has run out.
     nonisolated static func access() async throws -> String {
         if let cache, cache.until > Date() { return cache.token }
-        guard let refresh = Vault.load(String.self, key: "google.refresh") else { throw ProviderError("还没登录谷歌：在「调弦 → 连接器」里登录。") }
+        guard let refresh = Vault.load(String.self, key: "google.refresh") else { throw ProviderError(Words.t("还没登录谷歌：在「调弦 → 连接器」里登录。")) }
         let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
         let body = try await token(["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"])
         guard let access = body["access_token"]?.string else { throw ProviderError("谷歌没给访问令牌。") }

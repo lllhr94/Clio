@@ -246,21 +246,39 @@ struct SpritePet: View {
     let unit: CGFloat
     var mirrored = false
 
+    private struct Playback: Equatable {
+        let pack: String
+        let animation: String
+        let since: Date
+    }
+
+    @State private var ended: Playback?
+
     var body: some View {
-        let u = unit
+        let playback = Playback(pack: pack.id, animation: anim, since: since)
+        let animation = pack.animations[anim]
+        let finish: Date? = animation.flatMap { $0.loop ? nil : since.addingTimeInterval(Double($0.total) / 1000) }
         Group {
-            if let animation = pack.animations[anim], scenePhase == .active,
+            if let animation, scenePhase == .active, ended != playback,
                let first = animation.frames.first, animation.frames.contains(where: { $0.i != first.i }) {
                 let sleeping = pack.states["sleeping"]?.contains(anim) == true
-                let interval = sleeping ? 1.0 / 4 : 1.0 / 12
-                TimelineView(.animation(minimumInterval: interval)) { timeline in
-                    frame(at: timeline.date, unit: u)
+                TimelineView(.animation(minimumInterval: sleeping ? 1.0 / 4 : 1.0 / 12)) { timeline in
+                    frame(at: timeline.date, unit: unit)
                 }
             } else {
-                frame(at: since, unit: u)
+                frame(at: ended == playback ? finish ?? since : since, unit: unit)
             }
         }
-        .frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.baseline) * u, alignment: .top)
+        .task(id: playback) {
+            guard let finish else { return }
+            let remaining = finish.timeIntervalSinceNow
+            if remaining > 0 {
+                do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            ended = playback
+        }
+        .frame(width: CGFloat(pack.canvasW) * unit, height: CGFloat(pack.baseline) * unit, alignment: .top)
         .scaleEffect(x: mirrored ? -1 : 1, y: 1, anchor: UnitPoint(x: pack.anchorX / pack.canvasW, y: 0.5))
     }
 

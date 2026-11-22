@@ -27,11 +27,11 @@ struct SettingsView: View {
 
     private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
         ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models, .image]),
-        ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .pet]),
+        ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .pet, .morning]),
         ("settings.appearance", Ink.Tile.teng, [.theme, .font, .size, .tone]),
         ("settingsHome.chatGroup", Ink.Tile.mo, [.display, .context]),
         ("agent.capabilities", Ink.Tile.xiang, [.grants, .connectors, .skills, .timing, .hosts]),
-        ("settingsHome.privacyGroup", Ink.Tile.zhu, [.notifications, .morning, .lock, .care]),
+        ("settingsHome.privacyGroup", Ink.Tile.zhu, [.notifications, .lock, .care]),
     ]
 
     var body: some View {
