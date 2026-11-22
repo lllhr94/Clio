@@ -1078,9 +1078,12 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("这个模型不接受「\(level.title)」这个思考设置，这次按它默认的来，思考强度也改回了默认。\n服务说：\(said)"), note: true), to: key)
             Diag.note("思考设置被拒：\(level.rawValue)；\(said)")
         case .toolWriting(let name, let characters):
-            let amount = characters < 1000 ? "\(characters) 字" : String(format: "%.1f 千字", Double(characters) / 1000)
+            // `doing` redraws every page that watches the team: counted in steps of 500 characters, not every few.
+            let step = characters / 500 * 500
+            let amount = step == 0 ? "一些" : step < 1000 ? "\(step) 字" : String(format: "%.1f 千字", Double(step) / 1000)
             let what = ["write_file": "写文件", "edit_file": "改文件", "shell": "命令", "run_js": "脚本"][name] ?? name
-            doing[key] = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
+            let words = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
+            if doing[key] != words { doing[key] = words }
         case .toolFinished:
             break
         case .message(var message):
