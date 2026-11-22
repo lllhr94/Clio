@@ -365,10 +365,13 @@ enum Ink {
     }
 
     /// Code blocks use a half-em ASCII cell and the system's natural full-em CJK glyphs.
-    static func codeBlockFonts() -> (narrow: Font, wide: Font) {
+    @MainActor static func codeBlockFonts() -> (narrow: Font, wide: Font) {
         let size = CGFloat(max(12, Pref.size - 3))
-        let mono = uiMono(size)
-        let native = CTFontCreateWithName(mono.fontName as CFString, size, nil)
+        let preference = Pref.code
+        if let cached = codeBlockFontCache, cached.size == size, cached.preference == preference { return cached.fonts }
+        let mono = (preference == .maple ? UIFont(name: "MapleMono-Regular", size: size) : nil)
+            ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let native = mono as CTFont
         var zero: UniChar = 48
         var glyph: CGGlyph = 0
         guard CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) else {
@@ -378,8 +381,13 @@ enum Ink {
         guard advance > 0 else { return (Font(mono), .system(size: size)) }
         var matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
         let half = CTFontCreateCopyWithAttributes(native, size, &matrix, nil)
-        return (Font(half), .system(size: size))
+        let fonts = (narrow: Font(half), wide: Font.system(size: size))
+        codeBlockFontCache = (size, preference, fonts)
+        return fonts
     }
+
+    @MainActor private static var codeBlockFontCache: (size: CGFloat, preference: Pref.Code, fonts: (narrow: Font, wide: Font))?
+
 
     /// Maple Mono, with Clio Mono CN behind it for Chinese: every Chinese character exactly two letters wide, so
     /// columns of output and code line up even with Chinese in them (Maple Mono CN, cut to GB2312).

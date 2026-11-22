@@ -555,7 +555,7 @@ private struct TableBlock: View {
 }
 
 /// Keyword-level coloring, enough to read code at a glance.
-enum Highlight {
+@MainActor enum Highlight {
     private static let keywords: Set<String> = [
         "func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch",
         "def", "from", "as", "in", "not", "and", "or", "is", "None", "True", "False", "lambda", "with", "try", "except",
@@ -579,16 +579,21 @@ enum Highlight {
     }
 
     static func output(_ text: String) -> AttributedString {
-        let fonts = Ink.codeBlockFonts()
+        let fonts = fonts(for: text)
         var result = AttributedString()
         append(text[...], fonts: fonts, to: &result)
         return result
     }
 
+    private static func fonts(for text: String) -> (narrow: Font, wide: Font) {
+        guard text.contains(where: wide) else { return (Ink.code, Ink.code) }
+        return Ink.codeBlockFonts()
+    }
+
     private static func wide(_ character: Character) -> Bool {
         guard let scalar = character.unicodeScalars.first else { return false }
         switch scalar.value {
-        case 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
+        case 0x00B7, 0x2014, 0x2018...0x2019, 0x201C...0x201D, 0x2026, 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
              0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
             return true
         default:
@@ -620,7 +625,7 @@ enum Highlight {
     }
 
     static func code(_ text: String, language: String) -> AttributedString {
-        let fonts = Ink.codeBlockFonts()
+        let fonts = fonts(for: text)
         var out = AttributedString()
         var index = text.startIndex
         var start = index

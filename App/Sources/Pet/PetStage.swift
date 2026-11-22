@@ -37,8 +37,8 @@ struct PetStage: View {
 
     @State private var drag: CGFloat = 0
     @State private var dragUp: CGFloat = 0
-    @State private var dragStart: CGFloat?
-    private var dragging: Bool { dragStart != nil }
+    @State private var dragOrigin: CGFloat?
+    private var dragging: Bool { dragOrigin != nil }
     @State private var wander: CGFloat = 0
     @State private var facingRight = false
     /// A one-off: a reaction, a moment of joy, a stumble. Plays over the state until `until`.
@@ -71,15 +71,14 @@ struct PetStage: View {
                 // It never stands under the jump buttons while they show (they would be hidden and untappable).
                 let right = max(margin, width - margin - perch.keepOutRight)
                 let foot = foot(in: height, stand: stand)
-                let buttons = perch.replyActions
-                let overlaps = !buttons.isNull && buttons.minY < foot && buttons.maxY > foot - stand
-                let left = overlaps && !dragging
-                    ? min(right, max(margin, buttons.maxX - perch.chatOffset + figureWidth / 2 + Ink.Space.xs))
-                    : margin
-                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, left), right)
+                let left = perch.replyActionsRight.map {
+                    min(right, max(margin, $0 - perch.chatOffset + figureWidth / 2 + Ink.Space.xs))
+                } ?? margin
+                let resting = margin + (width - margin * 2) * restX + wander
+                let x = min(max((dragOrigin ?? resting) + drag, dragging ? margin : left), right)
                 ZStack(alignment: .topLeading) {
                     pet(pack, unit: unit, width: figureWidth, stand: stand)
-                        .simultaneousGesture(dragGesture(width: width, height: height, margin: margin, foot: foot, stand: stand))
+                        .simultaneousGesture(dragGesture(width: width, margin: margin, right: right, x: x))
                         .position(x: aligned(x + perch.chatOffset, offset: figureWidth / 2), y: aligned(foot, offset: stand) - stand / 2)
                         .transition(.opacity)
                     if let bubble = news.bubble {
@@ -94,6 +93,8 @@ struct PetStage: View {
                     }
                 }
                 .frame(width: width, height: height)
+                .onChange(of: stand, initial: true) { _, height in perch.replyStand = height }
+                .onDisappear { perch.replyStand = 0 }
                 .onAppear {
                     if pinnedY >= 0 { pinnedY = -1 }
                     if legacyLift > 0 { legacyLift = 0 }
@@ -220,14 +221,14 @@ struct PetStage: View {
 
     /// A drag moves it left or right along the composer. Pulling up only lifts it a little while held; let go and it
     /// drops back onto the composer at the new spot.
-    private func dragGesture(width: CGFloat, height: CGFloat, margin: CGFloat, foot: CGFloat, stand: CGFloat) -> some Gesture {
+    private func dragGesture(width: CGFloat, margin: CGFloat, right: CGFloat, x: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
                 var still = Transaction()
                 still.disablesAnimations = true
                 withTransaction(still) {
-                    if dragStart == nil {
-                        dragStart = foot
+                    if dragOrigin == nil {
+                        dragOrigin = x
                         touch()
                         Haptics.tick(0.4)
                     }
@@ -237,7 +238,7 @@ struct PetStage: View {
             }
             .onEnded { value in
                 let span = max(width - margin * 2, 1)
-                let landed = margin + span * restX + wander + value.translation.width
+                let landed = min(max((dragOrigin ?? x) + value.translation.width, margin), right)
                 var still = Transaction()
                 still.disablesAnimations = true
                 withTransaction(still) {
@@ -246,7 +247,7 @@ struct PetStage: View {
                     wanderTarget = 0
                     drag = 0
                     dragUp = 0
-                    dragStart = nil
+                    dragOrigin = nil
                 }
                 // A small bump as it lands back on the composer.
                 if !calm { landingCount += 1 }
