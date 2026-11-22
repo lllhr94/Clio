@@ -301,33 +301,33 @@ enum WebFetch {
     }
 }
 
-/// Supported web search backends.
+/// Supported web search backends. Built-in Bing / DuckDuckGo is the default; third-party providers are opt-in.
 public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifiable {
+    case builtin
     case anysearch
     case tavily
     case exa
     case brave
-    case builtin
 
     public var id: String { rawValue }
 
     public var name: String {
         switch self {
+        case .builtin: "内置网页（Bing / DuckDuckGo）"
         case .anysearch: "AnySearch"
         case .tavily: "Tavily"
         case .exa: "Exa"
         case .brave: "Brave"
-        case .builtin: "内置网页（Bing / DuckDuckGo）"
         }
     }
 
     public var shortName: String {
         switch self {
+        case .builtin: "内置网页"
         case .anysearch: "AnySearch"
         case .tavily: "Tavily"
         case .exa: "Exa"
         case .brave: "Brave"
-        case .builtin: "内置网页"
         }
     }
 
@@ -344,21 +344,21 @@ public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifi
 
     public var summary: String {
         switch self {
-        case .anysearch: "默认推荐，免密钥直接可用；填免费密钥每天 1000 次"
+        case .builtin: "默认选项，直接抓取 Bing / DuckDuckGo，不经第三方搜索 API"
+        case .anysearch: "免密钥直接可用；填免费密钥每天 1000 次"
         case .tavily: "面向 AI 整理的搜索摘要，免费版每月 1000 次"
         case .exa: "语义搜索，查英文技术文档和论文效果好"
         case .brave: "独立网页索引，响应快、无广告追踪"
-        case .builtin: "直接抓取 Bing / DuckDuckGo，不经第三方搜索 API"
         }
     }
 
     public var consoleHost: String {
         switch self {
+        case .builtin: ""
         case .anysearch: "anysearch.com/console/api-keys"
         case .tavily: "app.tavily.com"
         case .exa: "dashboard.exa.ai/api-keys"
         case .brave: "api-dashboard.search.brave.com"
-        case .builtin: ""
         }
     }
 }
@@ -369,7 +369,7 @@ public struct WebSearchConfig: Sendable, Equatable {
     public var apiKey: String?
     public var fallbackToBuiltin: Bool
 
-    public init(primary: WebSearchProvider = .anysearch, apiKey: String? = nil, fallbackToBuiltin: Bool = true) {
+    public init(primary: WebSearchProvider = .builtin, apiKey: String? = nil, fallbackToBuiltin: Bool = true) {
         self.primary = primary
         self.apiKey = apiKey
         self.fallbackToBuiltin = fallbackToBuiltin

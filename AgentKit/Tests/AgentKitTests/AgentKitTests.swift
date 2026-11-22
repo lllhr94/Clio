@@ -328,6 +328,7 @@ final class WebTextTests: XCTestCase {
     }
 
     func testAnySearchAnonymousAndKeyedRequests() async throws {
+        XCTAssertEqual(WebSearchConfig().primary, .builtin)
         let anonTool = WebSearchTool(
             config: WebSearchConfig(primary: .anysearch, apiKey: nil, fallbackToBuiltin: false),
             sendJSON: { request in

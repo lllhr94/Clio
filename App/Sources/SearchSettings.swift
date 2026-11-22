@@ -11,7 +11,7 @@ enum SearchEngine {
         get {
             guard let raw = UserDefaults.standard.string(forKey: providerKey),
                   let parsed = WebSearchProvider(rawValue: raw) else {
-                return .anysearch
+                return .builtin
             }
             return parsed
         }
@@ -94,9 +94,9 @@ enum SearchEngine {
     }
 }
 
-/// Settings page for choosing the web search backend (AnySearch, Tavily, Exa, Brave, or built-in Bing/DDG).
+/// Settings page for choosing the web search backend (built-in Bing/DDG by default, or opt-in AnySearch, Tavily, Exa, Brave).
 struct SearchSettingsPage: View {
-    @AppStorage(SearchEngine.providerKey) private var providerRaw = WebSearchProvider.anysearch.rawValue
+    @AppStorage(SearchEngine.providerKey) private var providerRaw = WebSearchProvider.builtin.rawValue
     @AppStorage(SearchEngine.fallbackKey) private var fallbackToBuiltin = true
 
     @State private var keyedProviders: Set<WebSearchProvider> = []
@@ -108,7 +108,7 @@ struct SearchSettingsPage: View {
     @State private var testResult: WebSearchTool.ProbeResult?
 
     private var selected: WebSearchProvider {
-        WebSearchProvider(rawValue: providerRaw) ?? .anysearch
+        WebSearchProvider(rawValue: providerRaw) ?? .builtin
     }
 
     var body: some View {
@@ -144,7 +144,7 @@ struct SearchSettingsPage: View {
                 }
             }
             .paperCard()
-            Text("联网搜索默认先走 AnySearch 免费通道；如果你有 Tavily、Exa 或 Brave 密钥，切过去并填上即可生效。")
+            Text("默认使用内置网页抓取（Bing / DuckDuckGo）；需要更稳或更准的搜索结果时，可按需切到 AnySearch（免密钥可用）或填写 Tavily、Exa、Brave 密钥。")
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
