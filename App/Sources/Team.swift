@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Observation
 import SwiftUI
 import UserNotifications
 import UIKit
@@ -103,12 +104,37 @@ final class TeamModel: ObservableObject {
     /// remembers the number it started with, and anything it says after the number has moved is dropped, so a
     /// stopped turn's last words cannot land in the new page (the review, #16).
     var epochs: [String: Int] = [:]
-    @Published var doing: [String: String] = [:] {
+    var doing: [String: String] = [:] {
+        willSet {
+            if Set(doing.keys) != Set(newValue.keys) { objectWillChange.send() }
+        }
         // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
         didSet {
-            Hitches.shared.doing(doing.values.sorted().first.map { "旅伴：" + $0 }, as: "work")
-            for (key, words) in doing where oldValue[key] != words { LiveTurns.follow(chat: key, doing: words) }
+            guard oldValue != doing else { return }
+            Hitches.shared.doing(doing.values.min().map { "旅伴：" + $0 }, as: "work")
+            for (key, words) in doing where oldValue[key] != words {
+                workDetails[key]?.words = words
+                LiveTurns.follow(chat: key, doing: words)
+            }
+            for key in oldValue.keys where doing[key] == nil {
+                workDetails[key]?.words = nil
+                lastWritingStatus[key] = nil
+            }
         }
+    }
+    @Observable @MainActor
+    final class WorkDetail {
+        fileprivate(set) var words: String?
+        init(_ words: String?) { self.words = words }
+    }
+    private var workDetails: [String: WorkDetail] = [:]
+    private var lastWritingStatus: [String: ContinuousClock.Instant] = [:]
+
+    func workDetail(for key: String) -> WorkDetail {
+        if let existing = workDetails[key] { return existing }
+        let detail = WorkDetail(doing[key])
+        workDetails[key] = detail
+        return detail
     }
     /// Bots speaking in a group right now.
     @Published var busyBots: Set<String> = []
@@ -981,8 +1007,7 @@ final class TeamModel: ObservableObject {
         cutShort[key] = nil
         do {
             try await agent.run(history: messages) { [weak self] event in
-                guard let self, await self.epochs[key, default: 0] == epoch else { return }
-                await self.hear(event, chat: key, speaker: speaker)
+                await self?.hear(event, chat: key, speaker: speaker, epoch: epoch)
             }
             // An answer that came back cut short is not 「done」: no 「做完了」, and what is waiting to be sent waits
             // for the user (the review, #19).
@@ -1051,7 +1076,9 @@ final class TeamModel: ObservableObject {
         return tail
     }
 
-    func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
+    func hear(_ event: AgentEvent, chat key: String, speaker: String?, epoch: Int? = nil) async {
+        let generation = epoch ?? epochs[key, default: 0]
+        guard epochs[key, default: 0] == generation else { return }
         heard[key] = Date()
         switch event {
         case .text(let raw):
@@ -1070,9 +1097,10 @@ final class TeamModel: ObservableObject {
                 }
             }
         case .reasoning(let piece):
-            if doing[key] != "正在想" { doing[key] = "正在想" }
+            if doing[key] != "正在想", streamed[key] == nil { doing[key] = "正在想" }
             notify(key, .thinking(piece))
         case .toolStarted(let id, _, let label):
+            lastWritingStatus[key] = nil
             labels[id] = label
             LiveTurns.step(chat: key)
             BackgroundTurn.step(chat: key, doing: label)
@@ -1102,12 +1130,16 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("这个模型不接受「\(level.title)」这个思考设置，这次按它默认的来，思考强度也改回了默认。\n服务说：\(said)"), note: true), to: key)
             Diag.note("思考设置被拒：\(level.rawValue)；\(said)")
         case .toolWriting(let name, let characters):
-            // `doing` redraws every page that watches the team: counted in steps of 500 characters, not every few.
+            let now = ContinuousClock.now
+            if let last = lastWritingStatus[key], now - last < .milliseconds(250) { return }
             let step = characters / 500 * 500
             let amount = step == 0 ? "一些" : step < 1000 ? "\(step) 字" : String(format: "%.1f 千字", Double(step) / 1000)
             let what = ["write_file": "写文件", "edit_file": "改文件", "shell": "命令", "run_js": "脚本"][name] ?? name
             let words = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
-            if doing[key] != words { doing[key] = words }
+            if doing[key] != words {
+                lastWritingStatus[key] = now
+                doing[key] = words
+            }
         case .toolFinished:
             break
         case .message(var message):
@@ -1125,14 +1157,28 @@ final class TeamModel: ObservableObject {
                 if pausing[key] != nil, message.toolCalls.isEmpty { return }
             }
             var kept = message
+            let images = keeping ? message.images : []
+            let toolText = message.role == .tool ? message.text : nil
+            let shots: [String]
+            if toolText != nil || !images.isEmpty {
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let short = toolText.map { text in
+                        let prefix = text.prefix(3001)
+                        return prefix.count > 3000 ? String(prefix.prefix(3000)) + "\n……" : text
+                    }
+                    return (short, images.map { Disk.keepPhoto($0.data) })
+                }.value
+                guard epochs[key, default: 0] == generation else { return }
+                if let short = prepared.0 { kept.text = short }
+                shots = prepared.1
+            } else {
+                shots = []
+            }
             var label: String?
             if message.role == .tool {
                 label = message.toolCallId.flatMap { labels.removeValue(forKey: $0) }
-                // The model had all of it in this turn; later turns need only the gist.
-                if kept.text.count > 3000 { kept.text = String(kept.text.prefix(3000)) + "\n……" }
             }
             // Pictures a tool brought back are kept as photos for the trace, not inside the saved message.
-            let shots = keeping ? kept.images.map { Disk.keepPhoto($0.data) } : []
             kept.images = []
             var entry = Entry(id: UUID().uuidString, at: Now.ms, message: kept, speaker: message.role == .user ? nil : speaker, photos: shots, label: label)
             entry.pulse = felt
@@ -1486,6 +1532,7 @@ final class TeamModel: ObservableObject {
         agent.thinking = options(key).thinking ?? .auto
         agent.maxSteps = 12
         let before = doing[key]
+        let helperEpoch = epochs[helperKey, default: 0]
         doing[key] = "\(helper.name)在帮忙"
         doing[helperKey] = "在帮\(asker.name)"
         notify(helperKey, .changed)
@@ -1497,7 +1544,7 @@ final class TeamModel: ObservableObject {
         }
         do {
             try await agent.run(history: [.user(asked)]) { [weak self] event in
-                await self?.hear(event, chat: helperKey, speaker: nil)
+                await self?.hear(event, chat: helperKey, speaker: nil, epoch: helperEpoch)
                 if case .toolStarted(_, _, let label) = event { await self?.helping(key, "\(helperName)：\(label)") }
             }
         } catch is CancellationError {

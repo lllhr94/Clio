@@ -107,6 +107,7 @@ final class ChatModel {
     private var limit = 160
     /// The tool running now, before its result is kept.
     private var running: String?
+    @ObservationIgnored private var toolRows: Task<Void, Never>?
     private var browsingHistory = false
     private var heldRows: [ChatLine]?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
@@ -177,6 +178,7 @@ final class ChatModel {
     }
 
     func close() {
+        cancelToolRows()
         opening?.cancel()
         opening = nil
         if let feed { team.unlisten(feed) }
@@ -228,6 +230,7 @@ final class ChatModel {
 
     func refresh() async {
         guard !demo else { return }
+        cancelToolRows()
         apply(build(team.history(key)))
     }
 
@@ -241,8 +244,10 @@ final class ChatModel {
 
     func loadEarlier() async {
         guard hasEarlier, !loadingEarlier else { return }
+        cancelToolRows()
         loadingEarlier = true
         defer { loadingEarlier = false }
+        let epoch = team.epochs[key, default: 0]
         let nextLimit = limit + 160
         let history = await team.loadHistory(key)
         let working = team.isWorking(key)
@@ -250,7 +255,9 @@ final class ChatModel {
         let page = await Task.detached(priority: .userInitiated) {
             Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, team.epochs[key, default: 0] == epoch else { return }
+        // A tool event may have started another build while the larger page was being prepared.
+        cancelToolRows()
         limit = nextLimit
         heldRows = nil
         let newest = team.history(key)
@@ -278,6 +285,7 @@ final class ChatModel {
         var thought = ""
         var feltThisTurn: String?
         for entry in entries {
+            if Task.isCancelled { return [] }
             let message = entry.message
             if entry.note == true {
                 var note = ChatLine(id: entry.id, kind: .note, text: message.text)
@@ -404,6 +412,35 @@ final class ChatModel {
         if !thinking.isEmpty { thinking = "" }
     }
 
+    private func cancelToolRows() {
+        toolRows?.cancel()
+        toolRows = nil
+    }
+
+    private func rebuildToolRows(_ history: [Entry]) {
+        cancelToolRows()
+        let pageLimit = limit
+        let epoch = team.epochs[key, default: 0]
+        let working = team.isWorking(key)
+        let label = running
+        toolRows = Task { [weak self] in
+            let worker = Task.detached(priority: .userInitiated) {
+                Self.buildRows(history.suffix(pageLimit), working: working, running: label)
+            }
+            let next = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard let self, !Task.isCancelled else { return }
+            self.toolRows = nil
+            guard self.limit == pageLimit, self.team.epochs[self.key, default: 0] == epoch else { return }
+            let current = self.team.history(self.key)
+            guard self.running == label, self.team.isWorking(self.key) == working, current == history else {
+                self.rebuildToolRows(current)
+                return
+            }
+            self.hasEarlier = current.count > pageLimit
+            self.apply(next)
+        }
+    }
+
     private func hear(_ event: TurnEvent) {
         switch event {
         case .pulse(let piece, let speaker):
@@ -420,10 +457,16 @@ final class ChatModel {
         case .tool(let label):
             clearThinking()
             running = label
-            apply(build(team.history(key)))
+            rebuildToolRows(team.history(key))
         case .changed:
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
+            if target.isEmpty, let last = all.last?.message,
+               last.role == .tool || (last.role == .assistant && last.text.isEmpty && !last.toolCalls.isEmpty) {
+                rebuildToolRows(all)
+                return
+            }
+            cancelToolRows()
             let next = build(all)
             if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
                 // The kept row takes over exactly where the streaming one stood. Not only when the words match to
@@ -455,8 +498,9 @@ final class ChatModel {
                 target = ""
                 streaming = ""
             }
-            apply(build(team.history(key)))
+            rebuildToolRows(team.history(key))
         case .failed(let message):
+            cancelToolRows()
             clearThinking()
             pulse = ""
             withAnimation(.smooth) { error = message }

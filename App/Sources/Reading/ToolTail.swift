@@ -16,7 +16,7 @@ final class ToolTail: ObservableObject {
         let preview = String(decoding: text.utf8.prefix(1024), as: UTF8.self)
         guard buffer.append(preview) else { return }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: .milliseconds(250))
             guard let self else { return }
             let pending = buffer.drain()
             if !pending.isEmpty { lines = Array((lines + pending.map { Line(text: $0) }).suffix(5)) }
@@ -72,7 +72,6 @@ struct ToolTailView: View {
             .padding(Ink.Space.s)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Ink.mine.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-            .animation(.easeOut(duration: 0.15), value: tail.lines)
             .accessibilityLabel("正在输出：" + (tail.lines.last?.text ?? ""))
         }
     }

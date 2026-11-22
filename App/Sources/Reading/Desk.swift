@@ -1343,7 +1343,7 @@ struct Desk: View {
                         Spacer()
                         Text(Self.when(item.at)).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                     }
-                    if let live = Live.brief(team.doing[item.id.id], waiting: team.approvals.contains { $0.chat == item.id.id }) {
+                    if let live = Live.brief(team.workDetail(for: item.id.id).words, waiting: team.approvals.contains { $0.chat == item.id.id }) {
                         HStack(spacing: Ink.Space.xs) {
                             BreathingDot()
                             Text(live).font(Ink.secondary).foregroundStyle(Ink.accent).lineLimit(1)

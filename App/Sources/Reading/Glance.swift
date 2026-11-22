@@ -51,13 +51,13 @@ struct GlanceCard: View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
             HStack(spacing: Ink.Space.m) {
                 PetStill(size: 48, wash: Ink.wash(for: bot), avatar: true, bot: bot)
-                    .breathing(team.doing[key] != nil, tint: Ink.accent)
+                    .breathing(team.workDetail(for: key).words != nil, tint: Ink.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: Ink.Space.xs) {
                         Text(bot.name).font(Ink.mark(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                         Text(Temper.of(bot).symbol).foregroundStyle(Ink.accent)
                     }
-                    Text(team.doing[key] ?? (bot.role?.isEmpty == false ? bot.role! : Temper.of(bot).line))
+                    Text(team.workDetail(for: key).words ?? (bot.role?.isEmpty == false ? bot.role! : Temper.of(bot).line))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(2)
@@ -102,7 +102,7 @@ struct GlanceCard: View {
         .padding(Ink.Space.l)
         .frame(width: availableWidth > 0 ? min(availableWidth * 0.86, Ink.Size.body * 24) : nil)
         .background(Ink.paper)
-        .task(id: team.doing[key] == nil) { files = team.allChangedFiles(key) }
+        .task(id: team.workDetail(for: key).words == nil) { files = team.allChangedFiles(key) }
     }
 
     @ViewBuilder private var actions: some View {

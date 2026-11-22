@@ -18,7 +18,7 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 
 + (BOOL)booted;
 
-/// Runs `/bin/sh -c command`. Lines arrive on the main queue as they are printed. Returns the guest pid, or a negative error.
+/// Runs `/bin/sh -c command`. Line callbacks run on the pipe readers and may overlap. Returns the guest pid, or a negative error.
 + (int)run:(NSString *)command
        environment:(nullable NSDictionary<NSString *, NSString *> *)environment
             onLine:(nullable DenLine)onLine
