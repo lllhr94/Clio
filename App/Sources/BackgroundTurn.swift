@@ -63,7 +63,10 @@ enum BackgroundTurn {
         turns[chat] = turn
         guard let task = turn.task else { return }
         task.progress.completedUnitCount = min(95, turn.steps * 8 + 4)
-        if let doing { task.updateTitle(task.title, subtitle: String(doing.prefix(60))) }
+        if let doing {
+            let shown = doing == "等你批准" ? L.t("pet.needsApproval") : Words.t(doing)
+            task.updateTitle(task.title, subtitle: String(shown.prefix(60)))
+        }
     }
 
     static func end(chat: String, token: UUID, ok: Bool) {

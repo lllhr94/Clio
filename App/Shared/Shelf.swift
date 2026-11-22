@@ -3,14 +3,35 @@ import Security
 
 /// What the home-screen widget shows: one companion, what it is doing, the last thing it said.
 struct WidgetSnapshot: Codable, Equatable {
+    enum Kind: String, Codable, Equatable {
+        case idle, working, waiting
+    }
+
     var name: String
-    /// 闲坐 · 在干活 · 等你批准
+    /// Localized status text (空闲/闲坐 · 正在干活 · 等你确认/等你落款).
     var status: String
     var line: String
     /// Seconds since 1970.
     var at: Double
     /// The conversation a tap opens, bot-… or room-….
     var chat: String
+    /// Structured status so the widget stays accurate across 日常 / 书卷 labels.
+    var kind: Kind?
+    /// Pure black dark mode preference synced from the app.
+    var oled: Bool?
+    /// True in 日常 mode, false in 书卷 mode.
+    var plain: Bool?
+
+    init(name: String, status: String, line: String, at: Double, chat: String, kind: Kind? = nil, oled: Bool? = nil, plain: Bool? = nil) {
+        self.name = name
+        self.status = status
+        self.line = line
+        self.at = at
+        self.chat = chat
+        self.kind = kind
+        self.oled = oled
+        self.plain = plain
+    }
 }
 
 /// A small shelf both the app and its widget can reach: a keychain item in a group shared by the two.

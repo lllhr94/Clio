@@ -10,8 +10,31 @@ enum WidgetFeed {
     static func publish(_ team: TeamModel) {
         guard let id = team.mainBotId, let bot = team.bots.first(where: { $0.id == id }) else { return }
         let key = TeamModel.key(bot: id)
-        let status = team.approvals.contains { $0.chat == key } ? "等你批准" : (team.isWorking(key) ? "在干活" : Words.t("闲坐"))
-        let snapshot = WidgetSnapshot(name: bot.name, status: status, line: String((bot.preview ?? "").prefix(120)), at: (bot.lastAt ?? 0) / 1000, chat: key)
+        let kind: WidgetSnapshot.Kind
+        let status: String
+        if team.approvals.contains(where: { $0.chat == key }) {
+            kind = .waiting
+            status = L.t("pet.needsApproval")
+        } else if team.isWorking(key) {
+            kind = .working
+            status = "正在干活"
+        } else {
+            kind = .idle
+            status = L.t("chat.idle")
+        }
+        let cleanedLine = (bot.preview ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let snapshot = WidgetSnapshot(
+            name: bot.name,
+            status: status,
+            line: String(cleanedLine.prefix(120)),
+            at: (bot.lastAt ?? 0) / 1000,
+            chat: key,
+            kind: kind,
+            oled: Theme.shared.oled,
+            plain: Theme.shared.plain
+        )
         guard snapshot != last else { return }
         last = snapshot
         if Shelf.put(snapshot) {

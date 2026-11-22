@@ -26,4 +26,13 @@ struct TurnAttributes: ActivityAttributes {
     var chat: String
     /// The companion's face, a tiny PNG (its pet's first frame, or its photo), for the Dynamic Island.
     var face: Data?
+    /// Pure black dark mode preference synced from the app for the Lock Screen card.
+    var oled: Bool?
+
+    init(name: String, chat: String, face: Data? = nil, oled: Bool? = nil) {
+        self.name = name
+        self.chat = chat
+        self.face = face
+        self.oled = oled
+    }
 }
