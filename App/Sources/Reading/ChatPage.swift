@@ -64,6 +64,8 @@ struct ChatPage: View {
     @State var jumpedTo: String?
     @State var jumpVisible = false
     @State var hideJumps: Task<Void, Never>?
+    /// The question the finger is on while sliding along the 小地图 (an index into the rows), nil when not sliding.
+    @State var minimapScrub: Int?
     @State var viewport = ChatViewport()
     @State var selecting: Set<UUID> = []
     @State var sharing: ShareFile?
