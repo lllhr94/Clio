@@ -426,6 +426,8 @@ final class TeamModel: ObservableObject {
         browser.release(key)
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else {
+            queued[key] = nil
+            persistQueued(key)
             modelInputLog.clear(key)
             forgetThreads(key)
             return true
@@ -453,6 +455,8 @@ final class TeamModel: ObservableObject {
         moveThread(key, to: Self.threadKey(key, leaf: leaf.id))
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
+        queued[key] = nil
+        persistQueued(key)
         modelInputLog.clear(key)
         if keeping { ChatDisk.save([Entry](), chat: key) }
         clearPreview(key)
@@ -484,6 +488,7 @@ final class TeamModel: ObservableObject {
     func clearChat(_ key: String, includingLeaves: Bool = true) -> Bool {
         guard !openingLeaves.contains(key) else { return false }
         queued[key] = nil
+        persistQueued(key)
         stop(key)
         epochs[key, default: 0] += 1
         modelInputLog.clear(key)
@@ -663,13 +668,21 @@ final class TeamModel: ObservableObject {
     }
 
     /// A message written while the companion is still at work: it waits its turn instead of cutting the work short.
-    struct Queued: Identifiable, Equatable {
-        let id = UUID()
+    struct Queued: Identifiable, Equatable, Sendable {
+        let id: UUID
         var text: String
         var photos: [Data]
         /// 插话: handed to the companion between its steps, not after the turn.
-        var interject = false
-        var userInitiated = true
+        var interject: Bool
+        var userInitiated: Bool
+
+        init(id: UUID = UUID(), text: String, photos: [Data], interject: Bool = false, userInitiated: Bool = true) {
+            self.id = id
+            self.text = text
+            self.photos = photos
+            self.interject = interject
+            self.userInitiated = userInitiated
+        }
     }
 
     /// Messages waiting for the turn in progress to finish, by chat.
@@ -677,12 +690,18 @@ final class TeamModel: ObservableObject {
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
     var sendQueuedNow: Set<String> = []
 
+    func persistQueued(_ key: String) {
+        guard keeping else { return }
+        QueuedStore.save(queued[key] ?? [], for: key)
+    }
+
     func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
         if archived.contains(key) { archive(key, false) }
         guard phase != .demo else { return }
         // Busy with its own turn, or helping another companion: the message waits its turn.
         if runs[key] != nil || helping.contains(key) {
             withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated)) }
+            persistQueued(key)
             return
         }
         let names = keeping ? photos.map(Disk.keepPhoto) : []
@@ -698,6 +717,7 @@ final class TeamModel: ObservableObject {
     func interject(_ text: String, to key: String) {
         guard runs[key] != nil else { send(text, photos: [], to: key); return }
         withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: [], interject: true)) }
+        persistQueued(key)
     }
 
     /// What was said in passing, taken out of the queue for the companion to read now.
@@ -706,6 +726,7 @@ final class TeamModel: ObservableObject {
         let taken = list.filter(\.interject).map(\.text)
         let rest = list.filter { !$0.interject }
         withAnimation(.smooth) { queued[key] = rest.isEmpty ? nil : rest }
+        persistQueued(key)
         return taken
     }
 
@@ -714,7 +735,7 @@ final class TeamModel: ObservableObject {
         guard queued[key]?.isEmpty == false else { return }
         if runs[key] != nil {
             sendQueuedNow.insert(key)
-            stop(key)
+            stop(key, keepSendNow: true)
         } else {
             flushQueue(key)
         }
@@ -726,6 +747,7 @@ final class TeamModel: ObservableObject {
         var list = queued[key] ?? []
         let item = list.remove(at: index)
         withAnimation(.smooth) { queued[key] = list.isEmpty ? nil : list }
+        persistQueued(key)
         return item
     }
 
@@ -733,11 +755,15 @@ final class TeamModel: ObservableObject {
     func flushQueue(_ key: String) {
         guard let waiting = queued[key], !waiting.isEmpty else { return }
         withAnimation(.smooth) { queued[key] = nil }
+        persistQueued(key)
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        send(text, photos: waiting.flatMap(\.photos), to: key, userInitiated: waiting.contains(where: \.userInitiated))
+        let allPhotos = waiting.flatMap(\.photos)
+        guard !text.isEmpty || !allPhotos.isEmpty else { return }
+        send(text, photos: allPhotos, to: key, userInitiated: waiting.contains(where: \.userInitiated))
     }
 
-    func stop(_ key: String) {
+    func stop(_ key: String, keepSendNow: Bool = false) {
+        if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
         for approval in approvals where approval.chat == key {
             if let waiter = waiters.removeValue(forKey: approval.id) { waiter.resume(returning: false) }

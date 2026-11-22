@@ -492,7 +492,13 @@ struct ChatPage: View {
                 Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                 Button("撤回", systemImage: "arrow.uturn.backward") {
                     if let back = team.unqueue(chat.key, item.id) {
-                        draft = draft.isEmpty ? back.text : draft + "\n" + back.text
+                        if !back.text.isEmpty {
+                            draft = draft.isEmpty ? back.text : draft + "\n" + back.text
+                        }
+                        if !back.photos.isEmpty {
+                            photos.append(contentsOf: back.photos)
+                            DraftAttachments.save(photos: photos, files: files, chat: chat.key)
+                        }
                         typing = true
                     }
                 }

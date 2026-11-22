@@ -79,6 +79,8 @@ extension TeamModel {
         }
         leafBook[key] = nil
         optionBook[key] = nil
+        queued[key] = nil
+        persistQueued(key)
         Snapshots.shared.forget(key)
         entries[key] = nil
         modelInputLog.clear(key)
@@ -124,6 +126,8 @@ extension TeamModel {
         }
         leafBook[key] = nil
         optionBook[key] = nil
+        queued[key] = nil
+        persistQueued(key)
         Snapshots.shared.forget(key)
         entries[key] = nil
         modelInputLog.clear(key)

@@ -14,6 +14,7 @@ extension TeamModel {
         let memory: MemoryBook
         let laters: [Later]
         let routines: [Routine]
+        let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
             Self(
@@ -22,7 +23,8 @@ extension TeamModel {
                 rooms: Disk.load([RoomInfo].self, "rooms.json") ?? [],
                 memory: Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? []),
                 laters: Disk.load([Later].self, "later.json") ?? [],
-                routines: Disk.load([Routine].self, "routines.json") ?? []
+                routines: Disk.load([Routine].self, "routines.json") ?? [],
+                queued: QueuedStore.loadAll()
             )
         }
     }
@@ -55,6 +57,18 @@ extension TeamModel {
         modelInputLog.reset()
         approvals = []
         phase = settings.endpoints.isEmpty ? .setup : .ready
+        let validKeys = Set(bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) })
+        var restored: [String: [Queued]] = [:]
+        for (chatKey, stored) in data.queued {
+            if validKeys.contains(chatKey) {
+                restored[chatKey] = stored.map {
+                    Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
+                }
+            } else {
+                QueuedStore.clear(chatKey)
+            }
+        }
+        queued = restored
         sortBots()
         deliverDue()
     }
