@@ -47,6 +47,12 @@
     "filesAndTerminal": "文件与终端"
   },
   "chat": {
+    "untitled": "没有标题的对话",
+    "titleField": "对话标题",
+    "deletePast": "删除这段旧对话？",
+    "newCompanion": "跟哪位助手聊",
+    "newMemory": "这次参考记忆",
+    "newMemoryNote": "关掉后，这段对话里助手不会读取或写入记忆。旧对话仍在侧边栏里。",
     "pasteAttached": "已把粘贴的 %d 字存成文件：书案/%@",
     "earlier": "更早的消息",
     "menu": "对话菜单",
@@ -396,6 +402,8 @@
     "dailyHintDesc": "书卷名字旁边用浅灰小字标出日常意思，熟悉后可以关掉"
   },
   "actions": {
+    "start": "开始",
+    "newChat": "新对话",
     "confirm": "确定",
     "save": "保存",
     "cancel": "取消",
@@ -549,6 +557,7 @@
     "working": "正在处理…"
   },
   "errors": {
+    "saveConversation": "没能保存对话的修改，请重试。",
     "exportChat": "这次没能导出对话，请重试。",
     "imagePromptEmpty": "请先说明想画什么。",
     "imageTimeout": "生图超时了，请稍后再试。",

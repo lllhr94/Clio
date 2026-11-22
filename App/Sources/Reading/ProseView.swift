@@ -57,23 +57,27 @@ struct ProseView: View {
 /// Once sealed, a block keeps its identity and its original text while the tail grows.
 struct StreamingProse: View {
     let text: String
-    @State private var blocks = StreamBlocks()
+    @State private var scanner = StreamBlocks()
+    @State private var sealed: [Prose.Block] = []
+    @State private var tail: [Prose.Block] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
-            ForEach(blocks.finished.indices, id: \.self) { index in
-                ProseView(text: blocks.finished[index]).equatable()
+        let blocks = scanner.receivedBytes == 0 ? Prose.parse(Prose.mend(text)) : sealed + tail
+        ReplyProseLayout(text: text, blocks: blocks, streaming: true)
+            .onChange(of: text, initial: true) { _, new in
+                // A shortened stream starts over; the caller gives every new reply its own identity.
+                if new.utf8.count < scanner.receivedBytes {
+                    scanner = StreamBlocks()
+                    sealed = []
+                }
+                let count = scanner.finished.count
+                let delta = String(decoding: new.utf8.dropFirst(scanner.receivedBytes), as: UTF8.self)
+                scanner.append(delta)
+                for source in scanner.finished.dropFirst(count) {
+                    sealed.append(contentsOf: ParsedCache.blocks(source))
+                }
+                tail = Prose.parse(Prose.mend(scanner.tail))
             }
-            if !blocks.tail.isEmpty {
-                ProseView(text: blocks.tail, streaming: true).equatable()
-            }
-        }
-        .onChange(of: text, initial: true) { _, new in
-            // A stream only appends within this view's identity. A different reply gets a new identity.
-            if new.utf8.count < blocks.receivedBytes { blocks = StreamBlocks() }
-            let delta = String(decoding: new.utf8.dropFirst(blocks.receivedBytes), as: UTF8.self)
-            blocks.append(delta)
-        }
     }
 }
 
@@ -847,15 +851,25 @@ extension ProseView: Equatable {
 /// are one native text, so a drag can run from one paragraph into the next. Code, tables, pictures, files and formulas
 /// stand between them as their own blocks (code keeps its copy button).
 struct SelectableProse: View, Equatable {
+    let text: String
+
+    var body: some View {
+        ReplyProseLayout(text: text, blocks: ParsedCache.blocks(text))
+    }
+}
+
+/// Both stages of a reply use the same layout. Only the growing tail needs live formatting.
+private struct ReplyProseLayout: View {
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
     @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
-    /// Native text takes its colours when set: a change of light and dark sets it again.
+    @AppStorage("look.fade") private var fade = true
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let text: String
-
-    static func == (a: SelectableProse, b: SelectableProse) -> Bool { a.text == b.text }
+    let blocks: [Prose.Block]
+    var streaming = false
 
     enum Part {
         case words([Prose.Block])
@@ -884,20 +898,28 @@ struct SelectableProse: View, Equatable {
 
     var body: some View {
         let _ = (face, code, size, leading)
-        let parts = Self.parts(ParsedCache.blocks(text))
+        let parts = Self.parts(blocks)
         let format = "\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(FontShelf.shared.generation)"
         VStack(alignment: .leading, spacing: Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                let live = streaming && index == parts.count - 1
                 switch part {
                 case .words(let blocks):
-                    ProseText(attributed: ProseWords.make(blocks), text: text, part: index, format: format)
+                    ProseText(blocks: blocks, text: text, part: index, format: format,
+                              streaming: streaming, fadeTail: live && fade && !reduceMotion)
                 case .block(let block):
-                    BlockView(block: block, fading: false)
+                    BlockView(block: block, fading: false, live: unfinished(block, live: live))
                 }
             }
         }
         .id(format)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func unfinished(_ block: Prose.Block, live: Bool) -> Bool {
+        guard live else { return false }
+        if case .code(_, _, let closed) = block { return !closed }
+        return true
     }
 }
 
@@ -912,13 +934,8 @@ enum ProseWords {
         }
     }
 
-    static func make(_ blocks: [Prose.Block]) -> NSAttributedString {
-        let out = NSMutableAttributedString()
-        for (index, block) in blocks.enumerated() {
-            if index > 0 { out.append(NSAttributedString(string: "\n")) }
-            out.append(set(block, quoteDepth: 0, first: index == 0))
-        }
-        return out
+    static func make(_ block: Prose.Block, first: Bool) -> NSAttributedString {
+        set(block, quoteDepth: 0, first: first)
     }
 
     private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
@@ -1068,10 +1085,12 @@ private final class InlineCodeTextView: UITextView {
 
 /// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
 private struct ProseText: UIViewRepresentable {
-    let attributed: NSAttributedString
+    let blocks: [Prose.Block]
     let text: String
     let part: Int
     let format: String
+    let streaming: Bool
+    let fadeTail: Bool
 
     private struct Length: Hashable {
         let text: String
@@ -1104,16 +1123,21 @@ private struct ProseText: UIViewRepresentable {
     func updateUIView(_ view: InlineCodeTextView, context: Context) {
         context.coordinator.open = openURL
         context.coordinator.selectionChanged = selectionChanged
-        // Compared by its words only: the colours inside are made fresh on every redraw and never compare equal, so the
-        // old check set the text again each time the chat redrew, and that wiped a selection the moment it was made.
-        // A change of face, size or light/dark gives the whole block a new identity (see `SelectableProse`), so it is
-        // built anew then anyway.
-        if view.attributedText.string != attributed.string { view.replaceWords(with: attributed) }
+        if let words = context.coordinator.words(for: blocks, fade: fadeTail) {
+            let selection = view.selectedRange
+            let keepsSelection = selection.length > 0 && words.string.hasPrefix(view.attributedText?.string ?? "")
+            view.replaceWords(with: words)
+            if keepsSelection { view.selectedRange = selection }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: InlineCodeTextView, context: Context) -> CGSize? {
         guard let width = proposal.width ?? uiView.superview?.bounds.width ?? uiView.window?.bounds.width,
               width > 0 else { return nil }
+        if streaming {
+            let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            return CGSize(width: width, height: ceil(fitted.height))
+        }
         let key = Length(text: text, part: part, format: format, width: width)
         if let height = Self.heights[key] { return CGSize(width: width, height: height) }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
@@ -1132,6 +1156,37 @@ private struct ProseText: UIViewRepresentable {
         var selectionChanged: (@MainActor (UUID, Bool) -> Void)?
         private let id = UUID()
         private var selected = false
+
+        private var blocks: [Prose.Block] = []
+        private var spans: [NSAttributedString] = []
+        private var fading = false
+
+        func words(for next: [Prose.Block], fade: Bool) -> NSAttributedString? {
+            guard next != blocks || fade != fading else { return nil }
+            let shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
+            spans.removeSubrange(shared...)
+            for index in next.indices.dropFirst(shared) {
+                spans.append(ProseWords.make(next[index], first: index == 0))
+            }
+            blocks = next
+            fading = fade
+
+            let words = NSMutableAttributedString()
+            for (index, span) in spans.enumerated() {
+                if index > 0 { words.append(NSAttributedString(string: "\n")) }
+                words.append(span)
+            }
+            if fade {
+                let text = words.string
+                let tail = text.suffix(12)
+                for (offset, index) in tail.indices.enumerated() {
+                    let range = NSRange(index..<text.index(after: index), in: text)
+                    guard let color = words.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor else { continue }
+                    words.addAttribute(.foregroundColor, value: color.withAlphaComponent(Double(12 - offset) / 13), range: range)
+                }
+            }
+            return words
+        }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
             publishSelection(textView.selectedRange.length > 0)

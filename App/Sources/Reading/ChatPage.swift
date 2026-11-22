@@ -279,7 +279,8 @@ struct ChatPage: View {
                             .padding(.top, line.kind == .user && line.id != displayedRows.first?.id ? Ink.Space.l : 0)
                             .id(line.id)
                             // Only what just arrived rises into place; history loaded above stays still.
-                            .transition(historyPage == nil && chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                            .transition(historyPage == nil && chat.fresh?.id != line.id &&
+                                        chat.lines.suffix(2).contains(where: { $0.id == line.id })
                                         ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
                                         : .identity)
                     }
@@ -295,7 +296,7 @@ struct ChatPage: View {
                         .id("folding")
                         .transition(.opacity)
                 }
-                ChatSection { liveReply }
+                ChatSection { liveReply }.transition(.identity)
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
                 if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
                     ToolTailView(tail: team.toolTail(for: chat.key))
@@ -414,7 +415,6 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
-            .animation(Ink.Motion.settle, value: showsLive)
             .onAppear { scroller = proxy }
             .task { await playShot() }
         }
@@ -426,7 +426,16 @@ struct ChatPage: View {
         try? await Task.sleep(for: .seconds(1))
         switch shot {
         case "chat-stream":
-            chat.send("再帮我列个要带的东西", photos: [])
+            if let stage = Shots.streamStage {
+                following = false
+                chat.stageReplyShot(stage)
+                do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                scroller?.scrollTo(ChatModel.shotQuestionID, anchor: .top)
+            } else {
+                chat.send("再帮我列个要带的东西", photos: [])
+            }
+        case "newchat":
+            side.fresh(bot.id)
         case "chat-latest":
             following = false
             if let first = chat.lines.suffix(shownCount).first?.id { scroller?.scrollTo(first, anchor: .top) }
@@ -576,7 +585,7 @@ struct ChatPage: View {
                     perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
                     showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil
                         || (asker.current.map { !$0.inline } ?? false),
-                    covered: petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
+                    covered: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
                     quiet: dictation.listening, enabled: PetLibrary.shared.visible
                 ) { petSettingsOpen = true }
                 .frame(height: 1)
@@ -968,7 +977,10 @@ struct ChatPage: View {
             }
             Menu {
                 Section {
-                    chatMenuButton("chat.newConversation", icon: "square.and.pencil") { team.turnLeaf(chat.key) }
+                    chatMenuButton("chat.newConversation", icon: "square.and.pencil") {
+                        typing = false
+                        side.fresh(isRoom ? nil : bot.id)
+                    }
                     chatMenuButton("actions.share", icon: "square.and.arrow.up") {
                         let title = team.title(of: chat.key) ?? bot.name
                         Task {
@@ -1493,7 +1505,8 @@ struct ChatPage: View {
                 if let felt = line.pulse {
                     PulseBox(text: felt, temper: Temper.of(line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)))
                 }
-                if let fresh = chat.fresh, fresh.id == line.id, let shown = fresh.shown {
+                let writing = chat.fresh?.id == line.id ? chat.fresh?.shown : nil
+                if let shown = writing {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
@@ -1516,7 +1529,7 @@ struct ChatPage: View {
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
                 let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
                 // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
-                if newest ? !working : (!(chat.fresh?.id == line.id) && endsTurn(line)) {
+                if writing == nil, newest ? !working : (!(chat.fresh?.id == line.id) && endsTurn(line)) {
                     footer(line, newest: newest)
                         .transition(.opacity)
                 }

@@ -17,6 +17,7 @@ struct StopRow<Value: Hashable>: View {
     let stops: [Stop<Value>]
     /// The detail under the current value in the row, when it helps (like how much that 档位 is for this model).
     var line: String? = nil
+    var opensForShot = false
     @State private var open = false
 
     var body: some View {
@@ -43,6 +44,11 @@ struct StopRow<Value: Hashable>: View {
         .accessibilityLabel(title)
         .accessibilityValue(current?.name ?? "")
         .accessibilityHint("点一下调整")
+        .task {
+            guard opensForShot else { return }
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            open = true
+        }
         // Pinned to the value at the row's right end, where the thumb taps, not the middle of the row; it keeps
         // the left of the page (a preview of the text, the pet) in view while dragging.
         .popover(isPresented: $open, attachmentAnchor: .point(UnitPoint(x: 0.92, y: 0.5)), arrowEdge: .bottom) {
