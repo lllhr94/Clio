@@ -257,7 +257,7 @@ final class TeamModel: ObservableObject {
     }
 
     static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
-    nonisolated static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
+    nonisolated static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile(threadKey(key, leaf: id)) }
 
     func entries(in leaf: Leaf, of key: String) -> [Entry] {
         Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []
@@ -272,6 +272,7 @@ final class TeamModel: ObservableObject {
 
     @discardableResult
     func renameLeaf(_ key: String, id: String, to title: String) -> Bool {
+        guard !openingLeaves.contains(key) else { return false }
         var list = leaves(key)
         guard let index = list.firstIndex(where: { $0.id == id && $0.marker == nil }) else { return false }
         let title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
@@ -282,9 +283,11 @@ final class TeamModel: ObservableObject {
 
     @discardableResult
     func deleteLeaf(_ key: String, id: String) -> Bool {
+        guard !openingLeaves.contains(key) else { return false }
         let list = leaves(key)
         guard list.contains(where: { $0.id == id && $0.marker == nil }),
               writeEditedLeaves(key, list.filter { $0.id != id }) else { return false }
+        forgetThreads(Self.threadKey(key, leaf: id))
         if keeping {
             Disk.remove(Self.leafFile(key, id))
             Disk.remove(Self.leafSummary(key, id))
@@ -371,10 +374,12 @@ final class TeamModel: ObservableObject {
         guard said.filter({ $0.message.role == .user }).count == 1, said.contains(where: { $0.message.role == .assistant }),
               let agent = helper(for: key, system: "你给对话起标题：不超过 12 个字，中文，不要标点、引号和表情，只输出标题。") else { return }
         let transcript = said.prefix(4).map { ($0.message.role == .user ? "用户：" : "旅伴：") + String($0.message.text.prefix(400)) }.joined(separator: "\n")
+        let epoch = epochs[key, default: 0]
         Task { [weak self] in
             guard let raw = try? await agent.ask("给这段对话起个标题：\n\n" + transcript) else { return }
             let clean = String(raw.unicodeScalars.filter { !CharacterSet.punctuationCharacters.contains($0) && !CharacterSet.symbols.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0) }).prefix(12)
-            guard let self, !clean.isEmpty, self.options(key).title == nil else { return }
+            guard let self, !clean.isEmpty, self.epochs[key, default: 0] == epoch,
+                  self.options(key).title == nil else { return }
             var value = self.options(key)
             value.title = String(clean)
             self.setOptions(key, value)
@@ -385,12 +390,18 @@ final class TeamModel: ObservableObject {
     /// conversation could not be put aside (the disk is full, say): then it stays as it is.
     @discardableResult
     func turnLeaf(_ key: String) -> Bool {
+        guard !openingLeaves.contains(key) else { return false }
+        return shelveCurrent(key)
+    }
+
+    private func shelveCurrent(_ key: String) -> Bool {
         stop(key)
         epochs[key, default: 0] += 1
         browser.release(key)
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else {
             modelInputLog.clear(key)
+            forgetThreads(key)
             return true
         }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
@@ -413,6 +424,7 @@ final class TeamModel: ObservableObject {
         setOptions(key, value)
         setSummary(key, nil)
         setLeaves(key, [leaf] + leaves(key))
+        moveThread(key, to: Self.threadKey(key, leaf: leaf.id))
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
         modelInputLog.clear(key)
@@ -441,28 +453,34 @@ final class TeamModel: ObservableObject {
         notify(key, .changed)
     }
 
-    /// Empties a conversation for good: what is on the page now, every leaf put aside and their summaries. The companion stays.
-    func clearChat(_ key: String) {
+    /// Empties the current conversation. The legacy clear action can also remove every conversation put aside.
+    @discardableResult
+    func clearChat(_ key: String, includingLeaves: Bool = true) -> Bool {
+        guard !openingLeaves.contains(key) else { return false }
         queued[key] = nil
         stop(key)
         epochs[key, default: 0] += 1
         modelInputLog.clear(key)
-        if keeping {
-            for leaf in leaves(key) {
-                Disk.remove(Self.leafFile(key, leaf.id))
-                Disk.remove(Self.leafSummary(key, leaf.id))
+        if includingLeaves {
+            if keeping {
+                for leaf in leaves(key) {
+                    Disk.remove(Self.leafFile(key, leaf.id))
+                    Disk.remove(Self.leafSummary(key, leaf.id))
+                }
             }
-            ChatDisk.save([Entry](), chat: key)
+            setLeaves(key, [])
+            Snapshots.shared.forget(key)
         }
-        setLeaves(key, [])
+        if keeping { ChatDisk.save([Entry](), chat: key) }
+        forgetThreads(key, includingLeaves: includingLeaves)
         setSummary(key, nil)
-        Snapshots.shared.forget(key)
         var cleared = options(key)
         cleared.title = nil
         setOptions(key, cleared)
         entries[key] = []
         clearPreview(key)
         notify(key, .changed)
+        return true
     }
 
     /// Brings an earlier conversation back to the front; the current one is put aside in its place.
@@ -497,8 +515,8 @@ final class TeamModel: ObservableObject {
             kept = read.entries ?? []
             keptSummary = read.summary
         }
-        guard leaves(key).contains(where: { $0.id == leaf.id }) else { return }
-        guard turnLeaf(key) else { return }
+        guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
+        guard shelveCurrent(key) else { return }
         if keeping {
             // The leaf's own file goes only once the page it became is surely saved.
             let toSave = kept
@@ -515,9 +533,12 @@ final class TeamModel: ObservableObject {
         entries[key] = kept
         if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
-        if leaf.marker == nil { rename(key, to: leaf.title) }
+        if leaf.marker == nil {
+            moveThread(Self.threadKey(key, leaf: leaf.id), to: key)
+            rename(key, to: leaf.title)
+        }
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
-        touch(key, preview: last)
+        touch(key, preview: last, at: leaf.at)
         notify(key, .changed)
     }
 
@@ -555,19 +576,23 @@ final class TeamModel: ObservableObject {
     }
 
     func dropLeaf(_ key: String, _ leaf: Leaf) {
+        guard !openingLeaves.contains(key) else { return }
         if keeping {
             Disk.remove(Self.leafFile(key, leaf.id))
             Disk.remove(Self.leafSummary(key, leaf.id))
         }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        forgetThreads(Self.threadKey(key, leaf: leaf.id))
     }
 
     func clearPreview(_ key: String) {
         if let index = bots.firstIndex(where: { Self.key(bot: $0.id) == key }) {
             bots[index].preview = nil
+            bots[index].lastAt = nil
             saveBots()
         } else if let index = rooms.firstIndex(where: { Self.key(room: $0.id) == key }) {
             rooms[index].preview = nil
+            rooms[index].lastAt = nil
             saveRooms()
         }
     }
@@ -593,15 +618,14 @@ final class TeamModel: ObservableObject {
     }
 
     /// The chat's last words go on the home screen.
-    func touch(_ key: String, preview: String?, speaker: String? = nil) {
-        let now = Now.ms
+    func touch(_ key: String, preview: String?, speaker: String? = nil, at: Double = Now.ms) {
         let line = preview.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120)) }
         if key.hasPrefix("bot-"), let index = bots.firstIndex(where: { Self.key(bot: $0.id) == key }) {
-            bots[index].lastAt = now
+            bots[index].lastAt = at
             if let line, !line.isEmpty { bots[index].preview = line }
             saveBots()
         } else if let index = rooms.firstIndex(where: { Self.key(room: $0.id) == key }) {
-            rooms[index].lastAt = now
+            rooms[index].lastAt = at
             if let line, !line.isEmpty {
                 let name = speaker.flatMap { id in bots.first { $0.id == id }?.name }
                 rooms[index].preview = name.map { "\($0)：\(line)" } ?? line
@@ -1078,9 +1102,12 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("这个模型不接受「\(level.title)」这个思考设置，这次按它默认的来，思考强度也改回了默认。\n服务说：\(said)"), note: true), to: key)
             Diag.note("思考设置被拒：\(level.rawValue)；\(said)")
         case .toolWriting(let name, let characters):
-            let amount = characters < 1000 ? "\(characters) 字" : String(format: "%.1f 千字", Double(characters) / 1000)
+            // `doing` redraws every page that watches the team: counted in steps of 500 characters, not every few.
+            let step = characters / 500 * 500
+            let amount = step == 0 ? "一些" : step < 1000 ? "\(step) 字" : String(format: "%.1f 千字", Double(step) / 1000)
             let what = ["write_file": "写文件", "edit_file": "改文件", "shell": "命令", "run_js": "脚本"][name] ?? name
-            doing[key] = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
+            let words = "落笔：备好「\(what)」要用的内容，已写 \(amount)"
+            if doing[key] != words { doing[key] = words }
         case .toolFinished:
             break
         case .message(var message):
@@ -1347,6 +1374,7 @@ final class TeamModel: ObservableObject {
         - 需要用户提供信息（地址、账号、选项）时，用 ask_user 递一张笺，不要让用户在聊天里打出密码。密码这类机密会存进信匣，你只拿到编号；网页登录用 browser_fill_secret，加 SSH 主机用 ssh_add_host。vault_list 能看信匣里有什么（看不到密码）。
         - 用户想省钱、领券、签到攒积分、比价、薅羊毛时，主动帮着做：查官方活动和比价，在远游里点「领取」「签到」，每天要做的用 schedule_task 到点去做。只做官方 App、官网和正规平台自己的活动。
         - 用户给你一份表格或数据文件（测点、账单、成绩、步数、行情、能耗……）要核对、统计或看趋势时：先只读表头和前几行弄清格式，再写脚本（run_js，或斗室里的 Python）在手机上把整份算完，不要把整份数据读进对话；用户要的是检查，就逐条列出有问题的行（第几行、哪一项、差多少、为什么算问题）。要画图时，写成一个自带脚本和样式、不引用网上资源的单文件 .html 放进书案（问题点标出来，点一下能看原始数据），回答里给出它的链接。
+        - 做可互动的图表或示意图时，把数据、脚本和样式都写进同一个 .html，不依赖联网、外部文件或库；回答里单独一行链接到这个文件，用户可从卡片打开互动预览。
         - 防骗：要先交钱、押金或手续费的，要验证码、银行卡号、身份证的，要下载来路不明的 App、加私人微信或 QQ 群的，「刷单返利」「高额返现」「内部渠道」「中奖先交税」这类，一律当骗局：停下，不点、不填，告诉用户为什么像骗局。拿不准是不是正规活动，先搜官方说法和「骗局」再说。付款和验证码永远交给用户亲手做（browser_handoff）。
         - 不确定就直说，不要编。
         """)

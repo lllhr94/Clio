@@ -452,14 +452,23 @@ struct StudyFolder: View {
 struct StudyFile: View {
     let url: URL
     var mount: MountedFolder? = nil
+    @Environment(\.dismiss) private var dismiss
     @State private var text: String?
     @State private var plain = false
     @State private var picture: UIImage?
     @State private var loaded = false
     @State private var mountBroken = false
     @State private var scope: MountedFolders.ScopeToken?
+    @State private var allowedRoot: URL?
 
     private var ext: String { url.pathExtension.lowercased() }
+    private var interactive: Bool { InteractiveDocument.supports(url) }
+    private var shareURL: URL? {
+        if mountBroken { return nil }
+        if !interactive { return url }
+        guard let allowedRoot else { return nil }
+        return InteractiveDocument(url: url, root: allowedRoot).shareURL
+    }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
     private var longPlainText: String? {
@@ -477,6 +486,8 @@ struct StudyFile: View {
                     .foregroundStyle(Ink.inkSoft)
                     .multilineTextAlignment(.center)
                     .padding(Ink.Space.page)
+            } else if interactive, let allowedRoot {
+                InteractivePreviewContent(document: InteractiveDocument(url: url, root: allowedRoot))
             } else if let picture {
                 ScrollView([.horizontal, .vertical]) {
                     Image(uiImage: picture)
@@ -525,10 +536,11 @@ struct StudyFile: View {
                 if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
-                if !mountBroken {
-                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                if let shareURL {
+                    ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
                         .accessibilityLabel("分享文件")
                 }
+                if interactive { Button(L.t("actions.done")) { dismiss() } }
             }
         }
         .task(id: url) {
@@ -549,11 +561,19 @@ struct StudyFile: View {
                 }
                 scope = opened.token
                 mountBroken = false
+                if interactive {
+                    allowedRoot = opened.url
+                    return
+                }
                 let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: opened.url) }.value
                 guard !Task.isCancelled else { return }
                 picture = result.picture
                 text = result.text
                 loaded = true
+                return
+            }
+            if interactive {
+                allowedRoot = Workspace.root
                 return
             }
             let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: Workspace.root) }.value
@@ -565,6 +585,7 @@ struct StudyFile: View {
         .onDisappear {
             scope?.stop()
             scope = nil
+            allowedRoot = nil
         }
     }
 

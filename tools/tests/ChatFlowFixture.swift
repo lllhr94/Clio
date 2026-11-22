@@ -78,6 +78,7 @@ private final class FlowFixture {
     var files = ["file"]
     var following = true
     var scrolling = false
+    var touchScrolling = false
     let chat = HistoryPause()
 
     final class HistoryPause {
