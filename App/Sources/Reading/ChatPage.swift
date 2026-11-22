@@ -1111,7 +1111,12 @@ struct ChatPage: View {
         let now = isRoom ? nil : team.current(chat.key, bot: bot)
         // Only the levels this model's service really tells apart (the one chosen stays visible).
         let offered: [Thinking] = {
-            guard let now, now.endpoint.kind == .openai else { return Thinking.allCases }
+            guard let now else { return Thinking.allCases }
+            // Tested in 模型 › 试一试: exactly the levels the service took.
+            if let tested = now.traits.levels {
+                return Thinking.allCases.filter { $0 == .auto || tested.contains($0.rawValue) || $0 == level }
+            }
+            guard now.endpoint.kind == .openai else { return Thinking.allCases }
             let levels = now.endpoint.thinkingStyle.levels(thinks: now.traits.thinks)
             return Thinking.allCases.filter { levels.contains($0) || $0 == level }
         }()

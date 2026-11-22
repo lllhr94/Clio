@@ -588,6 +588,7 @@ struct ModelSheet: View {
             if let sees = sight.sees { found.sees = sees }
             if let calls = tools.calls { found.tools = calls }
             if let thinks = thinking.thinks { found.thinks = thinks }
+            if let levels = thinking.levels { found.levels = levels.map(\.rawValue) }
             if found != traits { traits = found }
             note = lines.joined(separator: "\n")
             working = false
@@ -656,10 +657,11 @@ extension TeamModel {
         }
     }
 
-    /// Asks the same small question with thinking off and deep, and compares how much it thought.
-    /// `thinks` is nil when the test itself failed.
-    func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String) {
-        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试思考：没有密钥。") }
+    /// Asks the same small question at every thinking level: which ones the service takes, and whether it really
+    /// thinks less when told not to. `thinks` is nil when the test itself failed; `levels` is nil when nothing
+    /// could be told.
+    func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String, levels: [Thinking]?) {
+        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
         let provider = endpoint.provider(key: key)
         func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
             let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],
@@ -676,20 +678,27 @@ extension TeamModel {
                 return (0, false, true)
             }
         }
-        let deep = await thought(.high)
-        let off = await thought(.off)
-        if deep.failed && off.failed { return (nil, "思考没试成：连不上。") }
-        if deep.chars == 0 && off.chars == 0 {
-            if deep.refused { return (false, "不会思考：服务不接受思考设置。已标成不会思考。") }
-            return (false, "没看到思考内容：要么不会思考，要么这家服务不把思考发回来。已标成不会思考，思考菜单只留「默认」。")
+        let tried: [Thinking] = [.off, .low, .medium, .high, .max]
+        var results: [Thinking: (chars: Int, refused: Bool, failed: Bool)] = [:]
+        for level in tried { results[level] = await thought(level) }
+        if results.values.allSatisfy({ $0.failed }) { return (nil, "思考没试成：连不上。", nil) }
+        let taken = tried.filter { results[$0].map { !$0.refused && !$0.failed } ?? false }
+        let refused = tried.filter { results[$0]?.refused == true }
+        let anyThought = taken.contains { (results[$0]?.chars ?? 0) > 0 }
+        let deep = taken.filter { $0 != .off }.map { results[$0]?.chars ?? 0 }.max() ?? 0
+        let off = results[.off].map { $0.refused || $0.failed ? -1 : $0.chars } ?? -1
+        var words: [String] = []
+        if !anyThought {
+            words.append(refused.count == tried.count ? "不会思考：服务不接受任何思考设置。" : "没看到思考内容：要么不会思考，要么这家服务不把思考发回来。")
+            words.append("已标成不会思考，思考菜单只留「默认」。")
+            return (false, words.joined(), [])
         }
-        if off.chars == 0 {
-            return (true, "会思考，也能关：「深想」想了 \(deep.chars) 字，「不想」直接回答。")
-        }
-        if deep.chars > off.chars * 2 {
-            return (true, "会思考，分得出档：「深想」想了 \(deep.chars) 字，「不想」也想了 \(off.chars) 字（关不掉，只能少想）。")
-        }
-        return (true, "会思考，但档位基本不管用：「深想」\(deep.chars) 字、「不想」\(off.chars) 字，差不多。")
+        words.append("能用的档：" + taken.map(\.title).joined(separator: "、") + "。")
+        if !refused.isEmpty { words.append("服务不收：" + refused.map(\.title).joined(separator: "、") + "，菜单里不再出现。") }
+        if off == 0 { words.append("「不想」能真的关掉思考。") }
+        else if off > 0 && deep > off * 2 { words.append("「不想」关不掉，只是少想（\(off) 字，深的 \(deep) 字）。") }
+        else if off > 0 { words.append("各档想的差不多多（约 \(deep) 字），档位作用不大。") }
+        return (true, "会思考。" + words.joined(), taken)
     }
 
     /// Shows the model a red square and asks its colour. `sees` is nil when the test itself failed.

@@ -412,9 +412,13 @@ final class ChatModel {
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
             let next = build(all)
-            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }), Self.same(reply.text, target) {
-                // The kept row takes over exactly where the streaming one stood.
+            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
+                // The kept row takes over exactly where the streaming one stood. Not only when the words match to
+                // the letter: the kept text can differ a little (a 心绪 taken out, trailing spaces, a sources list
+                // tidied), and waiting for an exact match left both rows up, then dropped the streaming one, so the
+                // answer seemed to vanish and come back.
                 finalCount = reply.text.count
+                if !Self.same(reply.text, target) { shown = min(shown, finalCount) }
                 fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
                 target = ""
                 streaming = ""
