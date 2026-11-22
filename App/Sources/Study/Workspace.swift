@@ -617,7 +617,11 @@ enum Workspace {
             return ToolOutput("翻了 \(documents.count) 份资料。" + DocSearch.shown(hits, query: query))
         })
         tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 和 writeFile(path, text) 读写书案和挂载文件夹里的文件。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
-            await Reckoner.run(arguments["code"]?.string ?? "")
+            await Reckoner.run(
+                arguments["code"]?.string ?? "",
+                read: { path in (try? readBytes(path)).flatMap { String(data: $0.data, encoding: .utf8) } },
+                write: { path, text in (try? writeBytes(path, data: Data(text.utf8))) != nil }
+            )
         })
         tools.append(DocMaker.tool())
         return tools
@@ -645,11 +649,22 @@ struct DeskTool: AgentTool {
 
 /// Runs JavaScript off the main thread. The watchdog interrupts JavaScriptCore itself, not just its caller.
 enum Reckoner {
-    static func run(_ code: String) async -> ToolOutput {
+    static func run(
+        _ code: String,
+        read: @escaping @Sendable (String) -> String? = { path in
+            guard let file = Workspace.resolve(path) else { return nil }
+            return try? String(contentsOf: file, encoding: .utf8)
+        },
+        write: @escaping @Sendable (String, String) -> Bool = { path, text in
+            guard let file = Workspace.resolve(path) else { return false }
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return (try? Data(text.utf8).write(to: file, options: .atomic)) != nil
+        }
+    ) async -> ToolOutput {
         let run = Run()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let thread = Thread { continuation.resume(returning: evaluate(code, run: run)) }
+                let thread = Thread { continuation.resume(returning: evaluate(code, run: run, read: read, write: write)) }
                 thread.stackSize = 8 << 20
                 thread.start()
             }
@@ -693,16 +708,16 @@ enum Reckoner {
         return false
     }
 
-    private static func evaluate(_ code: String, run: Run) -> ToolOutput {
+    private static func evaluate(_ code: String, run: Run, read: @escaping @Sendable (String) -> String?, write: @escaping @Sendable (String, String) -> Bool) -> ToolOutput {
         if let interruption = run.interruption { return interruption }
         guard let setLimit, let context = JSContext(), let group = JSContextGetGroup(context.jsGlobalContextRef) else {
             return ToolOutput("这个系统无法为演算设置超时。", isError: true)
         }
         setLimit(group, 0.25, shouldTerminate, Unmanaged.passUnretained(run).toOpaque())
-        return withExtendedLifetime(run) { evaluate(code, context: context, run: run) }
+        return withExtendedLifetime(run) { evaluate(code, context: context, run: run, read: read, write: write) }
     }
 
-    private static func evaluate(_ code: String, context: JSContext, run: Run) -> ToolOutput {
+    private static func evaluate(_ code: String, context: JSContext, run: Run, read: @escaping @Sendable (String) -> String?, write: @escaping @Sendable (String, String) -> Bool) -> ToolOutput {
         let outputLimit = 12_000
         var printed = ""
         var clipped = false
@@ -724,12 +739,12 @@ enum Reckoner {
         for name in ["log", "info", "warn", "error"] { console?.setObject(log, forKeyedSubscript: name as NSString) }
         context.setObject(console, forKeyedSubscript: "console" as NSString)
         let readFile: @convention(block) (String) -> Any = { path in
-            guard run.interruption == nil, let loaded = try? Workspace.readBytes(path), let text = String(data: loaded.data, encoding: .utf8) else { return NSNull() }
+            guard run.interruption == nil, let text = read(path) else { return NSNull() }
             return text
         }
         let writeFile: @convention(block) (String, String) -> Bool = { path, text in
             guard run.interruption == nil else { return false }
-            return (try? Workspace.writeBytes(path, data: Data(text.utf8))) != nil
+            return write(path, text)
         }
         context.setObject(readFile, forKeyedSubscript: "readFile" as NSString)
         context.setObject(writeFile, forKeyedSubscript: "writeFile" as NSString)
