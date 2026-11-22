@@ -901,6 +901,7 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
         let title = "远山"
         let shellTitle = "远山"
         let root = "~"
+        let canBackground = false
         let lock = NSLock()
         var commands: [String] = []
         var responder: (String) -> ExecResult = { _ in ExecResult(code: 0, output: "CLIO_OK\n") }
