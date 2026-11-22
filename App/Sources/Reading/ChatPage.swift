@@ -526,7 +526,10 @@ struct ChatPage: View {
         guard let ask = ShortcutDoor.take(for: chat.key) else { return }
         switch ask {
         case .ask(let words):
-            if !words.isEmpty { draft = words }
+            let trimmed = words.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                draft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmed : draft + "\n\n" + trimmed
+            }
             typing = true
         case .dictate:
             listen()
@@ -610,7 +613,7 @@ struct ChatPage: View {
             .background(alignment: .top) {
                 PetPerchAnchor(
                     perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
-                    showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil
+                    showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil
                         || (asker.current.map { !$0.inline } ?? false),
                     covered: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
                     quiet: dictation.listening, enabled: PetLibrary.shared.visible
@@ -698,6 +701,16 @@ struct ChatPage: View {
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
                       bot: isRoom ? nil : bot)
+        }
+        .sheet(item: $savingNote) { note in
+            SaveNoteSheet(
+                text: note.text,
+                question: askedBefore(note.id),
+                sender: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name
+            ) { savedPath in
+                say(Words.t("已存成笔记：书案/\(savedPath)"))
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(item: $quoting) { item in
             QuoteSheet(text: item.text) { picked in
@@ -888,6 +901,7 @@ struct ChatPage: View {
         return displayedRows[..<index].last(where: { $0.kind == .user && !$0.text.isEmpty })?.text
     }
     @State var noting: Noting?
+    @State var savingNote: Noting?
     @State var quoting: Noting?
     /// Words from a reply the next message asks about.
     @State var quote: String?

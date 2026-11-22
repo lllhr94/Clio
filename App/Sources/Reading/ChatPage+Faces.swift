@@ -249,6 +249,7 @@ extension ChatPage {
     func replyMenu(_ line: ChatLine) -> some View {
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
+        Button("存成笔记", systemImage: "square.and.arrow.down.on.square") { savingNote = Noting(id: line.id, text: line.text) }
         Button(Words.t("做成长图"), systemImage: "photo.on.rectangle") { noting = Noting(id: line.id, text: line.text) }
         ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
         if !isRoom {
