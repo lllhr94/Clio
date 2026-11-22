@@ -37,10 +37,10 @@ Clio：iOS 原生（SwiftUI，iOS 26）个人 agent App，引擎是同仓库的 
 ```bash
 # 编译 + 发测试包到 probe-<分支>
 gh api -X POST repos/lllhr94/Clio/actions/workflows/build.yml/dispatches \
-  -f ref=batch-0.34 -f 'inputs[runner]=macos-15-intel' -F 'inputs[publish]=true' -F 'inputs[shots]=false'
+  -f ref=batch-0.35 -f 'inputs[runner]=macos-15-intel' -F 'inputs[publish]=true' -F 'inputs[shots]=false'
 
 # 看结果、找编译错误
-gh api "repos/lllhr94/Clio/actions/runs?branch=batch-0.34&per_page=1" --jq '.workflow_runs[0]|.id,.status,.conclusion'
+gh api "repos/lllhr94/Clio/actions/runs?branch=batch-0.35&per_page=1" --jq '.workflow_runs[0]|.id,.status,.conclusion'
 gh api repos/lllhr94/Clio/actions/runs/<run>/jobs --jq '.jobs[0].id'
 gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 ```

@@ -67,8 +67,8 @@ targets:
       properties:
         CFBundleDisplayName: Clio
         UIBackgroundModes: [audio, processing]
-        CFBundleShortVersionString: "0.34"
-        CFBundleVersion: "36"
+        CFBundleShortVersionString: "0.35"
+        CFBundleVersion: "37"
         UILaunchScreen: {}
         UIAppFonts: [ClioKai-Regular.ttf, ClioKai-Medium.ttf, ClioSeal-Regular.ttf, MapleMono-Regular.ttf, MapleMono-SemiBold.ttf, ClioMonoCN-Regular.ttf]
         UIFileSharingEnabled: true
@@ -133,8 +133,8 @@ targets:
       path: ClioWidget-Info.plist
       properties:
         CFBundleDisplayName: Clio
-        CFBundleShortVersionString: "0.34"
-        CFBundleVersion: "36"
+        CFBundleShortVersionString: "0.35"
+        CFBundleVersion: "37"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
