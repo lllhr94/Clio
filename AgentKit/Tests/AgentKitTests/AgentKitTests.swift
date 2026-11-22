@@ -711,3 +711,367 @@ final class DroppedStreamTests: XCTestCase {
         XCTAssertEqual(seen.shorts, [.dropped])
     }
 }
+
+final class LocalAddressTests: XCTestCase {
+    func testExpandedIPv6AndSpecialIPv4() {
+        let blocked = [
+            "http://localhost/test",
+            "http://foo.localhost/test",
+            "http://127.0.0.1/",
+            "http://127.1/",
+            "http://2130706433/",
+            "http://0x7f.0x1/",
+            "http://0x7f000001/",
+            "http://127.0.0.0xa/",
+            "http://0177.0.0.1/",
+            "http://10.0.0.1/",
+            "http://172.16.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/",
+            "http://[::1]/",
+            "http://[0:0:0:0:0:0:0:1]/",
+            "http://[0000::1]/",
+            "http://[::0001]/",
+            "http://[0:0:0:0:0:0:0:0]/",
+            "http://[fe80::1]/",
+            "http://[fe90::1]/",
+            "http://[febf::1]/",
+            "http://[fc00::1]/",
+            "http://[fd12:3456::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[0:0:0:0:0:ffff:192.168.1.1]/",
+            "http://[64:ff9b::10.0.0.1]/",
+        ]
+        for raw in blocked {
+            let url = URL(string: raw)!
+            XCTAssertTrue(LocalAddress.isLocal(url), "expected local: \(raw)")
+        }
+        let allowed = [
+            "https://example.com/",
+            "https://8.8.8.8/",
+            "https://1.1.1.1/",
+            "https://[2606:4700:4700::1111]/",
+            "https://[::ffff:8.8.8.8]/",
+        ]
+        for raw in allowed {
+            let url = URL(string: raw)!
+            XCTAssertFalse(LocalAddress.isLocal(url), "expected public: \(raw)")
+        }
+    }
+
+    func testDNSResolutionCheck() {
+        XCTAssertTrue(LocalAddress.resolvesHostToLocal("localhost"))
+    }
+}
+
+final class PDFTextTests: XCTestCase {
+    func testLooksLikeAndShown() {
+        XCTAssertTrue(PDFText.looksLike(Data("%PDF-1.7\n".utf8)))
+        XCTAssertFalse(PDFText.looksLike(Data("<html>".utf8)))
+        XCTAssertNil(PDFText.read(Data("not a pdf".utf8)))
+
+        let reading = PDFText.Reading(
+            title: "测试文档",
+            pages: 3,
+            read: [
+                .init(number: 1, text: "第一页内容"),
+                .init(number: 2, text: "   "),
+            ]
+        )
+        XCTAssertEqual(reading.blank, [2])
+        let shown = reading.shown(limit: 500)
+        XCTAssertTrue(shown.contains("《测试文档》共 3 页，这是第 1–2 页。"))
+        XCTAssertTrue(shown.contains("第一页内容"))
+        XCTAssertTrue(shown.contains("扫描件或图片"))
+        XCTAssertTrue(shown.contains("从第 3 页接着读"))
+
+        let empty = PDFText.Reading(title: nil, pages: 0, read: [])
+        XCTAssertTrue(empty.shown(limit: 100).contains("没有页"))
+    }
+
+    func testReadsMinimalValidPDF() {
+        let pdf = Data("""
+        %PDF-1.4
+        1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+        2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+        3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+        4 0 obj << /Length 44 >> stream
+        BT /F1 12 Tf 10 100 Td (Hello Clio PDF) Tj ET
+        endstream endobj
+        5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+        xref
+        0 6
+        0000000000 65535 f 
+        0000000009 00000 n 
+        0000000058 00000 n 
+        0000000115 00000 n 
+        0000000241 00000 n 
+        0000000335 00000 n 
+        trailer << /Size 6 /Root 1 0 R >>
+        startxref
+        405
+        %%EOF
+        """.utf8)
+        XCTAssertTrue(PDFText.looksLike(pdf))
+        #if canImport(PDFKit)
+        let reading = PDFText.read(pdf, from: 1, count: 5)
+        XCTAssertEqual(reading?.pages, 1)
+        XCTAssertTrue(reading?.read.first?.text.contains("Hello Clio PDF") == true)
+        XCTAssertTrue(PDFText.all(pdf)?.contains("Hello Clio PDF") == true)
+        #endif
+    }
+}
+
+final class WebReadToolTests: XCTestCase {
+    func testReadsHTMLRejectsMediaAndLocalRedirects() async throws {
+        let htmlTool = WebReadTool(limit: 40) { url in
+            let html = "<html><head><title>标题</title></head><body><script>bad()</script><p>\(String(repeating: "正", count: 60))</p></body></html>"
+            return (Data(html.utf8), "text/html", "utf-8", url)
+        }
+        let ok = try await htmlTool.run(["url": "https://example.com/article"])
+        XCTAssertFalse(ok.isError)
+        XCTAssertTrue(ok.text.contains("标题"))
+        XCTAssertTrue(ok.text.contains("太长截断了"))
+        XCTAssertFalse(ok.text.contains("bad()"))
+
+        let local = try await htmlTool.run(["url": "http://127.0.0.1/secret"])
+        XCTAssertTrue(local.isError)
+        XCTAssertEqual(local.text, LocalAddress.refusal)
+
+        let redirectLocal = WebReadTool { _ in
+            (Data("secret".utf8), "text/plain", "utf-8", URL(string: "http://192.168.1.1/")!)
+        }
+        let bounced = try await redirectLocal.run(["url": "https://example.com/bounce"])
+        XCTAssertTrue(bounced.isError)
+        XCTAssertEqual(bounced.text, LocalAddress.refusal)
+
+        let media = WebReadTool { url in
+            (Data([0x89, 0x50]), "image/png", nil, url)
+        }
+        let rejected = try await media.run(["url": "https://example.com/a.png"])
+        XCTAssertTrue(rejected.isError)
+        XCTAssertTrue(rejected.text.contains("image/png"))
+
+        let bad = try await htmlTool.run(["url": "ftp://example.com/file"])
+        XCTAssertTrue(bad.isError)
+    }
+}
+
+private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+final class HTTPStreamAndProviderEdgeTests: XCTestCase {
+    private func stubSession(_ body: String, status: Int = 200, mime: String = "text/event-stream") -> URLSession {
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": mime])!
+            return (response, Data(body.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testHTTPStreamNormalSSEAndDone() async throws {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\ndata: [DONE]\n\n"
+        let session = stubSession(sse)
+        var events: [StreamEvent] = []
+        for try await event in HTTP.stream(URLRequest(url: URL(string: "https://example.com/sse")!), session: session, decode: OpenAIProvider.decode) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [.text("你好"), .finish(reason: "done")])
+    }
+
+    func testHTTPStreamSurfacesHTTP200ErrorJSON() async {
+        let errorJSON = "{\"error\":{\"message\":\"quota exceeded\"}}"
+        let session = stubSession(errorJSON, status: 200, mime: "text/plain")
+        do {
+            for try await _ in HTTP.stream(URLRequest(url: URL(string: "https://example.com/sse")!), session: session, decode: OpenAIProvider.decode) {}
+            XCTFail("Expected ProviderError for HTTP 200 error JSON")
+        } catch let error as ProviderError {
+            XCTAssertTrue(error.message.contains("quota exceeded"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testHTTPStreamSurfacesNon200Error() async {
+        let session = stubSession("{\"error\":{\"message\":\"invalid key\"}}", status: 401, mime: "application/json")
+        do {
+            for try await _ in HTTP.stream(URLRequest(url: URL(string: "https://example.com/sse")!), session: session, decode: OpenAIProvider.decode) {}
+            XCTFail("Expected ProviderError for HTTP 401")
+        } catch let error as ProviderError {
+            XCTAssertEqual(error.status, 401)
+            XCTAssertTrue(error.message.contains("invalid key"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testOpenAISplitToolCallIdAndNameMerged() async throws {
+        let raw = AsyncThrowingStream<StreamEvent, Error> { continuation in
+            for line in [
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{}}]}}]}"#,
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"web_search"}}]}}]}"#,
+                #"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"weather","arguments":"{}"}}]}}]}"#,
+            ] {
+                if let decoded = try? OpenAIProvider.decode(line) {
+                    for e in decoded { continuation.yield(e) }
+                }
+            }
+            continuation.finish()
+        }
+        var out: [StreamEvent] = []
+        for try await event in OpenAIProvider.splittingThoughts(raw) { out.append(event) }
+        XCTAssertTrue(out.contains(.toolCallStart(index: 0, id: "call_abc", name: "web_search")))
+        XCTAssertTrue(out.contains(.toolCallStart(index: 1, id: "call_1", name: "weather")))
+    }
+
+    func testAnthropicRedactedThinkingRoundTrip() throws {
+        let decoded = try AnthropicProvider.decode(#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"ENC_BLOB_1"}}"#)
+        guard case .reasoningSignature(let sig) = decoded.first else {
+            return XCTFail("Expected reasoningSignature carrying redacted marker")
+        }
+        var assistant = Message.assistant("答复")
+        assistant.reasoning = "思考"
+        assistant.reasoningSignature = "sig_plain" + sig
+        let request = ModelRequest(model: "claude-sonnet-4-6", system: "", messages: [.user("问"), assistant, .user("继续")], thinking: .high)
+        let body = AnthropicProvider.body(request)
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(messages[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(blocks[0]["type"] as? String, "thinking")
+        XCTAssertEqual(blocks[0]["signature"] as? String, "sig_plain")
+        XCTAssertEqual(blocks[1]["type"] as? String, "redacted_thinking")
+        XCTAssertEqual(blocks[1]["data"] as? String, "ENC_BLOB_1")
+    }
+}
+
+final class ThinkingStyleMatrixTests: XCTestCase {
+    func testEveryStyleAndEveryLevelFields() {
+        // auto: every style sends empty except minimax (reasoning_split: true)
+        for style in ThinkingStyle.allCases {
+            let autoFields = style.fields(.auto)
+            if style == .minimax {
+                XCTAssertEqual(autoFields["reasoning_split"] as? Bool, true)
+                XCTAssertEqual(autoFields.count, 1)
+            } else {
+                XCTAssertTrue(autoFields.isEmpty, "\(style) auto should be empty")
+            }
+        }
+
+        // effort
+        XCTAssertEqual(ThinkingStyle.effort.fields(.off)["reasoning_effort"] as? String, "none")
+        XCTAssertEqual(ThinkingStyle.effort.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.effort.fields(.medium)["reasoning_effort"] as? String, "medium")
+        XCTAssertEqual(ThinkingStyle.effort.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.effort.fields(.max)["reasoning_effort"] as? String, "xhigh")
+
+        // deepseek
+        XCTAssertEqual((ThinkingStyle.deepseek.fields(.off)["thinking"] as? [String: String])?["type"], "disabled")
+        XCTAssertNil(ThinkingStyle.deepseek.fields(.off)["reasoning_effort"])
+        XCTAssertEqual((ThinkingStyle.deepseek.fields(.low)["thinking"] as? [String: String])?["type"], "enabled")
+        XCTAssertEqual(ThinkingStyle.deepseek.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.deepseek.fields(.medium)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.deepseek.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.deepseek.fields(.max)["reasoning_effort"] as? String, "max")
+
+        // kimi
+        XCTAssertEqual(ThinkingStyle.kimi.fields(.off)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.kimi.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.kimi.fields(.medium)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.kimi.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.kimi.fields(.max)["reasoning_effort"] as? String, "max")
+
+        // qwen
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.off)["enable_thinking"] as? Bool, false)
+        XCTAssertNil(ThinkingStyle.qwen.fields(.off)["thinking_budget"])
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.low)["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.low)["thinking_budget"] as? Int, 1024)
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.medium)["thinking_budget"] as? Int, 4096)
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.high)["thinking_budget"] as? Int, 16384)
+        XCTAssertEqual(ThinkingStyle.qwen.fields(.max)["enable_thinking"] as? Bool, true)
+        XCTAssertNil(ThinkingStyle.qwen.fields(.max)["thinking_budget"])
+
+        // glm
+        XCTAssertEqual((ThinkingStyle.glm.fields(.off)["thinking"] as? [String: String])?["type"], "disabled")
+        XCTAssertEqual((ThinkingStyle.glm.fields(.low)["thinking"] as? [String: String])?["type"], "enabled")
+        XCTAssertEqual(ThinkingStyle.glm.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.glm.fields(.medium)["reasoning_effort"] as? String, "medium")
+        XCTAssertEqual(ThinkingStyle.glm.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.glm.fields(.max)["reasoning_effort"] as? String, "max")
+
+        // doubao
+        XCTAssertEqual((ThinkingStyle.doubao.fields(.off)["thinking"] as? [String: String])?["type"], "disabled")
+        XCTAssertEqual((ThinkingStyle.doubao.fields(.low)["thinking"] as? [String: String])?["type"], "enabled")
+        XCTAssertEqual(ThinkingStyle.doubao.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.doubao.fields(.medium)["reasoning_effort"] as? String, "medium")
+        XCTAssertEqual(ThinkingStyle.doubao.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.doubao.fields(.max)["reasoning_effort"] as? String, "high")
+
+        // minimax
+        for level in Thinking.allCases {
+            XCTAssertEqual(ThinkingStyle.minimax.fields(level)["reasoning_split"] as? Bool, true)
+            XCTAssertEqual(ThinkingStyle.minimax.fields(level).count, 1)
+        }
+
+        // openrouter
+        XCTAssertEqual((ThinkingStyle.openrouter.fields(.off)["reasoning"] as? [String: Any])?["enabled"] as? Bool, false)
+        XCTAssertEqual((ThinkingStyle.openrouter.fields(.low)["reasoning"] as? [String: Any])?["effort"] as? String, "low")
+        XCTAssertEqual((ThinkingStyle.openrouter.fields(.medium)["reasoning"] as? [String: Any])?["effort"] as? String, "medium")
+        XCTAssertEqual((ThinkingStyle.openrouter.fields(.high)["reasoning"] as? [String: Any])?["effort"] as? String, "high")
+        XCTAssertEqual((ThinkingStyle.openrouter.fields(.max)["reasoning"] as? [String: Any])?["effort"] as? String, "xhigh")
+
+        // gemini
+        XCTAssertEqual(ThinkingStyle.gemini.fields(.off)["reasoning_effort"] as? String, "none")
+        XCTAssertEqual(ThinkingStyle.gemini.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.gemini.fields(.medium)["reasoning_effort"] as? String, "medium")
+        XCTAssertEqual(ThinkingStyle.gemini.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.gemini.fields(.max)["reasoning_effort"] as? String, "high")
+
+        // grok
+        XCTAssertTrue(ThinkingStyle.grok.fields(.off).isEmpty)
+        XCTAssertEqual(ThinkingStyle.grok.fields(.low)["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(ThinkingStyle.grok.fields(.medium)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.grok.fields(.high)["reasoning_effort"] as? String, "high")
+        XCTAssertEqual(ThinkingStyle.grok.fields(.max)["reasoning_effort"] as? String, "high")
+
+        // none
+        for level in Thinking.allCases {
+            XCTAssertTrue(ThinkingStyle.none.fields(level).isEmpty)
+        }
+    }
+
+    func testGuessFromBaseURL() {
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.deepseek.com/v1"), .deepseek)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.moonshot.cn/v1"), .kimi)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"), .qwen)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://open.bigmodel.cn/api/paas/v4"), .glm)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://ark.cn-beijing.volces.com/api/v3"), .doubao)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.minimaxi.com/v1"), .minimax)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://openrouter.ai/api/v1"), .openrouter)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://generativelanguage.googleapis.com/v1beta/openai"), .gemini)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.x.ai/v1"), .grok)
+        XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.openai.com/v1"), .effort)
+    }
+}

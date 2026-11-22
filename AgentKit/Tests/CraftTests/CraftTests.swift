@@ -895,3 +895,90 @@ final class SkillTests: XCTestCase {
         XCTAssertTrue(Skill.menu([skill]).hasPrefix("- 记账：把花销记进账本。"))
     }
 }
+
+final class WorkspaceHostDefaultsTests: XCTestCase {
+    private final class ShellSpyHost: WorkspaceHost, @unchecked Sendable {
+        let title = "远山"
+        let shellTitle = "远山"
+        let root = "~"
+        let lock = NSLock()
+        var commands: [String] = []
+        var responder: (String) -> ExecResult = { _ in ExecResult(output: "CLIO_OK\n", code: 0) }
+
+        func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
+            lock.lock()
+            commands.append(command)
+            let reply = responder(command)
+            lock.unlock()
+            if !reply.output.isEmpty { onOutput(reply.output) }
+            return reply
+        }
+    }
+
+    func testShellCommandsUseFlagGuardsAndUniqueTempNames() async throws {
+        let host = ShellSpyHost()
+        try await host.writeFile("-weird.txt", Data("hello".utf8))
+        XCTAssertTrue(host.commands.first?.contains("mkdir -p -- \"$(dirname -- '-weird.txt')\"") == true)
+        XCTAssertTrue(host.commands.last?.contains("mv -f -- '-weird.txt.clio-part-") == true)
+
+        try await host.removeFile("-weird.txt")
+        XCTAssertEqual(host.commands.last, "rm -f -- '-weird.txt'")
+
+        host.responder = { _ in ExecResult(output: "./a.txt\n", code: 0) }
+        let listed = try await host.listDir("-dir", depth: 2)
+        XCTAssertEqual(listed, "./a.txt\n")
+        XCTAssertTrue(host.commands.last?.hasPrefix("cd -- '-dir'") == true)
+
+        let globbed = try await host.glob("*.txt", in: "-dir")
+        XCTAssertEqual(globbed, ["a.txt"])
+        XCTAssertTrue(host.commands.last?.hasPrefix("cd -- '-dir'") == true)
+
+        _ = try await host.grep("needle", in: "-dir", include: nil, ignoreCase: false)
+        XCTAssertTrue(host.commands.last?.contains(" -e 'needle' -- '-dir' ") == true)
+    }
+
+    func testWorkspaceToolsMaskBeforeClipAndMaskStreamingAndDiffs() async throws {
+        let secret = "sk-super-secret-token-1234567890"
+        let host = ShellSpyHost()
+        let huge = String(repeating: "a", count: 9990) + secret + String(repeating: "b", count: 15000)
+        host.responder = { _ in ExecResult(output: huge, code: 0) }
+        final class TailBox: @unchecked Sendable {
+            let lock = NSLock()
+            var seen: [String] = []
+        }
+        let tailBox = TailBox()
+        let kit = WorkspaceKit(canSee: false, secrets: { [secret] }, tail: { line in
+            tailBox.lock.lock()
+            tailBox.seen.append(line)
+            tailBox.lock.unlock()
+        })
+        let shellTool = WorkspaceTools.all(host: host, kit: kit).first { $0.spec.name == "shell" }!
+        let output = try await shellTool.run(["command": "cat big"])
+        XCTAssertFalse(output.text.contains("sk-super-secret"))
+        XCTAssertFalse(tailBox.seen.joined().contains(secret))
+    }
+
+    func testWindowStartCountsReasoningAndImages() {
+        let withReasoning: [Message] = [
+            .user("旧问题"),
+            .assistant("旧答", reasoning: String(repeating: "思", count: 500)),
+            .user("新问题"),
+            .assistant("新答"),
+        ]
+        XCTAssertEqual(Conversation.windowStart(withReasoning, maxChars: 100, maxCount: 0), 2)
+
+        let withImage: [Message] = [
+            .user("看图", images: [ImagePart(data: Data([1, 2, 3]))]),
+            .assistant("看到了"),
+            .user("下一句"),
+        ]
+        XCTAssertEqual(Conversation.windowStart(withImage, maxChars: 500, maxCount: 0), 2)
+    }
+
+    func testGlobRepeatedDoubleStarDoesNotBacktrack() {
+        let pattern = "**/**/**/**/**/**/target.swift"
+        let nonMatching = (0..<40).map { "dir\($0)" }.joined(separator: "/") + "/other.txt"
+        XCTAssertFalse(Glob.matches(pattern, path: nonMatching))
+        XCTAssertTrue(Glob.matches(pattern, path: "a/b/c/target.swift"))
+    }
+}
