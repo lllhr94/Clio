@@ -1562,7 +1562,7 @@ final class TeamModel: ObservableObject {
 
     /// What a chat is called: the companion's name, or the gathering's.
     func chatName(_ key: String) -> String {
-        key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? "雅集") : (bots.first { Self.key(bot: $0.id) == key }?.name ?? "旅伴")
+        key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? L.t("nav.groupChat")) : (bots.first { Self.key(bot: $0.id) == key }?.name ?? L.t("nav.assistant"))
     }
 
     private func endGrace(_ token: UUID) {
@@ -2135,6 +2135,8 @@ final class TeamModel: ObservableObject {
         - 你还能用手机的一些本事：所在（where_am_i）、通讯录、相册、步数、「健康」里的睡眠心率（health_read）、剪贴板、打开链接、手机状态。用户说「附近」「今天走了多少」「帮我复制」之类时直接用，不用先问。用户在「应许」里关掉的本事你看不到。
         - 远山是用户在别处的电脑。工作地点就是某台远山时，用八件工作区工具；要临时在别的主机上跑一条命令，用 ssh_run，跑几分钟以上的用 ssh_job_start 放到后台、ssh_job_check 看进度。mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
         - 需要用户提供信息（地址、账号、选项）时，用 ask_user 递一张笺，不要让用户在聊天里打出密码。密码这类机密会存进信匣，你只拿到编号；网页登录用 browser_fill_secret，加 SSH 主机用 ssh_add_host。vault_list 能看信匣里有什么（看不到密码）。
+        - 用户想省钱、领券、签到攒积分、比价、薅羊毛时，主动帮着做：查官方活动和比价，在远游里点「领取」「签到」，每天要做的用 schedule_task 到点去做。只做官方 App、官网和正规平台自己的活动。
+        - 防骗：要先交钱、押金或手续费的，要验证码、银行卡号、身份证的，要下载来路不明的 App、加私人微信或 QQ 群的，「刷单返利」「高额返现」「内部渠道」「中奖先交税」这类，一律当骗局：停下，不点、不填，告诉用户为什么像骗局。拿不准是不是正规活动，先搜官方说法和「骗局」再说。付款和验证码永远交给用户亲手做（browser_handoff）。
         - 不确定就直说，不要编。
         """)
         return parts.joined(separator: "\n\n")
@@ -2415,7 +2417,7 @@ final class TeamModel: ObservableObject {
         if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
         Haptics.tick(0.8)
         if UIApplication.shared.applicationState != .active {
-            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? "旅伴")
+            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
         }
         let allowed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in waiters[id] = continuation }
         if doing[chat] == "等你批准" { doing[chat] = before }
@@ -2445,7 +2447,13 @@ final class TeamModel: ObservableObject {
     /// 同意 / 不同意 pressed on a notification.
     func answerFromNotification(_ id: String, allow: Bool) {
         guard let approval = approvals.first(where: { $0.id == id }) else {
-            Notify.now("这张单子已经过期了", "Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。", chat: "")
+            Notify.now("这张单子已经过期了", Words.t("Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。"), chat: "")
+            return
+        }
+        // A slip that must be asked because outside text (a web page, an email) came before it is not answered
+        // from a notification: the notification shows too little to judge it. 不同意 still works from there.
+        if allow, approval.forced == true {
+            Notify.now("这一单要打开 Clio 看清楚再批", "它是在读过网页、邮件等外部内容之后提出的。", chat: approval.chat ?? "")
             return
         }
         Task {
@@ -2464,7 +2472,7 @@ final class TeamModel: ObservableObject {
         let item = Later(id: UUID().uuidString, chat: chat, botId: bot, text: text, at: date.timeIntervalSince1970)
         laters.append(item)
         saveLaters()
-        Notify.schedule(item, from: bots.first { $0.id == bot }?.name ?? "旅伴")
+        Notify.schedule(item, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
     }
 
     /// Messages whose time has come go into their chats.
@@ -2491,7 +2499,7 @@ final class TeamModel: ObservableObject {
     func setRoutine(_ routine: Routine) {
         if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = routine } else { routines.append(routine) }
         saveRoutines()
-        Notify.schedule(routine, from: bots.first { $0.id == routine.botId }?.name ?? "旅伴")
+        Notify.schedule(routine, from: bots.first { $0.id == routine.botId }?.name ?? L.t("nav.assistant"))
     }
 
     func removeRoutine(_ id: String) {
