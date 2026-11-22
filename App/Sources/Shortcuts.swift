@@ -106,7 +106,79 @@ struct QuickAnswerIntent: AppIntent {
     }
 }
 
-/// What Siri knows without setup, and what shows in the Shortcuts app.
+struct ShareToClioIntent: AppIntent {
+    static let title: LocalizedStringResource = "发给 Clio"
+    static let description = IntentDescription("把文字、网页链接或从别的 App 共享的内容带进 Clio 输入框，不会自动发出去。可在快捷指令里开启「在共享表单中显示」。")
+    static let openAppWhenRun = true
+
+    @Parameter(title: "内容或文字")
+    var text: String?
+
+    @Parameter(title: "网页链接")
+    var url: URL?
+
+    @Parameter(title: "附言（可选）")
+    var prompt: String?
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        let composed = ShortcutText.compose(text: text, url: url?.absoluteString, title: nil, prompt: prompt)
+        ShortcutDoor.knock(.ask(composed))
+        return .result()
+    }
+}
+
+enum ShortcutText {
+    /// Formats shared text, URL, title, and optional prompt into clean composer input.
+    static func compose(text: String?, url: String?, title: String?, prompt: String?) -> String {
+        let cleanPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanText = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanURL = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        var parts: [String] = []
+        if !cleanPrompt.isEmpty { parts.append(cleanPrompt) }
+        if !cleanText.isEmpty { parts.append(cleanText) }
+        if !cleanURL.isEmpty {
+            if parts.isEmpty {
+                if !cleanTitle.isEmpty {
+                    parts.append("请帮我看看这篇内容（\(cleanTitle)）：\n\(cleanURL)")
+                } else {
+                    parts.append("请帮我看看这个链接：\n\(cleanURL)")
+                }
+            } else if !cleanText.contains(cleanURL) {
+                parts.append(cleanURL)
+            }
+        } else if parts.isEmpty, !cleanTitle.isEmpty {
+            parts.append(cleanTitle)
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Parses query items from `clio://ask?...` or `clio://share?...`.
+    static func fromURL(_ incoming: URL) -> String {
+        guard let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
+              let items = components.queryItems, !items.isEmpty else {
+            return ""
+        }
+        func value(_ names: [String]) -> String? {
+            for name in names {
+                if let hit = items.first(where: { $0.name.lowercased() == name })?.value,
+                   !hit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return hit
+                }
+            }
+            return nil
+        }
+        let text = value(["text", "q", "words", "body", "content"])
+        let link = value(["url", "link"])
+        let title = value(["title"])
+        let prompt = value(["prompt", "instruction"])
+        return compose(text: text, url: link, title: title, prompt: prompt)
+    }
+}
+
+/// What Siri or a shortcut knows without setup, and what shows in the Shortcuts app.
 struct ClioShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -114,6 +186,12 @@ struct ClioShortcuts: AppShortcutsProvider {
             phrases: ["问 \(.applicationName)", "跟 \(.applicationName) 说", "Ask \(.applicationName)"],
             shortTitle: "问 Clio",
             systemImageName: "bubble.left.and.text.bubble.right"
+        )
+        AppShortcut(
+            intent: ShareToClioIntent(),
+            phrases: ["发给 \(.applicationName)", "分享给 \(.applicationName)", "Send to \(.applicationName)"],
+            shortTitle: "发给 Clio",
+            systemImageName: "square.and.arrow.up"
         )
         AppShortcut(
             intent: DictateToClioIntent(),

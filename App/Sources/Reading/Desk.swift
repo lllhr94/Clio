@@ -949,7 +949,7 @@ struct Desk: View {
             guard url.scheme == "clio" else { return }
             switch url.host {
             case "chat": NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)
-            case "ask": ShortcutDoor.knock(.ask(""))
+            case "ask", "share": ShortcutDoor.knock(.ask(ShortcutText.fromURL(url)))
             case "dictate": ShortcutDoor.knock(.dictate)
             case "new": ShortcutDoor.knock(.fresh)
             case "settings":

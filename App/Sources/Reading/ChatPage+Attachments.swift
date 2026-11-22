@@ -92,10 +92,17 @@ extension ChatPage {
     /// What goes after the message so the companion knows about the files.
     var fileNote: String {
         guard !files.isEmpty else { return "" }
+        let mountPrefix = MountedFolders.virtualFolder + "/"
+        let hasMounted = files.contains { $0.hasPrefix(mountPrefix) }
         let lines = files.map { path -> String in
-            let pdf = path.lowercased().hasSuffix(".pdf") && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
+            let pdf = !path.hasPrefix(mountPrefix)
+                && path.lowercased().hasSuffix(".pdf")
+                && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
             return "- 书案/\(path)" + (pdf ? "（PDF：用 read_pdf 按页读；文字也抽出到了 \(path).txt）" : "")
         }
-        return "\n\n［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、read_pdf 读 PDF、view_image 看图，或用 shell 处理：\n" + lines.joined(separator: "\n") + "］"
+        let header = hasMounted
+            ? "［我附带的文件（其中 书案/\(MountedFolders.virtualFolder)/… 是挂载的外部文件夹，请直接用 read_file、read_pdf、view_image 等文件工具读，不经过斗室 shell；其余在书案里也可在斗室 /root/desk 访问）：\n"
+            : "［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、read_pdf 读 PDF、view_image 看图，或用 shell 处理：\n"
+        return "\n\n" + header + lines.joined(separator: "\n") + "］"
     }
 }
