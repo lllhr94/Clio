@@ -102,11 +102,11 @@ public enum VoiceEndpoint {
     /// Redirect policy for authenticated speech-to-text uploads: must stay on the EXACT same origin and valid transport.
     public static func allowsRedirect(from origin: URL, to next: URL) -> Bool {
         guard allowsTransport(origin), allowsTransport(next),
-              let originKey = originKey(for: origin),
-              let nextKey = originKey(for: next) else {
+              let sourceKey = Self.originKey(for: origin),
+              let nextKey = Self.originKey(for: next) else {
             return false
         }
-        return originKey == nextKey
+        return sourceKey == nextKey
     }
 
     /// Normalized `(scheme, host, effectivePort)` key for isolating saved Keychain credentials per service origin.
