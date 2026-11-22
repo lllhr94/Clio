@@ -903,13 +903,13 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
         let root = "~"
         let lock = NSLock()
         var commands: [String] = []
-        var responder: (String) -> ExecResult = { _ in ExecResult(output: "CLIO_OK\n", code: 0) }
+        var responder: (String) -> ExecResult = { _ in ExecResult(code: 0, output: "CLIO_OK\n") }
 
         func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
-            lock.lock()
-            commands.append(command)
-            let reply = responder(command)
-            lock.unlock()
+            let reply: ExecResult = lock.withLock {
+                commands.append(command)
+                return responder(command)
+            }
             if !reply.output.isEmpty { onOutput(reply.output) }
             return reply
         }
@@ -924,7 +924,7 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
         try await host.removeFile("-weird.txt")
         XCTAssertEqual(host.commands.last, "rm -f -- '-weird.txt'")
 
-        host.responder = { _ in ExecResult(output: "./a.txt\n", code: 0) }
+        host.responder = { _ in ExecResult(code: 0, output: "./a.txt\n") }
         let listed = try await host.listDir("-dir", depth: 2)
         XCTAssertEqual(listed, "./a.txt\n")
         XCTAssertTrue(host.commands.last?.hasPrefix("cd -- '-dir'") == true)
@@ -941,7 +941,7 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
         let secret = "sk-super-secret-token-1234567890"
         let host = ShellSpyHost()
         let huge = String(repeating: "a", count: 9990) + secret + String(repeating: "b", count: 15000)
-        host.responder = { _ in ExecResult(output: huge, code: 0) }
+        host.responder = { _ in ExecResult(code: 0, output: huge) }
         final class TailBox: @unchecked Sendable {
             let lock = NSLock()
             var seen: [String] = []
