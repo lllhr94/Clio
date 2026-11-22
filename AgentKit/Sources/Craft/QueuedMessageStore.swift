@@ -75,12 +75,54 @@ public struct StoredTextDraft: Codable, Equatable, Sendable {
     }
 }
 
+/// Outcome of isolating pre-restore or mismatched queued message slots out of active `ClioQueued`.
+public struct IsolationReport: Equatable, Sendable {
+    /// Queued messages whose source slot was verified removed from active `ClioQueued`.
+    public var isolatedMessages: Int
+    /// Queued messages whose source slot could not be moved/removed and remain persistently blocked.
+    public var failedMessages: Int
+    /// Chat/leaf slot keys that failed isolation and were persisted as blocked from auto-restoring.
+    public var failedSlots: [String]
+    /// True if readable Markdown/photo export succeeded for every attempted slot (or when no export was requested / 0 items).
+    public var readableExportSucceeded: Bool
+
+    public init(
+        isolatedMessages: Int = 0,
+        failedMessages: Int = 0,
+        failedSlots: [String] = [],
+        readableExportSucceeded: Bool = true
+    ) {
+        self.isolatedMessages = isolatedMessages
+        self.failedMessages = failedMessages
+        self.failedSlots = failedSlots
+        self.readableExportSucceeded = readableExportSucceeded
+    }
+}
+
+/// Durable journal record written before multi-step `openLeafNow` writes so a crash or failed leaf-index write
+/// can cleanly roll back (or finish committing) without duplicating the conversation or its queue across restarts.
+public struct PendingLeafOpen: Codable, Equatable, Sendable {
+    public var chatKey: String
+    public var leafId: String
+    public var leafKey: String
+    public var priorActiveQueuedIds: [UUID]
+
+    public init(chatKey: String, leafId: String, leafKey: String, priorActiveQueuedIds: [UUID] = []) {
+        self.chatKey = chatKey
+        self.leafId = leafId
+        self.leafKey = leafKey
+        self.priorActiveQueuedIds = priorActiveQueuedIds
+    }
+}
+
 /// Atomically persists per-chat queued messages (text + raw photo attachments) so messages queued during a turn
 /// survive app termination instead of being lost in memory.
 public enum QueuedMessageStore {
     public enum SlotDisposition: Equatable, Sendable {
         /// Slot exists in index and its conversation anchor matches: restore into memory (after deduplication).
         case restore
+        /// Slot failed isolation after a backup restore and is persistently blocked: retry isolation, never restore.
+        case retryIsolation
         /// Index could not be read or the chat/leaf file still exists on disk: leave untouched on disk (fail-closed).
         case preserveUnreadable
         /// Slot belongs to a different conversation (e.g. after restoring an older backup): isolate out of active queues.
@@ -102,6 +144,10 @@ public enum QueuedMessageStore {
         var anchor: ConversationAnchor?
     }
 
+    private struct LeafIDRecord: Decodable {
+        var id: String
+    }
+
     private static func folderName(for chatKey: String) -> String {
         let safe = chatKey.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "..", with: "_")
@@ -115,6 +161,24 @@ public enum QueuedMessageStore {
 
     private static func textDraftFile(for chatKey: String, under root: URL) -> URL {
         root.appendingPathComponent(folderName(for: chatKey) + "-text.json")
+    }
+
+    private static func blockedSlotsFile(under root: URL) -> URL {
+        root.appendingPathComponent(".restore-blocked.json")
+    }
+
+    private static func pendingLeafOpenDir(under root: URL) -> URL {
+        root.appendingPathComponent(".pending-leaf-open", isDirectory: true)
+    }
+
+    private static func pendingLeafOpenFile(for chatKey: String, under root: URL) -> URL {
+        pendingLeafOpenDir(under: root).appendingPathComponent(folderName(for: chatKey) + ".json")
+    }
+
+    /// True only when queued messages are allowed to be flushed or handed to a model turn.
+    /// Blocked while a backup restore is in progress or after a restore has frozen writes until relaunch.
+    public static func canDispatchQueue(isFrozen: Bool, isRestoring: Bool) -> Bool {
+        !isFrozen && !isRestoring
     }
 
     /// Saves `items` for `chatKey` atomically (temp folder + `replaceItemAt`), or deletes the folder when empty.
@@ -168,7 +232,7 @@ public enum QueuedMessageStore {
     }
 
     /// Loads all persisted chat queues under `root` along with each slot's conversation anchor,
-    /// ignoring symlinks and cleaning up any leftover `.new-*` staging folders.
+    /// ignoring symlinks and hidden internal metadata folders while cleaning up leftover `.new-*` staging folders.
     public static func loadAllSlots(from root: URL) -> [String: StoredQueuedSlot] {
         let fm = FileManager.default
         guard let children = try? fm.contentsOfDirectory(
@@ -189,6 +253,9 @@ public enum QueuedMessageStore {
             }
             if name.hasPrefix(".new-") {
                 try? fm.removeItem(at: dir)
+                continue
+            }
+            if name.hasPrefix(".") {
                 continue
             }
             let manifestURL = dir.appendingPathComponent("queue.json")
@@ -232,15 +299,46 @@ public enum QueuedMessageStore {
         loadAllSlots(from: root).mapValues(\.items)
     }
 
+    /// Loads slot keys persistently blocked from auto-restoring after an incomplete post-restore isolation.
+    public static func loadBlockedSlots(from root: URL) -> Set<String> {
+        let file = blockedSlotsFile(under: root)
+        guard let data = try? Data(contentsOf: file),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return Set(keys)
+    }
+
+    /// Persists the set of blocked slot keys under `root` (removing the marker file once empty).
+    public static func saveBlockedSlots(_ slots: Set<String>, under root: URL) {
+        let fm = FileManager.default
+        let file = blockedSlotsFile(under: root)
+        guard !slots.isEmpty else {
+            if fm.fileExists(atPath: file.path) {
+                try? fm.removeItem(at: file)
+            }
+            return
+        }
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(slots.sorted()) {
+            try? data.write(to: file, options: fileWriteOptions)
+        }
+    }
+
     /// Fail-closed startup decision for a persisted queue slot.
-    /// Never recommends deleting a slot when the index could not be read or its chat file still exists on disk.
+    /// Blocked slots always retry isolation (even without an anchor or with a matching anchor).
+    /// Unreadable indexes or surviving chat files are preserved without deletion.
     public static func evaluateSlot(
         existsInIndex: Bool,
         indexReadable: Bool,
         chatFileExists: Bool,
         anchor: ConversationAnchor?,
-        chatEntryIds: [String]?
+        chatEntryIds: [String]?,
+        isBlockedByRestore: Bool = false
     ) -> SlotDisposition {
+        if isBlockedByRestore {
+            return .retryIsolation
+        }
         if !existsInIndex {
             if !indexReadable || chatFileExists {
                 return .preserveUnreadable
@@ -255,32 +353,39 @@ public enum QueuedMessageStore {
 
     /// Moves every persisted queue slot out of `root` into `quarantineRoot` (e.g. after restoring a backup)
     /// and optionally writes a human-readable Markdown + photo export under `readableExportRoot`.
-    /// Returns the total number of isolated queued messages.
+    /// Verifies each source slot is actually removed from `root`; any failure is recorded in `failedSlots`
+    /// and persisted in `.restore-blocked.json` so relaunch cannot silently re-attach it.
     @discardableResult
     public static func isolateAll(
         from root: URL,
         to quarantineRoot: URL,
         readableExportRoot: URL? = nil,
         now: Date = Date()
-    ) -> Int {
+    ) -> IsolationReport {
         let slots = loadAllSlots(from: root)
-        guard !slots.isEmpty else { return 0 }
+        guard !slots.isEmpty else { return IsolationReport() }
         let stamp = Self.exportStamp(now)
-        var total = 0
+        var combined = IsolationReport()
         for chatKey in slots.keys.sorted() {
-            total += isolateSlot(
+            let part = isolateSlot(
                 chatKey,
                 from: root,
                 to: quarantineRoot,
                 readableExportRoot: readableExportRoot,
                 stamp: stamp
             )
+            combined.isolatedMessages += part.isolatedMessages
+            combined.failedMessages += part.failedMessages
+            combined.failedSlots.append(contentsOf: part.failedSlots)
+            if !part.readableExportSucceeded {
+                combined.readableExportSucceeded = false
+            }
         }
-        return total
+        return combined
     }
 
     /// Moves a single persisted queue slot out of `root` into `quarantineRoot` so it can never auto-send
-    /// into a different conversation, while keeping a readable copy if `readableExportRoot` is provided.
+    /// into a different conversation, reporting isolation and readable export outcomes separately.
     @discardableResult
     public static func isolateSlot(
         _ chatKey: String,
@@ -288,7 +393,7 @@ public enum QueuedMessageStore {
         to quarantineRoot: URL,
         readableExportRoot: URL? = nil,
         now: Date = Date()
-    ) -> Int {
+    ) -> IsolationReport {
         isolateSlot(chatKey, from: root, to: quarantineRoot, readableExportRoot: readableExportRoot, stamp: exportStamp(now))
     }
 
@@ -298,36 +403,73 @@ public enum QueuedMessageStore {
         to quarantineRoot: URL,
         readableExportRoot: URL?,
         stamp: String
-    ) -> Int {
+    ) -> IsolationReport {
         let fm = FileManager.default
         let source = folder(for: chatKey, under: root)
-        guard fm.fileExists(atPath: source.path) else { return 0 }
+        guard fm.fileExists(atPath: source.path) else {
+            var blocked = loadBlockedSlots(from: root)
+            if blocked.remove(chatKey) != nil {
+                saveBlockedSlots(blocked, under: root)
+            }
+            return IsolationReport()
+        }
         let items = loadAllSlots(from: root)[chatKey]?.items ?? []
         guard !items.isEmpty else {
             try? fm.removeItem(at: source)
-            return 0
+            return IsolationReport()
         }
 
+        let exportOk: Bool
         if let readableExportRoot {
-            writeReadableExport(items: items, chatKey: chatKey, under: readableExportRoot, stamp: stamp)
+            exportOk = writeReadableExport(items: items, chatKey: chatKey, under: readableExportRoot, stamp: stamp)
+        } else {
+            exportOk = true
         }
 
         let batchDir = quarantineRoot.appendingPathComponent(stamp, isDirectory: true)
+        var moved = false
         do {
             try fm.createDirectory(at: batchDir, withIntermediateDirectories: true)
             let dest = batchDir.appendingPathComponent("\(folderName(for: chatKey))-\(UUID().uuidString.prefix(8))", isDirectory: true)
             try fm.moveItem(at: source, to: dest)
+            moved = !fm.fileExists(atPath: source.path)
         } catch {
-            // Fallback: if move fails (e.g. cross-volume), copy then remove source only on copy success.
-            let dest = batchDir.appendingPathComponent("\(folderName(for: chatKey))-\(UUID().uuidString.prefix(8))", isDirectory: true)
-            if (try? fm.copyItem(at: source, to: dest)) != nil {
-                try? fm.removeItem(at: source)
+            // Fallback: if move fails (e.g. cross-volume), copy then remove source only when copy succeeded.
+            do {
+                try fm.createDirectory(at: batchDir, withIntermediateDirectories: true)
+                let dest = batchDir.appendingPathComponent("\(folderName(for: chatKey))-\(UUID().uuidString.prefix(8))", isDirectory: true)
+                try fm.copyItem(at: source, to: dest)
+                try fm.removeItem(at: source)
+                moved = !fm.fileExists(atPath: source.path)
+            } catch {
+                moved = false
             }
         }
-        return items.count
+
+        var blocked = loadBlockedSlots(from: root)
+        if moved {
+            if blocked.remove(chatKey) != nil {
+                saveBlockedSlots(blocked, under: root)
+            }
+            return IsolationReport(
+                isolatedMessages: items.count,
+                failedMessages: 0,
+                failedSlots: [],
+                readableExportSucceeded: exportOk
+            )
+        } else {
+            blocked.insert(chatKey)
+            saveBlockedSlots(blocked, under: root)
+            return IsolationReport(
+                isolatedMessages: 0,
+                failedMessages: items.count,
+                failedSlots: [chatKey],
+                readableExportSucceeded: exportOk
+            )
+        }
     }
 
-    private static func writeReadableExport(items: [StoredQueuedMessage], chatKey: String, under exportRoot: URL, stamp: String) {
+    private static func writeReadableExport(items: [StoredQueuedMessage], chatKey: String, under exportRoot: URL, stamp: String) -> Bool {
         let fm = FileManager.default
         let dir = exportRoot.appendingPathComponent(stamp, isDirectory: true)
         do {
@@ -342,7 +484,7 @@ public enum QueuedMessageStore {
                 }
                 for (photoIndex, photo) in item.photos.enumerated() {
                     let photoName = "\(safeKey)-\(itemIndex + 1)-\(photoIndex + 1).jpg"
-                    try? photo.write(to: dir.appendingPathComponent(photoName), options: fileWriteOptions)
+                    try photo.write(to: dir.appendingPathComponent(photoName), options: fileWriteOptions)
                     lines.append("")
                     lines.append("![附图 \(photoIndex + 1)](\(photoName))")
                 }
@@ -350,8 +492,111 @@ public enum QueuedMessageStore {
             }
             let noteURL = dir.appendingPathComponent("\(safeKey).md")
             try Data(lines.joined(separator: "\n").utf8).write(to: noteURL, options: fileWriteOptions)
+            return true
         } catch {
-            // Best-effort readable export; raw quarantine copy in Application Support still holds full data.
+            return false
+        }
+    }
+
+    /// Saves a transaction marker before multi-step `openLeafNow` writes so an interrupted or partially failed
+    /// leaf restore can be cleanly rolled back or finished on next launch.
+    public static func savePendingLeafOpen(_ tx: PendingLeafOpen, under root: URL) throws {
+        let fm = FileManager.default
+        let dir = pendingLeafOpenDir(under: root)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(tx)
+        try data.write(to: pendingLeafOpenFile(for: tx.chatKey, under: root), options: fileWriteOptions)
+    }
+
+    /// Loads all unfinished `openLeafNow` transaction markers under `root`.
+    public static func loadPendingLeafOpens(from root: URL) -> [PendingLeafOpen] {
+        let fm = FileManager.default
+        let dir = pendingLeafOpenDir(under: root)
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files.compactMap { url in
+            guard url.pathExtension == "json",
+                  let data = try? Data(contentsOf: url),
+                  let tx = try? JSONDecoder().decode(PendingLeafOpen.self, from: data) else {
+                return nil
+            }
+            return tx
+        }
+    }
+
+    /// Removes the `openLeafNow` transaction marker for `chatKey`.
+    public static func clearPendingLeafOpen(for chatKey: String, under root: URL) {
+        let fm = FileManager.default
+        let file = pendingLeafOpenFile(for: chatKey, under: root)
+        if fm.fileExists(atPath: file.path) {
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    /// Reconciles any interrupted or partially failed `openLeafNow` transactions on startup:
+    /// - If the leaf is still listed in `<chatKey>~leaves.json` and its leaf chat file still exists on disk,
+    ///   rolls back the uncommitted active chat and active queue copy so no duplicate conversation or queue remains.
+    /// - If the leaf was already removed from `<chatKey>~leaves.json`, completes cleanup of the leftover leaf files and queue.
+    public static func reconcilePendingLeafOpens(teamRoot: URL, queuedRoot: URL) {
+        let transactions = loadPendingLeafOpens(from: queuedRoot)
+        guard !transactions.isEmpty else { return }
+        let fm = FileManager.default
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let slots = loadAllSlots(from: queuedRoot)
+
+        for tx in transactions {
+            let safeChat = tx.chatKey.replacingOccurrences(of: "/", with: "_")
+            let safeLeaf = tx.leafKey.replacingOccurrences(of: "/", with: "_")
+            let activeChatURL = chatsDir.appendingPathComponent("\(safeChat).json")
+            let leafChatURL = chatsDir.appendingPathComponent("\(safeLeaf).json")
+            let leafSummaryURL = chatsDir.appendingPathComponent("\(safeChat)~\(tx.leafId)~summary.json")
+            let leafListURL = chatsDir.appendingPathComponent("\(safeChat)~leaves.json")
+
+            // Determine whether the leaf index already dropped `tx.leafId`.
+            let indexExists = fm.fileExists(atPath: leafListURL.path)
+            let leafStillInIndex: Bool
+            if !indexExists {
+                leafStillInIndex = false
+            } else if let data = try? Data(contentsOf: leafListURL),
+                      let list = try? JSONDecoder().decode([LeafIDRecord].self, from: data) {
+                leafStillInIndex = list.contains(where: { $0.id == tx.leafId })
+            } else {
+                // Index unreadable: fail closed, leave files untouched until readable.
+                continue
+            }
+
+            if leafStillInIndex && fm.fileExists(atPath: leafChatURL.path) {
+                // Index write never committed: roll back partially written active chat and active queue.
+                var rollbackOk = true
+                if fm.fileExists(atPath: activeChatURL.path) {
+                    try? fm.removeItem(at: activeChatURL)
+                    if fm.fileExists(atPath: activeChatURL.path) { rollbackOk = false }
+                }
+                if let activeSlot = slots[tx.chatKey] {
+                    let keepIds = Set(tx.priorActiveQueuedIds)
+                    let restoredPrior = activeSlot.items.filter { keepIds.contains($0.id) }
+                    do {
+                        try save(restoredPrior, for: tx.chatKey, anchor: restoredPrior.isEmpty ? nil : ConversationAnchor(), under: queuedRoot)
+                    } catch {
+                        rollbackOk = false
+                    }
+                }
+                if rollbackOk {
+                    clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
+                }
+            } else if !leafStillInIndex {
+                // Index write already committed before crash: finish deleting leftover leaf files and leaf queue.
+                if fm.fileExists(atPath: leafChatURL.path) { try? fm.removeItem(at: leafChatURL) }
+                if fm.fileExists(atPath: leafSummaryURL.path) { try? fm.removeItem(at: leafSummaryURL) }
+                try? save([], for: tx.leafKey, under: queuedRoot)
+                if !fm.fileExists(atPath: leafChatURL.path), !fm.fileExists(atPath: folder(for: tx.leafKey, under: queuedRoot).path) {
+                    clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
+                }
+            } else {
+                // Leaf file already gone: clear stale transaction marker.
+                clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
+            }
         }
     }
 

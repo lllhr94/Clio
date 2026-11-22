@@ -225,13 +225,16 @@ final class QueuedMessageStoreTests: XCTestCase {
         )
 
         // Isolating moves B's queue out of active ClioQueued so it cannot auto-send in A, and exports a readable copy.
-        let count = QueuedMessageStore.isolateSlot(
+        let report = QueuedMessageStore.isolateSlot(
             "bot-alpha",
             from: queuedRoot,
             to: quarantineRoot,
             readableExportRoot: exportRoot
         )
-        XCTAssertEqual(count, 1)
+        XCTAssertEqual(report.isolatedMessages, 1)
+        XCTAssertEqual(report.failedMessages, 0)
+        XCTAssertTrue(report.failedSlots.isEmpty)
+        XCTAssertTrue(report.readableExportSucceeded)
         XCTAssertTrue(QueuedMessageStore.loadAll(from: queuedRoot).isEmpty)
 
         // Verify quarantine copy and readable export both exist with text + photo preserved.
@@ -241,5 +244,172 @@ final class QueuedMessageStoreTests: XCTestCase {
         XCTAssertTrue(exportedMarkdown.contains("发给 B 对话的敏感内容"))
         let exportedPhoto = try Data(contentsOf: exportFolders[0].appendingPathComponent("bot-alpha-1-1.jpg"))
         XCTAssertEqual(exportedPhoto, photo)
+    }
+
+    func testQueueDispatchGateBlocksDuringAndAfterRestoreAndResumesOnFailure() {
+        // Normal operation: allowed.
+        XCTAssertTrue(QueuedMessageStore.canDispatchQueue(isFrozen: false, isRestoring: false))
+        // While restore is running: blocked even before Disk.frozen flips.
+        XCTAssertFalse(QueuedMessageStore.canDispatchQueue(isFrozen: false, isRestoring: true))
+        // After restore succeeds (Disk.frozen == true), before relaunch: permanently blocked even if old turn finishes.
+        XCTAssertFalse(QueuedMessageStore.canDispatchQueue(isFrozen: true, isRestoring: true))
+        XCTAssertFalse(QueuedMessageStore.canDispatchQueue(isFrozen: true, isRestoring: false))
+    }
+
+    func testIsolationFailureReportsFailedSlotBlocksRestartEvenWithoutAnchorAndRetriesCleanly() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        let blockedQuarantine = root.appendingPathComponent("ClioQueuedIsolated-blocker")
+        let exportRoot = root.appendingPathComponent("Export", isDirectory: true)
+
+        // Create a legacy queue without anchor (nil), where anchor mismatch alone would NOT catch it.
+        let legacyItem = StoredQueuedMessage(text: "旧格式纯文字排队消息")
+        try QueuedMessageStore.save([legacyItem], for: "bot-legacy", anchor: nil, under: queuedRoot)
+
+        // Place a regular file at quarantineRoot so creating the quarantine directory fails.
+        try Data("blocker".utf8).write(to: blockedQuarantine)
+
+        let failed = QueuedMessageStore.isolateAll(
+            from: queuedRoot,
+            to: blockedQuarantine,
+            readableExportRoot: exportRoot
+        )
+        XCTAssertEqual(failed.isolatedMessages, 0)
+        XCTAssertEqual(failed.failedMessages, 1)
+        XCTAssertEqual(failed.failedSlots, ["bot-legacy"])
+        XCTAssertTrue(failed.readableExportSucceeded)
+        // Source slot is still present, and blocked marker was persisted.
+        XCTAssertEqual(QueuedMessageStore.loadAll(from: queuedRoot)["bot-legacy"], [legacyItem])
+        let blocked = QueuedMessageStore.loadBlockedSlots(from: queuedRoot)
+        XCTAssertTrue(blocked.contains("bot-legacy"))
+
+        // On restart, even with nil anchor (or matching anchor), blocked slot MUST return .retryIsolation, NEVER .restore.
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: true,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: nil,
+                chatEntryIds: ["a1", "a2"],
+                isBlockedByRestore: blocked.contains("bot-legacy")
+            ),
+            .retryIsolation
+        )
+
+        // Once the quarantine path is writable again, retrying isolation succeeds and clears the blocked marker.
+        try FileManager.default.removeItem(at: blockedQuarantine)
+        let retried = QueuedMessageStore.isolateSlot(
+            "bot-legacy",
+            from: queuedRoot,
+            to: blockedQuarantine,
+            readableExportRoot: exportRoot
+        )
+        XCTAssertEqual(retried.isolatedMessages, 1)
+        XCTAssertEqual(retried.failedMessages, 0)
+        XCTAssertTrue(QueuedMessageStore.loadAll(from: queuedRoot).isEmpty)
+        XCTAssertFalse(QueuedMessageStore.loadBlockedSlots(from: queuedRoot).contains("bot-legacy"))
+    }
+
+    func testReadableExportFailureIsReportedSeparatelyFromSuccessfulIsolation() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        let quarantineRoot = root.appendingPathComponent("ClioQueuedIsolated", isDirectory: true)
+        let blockedExport = root.appendingPathComponent("ExportBlocker")
+        try Data("not-a-dir".utf8).write(to: blockedExport)
+
+        let item = StoredQueuedMessage(text: "隔离成功但导出失败的消息")
+        try QueuedMessageStore.save([item], for: "bot-a", under: queuedRoot)
+
+        let report = QueuedMessageStore.isolateAll(
+            from: queuedRoot,
+            to: quarantineRoot,
+            readableExportRoot: blockedExport
+        )
+        XCTAssertEqual(report.isolatedMessages, 1)
+        XCTAssertEqual(report.failedMessages, 0)
+        XCTAssertFalse(report.readableExportSucceeded)
+        XCTAssertTrue(QueuedMessageStore.loadAll(from: queuedRoot).isEmpty)
+    }
+
+    func testPendingLeafOpenReconcilesRollbackWhenIndexWriteFailedBeforeRestart() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let teamRoot = root.appendingPathComponent("Team", isDirectory: true)
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let leafKey = "bot-a~leaf-1"
+        let leafQueuedItem = StoredQueuedMessage(text: "旧对话里的排队消息")
+        let priorActiveItem = StoredQueuedMessage(text: "空白当前页里原本的排队")
+        let leafAnchor = ConversationAnchor.from(entryIds: ["e1", "e2"])
+
+        // Existing leaf on disk + leaf still listed in ~leaves.json (3rd write failed!).
+        try Data("[{\"id\":\"e1\"},{\"id\":\"e2\"}]".utf8).write(to: chatsDir.appendingPathComponent("\(leafKey).json"))
+        try Data("[{\"id\":\"leaf-1\",\"title\":\"旧对话\",\"at\":1,\"count\":2}]".utf8)
+            .write(to: chatsDir.appendingPathComponent("bot-a~leaves.json"))
+        try QueuedMessageStore.save([leafQueuedItem], for: leafKey, anchor: leafAnchor, under: queuedRoot)
+
+        // Simulate writes #1 and #2 succeeding (active chat + merged active queue written), then #3 failing / crashing!
+        try QueuedMessageStore.savePendingLeafOpen(
+            PendingLeafOpen(
+                chatKey: "bot-a",
+                leafId: "leaf-1",
+                leafKey: leafKey,
+                priorActiveQueuedIds: [priorActiveItem.id]
+            ),
+            under: queuedRoot
+        )
+        try Data("[{\"id\":\"e1\"},{\"id\":\"e2\"}]".utf8).write(to: chatsDir.appendingPathComponent("bot-a.json"))
+        try QueuedMessageStore.save([priorActiveItem, leafQueuedItem], for: "bot-a", anchor: leafAnchor, under: queuedRoot)
+
+        // Restart reconciles the uncommitted transaction: rolls back duplicate active chat & leaf queue copy.
+        QueuedMessageStore.reconcilePendingLeafOpens(teamRoot: teamRoot, queuedRoot: queuedRoot)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: chatsDir.appendingPathComponent("bot-a.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: chatsDir.appendingPathComponent("\(leafKey).json").path))
+        let slotsAfter = QueuedMessageStore.loadAllSlots(from: queuedRoot)
+        XCTAssertEqual(slotsAfter[leafKey]?.items, [leafQueuedItem])
+        XCTAssertEqual(slotsAfter["bot-a"]?.items, [priorActiveItem])
+        XCTAssertTrue(QueuedMessageStore.loadPendingLeafOpens(from: queuedRoot).isEmpty)
+    }
+
+    func testPendingLeafOpenReconcilesForwardWhenIndexAlreadyCommittedBeforeCrash() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let teamRoot = root.appendingPathComponent("Team", isDirectory: true)
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let leafKey = "bot-a~leaf-2"
+        let leafQueuedItem = StoredQueuedMessage(text: "翻回后的排队消息")
+        let leafAnchor = ConversationAnchor.from(entryIds: ["e1"])
+
+        // Writes #1, #2, and #3 ALL succeeded (leaf-2 removed from ~leaves.json), then app crashed before deleting leaf files.
+        try QueuedMessageStore.savePendingLeafOpen(
+            PendingLeafOpen(chatKey: "bot-a", leafId: "leaf-2", leafKey: leafKey, priorActiveQueuedIds: []),
+            under: queuedRoot
+        )
+        try Data("[{\"id\":\"e1\"}]".utf8).write(to: chatsDir.appendingPathComponent("bot-a.json"))
+        try Data("[{\"id\":\"e1\"}]".utf8).write(to: chatsDir.appendingPathComponent("\(leafKey).json"))
+        try Data("[]".utf8).write(to: chatsDir.appendingPathComponent("bot-a~leaves.json"))
+        try QueuedMessageStore.save([leafQueuedItem], for: "bot-a", anchor: leafAnchor, under: queuedRoot)
+        try QueuedMessageStore.save([leafQueuedItem], for: leafKey, anchor: leafAnchor, under: queuedRoot)
+
+        QueuedMessageStore.reconcilePendingLeafOpens(teamRoot: teamRoot, queuedRoot: queuedRoot)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: chatsDir.appendingPathComponent("bot-a.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: chatsDir.appendingPathComponent("\(leafKey).json").path))
+        let slotsAfter = QueuedMessageStore.loadAllSlots(from: queuedRoot)
+        XCTAssertEqual(slotsAfter["bot-a"]?.items, [leafQueuedItem])
+        XCTAssertNil(slotsAfter[leafKey])
+        XCTAssertTrue(QueuedMessageStore.loadPendingLeafOpens(from: queuedRoot).isEmpty)
     }
 }
