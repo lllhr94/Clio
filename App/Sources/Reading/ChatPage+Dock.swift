@@ -551,19 +551,20 @@ extension ChatPage {
 
     var action: some View {
         let mode: Int
+        let symbol: String
+        let fill: Color
+        let label: String
         if dictation.listening {
-            mode = 0
+            mode = 0; symbol = "waveform"; fill = Ink.stop; label = "说完了"
         } else if dictation.transcribing {
-            mode = 4
+            mode = 4; symbol = "ellipsis"; fill = Ink.accentWash; label = L.t("voiceSettings.cancelTranscribe")
         } else if working && !canSend {
-            mode = 1
+            mode = 1; symbol = "stop.fill"; fill = Ink.ink; label = "让它停下"
         } else if canSend {
-            mode = 2
+            mode = 2; symbol = "arrow.up"; fill = Ink.accent; label = working ? "插话" : "发送"
         } else {
-            mode = 3
+            mode = 3; symbol = "mic"; fill = .clear; label = "说话"
         }
-        let symbol = ["waveform", "stop.fill", "arrow.up", "mic", "ellipsis"][mode]
-        let fill: Color = [Ink.stop, Ink.ink, Ink.accent, .clear, Ink.accentWash][mode]
         return Button {
             switch mode {
             case 0:
@@ -633,7 +634,7 @@ extension ChatPage {
             Text(L.t("chat.stopAskNote"))
         }
         .animation(Ink.Motion.press, value: mode)
-        .accessibilityLabel(["说完了", "让它停下", working ? "插话" : "发送", "说话"][mode])
+        .accessibilityLabel(label)
         .contextMenu {
             if working && canSend && editing == nil && quote == nil {
                 Button("插话：这一步做完就递给它", systemImage: "text.bubble") {

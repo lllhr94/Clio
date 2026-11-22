@@ -25,6 +25,11 @@ extension TeamModel {
         if let text, !text.isEmpty { Disk.save(text, Self.summaryFile(key)) } else { Disk.remove(Self.summaryFile(key)) }
     }
 
+    /// In-memory summary length for reactive triggers without touching disk on the main thread.
+    func cachedSummaryLength(_ key: String) -> Int {
+        summaryBook[key]?.count ?? 0
+    }
+
     func summaryBlock(_ key: String) -> String {
         guard let summary = summary(key) else { return "" }
         return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文还在对话里，用户能往上翻到）：\n" + summary

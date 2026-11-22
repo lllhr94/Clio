@@ -939,6 +939,7 @@ final class TeamModel: ObservableObject {
         }
         let paused = pausing[key] != nil
         notePause(key)
+        if runs[key] == nil { streamed[key] = nil }
         if paused, UIApplication.shared.applicationState == .active, pausedAway.contains(key) {
             // Clio came back while this turn was still stopping: go on as soon as it has.
             Task { @MainActor [weak self] in

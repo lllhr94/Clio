@@ -594,7 +594,10 @@ struct ChatPage: View {
     }
 
     var estimateTrigger: String {
-        "\(chat.loaded)|\(working)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(usageOpen)"
+        let folding = team.compressing.contains(chat.key)
+        let lastFold = chat.lines.last(where: { $0.fold })?.id ?? ""
+        let summaryLen = team.cachedSummaryLength(chat.key)
+        return "\(chat.loaded)|\(working)|\(folding)|\(lastFold)|\(summaryLen)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(Pref.contextShare)|\(usageOpen)"
     }
 
     var dockedForm: Asker.Form? {
