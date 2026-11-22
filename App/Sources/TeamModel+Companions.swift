@@ -57,8 +57,8 @@ extension TeamModel {
             settings.mainBotId = bots.first?.id
             saveSettings()
         }
-        if threadLabels[Self.key(bot: id)] != nil { setThreadLabel("", for: Self.key(bot: id)) }
         let key = Self.key(bot: id)
+        forgetThreads(key, includingLeaves: true)
         // What it was set to do later goes with it: no routine or message fires for a companion that is gone.
         for routine in routines where routine.botId == id { removeRoutine(routine.id) }
         let letters = laters.filter { $0.botId == id || $0.chat == key }
@@ -105,8 +105,8 @@ extension TeamModel {
     func deleteRoom(_ id: String) {
         stop(Self.key(room: id))
         withAnimation(.smooth(duration: 0.35)) { rooms.removeAll { $0.id == id } }
-        if threadLabels[Self.key(room: id)] != nil { setThreadLabel("", for: Self.key(room: id)) }
         let key = Self.key(room: id)
+        forgetThreads(key, includingLeaves: true)
         let letters = laters.filter { $0.chat == key }
         if !letters.isEmpty {
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: letters.map(\.id))

@@ -155,8 +155,22 @@ final class ChatModel {
             guard let self else { return }
             let history = await team.loadHistory(key)
             guard !Task.isCancelled else { return }
+            let pageLimit = limit
+            var firstPage: [ChatLine]?
+            if !team.isWorking(key), !history.isEmpty {
+                firstPage = await Task.detached(priority: .userInitiated) {
+                    Self.buildRows(history.suffix(pageLimit), working: false, running: nil)
+                }.value
+                guard !Task.isCancelled else { return }
+            }
             feed = team.listen(key) { [weak self] event in self?.hear(event) }
-            lines = build(history)
+            let newest = team.history(key)
+            if let firstPage, pageLimit == limit, !team.isWorking(key), history == newest {
+                hasEarlier = history.count > pageLimit
+                lines = firstPage
+            } else {
+                lines = build(newest)
+            }
             loaded = true
             opening = nil
         }
