@@ -190,6 +190,8 @@
     "contextLine": "设压缩阈值、上下文长度和温度",
     "grants": "权限与批准",
     "grantsLine": "决定能做哪些事、哪些要先问",
+    "searchEngine": "联网搜索",
+    "searchEngineLine": "选择 AnySearch、Tavily、Exa 等搜索源",
     "connectorsLine": "连接谷歌、高德、Notion 等服务",
     "skillsLine": "启停、编辑或添加技能",
     "timingLine": "新建任务、设置执行时间",

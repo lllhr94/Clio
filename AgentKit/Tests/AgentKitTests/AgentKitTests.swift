@@ -327,6 +327,104 @@ final class WebTextTests: XCTestCase {
         XCTAssertFalse(output.isError)
     }
 
+    func testAnySearchAnonymousAndKeyedRequests() async throws {
+        let anonTool = WebSearchTool(
+            config: WebSearchConfig(primary: .anysearch, apiKey: nil, fallbackToBuiltin: false),
+            sendJSON: { request in
+                XCTAssertEqual(request.url?.absoluteString, "https://api.anysearch.com/v1/search")
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                let body = """
+                {"code":0,"data":{"results":[
+                  {"title":"Swift 6 文档","url":"https://swift.org/docs","snippet":"官方语言指南"},
+                  {"title":"备选内容","url":"https://example.org/alt","content":"当没有 snippet 时回退读 content"}
+                ]}}
+                """
+                return (200, Data(body.utf8))
+            }
+        )
+        let anonOutput = try await anonTool.run(.object(["query": .string("Swift 6")]))
+        XCTAssertFalse(anonOutput.isError)
+        XCTAssertTrue(anonOutput.text.contains("搜索来源：AnySearch（免费通道）"))
+        XCTAssertTrue(anonOutput.text.contains("Swift 6 文档"))
+        XCTAssertTrue(anonOutput.text.contains("当没有 snippet 时回退读 content"))
+
+        let keyedTool = WebSearchTool(
+            config: WebSearchConfig(primary: .anysearch, apiKey: "as_test_key", fallbackToBuiltin: false),
+            sendJSON: { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer as_test_key")
+                let body = #"{"code":0,"data":{"results":[{"title":"已登录通道","url":"https://example.org/k","snippet":"每日 1000 次"}]}}"#
+                return (200, Data(body.utf8))
+            }
+        )
+        let keyedOutput = try await keyedTool.run(.object(["query": .string("测试")]))
+        XCTAssertTrue(keyedOutput.text.contains("搜索来源：AnySearch\n"))
+        XCTAssertTrue(keyedOutput.text.contains("已登录通道"))
+    }
+
+    func testAnySearchHTTP402RedactsCredentialsAndFallsBack() async throws {
+        let sensitive402 = #"{"code":-1,"message":"username=u1\npassword=SECRET_PASS_999\napi_key=SECRET_KEY_888"}"#
+        let noFallback = WebSearchTool(
+            config: WebSearchConfig(primary: .anysearch, apiKey: nil, fallbackToBuiltin: false),
+            sendJSON: { _ in (402, Data(sensitive402.utf8)) }
+        )
+        let errOut = try await noFallback.run(.object(["query": .string("重庆 天气")]))
+        XCTAssertTrue(errOut.isError)
+        XCTAssertTrue(errOut.text.contains("402"))
+        XCTAssertFalse(errOut.text.contains("SECRET_PASS_999"))
+        XCTAssertFalse(errOut.text.contains("SECRET_KEY_888"))
+
+        let withFallback = WebSearchTool(
+            config: WebSearchConfig(primary: .anysearch, apiKey: nil, fallbackToBuiltin: true),
+            sendJSON: { _ in (402, Data(sensitive402.utf8)) },
+            fetchHTML: { _ in
+                #"<li class="b_algo"><h2><a href="https://weather.example.org">重庆天气预报</a></h2><p>周末晴</p></li>"#
+            }
+        )
+        let fallbackOut = try await withFallback.run(.object(["query": .string("重庆 天气")]))
+        XCTAssertFalse(fallbackOut.isError)
+        XCTAssertTrue(fallbackOut.text.contains("Bing 国际站"))
+        XCTAssertTrue(fallbackOut.text.contains("重庆天气预报"))
+        XCTAssertFalse(fallbackOut.text.contains("SECRET_KEY_888"))
+    }
+
+    func testTavilyExaAndBraveProviders() async throws {
+        let tavily = WebSearchTool(
+            config: WebSearchConfig(primary: .tavily, apiKey: "tvly-abc", fallbackToBuiltin: false),
+            sendJSON: { request in
+                XCTAssertEqual(request.url?.absoluteString, "https://api.tavily.com/search")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tvly-abc")
+                return (200, Data(#"{"results":[{"title":"Tavily Result","url":"https://tavily.example.org","content":"Clean summary"}]}"#.utf8))
+            }
+        )
+        let tavilyOut = try await tavily.run(.object(["query": .string("ai")]))
+        XCTAssertTrue(tavilyOut.text.contains("搜索来源：Tavily"))
+        XCTAssertTrue(tavilyOut.text.contains("Clean summary"))
+
+        let exa = WebSearchTool(
+            config: WebSearchConfig(primary: .exa, apiKey: "exa-xyz", fallbackToBuiltin: false),
+            sendJSON: { request in
+                XCTAssertEqual(request.url?.absoluteString, "https://api.exa.ai/search")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "exa-xyz")
+                return (200, Data(#"{"results":[{"title":"Exa Paper","url":"https://arxiv.org/abs/1234","highlights":["Key finding A","Key finding B"]}]}"#.utf8))
+            }
+        )
+        let exaOut = try await exa.run(.object(["query": .string("paper")]))
+        XCTAssertTrue(exaOut.text.contains("搜索来源：Exa"))
+        XCTAssertTrue(exaOut.text.contains("Key finding A Key finding B"))
+
+        let brave = WebSearchTool(
+            config: WebSearchConfig(primary: .brave, apiKey: "BSA-123", fallbackToBuiltin: false),
+            sendJSON: { request in
+                XCTAssertEqual(request.httpMethod, "GET")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "X-Subscription-Token"), "BSA-123")
+                return (200, Data(#"{"web":{"results":[{"title":"Brave Page","url":"https://brave.example.org","description":"A <strong>bold</strong> snippet &amp; more"}]}}"#.utf8))
+            }
+        )
+        let braveOut = try await brave.run(.object(["query": .string("brave")]))
+        XCTAssertTrue(braveOut.text.contains("搜索来源：Brave"))
+        XCTAssertTrue(braveOut.text.contains("A bold snippet & more"))
+    }
+
     func testPageText() {
         let html = """
         <html><head><title>天气 &amp; 预报</title><style>p{}</style></head>
