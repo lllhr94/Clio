@@ -8,13 +8,24 @@ import UIKit
 final class PetPerch {
     var mood: PetMood = .idle
     var face: String?
-    var foot: CGFloat = 0
+    var foot: CGFloat = 0 { didSet { updateReplyClearance() } }
     var chatOffset: CGFloat = 0
     var landing = 0
     var rising = false
     var suppressed = false
     /// Room on the right the pet keeps clear of: the jump buttons over the composer while they show.
     var keepOutRight: CGFloat = 0
+    /// The newest reply’s buttons, measured in the same window coordinates as the dock.
+    @ObservationIgnored var replyActions = CGRect.null { didSet { updateReplyClearance() } }
+    @ObservationIgnored var replyStand: CGFloat = 0 { didSet { updateReplyClearance() } }
+    private(set) var replyActionsRight: CGFloat?
+
+    private func updateReplyClearance() {
+        let visible = replyStand > 0 && !replyActions.isNull && replyActions.minY < foot && replyActions.maxY > foot - replyStand
+        let edge = visible ? replyActions.maxX : nil
+        if replyActionsRight != edge { replyActionsRight = edge }
+    }
+    @ObservationIgnored var replyActionsOwner: String?
     @ObservationIgnored var layoutChanged: () -> Void = {}
     @ObservationIgnored var openSettings: () -> Void = {}
     @ObservationIgnored var bodyHit = CGRect.null
@@ -301,7 +312,7 @@ struct PetPerchAnchor: UIViewRepresentable {
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard let perch else { return nil }
             if rootViewController?.presentedViewController != nil { return super.hitTest(point, with: event) }
-            guard !perch.suppressed, abs(perch.chatOffset) < 1,
+            guard !perch.suppressed, abs(perch.chatOffset) < 1, !perch.replyActions.contains(point),
                   perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
             return super.hitTest(point, with: event)
         }

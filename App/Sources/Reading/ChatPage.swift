@@ -1964,28 +1964,46 @@ struct ChatPage: View {
 
     private func footer(_ line: ChatLine, newest: Bool = true) -> some View {
         HStack(spacing: 2) {
-            icon("doc.on.doc", "复制") {
-                UIPasteboard.general.string = line.text
-                Haptics.tick(0.5)
-                say("复制好了。")
+            HStack(spacing: 2) {
+                icon("doc.on.doc", "复制") {
+                    UIPasteboard.general.string = line.text
+                    Haptics.tick(0.5)
+                    say("复制好了。")
+                }
+                if newest {
+                    icon("arrow.clockwise", "重来一次") {
+                        Haptics.light()
+                        redo()
+                    }
+                }
+                // The rest waits behind ⋯, so the row stays short like other apps'.
+                Menu {
+                    replyMenu(line)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: Ink.Size.small, weight: .medium))
+                        .foregroundStyle(Ink.inkSoft)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("更多")
             }
-            if newest {
-                icon("arrow.clockwise", "重来一次") {
-                    Haptics.light()
-                    redo()
+            .overlay {
+                if newest {
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { rect in
+                            petPerch.replyActionsOwner = line.id
+                            petPerch.replyActions = rect
+                        }
+                        .onDisappear {
+                            if petPerch.replyActionsOwner == line.id {
+                                petPerch.replyActionsOwner = nil
+                                petPerch.replyActions = .null
+                            }
+                        }
                 }
             }
-            // The rest waits behind ⋯, so the row stays short like other apps'.
-            Menu {
-                replyMenu(line)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: Ink.Size.small, weight: .medium))
-                    .foregroundStyle(Ink.inkSoft)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("更多")
             Spacer(minLength: Ink.Space.s)
             if newest, Pref.stats {
                 Text(Self.numbers(line))
@@ -2885,6 +2903,9 @@ private struct Trace: View {
         var url: URL?
         /// A changed file's whole comparison.
         var diff: String?
+        var place: String?
+
+        var displayDetail: String { place.map { Words.t($0) + " · " + detail } ?? detail }
     }
 
     /// A file change opened to its whole comparison.
@@ -2940,7 +2961,7 @@ private struct Trace: View {
                 Button {
                     Haptics.light()
                     if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                        diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
+                        diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url)
                     } else if let url = item.url {
                         openFile(url)
                     }
@@ -2954,7 +2975,7 @@ private struct Trace: View {
                                 Text(item.title).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                                 if fresh { Text("新建").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.ok) }
                             }
-                            Text(item.detail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                            Text(item.displayDetail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                         }
                         Spacer(minLength: Ink.Space.s)
                         tallyText(counts[index].added, counts[index].removed)
@@ -3015,7 +3036,7 @@ private struct Trace: View {
                 if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
                     let where_ = tool.split(separator: "：", maxSplits: 1).first.map(String.init) ?? ""
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
-                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: where_ + " · " + String(rest.dropFirst(2)) + change, diff: full))
+                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: String(rest.dropFirst(2)) + change, diff: full, place: where_))
                     continue
                 }
                 guard tool.hasPrefix("斗室：") else { continue }
@@ -3131,7 +3152,7 @@ private struct Trace: View {
                     switch item.kind {
                     case .file, .remoteFile:
                         if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                            diffing = DiffShow(title: item.title, place: item.detail, diff: diff, url: item.url)
+                            diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url)
                         } else if let url = item.url {
                             openFile(url)
                         }
@@ -3151,7 +3172,7 @@ private struct Trace: View {
                             Text(item.kind == .command ? "# " + item.title : item.title)
                                 .font(item.kind == .command ? Ink.mono(Ink.Size.small, weight: .medium) : .system(size: Ink.Size.sub, weight: .medium))
                                 .foregroundStyle(Ink.ink).lineLimit(2)
-                            Text(item.detail)
+                            Text(item.displayDetail)
                                 .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
                                 .foregroundStyle(Ink.inkSoft).lineLimit(3)
                             if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
