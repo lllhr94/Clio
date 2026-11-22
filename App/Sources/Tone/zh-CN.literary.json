@@ -5,6 +5,9 @@
     "temper": "性情"
   },
   "homeThreads": {
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "conversations": "对话",
     "all": "全部",
     "working": "正在做",
     "waiting": "等我确认",
@@ -49,6 +52,7 @@
   "chat": {
     "untitled": "没有标题的对话",
     "titleField": "对话标题",
+    "deleteConversationConfirm": "删除这段对话？",
     "deletePast": "删除这段旧对话？",
     "newCompanion": "跟哪位旅伴聊",
     "newMemory": "这次参考拾遗",
@@ -440,6 +444,10 @@
     "skills": "技能说明",
     "tools": "工具清单",
     "none": "这次没有带上"
+  },
+  "interactivePreview": {
+    "open": "点开互动",
+    "unavailable": "这个文件暂时无法互动预览。可以分享原文件，换个 App 打开。"
   },
   "actions": {
     "start": "开始",

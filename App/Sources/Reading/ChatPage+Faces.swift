@@ -291,6 +291,7 @@ extension ChatPage {
                             petPerch.replyActionsOwner = line.id
                             petPerch.replyActions = rect
                         }
+                        .onChange(of: following, initial: true) { _, resting in petPerch.avoidsReplies = resting }
                         .onDisappear {
                             if petPerch.replyActionsOwner == line.id {
                                 petPerch.replyActionsOwner = nil
