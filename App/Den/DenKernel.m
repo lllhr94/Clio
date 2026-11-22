@@ -368,7 +368,7 @@ static dispatch_queue_t readers;
     }
     DenLine onLine = run.onLine;
     if (onLine)
-        dispatch_async(dispatch_get_main_queue(), ^{ onLine(line, isError); });
+        onLine(line, isError);
 }
 
 + (void)exited:(NSNotification *)note {

@@ -114,7 +114,7 @@ struct ChatPage: View {
     var isRoom: Bool { chat.roomId != nil }
 
     var bot: BotInfo { isRoom ? chat.bot : (team.bots.first { $0.id == chat.bot.id } ?? chat.bot) }
-    var doing: String? { team.doing[chat.key] }
+    var doing: String? { team.workDetail(for: chat.key).words }
     var working: Bool { doing != nil || chat.hasStreaming }
     var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
@@ -304,7 +304,7 @@ struct ChatPage: View {
                 }
                 ChatSection { liveReply }.transition(.identity)
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
-                if let doing = team.doing[chat.key], doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
+                if let doing = team.workDetail(for: chat.key).words, doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
                     ToolTailView(tail: team.toolTail(for: chat.key))
                         .id("live")
                         .transition(.opacity.combined(with: .offset(y: 8)))

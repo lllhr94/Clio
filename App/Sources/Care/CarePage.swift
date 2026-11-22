@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 struct CarePage: View {
     @ObservedObject var team: TeamModel
     var openRestore = false
-    @ObservedObject private var den = Den.shared
+    @State private var denState = Den.State.asleep
+    @State private var diagnosticsReady = false
+    @State private var recentErrors: [String] = []
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
     @State private var made: URL?
@@ -104,17 +106,19 @@ struct CarePage: View {
                 } header: { Text(L.t("settings.modelConnectivity")) }
 
                 Section {
-                    if Diag.log.isEmpty {
+                    if !diagnosticsReady {
+                        Text(L.t("loading.calculating")).foregroundStyle(Ink.inkSoft)
+                    } else if recentErrors.isEmpty {
                         Text(L.t("settings.noRecentErrors")).foregroundStyle(Ink.inkSoft)
                     } else {
-                        ForEach(Array(Diag.log.reversed().prefix(20).enumerated()), id: \.offset) { _, line in
+                        ForEach(Array(recentErrors.enumerated()), id: \.offset) { _, line in
                             Text(line).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                         }
-                        Button(L.t("actions.clearLogs"), role: .destructive) { Diag.clear(); notice = "清空了。" }
+                        Button(L.t("actions.clearLogs"), role: .destructive) { Diag.clear(); recentErrors = []; notice = "清空了。" }
                     }
                 } header: { Text(L.t("settings.recentErrors")) }
 
-                HitchSettings()
+                if diagnosticsReady { HitchSettings() }
 
                 Section {
                     Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
@@ -134,7 +138,15 @@ struct CarePage: View {
             .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
-            .task { await measureStorage() }
+            .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
+            .task {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+                let errors = await Task.detached(priority: .utility) { Array(Diag.log.reversed().prefix(20)) }.value
+                guard !Task.isCancelled else { return }
+                recentErrors = errors
+                diagnosticsReady = true
+                await measureStorage()
+            }
             .task {
                 guard !davPasswordLoaded else { return }
                 davPassword = await Task.detached { WebDAV.password }.value
@@ -188,7 +200,7 @@ struct CarePage: View {
     }
 
     private var denText: String {
-        switch den.state {
+        switch denState {
         case .asleep: "睡着"
         case .unpacking: "准备中"
         case .waking: "醒来中"

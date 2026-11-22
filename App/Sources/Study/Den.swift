@@ -21,13 +21,14 @@ final class Den: ObservableObject {
     @Published private(set) var log: [Line] = []
     @Published private(set) var running: Set<Int32> = []
 
-    struct Line: Identifiable, Equatable {
-        enum Kind { case command, out, error, note }
+    struct Line: Identifiable, Equatable, Sendable {
+        enum Kind: Sendable { case command, out, error, note }
         let id = UUID()
         let kind: Kind
         let text: String
     }
 
+    private nonisolated let output = LiveOutput()
     private var waiting: [CheckedContinuation<Bool, Never>] = []
 
     nonisolated private static var home: URL {
@@ -108,15 +109,15 @@ final class Den: ObservableObject {
         if shown { note(.command, command) }
         let control = CommandControl()
         let printed = PrintedLines()
+        let receive: @Sendable (String, Bool) -> Void = { [weak self] line, isError in
+            printed.add(line)
+            onOutput?(line)
+            if shown { self?.buffer(Line(kind: isError ? .error : .out, text: line)) }
+        }
         let result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let once = Once(continuation)
-                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: { [weak self] line, isError in
-                    printed.add(line)
-                    onOutput?(line)
-                    guard shown else { return }
-                    MainActor.assumeIsolated { self?.note(isError ? .error : .out, line) }
-                }, done: { code, output, errorOutput in
+                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: receive, done: { code, output, errorOutput in
                     once.finish(Outcome(code: code, output: output, errorOutput: errorOutput, timedOut: false))
                 })
                 guard pid >= 0 else {
@@ -150,11 +151,50 @@ final class Den: ObservableObject {
         for pid in running { DenKernel.kill(pid) }
     }
 
-    func clear() { log = [] }
+    func clear() {
+        _ = output.drain()
+        if !log.isEmpty { log = [] }
+    }
 
     private func note(_ kind: Line.Kind, _ text: String) {
-        log.append(Line(kind: kind, text: text))
-        if log.count > 2000 { log.removeFirst(log.count - 2000) }
+        append(output.drain() + [Line(kind: kind, text: text)])
+    }
+
+    private nonisolated func buffer(_ line: Line) {
+        guard output.add(line) else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            self.append(self.output.drain(finishingBatch: true))
+        }
+    }
+
+    private func append(_ lines: [Line]) {
+        guard !lines.isEmpty else { return }
+        log = Array((log + lines).suffix(2000))
+    }
+
+    private final class LiveOutput: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [Line] = []
+        private var scheduled = false
+
+        func add(_ line: Line) -> Bool {
+            lock.withLock {
+                if lines.count >= 4000 { lines.removeFirst(2000) }
+                lines.append(line)
+                guard !scheduled else { return false }
+                scheduled = true
+                return true
+            }
+        }
+
+        func drain(finishingBatch: Bool = false) -> [Line] {
+            lock.withLock {
+                defer { lines = []; if finishingBatch { scheduled = false } }
+                return lines
+            }
+        }
     }
 
     @MainActor

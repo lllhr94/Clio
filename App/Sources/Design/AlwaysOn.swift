@@ -94,7 +94,7 @@ private struct AlwaysOnStatus: View {
     var body: some View {
         let turn = team.alwaysOnTurn(chat)
         let waiting = team.approvals.contains { $0.chat == chat }
-        let words = waiting ? L.t("alwaysOn.waiting") : Live.words(team.doing[chat], name: turn.bot?.name ?? team.chatName(chat))
+        let words = waiting ? L.t("alwaysOn.waiting") : Live.words(team.workDetail(for: chat).words, name: turn.bot?.name ?? team.chatName(chat))
             ?? L.t("alwaysOn.idle")
 
         TimelineView(.periodic(from: opened, by: 15)) { context in

@@ -450,27 +450,7 @@ struct Trace: View {
                 }
                 .frame(minHeight: 22)
                 if shown, let more {
-                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        if !more.input.isEmpty, more.input != "{}" {
-                            Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                            Text(Self.tidy(more.input)).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(12)
-                        }
-                        if let name = more.photo, let data = Disk.photo(name), let image = UIImage(data: data) {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 260)
-                                .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                                .padding(.top, 2)
-                        }
-                        Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.top, 2)
-                        if let hunk = Diff.hunk(in: more.output) {
-                            Text(more.output.components(separatedBy: "\n").first ?? "").font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                            DiffText(hunk: hunk)
-                        } else {
-                            Text(more.output.isEmpty ? "（空）" : String(more.output.prefix(1500))).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(24)
-                        }
-                    }
+                    TraceStepEvidence(detail: more)
                     .textSelection(.enabled)
                     .padding(Ink.Space.s)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -505,7 +485,7 @@ struct Trace: View {
     }
 
     /// Tool arguments as short lines: `key: value`.
-    static func tidy(_ json: String) -> String {
+    nonisolated static func tidy(_ json: String) -> String {
         guard let value = JSONValue.parse(json), case .object(let map) = value else { return json }
         return map.keys.sorted().map { key in
             let item = map[key]!
@@ -560,6 +540,60 @@ struct Trace: View {
         case "看日历", "新建日程": "calendar"
         case "看提醒事项", "加提醒": "checklist"
         default: label.hasPrefix("约好") ? "envelope" : "wrench.and.screwdriver"
+        }
+    }
+}
+
+
+/// Tool arguments and any image are prepared only for an expanded step, without blocking scrolling.
+private struct TraceStepEvidence: View {
+    let detail: StepDetail
+    @State private var prepared: Evidence?
+
+    private struct Evidence {
+        var input: String?
+        var image: UIImage?
+        var output: String
+        var diff: String?
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+            if let prepared {
+                if let input = prepared.input {
+                    Text("交给它的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                    Text(input).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(12)
+                }
+                if let image = prepared.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 260)
+                        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                }
+                Text("它回来的").font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                Text(prepared.output).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(24)
+                if let diff = prepared.diff { DiffText(hunk: diff) }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task(id: detail) {
+            prepared = nil
+            let snapshot = detail
+            let job = Task.detached(priority: .utility) {
+                let input = snapshot.input.isEmpty || snapshot.input == "{}" ? nil : Trace.tidy(snapshot.input)
+                let image = snapshot.photo.flatMap { name in
+                    Disk.photo(name).flatMap { UIImage(data: $0) }
+                }
+                let diff = Diff.hunk(in: snapshot.output)
+                let output = diff == nil
+                    ? (snapshot.output.isEmpty ? "（空）" : String(snapshot.output.prefix(1500)))
+                    : String(snapshot.output.prefix(while: { $0 != "\n" }))
+                return Evidence(input: input, image: image, output: output, diff: diff)
+            }
+            let ready = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            if !Task.isCancelled { prepared = ready }
         }
     }
 }

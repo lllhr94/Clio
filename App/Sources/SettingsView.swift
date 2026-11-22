@@ -33,7 +33,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
                     if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ForEach(Self.groups, id: \.title) { group in
                             RowCard(title: L.t(group.title)) {
