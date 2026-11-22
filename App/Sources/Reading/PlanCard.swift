@@ -6,15 +6,16 @@ struct PlanCard: View {
     let steps: [TeamModel.PlanStep]
     var close: () -> Void
     @State private var open = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var done: Int { steps.filter { $0.state == "done" }.count }
     private var current: TeamModel.PlanStep? { steps.first { $0.state == "doing" } ?? steps.first { $0.state != "done" } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        PlanReveal(progress: open ? 1 : 0) {
             Button {
                 Haptics.tick(0.4)
-                withAnimation(Ink.Motion.unfold) { open.toggle() }
+                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
                     Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
@@ -38,33 +39,34 @@ struct PlanCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
+            .accessibilityValue(L.t(open ? "chat.planExpanded" : "chat.planCollapsed"))
 
-            if open {
-                VStack(alignment: .leading, spacing: Ink.Space.m) {
-                    ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                        HStack(alignment: .firstTextBaseline, spacing: Ink.Space.m) {
-                            mark(step.state)
-                            Text(step.text)
-                                .font(.system(size: Ink.Size.sub, weight: step.state == "doing" ? .semibold : .regular))
-                                .foregroundStyle(step.state == "done" ? Ink.inkFaint : Ink.ink)
-                                .strikethrough(step.state == "done", color: Ink.inkFaint)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    if done == steps.count {
-                        Button("收起清单") { close() }
-                            .font(.system(size: Ink.Size.small, weight: .semibold))
-                            .foregroundStyle(Ink.accent)
-                            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                    HStack(alignment: .firstTextBaseline, spacing: Ink.Space.m) {
+                        mark(step.state)
+                        Text(step.text)
+                            .font(.system(size: Ink.Size.sub, weight: step.state == "doing" ? .semibold : .regular))
+                            .foregroundStyle(step.state == "done" ? Ink.inkFaint : Ink.ink)
+                            .strikethrough(step.state == "done", color: Ink.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.horizontal, Ink.Space.l)
-                .padding(.bottom, Ink.Space.l)
-                .transition(.opacity)
+                if done == steps.count {
+                    Button("收起清单") { close() }
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.bottom, Ink.Space.l)
+            .allowsHitTesting(open)
+            .accessibilityHidden(!open)
         }
+        .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
         .paperCard()
-        .animation(Ink.Motion.settle, value: steps)
+        .animation(reduceMotion ? nil : Ink.Motion.settle, value: steps)
     }
 
     private var headline: String {
@@ -83,5 +85,30 @@ struct PlanCard: View {
         default:
             Image(systemName: "circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkFaint)
         }
+    }
+}
+
+/// Only the card's height animates. Its fully laid-out rows are revealed by the card's clip.
+private struct PlanReveal: Layout {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        let row = ProposedViewSize(width: width, height: nil)
+        let header = subviews[0].sizeThatFits(row).height
+        let details = subviews[1].sizeThatFits(row).height
+        return CGSize(width: width, height: header + details * min(1, max(0, progress)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let row = ProposedViewSize(width: bounds.width, height: nil)
+        let header = subviews[0].sizeThatFits(row).height
+        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: row)
+        subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + header), anchor: .topLeading, proposal: row)
     }
 }

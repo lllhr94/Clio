@@ -31,16 +31,14 @@ extension ChatPage {
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
         .padding(.bottom, Ink.Space.s)
-        // Paper behind the buttons that fades out downwards, the same as under the composer: no hard band with
-        // a line under it, and text scrolling up melts away instead of showing between the buttons.
-        .background(alignment: .top) {
-            LinearGradient(stops: [
-                .init(color: Ink.paper, location: 0),
-                .init(color: Ink.paper.opacity(0.92), location: 0.6),
-                .init(color: Ink.paper.opacity(0), location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-            .padding(.bottom, -Ink.Space.l)
-            .ignoresSafeArea(edges: .top)
+        // Cover the whole header, including the model label. Start fading only below its tap area.
+        .background {
+            Ink.paper.ignoresSafeArea(edges: .top)
+        }
+        .background(alignment: .bottom) {
+            LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
+            .frame(height: Ink.Space.l)
+            .offset(y: Ink.Space.l)
             .allowsHitTesting(false)
         }
     }

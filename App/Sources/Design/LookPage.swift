@@ -206,6 +206,17 @@ struct ChatDisplayPage: View {
     @AppStorage("pulse.on") private var pulseOn = true
     @AppStorage("chat.faces") private var faces = false
     @AppStorage("chat.confirmStop") private var confirmStop = true
+    @AppStorage(VoiceTranscription.modeKey) private var voiceModeRaw = VoiceTranscription.Mode.system.rawValue
+    @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
+
+    private var voiceSummary: String {
+        let mode = VoiceTranscription.Mode(rawValue: voiceModeRaw) ?? .system
+        if mode == .cloud {
+            let trimmed = voiceModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "云端转写" : trimmed
+        }
+        return mode.title
+    }
 
     var body: some View {
         PreferenceForm(L.t("settingsHome.display"), reset: reset) {
@@ -218,6 +229,23 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
                 Toggle(L.t("settings.haptics"), isOn: $haptics)
                 Toggle(L.t("settings.showReplyStats"), isOn: $stats)
+            }
+            Section {
+                NavigationLink {
+                    VoiceSettingsPage()
+                } label: {
+                    HStack {
+                        Text("语音输入与转写")
+                            .foregroundStyle(Ink.ink)
+                        Spacer(minLength: Ink.Space.s)
+                        Text(voiceSummary)
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.inkSoft)
+                            .lineLimit(1)
+                    }
+                }
+            } footer: {
+                Text("默认用苹果系统听写；也可以单独填写 Whisper / SenseVoice 等转写接口，提升中英混说准确度。")
             }
         }
     }
