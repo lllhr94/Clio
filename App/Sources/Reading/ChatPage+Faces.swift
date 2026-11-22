@@ -341,7 +341,12 @@ extension ChatPage {
             voice.stopSpeaking(at: .immediate)
             return
         }
-        let plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
+        var plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
+        for secret in Vault.allStrings() where secret.count >= 6 {
+            if plain.contains(secret) {
+                plain = plain.replacingOccurrences(of: secret, with: "（已跳过密钥）")
+            }
+        }
         let utterance = AVSpeechUtterance(string: plain)
         utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
         voice.speak(utterance)

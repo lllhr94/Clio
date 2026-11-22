@@ -132,7 +132,17 @@ extension ChatPage {
     }
 
     var draftField: some View {
-        TextField(dictation.listening ? "正在听，说完点右边" : (working ? "在做 · 可以直接插话" : "同\(bot.name)说点什么…"), text: Binding(get: { draft }, set: { draft = $0 }), axis: .vertical)
+        let placeholder: String
+        if dictation.listening {
+            placeholder = "正在听，说完点右边"
+        } else if dictation.transcribing {
+            placeholder = "正在转写语音…"
+        } else if working {
+            placeholder = "在做 · 可以直接插话"
+        } else {
+            placeholder = "同\(bot.name)说点什么…"
+        }
+        return TextField(placeholder, text: Binding(get: { draft }, set: { draft = $0 }), axis: .vertical)
             .font(largeText ? .body : Ink.label)
             .foregroundStyle(Ink.ink)
             .lineLimit(1...(largeText ? 3 : 6))
@@ -498,7 +508,7 @@ extension ChatPage {
 
     /// Writing something: the row of chips shows under the text field.
     var composing: Bool {
-        typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening
+        typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening || dictation.transcribing
     }
 
     var canSend: Bool {
@@ -506,14 +516,28 @@ extension ChatPage {
     }
 
     var action: some View {
-        let mode: Int = dictation.listening ? 0 : (working && !canSend ? 1 : (canSend ? 2 : 3))
-        let symbol = ["waveform", "stop.fill", "arrow.up", "mic"][mode]
-        let fill: Color = [Ink.stop, Ink.ink, Ink.accent, .clear][mode]
+        let mode: Int
+        if dictation.listening {
+            mode = 0
+        } else if dictation.transcribing {
+            mode = 4
+        } else if working && !canSend {
+            mode = 1
+        } else if canSend {
+            mode = 2
+        } else {
+            mode = 3
+        }
+        let symbol = ["waveform", "stop.fill", "arrow.up", "mic", "ellipsis"][mode]
+        let fill: Color = [Ink.stop, Ink.ink, Ink.accent, .clear, Ink.accentWash][mode]
         return Button {
             switch mode {
             case 0:
                 Haptics.light()
                 dictation.stop()
+            case 4:
+                Haptics.light()
+                dictation.cancel()
             case 1:
                 if confirmStop {
                     Haptics.light()
@@ -546,13 +570,21 @@ extension ChatPage {
                 if mode == 0 {
                     Circle().fill(Ink.stop.opacity(0.25)).scaleEffect(1 + dictation.level * 0.6)
                 }
-                Image(systemName: symbol)
-                    .font(.system(size: mode == 3 ? 16 : 15, weight: mode == 3 ? .medium : .bold))
-                    .foregroundStyle(mode == 3 ? Ink.inkSoft : Ink.paper)
-                    .contentTransition(.symbolEffect(.replace))
-                    .symbolEffect(.variableColor.iterative, isActive: mode == 0)
-                    .frame(width: 34, height: 34)
-                    .background(fill, in: .circle)
+                if mode == 4 {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Ink.accent)
+                        .frame(width: 34, height: 34)
+                        .background(fill, in: .circle)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: mode == 3 ? 16 : 15, weight: mode == 3 ? .medium : .bold))
+                        .foregroundStyle(mode == 3 ? Ink.inkSoft : Ink.paper)
+                        .contentTransition(.symbolEffect(.replace))
+                        .symbolEffect(.variableColor.iterative, isActive: mode == 0)
+                        .frame(width: 34, height: 34)
+                        .background(fill, in: .circle)
+                }
             }
             .frame(width: 34, height: 34)
         }
