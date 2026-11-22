@@ -448,8 +448,16 @@ struct Desk: View {
         var id: String { owner.id + "/" + leaf.id }
     }
 
-    private var pastLeaves: [PastLeaf] {
-        let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var pastLeaves: [PastLeaf] { pastLeaves(matching: sideQuery) }
+
+    /// The home page lists them too (only under 全部 with no colour picked: they have no working, waiting or unread state).
+    private var homePast: [PastLeaf] {
+        guard listFilter == 0, labelFilter.isEmpty else { return [] }
+        return pastLeaves(matching: "")
+    }
+
+    private func pastLeaves(matching query: String) -> [PastLeaf] {
+        let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let all = recent.flatMap { item in
             team.leaves(item.id.id)
                 .filter { $0.marker == nil && $0.count > 0 }
@@ -704,23 +712,25 @@ struct Desk: View {
         } else {
             TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? Words.t("旅伴"))
             filterChips
-            if shownThreads.isEmpty {
+            if shownThreads.isEmpty && homePast.isEmpty {
                 EmptyNote(
                     symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
                     words: recent.isEmpty ? L.t("empty.startConversation") : L.t("empty.activeConversations")
                 )
             }
-            ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
-                Text(group.title)
+            // Every conversation, not one row per companion: the ones put aside by 新对话 sit in 最近 / 更早 too.
+            ForEach(sections(shownThreads, past: homePast), id: \.title) { section in
+                Text(section.title)
                     .font(.system(size: Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.inkFaint)
                     .padding(.top, Ink.Space.m)
-                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                ForEach(Array(section.threads.enumerated()), id: \.element.id) { index, item in
                     thread(item)
-                    if index != group.items.count - 1 {
+                    if index != section.threads.count - 1 || !section.past.isEmpty {
                         Kit.rule(inset: 40)
                     }
                 }
+                ForEach(section.past) { past in pastRow(past) }
             }
             if !archivedThreads.isEmpty {
                 Button {
@@ -1228,21 +1238,22 @@ struct Desk: View {
     }
 
     /// The sidebar's groups: the open conversations, then the ones put aside, each under 最近 or 更早.
-    private var sideSections: [SideSection] {
-        let groups = Self.grouped(sideThreads, pinned: team.pinned)
-        let past = pastLeaves
-        var sections: [SideSection] = []
+    private var sideSections: [SideSection] { sections(sideThreads, past: pastLeaves) }
+
+    private func sections(_ threads: [Thread], past: [PastLeaf]) -> [SideSection] {
+        let groups = Self.grouped(threads, pinned: team.pinned)
+        var result: [SideSection] = []
         for title in ["置顶", "最近", "更早"] {
-            let threads = groups.first { $0.title == title }?.items ?? []
+            let rows = groups.first { $0.title == title }?.items ?? []
             let leaves: [PastLeaf]
             switch title {
             case "最近": leaves = past.filter { Self.isRecent($0.leaf.at) }
             case "更早": leaves = past.filter { !Self.isRecent($0.leaf.at) }
             default: leaves = []
             }
-            if !threads.isEmpty || !leaves.isEmpty { sections.append(SideSection(title: title, threads: threads, past: leaves)) }
+            if !rows.isEmpty || !leaves.isEmpty { result.append(SideSection(title: title, threads: rows, past: leaves)) }
         }
-        return sections
+        return result
     }
 
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {

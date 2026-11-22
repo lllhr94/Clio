@@ -334,23 +334,52 @@ extension ChatPage {
             GeometryReader { box in
                 let height = box.size.height
                 let place = { (index: Int) in height * CGFloat(index - first) / CGFloat(span) }
+                let nearest = { (y: CGFloat) in asked.min(by: { abs(place($0) - y) < abs(place($1) - y) }) }
                 ZStack(alignment: .top) {
                     Capsule().fill(Ink.rule.opacity(0.5)).frame(width: 3)
                     ForEach(asked, id: \.self) { index in
-                        let shown = visible.contains(rows[index].id)
+                        // While sliding, the finger's question is the one lit; otherwise the ones on screen.
+                        let lit = minimapScrub.map { $0 == index } ?? visible.contains(rows[index].id)
                         Capsule()
-                            .fill(shown ? Ink.accent : Ink.inkFaint)
-                            .frame(width: shown ? 10 : 7, height: 3)
+                            .fill(lit ? Ink.accent : Ink.inkFaint)
+                            .frame(width: lit ? 12 : 7, height: lit ? 4 : 3)
                             .offset(y: place(index) - 1.5)
                     }
                 }
                 .frame(width: 24, height: height, alignment: .top)
-                .contentShape(Rectangle())
-                // One tap target for the whole strip: a touch goes to the nearest question (the review, #32).
-                .gesture(SpatialTapGesture().onEnded { tap in
-                    guard let nearest = asked.min(by: { abs(place($0) - tap.location.y) < abs(place($1) - tap.location.y) }) else { return }
-                    jump(to: rows[nearest].id)
-                })
+                .contentShape(Rectangle().inset(by: -Ink.Space.s))
+                // Tap, or slide along it: the question under the finger lights at once (with a tick and its first
+                // words beside the strip), and letting go goes there. One gesture for the whole strip (the review, #32).
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { drag in
+                            hideJumps?.cancel()
+                            guard let index = nearest(drag.location.y), index != minimapScrub else { return }
+                            if minimapScrub != nil { Haptics.tick(0.3) }
+                            minimapScrub = index
+                        }
+                        .onEnded { drag in
+                            let index = nearest(drag.location.y) ?? minimapScrub
+                            minimapScrub = nil
+                            guard let index, rows.indices.contains(index) else { return }
+                            jump(to: rows[index].id, animated: false)
+                        }
+                )
+                .overlay(alignment: .topTrailing) {
+                    if let index = minimapScrub, rows.indices.contains(index) {
+                        Text(rows[index].text.replacingOccurrences(of: "\n", with: " "))
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.ink)
+                            .lineLimit(2)
+                            .frame(width: 200, alignment: .trailing)
+                            .padding(.horizontal, Ink.Space.m)
+                            .padding(.vertical, Ink.Space.s)
+                            .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
+                            .offset(x: -32, y: min(max(0, place(index) - 18), max(0, height - 44)))
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
             }
             .frame(width: 24)
             .padding(.vertical, Ink.Bar.height * 2)
@@ -372,12 +401,17 @@ extension ChatPage {
         return "\(at + 1) / \(asked.count)"
     }
 
-    func jump(to id: String) {
+    func jump(to id: String, animated: Bool = true) {
         Haptics.tick(0.4)
         following = false
         jumpedTo = id
         lingerJumpButtons()
-        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+        // From the 小地图 the page goes straight there: a long animated scroll through a lazy list lags behind.
+        if animated {
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+        } else {
+            scroller?.scrollTo(id, anchor: .top)
+        }
     }
 
     func lingerJumpButtons() {
