@@ -334,6 +334,6 @@ jobs:
           gh release upload "v$VERSION" "Clio-$VERSION.ipa" --repo "$REPO" --clobber
           # What changed, written in docs/releases/<version>.md, becomes the version's own notes.
           if [ -f "../docs/releases/$VERSION.md" ]; then gh release edit "v$VERSION" --repo "$REPO" --notes-file "../docs/releases/$VERSION.md"; fi
-          gh release edit latest --repo "$REPO" --notes "最新构建：Clio $VERSION（${{ github.sha }}）。下载 Clio-unsigned.ipa，用签名工具签名后安装。每个版本也单独留在 v$VERSION 里。"
+          gh release edit latest --repo "$REPO" --notes "最新构建：Clio ${VERSION}（${{ github.sha }}）。下载 Clio-unsigned.ipa，用签名工具签名后安装。每个版本也单独留在 v$VERSION 里。"
 
       # A probe from another branch gets its own release, so latest is never touched.
