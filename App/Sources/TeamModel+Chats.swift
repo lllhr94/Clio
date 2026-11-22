@@ -74,4 +74,17 @@ extension TeamModel {
         UserDefaults.standard.set(Array(archived), forKey: "desk.archived")
         UserDefaults.standard.set(threadLabels, forKey: "desk.threadLabels")
     }
+
+    /// Snapshot of media filenames currently referenced by in-memory conversations (protects unflushed photos during cache cleanup).
+    func referencedMediaNames() -> Set<String> {
+        var names: Set<String> = []
+        for list in entries.values {
+            for entry in list {
+                for photo in entry.photos where !photo.isEmpty {
+                    names.insert(photo)
+                }
+            }
+        }
+        return names
+    }
 }

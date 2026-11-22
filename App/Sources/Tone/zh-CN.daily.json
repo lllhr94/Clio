@@ -790,5 +790,18 @@
     "testFailed": "%@ 试搜未通过",
     "keySavedNotice": "已存入本机钥匙串。",
     "keyClearedNotice": "已清除 %@ 密钥。"
+  },
+  "careStorage": {
+    "section": "存储与缓存",
+    "total": "总占用",
+    "media": "对话图片",
+    "mediaWithOrphans": "%@（含 %lld 张未引用）",
+    "docCache": "文档提取缓存",
+    "cleanButton": "清理可释放缓存（%@）",
+    "cleanNothing": "没有可清理的缓存",
+    "cleaning": "正在清理缓存…",
+    "footer": "只清理不再被任何对话引用的旧图片和可重新生成的 PDF 提取缓存，不动任何对话、记忆与文件。",
+    "cleanedNotice": "已释放 %@（%lld 张未引用图片、%lld 份文档缓存）。",
+    "nothingCleaned": "没有需要清理的缓存。"
   }
 }

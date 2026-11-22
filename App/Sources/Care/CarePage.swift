@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -13,6 +14,8 @@ struct CarePage: View {
     @State private var withKeys = false
     @State private var made: URL?
     @State private var sizeText = ""
+    @State private var storage: StorageBreakdown?
+    @State private var cleaningCache = false
     @State private var making = false
     @State private var restoring = false
     @State private var restored = false
@@ -97,6 +100,8 @@ struct CarePage: View {
                     row(Words.t("斗室"), denText)
                     row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
                 } header: { Text(L.t("settings.diagnosticInfo")) }
+
+                storageSection
 
                 Section {
                     ForEach(team.settings.endpoints) { endpoint in
@@ -209,20 +214,96 @@ struct CarePage: View {
         }
     }
 
-    private func measureStorage() async {
-        let work = Task.detached(priority: .utility) {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            var total: Int64 = 0
-            if let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) {
-                for case let url as URL in walker {
-                    if Task.isCancelled { break }
-                    total += Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
+    @ViewBuilder
+    private var storageSection: some View {
+        Section {
+            if let storage {
+                row(L.t("careStorage.total"), Self.formatBytes(storage.totalBytes))
+                row(L.t("careStorage.media"), mediaSummary(storage))
+                row(L.t("careStorage.docCache"), Self.formatBytes(storage.docCacheBytes))
+                Button {
+                    cleanCache()
+                } label: {
+                    if cleaningCache {
+                        Text(L.t("careStorage.cleaning"))
+                    } else if storage.cleanableBytes > 0 {
+                        Text(L.format("careStorage.cleanButton", Self.formatBytes(storage.cleanableBytes)))
+                    } else {
+                        Text(L.t("careStorage.cleanNothing"))
+                    }
                 }
+                .disabled(cleaningCache || storage.cleanableBytes == 0 || Disk.frozen)
+            } else {
+                row(L.t("careStorage.total"), L.t("loading.calculating"))
             }
-            return total
+        } header: {
+            Text(L.t("careStorage.section"))
+        } footer: {
+            Text(L.t("careStorage.footer"))
         }
-        let total = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
-        if !Task.isCancelled { sizeText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file) }
+    }
+
+    private func mediaSummary(_ breakdown: StorageBreakdown) -> String {
+        let base = Self.formatBytes(breakdown.mediaBytes)
+        if breakdown.orphanMediaCount > 0 {
+            return L.format("careStorage.mediaWithOrphans", base, breakdown.orphanMediaCount)
+        }
+        return base
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+    }
+
+    private func measureStorage() async {
+        let referenced = team.referencedMediaNames()
+        let teamRoot = Disk.root
+        let work = Task.detached(priority: .utility) {
+            let hasWriteFailures = ChatDisk.finishWritesReportingFailures() > 0
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            return StorageCleanup.inspect(
+                appSupportRoot: base,
+                teamRoot: teamRoot,
+                extraReferencedMedia: referenced,
+                skipOrphanMedia: hasWriteFailures
+            )
+        }
+        let breakdown = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if !Task.isCancelled {
+            storage = breakdown
+            sizeText = Self.formatBytes(breakdown.totalBytes)
+        }
+    }
+
+    private func cleanCache() {
+        guard !cleaningCache, !Disk.frozen else { return }
+        cleaningCache = true
+        let referenced = team.referencedMediaNames()
+        let teamRoot = Disk.root
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                let hasWriteFailures = ChatDisk.finishWritesReportingFailures() > 0
+                return StorageCleanup.clean(
+                    teamRoot: teamRoot,
+                    extraReferencedMedia: referenced,
+                    skipOrphanMedia: hasWriteFailures
+                )
+            }.value
+            Disk.forgetPhotos()
+            await measureStorage()
+            cleaningCache = false
+            if outcome.removedMediaCount > 0 || outcome.removedDocCacheCount > 0 {
+                Haptics.thud()
+                notice = L.format(
+                    "careStorage.cleanedNotice",
+                    Self.formatBytes(outcome.freedBytes),
+                    outcome.removedMediaCount,
+                    outcome.removedDocCacheCount
+                )
+            } else {
+                notice = L.t("careStorage.nothingCleaned")
+            }
+        }
     }
 
     private var report: String {
