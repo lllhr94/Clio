@@ -61,9 +61,13 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         problem = nil
         defer { busy = false }
         let verifier = Self.random(48)
+        let state = Self.random(16)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
         let redirect = scheme + ":/oauth2redirect"
-        var parts = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+        guard var parts = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth") else {
+            problem = "谷歌登录地址不对。"
+            return
+        }
         parts.queryItems = [
             URLQueryItem(name: "client_id", value: clientId),
             URLQueryItem(name: "redirect_uri", value: redirect),
@@ -71,13 +75,23 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             URLQueryItem(name: "scope", value: Self.scopes.joined(separator: " ")),
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "prompt", value: "consent"),
         ]
+        guard let authURL = parts.url else {
+            problem = "谷歌登录地址不对。"
+            return
+        }
         do {
-            let back = try await authenticate(parts.url!, scheme: scheme)
-            guard let code = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "code" })?.value else {
-                let said = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "error" })?.value
-                problem = said == "access_denied" ? "你在谷歌那边没同意。" : "谷歌没给登录码（\(said ?? "不明原因")）。"
+            let back = try await authenticate(authURL, scheme: scheme)
+            let items = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if let said = items.first(where: { $0.name == "error" })?.value {
+                problem = said == "access_denied" ? "你在谷歌那边没同意。" : "谷歌没给登录码（\(said)）。"
+                return
+            }
+            guard items.first(where: { $0.name == "state" })?.value == state,
+                  let code = items.first(where: { $0.name == "code" })?.value else {
+                problem = "登录回来的信息对不上，再试一次。"
                 return
             }
             let tokens = try await Self.token([
@@ -102,9 +116,15 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     }
 
     func signOut() {
-        if let refresh = Vault.load(String.self, key: "google.refresh") {
-            var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/revoke?token=\(refresh)")!)
+        if let refresh = Vault.load(String.self, key: "google.refresh"),
+           let url = URL(string: "https://oauth2.googleapis.com/revoke") {
+            var request = URLRequest(url: url)
             request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~")
+            let encoded = refresh.addingPercentEncoding(withAllowedCharacters: allowed) ?? refresh
+            request.httpBody = Data("token=\(encoded)".utf8)
             Task { _ = try? await URLSession.shared.data(for: request) }
         }
         Vault.remove("google.refresh")

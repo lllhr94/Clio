@@ -12,8 +12,9 @@ public enum Conversation {
         var size = 0
         while start > 0 {
             let message = messages[start - 1]
-            size += message.text.count + message.toolCalls.reduce(0) { $0 + $1.arguments.count }
-            if size > maxChars, start < messages.count - 1 { break }
+            let imageWeight = message.images.count * 2000
+            size += message.text.count + (message.reasoning?.count ?? 0) + message.toolCalls.reduce(0) { $0 + $1.arguments.count } + imageWeight
+            if size > maxChars, start < messages.count { break }
             if maxCount > 0, messages.count - start >= maxCount { break }
             start -= 1
         }

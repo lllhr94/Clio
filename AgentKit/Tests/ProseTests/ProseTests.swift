@@ -89,4 +89,39 @@ final class MendTests: XCTestCase {
         XCTAssertEqual(Prose.mend("代码\n```sw"), "代码")
         XCTAssertEqual(Prose.mend("```swift\nlet a = \"**\""), "```swift\nlet a = \"**\"")
     }
+
+    func testFenceClosingAndDeepQuotesAndEscapedPipe() {
+        let md = """
+        ````markdown
+        ```swift
+        let x = 1
+        ```
+        ````
+        """
+        let blocks = Prose.parse(md)
+        XCTAssertEqual(blocks.count, 1)
+        if case .code(let lang, let text, let closed) = blocks.first {
+            XCTAssertEqual(lang, "markdown")
+            XCTAssertTrue(closed)
+            XCTAssertTrue(text.contains("```swift"))
+        } else {
+            XCTFail("Expected single code block")
+        }
+
+        let deep = String(repeating: "> ", count: 40) + "底层"
+        XCTAssertFalse(Prose.parse(deep).isEmpty)
+
+        let table = Prose.parse("| a | b |\n| - | - |\n| x | y\\\\|\n")
+        if case .table(let parsed) = table.first {
+            XCTAssertEqual(parsed.rows.first, ["x", "y\\"])
+        } else {
+            XCTFail("Expected table")
+        }
+    }
+
+    func testMendHandlesTildeFencesMathAndMultiplication() {
+        XCTAssertEqual(Prose.mend("~~~swift\nlet a = *b"), "~~~swift\nlet a = *b")
+        XCTAssertEqual(Prose.mend("$$\n\\frac{a}{b} * c"), "$$\n\\frac{a}{b} * c")
+        XCTAssertEqual(Prose.mend("计算 2 * 3"), "计算 2 * 3")
+    }
 }

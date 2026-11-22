@@ -55,7 +55,7 @@ public enum Prose {
 
     // MARK: Lines
 
-    private static func parse(_ lines: inout ArraySlice<String>) -> [Block] {
+    private static func parse(_ lines: inout ArraySlice<String>, depth: Int = 0) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
 
@@ -83,7 +83,7 @@ public enum Prose {
                 var closed = false
                 while let next = lines.first {
                     lines = lines.dropFirst()
-                    if next.trimmingCharacters(in: .whitespaces).hasPrefix(fence.marker) {
+                    if isClosingFence(next.trimmingCharacters(in: .whitespaces), marker: fence.char, count: fence.count) {
                         closed = true
                         break
                     }
@@ -137,7 +137,7 @@ public enum Prose {
                 continue
             }
 
-            if trimmed.hasPrefix(">") {
+            if trimmed.hasPrefix(">"), depth < 16 {
                 flush()
                 var inner: [String] = []
                 while let next = lines.first {
@@ -149,7 +149,7 @@ public enum Prose {
                     lines = lines.dropFirst()
                 }
                 var nested = inner[...]
-                blocks.append(.quote(parse(&nested)))
+                blocks.append(.quote(parse(&nested, depth: depth + 1)))
                 continue
             }
 
@@ -202,12 +202,19 @@ public enum Prose {
 
     // MARK: Recognizers
 
-    private static func fence(_ line: String) -> (marker: String, language: String)? {
-        for marker in ["```", "~~~"] where line.hasPrefix(marker) {
-            let language = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            return (marker, String(language.prefix { !$0.isWhitespace }))
-        }
-        return nil
+    private static func fence(_ line: String) -> (char: Character, count: Int, language: String)? {
+        guard let first = line.first, first == "`" || first == "~" else { return nil }
+        let count = line.prefix { $0 == first }.count
+        guard count >= 3 else { return nil }
+        let rest = line.dropFirst(count).trimmingCharacters(in: .whitespaces)
+        if first == "`", rest.contains("`") { return nil }
+        return (first, count, String(rest.prefix { !$0.isWhitespace }))
+    }
+
+    private static func isClosingFence(_ line: String, marker: Character, count: Int) -> Bool {
+        let run = line.prefix { $0 == marker }.count
+        guard run >= count else { return false }
+        return line.dropFirst(run).trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private static func heading(_ line: String) -> Block? {
@@ -255,7 +262,11 @@ public enum Prose {
     private static func cells(_ line: String) -> [String] {
         var bare = line.trimmingCharacters(in: .whitespaces)
         if bare.hasPrefix("|") { bare.removeFirst() }
-        if bare.hasSuffix("|"), !bare.hasSuffix("\\|") { bare.removeLast() }
+        if bare.hasSuffix("|") {
+            let before = bare.dropLast()
+            let slashes = before.reversed().prefix { $0 == "\\" }.count
+            if slashes % 2 == 0 { bare.removeLast() }
+        }
         var out: [String] = []
         var cell = ""
         var escaped = false

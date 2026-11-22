@@ -161,7 +161,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     static func of(tool name: String) -> Grant? {
         switch name {
-        case "web_search", "web_read": .web
+        case "web_search", "web_read", "weather": .web
         case "remember", "forget", "recall": .memory
         case "message_later", "schedule_task", "scheduled_tasks", "cancel_task": .letters
         case "calendar_events", "calendar_add": .calendar
@@ -189,11 +189,18 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Pure in-conversation orchestration tools that do not touch external services or user data directly.
+    private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion"]
+
     /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.
     /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
     static func gate(_ tools: [AgentTool], workspace: [String: Grant] = [:]) -> [AgentTool] {
         tools.compactMap { tool in
-            guard let grant = workspace[tool.spec.name] ?? of(tool: tool.spec.name) else { return tool }
+            let name = tool.spec.name
+            guard let grant = workspace[name] ?? of(tool: name) else {
+                if internalTools.contains(name) { return tool }
+                return Asking(inner: tool, grant: nil)
+            }
             switch grant.policy {
             case .off: return nil
             case .allow: return tool
@@ -276,12 +283,13 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 /// A tool whose ability is set to ask: every call waits for the user's seal.
 struct Asking: AgentTool {
     let inner: AgentTool
-    let grant: Grant
+    let grant: Grant?
 
     var spec: ToolSpec { inner.spec }
     func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
     func approval(for arguments: JSONValue) -> ApprovalAsk? {
-        inner.approval(for: arguments) ?? ApprovalAsk(title: "用\(grant.title)", reason: inner.label(for: arguments))
+        let title = grant.map { "用\($0.title)" } ?? "用工具「\(inner.spec.name)」"
+        return inner.approval(for: arguments) ?? ApprovalAsk(title: title, reason: inner.label(for: arguments))
     }
     func run(_ arguments: JSONValue) async throws -> ToolOutput { try await inner.run(arguments) }
 }
