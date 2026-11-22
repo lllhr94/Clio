@@ -1083,10 +1083,28 @@ private struct ChatSelectionKey: EnvironmentKey {
     static let defaultValue: (@MainActor (UUID, Bool) -> Void)? = nil
 }
 
+private struct ChatQuoteSelectionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (String) -> Void)? = nil
+}
+
+private struct ChatSpeakSelectionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (String) -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var chatSelectionChanged: (@MainActor (UUID, Bool) -> Void)? {
         get { self[ChatSelectionKey.self] }
         set { self[ChatSelectionKey.self] = newValue }
+    }
+
+    var chatQuoteSelection: (@MainActor (String) -> Void)? {
+        get { self[ChatQuoteSelectionKey.self] }
+        set { self[ChatQuoteSelectionKey.self] = newValue }
+    }
+
+    var chatSpeakSelection: (@MainActor (String) -> Void)? {
+        get { self[ChatSpeakSelectionKey.self] }
+        set { self[ChatSpeakSelectionKey.self] = newValue }
     }
 }
 
@@ -1156,6 +1174,8 @@ private struct ProseText: UIViewRepresentable {
     @MainActor private static var heights: [Length: CGFloat] = [:]
     @Environment(\.openURL) private var openURL
     @Environment(\.chatSelectionChanged) private var selectionChanged
+    @Environment(\.chatQuoteSelection) private var quoteSelection
+    @Environment(\.chatSpeakSelection) private var speakSelection
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -1177,6 +1197,8 @@ private struct ProseText: UIViewRepresentable {
     func updateUIView(_ view: InlineCodeTextView, context: Context) {
         context.coordinator.open = openURL
         context.coordinator.selectionChanged = selectionChanged
+        context.coordinator.quoteSelection = quoteSelection
+        context.coordinator.speakSelection = speakSelection
         if let words = context.coordinator.words(for: blocks, fade: fadeTail) {
             let selection = view.selectedRange
             let keepsSelection = selection.length > 0 && words.string.hasPrefix(view.attributedText?.string ?? "")
@@ -1208,6 +1230,8 @@ private struct ProseText: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var open: OpenURLAction?
         var selectionChanged: (@MainActor (UUID, Bool) -> Void)?
+        var quoteSelection: (@MainActor (String) -> Void)?
+        var speakSelection: (@MainActor (String) -> Void)?
         private let id = UUID()
         private var selected = false
 
@@ -1256,6 +1280,31 @@ private struct ProseText: UIViewRepresentable {
             let callback = selectionChanged
             let id = self.id
             DispatchQueue.main.async { callback?(id, active) }
+        }
+
+        /// Adds 「引用追问」 and 「朗读」 right inside the native iOS text-selection menu.
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard range.length > 0, let full = textView.text as NSString?,
+                  range.location >= 0, range.location + range.length <= full.length else {
+                return UIMenu(children: suggestedActions)
+            }
+            let picked = full.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !picked.isEmpty else { return UIMenu(children: suggestedActions) }
+
+            var custom: [UIMenuElement] = []
+            if let onQuote = quoteSelection {
+                custom.append(UIAction(title: "引用追问", image: UIImage(systemName: "text.quote")) { [weak textView] _ in
+                    textView?.selectedRange = NSRange(location: 0, length: 0)
+                    DispatchQueue.main.async { onQuote(picked) }
+                })
+            }
+            if let onSpeak = speakSelection {
+                custom.append(UIAction(title: "朗读", image: UIImage(systemName: "speaker.wave.2")) { _ in
+                    DispatchQueue.main.async { onSpeak(picked) }
+                })
+            }
+            guard !custom.isEmpty else { return UIMenu(children: suggestedActions) }
+            return UIMenu(children: custom + suggestedActions)
         }
 
         /// A tapped link goes where the rest of Clio sends links (the in-app browser, 书案 files …).

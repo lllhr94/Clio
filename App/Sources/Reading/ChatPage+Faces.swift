@@ -249,6 +249,7 @@ extension ChatPage {
     func replyMenu(_ line: ChatLine) -> some View {
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
+        Button("存成笔记", systemImage: "square.and.arrow.down.on.square") { savingNote = Noting(id: line.id, text: line.text) }
         Button(Words.t("做成长图"), systemImage: "photo.on.rectangle") { noting = Noting(id: line.id, text: line.text) }
         ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
         if !isRoom {
@@ -342,7 +343,12 @@ extension ChatPage {
             voice.stopSpeaking(at: .immediate)
             return
         }
-        let plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
+        var plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
+        for secret in Vault.allStrings() where secret.count >= 6 {
+            if plain.contains(secret) {
+                plain = plain.replacingOccurrences(of: secret, with: "（已跳过密钥）")
+            }
+        }
         let utterance = AVSpeechUtterance(string: plain)
         utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
         voice.speak(utterance)

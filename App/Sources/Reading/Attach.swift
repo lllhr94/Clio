@@ -101,15 +101,22 @@ struct DeskPicker: View {
         return words.isEmpty ? all : all.filter { $0.path.localizedCaseInsensitiveContains(words) }
     }
 
-    nonisolated private static func readFiles() -> [(path: String, date: Date, size: Int)] {
-        let root = Workspace.root
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
-        var found: [(path: String, date: Date, size: Int)] = []
-        if let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) {
-            for case let url as URL in walker {
-                guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
-                found.append((Workspace.relative(url), values.contentModificationDate ?? .distantPast, values.fileSize ?? 0))
-                if found.count > 2000 { break }
+    nonisolated static func readFiles(capPerMount: Int = 400, totalCap: Int = 1600) -> [(path: String, date: Date, size: Int)] {
+        var found: [(path: String, date: Date, size: Int)] = Workspace.files(under: Workspace.root, cap: 800, root: Workspace.root, prefix: "")
+            .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
+            .map { (path: $0.path, date: $0.date, size: $0.size) }
+
+        for mount in MountedFolders.all() {
+            guard !Task.isCancelled, found.count < totalCap else { break }
+            let prefix = "\(MountedFolders.virtualFolder)/\(mount.name)"
+            let remaining = min(capPerMount, totalCap - found.count)
+            guard remaining > 0 else { break }
+            if let mountedItems = try? MountedFolders.withAccess(mount, body: { rootURL, target in
+                Workspace.files(under: target, cap: remaining, root: rootURL, prefix: prefix)
+            }) {
+                for item in mountedItems where !item.path.hasSuffix(".pdf.txt") {
+                    found.append((path: item.path, date: item.date, size: item.size))
+                }
             }
         }
         return found.sorted { $0.date > $1.date }

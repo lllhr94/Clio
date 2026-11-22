@@ -64,9 +64,9 @@ struct PlanCard: View {
             .allowsHitTesting(open)
             .accessibilityHidden(!open)
         }
-        .clipped()
+        .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
         .paperCard()
-        .animation(Ink.Motion.settle, value: steps)
+        .animation(reduceMotion ? nil : Ink.Motion.settle, value: steps)
     }
 
     private var headline: String {
