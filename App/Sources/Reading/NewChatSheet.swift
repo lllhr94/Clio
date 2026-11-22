@@ -7,8 +7,8 @@ struct NewChatSheet: View {
     let start: (String, Bool) -> Void
     @State private var pick: String
     @State private var memory = true
+    @State private var detent = PresentationDetent.large
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.dynamicTypeSize) private var textSize
 
     init(team: TeamModel, first: String?, start: @escaping (String, Bool) -> Void) {
         self.team = team
@@ -60,6 +60,6 @@ struct NewChatSheet: View {
                 }
             }
         }
-        .presentationDetents(textSize.isAccessibilitySize ? [.large] : [.medium, .large])
+        .presentationDetents([.medium, .large], selection: $detent)
     }
 }
