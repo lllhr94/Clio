@@ -1,0 +1,300 @@
+2026-11-22 03:32:44.806 Df Clio[41273:1c9b1] [com.apple.BoardServices:XPCErrors] [C:1] Alloc com.apple.frontboard.systemappservices
+2026-11-22 03:32:44.809 Df Clio[41273:1c9af] [com.apple.UIKit:BackgroundTask] Creating new assertion because there is no existing background assertion.
+2026-11-22 03:32:44.819 Df Clio[41273:1c9af] [com.apple.UIKit:BackgroundTask] Creating new background assertion
+2026-11-22 03:32:44.819 Df Clio[41273:1c9af] [com.apple.UIKit:BackgroundTask] Created new background assertion <BKSProcessAssertion: 0x104bf4100>
+2026-11-22 03:32:44.821 Df Clio[41273:1c9af] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x104bf4100>
+2026-11-22 03:32:44.826 Df Clio[41273:1c991] [com.apple.runningboard:general] Added observer for process assertions expiration warning: <_RBSExpirationWarningClient: 0x10511d620>
+2026-11-22 03:32:44.844 Df Clio[41273:1c991] [com.apple.dt.xctest:Default] Registering for test daemon availability notify post.
+2026-11-22 03:32:44.845 Df Clio[41273:1c991] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:44.845 Df Clio[41273:1c991] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:44.845 Df Clio[41273:1c991] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:44.944 Df Clio[41273:1c991] [com.apple.BoardServices:XPCErrors] [C:2] Alloc com.apple.backboard.hid-services.xpc
+2026-11-22 03:32:44.948 Df Clio[41273:1c991] [com.apple.app_launch_measurement:ApplicationLaunch] alm_acquire_pageins_recording_assertion: acquired pageins recording assertion!
+2026-11-22 03:32:44.955 Df Clio[41273:1c991] [com.apple.UIKit:BackgroundTask] Reusing background assertion <BKSProcessAssertion: 0x104bf4100>
+2026-11-22 03:32:44.955 Df Clio[41273:1c991] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x104bf4100>
+2026-11-22 03:32:44.959 Df Clio[41273:1c991] [com.apple.BacklightServices:scenes] 0x10504ddd0 setDelegate:<0x10504c4b0 _UIBacklightEnvironment> hasDelegate:YES for environment:sceneID:io.github.lllhr94.clio-default
+2026-11-22 03:32:44.964 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to LastOneWins
+2026-11-22 03:32:44.964 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Scene target of keyboard event deferring environment did change: 1; scene: UIWindowScene: 0x104bec3f0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:44.964 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x104bec3f0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:44.965 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to SystemShellManaged
+2026-11-22 03:32:45.085 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Window did become application key: UIWindow: 0x1051cc400; contextId: 0x1C822C84; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:45.087 Df Clio[41273:1c9b5] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x105056e20; token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default; status: ancestor> was:target
+2026-11-22 03:32:45.089 Df Clio[41273:1c991] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:45.476 Df Clio[41273:1c9db] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x104bf4100> (used by background task with identifier 2: <_UIBackgroundTaskInfo: 0x105259f80>: taskID = 2, taskName = Persistent SceneSession Map Update, creationTime = 1385 (elapsed = 1))
+2026-11-22 03:32:45.646 Df Clio[41273:1c9b0] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:45.825 Df Clio[41273:1c9da] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x104bf4100> (used by background task with identifier 1: <_UIBackgroundTaskInfo: 0x105050b00>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 1385 (elapsed = 1))
+2026-11-22 03:32:45.825 Df Clio[41273:1c9da] [com.apple.UIKit:BackgroundTask] Will invalidate assertion: <BKSProcessAssertion: 0x104bf4100> for task identifier: 1
+2026-11-22 03:32:45.825 Df Clio[41273:1c9d8] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:46.388 Df Clio[41273:1c991] [PrototypeTools:domain] Not observing PTDefaults on customer install.
+2026-11-22 03:32:46.453 Df Clio[41273:1c991] [com.apple.BoardServices:XPCErrors] [C:3] Alloc com.apple.sessionservices
+2026-11-22 03:32:46.908 Df Clio[41273:1c991] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:1 [B58886D0-D5D1-407A-B498-E44FD7C14506] (reporting strategy default)>
+2026-11-22 03:32:46.908 Df Clio[41273:1c991] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:2 [650B4DC4-5523-47CC-8DC4-6E0F394D11FB] (reporting strategy default)>
+2026-11-22 03:32:46.908 Df Clio[41273:1c991] [com.apple.network:activity] Set activity <nw_activity 50:1 [B58886D0-D5D1-407A-B498-E44FD7C14506] (reporting strategy default)> as the global parent
+2026-11-22 03:32:46.909 Df Clio[41273:1c991] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:46.941 Df Clio[41273:1c991] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x104bec3f0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:46.975 E  Clio[41273:1c991] [com.apple.WebKit:ResourceLoadStatistics] Failed to request known fingerprinting scripts from WebPrivacy: Error Domain=WebPrivacyErrorDomain Code=1001 "List data not found" UserInfo={NSLocalizedDescription=List data not found}
+2026-11-22 03:32:46.985 Df Clio[41273:1c991] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:47.076 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1160d4150 - [PID=41296] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=2)
+2026-11-22 03:32:47.076 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:47.078 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1600453c0 - WKProcessAssertionBackgroundTaskManager: beginBackgroundTaskWithName
+2026-11-22 03:32:47.078 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] WKProcessAssertionBackgroundTaskManager: Took a FinishTaskInterruptable assertion for own process
+2026-11-22 03:32:47.078 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1160d40c0 - [PID=41296] WebProcessProxy::didChangeThrottleState(Foreground) Taking foreground assertion for network process
+2026-11-22 03:32:47.079 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x1161540c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Foreground Assertion' for process with PID=41296
+2026-11-22 03:32:47.080 Df Clio[41273:1c991] [com.apple.WebKit:Sandbox] Successfully created a sandbox extension for '/Users/runner/Library/Developer/CoreSimulator/Devices/3F2735D2-5F33-47F1-AF26-E1E1E6A345F7/data/Containers/Data/Application/851E806B-0116-4039-B8A4-89DE08053F31/Library/WebKit/io.github.lllhr94.clio/WebsiteData/Default'
+2026-11-22 03:32:47.082 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x1161540c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.082 Df Clio[41273:1c991] [com.apple.CFNetwork:Default] Initializing CFHTTPCookieStorage singleton
+2026-11-22 03:32:47.082 Df Clio[41273:1c991] [com.apple.CFNetwork:Default] Creating default cookie storage with process/bundle identifier
+2026-11-22 03:32:47.083 E  Clio[41273:1c9da] [com.apple.extensionkit:default] Failed to resolve host network app id to config: bundleID: com.apple.WebKit.Networking instance ID: Optional([_EXExtensionInstanceIdentifier: A41FA09C-282C-45E5-ABBD-761085FEDC5C])
+2026-11-22 03:32:47.099 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116118270 - [PID=41298] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=2, backgroundActivities=1)
+2026-11-22 03:32:47.099 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:47.099 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x116154180 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Foreground Assertion' for process with PID=41298
+2026-11-22 03:32:47.135 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x116154180 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.166 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1160d4150 - [PID=41296] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:32:47.166 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:47.167 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1160d40c0 - [PID=41296] WebProcessProxy::didChangeThrottleState(Background) Taking background assertion for network process
+2026-11-22 03:32:47.168 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116158190 - NetworkProcessProxy::getNetworkProcessConnection: Taking a background assertion because web process pid 41296 (core identifier 2) is requesting a connection
+2026-11-22 03:32:47.168 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x116154240 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Background Assertion' for process with PID=41296
+2026-11-22 03:32:47.290 Df Clio[41273:1c991] [com.apple.network:activity] <nw_activity 50:1 [B58886D0-D5D1-407A-B498-E44FD7C14506] (global parent) (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3762ms
+2026-11-22 03:32:47.290 Df Clio[41273:1c991] [com.apple.network:activity] <nw_activity 50:2 [650B4DC4-5523-47CC-8DC4-6E0F394D11FB] (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3762ms
+2026-11-22 03:32:47.290 Df Clio[41273:1c991] [com.apple.network:activity] Unsetting the global parent activity <nw_activity 50:1 [B58886D0-D5D1-407A-B498-E44FD7C14506] (global parent) (reporting strategy default) complete (reason success)>
+2026-11-22 03:32:47.290 Df Clio[41273:1c991] [com.apple.app_launch_measurement:ApplicationLaunch] alm_release_pageins_recording_assertion: releasing pageins recording assertion
+2026-11-22 03:32:47.346 Df Clio[41273:1c9b5] [com.apple.WebKit:ProcessSuspension] 0x116154240 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.392 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116118270 - [PID=41298] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:32:47.392 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:47.392 Df Clio[41273:1c9db] [com.apple.WebKit:ProcessSuspension] 0x116154300 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Background Assertion' for process with PID=41298
+2026-11-22 03:32:47.393 Df Clio[41273:1c9db] [com.apple.WebKit:ProcessSuspension] 0x116154300 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.489 Df Clio[41273:1c9da] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:47.759 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116158220 - [PID=41320] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=3)
+2026-11-22 03:32:47.759 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:47.759 Df Clio[41273:1c9d8] [com.apple.WebKit:ProcessSuspension] 0x1161543c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Foreground Assertion' for process with PID=41320
+2026-11-22 03:32:47.763 Df Clio[41273:1c9d8] [com.apple.WebKit:ProcessSuspension] 0x1161543c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.811 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116158220 - [PID=41320] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=3)
+2026-11-22 03:32:47.811 Df Clio[41273:1c991] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:47.811 Df Clio[41273:1c9d8] [com.apple.WebKit:ProcessSuspension] 0x116154480 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Background Assertion' for process with PID=41320
+2026-11-22 03:32:47.813 Df Clio[41273:1c9d8] [com.apple.WebKit:ProcessSuspension] 0x116154480 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:47.924 Df Clio[41273:1c9d8] [com.apple.xpc:connection] [0x1600cc280] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+2026-11-22 03:32:48.169 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1161540c0 - ~ProcessAssertion: Releasing process assertion 'WebProcess Foreground Assertion' for process with PID=41296
+2026-11-22 03:32:48.173 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:48.393 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x116154180 - ~ProcessAssertion: Releasing process assertion 'GPUProcess Foreground Assertion' for process with PID=41298
+2026-11-22 03:32:48.393 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:48.813 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x1161543c0 - ~ProcessAssertion: Releasing process assertion 'NetworkProcess Foreground Assertion' for process with PID=41320
+2026-11-22 03:32:48.813 Df Clio[41273:1c991] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:53.740 Df Clio[41543:1ccba] [com.apple.UIKit:BackgroundTask] Creating new assertion because there is no existing background assertion.
+2026-11-22 03:32:53.741 Df Clio[41543:1ccba] [com.apple.UIKit:BackgroundTask] Creating new background assertion
+2026-11-22 03:32:53.741 Df Clio[41543:1ccba] [com.apple.UIKit:BackgroundTask] Created new background assertion <BKSProcessAssertion: 0x104cd8970>
+2026-11-22 03:32:53.741 Df Clio[41543:1ccbc] [com.apple.BoardServices:XPCErrors] [C:1] Alloc com.apple.frontboard.systemappservices
+2026-11-22 03:32:53.757 Df Clio[41543:1ccba] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x104cd8970>
+2026-11-22 03:32:53.759 Df Clio[41543:1cc7d] [com.apple.runningboard:general] Added observer for process assertions expiration warning: <_RBSExpirationWarningClient: 0x105534fc0>
+2026-11-22 03:32:53.776 Df Clio[41543:1cc7d] [com.apple.dt.xctest:Default] Registering for test daemon availability notify post.
+2026-11-22 03:32:53.777 Df Clio[41543:1cc7d] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:53.777 Df Clio[41543:1cc7d] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:53.777 Df Clio[41543:1cc7d] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:32:53.786 Df Clio[41543:1cc7d] [com.apple.app_launch_measurement:ApplicationLaunch] alm_acquire_pageins_recording_assertion: acquired pageins recording assertion!
+2026-11-22 03:32:53.788 Df Clio[41543:1cc7d] [com.apple.BacklightServices:scenes] 0x1056a27f0 setDelegate:<0x1056a2460 _UIBacklightEnvironment> hasDelegate:YES for environment:sceneID:io.github.lllhr94.clio-default
+2026-11-22 03:32:53.789 Df Clio[41543:1cc7d] [com.apple.BoardServices:XPCErrors] [C:2] Alloc com.apple.backboard.hid-services.xpc
+2026-11-22 03:32:53.791 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to LastOneWins
+2026-11-22 03:32:53.791 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Scene target of keyboard event deferring environment did change: 1; scene: UIWindowScene: 0x104cc9d70; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:53.791 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x104cc9d70; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:53.791 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to SystemShellManaged
+2026-11-22 03:32:53.878 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Window did become application key: UIWindow: 0x105640400; contextId: 0x7532D445; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:53.881 Df Clio[41543:1cc7d] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:53.881 Df Clio[41543:1ccba] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x1054568e0; token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default; status: ancestor> was:target
+2026-11-22 03:32:54.261 Df Clio[41543:1ccbc] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:54.532 Df Clio[41543:1ccba] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:54.776 Df Clio[41543:1ccbc] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x104cd8970> (used by background task with identifier 1: <_UIBackgroundTaskInfo: 0x105450940>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 1394 (elapsed = 1))
+2026-11-22 03:32:54.776 Df Clio[41543:1ccbc] [com.apple.UIKit:BackgroundTask] Will invalidate assertion: <BKSProcessAssertion: 0x104cd8970> for task identifier: 1
+2026-11-22 03:32:54.921 Df Clio[41543:1ccbc] [com.apple.calls.callkit:Default] Call host has no calls
+2026-11-22 03:32:55.275 Df Clio[41543:1cc7d] [PrototypeTools:domain] Not observing PTDefaults on customer install.
+2026-11-22 03:32:55.356 Df Clio[41543:1cc7d] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UIActivityIndicatorView
+2026-11-22 03:32:55.356 Df Clio[41543:1cc7d] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UIActivityIndicatorView
+2026-11-22 03:32:55.515 Df Clio[41543:1cc7d] [com.apple.BoardServices:XPCErrors] [C:3] Alloc com.apple.sessionservices
+2026-11-22 03:32:56.549 Df Clio[41543:1cc7d] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:1 [56DFDC04-570E-45EA-B514-C576DFE7B607] (reporting strategy default)>
+2026-11-22 03:32:56.549 Df Clio[41543:1cc7d] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:2 [B721BB91-7010-4F53-BBD4-63D2F96AA592] (reporting strategy default)>
+2026-11-22 03:32:56.549 Df Clio[41543:1cc7d] [com.apple.network:activity] Set activity <nw_activity 50:1 [56DFDC04-570E-45EA-B514-C576DFE7B607] (reporting strategy default)> as the global parent
+2026-11-22 03:32:56.551 Df Clio[41543:1cc7d] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:56.574 Df Clio[41543:1cc7d] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x104cc9d70; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:32:56.594 Df Clio[41543:1cc7d] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:32:56.778 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=2)
+2026-11-22 03:32:56.779 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:56.783 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x160e6ed80 - WKProcessAssertionBackgroundTaskManager: beginBackgroundTaskWithName
+2026-11-22 03:32:56.784 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] WKProcessAssertionBackgroundTaskManager: Took a FinishTaskInterruptable assertion for own process
+2026-11-22 03:32:56.784 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e00c0 - [PID=41576] WebProcessProxy::didChangeThrottleState(Foreground) Taking foreground assertion for network process
+2026-11-22 03:32:56.784 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x1161600c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Foreground Assertion' for process with PID=41576
+2026-11-22 03:32:56.786 Df Clio[41543:1cc7d] [com.apple.WebKit:Sandbox] Successfully created a sandbox extension for '/Users/runner/Library/Developer/CoreSimulator/Devices/3F2735D2-5F33-47F1-AF26-E1E1E6A345F7/data/Containers/Data/Application/851E806B-0116-4039-B8A4-89DE08053F31/Library/WebKit/io.github.lllhr94.clio/WebsiteData/Default'
+2026-11-22 03:32:56.788 Df Clio[41543:1cc7d] [com.apple.CFNetwork:Default] Initializing CFHTTPCookieStorage singleton
+2026-11-22 03:32:56.788 Df Clio[41543:1cc7d] [com.apple.CFNetwork:Default] Creating default cookie storage with process/bundle identifier
+2026-11-22 03:32:56.795 E  Clio[41543:1cd7e] [com.apple.extensionkit:default] Failed to resolve host network app id to config: bundleID: com.apple.WebKit.Networking instance ID: Optional([_EXExtensionInstanceIdentifier: 2D11C396-109C-4E7E-BA6F-6D25A48EE15C])
+2026-11-22 03:32:56.796 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x1161600c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:56.811 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116124270 - [PID=41573] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=2, backgroundActivities=1)
+2026-11-22 03:32:56.811 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:56.811 Df Clio[41543:1ccb8] [com.apple.WebKit:ProcessSuspension] 0x116160180 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Foreground Assertion' for process with PID=41573
+2026-11-22 03:32:56.815 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:32:56.815 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:56.816 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e00c0 - [PID=41576] WebProcessProxy::didChangeThrottleState(Background) Taking background assertion for network process
+2026-11-22 03:32:56.817 Df Clio[41543:1ccb8] [com.apple.WebKit:ProcessSuspension] 0x116160180 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:56.817 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116164190 - NetworkProcessProxy::getNetworkProcessConnection: Taking a background assertion because web process pid 41576 (core identifier 2) is requesting a connection
+2026-11-22 03:32:56.818 Df Clio[41543:1ccb8] [com.apple.WebKit:ProcessSuspension] 0x116160240 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Background Assertion' for process with PID=41576
+2026-11-22 03:32:56.832 Df Clio[41543:1ccb8] [com.apple.WebKit:ProcessSuspension] 0x116160240 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:56.992 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116124270 - [PID=41573] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:32:56.992 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:56.992 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160300 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Background Assertion' for process with PID=41573
+2026-11-22 03:32:56.998 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160300 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.109 Df Clio[41543:1cd81] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:57.142 Df Clio[41543:1cc7d] [com.apple.network:activity] <nw_activity 50:1 [56DFDC04-570E-45EA-B514-C576DFE7B607] (global parent) (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 4556ms
+2026-11-22 03:32:57.142 Df Clio[41543:1cc7d] [com.apple.network:activity] <nw_activity 50:2 [B721BB91-7010-4F53-BBD4-63D2F96AA592] (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 4556ms
+2026-11-22 03:32:57.142 Df Clio[41543:1cc7d] [com.apple.network:activity] Unsetting the global parent activity <nw_activity 50:1 [56DFDC04-570E-45EA-B514-C576DFE7B607] (global parent) (reporting strategy default) complete (reason success)>
+2026-11-22 03:32:57.142 Df Clio[41543:1cc7d] [com.apple.app_launch_measurement:ApplicationLaunch] alm_release_pageins_recording_assertion: releasing pageins recording assertion
+2026-11-22 03:32:57.375 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116164220 - [PID=41648] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=3)
+2026-11-22 03:32:57.375 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:32:57.375 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x1161603c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Foreground Assertion' for process with PID=41648
+2026-11-22 03:32:57.376 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x1161603c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.403 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116164220 - [PID=41648] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=3)
+2026-11-22 03:32:57.403 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:32:57.403 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160480 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Background Assertion' for process with PID=41648
+2026-11-22 03:32:57.404 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160480 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.425 Df Clio[41543:1cd81] [com.apple.xpc:connection] [0x1610c4140] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::clearAssertion:
+2026-11-22 03:32:57.548 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160540 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess NearSuspended Assertion' for process with PID=41576
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] 0x1160e00c0 - [PID=41576] WebProcessProxy::canTerminateAuxiliaryProcess: returns false (pageCount=1, remotePageCount=0, provisionalPageCount=0, suspendedPageCount=0, m_isInProcessCache=0, m_shutdownPreventingScopeCounter=0)
+2026-11-22 03:32:57.548 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e00c0 - [PID=41576] WebProcessProxy::didChangeThrottleState(Suspended) Release all assertions for network process
+2026-11-22 03:32:57.548 E  Clio[41543:1cda2] [com.apple.WebKit:ProcessSuspension] WebContent[41576] 0x112060100 - [sessionID=1] WebProcess::updateFreezerStatus: isFreezable=1, error=-1
+2026-11-22 03:32:57.549 Df Clio[41543:1cd81] [com.apple.WebKit:ProcessSuspension] 0x116160540 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.553 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116124270 - [PID=41573] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:32:57.553 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116124270 - [PID=41573] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:32:57.553 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:32:57.553 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x116160600 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess NearSuspended Assertion' for process with PID=41573
+2026-11-22 03:32:57.554 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x116160600 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.557 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116164220 - [PID=41648] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:32:57.557 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116164220 - [PID=41648] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:32:57.557 Df Clio[41543:1cc7d] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:32:57.557 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x1161606c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess NearSuspended Assertion' for process with PID=41648
+2026-11-22 03:32:57.557 Df Clio[41543:1ccbb] [com.apple.WebKit:ProcessSuspension] 0x1161606c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:32:57.572 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1160e0150 - [PID=41576] ProcessThrottler::clearAssertion: Releasing near-suspended assertion
+2026-11-22 03:32:57.572 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116160540 - ~ProcessAssertion: Releasing process assertion 'WebProcess NearSuspended Assertion' for process with PID=41576
+2026-11-22 03:32:57.572 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Suspended assertion for process with PID=0 was invalidated
+2026-11-22 03:32:57.817 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1161600c0 - ~ProcessAssertion: Releasing process assertion 'WebProcess Foreground Assertion' for process with PID=41576
+2026-11-22 03:32:57.817 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:57.992 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116160180 - ~ProcessAssertion: Releasing process assertion 'GPUProcess Foreground Assertion' for process with PID=41573
+2026-11-22 03:32:57.992 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:58.405 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x1161603c0 - ~ProcessAssertion: Releasing process assertion 'NetworkProcess Foreground Assertion' for process with PID=41648
+2026-11-22 03:32:58.405 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:32:58.549 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116160240 - ~ProcessAssertion: Releasing process assertion 'WebProcess Background Assertion' for process with PID=41576
+2026-11-22 03:32:58.550 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
+2026-11-22 03:32:58.554 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116160300 - ~ProcessAssertion: Releasing process assertion 'GPUProcess Background Assertion' for process with PID=41573
+2026-11-22 03:32:58.554 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
+2026-11-22 03:32:58.557 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x116160480 - ~ProcessAssertion: Releasing process assertion 'NetworkProcess Background Assertion' for process with PID=41648
+2026-11-22 03:32:58.558 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x160e6ed80 - WKProcessAssertionBackgroundTaskManager: endBackgroundTask
+2026-11-22 03:32:58.558 Df Clio[41543:1cc7d] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
+2026-11-22 03:33:05.024 Df Clio[42043:1d115] [com.apple.UIKit:BackgroundTask] Creating new assertion because there is no existing background assertion.
+2026-11-22 03:33:05.024 Df Clio[42043:1d115] [com.apple.UIKit:BackgroundTask] Creating new background assertion
+2026-11-22 03:33:05.025 Df Clio[42043:1d115] [com.apple.UIKit:BackgroundTask] Created new background assertion <BKSProcessAssertion: 0x10576c400>
+2026-11-22 03:33:05.027 Df Clio[42043:1d116] [com.apple.BoardServices:XPCErrors] [C:1] Alloc com.apple.frontboard.systemappservices
+2026-11-22 03:33:05.030 Df Clio[42043:1d115] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x10576c400>
+2026-11-22 03:33:05.048 Df Clio[42043:1d0fd] [com.apple.runningboard:general] Added observer for process assertions expiration warning: <_RBSExpirationWarningClient: 0x105d49640>
+2026-11-22 03:33:05.064 Df Clio[42043:1d0fd] [com.apple.dt.xctest:Default] Registering for test daemon availability notify post.
+2026-11-22 03:33:05.064 Df Clio[42043:1d0fd] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:33:05.064 Df Clio[42043:1d0fd] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:33:05.064 Df Clio[42043:1d0fd] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-11-22 03:33:05.137 Df Clio[42043:1d0fd] [com.apple.BoardServices:XPCErrors] [C:2] Alloc com.apple.backboard.hid-services.xpc
+2026-11-22 03:33:05.138 Df Clio[42043:1d0fd] [com.apple.app_launch_measurement:ApplicationLaunch] alm_acquire_pageins_recording_assertion: acquired pageins recording assertion!
+2026-11-22 03:33:05.142 Df Clio[42043:1d0fd] [com.apple.UIKit:BackgroundTask] Reusing background assertion <BKSProcessAssertion: 0x10576c400>
+2026-11-22 03:33:05.142 Df Clio[42043:1d0fd] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x10576c400>
+2026-11-22 03:33:05.143 Df Clio[42043:1d0fd] [com.apple.BacklightServices:scenes] 0x105c4d9b0 setDelegate:<0x105c4da10 _UIBacklightEnvironment> hasDelegate:YES for environment:sceneID:io.github.lllhr94.clio-default
+2026-11-22 03:33:05.145 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to LastOneWins
+2026-11-22 03:33:05.145 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Scene target of keyboard event deferring environment did change: 1; scene: UIWindowScene: 0x105767cd0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:33:05.145 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x105767cd0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:33:05.145 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to SystemShellManaged
+2026-11-22 03:33:05.208 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Window did become application key: UIWindow: 0x105dc8400; contextId: 0x6EC37D25; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:33:05.211 Df Clio[42043:1d118] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x105c55f80; token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default; status: ancestor> was:target
+2026-11-22 03:33:05.214 Df Clio[42043:1d0fd] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:33:05.487 Df Clio[42043:1d116] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:05.679 Df Clio[42043:1d118] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x10576c400> (used by background task with identifier 2: <_UIBackgroundTaskInfo: 0x105e46100>: taskID = 2, taskName = Persistent SceneSession Map Update, creationTime = 1406 (elapsed = 0))
+2026-11-22 03:33:05.694 Df Clio[42043:1d0fd] [PrototypeTools:domain] Not observing PTDefaults on customer install.
+2026-11-22 03:33:05.809 Df Clio[42043:1d11c] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:05.979 Df Clio[42043:1d118] [com.apple.calls.callkit:Default] Call host has no calls
+2026-11-22 03:33:06.012 Df Clio[42043:1d0fd] [com.apple.BoardServices:XPCErrors] [C:3] Alloc com.apple.sessionservices
+2026-11-22 03:33:06.070 Df Clio[42043:1d11c] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x10576c400> (used by background task with identifier 1: <_UIBackgroundTaskInfo: 0x105c50d00>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 1406 (elapsed = 1))
+2026-11-22 03:33:06.070 Df Clio[42043:1d11c] [com.apple.UIKit:BackgroundTask] Will invalidate assertion: <BKSProcessAssertion: 0x10576c400> for task identifier: 1
+2026-11-22 03:33:06.569 Df Clio[42043:1d0fd] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:1 [A0601AFF-D9F0-4838-ADCE-5772993F57BF] (reporting strategy default)>
+2026-11-22 03:33:06.569 Df Clio[42043:1d0fd] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:2 [90A2E7FB-C7D3-4261-9498-5E260614E6D6] (reporting strategy default)>
+2026-11-22 03:33:06.569 Df Clio[42043:1d0fd] [com.apple.network:activity] Set activity <nw_activity 50:1 [A0601AFF-D9F0-4838-ADCE-5772993F57BF] (reporting strategy default)> as the global parent
+2026-11-22 03:33:06.575 Df Clio[42043:1d0fd] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:33:06.613 Df Clio[42043:1d0fd] [com.apple.UIKit:KeyWindow] Scene became target of keyboard event deferring environment: UIWindowScene: 0x105767cd0; scene identity: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Aio.github.lllhr94.clio-default
+2026-11-22 03:33:06.621 Df Clio[42043:1d0fd] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:io.github.lllhr94.clio-default  persistentID: 3D8BBA21-3B32-4C59-82C6-3C55B0DE945F
+2026-11-22 03:33:06.627 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=2)
+2026-11-22 03:33:06.627 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:06.628 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1604833c0 - WKProcessAssertionBackgroundTaskManager: beginBackgroundTaskWithName
+2026-11-22 03:33:06.628 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] WKProcessAssertionBackgroundTaskManager: Took a FinishTaskInterruptable assertion for own process
+2026-11-22 03:33:06.629 Df Clio[42043:1d116] [com.apple.WebKit:ProcessSuspension] 0x11715c0c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Foreground Assertion' for process with PID=42062
+2026-11-22 03:33:06.629 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d40c0 - [PID=42062] WebProcessProxy::didChangeThrottleState(Foreground) Taking foreground assertion for network process
+2026-11-22 03:33:06.631 Df Clio[42043:1d0fd] [com.apple.WebKit:Sandbox] Successfully created a sandbox extension for '/Users/runner/Library/Developer/CoreSimulator/Devices/3F2735D2-5F33-47F1-AF26-E1E1E6A345F7/data/Containers/Data/Application/851E806B-0116-4039-B8A4-89DE08053F31/Library/WebKit/io.github.lllhr94.clio/WebsiteData/Default'
+2026-11-22 03:33:06.633 Df Clio[42043:1d0fd] [com.apple.CFNetwork:Default] Initializing CFHTTPCookieStorage singleton
+2026-11-22 03:33:06.634 Df Clio[42043:1d0fd] [com.apple.CFNetwork:Default] Creating default cookie storage with process/bundle identifier
+2026-11-22 03:33:06.635 E  Clio[42043:1d11a] [com.apple.extensionkit:default] Failed to resolve host network app id to config: bundleID: com.apple.WebKit.Networking instance ID: Optional([_EXExtensionInstanceIdentifier: D5B96872-29BE-47F4-BC8F-254CF9836496])
+2026-11-22 03:33:06.635 Df Clio[42043:1d116] [com.apple.WebKit:ProcessSuspension] 0x11715c0c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:06.642 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117118270 - [PID=42065] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=2, backgroundActivities=1)
+2026-11-22 03:33:06.642 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:06.643 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c180 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Foreground Assertion' for process with PID=42065
+2026-11-22 03:33:06.659 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c180 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:06.740 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:33:06.740 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:33:06.741 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d40c0 - [PID=42062] WebProcessProxy::didChangeThrottleState(Background) Taking background assertion for network process
+2026-11-22 03:33:06.742 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117160190 - NetworkProcessProxy::getNetworkProcessConnection: Taking a background assertion because web process pid 42062 (core identifier 2) is requesting a connection
+2026-11-22 03:33:06.805 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c240 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess Background Assertion' for process with PID=42062
+2026-11-22 03:33:06.812 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c240 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:06.818 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117118270 - [PID=42065] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=2)
+2026-11-22 03:33:06.818 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:33:06.835 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c300 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess Background Assertion' for process with PID=42065
+2026-11-22 03:33:06.841 Df Clio[42043:1d115] [com.apple.WebKit:ProcessSuspension] 0x11715c300 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:06.958 Df Clio[42043:1d11a] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:07.008 Df Clio[42043:1d0fd] [com.apple.network:activity] <nw_activity 50:1 [A0601AFF-D9F0-4838-ADCE-5772993F57BF] (global parent) (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3110ms
+2026-11-22 03:33:07.008 Df Clio[42043:1d0fd] [com.apple.network:activity] <nw_activity 50:2 [90A2E7FB-C7D3-4261-9498-5E260614E6D6] (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3109ms
+2026-11-22 03:33:07.008 Df Clio[42043:1d0fd] [com.apple.network:activity] Unsetting the global parent activity <nw_activity 50:1 [A0601AFF-D9F0-4838-ADCE-5772993F57BF] (global parent) (reporting strategy default) complete (reason success)>
+2026-11-22 03:33:07.008 Df Clio[42043:1d0fd] [com.apple.app_launch_measurement:ApplicationLaunch] alm_release_pageins_recording_assertion: releasing pageins recording assertion
+2026-11-22 03:33:07.222 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117160220 - [PID=42081] ProcessThrottler::setThrottleState: Updating process assertion type to 3 (foregroundActivities=1, backgroundActivities=3)
+2026-11-22 03:33:07.222 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Foreground
+2026-11-22 03:33:07.222 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c3c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Foreground Assertion' for process with PID=42081
+2026-11-22 03:33:07.222 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c3c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:07.241 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117160220 - [PID=42081] ProcessThrottler::setThrottleState: Updating process assertion type to 1 (foregroundActivities=0, backgroundActivities=3)
+2026-11-22 03:33:07.241 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Background
+2026-11-22 03:33:07.241 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c480 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess Background Assertion' for process with PID=42081
+2026-11-22 03:33:07.241 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c480 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:07.267 Df Clio[42043:1d118] [com.apple.xpc:connection] [0x1604ccc80] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+2026-11-22 03:33:07.318 E  Clio[42043:1d17e] [com.apple.WebKit:ProcessSuspension] WebContent[42062] 0x10d060100 - [sessionID=1] WebProcess::updateFreezerStatus: isFreezable=1, error=-1
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::clearAssertion:
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] 0x1170d40c0 - [PID=42062] WebProcessProxy::canTerminateAuxiliaryProcess: returns false (pageCount=1, remotePageCount=0, provisionalPageCount=0, suspendedPageCount=0, m_isInProcessCache=0, m_shutdownPreventingScopeCounter=0)
+2026-11-22 03:33:07.324 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c540 - ProcessAssertion::acquireSync Trying to take RBS assertion 'WebProcess NearSuspended Assertion' for process with PID=42062
+2026-11-22 03:33:07.324 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d40c0 - [PID=42062] WebProcessProxy::didChangeThrottleState(Suspended) Release all assertions for network process
+2026-11-22 03:33:07.326 Df Clio[42043:1d12d] [com.apple.WebKit:ProcessSuspension] 0x11715c540 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:07.329 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117118270 - [PID=42065] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:33:07.329 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117118270 - [PID=42065] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:33:07.329 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:33:07.329 Df Clio[42043:1d118] [com.apple.WebKit:ProcessSuspension] 0x11715c600 - ProcessAssertion::acquireSync Trying to take RBS assertion 'GPUProcess NearSuspended Assertion' for process with PID=42065
+2026-11-22 03:33:07.330 Df Clio[42043:1d118] [com.apple.WebKit:ProcessSuspension] 0x11715c600 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:07.332 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1170d4150 - [PID=42062] ProcessThrottler::clearAssertion: Releasing near-suspended assertion
+2026-11-22 03:33:07.332 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c540 - ~ProcessAssertion: Releasing process assertion 'WebProcess NearSuspended Assertion' for process with PID=42062
+2026-11-22 03:33:07.332 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Suspended assertion for process with PID=0 was invalidated
+2026-11-22 03:33:07.345 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117160220 - [PID=42081] ProcessThrottler::processReadyToSuspend: Updating process assertion to allow suspension
+2026-11-22 03:33:07.345 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x117160220 - [PID=42081] ProcessThrottler::setThrottleState: Updating process assertion type to 0 (foregroundActivities=0, backgroundActivities=0)
+2026-11-22 03:33:07.345 Df Clio[42043:1d0fd] [com.apple.WebKit:Process] AssertionCapability::AssertionCapability: taking assertion Suspended
+2026-11-22 03:33:07.345 Df Clio[42043:1d118] [com.apple.WebKit:ProcessSuspension] 0x11715c6c0 - ProcessAssertion::acquireSync Trying to take RBS assertion 'NetworkProcess NearSuspended Assertion' for process with PID=42081
+2026-11-22 03:33:07.345 Df Clio[42043:1d118] [com.apple.WebKit:ProcessSuspension] 0x11715c6c0 - ProcessAssertion() Successfully granted capability
+2026-11-22 03:33:07.742 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c0c0 - ~ProcessAssertion: Releasing process assertion 'WebProcess Foreground Assertion' for process with PID=42062
+2026-11-22 03:33:07.743 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:33:07.819 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c180 - ~ProcessAssertion: Releasing process assertion 'GPUProcess Foreground Assertion' for process with PID=42065
+2026-11-22 03:33:07.820 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:33:08.242 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c3c0 - ~ProcessAssertion: Releasing process assertion 'NetworkProcess Foreground Assertion' for process with PID=42081
+2026-11-22 03:33:08.242 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Foreground assertion for process with PID=0 was invalidated
+2026-11-22 03:33:08.324 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c240 - ~ProcessAssertion: Releasing process assertion 'WebProcess Background Assertion' for process with PID=42062
+2026-11-22 03:33:08.325 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
+2026-11-22 03:33:08.330 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c300 - ~ProcessAssertion: Releasing process assertion 'GPUProcess Background Assertion' for process with PID=42065
+2026-11-22 03:33:08.330 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
+2026-11-22 03:33:08.346 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x11715c480 - ~ProcessAssertion: Releasing process assertion 'NetworkProcess Background Assertion' for process with PID=42081
+2026-11-22 03:33:08.347 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x1604833c0 - WKProcessAssertionBackgroundTaskManager: endBackgroundTask
+2026-11-22 03:33:08.347 Df Clio[42043:1d0fd] [com.apple.WebKit:ProcessSuspension] 0x0 - ProcessAssertion: RBS Background assertion for process with PID=0 was invalidated
