@@ -52,6 +52,7 @@ extension TeamModel {
         laters = data.laters
         routines = data.routines
         entries = [:]
+        modelInputLog.reset()
         approvals = []
         phase = settings.endpoints.isEmpty ? .setup : .ready
         sortBots()

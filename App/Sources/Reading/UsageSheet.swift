@@ -23,6 +23,13 @@ struct UsageSheet: View {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     heading("上下文")
                     contextCard
+                    NavigationLink {
+                        ModelInputPage(team: team, chat: key)
+                    } label: {
+                        RowLabel("doc.text.magnifyingglass", title: L.t("modelInput.open"))
+                    }
+                    .buttonStyle(TapStyle())
+                    .paperCard()
                     heading("本对话").padding(.top, Ink.Space.m)
                     spendCard
                     allCard

@@ -114,6 +114,7 @@ final class TeamModel: ObservableObject {
     @Published var busyBots: Set<String> = []
 
     var entries: [String: [Entry]] = [:]
+    let modelInputLog = ModelInputLog()
     var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
     var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
@@ -386,7 +387,10 @@ final class TeamModel: ObservableObject {
         epochs[key, default: 0] += 1
         browser.release(key)
         let current = history(key)
-        guard current.contains(where: { $0.note != true }) else { return true }
+        guard current.contains(where: { $0.note != true }) else {
+            modelInputLog.clear(key)
+            return true
+        }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
         let named = options(key).title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
@@ -409,6 +413,7 @@ final class TeamModel: ObservableObject {
         setLeaves(key, [leaf] + leaves(key))
         if named == nil { nameLeaf(key, leaf.id, from: current) }
         entries[key] = []
+        modelInputLog.clear(key)
         if keeping { ChatDisk.save([Entry](), chat: key) }
         clearPreview(key)
         notify(key, .changed)
@@ -439,6 +444,7 @@ final class TeamModel: ObservableObject {
         queued[key] = nil
         stop(key)
         epochs[key, default: 0] += 1
+        modelInputLog.clear(key)
         if keeping {
             for leaf in leaves(key) {
                 Disk.remove(Self.leafFile(key, leaf.id))
@@ -892,10 +898,14 @@ final class TeamModel: ObservableObject {
         if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
+        let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
+        let basePrompt = system(for: bot, room: room, memory: usesMemory)
+        let extraPrompt = summaryBlock(key) + offBlock(key) + place(of: key).promptLine
+            + (Pulse.on ? (Temper.of(bot).pulsePrompt ?? "") : "") + connectorHint
         var agent = Agent(
-            provider: endpoint.provider(key: apiKey),
+            provider: recordingProvider(endpoint.provider(key: apiKey), chat: key, base: basePrompt, extra: extraPrompt, memory: usesMemory),
             model: found.model,
-            system: system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue)) + summaryBlock(key) + offBlock(key) + place(of: key).promptLine + (Pulse.on ? (Temper.of(bot).pulsePrompt ?? "") : "") + connectorHint,
+            system: basePrompt + extraPrompt,
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
         )
@@ -1226,6 +1236,37 @@ final class TeamModel: ObservableObject {
     /// Every tool call gets its answer, even one cut off when a turn was stopped.
     static func paired(_ messages: [Message]) -> [Message] { Conversation.paired(messages) }
 
+    /// Read-only snapshots for the usage sheet, scoped to the open conversation.
+    func modelInputs(_ key: String) -> [ModelInput] { modelInputLog.requests(in: key) }
+
+    private func recordingProvider(_ provider: any ModelProvider, chat: String, base: String, extra: String, memory: Bool) -> ModelInputProvider {
+        let epoch = epochs[chat, default: 0]
+        let session = modelInputLog.session
+        var memoryBlocks: [String] = []
+        if memory {
+            let surface = surfaceMemories
+            if !surface.isEmpty {
+                memoryBlocks.append("你记得的关于用户的事：\n" + surface.map { "- \($0.text)" }.joined(separator: "\n"))
+            }
+            let deepCount = deepMemories.count
+            if deepCount > 0 {
+                memoryBlocks.append("另有 \(deepCount) 件较早的旧事收在拾遗深处，不在上面。用户提到过去的人和事、而上面没有时，先用 recall 翻一翻。")
+            }
+        }
+        let skills = SkillShelf.promptBlock.trimmingCharacters(in: .newlines)
+        let sections = ModelInputSections(base: base, extra: extra, memory: memoryBlocks.joined(separator: "\n\n"), skills: skills)
+        return ModelInputProvider(upstream: provider, sections: sections) { [weak self] input in
+            Task { @MainActor in
+                guard let self, self.modelInputLog.session == session, self.epochs[chat, default: 0] == epoch else { return }
+                let exists = chat.hasPrefix("room-")
+                    ? self.rooms.contains { Self.key(room: $0.id) == chat }
+                    : self.bots.contains { Self.key(bot: $0.id) == chat }
+                guard exists else { return }
+                self.modelInputLog.add(input, in: chat)
+            }
+        }
+    }
+
     func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
         var parts: [String] = []
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
@@ -1377,10 +1418,12 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(asked)), to: helperKey)
         touch(helperKey, preview: nil)
         let traits = found.endpoint.traits(found.model)
+        let basePrompt = system(for: helper, room: nil)
+        let extraPrompt = "\n\n这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。"
         var agent = Agent(
-            provider: found.endpoint.provider(key: apiKey),
+            provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, base: basePrompt, extra: extraPrompt, memory: true),
             model: found.model,
-            system: system(for: helper, room: nil) + "\n\n这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。",
+            system: basePrompt + extraPrompt,
             tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true) : [],
             approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key) ?? false }
         )

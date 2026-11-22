@@ -81,6 +81,7 @@ extension TeamModel {
         optionBook[key] = nil
         Snapshots.shared.forget(key)
         entries[key] = nil
+        modelInputLog.clear(key)
         if keeping { ChatDisk.remove(key) }
         saveBots()
         saveRooms()
@@ -125,6 +126,7 @@ extension TeamModel {
         optionBook[key] = nil
         Snapshots.shared.forget(key)
         entries[key] = nil
+        modelInputLog.clear(key)
         if keeping { ChatDisk.remove(key) }
         saveRooms()
     }
