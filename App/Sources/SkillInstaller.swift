@@ -58,14 +58,13 @@ enum SkillInstaller {
             _ session: URLSession,
             task: URLSessionTask,
             willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest,
-            completionHandler: @escaping (URLRequest?) -> Void
-        ) {
+            newRequest request: URLRequest
+        ) async -> URLRequest? {
             guard let next = request.url, next.scheme?.lowercased() == "https", !LocalAddress.isLocal(next) else {
-                completionHandler(nil)
-                return
+                return nil
             }
-            completionHandler(request)
+            if await LocalAddress.resolvesToLocal(next) { return nil }
+            return request
         }
     }
 
@@ -168,7 +167,8 @@ enum SkillInstaller {
         try fm.createDirectory(at: tempTarget, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: tempTarget) }
 
-        let srcBase = staged.directory.standardizedFileURL.path
+        let srcBase = staged.directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let tempBase = tempTarget.resolvingSymlinksInPath().standardizedFileURL.path
         for entry in staged.files {
             let source = entry.path.split(separator: "/").reduce(staged.directory) { $0.appendingPathComponent(String($1)) }
             let resolvedSrc = source.resolvingSymlinksInPath().standardizedFileURL.path
@@ -176,7 +176,8 @@ enum SkillInstaller {
                 throw Problem.message("技能包里包含异常路径：\(entry.path)")
             }
             let destination = entry.path.split(separator: "/").reduce(tempTarget) { $0.appendingPathComponent(String($1)) }
-            guard destination.standardizedFileURL.path.hasPrefix(tempTarget.standardizedFileURL.path + "/") else {
+            let resolvedDest = destination.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolvedDest.hasPrefix(tempBase + "/") else {
                 throw Problem.message("技能包里包含越界路径：\(entry.path)")
             }
             try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -499,17 +500,18 @@ enum SkillInstaller {
 
     private static func collectFiles(in dir: URL) -> [FileEntry] {
         let fm = FileManager.default
-        let base = dir.standardizedFileURL.path
+        let baseURL = dir.resolvingSymlinksInPath().standardizedFileURL
+        let base = baseURL.path
         let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
-        guard let walker = fm.enumerator(at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
+        guard let walker = fm.enumerator(at: baseURL, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
         var entries: [FileEntry] = []
         for case let url as URL in walker {
             guard let values = try? url.resourceValues(forKeys: Set(keys)),
                   values.isSymbolicLink != true,
                   values.isRegularFile == true else { continue }
-            let std = url.standardizedFileURL.path
-            guard std.hasPrefix(base + "/") else { continue }
-            let rel = String(std.dropFirst(base.count + 1))
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolved.hasPrefix(base + "/") else { continue }
+            let rel = String(resolved.dropFirst(base.count + 1))
             let bytes = values.fileSize ?? 0
             entries.append(FileEntry(path: rel, bytes: bytes, isScript: isScriptFile(url: url, relativePath: rel)))
         }
@@ -622,7 +624,9 @@ enum SkillInstaller {
     }
 
     private static func makeScratchDir() -> URL {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("clio-skill-\(UUID().uuidString)", isDirectory: true)
+        let dir = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("clio-skill-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
