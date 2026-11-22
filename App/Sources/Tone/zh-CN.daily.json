@@ -403,6 +403,7 @@
   },
   "actions": {
     "start": "开始",
+    "newChat": "新对话",
     "confirm": "确定",
     "save": "保存",
     "cancel": "取消",

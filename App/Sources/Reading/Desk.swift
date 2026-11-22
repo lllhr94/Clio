@@ -334,11 +334,12 @@ struct Desk: View {
                     closeSide()
                     startFresh()
                 } label: {
-                    Label(L.t("chat.newConversation"), systemImage: "square.and.pencil")
+                    Label(L.t("actions.newChat"), systemImage: "square.and.pencil")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.paper)
                         .lineLimit(1)
-                        .padding(.horizontal, Ink.Space.l)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, Ink.Space.m)
                         .frame(minHeight: Ink.Bar.height)
                         .background(Ink.ink, in: .capsule)
                 }
