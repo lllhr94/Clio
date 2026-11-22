@@ -50,7 +50,7 @@ final class Den: ObservableObject {
             do {
                 if !FileManager.default.fileExists(atPath: root.appendingPathComponent("meta.db").path) {
                     guard let bundled = Bundle.main.url(forResource: "alpine", withExtension: nil) else {
-                        throw ProviderError("这个安装包里没有带斗室的 Linux。")
+                        throw ProviderError(Words.t("这个安装包里没有带斗室的 Linux。"))
                     }
                     try? FileManager.default.removeItem(at: root)
                     try FileManager.default.createDirectory(at: Self.home, withIntermediateDirectories: true)
@@ -100,7 +100,7 @@ final class Den: ObservableObject {
     func run(_ command: String, timeout: Double = 120, shown: Bool = true, onOutput: (@Sendable (String) -> Void)? = nil) async -> Outcome {
         guard await wake() else {
             if case .broken(let why) = state { return Outcome(code: -1, output: "", errorOutput: why, timedOut: false) }
-            return Outcome(code: -1, output: "", errorOutput: "斗室没醒。", timedOut: false)
+            return Outcome(code: -1, output: "", errorOutput: Words.t("斗室没醒。"), timedOut: false)
         }
         if shown { note(.command, command) }
         var pid: Int32 = -1

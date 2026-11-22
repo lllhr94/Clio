@@ -93,12 +93,44 @@ def swift_sources():
                 yield path, text.count("\n", 0, match.start()) + 1, MESSAGES[rule]
 
 
+LITERARY_TERMS = re.compile(
+    r"旅伴|书案|斗室|远山|远游|信匣|密匣|拾遗|絮语|名帖|晨信|落款|调弦|雅集|别馆|港湾|更漏|良方|手札|日课|偶得|集珍|笔庄|应许|封缄|便笺"
+)
+LITERARY_SKIP_FILES = {
+    Path("App/Sources/Design/Words.swift"),
+    Path("App/Sources/Tone/ModelErrorCopy.swift"),
+    Path("App/Sources/Shots.swift"),
+}
+LITERARY_STRING = re.compile(r'"(?:\\.|[^"\\\n])*"')
+
+
+def literary_warnings():
+    for full_path in sorted((ROOT / "App/Sources").rglob("*.swift")):
+        path = full_path.relative_to(ROOT)
+        if path in LITERARY_SKIP_FILES:
+            continue
+        for lineno, raw in enumerate(full_path.read_text(encoding="utf-8").splitlines(), 1):
+            code = raw.split("//", 1)[0]
+            if not code or "Words.t(" in code or "L.t(" in code:
+                continue
+            if any(token in code for token in ("description:", "ToolOutput(", "Diag.note(", ".hitchPage(", "appendingPathComponent(")):
+                continue
+            for match in LITERARY_STRING.finditer(code):
+                found = sorted(set(LITERARY_TERMS.findall(match.group(0))))
+                if found:
+                    yield path, lineno, f"bare literary term ({', '.join(found)}); wrap with Words.t(...) or L.t(...) if user-visible"
+                    break
+
+
 def main():
     errors = [*dictionaries(), *swift_sources()]
+    warnings = list(literary_warnings())
+    for path, line, message in warnings:
+        print(f"warning: {path}:{line}: {message}", file=sys.stderr)
     for path, line, message in errors:
         print(f"{path}:{line}: {message}", file=sys.stderr)
     if not errors:
-        print("Clio lint passed.")
+        print(f"Clio lint passed ({len(warnings)} literary warnings).")
     return int(bool(errors))
 
 

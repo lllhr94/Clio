@@ -25,7 +25,7 @@ enum DocMaker {
             "required": ["title", "format", "markdown"],
         ], label: { arguments in
             let format = Format(rawValue: arguments["format"]?.string ?? "") ?? .pdf
-            return "书案：写 文稿/\(name(arguments["title"]?.string)).\(format.ext)"
+            return Words.t("书案：写 文稿/\(name(arguments["title"]?.string)).\(format.ext)")
         }) { arguments in
             let format = Format(rawValue: arguments["format"]?.string ?? "") ?? .pdf
             let title = name(arguments["title"]?.string)

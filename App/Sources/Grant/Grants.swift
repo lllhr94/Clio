@@ -135,7 +135,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             switch self {
             case .careful: "读写、联网之外，样样先问"
             case .standard: "敏感的先问，其余直接做"
-            case .free: "都直接做，只有信匣先问"
+            case .free: Words.t("都直接做，只有信匣先问")
             }
         }
 
