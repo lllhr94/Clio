@@ -134,6 +134,23 @@ final class ProviderTests: XCTestCase {
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: body))
     }
 
+    func testAnthropicPromptCachingMarksOnlyAnthropicItself() throws {
+        XCTAssertTrue(AnthropicProvider.caches("https://api.anthropic.com"))
+        XCTAssertFalse(AnthropicProvider.caches("https://api.moonshot.cn/anthropic"))
+        let tool = ToolSpec(name: "t", description: "d", parameters: .object(["type": .string("object")]))
+        let request = ModelRequest(model: "claude-sonnet-4-5", system: "sys", messages: [.user("hi")], tools: [tool])
+        let plain = AnthropicProvider.body(request)
+        XCTAssertEqual(plain["system"] as? String, "sys")
+        let cached = AnthropicProvider.body(request, cache: true)
+        let system = try XCTUnwrap(cached["system"] as? [[String: Any]])
+        XCTAssertNotNil(system.first?["cache_control"])
+        let tools = try XCTUnwrap(cached["tools"] as? [[String: Any]])
+        XCTAssertNotNil(tools.last?["cache_control"])
+        let turns = try XCTUnwrap(cached["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(turns.last?["content"] as? [[String: Any]])
+        XCTAssertNotNil(blocks.last?["cache_control"])
+    }
+
     func testProviderErrorMessage() {
         let error = HTTP.failure(status: 401, data: Data(#"{"error":{"message":"Authentication Fails"}}"#.utf8))
         XCTAssertEqual(error, ProviderError(status: 401, "Authentication Fails"))

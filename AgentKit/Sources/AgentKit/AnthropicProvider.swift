@@ -22,7 +22,7 @@ public struct AnthropicProvider: ModelProvider {
         do {
             var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"))
             http.httpMethod = "POST"
-            http.httpBody = try HTTP.json(Self.body(request))
+            http.httpBody = try HTTP.json(Self.body(request, cache: Self.caches(baseURL)))
             return HTTP.stream(http, decode: Self.decode)
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
@@ -34,7 +34,16 @@ public struct AnthropicProvider: ModelProvider {
         return (list["data"]?.array ?? []).compactMap { $0["id"]?.string }
     }
 
-    static func body(_ request: ModelRequest) -> [String: Any] {
+    /// Anthropic's own service keeps a prompt it has seen for a few minutes and charges a tenth for reading it back.
+    /// Other services that speak this format may not take the marks, so they are left plain.
+    static func caches(_ baseURL: String) -> Bool {
+        URL(string: baseURL)?.host?.lowercased().hasSuffix("anthropic.com") == true
+    }
+
+    /// `cache`: marks the instructions, the tools and the conversation so far as reusable. A turn calls the model
+    /// several times (each tool step is another call); with the marks, everything before the newest step is read
+    /// from Anthropic's cache instead of paid for again in full.
+    static func body(_ request: ModelRequest, cache: Bool = false) -> [String: Any] {
         // Claude wants turns to alternate, and tool results inside a user turn.
         var turns: [(role: String, blocks: [[String: Any]])] = []
         func add(_ role: String, _ blocks: [[String: Any]]) {
@@ -92,7 +101,9 @@ public struct AnthropicProvider: ModelProvider {
             "stream": true,
             "messages": turns.map { ["role": $0.role, "content": $0.blocks] },
         ]
-        if !request.system.isEmpty { body["system"] = request.system }
+        if !request.system.isEmpty {
+            body["system"] = cache ? [["type": "text", "text": request.system, "cache_control": ["type": "ephemeral"]]] as [[String: Any]] : request.system
+        }
         if let temperature = request.temperature, !thinking { body["temperature"] = min(1, temperature) }
         switch request.thinking {
         case .auto:
@@ -113,7 +124,15 @@ public struct AnthropicProvider: ModelProvider {
             }
         }
         if !request.tools.isEmpty {
-            body["tools"] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
+            var tools: [[String: Any]] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
+            if cache { tools[tools.count - 1]["cache_control"] = ["type": "ephemeral"] }
+            body["tools"] = tools
+        }
+        // The newest block of the conversation: the next call starts from here, so all of it up to here is reused.
+        if cache, var last = turns.last, let index = last.blocks.lastIndex(where: { ["text", "image", "tool_result", "tool_use"].contains($0["type"] as? String ?? "") }) {
+            last.blocks[index]["cache_control"] = ["type": "ephemeral"]
+            turns[turns.count - 1] = last
+            body["messages"] = turns.map { ["role": $0.role, "content": $0.blocks] }
         }
         return body
     }
