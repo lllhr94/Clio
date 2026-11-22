@@ -1,6 +1,11 @@
 import Craft
 import Foundation
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 final class StorageCleanupTests: XCTestCase {
     private func makeSandbox() throws -> (appSupport: URL, team: URL, chats: URL, media: URL, doccache: URL) {
