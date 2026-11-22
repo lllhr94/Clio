@@ -84,14 +84,23 @@ struct StopRuler<Value: Hashable>: View {
             if let title {
                 Text(title).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkSoft)
             }
-            HStack(alignment: .top, spacing: Ink.Space.m) {
-                names
+            HStack(alignment: .top, spacing: Ink.Space.l) {
+                column(alignment: .leading) { at in
+                    Text(stops[at].name)
+                        .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
+                        .foregroundStyle(at == index ? Ink.accent : Ink.inkSoft)
+                }
+                if stops.contains(where: { $0.detail != nil }) {
+                    column(alignment: .trailing) { at in
+                        Text(stops[at].detail ?? "")
+                            .font(.system(size: Ink.Size.small).monospacedDigit())
+                            .foregroundStyle(at == index ? Ink.accent : Ink.inkFaint)
+                    }
+                }
                 capsule
             }
         }
-        .padding(.vertical, Ink.Space.l)
-        .padding(.leading, Ink.Space.l)
-        .padding(.trailing, Ink.Space.m)
+        .padding(Ink.Space.l)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title ?? name ?? "")
         .accessibilityValue(stops.indices.contains(index) ? stops[index].name : "")
@@ -130,23 +139,18 @@ struct StopRuler<Value: Hashable>: View {
         )
     }
 
-    private var names: some View {
-        VStack(alignment: .trailing, spacing: 0) {
+    /// One column of the table: names lined up on the left, the numbers on the right, each row as tall as its
+    /// stop on the bar, so the three columns read straight across (主人定: tidy, symmetric).
+    private func column<Cell: View>(alignment: HorizontalAlignment, @ViewBuilder cell: @escaping (Int) -> Cell) -> some View {
+        VStack(alignment: alignment, spacing: 0) {
             ForEach(stops.indices.reversed(), id: \.self) { at in
                 Button {
                     pick(at)
                 } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs) {
-                        if let detail = stops[at].detail {
-                            Text(detail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
-                        }
-                        Text(stops[at].name)
-                            .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
-                            .foregroundStyle(at == index ? Ink.accent : Ink.inkSoft)
-                    }
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: step, maxHeight: step, alignment: .trailing)
-                    .contentShape(.rect)
+                    cell(at)
+                        .lineLimit(1)
+                        .frame(minHeight: step, maxHeight: step)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
             }
