@@ -10,13 +10,13 @@ packages:
     path: ../AgentKit
   Citadel:
     url: https://github.com/orlandos-nl/Citadel
-    from: 0.9.2
+    exactVersion: 0.12.1
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.20.0
   SwiftNIOSSH:
     url: https://github.com/Wellz26/swift-nio-ssh.git
-    minorVersion: 0.3.4
+    exactVersion: 0.3.7
   SwiftMath:
     url: https://github.com/mgriebling/SwiftMath
     exactVersion: 1.7.3
