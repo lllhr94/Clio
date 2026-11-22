@@ -463,6 +463,12 @@ struct StudyFile: View {
 
     private var ext: String { url.pathExtension.lowercased() }
     private var interactive: Bool { InteractiveDocument.supports(url) }
+    private var shareURL: URL? {
+        if mountBroken { return nil }
+        if !interactive { return url }
+        guard let allowedRoot else { return nil }
+        return InteractiveDocument(url: url, root: allowedRoot).shareURL
+    }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
     private var longPlainText: String? {
@@ -530,8 +536,8 @@ struct StudyFile: View {
                 if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
-                if !mountBroken {
-                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                if let shareURL {
+                    ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
                         .accessibilityLabel("分享文件")
                 }
                 if interactive { Button(L.t("actions.done")) { dismiss() } }

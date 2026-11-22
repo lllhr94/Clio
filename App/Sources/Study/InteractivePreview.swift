@@ -11,9 +11,13 @@ struct InteractiveDocument: Equatable, Sendable {
         ["html", "htm", "svg"].contains(url.pathExtension.lowercased())
     }
 
+    var shareURL: URL? {
+        let resolved = url.resolvingSymlinksInPath()
+        return Workspace.isInsideRealRoot(resolved, root: root) ? resolved : nil
+    }
+
     fileprivate var fileInfo: (url: URL, revision: String)? {
-        let path = url.resolvingSymlinksInPath()
-        guard Self.supports(url), Workspace.isInsideRealRoot(path, root: root),
+        guard Self.supports(url), let path = shareURL,
               let values = try? path.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
               values.isRegularFile == true, let size = values.fileSize, size <= PreparedPreview.limit else { return nil }
         let changed = values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
@@ -39,7 +43,10 @@ private final class PreparedPreview: Sendable {
 
         let child = (document.url.pathExtension.lowercased() == "svg" ? "<!doctype html><html><body>" : "") + source
         // Put the child policy after its doctype when present, to keep standards-mode sizing.
-        let policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"\(restricted); frame-src 'none'\">"
+        let policy = """
+        <meta http-equiv="x-dns-prefetch-control" content="off">
+        <meta http-equiv="Content-Security-Policy" content="\(restricted); frame-src 'none'">
+        """
         let payload: String
         if let doctype = child.range(of: #"^\s*<!doctype\s+[^>]+>"#, options: [.regularExpression, .caseInsensitive]) {
             payload = String(child[..<doctype.upperBound]) + policy + String(child[doctype.upperBound...])
@@ -190,7 +197,7 @@ private final class OfflineWebPreview: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = action.request.url, let frame = action.targetFrame else { return .cancel }
         if !frame.isMainFrame {
-            return url.absoluteString == "about:srcdoc" ? .allow : .cancel
+            return ["about:srcdoc", "about:blank"].contains(url.absoluteString) ? .allow : .cancel
         }
         if url.isFileURL && url.standardizedFileURL.path == preview.file.path { return .allow }
         return .cancel
@@ -274,7 +281,9 @@ struct InteractivePreviewPage: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        ShareLink(item: document.url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
+                        if let url = document.shareURL {
+                            ShareLink(item: url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
+                        }
                         Button(L.t("actions.done")) { dismiss() }
                     }
                 }
