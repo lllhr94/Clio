@@ -225,3 +225,5 @@
   - 拆的这几天，别的任务不碰这两个文件（A6、A7 本来就不碰）。
 - [x] 网盘恢复能选哪一份（Claude 11-22 夜）。
 - [ ] **等 Claude 回来做**（`Backup.swift` 是安全边界）：备份带上 `书案/技能/`（不带整个书案，太大，文件 App 里能拷）。
+
+- [ ] **A8（Antigravity）书案里的网页能真的动起来**（主人 11-22 想让助手做「可以互动的燃气管线示意图」）：现在书案里的 `.html` 用系统快速预览（QuickLook）打开，不跑 JavaScript，只能看静态的。做一个 Clio 自己的网页预览页：`WKWebView` 打开书案里的 `.html` / `.svg`，允许 JavaScript，**只许读同一个文件夹里的文件、不许联网**（`loadFileURL(_:allowingReadAccessTo:)` 限在文件所在文件夹，用 `WKContentRuleList` 挡掉所有 http/https 请求），能缩放、横屏，右上角「完成」和「分享」。聊天里点助手写出来的 `.html` 卡片直接进这个页面。提示词里加一句：要做可交互的图表、示意图时，写成一个自带脚本和样式的单文件 `.html` 放进书案（不引用网上的库）。动 `Study/StudyPage.swift` 的预览分支、新文件放预览页，聊天卡片点开的地方如需改 `ChatPage+Rows.swift` 只改那一处。
