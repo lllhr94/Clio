@@ -2445,7 +2445,13 @@ final class TeamModel: ObservableObject {
     /// 同意 / 不同意 pressed on a notification.
     func answerFromNotification(_ id: String, allow: Bool) {
         guard let approval = approvals.first(where: { $0.id == id }) else {
-            Notify.now("这张单子已经过期了", "Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。", chat: "")
+            Notify.now("这张单子已经过期了", Words.t("Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。"), chat: "")
+            return
+        }
+        // A slip that must be asked because outside text (a web page, an email) came before it is not answered
+        // from a notification: the notification shows too little to judge it. 不同意 still works from there.
+        if allow, approval.forced == true {
+            Notify.now("这一单要打开 Clio 看清楚再批", "它是在读过网页、邮件等外部内容之后提出的。", chat: approval.chat ?? "")
             return
         }
         Task {
