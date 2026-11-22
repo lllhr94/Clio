@@ -1,7 +1,71 @@
 import ActivityKit
 import AppIntents
 import SwiftUI
+import UIKit
 import WidgetKit
+
+/// Light, dark and pure-black (OLED) pigments matching Clio's `Ink` palette inside the widget extension.
+fileprivate struct WidgetPalette {
+    let paper: Color
+    let ink: Color
+    let soft: Color
+    let accent: Color
+    let ok: Color
+    let warn: Color
+    let stop: Color
+
+    static let light = WidgetPalette(
+        paper: hex(0xF6F1E7),
+        ink: hex(0x2B2A27),
+        soft: hex(0x6F6A60),
+        accent: hex(0x4F7099),
+        ok: hex(0x4D7C5B),
+        warn: hex(0xA9772F),
+        stop: hex(0xB23A2B)
+    )
+
+    static func dark(oled: Bool) -> WidgetPalette {
+        WidgetPalette(
+            paper: hex(oled ? 0x000000 : 0x1C1A17),
+            ink: hex(0xECE6DA),
+            soft: hex(0xA39C8E),
+            accent: hex(0x7DA2CC),
+            ok: hex(0x7EB38B),
+            warn: hex(0xD9A65C),
+            stop: hex(0xD6746B)
+        )
+    }
+
+    static func resolve(_ scheme: ColorScheme, oled: Bool) -> WidgetPalette {
+        scheme == .dark ? dark(oled: oled) : light
+    }
+
+    static func activityBackground(oled: Bool) -> Color {
+        Color(UIColor { traits in
+            if traits.userInterfaceStyle == .dark {
+                return uiHex(oled ? 0x000000 : 0x1C1A17, alpha: 0.95)
+            }
+            return uiHex(0xF6F1E7, alpha: 0.94)
+        })
+    }
+
+    static let activityForeground = Color(UIColor { traits in
+        uiHex(traits.userInterfaceStyle == .dark ? 0xECE6DA : 0x2B2A27, alpha: 1)
+    })
+
+    private static func hex(_ value: UInt32) -> Color {
+        Color(uiHex(value, alpha: 1))
+    }
+
+    private static func uiHex(_ value: UInt32, alpha: CGFloat) -> UIColor {
+        UIColor(
+            red: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+}
 
 /// The companion on the home screen: name, what it is doing, the last thing it said. A tap opens that conversation.
 struct CompanionEntry: TimelineEntry {
@@ -10,7 +74,14 @@ struct CompanionEntry: TimelineEntry {
 }
 
 struct CompanionProvider: TimelineProvider {
-    private let sample = WidgetSnapshot(name: "团子", status: "闲坐", line: "今天想聊点什么？", at: Date().timeIntervalSince1970, chat: "")
+    private let sample = WidgetSnapshot(
+        name: "团子",
+        status: "空闲",
+        line: "今天想聊点什么？",
+        at: Date().timeIntervalSince1970,
+        chat: "",
+        kind: .idle
+    )
 
     func placeholder(in context: Context) -> CompanionEntry { CompanionEntry(date: Date(), snapshot: sample) }
 
@@ -25,44 +96,73 @@ struct CompanionProvider: TimelineProvider {
 }
 
 struct CompanionWidgetView: View {
-    /// Resting unless the app said it is working or waiting: the resting word itself differs between 日常 and 书卷.
-    static func idle(_ snapshot: WidgetSnapshot) -> Bool {
-        snapshot.status != "在干活" && snapshot.status != "等你批准"
+    static func kind(of snapshot: WidgetSnapshot) -> WidgetSnapshot.Kind {
+        if let kind = snapshot.kind { return kind }
+        if snapshot.status == "等你批准" || snapshot.status == "等你确认" || snapshot.status == "等你落款" { return .waiting }
+        if snapshot.status == "在干活" || snapshot.status == "正在干活" { return .working }
+        return .idle
+    }
+
+    static func chatURL(for snapshot: WidgetSnapshot?) -> URL? {
+        guard let chat = snapshot?.chat, !chat.isEmpty else { return URL(string: "clio://ask") }
+        return URL(string: "clio://chat/\(chat)")
     }
 
     let entry: CompanionEntry
     @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var scheme
 
-    private let paper = Color(red: 0.97, green: 0.95, blue: 0.91)
-    private let ink = Color(red: 0.16, green: 0.15, blue: 0.14)
-    private let soft = Color(red: 0.42, green: 0.39, blue: 0.36)
-    private let accent = Color(red: 0.27, green: 0.38, blue: 0.56)
+    private var palette: WidgetPalette {
+        WidgetPalette.resolve(scheme, oled: entry.snapshot?.oled == true)
+    }
 
     var body: some View {
         switch family {
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
-                Image(systemName: (entry.snapshot.map(Self.idle) ?? true) ? "bubble.left" : "ellipsis")
+                Image(systemName: circularSymbol)
                     .font(.system(size: 20, weight: .semibold))
             }
-            .widgetURL(URL(string: "clio://ask"))
+            .widgetURL(Self.chatURL(for: entry.snapshot))
             .containerBackground(.clear, for: .widget)
         case .accessoryInline:
             Text(entry.snapshot.map { "\($0.name) · \($0.status)" } ?? "Clio")
-                .widgetURL(URL(string: "clio://ask"))
+                .lineLimit(1)
+                .widgetURL(Self.chatURL(for: entry.snapshot))
                 .containerBackground(.clear, for: .widget)
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.snapshot.map { "\($0.name) · \($0.status)" } ?? "Clio").font(.system(size: 13, weight: .semibold))
+                Text(entry.snapshot.map { "\($0.name) · \($0.status)" } ?? "Clio")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
                 Text(entry.snapshot?.line.isEmpty == false ? entry.snapshot!.line : "点一下问点什么")
-                    .font(.system(size: 13)).lineLimit(2)
+                    .font(.system(size: 13))
+                    .lineLimit(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .widgetURL(URL(string: entry.snapshot.map { "clio://chat/\($0.chat)" } ?? "clio://ask"))
+            .widgetURL(Self.chatURL(for: entry.snapshot))
             .containerBackground(.clear, for: .widget)
         default:
             home
+        }
+    }
+
+    private var circularSymbol: String {
+        guard let snapshot = entry.snapshot else { return "bubble.left" }
+        switch Self.kind(of: snapshot) {
+        case .idle: return "bubble.left"
+        case .working: return "ellipsis"
+        case .waiting: return "hand.raised.fill"
+        }
+    }
+
+    private func dotColor(for snapshot: WidgetSnapshot) -> Color {
+        switch Self.kind(of: snapshot) {
+        case .idle: return palette.ok
+        case .working: return palette.accent
+        case .waiting: return palette.warn
         }
     }
 
@@ -71,32 +171,56 @@ struct CompanionWidgetView: View {
             if let snapshot = entry.snapshot {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Image(systemName: "bubble.left").font(.system(size: 13, weight: .semibold)).foregroundStyle(accent)
-                        Text(snapshot.name).font(.system(size: 15, weight: .semibold, design: .serif)).foregroundStyle(ink).lineLimit(1)
+                        Image(systemName: "bubble.left")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(palette.accent)
+                            .widgetAccentable()
+                        Text(snapshot.name)
+                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .foregroundStyle(palette.ink)
+                            .lineLimit(1)
                         Spacer(minLength: 0)
                     }
                     HStack(spacing: 4) {
-                        Circle().fill(Self.idle(snapshot) ? Color.green.opacity(0.7) : accent).frame(width: 6, height: 6)
-                        Text(snapshot.status).font(.system(size: 12)).foregroundStyle(soft)
+                        Circle()
+                            .fill(dotColor(for: snapshot))
+                            .frame(width: 6, height: 6)
+                        Text(snapshot.status)
+                            .font(.system(size: 12))
+                            .foregroundStyle(palette.soft)
+                            .lineLimit(1)
                     }
                     Text(snapshot.line.isEmpty ? "还没说话" : snapshot.line)
                         .font(.system(size: family == .systemSmall ? 13 : 14, design: .serif))
-                        .foregroundStyle(ink)
+                        .foregroundStyle(palette.ink)
                         .lineLimit(family == .systemSmall ? 3 : 4)
                     Spacer(minLength: 0)
                     if snapshot.at > 0 {
-                        Text(Date(timeIntervalSince1970: snapshot.at), style: .relative).font(.system(size: 11)).foregroundStyle(soft)
+                        Text(Date(timeIntervalSince1970: snapshot.at), style: .relative)
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.soft)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                     }
                 }
-                .widgetURL(URL(string: "clio://chat/\(snapshot.chat)"))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .widgetURL(Self.chatURL(for: snapshot))
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Image(systemName: "bubble.left").foregroundStyle(accent)
-                    Text("打开 Clio 一次，这里就会有旅伴的近况。").font(.system(size: 13, design: .serif)).foregroundStyle(soft)
+                    Image(systemName: "bubble.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(palette.accent)
+                        .widgetAccentable()
+                    Text("打开 Clio 一次，这里就会显示助手近况。")
+                        .font(.system(size: 13, design: .serif))
+                        .foregroundStyle(palette.soft)
+                        .lineLimit(3)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .widgetURL(URL(string: "clio://ask"))
             }
         }
-        .containerBackground(paper, for: .widget)
+        .containerBackground(palette.paper, for: .widget)
     }
 }
 
@@ -105,8 +229,8 @@ struct CompanionWidget: Widget {
         StaticConfiguration(kind: "companion", provider: CompanionProvider()) { entry in
             CompanionWidgetView(entry: entry)
         }
-        .configurationDisplayName("旅伴")
-        .description("旅伴在做什么，最后说了一句什么。点一下回到那段絮语。")
+        .configurationDisplayName("Clio 近况")
+        .description("助手在做什么、最后说了什么。点一下回到那段对话。")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
@@ -150,41 +274,52 @@ struct DictateControl: ControlWidget {
 
 /// The Live Activity: a companion's turn on the lock screen and in the Dynamic Island.
 struct TurnActivityWidget: Widget {
-    private static let paper = Color(red: 0.97, green: 0.95, blue: 0.91)
-    private static let ink = Color(red: 0.16, green: 0.15, blue: 0.14)
-    private static let soft = Color(red: 0.42, green: 0.39, blue: 0.36)
-    private static let accent = Color(red: 0.43, green: 0.60, blue: 0.78)
-    private static let warn = Color(red: 0.85, green: 0.65, blue: 0.36)
-    private static let ok = Color(red: 0.50, green: 0.69, blue: 0.55)
-    private static let stop = Color(red: 0.83, green: 0.47, blue: 0.44)
+    private static let islandPalette = WidgetPalette.dark(oled: true)
+
+    static func activityURL(for chat: String) -> URL? {
+        chat.isEmpty ? URL(string: "clio://ask") : URL(string: "clio://chat/\(chat)")
+    }
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: TurnAttributes.self) { context in
             LockScreenTurn(context: context)
-                .activityBackgroundTint(Self.paper.opacity(0.92))
-                .activitySystemActionForegroundColor(Self.ink)
-                .widgetURL(URL(string: "clio://chat/\(context.attributes.chat)"))
+                .activityBackgroundTint(WidgetPalette.activityBackground(oled: context.attributes.oled == true))
+                .activitySystemActionForegroundColor(WidgetPalette.activityForeground)
+                .widgetURL(Self.activityURL(for: context.attributes.chat))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.attributes.name, systemImage: "bubble.left")
-                        .font(.system(size: 15, weight: .semibold, design: .serif))
-                        .foregroundStyle(Self.accent)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Self.face(context, size: 20)
+                        Text(context.attributes.name)
+                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .foregroundStyle(Self.islandPalette.ink)
+                            .lineLimit(1)
+                    }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Self.clock(context.state)
                         .font(.system(size: 14, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: 64, alignment: .trailing)
+                        .foregroundStyle(Self.islandPalette.soft)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(1)
+                        .frame(minWidth: 44, maxWidth: 68, alignment: .trailing)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack(spacing: 8) {
-                        Image(systemName: Self.symbol(context.state.phase)).foregroundStyle(Self.tint(context.state.phase))
-                        Text(context.state.doing).font(.system(size: 14)).lineLimit(2)
+                        Image(systemName: Self.symbol(context.state.phase))
+                            .foregroundStyle(Self.tint(context.state.phase, palette: Self.islandPalette))
+                        Text(context.state.doing)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Self.islandPalette.ink)
+                            .lineLimit(2)
                         Spacer(minLength: 0)
                         if context.state.steps > 0 {
-                            Text("\(context.state.steps) 步").font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
+                            Text("\(context.state.steps) 步")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(Self.islandPalette.soft)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                 }
@@ -195,22 +330,23 @@ struct TurnActivityWidget: Widget {
             } minimal: {
                 Self.face(context)
             }
-            .widgetURL(URL(string: "clio://chat/\(context.attributes.chat)"))
-            .keylineTint(Self.accent)
+            .widgetURL(Self.activityURL(for: context.attributes.chat))
+            .keylineTint(Self.islandPalette.accent)
         }
     }
 
     /// The companion's tiny face (its pet in pixels, or its photo); a plain mark if none came along.
     @ViewBuilder
-    static func face(_ context: ActivityViewContext<TurnAttributes>) -> some View {
+    static func face(_ context: ActivityViewContext<TurnAttributes>, size: CGFloat = 24) -> some View {
         if let data = context.attributes.face, let picture = UIImage(data: data) {
             Image(uiImage: picture)
                 .resizable()
                 .interpolation(.none)
                 .scaledToFit()
-                .frame(width: 24, height: 24)
+                .frame(width: size, height: size)
         } else {
-            Image(systemName: "bubble.left.fill").foregroundStyle(accent)
+            Image(systemName: "bubble.left.fill")
+                .foregroundStyle(islandPalette.accent)
         }
     }
 
@@ -226,14 +362,14 @@ struct TurnActivityWidget: Widget {
                 EmptyView()
             }
             .progressViewStyle(.circular)
-            .tint(accent)
+            .tint(islandPalette.accent)
             .frame(width: 20, height: 20)
         case .waiting:
-            Image(systemName: "hand.raised.fill").foregroundStyle(warn)
+            Image(systemName: "hand.raised.fill").foregroundStyle(islandPalette.warn)
         case .done:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(ok)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(islandPalette.ok)
         case .failed:
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(stop)
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(islandPalette.stop)
         }
     }
 
@@ -246,12 +382,12 @@ struct TurnActivityWidget: Widget {
         }
     }
 
-    static func tint(_ phase: TurnAttributes.ContentState.Phase) -> Color {
+    fileprivate static func tint(_ phase: TurnAttributes.ContentState.Phase, palette: WidgetPalette) -> Color {
         switch phase {
-        case .working: return accent
-        case .waiting: return warn
-        case .done: return ok
-        case .failed: return stop
+        case .working: return palette.accent
+        case .waiting: return palette.warn
+        case .done: return palette.ok
+        case .failed: return palette.stop
         }
     }
 
@@ -259,7 +395,7 @@ struct TurnActivityWidget: Widget {
         switch phase {
         case .working: return "在做"
         case .waiting: return "等你"
-        case .done: return "好了"
+        case .done: return "完成"
         case .failed: return "出错"
         }
     }
@@ -276,26 +412,53 @@ struct TurnActivityWidget: Widget {
 
     struct LockScreenTurn: View {
         let context: ActivityViewContext<TurnAttributes>
+        @Environment(\.colorScheme) private var scheme
+
+        private var palette: WidgetPalette {
+            WidgetPalette.resolve(scheme, oled: context.attributes.oled == true)
+        }
+
+        private var phaseColor: Color {
+            TurnActivityWidget.tint(context.state.phase, palette: palette)
+        }
 
         var body: some View {
             HStack(alignment: .center, spacing: 12) {
                 ZStack {
-                    Circle().fill(TurnActivityWidget.tint(context.state.phase).opacity(0.18))
+                    Circle().fill(phaseColor.opacity(0.18))
                     Image(systemName: TurnActivityWidget.symbol(context.state.phase))
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(TurnActivityWidget.tint(context.state.phase))
+                        .foregroundStyle(phaseColor)
                 }
                 .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(context.attributes.name).font(.system(size: 16, weight: .semibold, design: .serif)).foregroundStyle(TurnActivityWidget.ink)
-                        Text(TurnActivityWidget.word(context.state.phase)).font(.system(size: 12, weight: .medium)).foregroundStyle(TurnActivityWidget.tint(context.state.phase))
-                        Spacer(minLength: 0)
-                        TurnActivityWidget.clock(context.state).font(.system(size: 13).monospacedDigit()).foregroundStyle(TurnActivityWidget.soft).frame(maxWidth: 70, alignment: .trailing)
+                    HStack(spacing: 6) {
+                        Text(context.attributes.name)
+                            .font(.system(size: 16, weight: .semibold, design: .serif))
+                            .foregroundStyle(palette.ink)
+                            .lineLimit(1)
+                        Text(TurnActivityWidget.word(context.state.phase))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(phaseColor)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 4)
+                        TurnActivityWidget.clock(context.state)
+                            .font(.system(size: 13).monospacedDigit())
+                            .foregroundStyle(palette.soft)
+                            .multilineTextAlignment(.trailing)
+                            .lineLimit(1)
+                            .frame(minWidth: 44, maxWidth: 72, alignment: .trailing)
                     }
-                    Text(context.state.doing).font(.system(size: 14, design: .serif)).foregroundStyle(TurnActivityWidget.ink).lineLimit(2)
+                    Text(context.state.doing)
+                        .font(.system(size: 14, design: .serif))
+                        .foregroundStyle(palette.ink)
+                        .lineLimit(2)
                     if context.state.steps > 0 {
-                        Text("用了 \(context.state.steps) 次工具").font(.system(size: 11)).foregroundStyle(TurnActivityWidget.soft)
+                        Text("用了 \(context.state.steps) 次工具")
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.soft)
+                            .lineLimit(1)
                     }
                 }
             }

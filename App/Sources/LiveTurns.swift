@@ -14,7 +14,8 @@ enum LiveTurns {
     /// A turn began. Live Activities can only be started while Clio is on screen; a turn begun in the background has none.
     static func begin(chat: String, name: String, face: @autoclosure () -> Data? = nil) {
         guard on, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let state = TurnAttributes.ContentState(doing: "正在想", phase: .working, steps: 0, started: Date(), ring: Date())
+        let initialDoing = L.plain ? "正在思考" : L.t("chat.thinking")
+        let state = TurnAttributes.ContentState(doing: initialDoing, phase: .working, steps: 0, started: Date(), ring: Date())
         if let activity = running[chat] {
             // A new turn in the same conversation: the same card, a fresh clock.
             states[chat] = state
@@ -22,7 +23,8 @@ enum LiveTurns {
             return
         }
         do {
-            let activity = try Activity.request(attributes: TurnAttributes(name: name, chat: chat, face: face()), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+            let attributes = TurnAttributes(name: name, chat: chat, face: face(), oled: Theme.shared.oled)
+            let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil), pushType: nil)
             running[chat] = activity
             states[chat] = state
         } catch {
@@ -33,10 +35,12 @@ enum LiveTurns {
     /// What the turn is doing changed. Updates go out at most about once a second, except a change of phase.
     static func follow(chat: String, doing: String?) {
         guard let activity = running[chat], var state = states[chat], let doing, state.ended == nil else { return }
-        let phase: TurnAttributes.ContentState.Phase = doing == "等你批准" ? .waiting : .working
-        guard doing != state.doing || phase != state.phase else { return }
+        let needsApproval = doing == "等你批准" || doing == L.t("pet.needsApproval")
+        let phase: TurnAttributes.ContentState.Phase = needsApproval ? .waiting : .working
+        let shown = needsApproval ? L.t("pet.needsApproval") : Words.t(doing)
+        guard shown != state.doing || phase != state.phase else { return }
         let urgent = phase != state.phase
-        state.doing = doing
+        state.doing = shown
         state.phase = phase
         if Date().timeIntervalSince(state.ring ?? state.started) > 55 { state.ring = Date() }
         states[chat] = state
@@ -74,7 +78,8 @@ enum LiveTurns {
         state.phase = ok ? .done : .failed
         state.ended = Date()
         let words = (line ?? "").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-        state.doing = words.isEmpty ? (ok ? "做完了，点开看看" : "这次没做成，点开看看") : String(words.prefix(80))
+        let fallback = ok ? "\(L.t("pet.done"))，点开看看" : "\(L.t("pet.failed"))，点开看看"
+        state.doing = words.isEmpty ? fallback : String(Words.t(words).prefix(80))
         // The island shows ✓ (or !) for a few seconds before the card leaves it; the lock screen keeps it a while.
         let grace = UIApplication.shared.beginBackgroundTask(withName: "clio-live-end")
         let final = ActivityContent(state: state, staleDate: nil)
