@@ -109,7 +109,7 @@ struct NoteSheet: View {
                                 .frame(minHeight: Ink.Bar.height)
                                 .paperCard()
                         }
-                        Toggle("落款写上\(from)", isOn: $signed)
+                        Toggle("署上\(from)的名字", isOn: $signed)
                             .font(Ink.label)
                             .tint(Ink.accent)
                             .padding(.horizontal, Ink.Space.l)
@@ -132,7 +132,7 @@ struct NoteSheet: View {
                     Button(saved ? "已存" : "存入相册", systemImage: saved ? "checkmark" : "square.and.arrow.down") { save() }
                     if let cache = shareImage, cache.input == shareInput {
                         let image = cache.image
-                        ShareLink(item: Image(uiImage: image), preview: SharePreview(title.isEmpty ? "笺" : title, image: Image(uiImage: image)))
+                        ShareLink(item: Image(uiImage: image), preview: SharePreview(title.isEmpty ? L.t("chat.note") : title, image: Image(uiImage: image)))
                     }
                 }
             }

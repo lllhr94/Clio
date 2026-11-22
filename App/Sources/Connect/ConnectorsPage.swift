@@ -5,16 +5,12 @@ import UIKit
 /// per service with a big sign-in button (or a key), a token as the other way in, and what it brought once connected.
 struct ConnectorsPage: View {
     @ObservedObject private var hills = Hills.shared
-    @ObservedObject private var google = Google.shared
     @ObservedObject private var work = ConnectorWork.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var googleOpen = false
     @State private var adding = false
     @State private var query = ""
     @State private var kind = "全部"
     @AppStorage("connectors.suggest") private var suggest = true
-    /// Redrawn after a system permission question was answered.
-    @State private var asked = 0
 
     var body: some View {
         NavigationStack {
@@ -22,7 +18,6 @@ struct ConnectorsPage: View {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
                     if query.isEmpty {
                         suggestCard
-                        if kind == "全部" { onDevice }
                     }
                     if !mine.isEmpty && kind == "全部" { section(L.t("connectors.connected"), mine) }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
@@ -66,7 +61,6 @@ struct ConnectorsPage: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .navigationDestination(for: Connector.self) { ConnectorDetail(connector: $0) }
         }
-        .sheet(isPresented: $googleOpen) { GoogleSheet() }
         .sheet(isPresented: $adding) { CustomSheet() }
     }
 
@@ -84,53 +78,6 @@ struct ConnectorsPage: View {
         }
         .padding(Ink.Space.l)
         .paperCard()
-    }
-
-    /// What is on this phone itself, as connectors: the system permissions behind them, at a glance.
-    private var onDevice: some View {
-        let grants: [Grant] = [.health, .location, .calendar, .reminders, .contacts, .photos]
-        return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            heading(L.t("connectors.onDevice"))
-            VStack(spacing: 0) {
-                ForEach(Array(grants.enumerated()), id: \.element) { index, grant in
-                    if index > 0 { Kit.divider }
-                    Button {
-                        Haptics.light()
-                        Task {
-                            if grant.system == .notAsked { await grant.requestSystem() }
-                            else if let url = URL(string: UIApplication.openSettingsURLString) { await UIApplication.shared.open(url) }
-                            asked += 1
-                        }
-                    } label: {
-                        RowLabel(grant.symbol, tint: Self.deviceTint(grant), title: grant.title, end: .valueChevron(deviceState(grant)))
-                    }
-                    .buttonStyle(PressStyle(haptic: false))
-                }
-            }
-            .paperCard()
-            .id(asked)
-        }
-    }
-
-    private static func deviceTint(_ grant: Grant) -> Color {
-        switch grant {
-        case .health, .calendar: Ink.Tile.yan
-        case .location: Ink.Tile.dai
-        case .reminders: Ink.Tile.xiang
-        case .contacts: Ink.Tile.mo
-        default: Ink.Tile.zhu
-        }
-    }
-
-    private func deviceState(_ grant: Grant) -> String {
-        if grant.policy == .off { return "在权限里关着" }
-        switch grant.system {
-        case .granted: return grant == .calendar || grant == .reminders ? "读取和写入" : "已允许"
-        case .limited: return "部分允许"
-        case .denied: return "被系统拒绝"
-        case .notAsked: return "点一下允许"
-        case .none: return "可用"
-        }
     }
 
     private var categories: some View {
@@ -182,11 +129,6 @@ struct ConnectorsPage: View {
                     if index > 0 { Kit.divider }
                     NavigationLink(value: item) { row(item) }.buttonStyle(PressStyle(haptic: false))
                 }
-                // One Google, not two: the older way in (your own Client ID) is the last row of the same group.
-                if title == "谷歌" {
-                    Kit.divider
-                    googleRow
-                }
             }
             .paperCard()
         }
@@ -199,17 +141,6 @@ struct ConnectorsPage: View {
         }
     }
 
-    private var googleRow: some View {
-        Button {
-            Haptics.light()
-            googleOpen = true
-        } label: {
-            RowLabel(title: L.t("connectors.useOwnClientID"), line: google.account ?? L.t("connectors.ownClientNote"), end: google.connected ? .valueChevron(L.t("connectors.connected"), Ink.ok) : .chevron) {
-                ConnectorIcon(mark: "ID", tint: Ink.Tile.mo, domain: nil)
-            }
-        }
-        .buttonStyle(PressStyle(haptic: false))
-    }
 }
 
 /// A service's tile: its own colour and the first letter of its name. Never the company's logo.

@@ -154,7 +154,7 @@ struct HillsPage: View {
                     Haptics.light()
                     terminalHost = host
                 } label: {
-                    Label("笔砚", systemImage: "terminal").font(.system(size: Ink.Size.small, weight: .medium))
+                    Label(L.t("nav.terminal"), systemImage: "terminal").font(.system(size: Ink.Size.small, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .tint(Ink.accent)

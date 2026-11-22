@@ -158,7 +158,7 @@ struct FormSheet: View {
                 out[field.key] = "secret:\(item.id)"
             } else if !value.isEmpty {
                 let title = form.site.isEmpty ? form.title : "\(form.title) · \(form.site)"
-                let item = Secrets.Item(title: title, kind: form.kind, site: form.site.isEmpty ? (values["address"] ?? "") : form.site, user: user, note: "由\(form.from)递笺时存下")
+                let item = Secrets.Item(title: title, kind: form.kind, site: form.site.isEmpty ? (values["address"] ?? "") : form.site, user: user, note: "由\(form.from)请你填写时存下")
                 Secrets.shared.save(item, secret: value)
                 out[field.key] = "secret:\(item.id)"
             } else {

@@ -40,13 +40,13 @@ struct InkstonePage: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: Ink.Space.xs) {
-                            Text("笔砚").font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
+                            Text(L.t("nav.terminal")).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                             Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                         Text(subtitle).font(Ink.footnote).foregroundStyle(ended ? Ink.stop : Ink.inkSoft).lineLimit(1)
                     }
                 }
-                .accessibilityLabel("笔砚：换一台机器")
+                .accessibilityLabel(L.t("nav.terminal") + "：换一台机器")
                 Spacer()
                 if ended {
                     Button(hill == nil ? "再开一个" : "重新连") {
@@ -61,7 +61,8 @@ struct InkstonePage: View {
                     Haptics.light()
                     dismiss()
                 }
-                .buttonStyle(PressStyle())
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
             }
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, Ink.Space.s)
@@ -81,7 +82,7 @@ struct InkstonePage: View {
                 default:
                     VStack(spacing: Ink.Space.m) {
                         ProgressView()
-                        Text(den.state == .unpacking ? "第一次打开，正在铺陈" : "正在醒来").font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+                        Text(den.state == .unpacking ? "第一次打开，正在准备（要一会儿）" : "正在启动").font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -185,7 +186,7 @@ private struct TerminalHost: UIViewRepresentable {
                 self?.ended = true
             }, error: &error)
             if shell == nil {
-                view.feed(text: "笔砚没能打开（错误 \(error)）\r\n")
+                view.feed(text: "终端没能打开（错误 \(error)）\r\n")
             } else {
                 shell?.resize(columns: Int32(terminal.cols), rows: Int32(terminal.rows))
             }

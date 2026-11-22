@@ -1009,7 +1009,7 @@ struct Desk: View {
     @ViewBuilder
     private var waitingCard: some View {
         if let first = team.approvals.first, let chat = first.chat {
-            let name = team.bots.first { $0.id == first.botId }?.name ?? "旅伴"
+            let name = team.bots.first { $0.id == first.botId }?.name ?? L.t("nav.assistant")
             Button {
                 Haptics.tick(0.6)
                 if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else { opened = .companion(String(chat.dropFirst(4))) }

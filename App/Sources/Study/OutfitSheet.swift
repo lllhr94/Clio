@@ -14,9 +14,9 @@ struct OutfitSheet: View {
         ("Python", "python3 py3-pip", "跑脚本、处理数据"),
         ("Node.js", "nodejs npm", "跑 JavaScript 工具"),
         ("Git", "git", "拉代码"),
-        ("OpenSSH", "openssh-client", "从斗室连别的主机"),
+        ("OpenSSH", "openssh-client", "连别的主机"),
         ("常用小工具", "bash coreutils curl wget jq less file tree", "bash、curl、jq 等"),
-        ("编辑器", "vim nano", "在笔砚里改文件"),
+        ("编辑器", "vim nano", "在终端里改文件"),
     ]
 
     @State private var mirror = "mirrors.tuna.tsinghua.edu.cn"

@@ -998,18 +998,6 @@ struct ChatPage: View {
                     }
                     if !isRoom { chatMenuButton("chat.openCard", icon: "person.text.rectangle") { cardOpen = true } }
                     if working { chatMenuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) } }
-                    if PetLibrary.shared.shown {
-                        chatMenuButton("pet.hideHour", icon: "eye.slash") {
-                            withAnimation(Ink.Motion.settle) { PetLibrary.shared.hideForAnHour() }
-                        }
-                    } else {
-                        chatMenuButton("pet.showNow", icon: "eye") {
-                            withAnimation(Ink.Motion.settle) {
-                                PetLibrary.shared.hiddenUntil = nil
-                                PetLibrary.shared.visible = true
-                            }
-                        }
-                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")

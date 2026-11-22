@@ -240,7 +240,7 @@ extension TeamModel {
                 guard !message.text.isEmpty else { continue }
                 out += "## 我 · \(time)\n\n\(message.text)\n\n"
             case .assistant:
-                let who = entry.speaker.flatMap { id in bots.first(where: { $0.id == id })?.name } ?? "旅伴"
+                let who = entry.speaker.flatMap { id in bots.first(where: { $0.id == id })?.name } ?? L.t("nav.assistant")
                 if !message.text.isEmpty { out += "## \(Words.t(who)) · \(time)\n\n\(message.text)\n\n" }
                 for call in message.toolCalls { out += "> 做了：\(entry.label ?? call.name)\n\n" }
             default:
