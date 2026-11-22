@@ -259,9 +259,10 @@ enum WebFetch {
     /// The most a page or file read from the web may be.
     static let limit = 15_000_000
 
-    /// Performs a public HTTPS JSON API call with the same local-address and streaming-size guards as `get`.
+    /// Performs a public HTTPS JSON API call; redirects are restricted to the exact same HTTPS origin so search queries
+    /// and custom auth headers (`x-api-key`, `X-Subscription-Token`, `Authorization`) can never leak to another host or HTTP.
     static func json(_ request: URLRequest, limit: Int = 2_000_000) async throws -> (status: Int, data: Data) {
-        guard let url = request.url, url.scheme?.lowercased() == "https" else {
+        guard let url = request.url, url.scheme?.lowercased() == "https", url.host != nil else {
             throw ProviderError("搜索接口只允许使用 https 地址。")
         }
         if LocalAddress.isLocal(url) {
@@ -270,11 +271,11 @@ enum WebFetch {
         if await LocalAddress.resolvesToLocal(url) {
             throw ProviderError(LocalAddress.refusal)
         }
-        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic())
+        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: SameOriginHTTPSRedirect(origin: url))
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         if (300..<400).contains(status) {
-            throw ProviderError(status: status, "搜索接口跳转到了本机或局域网地址，已中止。")
+            throw ProviderError(status: status, "搜索接口试图跳转到其他主机或非 https 地址，已中止。")
         }
         if response.expectedContentLength > limit {
             throw ProviderError("搜索返回的内容太大了，已忽略。")
@@ -289,6 +290,35 @@ enum WebFetch {
             }
         }
         return (status, data)
+    }
+
+    /// True only when a redirect keeps the exact same public HTTPS origin (scheme, host, port) without embedded credentials.
+    static func allowsSameHTTPSOriginRedirect(from origin: URL, to next: URL) -> Bool {
+        guard origin.scheme?.lowercased() == "https",
+              next.scheme?.lowercased() == "https",
+              let originHost = origin.host?.lowercased(),
+              let nextHost = next.host?.lowercased(),
+              originHost == nextHost,
+              (origin.port ?? 443) == (next.port ?? 443),
+              next.user == nil, next.password == nil,
+              !LocalAddress.isLocal(next) else {
+            return false
+        }
+        return true
+    }
+
+    private final class SameOriginHTTPSRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let origin: URL
+        init(origin: URL) { self.origin = origin }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let next = request.url, WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: next) else {
+                return nil
+            }
+            if await LocalAddress.resolvesToLocal(next) { return nil }
+            return request
+        }
     }
 
     private final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

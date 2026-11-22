@@ -106,6 +106,8 @@ struct SearchSettingsPage: View {
     @State private var testing = false
     @State private var testQuery = "Swift 6"
     @State private var testResult: WebSearchTool.ProbeResult?
+    @State private var selectionVersion = UUID()
+    @State private var probeTask: Task<Void, Never>?
 
     private var selected: WebSearchProvider {
         WebSearchProvider(rawValue: providerRaw) ?? .builtin
@@ -130,6 +132,7 @@ struct SearchSettingsPage: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await reloadKeys() }
         .task(id: providerRaw) { await loadSelectedKey() }
+        .onDisappear { probeTask?.cancel() }
     }
 
     // MARK: Provider picker
@@ -157,10 +160,17 @@ struct SearchSettingsPage: View {
         let hasKey = keyedProviders.contains(provider)
         let statusTag = providerBadge(for: provider, hasKey: hasKey)
         return Button {
+            guard provider != selected else { return }
             Haptics.tick(0.5)
+            probeTask?.cancel()
+            probeTask = nil
+            selectionVersion = UUID()
             providerRaw = provider.rawValue
+            keyInput = ""
+            savedMasked = ""
             keyNotice = nil
             testResult = nil
+            testing = false
         } label: {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: providerIcon(provider), tint: isSelected ? Ink.Tile.xiang : Ink.Tile.mo)
@@ -354,20 +364,24 @@ struct SearchSettingsPage: View {
     }
 
     private func loadSelectedKey() async {
-        let current = await SearchEngine.readKey(for: selected)
+        let target = selected
+        let version = selectionVersion
+        let current = await SearchEngine.readKey(for: target)
+        guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
         savedMasked = SearchEngine.mask(current)
-        keyInput = ""
     }
 
     private func saveCurrentKey() {
         let value = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         let target = selected
+        let version = selectionVersion
+        keyInput = ""
         Task {
             await SearchEngine.saveKey(value, for: target)
             keyedProviders.insert(target)
+            guard selected == target, selectionVersion == version else { return }
             savedMasked = SearchEngine.mask(value)
-            keyInput = ""
             keyNotice = "已存入本机钥匙串。"
             testResult = nil
             Haptics.thud()
@@ -376,11 +390,13 @@ struct SearchSettingsPage: View {
 
     private func clearCurrentKey() {
         let target = selected
+        let version = selectionVersion
+        keyInput = ""
         Task {
             await SearchEngine.saveKey("", for: target)
             keyedProviders.remove(target)
+            guard selected == target, selectionVersion == version else { return }
             savedMasked = ""
-            keyInput = ""
             keyNotice = "已清除 \(target.shortName) 密钥。"
             testResult = nil
             Haptics.lock()
@@ -390,11 +406,13 @@ struct SearchSettingsPage: View {
     private func runProbe() {
         let q = testQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !testing else { return }
+        probeTask?.cancel()
         testing = true
         testResult = nil
         let target = selected
+        let version = selectionVersion
         let pendingInput = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
+        probeTask = Task {
             let keyToUse: String?
             if !target.supportsKey {
                 keyToUse = nil
@@ -404,8 +422,10 @@ struct SearchSettingsPage: View {
                 let saved = await SearchEngine.readKey(for: target)
                 keyToUse = saved.isEmpty ? nil : saved
             }
+            guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
             let config = WebSearchConfig(primary: target, apiKey: keyToUse, fallbackToBuiltin: false)
             let result = await WebSearchTool.probe(query: q, config: config)
+            guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
             testResult = result
             testing = false
             if result.ok { Haptics.tick(0.6) } else { Haptics.lock() }

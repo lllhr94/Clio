@@ -426,6 +426,20 @@ final class WebTextTests: XCTestCase {
         XCTAssertTrue(braveOut.text.contains("A bold snippet & more"))
     }
 
+    func testSearchJSONRedirectRejectsCrossHostAndDowngrade() {
+        let origin = URL(string: "https://api.exa.ai/search")!
+        XCTAssertTrue(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "https://api.exa.ai/v2/search")!))
+        XCTAssertTrue(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "https://API.EXA.AI:443/search")!))
+        // Cross-host redirect must be blocked so auth headers and queries never leak.
+        XCTAssertFalse(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "https://evil.example.com/search")!))
+        // Protocol downgrade to plaintext HTTP must be blocked.
+        XCTAssertFalse(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "http://api.exa.ai/search")!))
+        // Different port is a different origin.
+        XCTAssertFalse(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "https://api.exa.ai:8443/search")!))
+        // Localhost / embedded credentials must be blocked.
+        XCTAssertFalse(WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: URL(string: "https://user:pass@api.exa.ai/search")!))
+    }
+
     func testPageText() {
         let html = """
         <html><head><title>天气 &amp; 预报</title><style>p{}</style></head>
