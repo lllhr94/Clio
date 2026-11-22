@@ -211,3 +211,13 @@
 - [ ] **C34（Codex）聊天这一侧**（C33 之后）：聊天顶栏淡字显示当前模型名；思考档位挪进选模型的弹出菜单顶上（只显示测出来能用的档，没测过就按服务的写法），底栏的思考按钮去掉。只动 `ChatPage.swift` 里模型和思考那几处。
 
 - [ ] **A5（Antigravity）小组件、灵动岛、快捷指令走查**（A4 之后，分支 `antigravity/a5-surfaces`）：`Widget/`、`LiveTurns` / 灵动岛、`Shortcuts.swift`、通知文案。逐个看：日常 / 书卷称谓对不对（`Shortcuts.swift` 里还有「絮语、旅伴」没走词典）、深色和纯黑下看不看得清、文字会不会被截断、没做完的入口别摆出来。改完列表交 PR。不碰 `ChatPage.swift`、`Desk.swift`、`Team.swift`、`Vault/`。不开截图。
+
+### 谷歌复盘之后（11-22 夜，Claude 核对过代码）
+
+谷歌的对标复盘（`clio_benchmark_review.md`，主人那里）点出的几条，Claude 逐条对过代码：缓存、扁平书案、技能导入入口、看不到发给模型什么、备份不含书案、两个巨石文件，都属实。Anthropic 缓存 Claude 当晚已做（只对 api.anthropic.com 生效；DeepSeek、Kimi、OpenAI 本来就自动缓存）。其余这样分：
+
+- [ ] **A6（Antigravity）外部文件夹挂进书案**（A5 之后，分支 `antigravity/a6-folders`）：在书案里「添加文件夹」，用系统文件选择器选 iCloud / Obsidian / 别的 App 的文件夹，存成安全书签（security-scoped bookmark），之后模型的工作区工具能读写它（路径写成 `书案/挂载/<名字>/…`）。只学 Open Minis 的思路。要点：每次用前 `startAccessingSecurityScopedResource`；书签失效要提示重新选；不让软链接跳出；删挂载只删书签不删文件。动 `Study/Place.swift`、`Study/Workspace.swift`、`Study/StudyPage.swift`，不碰别的。
+- [ ] **A7（Antigravity）技能一键安装**：技能页加「从链接 / zip 安装」：GitHub 目录链接或 zip，里面有 `SKILL.md` 的就装进 `书案/技能/<名字>/`；装之前给主人看名字、说明、有哪些文件（脚本要特别标出），点确认才装。zip 解压照宠物包那样限大小、防路径穿越。动 `Skills.swift` 和技能页。
+- [ ] **C36（Codex）「这次发给模型什么」只读页**（C34 之后）：用量页里加一行「看看发给模型的内容」，点开分段显示：系统提示、记忆、技能说明、工具清单（名字和说明）、带上的对话条数和字数。只读，可以复制。需要在 `Team.swift` 加一个只读函数把这几段拿出来（复用 `system(for:…)`、`tools(for:…)`，不改它们），**不碰 `ask` / `answer` / 污点**。密钥、信匣内容本来就不在里面，交 PR 时说明核对过。
+- [ ] **C37（Codex）拆巨石文件**（C36 之后，量大，单独一个 PR）：`ChatPage.swift` 按块拆成几个文件（顶栏、输入框、消息行、菜单和弹出页、跳转和小地图），`Team.swift` 拆成扩展（记忆、对话记录、定时和提醒、晨信和日记、用量）。**只搬家不改逻辑**，搬完 CI 编过、聊天流程测试过。`Team.swift` 里批准和污点那几个函数原地不动。合并前等 Claude 回来复查一遍。
+- [ ] **等 Claude 回来做**（`Backup.swift` 是安全边界）：网盘恢复能选哪一份；备份带上 `书案/技能/`（不带整个书案，太大，文件 App 里能拷）。
