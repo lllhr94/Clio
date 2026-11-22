@@ -1592,7 +1592,7 @@ extension TeamModel {
         }
     }
 
-    private struct ReviewSource {
+    struct ReviewSource {
         let key: String
         let leaf: Leaf?
         let name: String
@@ -1600,7 +1600,7 @@ extension TeamModel {
         var id: String { leaf.map { key + "~" + $0.id } ?? key }
     }
 
-    private struct ReviewTail: Equatable {
+    struct ReviewTail: Equatable {
         let entry: String?
         let count: Int
         let cutoff: String

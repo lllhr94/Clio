@@ -23,6 +23,8 @@ struct CarePage: View {
     @State private var davPassword = ""
     @State private var davPasswordLoaded = false
     @State private var davBusy = false
+    /// The drive's backups, newest first, while the person picks which one to bring back.
+    @State private var davChoices: [String] = []
     @State private var probing = false
     @State private var copied = false
 
@@ -158,6 +160,14 @@ struct CarePage: View {
                     }
                 }
             }
+            .confirmationDialog("从网盘的哪一份恢复？", isPresented: Binding(get: { !davChoices.isEmpty }, set: { if !$0 { davChoices = [] } }), titleVisibility: .visible) {
+                ForEach(davChoices.prefix(8), id: \.self) { name in
+                    Button(Self.backupLabel(name)) { davRestore(name) }
+                }
+                Button(L.t("actions.cancel"), role: .cancel) { davChoices = [] }
+            } message: {
+                Text("恢复会换掉手机上现在的助手、对话和记忆。")
+            }
             .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
                 if restored {
                     Button(L.t("actions.quitApp")) { exit(0) }
@@ -243,20 +253,47 @@ struct CarePage: View {
         }
     }
 
+    /// Lists the drive's backups first; the person picks one (newest at the top), then that one comes back.
     private func davRestore() {
         davBusy = true
         Task {
             do {
-                guard let newest = try await WebDAV.list().first else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
-                let file = try await WebDAV.download(newest)
+                let names = try await WebDAV.list()
+                guard !names.isEmpty else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
+                davChoices = names
+            } catch {
+                notice = "没找到网盘里的备份：\(error.localizedDescription)"
+            }
+            davBusy = false
+        }
+    }
+
+    private func davRestore(_ name: String) {
+        davChoices = []
+        davBusy = true
+        Task {
+            do {
+                let file = try await WebDAV.download(name)
                 let summary = try await Task.detached { try Backup.restore(from: file) }.value
                 restored = true
-                notice = "从网盘恢复了「\(newest)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
+                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
             } catch {
                 notice = "没恢复成：\(error.localizedDescription)"
             }
             davBusy = false
         }
+    }
+
+    /// 「Clio 备份 2026-11-22 0730.clio」 → 「2026-11-22 07:30」.
+    private static func backupLabel(_ name: String) -> String {
+        var text = name
+        if text.hasPrefix("Clio 备份 ") { text.removeFirst("Clio 备份 ".count) }
+        if let dot = text.lastIndex(of: ".") { text = String(text[..<dot]) }
+        let parts = text.split(separator: " ")
+        if parts.count == 2, parts[1].count == 4 {
+            return "\(parts[0]) \(parts[1].prefix(2)):\(parts[1].suffix(2))"
+        }
+        return text
     }
 
     private func make() {
