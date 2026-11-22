@@ -1001,11 +1001,33 @@ final class TeamModel: ObservableObject {
     }
 
     /// When to tidy up: before the model's window starts dropping the oldest lines, so nothing slips out unsummarised.
-    private var foldAt: Int { Pref.contextChars > 0 ? min(Pref.compressAt, Pref.contextChars * 4 / 5) : Pref.compressAt }
+    func foldAt(_ key: String) -> Int {
+        let total = window(of: key)
+        return min(Int(Double(total) * Pref.compressShare), Self.budget(window: total, share: Pref.contextShare) * 9 / 10)
+    }
+
+    /// The window of the model this chat talks to, in tokens.
+    func window(of key: String) -> Int {
+        speaker(of: key)?.found.map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
+    }
+
+    /// The default model's window, for the settings page to say what each share comes to.
+    var defaultWindow: Int {
+        resolve(settings.defaultModel).map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
+    }
+
+    /// How much of the chat goes with a request, counted in characters (a character is about a token or less, so
+    /// it errs short): the share of the window the user picked, always leaving room for the instructions, the tools
+    /// and the reply, so a full window never leaves the model nothing to answer with.
+    static func budget(window: Int, share: Double) -> Int {
+        let reply = Pref.maxOutput > 0 ? max(Pref.maxOutput, 8_192) : 16_384
+        let room = window - reply - 16_000
+        return max(8_000, min(Int(Double(window) * share), room))
+    }
 
     /// Compresses quietly, never in the way: it waits for nothing, and a turn goes on meanwhile with the chat as it is.
     func foldQuietly(_ key: String) {
-        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt else { return }
+        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt(key) else { return }
         Task { [weak self] in _ = try? await self?.compress(key) }
     }
 
@@ -1234,7 +1256,7 @@ final class TeamModel: ObservableObject {
             copy.id = UUID().uuidString
             return copy
         }
-        var marker = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("从这里另起了一叶，原来的那段收在絮语页，随时能翻回去。"))
+        var marker = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(Words.t("从这里另起了一叶，原来的那段收在絮语页，随时能翻回去。")))
         marker.note = true
         entries[key] = restarted + [marker]
         if keeping { ChatDisk.save(entries[key] ?? [], chat: key) }
@@ -1767,7 +1789,8 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private func fail(_ key: String, _ text: String, next: Explain.Next? = nil) {
+    private func fail(_ key: String, _ raw: String, next: Explain.Next? = nil) {
+        let text = Words.t(raw)
         Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
@@ -1994,7 +2017,7 @@ final class TeamModel: ObservableObject {
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
     private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
         let all = live(key).filter { $0.note != true }
-        let start = Conversation.windowStart(all.map(\.message), maxChars: Pref.contextChars, maxCount: Pref.contextCount)
+        let start = Conversation.windowStart(all.map(\.message), maxChars: Self.budget(window: window(of: key), share: Pref.contextShare), maxCount: Pref.contextCount)
         let recent = Array(all[start...])
         let photoEntries = Set(recent.filter { !$0.photos.isEmpty }.suffix(3).map(\.id))
         var context = RequestContext()
@@ -2511,8 +2534,8 @@ final class TeamModel: ObservableObject {
         guard Pref.morningOn else { return }
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         let content = UNMutableNotificationContent()
-        content.title = "晨信"
-        content.body = "新的一天，打开看看旅伴给你写了什么。"
+        content.title = L.t("agent.morningBrief")
+        content.body = Words.t("新的一天，打开看看旅伴给你写了什么。")
         content.sound = .default
         var parts = DateComponents()
         parts.hour = Pref.morningHour

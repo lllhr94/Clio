@@ -487,11 +487,8 @@ struct ModelSheet: View {
                     Toggle(L.t("settings.modelVision"), isOn: $traits.sees)
                     Toggle(L.t("settings.modelTools"), isOn: $traits.tools)
                     Toggle(L.t("settings.modelReasoning"), isOn: $traits.thinks)
-                    Picker("上下文", selection: $traits.window) {
-                        ForEach(windowChoices, id: \.self) { value in
-                            Text(Tokens.short(value)).tag(value)
-                        }
-                    }
+                    StopRow(title: "上下文", value: $traits.window,
+                            stops: windowChoices.map { Stop(value: $0, name: Tokens.short($0) + " token") })
                 } header: {
                     Text(L.t("settings.modelCapabilities"))
                 } footer: {
@@ -551,7 +548,7 @@ struct ModelSheet: View {
 
     private var footer: String {
         let source = endpoint?.corrected(model) == true ? "你改过。" : "按名字猜的，服务不会告诉我们。"
-        return source + "不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。"
+        return source + Words.t("不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。")
     }
 
     private func testSight() {

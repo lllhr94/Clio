@@ -41,7 +41,7 @@ struct PetPage: View {
                         }
                         .disabled(library.loading || installing)
                     } header: { Text(L.t("pet.choose")) } footer: {
-                        Text("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。")
+                        Text(Words.t("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。"))
                     }
 
                     Section {
@@ -89,28 +89,18 @@ struct PetPage: View {
 
     private var levels: [Double] { PetSize.levels(for: library.pack, displayScale: displayScale) }
 
+    /// The size as 档位 on the one adjuster Clio uses (主人定); the preview above follows while dragging.
     private var sizeSlider: some View {
         let marks = levels
-        let selection = PetSize.nearest(library.factor, in: marks)
-        let percent = Int((marks[selection] * 100).rounded())
-        return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            HStack {
-                Text(L.t("pet.sizeReference")).foregroundStyle(Ink.ink)
-                Spacer()
-                Text("\(percent)%").monospacedDigit().foregroundStyle(Ink.inkSoft)
-                    .accessibilityHidden(true)
-            }
-            if marks.count > 1 {
-                Slider(value: Binding(
-                    get: { Double(PetSize.nearest(library.factor, in: marks)) },
-                    set: { library.factor = marks[Int($0.rounded())] }
-                ), in: 0...Double(marks.count - 1), step: 1) {
-                    Text(L.t("pet.size"))
-                }
-                .tint(Ink.accent)
-                .accessibilityValue("\(percent)%")
-            }
-        }
+        return StopRow(
+            title: L.t("pet.size"),
+            value: Binding(
+                get: { marks.isEmpty ? library.factor : marks[PetSize.nearest(library.factor, in: marks)] },
+                set: { library.factor = $0 }
+            ),
+            stops: marks.map { Stop(value: $0, name: "\(Int(($0 * 100).rounded()))%") }
+        )
+        .disabled(marks.count < 2)
     }
 
     private var sizePreview: some View {
