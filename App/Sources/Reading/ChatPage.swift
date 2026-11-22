@@ -585,7 +585,7 @@ struct ChatPage: View {
                     perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
                     showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil
                         || (asker.current.map { !$0.inline } ?? false),
-                    covered: petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
+                    covered: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
                     quiet: dictation.listening, enabled: PetLibrary.shared.visible
                 ) { petSettingsOpen = true }
                 .frame(height: 1)

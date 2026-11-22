@@ -13,7 +13,7 @@ struct NewChatSheet: View {
     init(team: TeamModel, first: String?, start: @escaping (String, Bool) -> Void) {
         self.team = team
         self.start = start
-        _pick = State(initialValue: first ?? "")
+        _pick = State(initialValue: first.flatMap { id in team.bots.first { $0.id == id }?.id } ?? team.bots.first?.id ?? "")
     }
 
     var body: some View {

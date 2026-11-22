@@ -92,8 +92,11 @@ struct Desk: View {
     @State private var editing: EditTarget?
     @State private var tuning = false
     /// 新对话 asks first, like HanaAgent: with whom, and whether this one looks at memory.
-    @State private var startingFresh = false
-    @State private var freshCompanion: String?
+    private struct FreshRequest: Identifiable {
+        let id = UUID()
+        let first: String?
+    }
+    @State private var freshRequest: FreshRequest?
     @State private var settingsPage: String?
     @State private var gathering = false
     @State private var studying = false
@@ -313,7 +316,12 @@ struct Desk: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Ink.Space.s) {
                 HStack(alignment: .center, spacing: Ink.Space.s) {
-                    Text("Clio").font(Ink.wordmark((34 * UIScale.factor).rounded())).foregroundStyle(Ink.ink)
+                    Text("Clio")
+                        .font(Ink.wordmark((34 * UIScale.factor).rounded()))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     ClioSeal(size: (20 * UIScale.factor).rounded())
                 }
                 .accessibilityElement(children: .ignore)
@@ -326,11 +334,12 @@ struct Desk: View {
                     closeSide()
                     startFresh()
                 } label: {
-                    Label("新对话", systemImage: "square.and.pencil")
+                    Label(L.t("chat.newConversation"), systemImage: "square.and.pencil")
                         .font(.system(size: Ink.Size.sub, weight: .semibold))
                         .foregroundStyle(Ink.paper)
+                        .lineLimit(1)
                         .padding(.horizontal, Ink.Space.l)
-                        .frame(height: 38)
+                        .frame(minHeight: Ink.Bar.height)
                         .background(Ink.ink, in: .capsule)
                 }
                 .buttonStyle(PressStyle(haptic: false))
@@ -430,8 +439,8 @@ struct Desk: View {
 
     private func startFresh(first: String? = nil) {
         guard !team.bots.isEmpty else { return }
-        freshCompanion = first ?? lastCompanion
-        startingFresh = true
+        sideControl.choosingFresh = true
+        freshRequest = FreshRequest(first: first ?? lastCompanion)
     }
 
     /// The chosen companion on a fresh page; what was there goes to its 对话记录 (listed in the sidebar).
@@ -850,9 +859,9 @@ struct Desk: View {
             if phase != .active { archiveUndo = nil }
         }
         .sheet(isPresented: $addingService) { SetupView(team: team) { addingService = false } }
-        .sheet(isPresented: $startingFresh) {
-            NewChatSheet(team: team, first: freshCompanion) { id, memory in
-                startingFresh = false
+        .sheet(item: $freshRequest, onDismiss: { sideControl.choosingFresh = false }) { request in
+            NewChatSheet(team: team, first: request.first) { id, memory in
+                freshRequest = nil
                 begin(.companion(id), memory: memory)
             }
         }
@@ -1313,10 +1322,11 @@ struct BreathingDot: View {
 
 
 /// The sidebar's "open" for a conversation page: the same object every time the desk is drawn.
-@MainActor
+@MainActor @Observable
 final class SideControl {
-    var open: () -> Void = {}
-    var fresh: (String?) -> Void = { _ in }
+    @ObservationIgnored var open: () -> Void = {}
+    @ObservationIgnored var fresh: (String?) -> Void = { _ in }
+    var choosingFresh = false
 }
 
 private enum ThreadLabel: String, CaseIterable, Identifiable {
