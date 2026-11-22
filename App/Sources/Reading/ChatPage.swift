@@ -356,6 +356,15 @@ struct ChatPage: View {
                 conversationContent
             }
             .environment(\.chatSelectionChanged, selectionChanged)
+            .environment(\.chatQuoteSelection) { picked in
+                Haptics.tick(0.5)
+                withAnimation(Ink.Motion.settle) { quote = picked }
+                typing = true
+            }
+            .environment(\.chatSpeakSelection) { picked in
+                Haptics.light()
+                speak(picked)
+            }
             .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
