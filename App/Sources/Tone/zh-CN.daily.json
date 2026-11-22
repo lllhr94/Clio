@@ -428,6 +428,19 @@
     "dailyHintToggle": "日常旁注",
     "dailyHintDesc": "书卷名字旁边用浅灰小字标出日常意思，熟悉后可以关掉"
   },
+  "modelInput": {
+    "open": "看看发给模型的内容",
+    "title": "发给模型的内容",
+    "retention": "这里显示本次打开 App 后的近期聊天请求。",
+    "noRequests": "这段对话还没有可查看的请求。发一条消息后再来看看。",
+    "conversation": "带上的对话",
+    "messageCount": "%lld 条消息 · %lld 字正文",
+    "system": "系统提示",
+    "memory": "记忆",
+    "skills": "技能说明",
+    "tools": "工具清单",
+    "none": "这次没有带上"
+  },
   "actions": {
     "start": "开始",
     "newChat": "新对话",
