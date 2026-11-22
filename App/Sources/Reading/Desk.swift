@@ -112,6 +112,7 @@ struct Desk: View {
     @State private var tuning = false
     /// 新对话 asks first, like HanaAgent: with whom, and whether this one looks at memory.
     @State private var startingFresh = false
+    @State private var freshCompanion: String?
     @State private var settingsPage: String?
     @State private var gathering = false
     @State private var studying = false
@@ -140,11 +141,16 @@ struct Desk: View {
     /// How far a drag has moved the conversation (right to open the sidebar, left to close it).
     @State private var pull: CGFloat = 0
     /// The sidebar is out, the conversation pushed to the right.
-    @State private var sideOpen = Shots.name == "sidebar"
+    @State private var sideOpen = Shots.name == "sidebar" || Shots.name == "sidebar-past"
     /// What a conversation calls to open the sidebar; one object for the desk's whole life (see `ChatPage.side`).
     @State private var sideControl = SideControl()
     /// The conversation being renamed from the sidebar, and the words typed so far.
-    @State private var renamingKey: String?
+    private enum RenameTarget {
+        case current(String)
+        case past(PastLeaf)
+    }
+    @State private var renaming: RenameTarget?
+    @State private var deletingPast: PastLeaf?
     @State private var renameText = ""
     @State private var sideQuery = ""
     @State private var query = ""
@@ -293,7 +299,7 @@ struct Desk: View {
 
     private func startRename(_ key: String) {
         renameText = team.title(of: key) ?? ""
-        renamingKey = key
+        renaming = .current(key)
     }
 
     private func openSide() {
@@ -441,14 +447,15 @@ struct Desk: View {
         recent.compactMap(\.bot).first?.id ?? team.bots.first?.id
     }
 
-    private func startFresh() {
+    private func startFresh(first: String? = nil) {
         guard !team.bots.isEmpty else { return }
+        freshCompanion = first ?? lastCompanion
         startingFresh = true
     }
 
     /// The chosen companion on a fresh page; what was there goes to its 对话记录 (listed in the sidebar).
     private func begin(_ target: Opened, memory: Bool) {
-        team.turnLeaf(target.id)
+        guard team.turnLeaf(target.id) else { return }
         team.setAbility(.memory, on: memory, in: target.id)
         withAnimation(Ink.Motion.unfold) { opened = target }
     }
@@ -474,23 +481,33 @@ struct Desk: View {
     }
 
     private func pastRow(_ past: PastLeaf) -> some View {
-        Button {
-            Haptics.light()
-            jump(past.owner)
-            team.openLeaf(past.owner.id, past.leaf)
-        } label: {
-            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                Text(past.leaf.title.isEmpty ? "没有标题的对话" : past.leaf.title)
-                    .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                Text("\(past.ownerName) · \(Self.dayName(past.leaf.at)) · \(past.leaf.count) 条")
-                    .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+        SwipeRow(actions: [
+            SwipeAction(title: L.t("actions.delete"), symbol: "trash", tint: Ink.stop) { deletingPast = past }
+        ]) {
+            Button {
+                Haptics.light()
+                jump(past.owner)
+                team.openLeaf(past.owner.id, past.leaf)
+            } label: {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    Text(past.leaf.title.isEmpty ? L.t("chat.untitled") : past.leaf.title)
+                        .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
+                    Text("\(past.ownerName) · \(Self.dayName(past.leaf.at)) · \(past.leaf.count) 条")
+                        .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.s)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, Ink.Space.s)
-            .contentShape(Rectangle())
+            .buttonStyle(PressStyle(haptic: false))
+            .contextMenu {
+                Button(L.t("chat.rename"), systemImage: "pencil") {
+                    renameText = past.leaf.title
+                    renaming = .past(past)
+                }
+            }
         }
-        .buttonStyle(PressStyle(haptic: false))
     }
 
     private static func dayName(_ at: Double) -> String {
@@ -853,7 +870,7 @@ struct Desk: View {
         }
         .sheet(isPresented: $addingService) { SetupView(team: team) { addingService = false } }
         .sheet(isPresented: $startingFresh) {
-            NewChatSheet(team: team, first: lastCompanion) { id, memory in
+            NewChatSheet(team: team, first: freshCompanion) { id, memory in
                 startingFresh = false
                 begin(.companion(id), memory: memory)
             }
@@ -863,14 +880,33 @@ struct Desk: View {
     var body: some View {
         deskContent
         .animation(Ink.Motion.unfold, value: opened)
-        .onAppear { sideControl.open = { openSide() } }
-        .alert("重命名对话", isPresented: Binding(get: { renamingKey != nil }, set: { if !$0 { renamingKey = nil } })) {
-            TextField("对话标题", text: $renameText)
-            Button(L.t("actions.cancel"), role: .cancel) { renamingKey = nil }
+        .onAppear {
+            sideControl.open = { openSide() }
+            sideControl.fresh = { startFresh(first: $0) }
+        }
+        .alert(L.t("chat.rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField(L.t("chat.titleField"), text: $renameText)
+            Button(L.t("actions.cancel"), role: .cancel) { renaming = nil }
             Button(L.t("actions.save")) {
-                if let key = renamingKey { team.rename(key, to: renameText) }
-                renamingKey = nil
+                switch renaming {
+                case .current(let key): team.rename(key, to: renameText)
+                case .past(let past):
+                    if !team.renameLeaf(past.owner.id, id: past.leaf.id, to: renameText) {
+                        notice = L.t("errors.saveConversation")
+                    }
+                case nil: break
+                }
+                renaming = nil
             }
+        }
+        .confirmationDialog(L.t("chat.deletePast"), isPresented: Binding(get: { deletingPast != nil }, set: { if !$0 { deletingPast = nil } }), titleVisibility: .visible, presenting: deletingPast) { past in
+            Button(L.t("actions.delete"), role: .destructive) {
+                if !team.deleteLeaf(past.owner.id, id: past.leaf.id) { notice = L.t("errors.saveConversation") }
+                deletingPast = nil
+            }
+            Button(L.t("actions.cancel"), role: .cancel) { deletingPast = nil }
+        } message: { _ in
+            Text(L.t("errors.cannotUndo"))
         }
         .onChange(of: opened) { _, _ in
             if sideOpen || pull != 0 { sideOpen = false; pull = 0 }
@@ -1282,6 +1318,7 @@ struct BreathingDot: View {
 @MainActor
 final class SideControl {
     var open: () -> Void = {}
+    var fresh: (String?) -> Void = { _ in }
 }
 
 private enum ThreadLabel: String, CaseIterable, Identifiable {
@@ -1298,68 +1335,5 @@ private enum ThreadLabel: String, CaseIterable, Identifiable {
         case .teng: Ink.Tile.teng
         case .zhu: Ink.Tile.zhu
         }
-    }
-}
-
-/// 新对话, the HanaAgent way: pick who to talk with and whether this conversation looks at memory, then start.
-/// Turning memory off is cheaper too (the model's cache hits more often) and keeps this one out of what is remembered.
-private struct NewChatSheet: View {
-    @ObservedObject var team: TeamModel
-    let start: (String, Bool) -> Void
-    @State private var pick: String
-    @State private var memory = true
-    @Environment(\.dismiss) private var dismiss
-
-    init(team: TeamModel, first: String?, start: @escaping (String, Bool) -> Void) {
-        self.team = team
-        self.start = start
-        _pick = State(initialValue: first ?? "")
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                PaperRows {
-                    Section {
-                        ForEach(team.bots) { bot in
-                            Button {
-                                Haptics.tick(0.5)
-                                pick = bot.id
-                            } label: {
-                                HStack(spacing: Ink.Space.m) {
-                                    PetStill(size: 32, wash: Ink.wash(for: bot), avatar: true, bot: bot)
-                                    Text(bot.name).foregroundStyle(Ink.ink)
-                                    Spacer()
-                                    if pick == bot.id {
-                                        Image(systemName: "checkmark").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.accent)
-                                    }
-                                }
-                                .contentShape(.rect)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    } header: { Text(Words.t("跟哪位旅伴聊")) }
-                    Section {
-                        Toggle(Words.t("这次参考拾遗"), isOn: $memory).tint(Ink.accent)
-                    } footer: {
-                        Text(Words.t("关掉后，这段对话里旅伴不翻拾遗、也不往里记；更省钱。之前的对话还在侧边栏里。"))
-                    }
-                }
-            }
-            .paperForm()
-            .navigationTitle(L.t("chat.newConversation"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("开始") {
-                        Haptics.light()
-                        start(pick, memory)
-                    }
-                    .disabled(!team.bots.contains { $0.id == pick })
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
     }
 }

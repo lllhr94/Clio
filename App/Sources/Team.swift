@@ -1130,6 +1130,40 @@ final class TeamModel: ObservableObject {
         if keeping { Disk.save(list, Self.leafList(key)) }
     }
 
+    @discardableResult
+    func renameLeaf(_ key: String, id: String, to title: String) -> Bool {
+        var list = leaves(key)
+        guard let index = list.firstIndex(where: { $0.id == id && $0.marker == nil }) else { return false }
+        let title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        guard list[index].title != title else { return true }
+        list[index].title = title
+        return writeEditedLeaves(key, list)
+    }
+
+    @discardableResult
+    func deleteLeaf(_ key: String, id: String) -> Bool {
+        let list = leaves(key)
+        guard list.contains(where: { $0.id == id && $0.marker == nil }),
+              writeEditedLeaves(key, list.filter { $0.id != id }) else { return false }
+        if keeping {
+            Disk.remove(Self.leafFile(key, id))
+            Disk.remove(Self.leafSummary(key, id))
+        }
+        return true
+    }
+
+    private func writeEditedLeaves(_ key: String, _ list: [Leaf]) -> Bool {
+        do {
+            if keeping { try Disk.write(list, Self.leafList(key)) }
+        } catch {
+            Diag.note("没存进手机：\(Self.leafList(key))（\(error.localizedDescription)）")
+            return false
+        }
+        objectWillChange.send()
+        leafBook[key] = list
+        return true
+    }
+
     /// The newest compression line, which can be taken out again (the 前情提要 goes back to what it was before).
     func undoableLine(_ key: String) -> Entry? { history(key).last { $0.fold == true } }
 
@@ -1315,6 +1349,7 @@ final class TeamModel: ObservableObject {
         entries[key] = kept
         if keeping { Disk.remove(Self.leafFile(key, leaf.id)) }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        if leaf.marker == nil { rename(key, to: leaf.title) }
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
         touch(key, preview: last)
         notify(key, .changed)
@@ -1341,12 +1376,13 @@ final class TeamModel: ObservableObject {
             .map { ($0.message.role == .user ? "用户：" : "旅伴：") + String($0.message.text.prefix(300)) }
         guard lines.count >= 2, let agent = helper(for: key, system: "你给对话起标题：8 到 14 个字，中文，不加引号和标点，只输出标题。") else { return }
         let transcript = lines.joined(separator: "\n")
+        let initialTitle = leaves(key).first { $0.id == id }?.title
         Task { [weak self] in
             guard let title = try? await agent.ask("给下面这段对话起个标题：\n\n" + transcript) else { return }
             let clean = title.trimmingCharacters(in: CharacterSet(charactersIn: "「」\"'《》 \n。.")).prefix(20)
             guard let self, !clean.isEmpty else { return }
             var list = self.leaves(key)
-            guard let index = list.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = list.firstIndex(where: { $0.id == id }), list[index].title == initialTitle else { return }
             list[index].title = String(clean)
             self.setLeaves(key, list)
         }
@@ -2560,6 +2596,14 @@ final class TeamModel: ObservableObject {
             Approval(id: "a2", botId: "chef", tool: "添加提醒事项", reason: "今晚 18:30  泡黄豆", at: Now.ms, answerable: true),
         ]
         doing = [Self.key(bot: "scout"): "搜索：周末天气"]
+        if Shots.name == "sidebar-past" {
+            let key = Self.key(bot: "chief")
+            pinned = [key]
+            leafBook[key] = [
+                Leaf(id: "shot-old-route", title: "周末路线和雨天备选", at: Now.ms - 86_400_000, count: 7),
+                Leaf(id: "shot-old-list", title: "带给同行朋友的清单", at: Now.ms - 172_800_000, count: 4),
+            ]
+        }
     }
 
     private func fillDemoError() {

@@ -17,6 +17,7 @@ struct StopRow<Value: Hashable>: View {
     let stops: [Stop<Value>]
     /// The detail under the current value in the row, when it helps (like how much that 档位 is for this model).
     var line: String? = nil
+    var opensForShot = false
     @State private var open = false
 
     var body: some View {
@@ -43,6 +44,11 @@ struct StopRow<Value: Hashable>: View {
         .accessibilityLabel(title)
         .accessibilityValue(current?.name ?? "")
         .accessibilityHint("点一下调整")
+        .task {
+            guard opensForShot else { return }
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            open = true
+        }
         .popover(isPresented: $open, arrowEdge: .bottom) {
             StopRuler(title: title, value: $value, stops: stops)
                 .presentationCompactAdaptation(.popover)

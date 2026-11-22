@@ -8,7 +8,7 @@ enum Shots {
 
     static var startsInChat: Bool {
         switch name {
-        case "chat", "sidebar", "plan", "model-error": true
+        case "chat", "sidebar", "sidebar-past", "newchat", "plan", "model-error": true
         default: name?.hasPrefix("chat-") == true
         }
     }
@@ -16,6 +16,12 @@ enum Shots {
     /// Scenes that need more than the opening picture: a long conversation, one jumped back to its foot, one with a
     /// reply arriving. They wait `clioShotDelay` seconds after the first frames before saying they are ready.
     static var delay: Double { UserDefaults.standard.double(forKey: "clioShotDelay") }
+
+    enum StreamStage: String { case midway, finished }
+
+    static var streamStage: StreamStage? {
+        UserDefaults.standard.string(forKey: "clioShotStream").flatMap(StreamStage.init(rawValue:))
+    }
 
     static var readyToken: String? { UserDefaults.standard.string(forKey: "clioShotToken") }
 }
@@ -25,13 +31,14 @@ struct ShotSettingsPage: View {
     let name: String
     @ObservedObject var team: TeamModel
 
-    static let names: Set<String> = ["settings", "connectors", "look", "grants", "add", "pet"]
+    static let names: Set<String> = ["settings", "connectors", "look", "stops", "grants", "add", "pet"]
 
     var body: some View {
         switch name {
         case "settings": SettingsView(team: team)
         case "connectors": ConnectorsPage()
         case "look": NavigationStack { LookPage() }
+        case "stops": NavigationStack { ReadingSizePage() }
         case "grants": GrantsPage(team: team)
         case "add": SetupView(team: team, onDone: {})
         case "pet": PetPage()

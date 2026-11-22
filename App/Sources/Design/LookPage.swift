@@ -152,7 +152,7 @@ struct ReadingSizePage: View {
                     .animation(Ink.Motion.settle, value: size)
                 StopRow(title: L.t("settingsHome.fontSize"), value: Stops.snapped($size, to: Self.sizes), stops: Self.sizes.indices.map {
                     Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
-                })
+                }, opensForShot: Shots.name == "stops")
                 StopRow(title: L.t("settingsHome.lineSpacing"), value: Stops.snapped($lineHeight, to: Pref.lineHeights), stops: Pref.lineHeights.indices.map {
                     Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
                 })

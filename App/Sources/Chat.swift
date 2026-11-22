@@ -192,8 +192,7 @@ final class ChatModel {
     private func step() -> Bool {
         if let settling = fresh, settling.shown != nil {
             guard shown < finalCount else {
-                // Straight over, no crossfade: the writing layout and the finished one differ a little (list spacing,
-                // a table drawn whole), and fading one into the other showed both at once, a line apart.
+                // The same layout stays in place. No crossfade over the finished text.
                 fresh?.shown = nil
                 return false
             }
@@ -545,6 +544,47 @@ final class ChatModel {
 
     其余的到了再买，重庆什么都方便。再补一句很长的话，让这段回答在截图的时候还在一个字一个字地往外冒，看看页面会不会突然空白或者跳动。
     """
+
+    static let shotQuestionID = "shot-c33-question"
+
+    /// Same question and common blocks in both frames. Stage the reply after the chat is on screen so the
+    /// screenshot can hold steady at each point in the same renderer.
+    func stageReplyShot(_ stage: Shots.StreamStage) {
+        guard demo else { return }
+        let heading = """
+        要带的东西：
+
+        - 雨伞，下午三点后有雨
+
+        - 充电宝，拍照费电
+
+        | 东西 | 谁带 |
+        | :-- | :-- |
+        | 雨伞 | 你 |
+        | 水 | 都带 |
+
+        ```text
+        出发前：充好电，带上水。
+        ```
+        """
+        let end = """
+        到了再买零食。约在地铁口碰面，带件薄外套，回程路上会凉一点。
+        明早再看一次天气，如果一直下雨，我们就把午饭改到室内。
+
+        行程改完以后把地址同步给同行的人，免得大家跑错地方。
+        """
+        let prefix = heading + "\n\n"
+        lines.append(ChatLine(id: Self.shotQuestionID, kind: .user, text: "再帮我列个要带的东西"))
+        switch stage {
+        case .midway:
+            demoWorking = true
+            streaming = prefix + end.prefix(12)
+        case .finished:
+            let line = ChatLine(id: "shot-c33-reply", kind: .bot, text: prefix + end)
+            fresh = Fresh(id: line.id, shown: nil)
+            lines.append(line)
+        }
+    }
 
     private func sendDemo(_ text: String) {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
