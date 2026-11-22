@@ -44,10 +44,15 @@ jobs:
         run: python3 tools/lint.py
 
       - name: Use Xcode 26
+        id: xcode
         run: |
           XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
-          xcodebuild -version
+          VERSION=$(xcodebuild -version)
+          echo "$VERSION"
+          BUILD=$(awk '/^Build version / {print $3}' <<< "$VERSION")
+          test -n "$BUILD"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
 
       - name: Test chat flow rules
         working-directory: .
@@ -77,6 +82,23 @@ jobs:
           # Every build gets a higher build number, so an installer never mistakes a new probe for the one already on the phone.
           sed -i '' "s/CFBundleVersion: \"[0-9]*\"/CFBundleVersion: \"${{ github.run_number }}\"/" project.yml
           xcodegen generate
+
+      - name: Fingerprint package declarations
+        id: deps
+        working-directory: .
+        run: |
+          set -o pipefail
+          H=$(sed -n '/^packages:/,/^targets:/p' App/project.yml | shasum -a 256 | cut -d' ' -f1)
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+          echo "packages fingerprint: $H"
+
+      - name: Cache SwiftPM downloads
+        uses: actions/cache@v4
+        with:
+          path: App/build/SourcePackages/repositories
+          key: spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode${{ steps.xcode.outputs.build }}-${{ steps.deps.outputs.hash }}
+          restore-keys: |
+            spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode${{ steps.xcode.outputs.build }}-
 
       - name: Build (no code signing)
         run: |
