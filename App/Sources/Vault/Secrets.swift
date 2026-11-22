@@ -228,7 +228,7 @@ enum SecretTools {
             ], label: { "远山：添主机 \($0["address"]?.string ?? "")" }) { arguments in
                 let form = Asker.Form(
                     title: "添一台主机",
-                    reason: "存好后，旅伴就能用 SSH 在这台主机上替你跑命令。密码只存在这台手机里。",
+                    reason: Words.t("存好后，旅伴就能用 SSH 在这台主机上替你跑命令。密码只存在这台手机里。"),
                     from: botName,
                     fields: [
                         Asker.Field(key: "name", label: "称呼", placeholder: "比如：香港 VPS", value: arguments["name"]?.string ?? ""),
@@ -267,7 +267,7 @@ enum SecretTools {
                 ],
                 "required": ["ref", "id"],
             ], label: { "远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]" }, approval: { arguments in
-                ApprovalAsk(title: "从信匣取出来填进网页", reason: "信匣编号 \(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")")
+                ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: Words.t("信匣编号 ") + "\(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")")
             }) { arguments in
                 let id = arguments["id"]?.string ?? ""
                 guard let item = await Secrets.shared.item(id) else { return ToolOutput("信匣里没有编号 \(id)。", isError: true) }

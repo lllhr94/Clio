@@ -1562,7 +1562,7 @@ final class TeamModel: ObservableObject {
 
     /// What a chat is called: the companion's name, or the gathering's.
     func chatName(_ key: String) -> String {
-        key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? "雅集") : (bots.first { Self.key(bot: $0.id) == key }?.name ?? "旅伴")
+        key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? L.t("nav.groupChat")) : (bots.first { Self.key(bot: $0.id) == key }?.name ?? L.t("nav.assistant"))
     }
 
     private func endGrace(_ token: UUID) {
@@ -2415,7 +2415,7 @@ final class TeamModel: ObservableObject {
         if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
         Haptics.tick(0.8)
         if UIApplication.shared.applicationState != .active {
-            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? "旅伴")
+            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
         }
         let allowed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in waiters[id] = continuation }
         if doing[chat] == "等你批准" { doing[chat] = before }
@@ -2464,7 +2464,7 @@ final class TeamModel: ObservableObject {
         let item = Later(id: UUID().uuidString, chat: chat, botId: bot, text: text, at: date.timeIntervalSince1970)
         laters.append(item)
         saveLaters()
-        Notify.schedule(item, from: bots.first { $0.id == bot }?.name ?? "旅伴")
+        Notify.schedule(item, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
     }
 
     /// Messages whose time has come go into their chats.
@@ -2491,7 +2491,7 @@ final class TeamModel: ObservableObject {
     func setRoutine(_ routine: Routine) {
         if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = routine } else { routines.append(routine) }
         saveRoutines()
-        Notify.schedule(routine, from: bots.first { $0.id == routine.botId }?.name ?? "旅伴")
+        Notify.schedule(routine, from: bots.first { $0.id == routine.botId }?.name ?? L.t("nav.assistant"))
     }
 
     func removeRoutine(_ id: String) {
