@@ -139,7 +139,7 @@ struct SearchSettingsPage: View {
 
     private var providerSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("主搜索源")
+            SectionTitle(L.t("searchSettings.primarySection"))
             VStack(spacing: 0) {
                 ForEach(Array(WebSearchProvider.allCases.enumerated()), id: \.element.id) { index, provider in
                     if index > 0 { Kit.divider }
@@ -147,7 +147,7 @@ struct SearchSettingsPage: View {
                 }
             }
             .paperCard()
-            Text("默认使用内置网页抓取（Bing / DuckDuckGo）；需要更稳或更准的搜索结果时，可按需切到 AnySearch（免密钥可用）或填写 Tavily、Exa、Brave 密钥。")
+            Text(L.t("searchSettings.primaryNote"))
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
@@ -176,7 +176,7 @@ struct SearchSettingsPage: View {
                 IconBadge(symbol: providerIcon(provider), tint: isSelected ? Ink.Tile.xiang : Ink.Tile.mo)
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     HStack(spacing: Ink.Space.s) {
-                        Text(provider.name)
+                        Text(providerName(provider))
                             .font(.system(size: Ink.Size.body, weight: isSelected ? .semibold : .regular))
                             .foregroundStyle(Ink.ink)
                         if let statusTag {
@@ -188,7 +188,7 @@ struct SearchSettingsPage: View {
                                 .background(statusTag.tint.opacity(0.14), in: .capsule)
                         }
                     }
-                    Text(provider.summary)
+                    Text(providerSummary(provider))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)
@@ -208,6 +208,26 @@ struct SearchSettingsPage: View {
         .buttonStyle(PressStyle(haptic: false))
     }
 
+    private func providerName(_ provider: WebSearchProvider) -> String {
+        switch provider {
+        case .builtin: L.t("searchSettings.providerBuiltinName")
+        case .anysearch: L.t("searchSettings.providerAnysearchName")
+        case .tavily: L.t("searchSettings.providerTavilyName")
+        case .exa: L.t("searchSettings.providerExaName")
+        case .brave: L.t("searchSettings.providerBraveName")
+        }
+    }
+
+    private func providerSummary(_ provider: WebSearchProvider) -> String {
+        switch provider {
+        case .builtin: L.t("searchSettings.providerBuiltinSummary")
+        case .anysearch: L.t("searchSettings.providerAnysearchSummary")
+        case .tavily: L.t("searchSettings.providerTavilySummary")
+        case .exa: L.t("searchSettings.providerExaSummary")
+        case .brave: L.t("searchSettings.providerBraveSummary")
+        }
+    }
+
     private func providerIcon(_ provider: WebSearchProvider) -> String {
         switch provider {
         case .anysearch: "sparkles.rectangle.stack"
@@ -221,9 +241,13 @@ struct SearchSettingsPage: View {
     private func providerBadge(for provider: WebSearchProvider, hasKey: Bool) -> (text: String, tint: Color)? {
         switch provider {
         case .anysearch:
-            return hasKey ? ("已填密钥", Ink.ok) : ("免密钥可用", Ink.accent)
+            return hasKey
+                ? (L.t("searchSettings.badgeKeySaved"), Ink.ok)
+                : (L.t("searchSettings.badgeFreeReady"), Ink.accent)
         case .tavily, .exa, .brave:
-            return hasKey ? ("已填密钥", Ink.ok) : ("需密钥", Ink.warn)
+            return hasKey
+                ? (L.t("searchSettings.badgeKeySaved"), Ink.ok)
+                : (L.t("searchSettings.badgeKeyNeeded"), Ink.warn)
         case .builtin:
             return nil
         }
@@ -233,15 +257,18 @@ struct SearchSettingsPage: View {
 
     private var keySection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("\(selected.shortName) 密钥")
+            SectionTitle(L.format("searchSettings.keySection", selected.shortName))
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 HStack(spacing: Ink.Space.s) {
-                    SecureField(savedMasked.isEmpty ? "粘贴 \(selected.shortName) API Key" : savedMasked, text: $keyInput)
+                    SecureField(
+                        savedMasked.isEmpty ? L.format("searchSettings.keyPlaceholder", selected.shortName) : savedMasked,
+                        text: $keyInput
+                    )
                         .font(Ink.mono(Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     if keyInput.isEmpty {
-                        Button("粘贴") {
+                        Button(L.t("actions.paste")) {
                             if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
                                 keyInput = clip
                                 Haptics.tick(0.4)
@@ -258,18 +285,18 @@ struct SearchSettingsPage: View {
                 if !savedMasked.isEmpty {
                     Kit.rule(inset: 0)
                     HStack {
-                        Text("已保存：\(savedMasked)")
+                        Text(L.format("searchSettings.keySavedPreview", savedMasked))
                             .font(Ink.mono(Ink.Size.small))
                             .foregroundStyle(Ink.inkSoft)
                         Spacer()
-                        Button("清除密钥", role: .destructive) { clearCurrentKey() }
+                        Button(L.t("searchSettings.clearKey"), role: .destructive) { clearCurrentKey() }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(Ink.stop)
                     }
                 }
                 if !selected.consoleHost.isEmpty {
                     Kit.rule(inset: 0)
-                    Text("获取密钥：\(selected.consoleHost)")
+                    Text(L.format("searchSettings.consoleHost", selected.consoleHost))
                         .font(Ink.mono(Ink.Size.small))
                         .foregroundStyle(Ink.inkFaint)
                         .textSelection(.enabled)
@@ -293,19 +320,19 @@ struct SearchSettingsPage: View {
 
     private var keyFootnote: String {
         if selected == .anysearch {
-            return "不填密钥也能走免费匿名通道；填上免费密钥每天可用 1000 次、限流更少。密钥只存在本机钥匙串，不会发给模型，也不进备份。"
+            return L.t("searchSettings.anysearchKeyNote")
         }
-        return "密钥只存在本机钥匙串里，不会发给模型，也不会进云端备份。"
+        return L.t("searchSettings.keyNote")
     }
 
     // MARK: Fallback & Live Test
 
     private var fallbackAndTestSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("兜底与测试")
+            SectionTitle(L.t("searchSettings.fallbackAndTestSection"))
             VStack(alignment: .leading, spacing: 0) {
                 if selected != .builtin {
-                    Toggle("失败或超额时自动回退内置网页", isOn: $fallbackToBuiltin)
+                    Toggle(L.t("searchSettings.fallbackToggle"), isOn: $fallbackToBuiltin)
                         .font(.system(size: Ink.Size.body))
                         .foregroundStyle(Ink.ink)
                         .tint(Ink.accent)
@@ -315,7 +342,7 @@ struct SearchSettingsPage: View {
                 }
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
                     HStack(spacing: Ink.Space.s) {
-                        TextField("输入测试词", text: $testQuery)
+                        TextField(L.t("searchSettings.testPlaceholder"), text: $testQuery)
                             .font(.system(size: Ink.Size.sub))
                             .submitLabel(.search)
                             .onSubmit { runProbe() }
@@ -324,7 +351,7 @@ struct SearchSettingsPage: View {
                                 .controlSize(.small)
                         }
                     }
-                    Button(testing ? "正在试搜…" : "试搜一下") { runProbe() }
+                    Button(testing ? L.t("searchSettings.testing") : L.t("searchSettings.runTest")) { runProbe() }
                         .buttonStyle(WideButtonStyle())
                         .disabled(testing || testQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let testResult {
@@ -342,7 +369,11 @@ struct SearchSettingsPage: View {
             Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(result.ok ? Ink.ok : Ink.stop)
             VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                Text(result.ok ? "\(result.source) 可用，返回 \(result.count) 条结果" : "\(result.source) 试搜未通过")
+                Text(
+                    result.ok
+                        ? L.format("searchSettings.testPassed", result.source, result.count)
+                        : L.format("searchSettings.testFailed", result.source)
+                )
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                 Text(result.detail)
@@ -382,7 +413,7 @@ struct SearchSettingsPage: View {
             keyedProviders.insert(target)
             guard selected == target, selectionVersion == version else { return }
             savedMasked = SearchEngine.mask(value)
-            keyNotice = "已存入本机钥匙串。"
+            keyNotice = L.t("searchSettings.keySavedNotice")
             testResult = nil
             Haptics.thud()
         }
@@ -397,7 +428,7 @@ struct SearchSettingsPage: View {
             keyedProviders.remove(target)
             guard selected == target, selectionVersion == version else { return }
             savedMasked = ""
-            keyNotice = "已清除 \(target.shortName) 密钥。"
+            keyNotice = L.format("searchSettings.keyClearedNotice", target.shortName)
             testResult = nil
             Haptics.lock()
         }
