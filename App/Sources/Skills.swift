@@ -29,7 +29,7 @@ enum SkillShelf {
     nonisolated(unsafe) private static var cache: (at: Date, items: [Item])?
     nonisolated(unsafe) private static var cacheVersion = 0
 
-    private static func invalidate() {
+    static func invalidate() {
         cacheLock.withLock {
             cache = nil
             cacheVersion += 1
@@ -98,7 +98,7 @@ enum SkillShelf {
         invalidate()
     }
 
-    private static func safe(_ name: String) -> String {
+    static func safe(_ name: String) -> String {
         let cleaned = name.components(separatedBy: CharacterSet(charactersIn: "/\\:?*\"<>|")).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "技能" : String(cleaned.prefix(40))
     }
@@ -191,7 +191,17 @@ struct UseSkillTool: AgentTool {
         var text = "技能「\(item.skill.name)」（\(item.id)）：\n\n\(item.skill.body)"
         let parent = item.file.deletingLastPathComponent()
         if parent.standardizedFileURL != SkillShelf.folder.standardizedFileURL {
-            let others = ((try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []).filter { $0 != item.file.lastPathComponent && !$0.hasPrefix(".") }
+            let parentPath = parent.standardizedFileURL.path
+            var others: [String] = []
+            if let walker = FileManager.default.enumerator(at: parent, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+                for case let url as URL in walker {
+                    guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                    let std = url.standardizedFileURL.path
+                    guard std != item.file.standardizedFileURL.path, std.hasPrefix(parentPath + "/") else { continue }
+                    others.append(String(std.dropFirst(parentPath.count + 1)))
+                    if others.count >= 40 { break }
+                }
+            }
             if !others.isEmpty {
                 text += "\n\n这个技能的文件夹（书案/\(Workspace.relative(parent))）里还有：" + others.sorted().joined(separator: "、") + "。需要时用 read_file 读。"
             }
@@ -209,6 +219,7 @@ struct SkillsPage: View {
     @State private var loading = true
     @State private var scan = 0
     @State private var editing: Editing?
+    @State private var installing = false
     @State private var note: String?
 
     struct Editing: Identifiable {
@@ -227,11 +238,16 @@ struct SkillsPage: View {
                     } else if items.isEmpty {
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
                             EmptyNote(symbol: "books.vertical", words: L.t("empty.skills"))
-                            Button("装几个示例：旅行规划、周报、读长文档、记账") {
-                                installSamples()
+                            Button("从链接 / zip 安装技能") {
+                                installing = true
                             }
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
+                            Button("装几个示例：旅行规划、周报、读长文档、记账") {
+                                installSamples()
+                            }
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(Ink.inkSoft)
                         }
                     } else {
                         RowCard {
@@ -250,6 +266,7 @@ struct SkillsPage: View {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("从链接 / zip 安装", systemImage: "square.and.arrow.down.on.square") { installing = true }
                         Button("写一个新技能", systemImage: "square.and.pencil") { editing = Editing(item: nil) }
                         Button("装示例技能", systemImage: "tray.and.arrow.down") {
                             installSamples(fromMenu: true)
@@ -270,6 +287,12 @@ struct SkillsPage: View {
         }
         .sheet(item: $editing, onDismiss: reload) { editing in
             SkillEditor(item: editing.item)
+        }
+        .sheet(isPresented: $installing) {
+            SkillInstallSheet { installedName in
+                note = "装好了「\(installedName)」。"
+                reload()
+            }
         }
     }
 
