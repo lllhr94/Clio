@@ -228,7 +228,10 @@ enum WebFetch {
         request.setValue(agent, forHTTPHeaderField: "User-Agent")
         request.setValue("zh-CN,zh;q=0.9,en;q=0.7", forHTTPHeaderField: "Accept-Language")
         request.setValue("text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        if LocalAddress.isLocal(url) || await LocalAddress.resolvesToLocal(url) {
+        if LocalAddress.isLocal(url) {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        if await LocalAddress.resolvesToLocal(url) {
             throw ProviderError(LocalAddress.refusal)
         }
         // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to a

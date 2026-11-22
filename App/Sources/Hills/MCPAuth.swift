@@ -129,7 +129,10 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
               let host = target.host, !host.isEmpty else {
             throw ProviderError("\(label)必须是 https 公网地址。")
         }
-        if LocalAddress.isLocal(target) || await LocalAddress.resolvesToLocal(target) {
+        if LocalAddress.isLocal(target) {
+            throw ProviderError("\(label)指向本机或局域网，已拒绝。")
+        }
+        if await LocalAddress.resolvesToLocal(target) {
             throw ProviderError("\(label)指向本机或局域网，已拒绝。")
         }
         return target
