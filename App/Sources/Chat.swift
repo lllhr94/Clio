@@ -178,8 +178,7 @@ final class ChatModel {
     }
 
     func close() {
-        toolRows?.cancel()
-        toolRows = nil
+        cancelToolRows()
         opening?.cancel()
         opening = nil
         if let feed { team.unlisten(feed) }
@@ -231,6 +230,7 @@ final class ChatModel {
 
     func refresh() async {
         guard !demo else { return }
+        cancelToolRows()
         apply(build(team.history(key)))
     }
 
@@ -244,8 +244,10 @@ final class ChatModel {
 
     func loadEarlier() async {
         guard hasEarlier, !loadingEarlier else { return }
+        cancelToolRows()
         loadingEarlier = true
         defer { loadingEarlier = false }
+        let epoch = team.epochs[key, default: 0]
         let nextLimit = limit + 160
         let history = await team.loadHistory(key)
         let working = team.isWorking(key)
@@ -253,7 +255,9 @@ final class ChatModel {
         let page = await Task.detached(priority: .userInitiated) {
             Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, team.epochs[key, default: 0] == epoch else { return }
+        // A tool event may have started another build while the larger page was being prepared.
+        cancelToolRows()
         limit = nextLimit
         heldRows = nil
         let newest = team.history(key)
@@ -408,9 +412,15 @@ final class ChatModel {
         if !thinking.isEmpty { thinking = "" }
     }
 
-    private func rebuildToolRows(_ history: [Entry]) {
+    private func cancelToolRows() {
         toolRows?.cancel()
+        toolRows = nil
+    }
+
+    private func rebuildToolRows(_ history: [Entry]) {
+        cancelToolRows()
         let pageLimit = limit
+        let epoch = team.epochs[key, default: 0]
         let working = team.isWorking(key)
         let label = running
         toolRows = Task { [weak self] in
@@ -420,8 +430,13 @@ final class ChatModel {
             let next = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard let self, !Task.isCancelled else { return }
             self.toolRows = nil
-            guard self.limit == pageLimit else { return }
-            self.hasEarlier = history.count > pageLimit
+            guard self.limit == pageLimit, self.team.epochs[self.key, default: 0] == epoch else { return }
+            let current = self.team.history(self.key)
+            guard self.running == label, self.team.isWorking(self.key) == working, current == history else {
+                self.rebuildToolRows(current)
+                return
+            }
+            self.hasEarlier = current.count > pageLimit
             self.apply(next)
         }
     }
@@ -451,8 +466,7 @@ final class ChatModel {
                 rebuildToolRows(all)
                 return
             }
-            toolRows?.cancel()
-            toolRows = nil
+            cancelToolRows()
             let next = build(all)
             if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
                 // The kept row takes over exactly where the streaming one stood. Not only when the words match to
@@ -486,6 +500,7 @@ final class ChatModel {
             }
             rebuildToolRows(team.history(key))
         case .failed(let message):
+            cancelToolRows()
             clearThinking()
             pulse = ""
             withAnimation(.smooth) { error = message }

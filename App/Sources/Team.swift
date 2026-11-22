@@ -105,10 +105,12 @@ final class TeamModel: ObservableObject {
     /// stopped turn's last words cannot land in the new page (the review, #16).
     var epochs: [String: Int] = [:]
     var doing: [String: String] = [:] {
+        willSet {
+            if Set(doing.keys) != Set(newValue.keys) { objectWillChange.send() }
+        }
         // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
         didSet {
             guard oldValue != doing else { return }
-            if Set(oldValue.keys) != Set(doing.keys) { objectWillChange.send() }
             Hitches.shared.doing(doing.values.min().map { "旅伴：" + $0 }, as: "work")
             for (key, words) in doing where oldValue[key] != words {
                 workDetails[key]?.words = words

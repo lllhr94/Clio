@@ -142,7 +142,13 @@ final class Den: ObservableObject {
         control.once = nil
         if let pid = control.pid { running.remove(pid) }
         if shown {
-            if result.timedOut { note(.note, "超过 \(Int(duration)) 秒，停掉了") } else if result.code != 0 { note(.note, "退出码 \(result.code)") }
+            if result.timedOut {
+                note(.note, "超过 \(Int(duration)) 秒，停掉了")
+            } else if result.code != 0 {
+                note(.note, "退出码 \(result.code)")
+            } else {
+                append(output.drain())
+            }
         }
         return result
     }
