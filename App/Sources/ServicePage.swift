@@ -3,7 +3,7 @@ import Craft
 import SwiftUI
 import UIKit
 
-/// One model service, all of it: which models are in use and what each can do, the address and key, the balance.
+/// One model service, organized into three clear sections: enabled models, connection & key, and advanced.
 struct ServicePage: View {
     @ObservedObject var team: TeamModel
     let id: String
@@ -11,8 +11,8 @@ struct ServicePage: View {
     @Environment(\.openURL) private var openURL
     @State private var note: String?
     @State private var working = false
-    @State private var search = ""
-    @State private var typed = ""
+    @State private var managingModels = false
+    @State private var showAdvanced = false
     @State private var editing: String?
     @State private var removing = false
     @State private var name = ""
@@ -30,11 +30,15 @@ struct ServicePage: View {
         ScrollView {
             if let endpoint {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                    header(endpoint)
+                    if let subtitle = service?.note {
+                        Text(subtitle)
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                    }
                     inUse(endpoint)
-                    if !(endpoint.listed ?? []).filter({ !endpoint.models.contains($0) }).isEmpty { more(endpoint) }
                     connection(endpoint)
                     if Balance.source(baseURL: endpoint.baseURL) != nil { balance(endpoint) }
+                    advanced(endpoint)
                     Button(L.t("actions.deleteProvider"), role: .destructive) { removing = true }
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .frame(maxWidth: .infinity)
@@ -60,6 +64,9 @@ struct ServicePage: View {
             let key = await Vault.readString("key-\(id)")
             if !Task.isCancelled, let key, key.count > 8, keySuffix == nil { keySuffix = String(key.suffix(4)) }
         }
+        .sheet(isPresented: $managingModels) {
+            ManageModelsSheet(team: team, id: id)
+        }
         .sheet(item: Binding(get: { editing.map { Picked(model: $0) } }, set: { editing = $0?.model })) { picked in
             ModelSheet(team: team, endpointId: id, model: picked.model)
                 .presentationDetents([.large])
@@ -82,25 +89,6 @@ struct ServicePage: View {
         var id: String { model }
     }
 
-    // MARK: Header
-
-    private func header(_ endpoint: Endpoint) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.m) {
-            Text(service?.note ?? (URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL))
-                .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-            HStack(spacing: Ink.Space.s) {
-                pill("试连", "bolt.horizontal") { probe(endpoint) }
-                pill("刷新模型列表", "arrow.clockwise") { refresh(endpoint) }
-                if let page = service?.keyPage, let url = URL(string: page) {
-                    pill("管理密钥", "arrow.up.right") { openURL(url) }
-                }
-            }
-            if let note {
-                Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
     private func pill(_ title: String, _ icon: String, _ run: @escaping () -> Void) -> some View {
         Button {
             Haptics.light()
@@ -110,38 +98,41 @@ struct ServicePage: View {
                 .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .padding(.horizontal, Ink.Space.m)
-                .frame(height: 30)
+                .frame(height: 30 * UIScale.factor)
                 .background(Ink.accentWash, in: .capsule)
         }
         .buttonStyle(PressStyle(haptic: false))
         .disabled(working)
     }
 
-    // MARK: Models in use
+    // MARK: 1. Enabled models
 
     private func inUse(_ endpoint: Endpoint) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: L.t("settings.activeModels"), note: "选模型时只列这些。点一个看它能做什么，猜错了可以改")
+        let restCount = (endpoint.listed ?? []).filter { !endpoint.models.contains($0) }.count
+        let manageLine = restCount > 0
+            ? L.format("settings.manageModelsMoreLine", restCount)
+            : L.t("settings.manageModelsLine")
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.activeModels"))
             VStack(spacing: 0) {
                 ForEach(endpoint.models, id: \.self) { model in
                     modelRow(endpoint, model)
                     Kit.rule(inset: Ink.Space.l)
                 }
-                HStack(spacing: Ink.Space.s) {
-                    TextField(service?.modelHint ?? "手动添一个模型名", text: $typed)
-                        .font(Ink.mono(Ink.Size.sub))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.done)
-                        .onSubmit { addTyped(endpoint) }
-                    Button(L.t("actions.add")) { addTyped(endpoint) }
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.accent)
-                        .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button {
+                    Haptics.light()
+                    managingModels = true
+                } label: {
+                    RowLabel("plus", tint: Ink.Tile.dai, title: L.t("settings.manageModels"), line: manageLine)
                 }
-                .padding(Ink.Space.l)
+                .buttonStyle(TapStyle())
             }
             .paperCard()
+            Text("选模型时只列这些。点一个查看能力或实测。")
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -154,13 +145,16 @@ struct ServicePage: View {
             editing = model
         } label: {
             HStack(alignment: .center, spacing: Ink.Space.m) {
-                ModelIcon(model: model, service: Service.of(endpoint), size: 30, name: endpoint.name)
+                ModelIcon(model: model, service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     HStack(spacing: Ink.Space.s) {
                         Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
-                            Text(L.t("settings.defaultModelBadge")).font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.accent)
-                                .padding(.horizontal, Ink.Space.s).padding(.vertical, Ink.Space.xs / 4)
+                            Text(L.t("settings.defaultModelBadge"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                                .padding(.horizontal, Ink.Space.s)
+                                .padding(.vertical, Ink.Space.xs / 4)
                                 .background(Ink.accentWash, in: .capsule)
                         }
                     }
@@ -178,88 +172,30 @@ struct ServicePage: View {
         }
         .buttonStyle(TapStyle())
         .contextMenu {
-            Button(L.t("actions.setDefaultModel"), systemImage: "star") { team.setDefaultModel("\(endpoint.id)/\(model)") }
             Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
                 withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models.filter { $0 != model }) }
             }
         }
     }
 
-    private func addTyped(_ endpoint: Endpoint) {
-        let model = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else { return }
-        typed = ""
-        guard !endpoint.models.contains(model) else { return }
-        Haptics.tick(0.6)
-        withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
-        note = "添上了 \(model)。它能做什么是按名字猜的，点开可以试试、改一改。"
-    }
-
-    // MARK: The rest of the list
-
-    private func more(_ endpoint: Endpoint) -> some View {
-        let rest = (endpoint.listed ?? []).filter { !endpoint.models.contains($0) }
-        let words = search.trimmingCharacters(in: .whitespaces).lowercased()
-        let found = words.isEmpty ? rest : rest.filter { $0.lowercased().contains(words) }
-        let shown = Array(found.prefix(40))
-        return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "列表里还有 \(rest.count) 个", note: "点 ＋ 拿来用")
-            VStack(spacing: 0) {
-                if rest.count > 8 {
-                    HStack(spacing: Ink.Space.s) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(Ink.inkFaint)
-                        TextField("搜模型名，比如 qwen、vl、flash", text: $search)
-                            .font(.system(size: Ink.Size.sub))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                    .padding(Ink.Space.l)
-                    Rectangle().fill(Ink.rule).frame(height: 1)
-                }
-                ForEach(shown, id: \.self) { model in
-                    HStack(spacing: Ink.Space.m) {
-                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                            Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                            Text(endpoint.traits(model).summary).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
-                        }
-                        Spacer(minLength: 0)
-                        Button {
-                            Haptics.tick(0.6)
-                            withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
-                        } label: {
-                            Image(systemName: "plus.circle.fill").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
-                        }
-                        .buttonStyle(TapStyle(grow: 8))
-                        .accessibilityLabel("用 \(model)")
-                    }
-                    .padding(.horizontal, Ink.Space.l)
-                    .padding(.vertical, Ink.Space.m)
-                }
-                if found.count > shown.count {
-                    Text("还有 \(found.count - shown.count) 个，搜一搜就能找到。")
-                        .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                        .padding(Ink.Space.l)
-                } else if found.isEmpty {
-                    Text("没有名字里带「\(search)」的。").font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(Ink.Space.l)
-                }
-            }
-            .paperCard()
-        }
-    }
-
-    // MARK: Connection
+    // MARK: 2. Connection and key
 
     private func connection(_ endpoint: Endpoint) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: L.t("settings.apiType"), note: endpoint.kind == .anthropic ? "Claude 那种接口" : "OpenAI 那种接口（大多数服务都是）")
+            SectionTitle(L.t("settings.connectionAndKey"))
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 labeled("称呼") {
-                    TextField("称呼", text: $name).font(.system(size: Ink.Size.sub)).onSubmit { save(endpoint) }
+                    TextField("称呼", text: $name)
+                        .font(.system(size: Ink.Size.sub))
+                        .onSubmit { save(endpoint) }
                 }
+                Kit.rule(inset: 0)
                 labeled("地址") {
                     TextField("https://…", text: $address)
                         .font(Ink.mono(Ink.Size.sub))
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                         .onSubmit { save(endpoint) }
                 }
                 if let service, service.addresses.count > 1 {
@@ -273,48 +209,22 @@ struct ServicePage: View {
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(address == option.url ? Ink.accent : Ink.inkSoft)
                             .padding(.horizontal, Ink.Space.m)
-                            .frame(height: 28)
+                            .frame(height: 28 * UIScale.factor)
                             .background(address == option.url ? Ink.accentWash : Ink.mine, in: .capsule)
                         }
                     }
                 }
                 Text("实际请求：" + finalURL(endpoint))
-                    .font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkFaint)
+                    .font(Ink.mono(Ink.Size.small))
+                    .foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
-                if endpoint.kind == .openai {
-                    Rectangle().fill(Ink.rule).frame(height: 1)
-                    HStack {
-                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                            Text(L.t("settings.thinkingFormat")).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink)
-                            Text(L.t("settings.thinkingFormatNote")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                        }
-                        Spacer()
-                        Menu {
-                            Button {
-                                style = nil
-                                save(endpoint)
-                            } label: {
-                                if style == nil { Label("跟着服务（\(endpoint.thinkingStyleGuess.title)）", systemImage: "checkmark") } else { Text("跟着服务（\(endpoint.thinkingStyleGuess.title)）") }
-                            }
-                            ForEach(ThinkingStyle.allCases, id: \.self) { option in
-                                Button {
-                                    style = option
-                                    save(endpoint)
-                                } label: {
-                                    if style == option { Label(option.title, systemImage: "checkmark") } else { Text(option.title) }
-                                }
-                            }
-                        } label: {
-                            Text(style?.title ?? L.t("settings.providerDefault")).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent).lineLimit(1)
-                        }
-                    }
-                }
-                Rectangle().fill(Ink.rule).frame(height: 1)
+                Kit.rule(inset: 0)
                 labeled("密钥") {
                     HStack(spacing: Ink.Space.s) {
                         SecureField(maskedKey, text: $newKey)
                             .font(Ink.mono(Ink.Size.sub))
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                         if !newKey.isEmpty {
                             Button(L.t("actions.replaceKey")) { replaceKey(endpoint) }
                                 .font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -323,16 +233,142 @@ struct ServicePage: View {
                     }
                 }
                 Text(L.t("settings.keyStorageNote"))
-                    .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+                Kit.rule(inset: 0)
+                HStack(spacing: Ink.Space.s) {
+                    pill("试连", "bolt.horizontal") { probe(endpoint) }
+                    pill("刷新模型列表", "arrow.clockwise") { refresh(endpoint) }
+                    if let page = service?.keyPage, let url = URL(string: page) {
+                        pill("管理密钥", "arrow.up.right") { openURL(url) }
+                    }
+                }
+                if let note {
+                    Text(note)
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(Ink.Space.l)
             .paperCard()
         }
     }
 
+    // MARK: 3. Advanced (collapsed by default)
+
+    private func advanced(_ endpoint: Endpoint) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                Haptics.light()
+                withAnimation(Ink.Motion.settle) { showAdvanced.toggle() }
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Text(L.t("settings.advanced"))
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.ink)
+                    Spacer(minLength: Ink.Space.s)
+                    Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.inkFaint)
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(TapStyle())
+
+            if showAdvanced {
+                Kit.rule(inset: Ink.Space.l)
+                VStack(alignment: .leading, spacing: Ink.Space.m) {
+                    HStack {
+                        Text(L.t("settings.apiType"))
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.ink)
+                        Spacer()
+                        Text(endpoint.kind == .anthropic ? "Claude 接口" : "OpenAI 兼容接口")
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                    if endpoint.kind == .openai {
+                        Kit.rule(inset: 0)
+                        thinkingStyleRow(endpoint)
+                        Text(thinkingLevelsSummary(endpoint))
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(Ink.Space.l)
+                .transition(.opacity)
+            }
+        }
+        .paperCard()
+    }
+
+    private func thinkingStyleRow(_ endpoint: Endpoint) -> some View {
+        HStack(alignment: .top, spacing: Ink.Space.m) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                Text(L.t("settings.thinkingFormat"))
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.ink)
+                Text(L.t("settings.thinkingFormatNote"))
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkFaint)
+            }
+            Spacer(minLength: Ink.Space.s)
+            Menu {
+                Button {
+                    style = nil
+                    save(endpoint)
+                } label: {
+                    if style == nil {
+                        Label("跟着服务（\(endpoint.thinkingStyleGuess.title)）", systemImage: "checkmark")
+                    } else {
+                        Text("跟着服务（\(endpoint.thinkingStyleGuess.title)）")
+                    }
+                }
+                ForEach(ThinkingStyle.allCases, id: \.self) { option in
+                    Button {
+                        style = option
+                        save(endpoint)
+                    } label: {
+                        if style == option {
+                            Label(option.title, systemImage: "checkmark")
+                        } else {
+                            Text(option.title)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: Ink.Space.xs) {
+                    Text(style?.title ?? L.t("settings.providerDefault"))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
+                        .foregroundStyle(Ink.accent)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.inkFaint)
+                }
+            }
+        }
+    }
+
+    private func thinkingLevelsSummary(_ endpoint: Endpoint) -> String {
+        let effective = style ?? endpoint.thinkingStyleGuess
+        if effective == .none {
+            return "不发送思考参数，仅保留「默认」。"
+        }
+        let offered = effective.levels(thinks: true).map(\.title).joined(separator: " · ")
+        return "支持思考的模型默认提供：\(offered)"
+    }
+
     private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         HStack(spacing: Ink.Space.m) {
-            Text(title).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkSoft).frame(width: 40, alignment: .leading)
+            Text(title)
+                .font(.system(size: Ink.Size.sub))
+                .foregroundStyle(Ink.inkSoft)
+                .frame(width: 40 * UIScale.factor, alignment: .leading)
             content()
         }
     }
@@ -366,7 +402,7 @@ struct ServicePage: View {
 
     private func balance(_ endpoint: Endpoint) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: L.t("settings.balance"))
+            SectionTitle(L.t("settings.balance"))
             HStack {
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if let reading {
@@ -378,7 +414,9 @@ struct ServicePage: View {
                 }
                 Spacer()
                 if let source = Balance.source(baseURL: endpoint.baseURL) {
-                    Link("去充值", destination: source.topUp).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.accent)
+                    Link("去充值", destination: source.topUp)
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
+                        .foregroundStyle(Ink.accent)
                 }
             }
             .padding(Ink.Space.l)
@@ -405,7 +443,7 @@ struct ServicePage: View {
                 let count = try await team.refreshModels(endpoint.id)
                 let fresh = team.settings.endpoints.first { $0.id == endpoint.id }
                 let waiting = (fresh?.listed ?? []).filter { !(fresh?.models ?? []).contains($0) }.count
-                note = "列表里有 \(count) 个能聊天的模型" + (waiting > 0 ? "，在用的之外还有 \(waiting) 个，在下面挑。" : "。")
+                note = "列表里有 \(count) 个能聊天的模型" + (waiting > 0 ? "，在用的之外还有 \(waiting) 个，点「管理 / 添模型」勾选。" : "。")
             } catch {
                 note = Explain.model(error, service: endpoint.name).displayTitle
             }
@@ -415,7 +453,7 @@ struct ServicePage: View {
 
     private func probe(_ endpoint: Endpoint) {
         guard let model = (team.resolve(team.settings.defaultModel).flatMap { $0.endpoint.id == endpoint.id ? $0.model : nil }) ?? endpoint.models.first else {
-            note = "还没有在用的模型：先刷新列表，或手动添一个。"
+            note = "还没有在用的模型：点「管理 / 添模型」勾选或手动添一个。"
             return
         }
         working = true
@@ -425,6 +463,200 @@ struct ServicePage: View {
             note = result.note
             if result.ok { Haptics.thud() } else { Haptics.lock() }
             working = false
+        }
+    }
+}
+
+/// Unified drawer for enabling/disabling models from a service's catalog and typing custom model IDs.
+private struct ManageModelsSheet: View {
+    @ObservedObject var team: TeamModel
+    let id: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var typed = ""
+    @State private var refreshing = false
+    @State private var note: String?
+
+    private var endpoint: Endpoint? { team.settings.endpoints.first { $0.id == id } }
+    private var service: Service? { endpoint.flatMap(Service.of) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let endpoint {
+                    VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                        manualCard(endpoint)
+                        if let note {
+                            Text(note)
+                                .font(Ink.footnote)
+                                .foregroundStyle(Ink.inkSoft)
+                                .padding(.horizontal, Ink.Space.l)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        catalogCard(endpoint)
+                    }
+                    .padding(.horizontal, Ink.Space.page)
+                    .padding(.vertical, Ink.Space.l)
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("settings.manageModels"))
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜模型名，比如 qwen、vl、flash")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if let endpoint {
+                        Button {
+                            Haptics.light()
+                            refresh(endpoint)
+                        } label: {
+                            if refreshing {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(refreshing)
+                        .accessibilityLabel(L.t("settings.refreshImageModels"))
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func manualCard(_ endpoint: Endpoint) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.imageModelManual"))
+            HStack(spacing: Ink.Space.s) {
+                TextField(service?.modelHint ?? "手动添一个模型名", text: $typed)
+                    .font(Ink.mono(Ink.Size.sub))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit { addTyped(endpoint) }
+                Button(L.t("actions.add")) { addTyped(endpoint) }
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(typed.trimmingCharacters(in: .whitespaces).isEmpty ? Ink.inkFaint : Ink.accent)
+                    .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .frame(minHeight: Kit.rowHeight)
+            .paperCard()
+        }
+    }
+
+    private func catalogCard(_ endpoint: Endpoint) -> some View {
+        let all = endpoint.allModels
+        let words = search.trimmingCharacters(in: .whitespaces).lowercased()
+        let found = words.isEmpty ? all : all.filter { $0.lowercased().contains(words) }
+        let shown = Array(found.prefix(100))
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(all.isEmpty ? L.t("settings.imageModelAvailable") : "共 \(all.count) 个，已启用 \(endpoint.models.count) 个")
+            VStack(spacing: 0) {
+                if all.isEmpty {
+                    VStack(alignment: .leading, spacing: Ink.Space.s) {
+                        Text("还没有拉到模型列表，可以点左上角刷新，或在上面直接手填模型名。")
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                        Button("刷新模型列表") { refresh(endpoint) }
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
+                            .foregroundStyle(Ink.accent)
+                            .disabled(refreshing)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Ink.Space.l)
+                } else if found.isEmpty {
+                    Text("没有名字里带「\(search)」的。")
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkFaint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Ink.Space.l)
+                } else {
+                    ForEach(Array(shown.enumerated()), id: \.element) { index, model in
+                        if index > 0 { Kit.rule(inset: Ink.Space.l) }
+                        catalogRow(endpoint, model)
+                    }
+                    if found.count > shown.count {
+                        Kit.rule(inset: Ink.Space.l)
+                        Text("还有 \(found.count - shown.count) 个，搜一搜就能找到。")
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkFaint)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Ink.Space.l)
+                    }
+                }
+            }
+            .paperCard()
+        }
+    }
+
+    private func catalogRow(_ endpoint: Endpoint, _ model: String) -> some View {
+        let enabled = endpoint.models.contains(model)
+        return Button {
+            Haptics.tick(0.5)
+            withAnimation(.smooth) {
+                if enabled {
+                    team.setModels(endpoint.id, endpoint.models.filter { $0 != model })
+                } else {
+                    team.setModels(endpoint.id, endpoint.models + [model])
+                }
+            }
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: Ink.Size.title))
+                    .foregroundStyle(enabled ? Ink.accent : Ink.inkFaint)
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    Text(model)
+                        .font(Ink.mono(Ink.Size.sub, weight: enabled ? .medium : .regular))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                    Text(endpoint.traits(model).summary)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityAddTraits(enabled ? .isSelected : [])
+    }
+
+    private func addTyped(_ endpoint: Endpoint) {
+        let model = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return }
+        typed = ""
+        guard !endpoint.models.contains(model) else {
+            note = "\(model) 已经在常用模型里了。"
+            return
+        }
+        Haptics.tick(0.6)
+        withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
+        note = "添上了 \(model)。回到服务页点开它，可以查看或实测能力。"
+    }
+
+    private func refresh(_ endpoint: Endpoint) {
+        refreshing = true
+        note = L.t("loading.fetchingModels")
+        Task {
+            do {
+                let count = try await team.refreshModels(endpoint.id)
+                note = "刷新好了，列表里共有 \(count) 个模型。"
+            } catch {
+                note = Explain.model(error, service: endpoint.name).displayTitle
+            }
+            refreshing = false
         }
     }
 }
@@ -459,13 +691,13 @@ struct TraitChips: View {
             .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(on ? Ink.inkSoft : Ink.inkFaint)
             .padding(.horizontal, Ink.Space.s)
-            .frame(height: 20)
+            .frame(height: 20 * UIScale.factor)
             .background(on ? Ink.mine : Color.clear, in: .capsule)
             .overlay(Capsule().strokeBorder(on ? Color.clear : Ink.rule, lineWidth: 1))
     }
 }
 
-/// One model: what it can do (guessed or set by hand), a quick test of it, and making it the default.
+/// One model: what it can do (from catalog/API/probe or set by hand), probe verification, and removing from active list.
 struct ModelSheet: View {
     @ObservedObject var team: TeamModel
     let endpointId: String
@@ -478,89 +710,217 @@ struct ModelSheet: View {
     private static let windows = [32_768, 65_536, 131_072, 200_000, 262_144, 400_000, 1_048_576, 2_097_152]
 
     private var endpoint: Endpoint? { team.settings.endpoints.first { $0.id == endpointId } }
-    private var ref: String { "\(endpointId)/\(model)" }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    Toggle(L.t("settings.modelVision"), isOn: $traits.sees)
-                    Toggle(L.t("settings.modelTools"), isOn: $traits.tools)
-                    Toggle(L.t("settings.modelReasoning"), isOn: $traits.thinks)
-                    StopRow(title: "上下文", value: $traits.window,
-                            stops: windowChoices.map { Stop(value: $0, name: Tokens.short($0) + " token") })
-                } header: {
-                    Text(L.t("settings.modelCapabilities"))
-                } footer: {
-                    Text(footer)
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    capabilitiesCard
+                    probeCard
+                    actionsCard
                 }
-                Section {
-                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModelAll"), systemImage: "checklist") { testAll() }
-                        .disabled(working)
-                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModelVision"), systemImage: "eye") { testSight() }
-                        .disabled(working)
-                    Button(working ? L.t("loading.testingModel") : L.t("actions.testModel"), systemImage: "bolt.horizontal") { testReply() }
-                        .disabled(working)
-                    if let note {
-                        Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                    }
-                } footer: {
-                    Text(L.t("settings.visionTestNote"))
-                }
-                Section {
-                    if team.settings.defaultModel == ref {
-                        Label("这是默认模型", systemImage: "star.fill").foregroundStyle(.secondary)
-                    } else {
-                        Button(L.t("actions.setDefaultModel"), systemImage: "star") {
-                            team.setDefaultModel(ref)
-                            Haptics.thud()
-                        }
-                    }
-                    if endpoint?.corrected(model) == true {
-                        Button(L.t("actions.resetModelCapabilities"), systemImage: "arrow.uturn.backward") {
-                            team.setTraits(endpointId, model: model, nil)
-                            traits = endpoint.map { $0.traits(model, ignoringCorrection: true) } ?? ModelTraits.known(model)
-                        }
-                    }
-                    Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
-                        if let endpoint { team.setModels(endpointId, endpoint.models.filter { $0 != model }) }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(model)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) {
+                        Haptics.light()
                         dismiss()
                     }
                 }
             }
-            .paperForm()
-            .scrollContentBackground(.hidden)
-            .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(model)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
         }
         .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.known(model) }
         .onChange(of: traits) { _, value in
             guard value != endpoint?.traits(model) else { return }
-            team.setTraits(endpointId, model: model, value == (endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)) ? nil : value)
+            let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
+            team.setTraits(endpointId, model: model, value == baseline ? nil : value)
         }
+    }
+
+    private var capabilitiesCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.modelCapabilities"))
+            VStack(spacing: 0) {
+                toggleRow(L.t("settings.modelVision"), isOn: $traits.sees)
+                Kit.rule(inset: Ink.Space.l)
+                toggleRow(L.t("settings.modelTools"), isOn: $traits.tools)
+                Kit.rule(inset: Ink.Space.l)
+                toggleRow(L.t("settings.modelReasoning"), isOn: $traits.thinks)
+                Kit.rule(inset: Ink.Space.l)
+                StopRow(
+                    title: L.t("settings.modelContextLabel"),
+                    value: $traits.window,
+                    stops: windowChoices.map { Stop(value: $0, name: Tokens.short($0) + " token") }
+                )
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+                if traits.thinks || traits.levels != nil {
+                    Kit.rule(inset: Ink.Space.l)
+                    thinkingLevelsRow
+                }
+            }
+            .paperCard()
+            Text(footer)
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .font(.system(size: Ink.Size.body))
+            .foregroundStyle(Ink.ink)
+            .tint(Ink.accent)
+            .padding(.horizontal, Ink.Space.l)
+            .frame(minHeight: Kit.rowHeight)
+    }
+
+    private var thinkingLevelsRow: some View {
+        HStack(alignment: .center, spacing: Ink.Space.m) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                HStack(spacing: Ink.Space.s) {
+                    Text(L.t("settings.thinkingLevels"))
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.ink)
+                    Text(traits.levels != nil ? L.t("settings.thinkingLevelsTested") : L.t("settings.thinkingLevelsDefault"))
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(traits.levels != nil ? Ink.accent : Ink.inkFaint)
+                        .padding(.horizontal, Ink.Space.s)
+                        .padding(.vertical, Ink.Space.xs / 4)
+                        .background(traits.levels != nil ? Ink.accentWash : Ink.mine, in: .capsule)
+                }
+                Text(displayedThinkingLevels)
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: Ink.Space.s)
+            if traits.levels != nil {
+                Button(L.t("settings.clearTestedLevels")) {
+                    Haptics.tick(0.5)
+                    traits.levels = nil
+                }
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.accent)
+            }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+    }
+
+    private var displayedThinkingLevels: String {
+        if let rawLevels = traits.levels {
+            let parsed = rawLevels.compactMap(Thinking.init(rawValue:))
+            if parsed.isEmpty { return L.t("settings.thinkingLevelsOnlyAuto") }
+            return ([Thinking.auto] + parsed.filter { $0 != .auto }).map(\.title).joined(separator: " · ")
+        }
+        guard let endpoint else { return L.t("settings.thinkingLevelsOnlyAuto") }
+        let levels: [Thinking]
+        if endpoint.kind == .anthropic {
+            levels = traits.thinks ? Thinking.allCases : [.auto]
+        } else {
+            levels = endpoint.thinkingStyle.levels(thinks: traits.thinks)
+        }
+        return levels.map(\.title).joined(separator: " · ")
+    }
+
+    private var probeCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.modelProbeSection"))
+            VStack(spacing: 0) {
+                actionRow(working ? L.t("loading.testingModel") : L.t("actions.testModelAll"),
+                          symbol: "checklist", tint: Ink.accent, disabled: working) {
+                    testAll()
+                }
+                Kit.rule(inset: Ink.Space.l)
+                actionRow(working ? L.t("loading.testingModel") : L.t("actions.testModelOnly"),
+                          symbol: "bolt.horizontal", tint: Ink.ink, disabled: working) {
+                    testReply()
+                }
+                if let note {
+                    Kit.rule(inset: Ink.Space.l)
+                    Text(note)
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Ink.Space.l)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .paperCard()
+            Text(L.t("settings.modelProbeNote"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var actionsCard: some View {
+        VStack(spacing: 0) {
+            if endpoint?.corrected(model) == true {
+                actionRow(L.t("actions.resetModelCapabilities"), symbol: "arrow.uturn.backward", tint: Ink.ink, disabled: false) {
+                    Haptics.tick(0.5)
+                    team.setTraits(endpointId, model: model, nil)
+                    traits = endpoint.map { $0.traits(model, ignoringCorrection: true) } ?? ModelTraits.known(model)
+                }
+                Kit.rule(inset: Ink.Space.l)
+            }
+            actionRow(L.t("actions.removeModel"), symbol: "minus.circle", tint: Ink.stop, disabled: false) {
+                if let endpoint { team.setModels(endpointId, endpoint.models.filter { $0 != model }) }
+                dismiss()
+            }
+        }
+        .paperCard()
+    }
+
+    private func actionRow(_ title: String, symbol: String, tint: Color, disabled: Bool, run: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            run()
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                Image(systemName: symbol)
+                    .font(.system(size: Ink.Size.body, weight: .medium))
+                    .foregroundStyle(disabled ? Ink.inkFaint : tint)
+                    .frame(width: 24 * UIScale.factor)
+                Text(title)
+                    .font(.system(size: Ink.Size.body))
+                    .foregroundStyle(disabled ? Ink.inkFaint : tint)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .frame(minHeight: Kit.rowHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TapStyle())
+        .disabled(disabled)
     }
 
     private var windowChoices: [Int] {
         Self.windows.contains(traits.window) ? Self.windows : (Self.windows + [traits.window]).sorted()
     }
 
-    private var footer: String {
-        let source = endpoint?.corrected(model) == true ? "你改过。" : "按名字猜的，服务不会告诉我们。"
-        return source + Words.t("不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。")
+    private var capabilitySource: String {
+        if endpoint?.corrected(model) == true { return "来源：已手动修改或实测。" }
+        let hasAPIWindow = endpoint?.windows?[model] != nil
+        let hasCatalog = ModelsDev.lookup(model) != nil
+        if hasAPIWindow && hasCatalog { return "来源：服务接口与模型资料库。" }
+        if hasAPIWindow { return "来源：服务接口与名称识别。" }
+        if hasCatalog { return "来源：模型资料库（models.dev）。" }
+        return "来源：按模型名自动识别。"
     }
 
-    private func testSight() {
-        guard let endpoint else { return }
-        working = true
-        note = nil
-        Task {
-            let result = await team.probeSight(endpoint, model: model)
-            note = result.note
-            if let sees = result.sees, sees != traits.sees { traits.sees = sees }
-            working = false
-        }
+    private var footer: String {
+        capabilitySource + Words.t("不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。")
     }
 
     /// Every ability in one go: answers at all, sees a picture, calls a tool, thinks (and can stop). What it finds
