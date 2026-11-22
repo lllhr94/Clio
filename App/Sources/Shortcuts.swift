@@ -39,10 +39,10 @@ extension Notification.Name {
 
 struct AskClioIntent: AppIntent {
     static let title: LocalizedStringResource = "问 Clio"
-    static let description = IntentDescription("打开 Clio，停在最近那段絮语的输入框。可以先带一句话进去，不会自动发出去。")
+    static let description = IntentDescription("打开 Clio，停在最近那段对话的输入框。可以先带一句话进去，不会自动发出去。")
     static let openAppWhenRun = true
 
-    @Parameter(title: "想说的话", requestValueDialog: "想跟旅伴说什么？")
+    @Parameter(title: "想说的话", requestValueDialog: "想跟 Clio 说什么？")
     var words: String?
 
     @MainActor
@@ -54,7 +54,7 @@ struct AskClioIntent: AppIntent {
 
 struct DictateToClioIntent: AppIntent {
     static let title: LocalizedStringResource = "对 Clio 说话"
-    static let description = IntentDescription("打开 Clio，在最近那段絮语里开始听写。说完你自己点发送。")
+    static let description = IntentDescription("打开 Clio，在最近那段对话里开始听写。说完你自己点发送。")
     static let openAppWhenRun = true
 
     @MainActor
@@ -65,8 +65,8 @@ struct DictateToClioIntent: AppIntent {
 }
 
 struct FreshLeafIntent: AppIntent {
-    static let title: LocalizedStringResource = "Clio 另起一叶"
-    static let description = IntentDescription("和最近的旅伴从头聊起：眼下的絮语收起来，停在空白的输入框。")
+    static let title: LocalizedStringResource = "Clio 新对话"
+    static let description = IntentDescription("和最近的助手从头聊起：收起当前对话，停在空白输入框。")
     static let openAppWhenRun = true
 
     @MainActor
@@ -81,7 +81,7 @@ struct FreshLeafIntent: AppIntent {
 /// not kept in any conversation.
 struct QuickAnswerIntent: AppIntent {
     static let title: LocalizedStringResource = "Clio 直接回答"
-    static let description = IntentDescription("不打开 Clio，用默认模型回答一个问题，把答案交给快捷指令的下一步。不查网页、不动手做事，也不记进絮语。")
+    static let description = IntentDescription("不打开 Clio，用默认模型回答一个问题，把答案交给快捷指令的下一步。不查网页、不动手做事，也不记进对话。")
     static let openAppWhenRun = false
 
     @Parameter(title: "问题", requestValueDialog: "想问什么？")
@@ -130,7 +130,7 @@ struct ClioShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: FreshLeafIntent(),
             phrases: ["\(.applicationName) 新对话", "在 \(.applicationName) 里另起一叶", "New chat in \(.applicationName)"],
-            shortTitle: "另起一叶",
+            shortTitle: "新对话",
             systemImageName: "square.and.pencil"
         )
     }
