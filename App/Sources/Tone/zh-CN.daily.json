@@ -445,6 +445,10 @@
     "tools": "工具清单",
     "none": "这次没有带上"
   },
+  "interactivePreview": {
+    "open": "点开互动",
+    "unavailable": "这个文件暂时无法互动预览。可以分享原文件，换个 App 打开。"
+  },
   "actions": {
     "start": "开始",
     "newChat": "新对话",

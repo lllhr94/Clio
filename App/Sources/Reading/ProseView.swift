@@ -803,6 +803,7 @@ struct FileCard: View {
     let label: String
     let path: String
     @State private var open = false
+    @State private var interaction = false
 
     private var url: URL? {
         var cleaned = path.removingPercentEncoding ?? path
@@ -813,25 +814,31 @@ struct FileCard: View {
 
     var body: some View {
         let file = url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        let document = file.flatMap { file in
+            InteractiveDocument.supports(file) ? InteractiveDocument(url: file) : nil
+        }
         Button {
             guard file != nil else { return }
             Haptics.light()
-            open = true
+            if document == nil { open = true } else { interaction = true }
         } label: {
-            HStack(spacing: Ink.Space.m) {
-                IconBadge(symbol: Self.symbol(for: path), tint: file == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label.isEmpty ? (path as NSString).lastPathComponent : label)
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1)
-                    Text(file.map(Self.detail) ?? "找不到这个文件了")
-                        .font(.system(size: Ink.Size.small))
-                        .foregroundStyle(Ink.inkSoft)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                if let document { InteractivePreviewThumbnail(document: document) }
+                HStack(spacing: Ink.Space.m) {
+                    IconBadge(symbol: Self.symbol(for: path), tint: file == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(label.isEmpty ? (path as NSString).lastPathComponent : label)
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
+                            .foregroundStyle(Ink.ink)
+                            .lineLimit(1)
+                        Text(document != nil ? L.t("interactivePreview.open") : file.map(Self.detail) ?? "找不到这个文件了")
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.inkSoft)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: Ink.Space.s)
+                    if file != nil { Kit.chevron }
                 }
-                Spacer(minLength: Ink.Space.s)
-                if file != nil { Kit.chevron }
             }
             .padding(Ink.Space.m)
             .inkBlock()
@@ -841,6 +848,9 @@ struct FileCard: View {
         .accessibilityLabel("打开 \(label)")
         .sheet(isPresented: $open) {
             if let file { QuickPreview(url: file).ignoresSafeArea() }
+        }
+        .fullScreenCover(isPresented: $interaction) {
+            if let document { InteractivePreviewPage(document: document) }
         }
     }
 
