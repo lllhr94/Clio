@@ -127,7 +127,7 @@ final class Dictation: ObservableObject {
             cancel()
             return
         }
-        let key = await VoiceTranscription.readKey()
+        let key = await VoiceTranscription.readKey(for: endpoint)
         guard sessionID == id else { return }
         let recorded = await AVAudioApplication.requestRecordPermission()
         guard sessionID == id else { return }

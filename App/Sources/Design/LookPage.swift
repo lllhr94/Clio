@@ -245,7 +245,7 @@ struct ChatDisplayPage: View {
                     }
                 }
             } footer: {
-                Text("默认用苹果本地听写；也可以单独填写 Whisper / SenseVoice 等转写接口，提升中英混说准确度。")
+                Text("默认用苹果系统听写；也可以单独填写 Whisper / SenseVoice 等转写接口，提升中英混说准确度。")
             }
         }
     }

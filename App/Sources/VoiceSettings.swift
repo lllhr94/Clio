@@ -1,4 +1,4 @@
-import AgentKit
+import Craft
 import Foundation
 import SwiftUI
 import UIKit
@@ -13,14 +13,14 @@ enum VoiceTranscription {
 
         var title: String {
             switch self {
-            case .system: "系统本地听写"
+            case .system: "系统自带听写"
             case .cloud: "云端模型转写"
             }
         }
 
         var subtitle: String {
             switch self {
-            case .system: "苹果本机实时出字，零延迟、离线可用"
+            case .system: "苹果系统听写，实时出字、免配置（是否设备端离线处理由系统决定）"
             case .cloud: "录完发给 Whisper / SenseVoice 等接口，中英混说专有名词更准"
             }
         }
@@ -43,7 +43,6 @@ enum VoiceTranscription {
     static let baseURLKey = "voice.baseURL"
     static let modelKey = "voice.model"
     static let languageKey = "voice.language"
-    static let vaultKey = "voice-stt-key"
 
     nonisolated static var mode: Mode {
         get {
@@ -56,7 +55,11 @@ enum VoiceTranscription {
 
     nonisolated static var baseURL: String {
         get { UserDefaults.standard.string(forKey: baseURLKey) ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: baseURLKey) }
+        set {
+            // Never persist URLs carrying embedded user:pass@ credentials into plain UserDefaults.
+            guard !VoiceEndpoint.containsEmbeddedCredentials(newValue) else { return }
+            UserDefaults.standard.set(newValue, forKey: baseURLKey)
+        }
     }
 
     nonisolated static var model: String {
@@ -69,54 +72,31 @@ enum VoiceTranscription {
         set { UserDefaults.standard.set(newValue, forKey: languageKey) }
     }
 
-    static func readKey() async -> String {
-        (await Vault.readString(vaultKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Isolates Keychain API keys per normalized endpoint origin (`scheme://host:port`) so switching services never reuses another service's key.
+    nonisolated static func vaultKey(for endpoint: URL) -> String? {
+        guard let origin = VoiceEndpoint.originKey(for: endpoint) else { return nil }
+        return "voice-stt-key-\(origin)"
     }
 
-    static func saveKey(_ value: String) async {
+    static func readKey(for endpoint: URL) async -> String {
+        guard let slot = vaultKey(for: endpoint) else { return "" }
+        return (await Vault.readString(slot) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func saveKey(_ value: String, for endpoint: URL) async {
+        guard let slot = vaultKey(for: endpoint) else { return }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         await Task.detached(priority: .userInitiated) {
             if trimmed.isEmpty {
-                Vault.remove(vaultKey)
+                Vault.remove(slot)
             } else {
-                Vault.save(trimmed, as: vaultKey)
+                Vault.save(trimmed, as: slot)
             }
         }.value
     }
 
-    nonisolated static func validateEndpoint(_ rawBase: String) -> Result<URL, Problem> {
-        var trimmed = rawBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        while trimmed.hasSuffix("/") { trimmed.removeLast() }
-        guard !trimmed.isEmpty else {
-            return .failure(.message("还没填语音转写接口地址，请去 设置 › 对话显示与反馈 › 语音输入与转写 配置。"))
-        }
-        let lowerInitial = trimmed.lowercased()
-        if !lowerInitial.hasPrefix("http://") && !lowerInitial.hasPrefix("https://") {
-            trimmed = "https://" + trimmed
-        }
-        let lower = trimmed.lowercased()
-        let full: String
-        if lower.hasSuffix("/audio/transcriptions") {
-            full = trimmed
-        } else if lower.hasSuffix("/v1") || lower.hasSuffix("/openai/v1") {
-            full = trimmed + "/audio/transcriptions"
-        } else {
-            full = trimmed + "/v1/audio/transcriptions"
-        }
-        guard let url = URL(string: full),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http",
-              url.host != nil else {
-            return .failure(.message("语音转写接口地址格式不对，请填写完整的 https:// 地址。"))
-        }
-        if scheme == "http" && !LocalAddress.isLocal(url) {
-            return .failure(.message("公网语音转写地址必须使用 https://，只有本机或局域网地址允许 http://。"))
-        }
-        return .success(url)
-    }
-
-    nonisolated static func endpointURL(from rawBase: String) -> URL? {
-        try? validateEndpoint(rawBase).get()
+    nonisolated static func validateEndpoint(_ rawBase: String) -> Result<URL, VoiceEndpointError> {
+        VoiceEndpoint.validate(rawBase)
     }
 
     static func mask(_ key: String) -> String {
@@ -135,42 +115,28 @@ enum VoiceTranscription {
         }
     }
 
-    /// Blocks redirects that downgrade a public endpoint to plaintext HTTP or cross hosts with credentials.
-    private final class TransportRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    /// Rejects cross-origin redirects and protocol downgrades so audio and Bearer credentials never leave the configured origin.
+    private final class SameOriginRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let origin: URL
+        init(origin: URL) { self.origin = origin }
+
         func urlSession(
             _ session: URLSession,
             task: URLSessionTask,
             willPerformHTTPRedirection response: HTTPURLResponse,
             newRequest request: URLRequest
         ) async -> URLRequest? {
-            guard let next = request.url, let scheme = next.scheme?.lowercased(), next.host != nil else {
+            guard let next = request.url, VoiceEndpoint.allowsRedirect(from: origin, to: next) else {
                 return nil
             }
-            if scheme == "https" {
-                return request
-            }
-            if scheme == "http" {
-                guard LocalAddress.isLocal(next) else { return nil }
-                let resolvedLocal = await LocalAddress.resolvesToLocal(next)
-                return resolvedLocal ? request : nil
-            }
-            return nil
+            return request
         }
     }
 
     /// Uploads a recorded `.m4a` file to an OpenAI-compatible `/audio/transcriptions` endpoint.
     nonisolated static func transcribe(fileURL: URL, endpoint: URL, apiKey: String, model: String, language: String) async throws -> String {
-        guard let scheme = endpoint.scheme?.lowercased(), scheme == "https" || scheme == "http", endpoint.host != nil else {
-            throw Problem.message("语音转写接口地址格式不对。")
-        }
-        if scheme == "http" {
-            guard LocalAddress.isLocal(endpoint) else {
-                throw Problem.message("公网语音转写地址必须使用 https://，只有本机或局域网地址允许 http://。")
-            }
-            let resolvedLocal = await LocalAddress.resolvesToLocal(endpoint)
-            guard resolvedLocal else {
-                throw Problem.message("这个 http 地址解析到了公网 IP，请改用 https://。")
-            }
+        guard VoiceEndpoint.allowsTransport(endpoint) else {
+            throw VoiceEndpointError.requiresHTTPS
         }
 
         let audioData = try Data(contentsOf: fileURL)
@@ -213,7 +179,7 @@ enum VoiceTranscription {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 35
         config.timeoutIntervalForResource = 60
-        let session = URLSession(configuration: config, delegate: TransportRedirectGuard(), delegateQueue: nil)
+        let session = URLSession(configuration: config, delegate: SameOriginRedirectGuard(origin: endpoint), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
         let (data, response) = try await session.data(for: request)
@@ -221,7 +187,7 @@ enum VoiceTranscription {
             throw Problem.message("语音转写失败：服务器没有正常回应。")
         }
         if (300..<400).contains(http.statusCode) {
-            throw Problem.message("语音转写接口试图跳转到不安全的 http 地址，已中止。")
+            throw Problem.message("语音转写接口试图跳转到其他主机或不安全地址，已中止。")
         }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 || http.statusCode == 403 {
@@ -244,19 +210,29 @@ enum VoiceTranscription {
     }
 }
 
-/// Settings page for choosing between Apple on-device dictation and a standalone OpenAI-compatible STT endpoint.
+/// Settings page for choosing between Apple system dictation and a standalone OpenAI-compatible STT endpoint.
 struct VoiceSettingsPage: View {
     @AppStorage(VoiceTranscription.modeKey) private var modeRaw = VoiceTranscription.Mode.system.rawValue
-    @AppStorage(VoiceTranscription.baseURLKey) private var baseURL = ""
     @AppStorage(VoiceTranscription.modelKey) private var model = ""
     @AppStorage(VoiceTranscription.languageKey) private var language = ""
 
+    @State private var baseURLInput = VoiceTranscription.baseURL
+    @State private var activeOriginKey: String? = nil
+    @State private var originVersion = UUID()
     @State private var savedMasked = ""
     @State private var keyInput = ""
     @State private var keyNotice: String?
 
     private var mode: VoiceTranscription.Mode {
         VoiceTranscription.Mode(rawValue: modeRaw) ?? .system
+    }
+
+    private var validatedEndpoint: Result<URL, VoiceEndpointError> {
+        VoiceTranscription.validateEndpoint(baseURLInput)
+    }
+
+    private var resolvedEndpoint: URL? {
+        try? validatedEndpoint.get()
     }
 
     var body: some View {
@@ -278,7 +254,16 @@ struct VoiceSettingsPage: View {
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("语音输入与转写")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await loadSavedKey() }
+        .task {
+            syncOriginChange(for: baseURLInput, persist: false)
+            await loadSavedKey()
+        }
+        .onChange(of: baseURLInput) { _, next in
+            let changed = syncOriginChange(for: next, persist: true)
+            if changed {
+                Task { await loadSavedKey() }
+            }
+        }
     }
 
     // MARK: Mode
@@ -335,17 +320,18 @@ struct VoiceSettingsPage: View {
             SectionTitle("常用服务快填")
             HStack(spacing: Ink.Space.s) {
                 ForEach(VoiceTranscription.presets) { preset in
+                    let picked = baseURLInput == preset.baseURL
                     Button {
                         Haptics.tick(0.4)
-                        baseURL = preset.baseURL
+                        baseURLInput = preset.baseURL
                         model = preset.model
                     } label: {
                         Text(preset.name)
                             .font(.system(size: Ink.Size.small, weight: .medium))
-                            .foregroundStyle(baseURL == preset.baseURL ? Ink.paper : Ink.ink)
+                            .foregroundStyle(picked ? Ink.paper : Ink.ink)
                             .padding(.horizontal, Ink.Space.m)
                             .padding(.vertical, Ink.Space.s)
-                            .background(baseURL == preset.baseURL ? Ink.accent : Ink.paperRaised, in: .capsule)
+                            .background(picked ? Ink.accent : Ink.paperRaised, in: .capsule)
                     }
                     .buttonStyle(TapStyle())
                 }
@@ -363,14 +349,14 @@ struct VoiceSettingsPage: View {
                     Text("接口地址（OpenAI 兼容）")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    TextField("https://api.groq.com/openai/v1", text: $baseURL)
+                    TextField("https://api.groq.com/openai/v1", text: $baseURLInput)
                         .font(Ink.mono(Ink.Size.sub))
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
-                if !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    switch VoiceTranscription.validateEndpoint(baseURL) {
+                if !baseURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    switch validatedEndpoint {
                     case .success(let resolved):
                         Text("实际请求：\(resolved.absoluteString)")
                             .font(Ink.mono(Ink.Size.small))
@@ -396,7 +382,7 @@ struct VoiceSettingsPage: View {
             }
             .padding(Ink.Space.l)
             .paperCard()
-            Text("公网接口必须使用 https://；只有本机或局域网自建转写服务允许 http://。")
+            Text("公网和域名接口必须使用 https://；只有明确的本机或局域网 IP（如 127.0.0.1、192.168.x.x）允许 http://。")
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
@@ -404,17 +390,24 @@ struct VoiceSettingsPage: View {
         }
     }
 
-    // MARK: Keychain API Key
+    // MARK: Keychain API Key (isolated per origin)
 
     private var keySection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle("转写密钥")
             VStack(alignment: .leading, spacing: Ink.Space.m) {
+                if let origin = activeOriginKey {
+                    Text("绑定来源：\(origin)")
+                        .font(Ink.mono(Ink.Size.small))
+                        .foregroundStyle(Ink.inkFaint)
+                        .lineLimit(1)
+                }
                 HStack(spacing: Ink.Space.s) {
-                    SecureField(savedMasked.isEmpty ? "粘贴转写服务的 API Key" : savedMasked, text: $keyInput)
+                    SecureField(savedMasked.isEmpty ? "粘贴当前服务的 API Key" : savedMasked, text: $keyInput)
                         .font(Ink.mono(Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(resolvedEndpoint == nil)
                     if keyInput.isEmpty {
                         Button("粘贴") {
                             if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
@@ -424,10 +417,12 @@ struct VoiceSettingsPage: View {
                         }
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.accent)
+                        .disabled(resolvedEndpoint == nil)
                     } else {
                         Button(L.t("actions.save")) { saveCurrentKey() }
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
+                            .disabled(resolvedEndpoint == nil)
                     }
                 }
                 if !savedMasked.isEmpty {
@@ -450,7 +445,7 @@ struct VoiceSettingsPage: View {
             }
             .padding(Ink.Space.l)
             .paperCard()
-            Text("密钥只存在本机钥匙串里，不发给聊天模型，也不进备份。自建本地 Whisper 服务若不需要密钥可留空。")
+            Text("密钥按接口来源隔离存在本机钥匙串里，切换其他服务不会复用旧密钥，也不发给聊天模型或进备份。局域网自建 Whisper 若不需要密钥可留空。")
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
@@ -476,29 +471,60 @@ struct VoiceSettingsPage: View {
 
     // MARK: Actions
 
+    /// Persists safe base URLs (never credential-bearing URLs) and resets key inputs whenever the origin changes.
+    @discardableResult
+    private func syncOriginChange(for raw: String, persist: Bool) -> Bool {
+        if persist && !VoiceEndpoint.containsEmbeddedCredentials(raw) {
+            VoiceTranscription.baseURL = raw
+        }
+        let nextOrigin = (try? VoiceTranscription.validateEndpoint(raw).get()).flatMap(VoiceEndpoint.originKey(for:))
+        guard nextOrigin != activeOriginKey else { return false }
+        activeOriginKey = nextOrigin
+        originVersion = UUID()
+        keyInput = ""
+        savedMasked = ""
+        keyNotice = nil
+        return true
+    }
+
     private func loadSavedKey() async {
-        let key = await VoiceTranscription.readKey()
+        guard let endpoint = resolvedEndpoint else {
+            savedMasked = ""
+            return
+        }
+        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        let version = originVersion
+        let key = await VoiceTranscription.readKey(for: endpoint)
+        guard !Task.isCancelled, activeOriginKey == expectedOrigin, originVersion == version else { return }
         savedMasked = VoiceTranscription.mask(key)
     }
 
     private func saveCurrentKey() {
+        guard let endpoint = resolvedEndpoint else { return }
         let trimmed = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        let version = originVersion
+        keyInput = ""
         Task {
-            await VoiceTranscription.saveKey(trimmed)
+            await VoiceTranscription.saveKey(trimmed, for: endpoint)
+            guard activeOriginKey == expectedOrigin, originVersion == version else { return }
             savedMasked = VoiceTranscription.mask(trimmed)
-            keyInput = ""
             keyNotice = "已存入本机钥匙串。"
             Haptics.thud()
         }
     }
 
     private func clearCurrentKey() {
+        guard let endpoint = resolvedEndpoint else { return }
+        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        let version = originVersion
+        keyInput = ""
         Task {
-            await VoiceTranscription.saveKey("")
+            await VoiceTranscription.saveKey("", for: endpoint)
+            guard activeOriginKey == expectedOrigin, originVersion == version else { return }
             savedMasked = ""
-            keyInput = ""
-            keyNotice = "已清除转写密钥。"
+            keyNotice = "已清除当前来源的转写密钥。"
             Haptics.lock()
         }
     }
