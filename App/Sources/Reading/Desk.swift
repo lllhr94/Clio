@@ -391,12 +391,15 @@ struct Desk: View {
                         }
                     }
                     if !pastLeaves.isEmpty {
-                        Text("之前的对话")
-                            .font(.system(size: Ink.Size.small, weight: .semibold))
-                            .foregroundStyle(Ink.inkFaint)
-                            .padding(.horizontal, Ink.Space.l)
-                            .padding(.top, Ink.Space.l)
-                            .padding(.bottom, Ink.Space.xs)
+                        // Put-aside conversations follow on under 对话, after the ones open with each companion.
+                        if !sideThreads.contains(where: { !team.pinned.contains($0.id.id) }) {
+                            Text("对话")
+                                .font(.system(size: Ink.Size.small, weight: .semibold))
+                                .foregroundStyle(Ink.inkFaint)
+                                .padding(.horizontal, Ink.Space.l)
+                                .padding(.top, Ink.Space.l)
+                                .padding(.bottom, Ink.Space.xs)
+                        }
                         ForEach(pastLeaves) { past in pastRow(past) }
                     }
                     if sideThreads.isEmpty && pastLeaves.isEmpty {
@@ -432,8 +435,7 @@ struct Desk: View {
         .background(Ink.paper.ignoresSafeArea())
     }
 
-    /// 新对话 from the home page: the companion talked with last (or the first one) on a fresh page; what was
-    /// there is kept in its 对话记录 and listed in the sidebar under 之前的对话.
+    /// 新对话: asks with whom and whether memory is on, then a fresh page; what was there stays in the sidebar.
     /// The companion talked with last, picked already in 新对话.
     private var lastCompanion: String? {
         recent.compactMap(\.bot).first?.id ?? team.bots.first?.id
@@ -444,7 +446,7 @@ struct Desk: View {
         startingFresh = true
     }
 
-    /// The chosen companion on a fresh page; what was there goes to its 对话记录 (listed under 之前的对话).
+    /// The chosen companion on a fresh page; what was there goes to its 对话记录 (listed in the sidebar).
     private func begin(_ target: Opened, memory: Bool) {
         team.turnLeaf(target.id)
         team.setAbility(.memory, on: memory, in: target.id)
@@ -1167,30 +1169,13 @@ struct Desk: View {
         ]
     }
 
-    /// 今天 / 昨天 / 本周 / 更早, newest first, empty groups left out.
-    /// 已置顶 first (in the order pinned), then the rest by day.
+    /// 置顶 first (in the order pinned), then the rest.
     static func grouped(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)], pinned: [String]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
         let top = pinned.compactMap { key in items.first { $0.id.id == key } }
-        let rest = byDay(items.filter { !pinned.contains($0.id.id) })
-        return top.isEmpty ? rest : [("已置顶", top)] + rest
-    }
-
-    static func byDay(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
-        let calendar = Calendar.current
-        let now = Date()
-        let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: now)) ?? now
-        func title(_ at: Double) -> String {
-            let date = Date(timeIntervalSince1970: at / 1000)
-            if calendar.isDateInToday(date) { return "今天" }
-            if calendar.isDateInYesterday(date) { return "昨天" }
-            return date >= weekAgo ? "本周" : "更早"
-        }
-        var groups: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = []
-        for item in items {
-            let name = title(item.at)
-            if let index = groups.firstIndex(where: { $0.title == name }) { groups[index].items.append(item) } else { groups.append((name, [item])) }
-        }
-        return groups
+        // 主人定: no 今天 / 昨天 / 本周 — just 置顶 (when there is any) and the rest, newest first.
+        let others = items.filter { !pinned.contains($0.id.id) }
+        let rest: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = others.isEmpty ? [] : [("对话", others)]
+        return top.isEmpty ? rest : [("置顶", top)] + rest
     }
 
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
@@ -1357,7 +1342,7 @@ private struct NewChatSheet: View {
                     Section {
                         Toggle(Words.t("这次参考拾遗"), isOn: $memory).tint(Ink.accent)
                     } footer: {
-                        Text(Words.t("关掉后，这段对话里旅伴不翻拾遗、也不往里记；更省钱。之前的对话在侧边栏「之前的对话」里。"))
+                        Text(Words.t("关掉后，这段对话里旅伴不翻拾遗、也不往里记；更省钱。之前的对话还在侧边栏里。"))
                     }
                 }
             }
