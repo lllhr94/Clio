@@ -9,6 +9,7 @@ public enum VoiceEndpointError: LocalizedError, Equatable {
     case empty
     case invalidFormat
     case embeddedCredentials
+    case queryOrFragmentNotAllowed
     case requiresHTTPS
 
     public var errorDescription: String? {
@@ -19,6 +20,8 @@ public enum VoiceEndpointError: LocalizedError, Equatable {
             return "语音转写接口地址格式不对，请填写完整的 https:// 地址。"
         case .embeddedCredentials:
             return "接口地址不能包含用户名或密码，请把密钥填到下方的本机钥匙串栏里。"
+        case .queryOrFragmentNotAllowed:
+            return "接口地址不能包含查询参数（?）或片段（#），请只填写纯服务地址；密钥请填到下方的本机钥匙串栏里。"
         case .requiresHTTPS:
             return "公网或域名语音转写地址必须使用 https://；只有明确的本机或局域网 IP（如 127.0.0.1、192.168.x.x）允许 http://。"
         }
@@ -28,70 +31,113 @@ public enum VoiceEndpointError: LocalizedError, Equatable {
 /// Validates standalone speech-to-text URLs, enforces strict transport/same-origin redirect rules,
 /// and computes normalized origin keys for per-service Keychain credential isolation.
 public enum VoiceEndpoint {
+    /// Fully parsed, sanitized endpoint data safe to persist (`baseURL` has no credentials, query, or fragment).
+    public struct Parsed: Equatable, Sendable {
+        public let baseURL: String
+        public let endpoint: URL
+        public let originKey: String
+    }
+
     /// Returns true if the raw text looks like it carries embedded `user[:pass]@` authority credentials.
     public static func containsEmbeddedCredentials(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        let candidate = trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://")
-            ? trimmed
-            : "https://" + trimmed
+        let candidate = trimmed.contains("://") ? trimmed : "https://" + trimmed
         if let components = URLComponents(string: candidate),
-           (components.user != nil || components.password != nil) {
+           (components.user != nil || components.password != nil
+            || components.percentEncodedUser != nil || components.percentEncodedPassword != nil) {
             return true
         }
-        // Fallback string check before the first `/` in case of malformed URLs containing `@`.
+        // Fallback string check before the first `/`, `?`, or `#` in case of malformed URLs containing `@`.
         let withoutScheme: Substring
         if let range = candidate.range(of: "://") {
             withoutScheme = candidate[range.upperBound...]
         } else {
             withoutScheme = Substring(candidate)
         }
-        let authority = withoutScheme.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let authority = withoutScheme.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
         return authority.contains("@")
     }
 
-    /// Validates and resolves a base URL into `/audio/transcriptions`.
+    /// Parses and validates a base URL with `URLComponents`, forbidding embedded credentials, query strings,
+    /// and fragments, and builds the normalized `/audio/transcriptions` endpoint URL.
     /// Plaintext HTTP is allowed ONLY for explicit loopback or private IP literals (no domain/mDNS shortcuts).
-    public static func validate(_ rawBase: String) -> Result<URL, VoiceEndpointError> {
-        var trimmed = rawBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+    public static func parse(_ rawBase: String) -> Result<Parsed, VoiceEndpointError> {
+        let trimmed = rawBase.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.empty) }
         if containsEmbeddedCredentials(trimmed) {
             return .failure(.embeddedCredentials)
         }
-        let lowerInitial = trimmed.lowercased()
-        if !lowerInitial.hasPrefix("http://") && !lowerInitial.hasPrefix("https://") {
-            trimmed = "https://" + trimmed
+        if trimmed.contains("?") || trimmed.contains("#") {
+            return .failure(.queryOrFragmentNotAllowed)
         }
-        let lower = trimmed.lowercased()
-        let full: String
-        if lower.hasSuffix("/audio/transcriptions") {
-            full = trimmed
-        } else if lower.hasSuffix("/v1") || lower.hasSuffix("/openai/v1") {
-            full = trimmed + "/audio/transcriptions"
-        } else {
-            full = trimmed + "/v1/audio/transcriptions"
-        }
-        guard let url = URL(string: full),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http",
-              let host = url.host, !host.isEmpty else {
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard var baseComponents = URLComponents(string: candidate) else {
             return .failure(.invalidFormat)
         }
-        if url.user != nil || url.password != nil {
+        if baseComponents.user != nil || baseComponents.password != nil
+            || baseComponents.percentEncodedUser != nil || baseComponents.percentEncodedPassword != nil {
             return .failure(.embeddedCredentials)
         }
-        guard allowsTransport(url) else {
+        if baseComponents.query != nil || baseComponents.percentEncodedQuery != nil
+            || baseComponents.fragment != nil || baseComponents.percentEncodedFragment != nil {
+            return .failure(.queryOrFragmentNotAllowed)
+        }
+        guard let scheme = baseComponents.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = baseComponents.host, !host.isEmpty else {
+            return .failure(.invalidFormat)
+        }
+        baseComponents.scheme = scheme
+
+        var cleanPath = baseComponents.path
+        while cleanPath.hasSuffix("/") {
+            cleanPath.removeLast()
+        }
+        baseComponents.path = cleanPath
+
+        guard let canonicalBase = baseComponents.url else {
+            return .failure(.invalidFormat)
+        }
+
+        var endpointComponents = baseComponents
+        let lowerPath = cleanPath.lowercased()
+        if lowerPath.hasSuffix("/audio/transcriptions") {
+            endpointComponents.path = cleanPath
+        } else if lowerPath.hasSuffix("/v1") || lowerPath.hasSuffix("/openai/v1") {
+            endpointComponents.path = cleanPath + "/audio/transcriptions"
+        } else {
+            endpointComponents.path = cleanPath + "/v1/audio/transcriptions"
+        }
+
+        guard let endpoint = endpointComponents.url else {
+            return .failure(.invalidFormat)
+        }
+        guard allowsTransport(endpoint) else {
             return .failure(.requiresHTTPS)
         }
-        return .success(url)
+        guard let key = Self.originKey(for: endpoint) else {
+            return .failure(.invalidFormat)
+        }
+        return .success(Parsed(baseURL: canonicalBase.absoluteString, endpoint: endpoint, originKey: key))
     }
 
-    /// True when the URL satisfies transport security: HTTPS for any valid host, or HTTP strictly for explicit private/loopback IP literals.
+    /// Convenience wrapper returning only the validated `/audio/transcriptions` endpoint URL.
+    public static func validate(_ rawBase: String) -> Result<URL, VoiceEndpointError> {
+        parse(rawBase).map(\.endpoint)
+    }
+
+    /// True when the URL satisfies transport security and carries no credentials, query, or fragment:
+    /// HTTPS for any valid host, or HTTP strictly for explicit private/loopback IP literals.
     public static func allowsTransport(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(),
-              let host = url.host, !host.isEmpty,
-              url.user == nil, url.password == nil else {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.percentEncodedUser == nil, components.percentEncodedPassword == nil,
+              components.query == nil, components.percentEncodedQuery == nil,
+              components.fragment == nil, components.percentEncodedFragment == nil else {
             return false
         }
         if scheme == "https" { return true }
@@ -113,9 +159,10 @@ public enum VoiceEndpoint {
     public static func originKey(for url: URL) -> String? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http",
-              let host = url.host?.lowercased(), !host.isEmpty else {
+              let rawHost = url.host?.lowercased(), !rawHost.isEmpty else {
             return nil
         }
+        let host = (rawHost.contains(":") && !rawHost.hasPrefix("[")) ? "[\(rawHost)]" : rawHost
         let defaultPort = scheme == "https" ? 443 : 80
         let port = url.port ?? defaultPort
         return "\(scheme)://\(host):\(port)"

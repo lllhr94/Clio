@@ -56,9 +56,14 @@ enum VoiceTranscription {
     nonisolated static var baseURL: String {
         get { UserDefaults.standard.string(forKey: baseURLKey) ?? "" }
         set {
-            // Never persist URLs carrying embedded user:pass@ credentials into plain UserDefaults.
-            guard !VoiceEndpoint.containsEmbeddedCredentials(newValue) else { return }
-            UserDefaults.standard.set(newValue, forKey: baseURLKey)
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                UserDefaults.standard.set("", forKey: baseURLKey)
+                return
+            }
+            // Only persist fully parsed, canonical URLs free of credentials, query strings, and fragments.
+            guard case .success(let parsed) = VoiceEndpoint.parse(trimmed) else { return }
+            UserDefaults.standard.set(parsed.baseURL, forKey: baseURLKey)
         }
     }
 
@@ -216,7 +221,9 @@ struct VoiceSettingsPage: View {
     @AppStorage(VoiceTranscription.modelKey) private var model = ""
     @AppStorage(VoiceTranscription.languageKey) private var language = ""
 
-    @State private var baseURLInput = VoiceTranscription.baseURL
+    @State private var savedBaseURL = VoiceTranscription.baseURL
+    @State private var baseURLDraft = VoiceTranscription.baseURL
+    @State private var endpointNotice: String?
     @State private var activeOriginKey: String? = nil
     @State private var originVersion = UUID()
     @State private var savedMasked = ""
@@ -227,12 +234,27 @@ struct VoiceSettingsPage: View {
         VoiceTranscription.Mode(rawValue: modeRaw) ?? .system
     }
 
-    private var validatedEndpoint: Result<URL, VoiceEndpointError> {
-        VoiceTranscription.validateEndpoint(baseURLInput)
+    private var trimmedDraft: String {
+        baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var resolvedEndpoint: URL? {
-        try? validatedEndpoint.get()
+    private var draftValidation: Result<VoiceEndpoint.Parsed, VoiceEndpointError> {
+        VoiceEndpoint.parse(baseURLDraft)
+    }
+
+    private var savedParsed: VoiceEndpoint.Parsed? {
+        try? VoiceEndpoint.parse(savedBaseURL).get()
+    }
+
+    private var hasUnsavedEndpoint: Bool {
+        trimmedDraft != savedBaseURL
+    }
+
+    private var canSaveDraft: Bool {
+        guard hasUnsavedEndpoint else { return false }
+        if trimmedDraft.isEmpty { return true }
+        if case .success = draftValidation { return true }
+        return false
     }
 
     var body: some View {
@@ -255,13 +277,12 @@ struct VoiceSettingsPage: View {
         .navigationTitle("语音输入与转写")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            syncOriginChange(for: baseURLInput, persist: false)
+            syncSavedOrigin(savedParsed?.originKey)
             await loadSavedKey()
         }
-        .onChange(of: baseURLInput) { _, next in
-            let changed = syncOriginChange(for: next, persist: true)
-            if changed {
-                Task { await loadSavedKey() }
+        .onChange(of: baseURLDraft) { _, next in
+            if next.trimmingCharacters(in: .whitespacesAndNewlines) != savedBaseURL {
+                endpointNotice = nil
             }
         }
     }
@@ -320,11 +341,9 @@ struct VoiceSettingsPage: View {
             SectionTitle("常用服务快填")
             HStack(spacing: Ink.Space.s) {
                 ForEach(VoiceTranscription.presets) { preset in
-                    let picked = baseURLInput == preset.baseURL
+                    let picked = !hasUnsavedEndpoint && savedBaseURL == preset.baseURL
                     Button {
-                        Haptics.tick(0.4)
-                        baseURLInput = preset.baseURL
-                        model = preset.model
+                        applyPreset(preset)
                     } label: {
                         Text(preset.name)
                             .font(.system(size: Ink.Size.small, weight: .medium))
@@ -349,16 +368,18 @@ struct VoiceSettingsPage: View {
                     Text("接口地址（OpenAI 兼容）")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    TextField("https://api.groq.com/openai/v1", text: $baseURLInput)
+                    TextField("https://api.groq.com/openai/v1", text: $baseURLDraft)
                         .font(Ink.mono(Ink.Size.sub))
                         .keyboardType(.URL)
+                        .submitLabel(.done)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .onSubmit { saveEndpointDraft() }
                 }
-                if !baseURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    switch validatedEndpoint {
-                    case .success(let resolved):
-                        Text("实际请求：\(resolved.absoluteString)")
+                if !trimmedDraft.isEmpty {
+                    switch draftValidation {
+                    case .success(let parsed):
+                        Text("实际请求：\(parsed.endpoint.absoluteString)")
                             .font(Ink.mono(Ink.Size.small))
                             .foregroundStyle(Ink.inkFaint)
                             .fixedSize(horizontal: false, vertical: true)
@@ -368,6 +389,29 @@ struct VoiceSettingsPage: View {
                             .foregroundStyle(Ink.stop)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                } else if hasUnsavedEndpoint {
+                    Text("点「保存地址」后会清空当前已保存的接口地址。")
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                }
+                if hasUnsavedEndpoint {
+                    HStack(spacing: Ink.Space.m) {
+                        Button("保存地址") { saveEndpointDraft() }
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
+                            .foregroundStyle(canSaveDraft ? Ink.accent : Ink.inkFaint)
+                            .disabled(!canSaveDraft)
+                        Button("还原") {
+                            baseURLDraft = savedBaseURL
+                            endpointNotice = nil
+                        }
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        Spacer()
+                    }
+                } else if let endpointNotice {
+                    Text(endpointNotice)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.ok)
                 }
                 Kit.rule(inset: 0)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
@@ -382,7 +426,7 @@ struct VoiceSettingsPage: View {
             }
             .padding(Ink.Space.l)
             .paperCard()
-            Text("公网和域名接口必须使用 https://；只有明确的本机或局域网 IP（如 127.0.0.1、192.168.x.x）允许 http://。")
+            Text("地址仅在点「保存地址」并校验通过后保存，不支持在网址里带用户名、密码、查询参数或片段。公网和域名必须使用 https://；只有明确的本机或局域网 IP（如 127.0.0.1、192.168.x.x）允许 http://。")
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
@@ -390,26 +434,39 @@ struct VoiceSettingsPage: View {
         }
     }
 
-    // MARK: Keychain API Key (isolated per origin)
+    // MARK: Keychain API Key (isolated per saved origin)
+
+    private var canEditKey: Bool {
+        savedParsed != nil && !hasUnsavedEndpoint
+    }
 
     private var keySection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle("转写密钥")
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                if let origin = activeOriginKey {
+                if hasUnsavedEndpoint {
+                    Text("上方接口地址尚未保存，请先点「保存地址」再配置对应来源的密钥。")
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let origin = activeOriginKey {
                     Text("绑定来源：\(origin)")
                         .font(Ink.mono(Ink.Size.small))
                         .foregroundStyle(Ink.inkFaint)
                         .lineLimit(1)
+                } else {
+                    Text("请先保存有效的转写接口地址。")
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
                 }
                 HStack(spacing: Ink.Space.s) {
                     SecureField(savedMasked.isEmpty ? "粘贴当前服务的 API Key" : savedMasked, text: $keyInput)
                         .font(Ink.mono(Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .disabled(resolvedEndpoint == nil)
+                        .disabled(!canEditKey)
                     if keyInput.isEmpty {
-                        Button("粘贴") {
+                        Button(L.t("actions.paste")) {
                             if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
                                 keyInput = clip
                                 Haptics.tick(0.4)
@@ -417,15 +474,15 @@ struct VoiceSettingsPage: View {
                         }
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.accent)
-                        .disabled(resolvedEndpoint == nil)
+                        .disabled(!canEditKey)
                     } else {
                         Button(L.t("actions.save")) { saveCurrentKey() }
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
-                            .disabled(resolvedEndpoint == nil)
+                            .disabled(!canEditKey)
                     }
                 }
-                if !savedMasked.isEmpty {
+                if !savedMasked.isEmpty && canEditKey {
                     Kit.rule(inset: 0)
                     HStack {
                         Text("已保存：\(savedMasked)")
@@ -437,7 +494,7 @@ struct VoiceSettingsPage: View {
                             .foregroundStyle(Ink.stop)
                     }
                 }
-                if let keyNotice {
+                if let keyNotice, !hasUnsavedEndpoint {
                     Text(keyNotice)
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.ok)
@@ -471,13 +528,45 @@ struct VoiceSettingsPage: View {
 
     // MARK: Actions
 
-    /// Persists safe base URLs (never credential-bearing URLs) and resets key inputs whenever the origin changes.
-    @discardableResult
-    private func syncOriginChange(for raw: String, persist: Bool) -> Bool {
-        if persist && !VoiceEndpoint.containsEmbeddedCredentials(raw) {
-            VoiceTranscription.baseURL = raw
+    private func applyPreset(_ preset: VoiceTranscription.Preset) {
+        guard case .success(let parsed) = VoiceEndpoint.parse(preset.baseURL) else { return }
+        Haptics.tick(0.4)
+        model = preset.model
+        commitParsedEndpoint(parsed, notice: "已切到 \(preset.name)。")
+    }
+
+    private func saveEndpointDraft() {
+        guard hasUnsavedEndpoint else { return }
+        if trimmedDraft.isEmpty {
+            VoiceTranscription.baseURL = ""
+            savedBaseURL = ""
+            baseURLDraft = ""
+            endpointNotice = "已清除接口地址。"
+            syncSavedOrigin(nil)
+            Haptics.lock()
+            return
         }
-        let nextOrigin = (try? VoiceTranscription.validateEndpoint(raw).get()).flatMap(VoiceEndpoint.originKey(for:))
+        guard case .success(let parsed) = VoiceEndpoint.parse(trimmedDraft) else {
+            Haptics.lock()
+            return
+        }
+        commitParsedEndpoint(parsed, notice: "已保存接口地址。")
+        Haptics.thud()
+    }
+
+    private func commitParsedEndpoint(_ parsed: VoiceEndpoint.Parsed, notice: String) {
+        VoiceTranscription.baseURL = parsed.baseURL
+        savedBaseURL = parsed.baseURL
+        baseURLDraft = parsed.baseURL
+        endpointNotice = notice
+        if syncSavedOrigin(parsed.originKey) {
+            Task { await loadSavedKey() }
+        }
+    }
+
+    /// Synchronously updates the active confirmed origin and clears transient key inputs on origin switches.
+    @discardableResult
+    private func syncSavedOrigin(_ nextOrigin: String?) -> Bool {
         guard nextOrigin != activeOriginKey else { return false }
         activeOriginKey = nextOrigin
         originVersion = UUID()
@@ -488,26 +577,26 @@ struct VoiceSettingsPage: View {
     }
 
     private func loadSavedKey() async {
-        guard let endpoint = resolvedEndpoint else {
+        guard let parsed = savedParsed else {
             savedMasked = ""
             return
         }
-        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        let expectedOrigin = parsed.originKey
         let version = originVersion
-        let key = await VoiceTranscription.readKey(for: endpoint)
+        let key = await VoiceTranscription.readKey(for: parsed.endpoint)
         guard !Task.isCancelled, activeOriginKey == expectedOrigin, originVersion == version else { return }
         savedMasked = VoiceTranscription.mask(key)
     }
 
     private func saveCurrentKey() {
-        guard let endpoint = resolvedEndpoint else { return }
+        guard canEditKey, let parsed = savedParsed else { return }
         let trimmed = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        let expectedOrigin = parsed.originKey
         let version = originVersion
         keyInput = ""
         Task {
-            await VoiceTranscription.saveKey(trimmed, for: endpoint)
+            await VoiceTranscription.saveKey(trimmed, for: parsed.endpoint)
             guard activeOriginKey == expectedOrigin, originVersion == version else { return }
             savedMasked = VoiceTranscription.mask(trimmed)
             keyNotice = "已存入本机钥匙串。"
@@ -516,12 +605,12 @@ struct VoiceSettingsPage: View {
     }
 
     private func clearCurrentKey() {
-        guard let endpoint = resolvedEndpoint else { return }
-        let expectedOrigin = VoiceEndpoint.originKey(for: endpoint)
+        guard canEditKey, let parsed = savedParsed else { return }
+        let expectedOrigin = parsed.originKey
         let version = originVersion
         keyInput = ""
         Task {
-            await VoiceTranscription.saveKey("", for: endpoint)
+            await VoiceTranscription.saveKey("", for: parsed.endpoint)
             guard activeOriginKey == expectedOrigin, originVersion == version else { return }
             savedMasked = ""
             keyNotice = "已清除当前来源的转写密钥。"

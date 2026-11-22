@@ -35,15 +35,39 @@ final class VoiceEndpointTests: XCTestCase {
             ("http://127.1/v1", .requiresHTTPS),
             ("https://user:secret@api.groq.com/openai/v1", .embeddedCredentials),
             ("http://user:secret@127.0.0.1:8000/v1", .embeddedCredentials),
+            ("https://api.groq.com/openai/v1?api_key=secret", .queryOrFragmentNotAllowed),
+            ("http://192.168.1.50:8000/v1?token=abc", .queryOrFragmentNotAllowed),
+            ("https://api.groq.com/openai/v1?", .queryOrFragmentNotAllowed),
+            ("https://api.groq.com/openai/v1#secret", .queryOrFragmentNotAllowed),
+            ("ftp://api.groq.com/v1", .invalidFormat),
         ]
         for (raw, expected) in rejected {
-            switch VoiceEndpoint.validate(raw) {
-            case .success(let url):
-                XCTFail("Expected rejection (\(expected)) for \(raw), got \(url)")
+            switch VoiceEndpoint.parse(raw) {
+            case .success(let parsed):
+                XCTFail("Expected rejection (\(expected)) for \(raw), got \(parsed)")
             case .failure(let err):
                 XCTAssertEqual(err, expected, "Unexpected error for \(raw)")
             }
         }
+    }
+
+    func testURLComponentsNormalizationBuildsCanonicalBaseAndEndpoint() throws {
+        let root = try VoiceEndpoint.parse("https://api.openai.com/").get()
+        XCTAssertEqual(root.baseURL, "https://api.openai.com")
+        XCTAssertEqual(root.endpoint.absoluteString, "https://api.openai.com/v1/audio/transcriptions")
+
+        let groq = try VoiceEndpoint.parse("HTTPS://api.groq.com/openai/v1/").get()
+        XCTAssertEqual(groq.baseURL, "https://api.groq.com/openai/v1")
+        XCTAssertEqual(groq.endpoint.absoluteString, "https://api.groq.com/openai/v1/audio/transcriptions")
+
+        let full = try VoiceEndpoint.parse("https://example.com/proxy/audio/transcriptions/").get()
+        XCTAssertEqual(full.baseURL, "https://example.com/proxy/audio/transcriptions")
+        XCTAssertEqual(full.endpoint.absoluteString, "https://example.com/proxy/audio/transcriptions")
+
+        let ipv6 = try VoiceEndpoint.parse("http://[::1]:8000/v1/").get()
+        XCTAssertEqual(ipv6.baseURL, "http://[::1]:8000/v1")
+        XCTAssertEqual(ipv6.endpoint.absoluteString, "http://[::1]:8000/v1/audio/transcriptions")
+        XCTAssertEqual(ipv6.originKey, "http://[::1]:8000")
     }
 
     func testRedirectsEnforceSameOriginAndTransportPolicy() {
@@ -56,8 +80,10 @@ final class VoiceEndpointTests: XCTestCase {
         XCTAssertFalse(VoiceEndpoint.allowsRedirect(from: groq, to: URL(string: "http://api.groq.com/openai/v1/audio/transcriptions")!))
         // Different port is a different origin.
         XCTAssertFalse(VoiceEndpoint.allowsRedirect(from: groq, to: URL(string: "https://api.groq.com:8443/openai/v1/audio/transcriptions")!))
-        // Embedded credentials in redirect target must be rejected.
+        // Embedded credentials, query strings, or fragments in redirect target must be rejected.
         XCTAssertFalse(VoiceEndpoint.allowsRedirect(from: groq, to: URL(string: "https://u:p@api.groq.com/openai/v1/audio/transcriptions")!))
+        XCTAssertFalse(VoiceEndpoint.allowsRedirect(from: groq, to: URL(string: "https://api.groq.com/openai/v1/audio/transcriptions?key=leak")!))
+        XCTAssertFalse(VoiceEndpoint.allowsRedirect(from: groq, to: URL(string: "https://api.groq.com/openai/v1/audio/transcriptions#frag")!))
 
         let lan = URL(string: "http://192.168.1.50:8000/v1/audio/transcriptions")!
         XCTAssertTrue(VoiceEndpoint.allowsRedirect(from: lan, to: URL(string: "http://192.168.1.50:8000/v2/audio/transcriptions")!))
