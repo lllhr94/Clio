@@ -64,6 +64,8 @@ struct ChatPage: View {
     @State var jumpedTo: String?
     @State var jumpVisible = false
     @State var hideJumps: Task<Void, Never>?
+    /// The question the finger is on while sliding along the 小地图 (an index into the rows), nil when not sliding.
+    @State var minimapScrub: Int?
     @State var viewport = ChatViewport()
     @State var selecting: Set<UUID> = []
     @State var sharing: ShareFile?
@@ -73,6 +75,10 @@ struct ChatPage: View {
     @State var clearingChat = false
     /// The conversation is moving under the reader's finger or settling after it.
     @State var scrolling = false
+    /// The reader's own finger is moving the page (dragging, or the glide after it) — not a scroll the app made.
+    @State var touchScrolling = false
+    /// Where the page was last time, to notice a jump nobody asked for (the reader saw it leap back to yesterday).
+    @State var lastOffset: CGFloat = 0
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
     @State var context: TeamModel.ContextEstimate?
     @State var usageOpen = false
@@ -386,10 +392,22 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top < 240
             } action: { _, nearTop in
-                if nearTop, scrolling, selecting.isEmpty { loadEarlier() }
+                // Only when the reader scrolls up by hand: a scroll the app makes (keeping to the foot while a
+                // reply arrives) must never pull in older lines above and shift the page.
+                if nearTop, touchScrolling, !following, selecting.isEmpty { loadEarlier() }
+            }
+            // A jump upward of more than a screen that no finger made: noted for 养护 › 诊断, to find where it comes from.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y
+            } action: { old, now in
+                if !touchScrolling, historyPage == nil, old - now > 900 {
+                    Diag.note("絮语页自己往上跳了 \(Int(old - now)) 点（following=\(following)，显示 \(shownCount) 条，共 \(chat.lines.count) 条，在写=\(chat.hasStreaming)）")
+                }
+                lastOffset = now
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
+                touchScrolling = phase == .interacting || phase == .decelerating
                 chat.setBrowsingHistory(phase == .interacting || phase == .decelerating)
                 if moving != scrolling {
                     scrolling = moving

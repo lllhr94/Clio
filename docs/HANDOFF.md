@@ -36,3 +36,22 @@
 ## Claude 回来时
 
 - 先读本文件、`docs/STATUS.md` 和这一个月合进来的 PR，复查合进来的安全相关改动，再接着当总管。
+
+## 11-22 夜：主人定，接下来主要交给 Codex
+
+**Codex 排队（按顺序）**
+1. **C40**：计划清单展开顺滑（整张卡片从下往上一起长高）；顶栏下的模型名别压在正文上。
+2. **C39**：照主人 11-22 18:52 的掉帧记录修卡顿（终端命令结束那 612 ms、终端输出流进来时的刷新、`doing` 之类高频状态、打开「养护」「调弦」的首帧）。
+3. **审谷歌的 A9 / A10 / A11**（搜索服务、共享和存笔记、云端语音识别）。Claude 已看过，合之前要满足：A9 **默认搜索用「内置网页」**，第三方搜索由主人自己选（除非主人另有决定）；A11 云端识别**只有局域网地址才许 http**，别的一律 https；密钥都在钥匙串、不进备份。
+4. 之后的新问题：主人截图 → 记进 `docs/FEEDBACK.md` → 按文件分给自己或谷歌。
+
+**Codex 当总管要做的**
+- 合并：谷歌的 PR 由 Codex 审，Codex 自己的 PR 由谷歌审；CI 编过、对方审过才合进 `batch-0.35`。
+- 每合一批，在 `batch-0.35` 上跑一次 CI（`publish=true`、`shots=false`），把测试包告诉主人。
+- 主人说「发」：写 `docs/releases/0.35.md`（中文、主人看得懂），把 `batch-0.35` 快进合进 `main`（不要 force），在 `main` 上跑 CI 发版。
+- 每做完一段，更新 `docs/STATUS.md`、`docs/FEEDBACK.md`、`docs/TASKS.md`。
+
+**仍然等 Claude 回来的**（安全边界，别动；真要改先写进 FEEDBACK）
+- `Team.swift` 里的批准（`ask` / `answer`）、污点（`TaintGuard`、`Taint.swift`）、帮忙时带过去的标记；`AgentKit` 的 `Agent.run` 主循环。
+- `Care/Backup.swift`（备份带上技能这件留给 Claude）、`Vault/`（信匣）。
+- 宠物「只在输入框上沿左右动」的规矩。

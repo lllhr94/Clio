@@ -80,7 +80,7 @@ targets:
         CADisableMinimumFrameDurationOnPhone: true
         UIRequiresFullScreen: true
         NSSupportsLiveActivities: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSCameraUsageDescription: 拍照发给旅伴看。
         NSMicrophoneUsageDescription: 按下说话时，用麦克风听你说的话。
         NSSpeechRecognitionUsageDescription: 把你说的话转成文字，发给旅伴。
