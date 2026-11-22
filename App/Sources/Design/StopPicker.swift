@@ -51,8 +51,10 @@ struct StopRow<Value: Hashable>: View {
         }
         // Pinned to the value at the row's right end, where the thumb taps, not the middle of the row; it keeps
         // the left of the page (a preview of the text, the pet) in view while dragging.
-        .popover(isPresented: $open, attachmentAnchor: .point(UnitPoint(x: 0.92, y: 0.5)), arrowEdge: .bottom) {
-            StopRuler(title: title, value: $value, stops: stops)
+        .popover(isPresented: $open, attachmentAnchor: .point(UnitPoint(x: 0.92, y: 0.5))) {
+            // No title inside: the row it opens from already says what it is, and the card stays short enough
+            // to fit above or below the row (the system picks the side with room).
+            StopRuler(value: $value, stops: stops, name: title)
                 .fixedSize()
                 .presentationCompactAdaptation(.popover)
         }
@@ -66,9 +68,11 @@ struct StopRuler<Value: Hashable>: View {
     var title: String? = nil
     @Binding var value: Value
     let stops: [Stop<Value>]
+    /// What VoiceOver calls it when no title is shown.
+    var name: String? = nil
 
     /// Long rulers (a pet's ten sizes, a model's eight windows) use shorter stops so the card stays on screen.
-    private var step: CGFloat { (stops.count > 6 ? 36 : 44) * UIScale.factor }
+    private var step: CGFloat { (stops.count > 6 ? 34 : 40) * UIScale.factor }
     private var width: CGFloat { 52 * UIScale.factor }
     private var index: Int { stops.firstIndex { $0.value == value } ?? 0 }
 
@@ -85,7 +89,7 @@ struct StopRuler<Value: Hashable>: View {
         .padding(Ink.Space.l)
         .frame(minWidth: 180 * UIScale.factor, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title ?? "")
+        .accessibilityLabel(title ?? name ?? "")
         .accessibilityValue(stops.indices.contains(index) ? stops[index].name : "")
         .accessibilityAdjustableAction { direction in
             switch direction {
