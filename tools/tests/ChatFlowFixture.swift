@@ -76,6 +76,7 @@ private final class FlowFixture {
     var draft = "你好"
     var photos = ["photo"]
     var files = ["file"]
+    var draftAttachmentQueuedIds: [UUID] = [UUID()]
     var following = true
     var scrolling = false
     var touchScrolling = false
@@ -246,6 +247,7 @@ private enum ChatFlowTests {
         try check(flow.draft, "", "Sending clears the draft")
         try check(flow.photos, [], "Sending clears attached photos")
         try check(flow.files, [], "Sending clears attached files")
+        try check(flow.draftAttachmentQueuedIds, [], "Sending clears queued attachment markers")
         try check(flow.following, true, "Sending resumes following")
         await flow.clock.waitForSleepers(1)
 
