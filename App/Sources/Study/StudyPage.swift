@@ -1,26 +1,31 @@
 import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// 书案: the folder the companions work in. Browse it, read what they wrote, share or throw away.
+/// 书案: the folder the companions work in (plus external folders mounted via security-scoped bookmarks).
+/// Browse it, read what they wrote, share or throw away.
 struct StudyPage: View {
     var folder: URL = Workspace.root
     @Environment(\.dismiss) private var dismiss
-    @State private var items: [Item] = []
-    @State private var deleting: Item?
 
     struct Item: Identifiable, Hashable, Sendable {
         let url: URL
         let folder: Bool
         let bytes: Int
         let changed: Date
-        var id: URL { url }
+        var mount: MountedFolder? = nil
+        var id: String { (mount?.id ?? "desk") + "|" + url.path }
     }
 
     var body: some View {
         NavigationStack {
             content
                 .navigationDestination(for: Item.self) { item in
-                    if item.folder { StudyFolder(folder: item.url) } else { StudyFile(url: item.url) }
+                    if item.folder {
+                        StudyFolder(folder: item.url, mount: item.mount)
+                    } else {
+                        StudyFile(url: item.url, mount: item.mount)
+                    }
                 }
         }
     }
@@ -30,18 +35,28 @@ struct StudyPage: View {
     }
 }
 
-/// One folder of the desk, as a list.
+/// One folder of the desk (or a mounted external folder), as a list.
 struct StudyFolder: View {
     let folder: URL
     var top = false
+    var mount: MountedFolder? = nil
     var close: (() -> Void)?
+
     @State private var items: [StudyPage.Item] = []
+    @State private var mounts: [MountedFolders.Inspection] = []
     @State private var deleting: StudyPage.Item?
+    @State private var unmounting: MountedFolder?
+    @State private var reauthorizing: MountedFolder?
     @State private var importing = false
+    @State private var pickingMount = false
     @State private var naming = false
     @State private var newFolder = ""
     @State private var loading = true
+    @State private var mountBroken = false
+    @State private var mountNotice: String?
     @State private var request: UUID?
+    @State private var scope: MountedFolders.ScopeToken?
+    @State private var mountRoot: URL?
 
     var body: some View {
         ZStack {
@@ -52,32 +67,35 @@ struct StudyFolder: View {
                         Text(L.t("files.localPath"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
+                    } else if let mount {
+                        Text(Words.t("外部文件夹 · 书案/\(MountedFolders.virtualFolder)/\(mount.name)"))
+                            .font(Ink.mono(Ink.Size.small))
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                    if let mountNotice {
+                        Text(mountNotice)
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if top && !mounts.isEmpty {
+                        mountedSection
                     }
                     if loading {
                         ProgressView(L.t("loading.generic"))
+                    } else if mountBroken {
+                        brokenMountView
                     } else if items.isEmpty {
-                        VStack(spacing: Ink.Space.m) {
-                            PetStill(size: 72)
+                        if top && !mounts.isEmpty {
                             Text(L.t("empty.files"))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
-                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, Ink.Space.xs)
+                        } else {
+                            emptyView
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, Ink.Space.xxl)
                     } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(items) { item in
-                                NavigationLink(value: item) { row(item) }
-                                    .buttonStyle(PressStyle())
-                                    .contextMenu {
-                                        if !item.folder { ShareLink(item: item.url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") } }
-                                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
-                                    }
-                                if item.id != items.last?.id { Kit.divider }
-                            }
-                        }
-                        .paperCard()
+                        filesSection
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)
@@ -85,64 +103,201 @@ struct StudyFolder: View {
             }
         }
         .hitchPage("书案")
-        .navigationTitle(top ? L.t("nav.files") : folder.lastPathComponent)
+        .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if let close {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(L.t("actions.done")) { close() }
+        .toolbar { toolbarItems }
+        .background {
+            Color.clear
+                .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: handleImport)
+            Color.clear
+                .fileImporter(isPresented: $pickingMount, allowedContentTypes: [.folder], allowsMultipleSelection: false, onCompletion: handlePickMount)
+            Color.clear
+                .confirmationDialog(
+                    L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""),
+                    isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    Button(L.t("actions.delete"), role: .destructive) {
+                        deleteSelectedItem()
+                    }
+                    Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
                 }
+            Color.clear
+                .confirmationDialog(
+                    "取消挂载「\(unmounting?.name ?? "")」？只会删掉书签连接，不会删除原文件夹里的任何文件。",
+                    isPresented: Binding(get: { unmounting != nil }, set: { if !$0 { unmounting = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    Button("取消挂载", role: .destructive) {
+                        if let target = unmounting {
+                            MountedFolders.remove(id: target.id)
+                            mountNotice = "已取消挂载「\(target.name)」，原文件夹里的文件未受影响。"
+                            Haptics.lock()
+                            Task { await load() }
+                        }
+                        unmounting = nil
+                    }
+                    Button(L.t("actions.cancel"), role: .cancel) { unmounting = nil }
+                }
+        }
+        .alert(L.t("actions.newFolder"), isPresented: $naming) {
+            TextField(L.t("files.folderName"), text: $newFolder)
+            Button(L.t("actions.create")) { createSubfolder() }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        }
+        .task(id: folder) { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+            guard top else { return }
+            Task { await load() }
+        }
+        .onDisappear {
+            scope?.stop()
+            scope = nil
+        }
+        .refreshable { await load() }
+    }
+
+    private var navigationTitle: String {
+        if top { return L.t("nav.files") }
+        if let mount, let mountRoot,
+           folder.resolvingSymlinksInPath().standardizedFileURL.path == mountRoot.resolvingSymlinksInPath().standardizedFileURL.path {
+            return mount.name
+        }
+        return folder.lastPathComponent
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        if let close {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(L.t("actions.done")) { close() }
             }
+        }
+        if !mountBroken {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button(L.t("actions.importFromFiles"), systemImage: "square.and.arrow.down") { importing = true }
                     Button(L.t("actions.newFolder"), systemImage: "folder.badge.plus") { newFolder = ""; naming = true }
+                    if top {
+                        Divider()
+                        Button("添加外部文件夹", systemImage: "plus.rectangle.on.folder") {
+                            reauthorizing = nil
+                            pickingMount = true
+                        }
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel(L.t("actions.addFilesOrFolder"))
             }
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            guard case .success(let urls) = result else { return }
-            for source in urls {
-                let reach = source.startAccessingSecurityScopedResource()
-                defer { if reach { source.stopAccessingSecurityScopedResource() } }
-                var target = folder.appendingPathComponent(source.lastPathComponent)
-                var number = 2
-                while FileManager.default.fileExists(atPath: target.path) {
-                    let base = source.deletingPathExtension().lastPathComponent
-                    let ext = source.pathExtension
-                    target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
-                    number += 1
+    }
+
+    private var mountedSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle("已挂载的文件夹")
+            VStack(spacing: 0) {
+                ForEach(Array(mounts.enumerated()), id: \.element.id) { index, inspection in
+                    if index > 0 { Kit.divider }
+                    mountRow(inspection)
                 }
-                try? FileManager.default.copyItem(at: source, to: target)
             }
-            Haptics.thud()
-            Task { await load() }
+            .paperCard()
+            Text(Words.t("可挂载 iCloud、Obsidian 等文件夹，旅伴可直接读写，取消挂载不会删文件。"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .alert(L.t("actions.newFolder"), isPresented: $naming) {
-            TextField(L.t("files.folderName"), text: $newFolder)
-            Button(L.t("actions.create")) {
-                let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
-                guard !name.isEmpty else { return }
-                try? FileManager.default.createDirectory(at: folder.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
-                Task { await load() }
+    }
+
+    @ViewBuilder
+    private func mountRow(_ inspection: MountedFolders.Inspection) -> some View {
+        if inspection.accessible, let rootURL = inspection.url {
+            let item = StudyPage.Item(url: rootURL, folder: true, bytes: 0, changed: Date(), mount: inspection.mount)
+            NavigationLink(value: item) {
+                RowLabel(
+                    "link",
+                    tint: Ink.Tile.dai,
+                    title: inspection.mount.name,
+                    line: Words.t("书案/\(MountedFolders.virtualFolder)/\(inspection.mount.name)")
+                )
             }
-            Button(L.t("actions.cancel"), role: .cancel) {}
+            .buttonStyle(PressStyle())
+            .contextMenu { mountContextMenu(inspection.mount) }
+        } else {
+            Button {
+                Haptics.light()
+                reauthorizing = inspection.mount
+                pickingMount = true
+            } label: {
+                RowLabel(
+                    "exclamationmark.triangle",
+                    tint: Ink.warn,
+                    title: inspection.mount.name,
+                    line: "授权已失效，点这里重新选择文件夹"
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .contextMenu { mountContextMenu(inspection.mount) }
         }
-        .task(id: folder) { await load() }
-        .refreshable { await load() }
-        .confirmationDialog(L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            Button(L.t("actions.delete"), role: .destructive) {
-                if let item = deleting {
-                    try? FileManager.default.removeItem(at: item.url)
-                    Haptics.lock()
-                    Task { await load() }
+    }
+
+    @ViewBuilder
+    private func mountContextMenu(_ target: MountedFolder) -> some View {
+        Button("重新选择文件夹", systemImage: "arrow.clockwise") {
+            reauthorizing = target
+            pickingMount = true
+        }
+        Button("取消挂载", systemImage: "minus.circle", role: .destructive) {
+            unmounting = target
+        }
+    }
+
+    private var filesSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            if top && !mounts.isEmpty {
+                SectionTitle(L.t("nav.files"))
+            }
+            LazyVStack(spacing: 0) {
+                ForEach(items) { item in
+                    NavigationLink(value: item) { row(item) }
+                        .buttonStyle(PressStyle())
+                        .contextMenu {
+                            if !item.folder { ShareLink(item: item.url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") } }
+                            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
+                        }
+                    if item.id != items.last?.id { Kit.divider }
                 }
-                deleting = nil
             }
-            Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
+            .paperCard()
+        }
+    }
+
+    private var emptyView: some View {
+        VStack(spacing: Ink.Space.m) {
+            PetStill(size: 72)
+            Text(L.t("empty.files"))
+                .font(Ink.secondary)
+                .foregroundStyle(Ink.inkSoft)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Ink.Space.xxl)
+    }
+
+    private var brokenMountView: some View {
+        RowCard {
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                Text("这个外部文件夹的授权已失效或目录已移动。")
+                    .font(.system(size: Ink.Size.body, weight: .medium))
+                    .foregroundStyle(Ink.ink)
+                Text(Words.t("请回到书案首页，点击该挂载项重新选择文件夹。"))
+                    .font(Ink.secondary)
+                    .foregroundStyle(Ink.inkSoft)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Ink.Space.l)
         }
     }
 
@@ -164,22 +319,129 @@ struct StudyFolder: View {
         }
     }
 
+    private func handleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        let activeRoot = mountRoot ?? Workspace.root
+        guard Workspace.isInsideRealRoot(folder, root: activeRoot) else { return }
+        for source in urls {
+            let reach = source.startAccessingSecurityScopedResource()
+            defer { if reach { source.stopAccessingSecurityScopedResource() } }
+            var target = folder.appendingPathComponent(source.lastPathComponent)
+            var number = 2
+            while FileManager.default.fileExists(atPath: target.path) {
+                let base = source.deletingPathExtension().lastPathComponent
+                let ext = source.pathExtension
+                target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                number += 1
+            }
+            guard Workspace.isInsideRealRoot(target, root: activeRoot) else { continue }
+            try? FileManager.default.copyItem(at: source, to: target)
+        }
+        Haptics.thud()
+        Task { await load() }
+    }
+
+    private func handlePickMount(_ result: Result<[URL], Error>) {
+        let targetMount = reauthorizing
+        reauthorizing = nil
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            do {
+                let saved: MountedFolder
+                if let targetMount {
+                    saved = try MountedFolders.reauthorize(id: targetMount.id, with: url)
+                    mountNotice = "已重新授权「\(saved.name)」。"
+                } else {
+                    saved = try MountedFolders.add(url)
+                    mountNotice = Words.t("已挂载「\(saved.name)」，路径为书案/\(MountedFolders.virtualFolder)/\(saved.name)。")
+                }
+                Haptics.thud()
+                Task { await load() }
+            } catch {
+                mountNotice = error.localizedDescription
+                Haptics.lock()
+            }
+        case .failure(let error):
+            mountNotice = error.localizedDescription
+        }
+    }
+
+    private func createSubfolder() {
+        let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
+        guard !name.isEmpty, name != ".", name != ".." else { return }
+        let target = folder.appendingPathComponent(name, isDirectory: true)
+        let activeRoot = mountRoot ?? Workspace.root
+        guard Workspace.isInsideRealRoot(target, root: activeRoot) else { return }
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        Task { await load() }
+    }
+
+    private func deleteSelectedItem() {
+        if let item = deleting {
+            let activeRoot = mountRoot ?? Workspace.root
+            if Workspace.isInsideRealRoot(item.url, root: activeRoot),
+               item.url.resolvingSymlinksInPath().standardizedFileURL.path != activeRoot.resolvingSymlinksInPath().standardizedFileURL.path {
+                try? FileManager.default.removeItem(at: item.url)
+                Haptics.lock()
+                Task { await load() }
+            }
+        }
+        deleting = nil
+    }
+
     private func load() async {
         let id = UUID()
         request = id
         let folder = self.folder
-        let result = await Task.detached(priority: .utility) { Self.readFolder(folder) }.value
+        let top = self.top
+        let mount = self.mount
+        if let mount {
+            let opened = await Task.detached(priority: .utility) { MountedFolders.openForUI(mount) }.value
+            guard !Task.isCancelled, request == id else {
+                opened?.token.stop()
+                return
+            }
+            scope?.stop()
+            guard let opened else {
+                scope = nil
+                mountRoot = nil
+                items = []
+                mountBroken = true
+                loading = false
+                return
+            }
+            scope = opened.token
+            mountRoot = opened.url
+            mountBroken = false
+            let result = await Task.detached(priority: .utility) {
+                Self.readFolder(folder, root: opened.url, mount: mount)
+            }.value
+            guard !Task.isCancelled, request == id else { return }
+            items = result
+            loading = false
+            return
+        }
+
+        let loaded = await Task.detached(priority: .utility) { () -> ([StudyPage.Item], [MountedFolders.Inspection]) in
+            let files = Self.readFolder(folder, root: Workspace.root, mount: nil)
+            let inspections = top ? MountedFolders.all(fresh: true).map(MountedFolders.inspect) : []
+            return (files, inspections)
+        }.value
         guard !Task.isCancelled, request == id else { return }
-        items = result
+        items = loaded.0
+        if top { mounts = loaded.1 }
         loading = false
     }
 
-    nonisolated private static func readFolder(_ folder: URL) -> [StudyPage.Item] {
+    nonisolated private static func readFolder(_ folder: URL, root baseRoot: URL, mount: MountedFolder?) -> [StudyPage.Item] {
+        guard Workspace.isInsideRealRoot(folder, root: baseRoot) else { return [] }
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-        return urls.map { url in
+        return urls.compactMap { url in
+            guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return nil }
             let values = try? url.resourceValues(forKeys: Set(keys))
-            return StudyPage.Item(url: url, folder: values?.isDirectory == true, bytes: values?.fileSize ?? 0, changed: values?.contentModificationDate ?? .distantPast)
+            return StudyPage.Item(url: url, folder: values?.isDirectory == true, bytes: values?.fileSize ?? 0, changed: values?.contentModificationDate ?? .distantPast, mount: mount)
         }
         .sorted { ($0.folder ? 0 : 1, $1.changed) < ($1.folder ? 0 : 1, $0.changed) }
     }
@@ -189,10 +451,13 @@ struct StudyFolder: View {
 /// and everything else (PDF, Word, Excel, Keynote…) through the system's own viewer.
 struct StudyFile: View {
     let url: URL
+    var mount: MountedFolder? = nil
     @State private var text: String?
     @State private var plain = false
     @State private var picture: UIImage?
     @State private var loaded = false
+    @State private var mountBroken = false
+    @State private var scope: MountedFolders.ScopeToken?
 
     private var ext: String { url.pathExtension.lowercased() }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
@@ -206,7 +471,13 @@ struct StudyFile: View {
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            if let picture {
+            if mountBroken {
+                Text(Words.t("外部文件夹的授权已失效，请回到书案首页重新选择文件夹。"))
+                    .font(Ink.secondary)
+                    .foregroundStyle(Ink.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .padding(Ink.Space.page)
+            } else if let picture {
                 ScrollView([.horizontal, .vertical]) {
                     Image(uiImage: picture)
                         .resizable()
@@ -254,21 +525,51 @@ struct StudyFile: View {
                 if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
-                ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("分享文件")
+                if !mountBroken {
+                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel("分享文件")
+                }
             }
         }
         .task(id: url) {
             let url = self.url
-            let result = await Task.detached(priority: .utility) { Self.readPreview(url) }.value
+            let mount = self.mount
+            if let mount {
+                let opened = await Task.detached(priority: .utility) { MountedFolders.openForUI(mount) }.value
+                guard !Task.isCancelled else {
+                    opened?.token.stop()
+                    return
+                }
+                scope?.stop()
+                guard let opened else {
+                    scope = nil
+                    mountBroken = true
+                    loaded = true
+                    return
+                }
+                scope = opened.token
+                mountBroken = false
+                let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: opened.url) }.value
+                guard !Task.isCancelled else { return }
+                picture = result.picture
+                text = result.text
+                loaded = true
+                return
+            }
+            let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: Workspace.root) }.value
             guard !Task.isCancelled else { return }
             picture = result.picture
             text = result.text
             loaded = true
         }
+        .onDisappear {
+            scope?.stop()
+            scope = nil
+        }
     }
 
-    nonisolated private static func readPreview(_ url: URL) -> (picture: UIImage?, text: String?) {
+    nonisolated private static func readPreview(_ url: URL, root baseRoot: URL) -> (picture: UIImage?, text: String?) {
+        guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return (nil, nil) }
         if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(url.pathExtension.lowercased()),
            let image = UIImage(contentsOfFile: url.path) {
             return (image.preparingForDisplay() ?? image, nil)
