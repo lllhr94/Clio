@@ -121,6 +121,7 @@ struct Desk: View {
     private struct ArchiveUndo: Equatable {
         let key: String
         let expires: Date
+        let epoch: Int
     }
     /// How far a drag has moved the conversation (right to open the sidebar, left to close it).
     @State private var pull: CGFloat = 0
@@ -134,7 +135,8 @@ struct Desk: View {
         case past(PastLeaf)
     }
     @State private var renaming: RenameTarget?
-    @State private var deletingPast: PastLeaf?
+    @State private var deletingThread: SideConversation?
+    @State private var deletingEpoch = 0
     @State private var renameText = ""
     @State private var sideQuery = ""
     @State private var query = ""
@@ -162,14 +164,15 @@ struct Desk: View {
 
     /// Conversations with something in them, newest first.
     private var recent: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
-        let bots = team.bots.compactMap { bot -> (Opened, String, String, Double, BotInfo?)? in
+        let bots = team.bots.compactMap { bot -> Thread? in
             guard let at = bot.lastAt else { return nil }
             return (.companion(bot.id), bot.name, bot.preview ?? "", at, bot)
         }
-        let rooms = team.rooms.map { room in
-            (Opened.gathering(room.id), room.name, room.preview ?? "还没有人说话", room.lastAt ?? 0, BotInfo?.none)
+        let rooms = team.rooms.compactMap { room -> Thread? in
+            guard let at = room.lastAt else { return nil }
+            return (.gathering(room.id), room.name, room.preview ?? "还没有人说话", at, nil)
         }
-        return (bots + rooms).sorted { $0.3 > $1.3 }.map { (id: $0.0, name: $0.1, preview: $0.2, at: $0.3, bot: $0.4) }
+        return (bots + rooms).sorted { $0.at > $1.at }
     }
 
     private typealias Thread = (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)
@@ -243,7 +246,7 @@ struct Desk: View {
     private func changeArchive(_ key: String, archived: Bool) {
         withAnimation(Ink.Motion.settle) {
             team.archive(key, archived)
-            if archived { archiveUndo = ArchiveUndo(key: key, expires: Date().addingTimeInterval(4)) }
+            if archived { archiveUndo = ArchiveUndo(key: key, expires: Date().addingTimeInterval(4), epoch: team.epochs[key, default: 0]) }
             else if archiveUndo?.key == key { archiveUndo = nil }
         }
     }
@@ -255,7 +258,8 @@ struct Desk: View {
                     Text(L.t("homeThreads.archived")).font(Ink.secondary).foregroundStyle(Ink.ink)
                     Spacer()
                     Button(L.t("homeThreads.undo")) {
-                        guard Date() < undo.expires else { archiveUndo = nil; return }
+                        guard Date() < undo.expires, team.archived.contains(undo.key),
+                              team.epochs[undo.key, default: 0] == undo.epoch else { archiveUndo = nil; return }
                         changeArchive(undo.key, archived: false)
                     }
                     .buttonStyle(PressStyle())
@@ -313,7 +317,8 @@ struct Desk: View {
     /// Claude- and DSH-like: search, a new conversation, the places to go, pinned and recent conversations,
     /// and settings at the bottom. It lies under the conversation; swiping from the left edge or the ☰ brings it out.
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let sections = sideSections
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Ink.Space.s) {
                 HStack(alignment: .center, spacing: Ink.Space.s) {
                     Text("Clio")
@@ -370,24 +375,27 @@ struct Desk: View {
                 .padding(.bottom, Ink.Space.s)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if sideQuery.isEmpty {
                         sideNav("house", Words.t("案头")) { jump(nil) }
                         sideNav("books.vertical", Words.t("书案")) { closeSide(); studying = true }
                         sideNav("terminal", Words.t("斗室")) { closeSide(); denning = true }
                     }
-                    ForEach(sideSections, id: \.title) { section in
+                    ForEach(sections, id: \.title) { section in
                         Text(section.title)
                             .font(.system(size: Ink.Size.small, weight: .semibold))
                             .foregroundStyle(Ink.inkFaint)
                             .padding(.horizontal, Ink.Space.l)
                             .padding(.top, Ink.Space.l)
                             .padding(.bottom, Ink.Space.xs)
-                        ForEach(section.threads, id: \.id) { item in sideThread(item) }
-                        // Conversations put aside by 新对话, in the same 最近 / 更早 as the ones open now.
-                        ForEach(section.past) { past in pastRow(past) }
+                        ForEach(section.rows) { row in
+                            switch row {
+                            case .current(let item): sideThread(item)
+                            case .past(let past): pastRow(past)
+                            }
+                        }
                     }
-                    if sideThreads.isEmpty && pastLeaves.isEmpty {
+                    if sections.isEmpty {
                         Text(sideQuery.isEmpty ? "还没有对话。" : "没找到「\(sideQuery)」。")
                             .font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(Ink.Space.l)
                     }
@@ -445,47 +453,53 @@ struct Desk: View {
         let owner: Opened
         let ownerName: String
         let leaf: TeamModel.Leaf
-        var id: String { owner.id + "/" + leaf.id }
+        var id: String { TeamModel.threadKey(owner.id, leaf: leaf.id) }
     }
 
     private var pastLeaves: [PastLeaf] {
         let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let all = recent.flatMap { item in
-            team.leaves(item.id.id)
-                .filter { $0.marker == nil && $0.count > 0 }
-                .map { PastLeaf(owner: item.id, ownerName: item.name, leaf: $0) }
+        let owners = team.bots.map { (Opened.companion($0.id), $0.name) }
+            + team.rooms.map { (Opened.gathering($0.id), $0.name) }
+        return owners.flatMap { owner, name in
+            team.leaves(owner.id).compactMap { leaf -> PastLeaf? in
+                guard leaf.marker == nil, leaf.count > 0 else { return nil }
+                let past = PastLeaf(owner: owner, ownerName: name, leaf: leaf)
+                if words.isEmpty {
+                    guard listFilter == 0, !team.archived.contains(past.id),
+                          labelFilter.isEmpty || team.threadLabels[past.id] == labelFilter else { return nil }
+                } else {
+                    guard leaf.title.localizedCaseInsensitiveContains(words) || name.localizedCaseInsensitiveContains(words) else { return nil }
+                }
+                return past
+            }
         }
-        let found = words.isEmpty ? all : all.filter { $0.leaf.title.localizedCaseInsensitiveContains(words) || $0.ownerName.localizedCaseInsensitiveContains(words) }
-        return Array(found.sorted { $0.leaf.at > $1.leaf.at }.prefix(60))
     }
 
     private func pastRow(_ past: PastLeaf) -> some View {
-        SwipeRow(actions: [
-            SwipeAction(title: L.t("actions.delete"), symbol: "trash", tint: Ink.stop) { deletingPast = past }
-        ]) {
+        let row = SideConversation.past(past)
+        return SwipeRow(actions: sidebarSwipes(row)) {
             Button {
                 Haptics.light()
                 jump(past.owner)
                 team.openLeaf(past.owner.id, past.leaf)
             } label: {
-                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    Text(past.leaf.title.isEmpty ? L.t("chat.untitled") : past.leaf.title)
-                        .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                    Text("\(past.ownerName) · \(Self.dayName(past.leaf.at)) · \(past.leaf.count) 条")
-                        .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                HStack(spacing: Ink.Space.s) {
+                    threadColor(row.id)
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                        Text(past.leaf.title.isEmpty ? L.t("chat.untitled") : past.leaf.title)
+                            .font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text("\(past.ownerName) · \(Self.dayName(past.leaf.at)) · \(past.leaf.count) 条")
+                            .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                    }
+                    Spacer(minLength: Ink.Space.s)
+                    archivedIcon(row.id)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Ink.Space.m)
                 .padding(.vertical, Ink.Space.s)
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
-            .contextMenu {
-                Button(L.t("chat.rename"), systemImage: "pencil") {
-                    renameText = past.leaf.title
-                    renaming = .past(past)
-                }
-            }
+            .contextMenu { sidebarMenu(row) }
         }
     }
 
@@ -517,55 +531,91 @@ struct Desk: View {
     private func sideThread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
         let here = item.id == opened
         let key = item.id.id
-        return SwipeRow(actions: [archiveSwipe(key)]) {
-        Button {
-            Haptics.light()
-            jump(item.id)
-        } label: {
-            HStack(spacing: Ink.Space.s) {
-                if let value = team.threadLabels[key], let label = ThreadLabel(rawValue: value) {
-                    Circle().fill(label.tint).frame(width: Ink.Space.s, height: Ink.Space.s)
-                        .accessibilityLabel(label.title)
-                }
-                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
-                    // What the conversation is about (its title, which you can rename), else its last words.
-                    let line = team.title(of: key) ?? item.preview
-                    if !line.isEmpty {
-                        Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+        let row = SideConversation.current(item)
+        return SwipeRow(actions: sidebarSwipes(row)) {
+            Button {
+                Haptics.light()
+                jump(item.id)
+            } label: {
+                HStack(spacing: Ink.Space.s) {
+                    threadColor(key)
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                        Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
+                        // What the conversation is about (its title, which you can rename), else its last words.
+                        let line = team.title(of: key) ?? item.preview
+                        if !line.isEmpty {
+                            Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: Ink.Space.s)
+                    if team.archived.contains(key) {
+                        archivedIcon(key)
+                    } else if team.approvals.contains(where: { $0.chat == key }) {
+                        Image(systemName: "exclamationmark.circle").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.warn)
+                    } else if team.isWorking(key) {
+                        ProgressView().controlSize(.mini)
+                    } else if team.isUnread(key, at: item.at) {
+                        Circle().fill(Ink.accent).frame(width: 7, height: 7)
                     }
                 }
-                Spacer(minLength: Ink.Space.s)
-                if team.archived.contains(key) {
-                    Image(systemName: "archivebox").foregroundStyle(Ink.inkFaint)
-                        .accessibilityLabel(L.t("homeThreads.archived"))
-                } else if team.approvals.contains(where: { $0.chat == key }) {
-                    Image(systemName: "exclamationmark.circle").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.warn)
-                } else if team.isWorking(key) {
-                    ProgressView().controlSize(.mini)
-                } else if team.isUnread(key, at: item.at) {
-                    Circle().fill(Ink.accent).frame(width: 7, height: 7)
-                }
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.s)
+                .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, Ink.Space.s)
-            .background(here ? Ink.paperRaised : Color.clear, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-            .contentShape(Rectangle())
+            .buttonStyle(PressStyle(haptic: false))
+            .contextMenu { sidebarMenu(row) }
         }
-        .buttonStyle(PressStyle(haptic: false))
-        .contextMenu {
-            Button(team.pinned.contains(key) ? "取消置顶" : "置顶", systemImage: team.pinned.contains(key) ? "pin.slash" : "pin") {
-                withAnimation(Ink.Motion.settle) { team.pin(key, !team.pinned.contains(key)) }
+    }
+
+    @ViewBuilder
+    private func threadColor(_ key: String) -> some View {
+        if let value = team.threadLabels[key], let label = ThreadLabel(rawValue: value) {
+            Circle().fill(label.tint).frame(width: Ink.Space.s, height: Ink.Space.s)
+                .accessibilityLabel(label.title)
+        }
+    }
+
+    @ViewBuilder
+    private func archivedIcon(_ key: String) -> some View {
+        if team.archived.contains(key) {
+            Image(systemName: "archivebox").foregroundStyle(Ink.inkFaint)
+                .accessibilityLabel(L.t("homeThreads.archived"))
+        }
+    }
+
+    private func sidebarSwipes(_ row: SideConversation) -> [SwipeAction] {
+        [archiveSwipe(row.id),
+         SwipeAction(title: L.t("actions.delete"), symbol: "trash", tint: Ink.stop) { requestDelete(row) }]
+    }
+
+    private func requestDelete(_ row: SideConversation) {
+        deletingEpoch = team.epochs[row.id, default: 0]
+        deletingThread = row
+    }
+
+    @ViewBuilder
+    private func sidebarMenu(_ row: SideConversation) -> some View {
+        let key = row.id
+        let pinned = team.pinned.contains(key)
+        Button(L.t(pinned ? "homeThreads.unpin" : "homeThreads.pin"), systemImage: pinned ? "pin.slash" : "pin") {
+            withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
+        }
+        Button(L.t("chat.rename"), systemImage: "pencil") {
+            switch row {
+            case .current: startRename(key)
+            case .past(let past):
+                renameText = past.leaf.title
+                renaming = .past(past)
             }
-            Button("重命名", systemImage: "pencil") { startRename(key) }
-            archiveMenu(key)
-            Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
-                labelChoices(selected: team.threadLabels[key] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
-                    team.setThreadLabel($0, for: key)
-                }
+        }
+        Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
+            labelChoices(selected: team.threadLabels[key] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
+                team.setThreadLabel($0, for: key)
             }
         }
-        }
+        archiveMenu(key)
+        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { requestDelete(row) }
     }
 
     private func archiveSwipe(_ key: String) -> SwipeAction {
@@ -698,7 +748,9 @@ struct Desk: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
-                .contextMenu { archiveMenu(hit.key) }
+                .contextMenu {
+                    archiveMenu(hit.leaf.map { TeamModel.threadKey(hit.key, leaf: $0) } ?? hit.key)
+                }
                 Kit.rule(inset: 0)
             }
         } else {
@@ -878,12 +930,20 @@ struct Desk: View {
                 renaming = nil
             }
         }
-        .confirmationDialog(L.t("chat.deletePast"), isPresented: Binding(get: { deletingPast != nil }, set: { if !$0 { deletingPast = nil } }), titleVisibility: .visible, presenting: deletingPast) { past in
+        .confirmationDialog(L.t("chat.deleteConversationConfirm"), isPresented: Binding(get: { deletingThread != nil }, set: { if !$0 { deletingThread = nil } }), titleVisibility: .visible, presenting: deletingThread) { row in
             Button(L.t("actions.delete"), role: .destructive) {
-                if !team.deleteLeaf(past.owner.id, id: past.leaf.id) { notice = L.t("errors.saveConversation") }
-                deletingPast = nil
+                let deleted: Bool
+                switch row {
+                case .current(let thread):
+                    deleted = team.epochs[row.id, default: 0] == deletingEpoch
+                        && team.clearChat(thread.id.id, includingLeaves: false)
+                case .past(let past): deleted = team.deleteLeaf(past.owner.id, id: past.leaf.id)
+                }
+                if deleted { Haptics.thud() }
+                else { notice = L.t("errors.saveConversation") }
+                deletingThread = nil
             }
-            Button(L.t("actions.cancel"), role: .cancel) { deletingPast = nil }
+            Button(L.t("actions.cancel"), role: .cancel) { deletingThread = nil }
         } message: { _ in
             Text(L.t("errors.cannotUndo"))
         }
@@ -1221,27 +1281,39 @@ struct Desk: View {
         return Date(timeIntervalSince1970: at / 1000) >= weekAgo
     }
 
-    private struct SideSection {
-        let title: String
-        let threads: [Thread]
-        let past: [PastLeaf]
+    private enum SideConversation: Identifiable {
+        case current(Thread)
+        case past(PastLeaf)
+
+        var id: String {
+            switch self {
+            case .current(let thread): thread.id.id
+            case .past(let past): past.id
+            }
+        }
+
+        var at: Double {
+            switch self {
+            case .current(let thread): thread.at
+            case .past(let past): past.leaf.at
+            }
+        }
     }
 
-    /// The sidebar's groups: the open conversations, then the ones put aside, each under 最近 or 更早.
+    private struct SideSection {
+        let title: String
+        let rows: [SideConversation]
+    }
+
     private var sideSections: [SideSection] {
-        let groups = Self.grouped(sideThreads, pinned: team.pinned)
-        let past = pastLeaves
+        let rows = sideThreads.map(SideConversation.current) + pastLeaves.map(SideConversation.past)
+        let byKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let pinned = team.pinned.compactMap { byKey[$0] }.filter { !team.archived.contains($0.id) }
+        let keys = Set(pinned.map(\.id))
+        let others = rows.filter { !keys.contains($0.id) }.sorted { $0.at > $1.at }
         var sections: [SideSection] = []
-        for title in ["置顶", "最近", "更早"] {
-            let threads = groups.first { $0.title == title }?.items ?? []
-            let leaves: [PastLeaf]
-            switch title {
-            case "最近": leaves = past.filter { Self.isRecent($0.leaf.at) }
-            case "更早": leaves = past.filter { !Self.isRecent($0.leaf.at) }
-            default: leaves = []
-            }
-            if !threads.isEmpty || !leaves.isEmpty { sections.append(SideSection(title: title, threads: threads, past: leaves)) }
-        }
+        if !pinned.isEmpty { sections.append(SideSection(title: L.t("homeThreads.pin"), rows: pinned)) }
+        if !others.isEmpty { sections.append(SideSection(title: L.t("homeThreads.conversations"), rows: others)) }
         return sections
     }
 

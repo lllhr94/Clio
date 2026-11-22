@@ -45,4 +45,33 @@ extension TeamModel {
         if on { archived.insert(key) } else { archived.remove(key) }
         UserDefaults.standard.set(Array(archived), forKey: "desk.archived")
     }
+
+    nonisolated static func threadKey(_ key: String, leaf: String) -> String { "\(key)~\(leaf)" }
+
+    /// Move the list state with the conversation as it changes storage slots.
+    func moveThread(_ source: String, to destination: String) {
+        pinned = pinned.filter { $0 != destination }.map { $0 == source ? destination : $0 }
+        let wasArchived = archived.remove(source) != nil
+        archived.remove(destination)
+        if wasArchived { archived.insert(destination) }
+        let color = threadLabels.removeValue(forKey: source)
+        threadLabels[destination] = color
+        saveThreadState()
+    }
+
+    func forgetThreads(_ key: String, includingLeaves: Bool = false) {
+        func matches(_ candidate: String) -> Bool {
+            candidate == key || (includingLeaves && candidate.hasPrefix(key + "~"))
+        }
+        pinned.removeAll(where: matches)
+        archived = archived.filter { !matches($0) }
+        threadLabels = threadLabels.filter { !matches($0.key) }
+        saveThreadState()
+    }
+
+    private func saveThreadState() {
+        UserDefaults.standard.set(pinned, forKey: "desk.pinned")
+        UserDefaults.standard.set(Array(archived), forKey: "desk.archived")
+        UserDefaults.standard.set(threadLabels, forKey: "desk.threadLabels")
+    }
 }
