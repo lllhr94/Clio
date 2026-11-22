@@ -99,4 +99,147 @@ final class QueuedMessageStoreTests: XCTestCase {
 
         XCTAssertEqual(remaining, [photoUnqueuedTextOnly, stillPending])
     }
+
+    func testEvaluateSlotPreservesLeafQueueWhenIndexUnreadableOrLeafFileStillExists() {
+        let anchor = ConversationAnchor.from(entryIds: ["e1", "e2"])
+
+        // 1. Index unreadable (e.g. failed write/corrupt JSON) -> fail closed, keep slot on disk.
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: false,
+                indexReadable: false,
+                chatFileExists: false,
+                anchor: anchor,
+                chatEntryIds: nil
+            ),
+            .preserveUnreadable
+        )
+
+        // 2. Index readable but leaf file still exists on disk (e.g. crash before index updated) -> fail closed.
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: false,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: anchor,
+                chatEntryIds: ["e1", "e2"]
+            ),
+            .preserveUnreadable
+        )
+
+        // 3. Index readable AND chat/leaf file confirmed absent -> safe to delete orphan.
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: false,
+                indexReadable: true,
+                chatFileExists: false,
+                anchor: anchor,
+                chatEntryIds: nil
+            ),
+            .deleteOrphan
+        )
+    }
+
+    func testAtomicTextDraftWriteThenImmediateTerminationDeduplicatesWithoutLoss() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        let draftsRoot = root.appendingPathComponent("ClioDrafts", isDirectory: true)
+        let item = StoredQueuedMessage(text: "撤回的纯文字消息")
+        try QueuedMessageStore.save([item], for: "bot-a", under: queuedRoot)
+
+        // Crash BEFORE atomic draft file lands: draft is absent, queue item stays intact.
+        XCTAssertNil(QueuedMessageStore.loadTextDraft(for: "bot-a", under: draftsRoot))
+        let beforeWrite = QueuedMessageStore.deduplicated(
+            QueuedMessageStore.loadAll(from: queuedRoot)["bot-a"] ?? [],
+            persistedInChat: [],
+            persistedInDraftText: Set(QueuedMessageStore.loadTextDraft(for: "bot-a", under: draftsRoot)?.queuedIds ?? [])
+        )
+        XCTAssertEqual(beforeWrite, [item])
+
+        // Crash RIGHT AFTER atomic draft file writes, BEFORE queue item is removed:
+        // restart reads both text and queuedIds from the atomic draft file and deduplicates the queue cleanly.
+        try QueuedMessageStore.saveTextDraft(StoredTextDraft(text: item.text, queuedIds: [item.id]), for: "bot-a", under: draftsRoot)
+        let loadedDraft = try XCTUnwrap(QueuedMessageStore.loadTextDraft(for: "bot-a", under: draftsRoot))
+        XCTAssertEqual(loadedDraft.text, "撤回的纯文字消息")
+        XCTAssertEqual(loadedDraft.queuedIds, [item.id])
+
+        let afterWrite = QueuedMessageStore.deduplicated(
+            QueuedMessageStore.loadAll(from: queuedRoot)["bot-a"] ?? [],
+            persistedInChat: [],
+            persistedInDraftText: Set(loadedDraft.queuedIds)
+        )
+        XCTAssertTrue(afterWrite.isEmpty)
+    }
+
+    func testRestoreOldBackupOfSameCompanionIsolatesMismatchedQueueAndExportsReadableCopy() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        let quarantineRoot = root.appendingPathComponent("ClioQueuedIsolated", isDirectory: true)
+        let exportRoot = root.appendingPathComponent("Export", isDirectory: true)
+
+        // Conversation B on bot-alpha queues a message with photo, bound to B's entry IDs.
+        let photo = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02])
+        let itemFromB = StoredQueuedMessage(text: "发给 B 对话的敏感内容", photos: [photo])
+        let anchorB = ConversationAnchor.from(entryIds: ["b1", "b2"])
+        try QueuedMessageStore.save([itemFromB], for: "bot-alpha", anchor: anchorB, under: queuedRoot)
+
+        // Same conversation continuing normally (b3 appended) still matches anchor B.
+        let loaded = try XCTUnwrap(QueuedMessageStore.loadAllSlots(from: queuedRoot)["bot-alpha"])
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: true,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: loaded.anchor,
+                chatEntryIds: ["b1", "b2", "b3"]
+            ),
+            .restore
+        )
+
+        // Restoring an older backup of the same companion replaces chat with conversation A ([a1, a2]) -> mismatch!
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: true,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: loaded.anchor,
+                chatEntryIds: ["a1", "a2"]
+            ),
+            .isolateMismatched
+        )
+
+        // Restoring an older snapshot of the same conversation ([b1], before b2 existed) also mismatches!
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: true,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: loaded.anchor,
+                chatEntryIds: ["b1"]
+            ),
+            .isolateMismatched
+        )
+
+        // Isolating moves B's queue out of active ClioQueued so it cannot auto-send in A, and exports a readable copy.
+        let count = QueuedMessageStore.isolateSlot(
+            "bot-alpha",
+            from: queuedRoot,
+            to: quarantineRoot,
+            readableExportRoot: exportRoot
+        )
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(QueuedMessageStore.loadAll(from: queuedRoot).isEmpty)
+
+        // Verify quarantine copy and readable export both exist with text + photo preserved.
+        let exportFolders = try FileManager.default.contentsOfDirectory(at: exportRoot, includingPropertiesForKeys: nil)
+        XCTAssertEqual(exportFolders.count, 1)
+        let exportedMarkdown = try String(contentsOf: exportFolders[0].appendingPathComponent("bot-alpha.md"), encoding: .utf8)
+        XCTAssertTrue(exportedMarkdown.contains("发给 B 对话的敏感内容"))
+        let exportedPhoto = try Data(contentsOf: exportFolders[0].appendingPathComponent("bot-alpha-1-1.jpg"))
+        XCTAssertEqual(exportedPhoto, photo)
+    }
 }
