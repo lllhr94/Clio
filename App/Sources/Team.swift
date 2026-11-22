@@ -324,6 +324,7 @@ final class TeamModel: ObservableObject {
     func removeEndpoint(_ id: String) {
         settings.endpoints.removeAll { $0.id == id }
         Vault.remove("key-\(id)")
+        if settings.backupModel?.hasPrefix(id + "/") == true { settings.backupModel = nil }
         if settings.imageModel?.hasPrefix(id + "/") == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(id + "/") == true { settings.memoryModel = nil }
         if resolve(settings.defaultModel) == nil {

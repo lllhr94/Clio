@@ -8,10 +8,7 @@ struct SettingsView: View {
     var startAt: String? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.dynamicTypeSize) private var typeSize
     @AppStorage("look.scheme") private var scheme = "system"
-    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
-    private var accessibilityScale: CGFloat { typeSize.isAccessibilitySize ? textScale : 1 }
 
     @State private var path: [SettingsPage] = []
     @State private var query = ""
@@ -23,10 +20,9 @@ struct SettingsView: View {
     @State private var memoryDraft = ""
     @State private var editingMemory: Memory?
     @State private var memoryText = ""
-    @State private var balance: Balance.Reading?
 
     private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
-        ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models, .image]),
+        ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models]),
         ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .pet, .morning]),
         ("settings.appearance", Ink.Tile.teng, [.theme, .font, .size, .tone]),
         ("settingsHome.chatGroup", Ink.Tile.mo, [.display, .context]),
@@ -140,11 +136,21 @@ struct SettingsView: View {
     private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .services:
-            subpage(page) { services; overview }
+            subpage(page) { services }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            Haptics.light()
+                            open(.add)
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel(L.t("settings.addService"))
+                    }
+                }
         case .models:
-            subpage(page) {
-                defaultModel
-                if !team.models.isEmpty { memoryModel }
+            DefaultModelsPage(team: team) {
+                path.append(.services)
             }
         case .image:
             ImageModelPage(team: team)
@@ -211,10 +217,11 @@ struct SettingsView: View {
     private var services: some View {
         RowCard(note: team.phase == .demo ? L.t("settings.demoData") : nil) {
             ForEach(team.settings.endpoints) { endpoint in
+                let host = URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL
                 NavigationLink {
                     ServicePage(team: team, id: endpoint.id)
                 } label: {
-                    RowLabel(title: endpoint.name, line: URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL) {
+                    RowLabel(title: endpoint.name, line: L.format("settings.providerCountSummary", host, endpoint.models.count)) {
                         ServiceIcon(service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
                     }
                 }
@@ -253,84 +260,6 @@ struct SettingsView: View {
             }
             .buttonStyle(PressStyle())
             .disabled(team.bots.count < 2)
-        }
-    }
-
-    @ViewBuilder
-    private var defaultModel: some View {
-        if !team.models.isEmpty {
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                FieldTitle(text: L.t("settings.defaultModel"))
-                Menu {
-                    ModelChoices(team: team, current: team.settings.defaultModel) { ref in
-                        Haptics.tick(0.6)
-                        team.setDefaultModel(ref)
-                    }
-                } label: {
-                    HStack {
-                        Image(systemName: "sparkle").foregroundStyle(Ink.accent)
-                        Text(team.modelTitle(team.settings.defaultModel))
-                            .font(.system(size: Ink.Size.body * accessibilityScale, weight: .medium))
-                            .foregroundStyle(Ink.ink)
-                            .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-                    }
-                    .paperField(height: typeSize.isAccessibilitySize ? nil : 50)
-                }
-                Menu {
-                    Button {
-                        Haptics.tick(0.6)
-                        team.setBackupModel(nil)
-                    } label: {
-                        if team.settings.backupModel == nil { Label(L.t("settings.noBackupModel"), systemImage: "checkmark") } else { Text(L.t("settings.noBackupModel")) }
-                    }
-                    ModelChoices(team: team, current: team.settings.backupModel) { ref in
-                        Haptics.tick(0.6)
-                        team.setBackupModel(ref)
-                    }
-                } label: {
-                    HStack {
-                        Image(systemName: "arrow.triangle.branch").foregroundStyle(Ink.inkSoft)
-                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                            Text(team.settings.backupModel == nil ? L.t("settings.backupModelUnset") : L.format("settings.backupModelSummary", team.modelTitle(team.settings.backupModel)))
-                                .font(.system(size: Ink.Size.sub, weight: .medium))
-                                .foregroundStyle(Ink.ink)
-                            Text(L.t("settings.backupModelNote"))
-                                .font(.system(size: Ink.Size.small))
-                                .foregroundStyle(Ink.inkFaint)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-                    }
-                    .paperField(height: typeSize.isAccessibilitySize ? nil : 50)
-                }
-            }
-        } else {
-            RowCard(note: L.t("settingsHome.noChatModels")) {
-                pageRow(.services, Ink.Tile.dai)
-            }
-        }
-    }
-
-    private var memoryModel: some View {
-        RowCard(note: L.t("memoryReview.modelHelp")) {
-            Menu {
-                Button {
-                    team.setMemoryModel(nil)
-                } label: {
-                    if team.settings.memoryModel == nil {
-                        Label(L.t("settings.defaultModel"), systemImage: "checkmark")
-                    } else {
-                        Text(L.t("settings.defaultModel"))
-                    }
-                }
-                ModelChoices(team: team, current: team.settings.memoryModel) { team.setMemoryModel($0) }
-            } label: {
-                RowLabel("moon.stars", tint: Ink.Tile.dai, title: L.t("memoryReview.model"),
-                         line: team.settings.memoryModel.map { team.modelTitle($0) } ?? L.t("settings.defaultModel"),
-                         end: .none)
-            }
         }
     }
 
@@ -387,37 +316,6 @@ struct SettingsView: View {
             Text(team.memories.isEmpty ? L.t("settings.memoryEmptyNote") : L.format("settingsHome.memoryEditNote", TeamModel.surfaceLimit))
                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
             MemoryReviewHistory(records: team.memoryReviews)
-        }
-    }
-
-    /// The one card on top: the model in use and what is left on its account.
-    @ViewBuilder
-    private var overview: some View {
-        if let found = team.resolve(team.settings.defaultModel) {
-            NavigationLink {
-                ServicePage(team: team, id: found.endpoint.id)
-            } label: {
-                HStack(spacing: Ink.Space.m) {
-                    ModelIcon(model: found.model, service: Service.of(found.endpoint), size: 46, name: found.endpoint.name)
-                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        Text(found.model).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
-                        Text(found.endpoint.name + " · " + found.endpoint.traits(found.model).summary)
-                            .font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                        if let balance {
-                            Text(L.format("settingsHome.balance", balance.shown)).font(Ink.footnote.monospacedDigit()).foregroundStyle(Ink.inkSoft)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Kit.chevron
-                }
-                .padding(Ink.Space.l)
-                .paperCard()
-            }
-            .buttonStyle(PressStyle(haptic: false))
-            .task(id: found.endpoint.id) {
-                balance = nil
-                if Balance.source(baseURL: found.endpoint.baseURL) != nil { balance = try? await team.balance(found.endpoint) }
-            }
         }
     }
 
@@ -527,7 +425,7 @@ private enum SettingsPage: String, Identifiable {
     var keywords: String {
         switch self {
         case .services: "添一家 添加模型服务 密钥 key api deepseek kimi claude openai ollama lm studio 本地 中转"
-        case .models: "默认 备用 换模型 兜底 出错 失败 记忆整理模型 小模型"
+        case .models: "默认 备用 换模型 兜底 出错 失败 记忆整理模型 小模型 画图 绘图 生图 图像 generate_image"
         case .image: "画图 绘图 生图 图像 generate_image"
         case .companions: "人物 角色 改名 头像 性格"
         case .rooms: "群聊 雅集 开一场 成员"
