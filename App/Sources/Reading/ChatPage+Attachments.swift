@@ -1,0 +1,101 @@
+import AVFoundation
+import AgentKit
+import CoreLocation
+import Craft
+import PhotosUI
+import Observation
+import SwiftUI
+import UniformTypeIdentifiers
+import VisionKit
+
+extension ChatPage {
+    // MARK: Attachments
+
+    func bring(_ kind: AttachKind) {
+        switch kind {
+        case .photos: pickerShown = true
+        case .camera: takingPhoto = true
+        case .files: importingFile = true
+        case .desk: deskPicking = true
+        case .scan: scanning = true
+        }
+    }
+
+    /// Keep the pasted text until its attachment is ready and the same draft is still on screen.
+    func keepLongPaste(_ old: String, _ new: String) {
+        pasteTask?.cancel()
+        guard new.utf8.count > DraftInput.pasteLimit else { return }
+        let largeChange = new.utf8.count - old.utf8.count > DraftInput.pasteLimit
+        let revision = attachmentRevision
+        pasteTask = Task {
+            if !largeChange {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            }
+            let worker = Task.detached(priority: .userInitiated) { () -> (URL, String, Int)? in
+                guard let pasted = DraftInput.longInsertion(from: old, to: new), !Task.isCancelled else { return nil }
+                let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+                let stamp = Date().formatted(.iso8601.year().month().day())
+                let id = UUID().uuidString.prefix(8)
+                let file = inbox.appendingPathComponent("粘贴片段-\(stamp)-\(id).txt")
+                do {
+                    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+                    try Data(pasted.utf8).write(to: file, options: .atomic)
+                    return (file, Workspace.relative(file), pasted.count)
+                } catch {
+                    return nil
+                }
+            }
+            let prepared = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let (url, path, count) = prepared else { return }
+            guard !Task.isCancelled, revision == attachmentRevision, draft == new else {
+                _ = await Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: url) }.value
+                return
+            }
+            draft = old
+            withAnimation(Ink.Motion.settle) { files.append(path) }
+            say(L.format("chat.pasteAttached", count, path))
+        }
+    }
+
+    /// Files picked from the Files app land in 书案/收件, and the companion is told where.
+    func receive(_ urls: [URL]) {
+        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            var target = inbox.appendingPathComponent(url.lastPathComponent)
+            var number = 2
+            while FileManager.default.fileExists(atPath: target.path) {
+                let base = url.deletingPathExtension().lastPathComponent
+                let ext = url.pathExtension
+                target = inbox.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                number += 1
+            }
+            do {
+                try FileManager.default.copyItem(at: url, to: target)
+                if target.pathExtension.lowercased() == "pdf", let text = PDFText.extract(target), !text.isEmpty {
+                    try? Data(text.utf8).write(to: target.appendingPathExtension("txt"))
+                }
+                files.append(Workspace.relative(target))
+            } catch {
+                say("没拿到「\(url.lastPathComponent)」：\(error.localizedDescription)")
+            }
+        }
+        if !urls.isEmpty { Haptics.tick(0.6) }
+    }
+
+    /// What goes after the message so the companion knows about the files.
+    var fileNote: String {
+        guard !files.isEmpty else { return "" }
+        let lines = files.map { path -> String in
+            let pdf = path.lowercased().hasSuffix(".pdf") && FileManager.default.fileExists(atPath: (Workspace.resolve(path + ".txt")?.path ?? ""))
+            return "- 书案/\(path)" + (pdf ? "（PDF：用 read_pdf 按页读；文字也抽出到了 \(path).txt）" : "")
+        }
+        return "\n\n［我放进书案的文件（书案路径；斗室里是 /root/desk 下同名路径），可以用 read_file 读、read_pdf 读 PDF、view_image 看图，或用 shell 处理：\n" + lines.joined(separator: "\n") + "］"
+    }
+}

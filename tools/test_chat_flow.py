@@ -22,23 +22,36 @@ def member(path: Path, name: str) -> str:
     return extract(path, rf"^    (?:private )?(?:static )?func {name}\([^\n]*\{{\n.*?^    \}}", name)
 
 
+def chat_part(pattern: str, label: str) -> str:
+    """The chat page is split across ChatPage.swift and its ChatPage+*.swift extensions: find the one file with it."""
+    files = sorted(READING.glob("ChatPage*.swift"))
+    found = [path for path in files if re.search(pattern, path.read_text(), flags=re.MULTILINE | re.DOTALL)]
+    if len(found) != 1:
+        raise SystemExit(f"ChatPage: expected {label} in exactly one file, found {len(found)}")
+    return extract(found[0], pattern, label)
+
+
+def chat_member(name: str) -> str:
+    return chat_part(rf"^    (?:private )?(?:static )?func {name}\([^\n]*\{{\n.*?^    \}}", name)
+
+
 def fixture() -> str:
     chat = READING / "ChatPage.swift"
-    phase = extract(chat, r"^            \.onScrollPhaseChange \{ old, phase, context in\n.*?^            \}", "scroll-phase callback")
+    phase = chat_part(r"^            \.onScrollPhaseChange \{ old, phase, context in\n.*?^            \}", "scroll-phase callback")
     phase_body = "\n".join(phase.splitlines()[1:-1])
     # Keep the source's Task and cancellation checks. Substitute only the sleep
     # call so tests can advance each delay without racing the runner's clock.
-    schedule, sleeps = re.subn(r"\bTask\.sleep\(", "clock.sleep(", member(chat, "followToEnd"))
+    schedule, sleeps = re.subn(r"\bTask\.sleep\(", "clock.sleep(", chat_member("followToEnd"))
     if sleeps != 1:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     fragments = {
         "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
         "DRAFT_INPUT": extract(chat, r"^enum DraftInput \{\n.*?^\}", "draft rules"),
-        "BELOW": member(chat, "below"),
+        "BELOW": chat_member("below"),
         "PHASE": phase_body,
         "FOLLOW": schedule,
-        "CLEAR_COMPOSER": member(chat, "clearComposer"),
+        "CLEAR_COMPOSER": chat_member("clearComposer"),
     }
     for label, source in fragments.items():
         template = template.replace(f"// RULE: {label}\n", source + "\n", 1)
