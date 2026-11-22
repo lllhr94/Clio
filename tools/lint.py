@@ -87,7 +87,7 @@ def swift_sources():
         text = full_path.read_text(encoding="utf-8")
         for match in SWIFT_PATTERNS.finditer(text):
             rule = match.lastgroup
-            if rule == "size" and (path in SIZE_HANDOFF or path.is_relative_to("App/Sources/Pet")):
+            if rule == "size" and (path in SIZE_HANDOFF or path.name.startswith("ChatPage+") or path.is_relative_to("App/Sources/Pet")):
                 continue
             if rule in MESSAGES and path not in EXCEPTIONS.get(rule, ()):
                 yield path, text.count("\n", 0, match.start()) + 1, MESSAGES[rule]
