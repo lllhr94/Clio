@@ -1,3 +1,4 @@
+import CoreText
 import Observation
 import SwiftUI
 import UIKit
@@ -361,6 +362,23 @@ enum Ink {
     static func uiMono(_ size: CGFloat, bold: Bool = false) -> UIFont {
         if Pref.code == .maple, let font = mapleWithChinese(size, bold: bold) { return font }
         return .monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
+    }
+
+    /// Code blocks use a half-em ASCII cell and the system's natural full-em CJK glyphs.
+    static func codeBlockFonts() -> (narrow: Font, wide: Font) {
+        let size = CGFloat(max(12, Pref.size - 3))
+        let mono = uiMono(size)
+        let native = CTFontCreateWithName(mono.fontName as CFString, size, nil)
+        var zero: UniChar = 48
+        var glyph: CGGlyph = 0
+        guard CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) else {
+            return (Font(mono), .system(size: size))
+        }
+        let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
+        guard advance > 0 else { return (Font(mono), .system(size: size)) }
+        var matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
+        let half = CTFontCreateCopyWithAttributes(native, size, &matrix, nil)
+        return (Font(half), .system(size: size))
     }
 
     /// Maple Mono, with Clio Mono CN behind it for Chinese: every Chinese character exactly two letters wide, so

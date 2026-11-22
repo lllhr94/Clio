@@ -396,7 +396,7 @@ private struct CodeBlock: View {
             // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
             // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
             ScrollView(.horizontal) {
-                Text(isOutput ? AttributedString(shown) : Highlight.code(shown, language: language))
+                Text(isOutput ? Highlight.output(shown) : Highlight.code(shown, language: language))
                     .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                     .font(Ink.code)
                     // Close lines, as in a terminal: rows of output and code read as columns.
@@ -578,7 +578,49 @@ enum Highlight {
         }
     }
 
+    static func output(_ text: String) -> AttributedString {
+        let fonts = Ink.codeBlockFonts()
+        var result = AttributedString()
+        append(text[...], fonts: fonts, to: &result)
+        return result
+    }
+
+    private static func wide(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
+             0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func append(_ text: Substring, fonts: (narrow: Font, wide: Font),
+                               color: Color? = nil, italic: Bool = false, to result: inout AttributedString) {
+        guard let first = text.first else { return }
+        var isWide = wide(first)
+        var start = text.startIndex
+        func flush(upTo end: String.Index, into result: inout AttributedString) {
+            var part = AttributedString(String(text[start..<end]))
+            let face = isWide ? fonts.wide : fonts.narrow
+            part.font = italic ? face.italic() : face
+            part.foregroundColor = color
+            result += part
+        }
+        for index in text.indices.dropFirst() {
+            let next = wide(text[index])
+            if next != isWide {
+                flush(upTo: index, into: &result)
+                start = index
+                isWide = next
+            }
+        }
+        flush(upTo: text.endIndex, into: &result)
+    }
+
     static func code(_ text: String, language: String) -> AttributedString {
+        let fonts = Ink.codeBlockFonts()
         var out = AttributedString()
         var index = text.startIndex
         var start = index
@@ -586,10 +628,7 @@ enum Highlight {
         let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(language.lowercased())
         func flush(upTo end: String.Index) {
             guard start < end else { return }
-            var part = AttributedString(String(text[start..<end]))
-            part.foregroundColor = style.color
-            if style == .comment { part.font = Ink.mono(max(12, Pref.size - 3)).italic() }
-            out += part
+            append(text[start..<end], fonts: fonts, color: style.color, italic: style == .comment, to: &out)
         }
         while index < text.endIndex {
             let rest = text[index...]

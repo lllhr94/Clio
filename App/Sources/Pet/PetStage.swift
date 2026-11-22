@@ -70,8 +70,13 @@ struct PetStage: View {
                 let margin = min(width / 2, figureWidth / 2 + Ink.Space.page)
                 // It never stands under the jump buttons while they show (they would be hidden and untappable).
                 let right = max(margin, width - margin - perch.keepOutRight)
-                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, margin), right)
                 let foot = foot(in: height, stand: stand)
+                let buttons = perch.replyActions
+                let overlaps = !buttons.isNull && buttons.minY < foot && buttons.maxY > foot - stand
+                let left = overlaps && !dragging
+                    ? min(right, max(margin, buttons.maxX - perch.chatOffset + figureWidth / 2 + Ink.Space.xs))
+                    : margin
+                let x = min(max(margin + (width - margin * 2) * restX + wander + drag, left), right)
                 ZStack(alignment: .topLeading) {
                     pet(pack, unit: unit, width: figureWidth, stand: stand)
                         .simultaneousGesture(dragGesture(width: width, height: height, margin: margin, foot: foot, stand: stand))
