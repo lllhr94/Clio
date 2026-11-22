@@ -81,29 +81,29 @@ final class TeamModel: ObservableObject {
         case demo
     }
 
-    @Published private(set) var phase: Phase = .setup
-    @Published private(set) var loading = true
-    private var startup: Task<InitialData, Never>?
-    @Published private(set) var bots: [BotInfo] = []
-    @Published private(set) var rooms: [RoomInfo] = []
-    @Published private(set) var approvals: [Approval] = []
-    @Published private(set) var questions: [String: Question] = [:]
-    @Published private(set) var memories: [Memory] = []
-    @Published private(set) var memoryReviews: [MemoryReviewLog] = []
-    private var memoryBook = MemoryBook()
-    private var reviewingMemory = false
-    private var memoryReviewAttempts: [String: Date] = [:]
-    private var cleanReviewTails: [String: ReviewTail] = [:]
-    private var diaryReviewAttempt: Date?
-    @Published private(set) var settings = TeamSettings()
+    @Published var phase: Phase = .setup
+    @Published var loading = true
+    var startup: Task<InitialData, Never>?
+    @Published var bots: [BotInfo] = []
+    @Published var rooms: [RoomInfo] = []
+    @Published var approvals: [Approval] = []
+    @Published var questions: [String: Question] = [:]
+    @Published var memories: [Memory] = []
+    @Published var memoryReviews: [MemoryReviewLog] = []
+    var memoryBook = MemoryBook()
+    var reviewingMemory = false
+    var memoryReviewAttempts: [String: Date] = [:]
+    var cleanReviewTails: [String: ReviewTail] = [:]
+    var diaryReviewAttempt: Date?
+    @Published var settings = TeamSettings()
     /// What each chat's Bot is doing now, by chat key.
     /// How the last answer in each conversation came back short, if it did (cleared at each turn's start).
-    private var cutShort: [String: CutShort] = [:]
+    var cutShort: [String: CutShort] = [:]
     /// Goes up each time a conversation's page is replaced (cleared, put aside, another brought back). A turn
     /// remembers the number it started with, and anything it says after the number has moved is dropped, so a
     /// stopped turn's last words cannot land in the new page (the review, #16).
-    private var epochs: [String: Int] = [:]
-    @Published private(set) var doing: [String: String] = [:] {
+    var epochs: [String: Int] = [:]
+    @Published var doing: [String: String] = [:] {
         // The 掉帧记录仪 notes what the companions were doing when a frame ran long.
         didSet {
             Hitches.shared.doing(doing.values.sorted().first.map { "旅伴：" + $0 }, as: "work")
@@ -111,18 +111,18 @@ final class TeamModel: ObservableObject {
         }
     }
     /// Bots speaking in a group right now.
-    @Published private(set) var busyBots: Set<String> = []
+    @Published var busyBots: Set<String> = []
 
-    private var entries: [String: [Entry]] = [:]
-    private var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
-    private var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
-    private var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
-    @Published private var laters: [Later] = []
+    var entries: [String: [Entry]] = [:]
+    var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
+    var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
+    var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
+    @Published var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
-    private var heard: [String: Date] = [:]
-    private var pulseSplitters: [String: PulseSplitter] = [:]
+    var heard: [String: Date] = [:]
+    var pulseSplitters: [String: PulseSplitter] = [:]
     /// The steps a companion laid out for the task in hand (update_plan), per conversation.
-    @Published private(set) var plans: [String: [PlanStep]] = [:]
+    @Published var plans: [String: [PlanStep]] = [:]
 
     struct PlanStep: Equatable, Sendable {
         var text: String
@@ -131,7 +131,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// 连接器推荐: the connectors not yet connected, so a companion can say which one would help.
-    private var connectorHint: String {
+    var connectorHint: String {
         let on = UserDefaults.standard.object(forKey: "connectors.suggest") as? Bool ?? true
         guard on else { return "" }
         let linked = Set(Hills.shared.servers.compactMap(\.connector))
@@ -194,12 +194,12 @@ final class TeamModel: ObservableObject {
     /// Tools used in the turn running now, per conversation (for the bar above the composer).
     @Published var toolCount: [String: Int] = [:]
     /// 定时: what companions do again and again at set times.
-    @Published private(set) var routines: [Routine] = []
+    @Published var routines: [Routine] = []
     /// 远游: the one browser every companion shares with the user.
     let browser = BrowserSession()
-    private var labels: [String: String] = [:]
+    var labels: [String: String] = [:]
     /// Tokens the model has written in the turn running in each chat.
-    private var written: [String: Int] = [:]
+    var written: [String: Int] = [:]
 
     init() {
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
@@ -231,861 +231,6 @@ final class TeamModel: ObservableObject {
 
     func isWorking(_ key: String) -> Bool { doing[key] != nil }
 
-    // MARK: Keeping
-
-    private struct InitialData: Sendable {
-        let settings: TeamSettings
-        let bots: [BotInfo]
-        let rooms: [RoomInfo]
-        let memory: MemoryBook
-        let laters: [Later]
-        let routines: [Routine]
-
-        nonisolated static func read() -> Self {
-            Self(
-                settings: Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings(),
-                bots: Disk.load([BotInfo].self, "bots.json") ?? [],
-                rooms: Disk.load([RoomInfo].self, "rooms.json") ?? [],
-                memory: Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? []),
-                laters: Disk.load([Later].self, "later.json") ?? [],
-                routines: Disk.load([Routine].self, "routines.json") ?? []
-            )
-        }
-    }
-
-    func prepare() async {
-        guard let startup else { return }
-        let data = await startup.value
-        guard loading else { return }
-        load(data)
-        startupCompleted()
-    }
-
-    private func startupCompleted() {
-        startup = nil
-        loading = false
-    }
-
-    private func load(_ data: InitialData) {
-        settings = data.settings
-        if Self.settle(&settings) { saveSettings() }
-        bots = data.bots
-        rooms = data.rooms
-        memoryBook = data.memory
-        memories = memoryBook.memories
-        memoryReviews = memoryBook.reviews
-        cleanReviewTails = [:]
-        laters = data.laters
-        routines = data.routines
-        entries = [:]
-        approvals = []
-        phase = settings.endpoints.isEmpty ? .setup : .ready
-        sortBots()
-        deliverDue()
-    }
-
-    private var keeping: Bool { phase != .demo }
-    private func saveSettings() { if keeping { Disk.save(settings, "settings.json") } }
-    private func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
-    private func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
-    private func saveMemory() {
-        guard keeping else { return }
-        memoryBook.memories = memories
-        if memoryBook.budgetDay == nil && memoryBook.reviewFromDay == nil { Disk.save(memories, "memory.json") }
-        else { Disk.save(memoryBook, "memory.json") }
-    }
-    private func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
-    private func saveRoutines() { if keeping { Disk.save(routines, "routines.json") } }
-
-    private func sortBots() {
-        let main = mainBotId
-        bots.sort { left, right in
-            if (left.id == main) != (right.id == main) { return left.id == main }
-            return (left.createdAt ?? 0) < (right.createdAt ?? 0)
-        }
-    }
-
-    // MARK: Model services
-
-    func apiKey(for endpoint: String) -> String? { Vault.load(String.self, key: "key-\(endpoint)") }
-
-    func addEndpoint(_ endpoint: Endpoint, key: String) {
-        settings.endpoints.removeAll { $0.id == endpoint.id }
-        settings.endpoints.append(endpoint)
-        Vault.save(key, as: "key-\(endpoint.id)")
-        if resolve(settings.defaultModel) == nil, let pick = Self.preferred(endpoint) {
-            settings.defaultModel = "\(endpoint.id)/\(pick)"
-        }
-        saveSettings()
-        if phase == .setup { phase = .ready }
-        ensureMainBot()
-    }
-
-    func removeEndpoint(_ id: String) {
-        settings.endpoints.removeAll { $0.id == id }
-        Vault.remove("key-\(id)")
-        if settings.backupModel?.hasPrefix(id + "/") == true { settings.backupModel = nil }
-        if settings.imageModel?.hasPrefix(id + "/") == true { settings.imageModel = nil }
-        if settings.memoryModel?.hasPrefix(id + "/") == true { settings.memoryModel = nil }
-        if resolve(settings.defaultModel) == nil {
-            settings.defaultModel = settings.endpoints.first.flatMap { endpoint in Self.preferred(endpoint).map { "\(endpoint.id)/\($0)" } }
-        }
-        saveSettings()
-    }
-
-    /// Asks a service for its models again. Returns how many it listed. Models in use stay in use.
-    @discardableResult
-    func refreshModels(_ id: String) async throws -> Int {
-        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
-        let endpoint = settings.endpoints[index]
-        guard let key = await Vault.readString("key-\(id)"), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
-        let provider = endpoint.provider(key: key)
-        var reported: [String: Int] = [:]
-        let raw: [String]
-        if let openAI = provider as? OpenAIProvider {
-            let catalog = try await openAI.catalog()
-            raw = catalog.ids
-            reported = catalog.windows
-        } else {
-            raw = try await provider.models()
-        }
-        let listed = Self.keep(raw, for: endpoint)
-        storeImageModels(raw, for: endpoint)
-        guard !listed.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
-        guard let again = settings.endpoints.firstIndex(where: { $0.id == id }) else { return listed.count }
-        settings.endpoints[again].listed = listed
-        settings.endpoints[again].windows = reported.isEmpty ? nil : reported
-        if settings.endpoints[again].models.isEmpty { settings.endpoints[again].models = Self.firstPicks(listed, service: Service.of(endpoint)) }
-        saveSettings()
-        return listed.count
-    }
-
-    /// Refreshes a service's images candidates without changing its chat model selection.
-    func refreshImageModels(_ id: String) async throws {
-        guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.kind == .openai }),
-              let key = await Vault.readString("key-\(id)"), !key.isEmpty else {
-            throw TeamError(message: L.t("errors.invalidApiKey"))
-        }
-        let listed = try await endpoint.provider(key: key).models()
-        try Task.checkCancellation()
-        storeImageModels(listed, for: endpoint)
-    }
-
-    private func storeImageModels(_ listed: [String], for endpoint: Endpoint) {
-        guard endpoint.kind == .openai,
-              let index = settings.endpoints.firstIndex(where: { $0.id == endpoint.id && $0.baseURL == endpoint.baseURL }) else { return }
-        settings.endpoints[index].imageModels = listed
-        saveSettings()
-    }
-
-    /// The chat models of what a service listed.
-    static func keep(_ listed: [String], for endpoint: Endpoint) -> [String] {
-        if let service = Service.of(endpoint) { return service.keep(listed) }
-        var models = listed.filter(ModelTraits.isChat)
-        if endpoint.kind == .anthropic { models = models.filter { $0.hasPrefix("claude") } }
-        return models
-    }
-
-    /// Which models of a fresh list go into use: all of a short list; of a long one, the service's suggestions, or a few.
-    static func firstPicks(_ listed: [String], service: Service?) -> [String] {
-        if listed.count <= 12 { return listed }
-        let suggested = (service?.suggested ?? []).filter(listed.contains)
-        if !suggested.isEmpty { return suggested }
-        return Array(listed.prefix(3))
-    }
-
-    /// Puts models into use or out of it.
-    func setModels(_ id: String, _ models: [String]) {
-        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
-        settings.endpoints[index].models = models
-        if resolve(settings.defaultModel) == nil, let pick = Self.preferred(settings.endpoints[index]) {
-            settings.defaultModel = "\(id)/\(pick)"
-        }
-        saveSettings()
-    }
-
-    /// Sets right what a model can do; nil goes back to the guess.
-    func setTraits(_ id: String, model: String, _ traits: ModelTraits?) {
-        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
-        var book = settings.endpoints[index].overrides ?? [:]
-        book[model] = traits
-        settings.endpoints[index].overrides = book.isEmpty ? nil : book
-        saveSettings()
-    }
-
-    /// Changes a service's name, address or thinking style.
-    func editEndpoint(_ id: String, name: String, baseURL: String, style: ThinkingStyle?) {
-        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
-        let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !given.isEmpty { settings.endpoints[index].name = given }
-        let address = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if address.hasPrefix("http") { settings.endpoints[index].baseURL = address }
-        settings.endpoints[index].style = style
-        saveSettings()
-    }
-
-    /// Brings settings kept by an older Clio up to date. True when something changed.
-    static func settle(_ settings: inout TeamSettings) -> Bool {
-        var changed = false
-        for index in settings.endpoints.indices {
-            var endpoint = settings.endpoints[index]
-            if endpoint.service == nil, let service = Service.of(endpoint) {
-                endpoint.service = service.id
-                changed = true
-            }
-            // V4.1 Flash came out after DeepSeek was first set up here, and it is the one that sees.
-            if endpoint.service == "deepseek", !endpoint.allModels.contains("deepseek-flash") {
-                endpoint.models.insert("deepseek-flash", at: 0)
-                changed = true
-            }
-            settings.endpoints[index] = endpoint
-        }
-        return changed
-    }
-
-    func replaceKey(_ id: String, _ key: String) {
-        Vault.save(key, as: "key-\(id)")
-        objectWillChange.send()
-    }
-
-    func editMemory(_ id: String, _ text: String) {
-        guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
-        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if words.isEmpty {
-            deleteMemory(id)
-            return
-        } else {
-            memories[index].text = words
-            memories[index].editedByUser = true
-        }
-        saveMemory()
-    }
-
-    func setDefaultModel(_ ref: String) {
-        settings.defaultModel = ref
-        saveSettings()
-    }
-
-    func setBackupModel(_ ref: String?) {
-        settings.backupModel = ref
-        saveSettings()
-    }
-
-    func setMemoryModel(_ ref: String?) {
-        settings.memoryModel = ref
-        saveSettings()
-    }
-
-    var imageModelSelection: (endpoint: Endpoint, model: String)? {
-        guard let selected = resolve(settings.imageModel), selected.endpoint.kind == .openai else { return nil }
-        return selected
-    }
-
-    func setImageModel(_ ref: String?) {
-        if let ref {
-            guard let selected = resolve(ref), selected.endpoint.kind == .openai else { return }
-        }
-        settings.imageModel = ref
-        saveSettings()
-    }
-
-    static func preferred(_ endpoint: Endpoint) -> String? {
-        endpoint.models.first { $0 == "deepseek-flash" }
-            ?? endpoint.models.first { $0 == "deepseek-v4-flash" }
-            ?? endpoint.models.first { $0 == "deepseek-chat" }
-            ?? endpoint.models.first { $0.contains("sonnet") }
-            ?? endpoint.models.first
-    }
-
-    /// The service and model a ref names; nil when it names none that is set up.
-    func resolve(_ ref: String?) -> (endpoint: Endpoint, model: String)? {
-        guard let ref, let slash = ref.firstIndex(of: "/") else { return nil }
-        let id = String(ref[..<slash])
-        let model = String(ref[ref.index(after: slash)...])
-        guard let endpoint = settings.endpoints.first(where: { $0.id == id }), !model.isEmpty else { return nil }
-        return (endpoint, model)
-    }
-
-    func modelTitle(_ ref: String?) -> String {
-        guard let found = resolve(ref) else { return "没有设置" }
-        return "\(found.model) · \(found.endpoint.name)"
-    }
-
-    /// Just the model, without a relay's routing prefix ("auto/deepseek-v4.1-flash" reads as "deepseek-v4.1-flash"),
-    /// for places too narrow for the whole name.
-    func modelShort(_ ref: String?) -> String {
-        guard let found = resolve(ref) else { return "没有设置" }
-        return found.model.split(separator: "/").last.map(String.init) ?? found.model
-    }
-
-    // MARK: Bots and groups
-
-    private func ensureMainBot() {
-        guard bots.isEmpty else { return }
-        bots = [BotInfo(id: UUID().uuidString, name: "团子", role: "你的贴身助理", color: "orange", main: true,
-                        instructions: "温柔、机灵，有点小调皮。记性很好，会主动关心用户。", createdAt: Now.ms)]
-        settings.mainBotId = bots[0].id
-        saveSettings()
-        saveBots()
-    }
-
-    /// Saves a companion and returns its id. `avatar`: nil leaves it as it is, "" goes back to the default pet.
-    @discardableResult
-    func saveBot(id: String?, name: String, role: String, color: String, model: String? = nil, instructions: String? = nil,
-                 avatar: String? = nil, temper: String? = nil, style: String? = nil, seal: String? = nil) async throws -> String {
-        let saved: String
-        if let id, let index = bots.firstIndex(where: { $0.id == id }) {
-            bots[index].name = name
-            bots[index].role = role
-            bots[index].color = color
-            if let model { bots[index].model = model.isEmpty ? nil : model }
-            if let instructions { bots[index].instructions = instructions }
-            if let avatar { bots[index].avatar = avatar.isEmpty ? nil : avatar }
-            if let temper { bots[index].temper = temper.isEmpty ? nil : temper }
-            if let style { bots[index].style = style.isEmpty ? nil : style }
-            if let seal { bots[index].seal = seal.isEmpty ? nil : seal }
-            saved = id
-        } else {
-            saved = UUID().uuidString
-            bots.append(BotInfo(id: saved, name: name, role: role, color: color, instructions: instructions,
-                                model: model?.isEmpty == false ? model : nil, createdAt: Now.ms,
-                                temper: temper?.isEmpty == false ? temper : nil, style: style?.isEmpty == false ? style : nil,
-                                seal: seal?.isEmpty == false ? seal : nil,
-                                avatar: avatar?.isEmpty == false ? avatar : nil))
-        }
-        withAnimation(.smooth(duration: 0.35)) { sortBots() }
-        saveBots()
-        return saved
-    }
-
-    func deleteBot(_ id: String) async throws {
-        guard bots.count > 1 else { throw TeamError(message: "至少要留一个 Bot。") }
-        stop(Self.key(bot: id))
-        Avatars.forget(id)
-        withAnimation(.smooth(duration: 0.35)) {
-            bots.removeAll { $0.id == id }
-            for index in rooms.indices { rooms[index].members?.removeAll { $0 == id } }
-        }
-        if settings.mainBotId == id {
-            settings.mainBotId = bots.first?.id
-            saveSettings()
-        }
-        if threadLabels[Self.key(bot: id)] != nil { setThreadLabel("", for: Self.key(bot: id)) }
-        let key = Self.key(bot: id)
-        // What it was set to do later goes with it: no routine or message fires for a companion that is gone.
-        for routine in routines where routine.botId == id { removeRoutine(routine.id) }
-        let letters = laters.filter { $0.botId == id || $0.chat == key }
-        if !letters.isEmpty {
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: letters.map(\.id))
-            laters.removeAll { item in letters.contains { $0.id == item.id } }
-            saveLaters()
-        }
-        // And its conversation's other files: leaves put aside, the 前情提要, settings, copies kept for 「重来」.
-        if keeping {
-            for leaf in leaves(key) {
-                Disk.remove(Self.leafFile(key, leaf.id))
-                Disk.remove(Self.leafSummary(key, leaf.id))
-            }
-            Disk.remove(Self.leafList(key))
-            Disk.remove(Self.summaryFile(key))
-            Disk.remove(Self.optionsFile(key))
-        }
-        leafBook[key] = nil
-        optionBook[key] = nil
-        Snapshots.shared.forget(key)
-        entries[key] = nil
-        if keeping { ChatDisk.remove(key) }
-        saveBots()
-        saveRooms()
-    }
-
-    @discardableResult
-    func createRoom(name: String, members: [String]) -> RoomInfo {
-        let room = RoomInfo(id: UUID().uuidString, name: name, members: members, lastAt: Now.ms)
-        withAnimation(.smooth(duration: 0.35)) { rooms.insert(room, at: 0) }
-        saveRooms()
-        return room
-    }
-
-    func updateRoom(_ id: String, name: String, members: [String]) {
-        guard let index = rooms.firstIndex(where: { $0.id == id }) else { return }
-        rooms[index].name = name
-        rooms[index].members = members
-        saveRooms()
-    }
-
-    func deleteRoom(_ id: String) {
-        stop(Self.key(room: id))
-        withAnimation(.smooth(duration: 0.35)) { rooms.removeAll { $0.id == id } }
-        if threadLabels[Self.key(room: id)] != nil { setThreadLabel("", for: Self.key(room: id)) }
-        let key = Self.key(room: id)
-        let letters = laters.filter { $0.chat == key }
-        if !letters.isEmpty {
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: letters.map(\.id))
-            laters.removeAll { $0.chat == key }
-            saveLaters()
-        }
-        if keeping {
-            for leaf in leaves(key) {
-                Disk.remove(Self.leafFile(key, leaf.id))
-                Disk.remove(Self.leafSummary(key, leaf.id))
-            }
-            Disk.remove(Self.leafList(key))
-            Disk.remove(Self.summaryFile(key))
-            Disk.remove(Self.optionsFile(key))
-        }
-        leafBook[key] = nil
-        optionBook[key] = nil
-        Snapshots.shared.forget(key)
-        entries[key] = nil
-        if keeping { ChatDisk.remove(key) }
-        saveRooms()
-    }
-
-    /// What a Bot is up to, in a few words, and the color of its light.
-    func status(of bot: BotInfo) -> (text: String, light: Color) {
-        if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Ink.warn) }
-        if doing[Self.key(bot: bot.id)] != nil || busyBots.contains(bot.id) { return ("正在干活", Ink.accent) }
-        if phase == .ready, resolve(bot.model ?? settings.defaultModel) == nil { return ("还没有模型", Ink.stop) }
-        return ("空闲", Ink.ok)
-    }
-
-    // MARK: Memory
-
-    /// How many things stay in every conversation; older ones sink into 旧事.
-    static let surfaceLimit = 40
-
-    var surfaceMemories: [Memory] { memories.filter { $0.deep != true } }
-    var deepMemories: [Memory] { memories.filter { $0.deep == true } }
-
-    @discardableResult
-    func remember(_ fact: String, by bot: String?) -> String? {
-        let added: String?
-        if let index = memories.firstIndex(where: { $0.text == fact }) {
-            added = nil
-            memories[index].deep = nil
-            memories[index].used = Now.ms
-            if bot == nil { memories[index].editedByUser = true }
-        } else {
-            let id = UUID().uuidString
-            memories.append(Memory(id: id, text: fact, at: Now.ms, by: bot, used: Now.ms))
-            added = id
-        }
-        settleMemory()
-        saveMemory()
-        return added
-    }
-
-    /// Keeps the surface small: the least recently used things sink first.
-    private func settleMemory() {
-        Self.settleMemory(&memories)
-    }
-
-    private static func settleMemory(_ memories: inout [Memory]) {
-        let surface = memories.filter { $0.deep != true }.sorted { ($0.used ?? $0.at) < ($1.used ?? $1.at) }
-        guard surface.count > Self.surfaceLimit else { return }
-        let sinking = Set(surface.prefix(surface.count - Self.surfaceLimit).map(\.id))
-        for index in memories.indices where sinking.contains(memories[index].id) { memories[index].deep = true }
-    }
-
-    /// Looks through everything kept, deep or not, for what matches the words. What is found comes back to the surface.
-    func recall(_ words: String) -> [String] {
-        let query = words.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return [] }
-        var terms = query.split(whereSeparator: { $0.isWhitespace || "，,、。".contains($0) }).map(String.init)
-        // Chinese has no spaces: also try every two-character piece of a long term.
-        for term in terms where term.count > 2 {
-            let chars = Array(term)
-            for i in 0..<(chars.count - 1) { terms.append(String(chars[i...i + 1])) }
-        }
-        let scored = memories.map { memory -> (Memory, Int) in
-            let text = memory.text.lowercased()
-            return (memory, terms.reduce(0) { $0 + (text.contains($1) ? ($1.count > 2 ? 3 : 1) : 0) })
-        }
-        .filter { $0.1 > 0 }
-        .sorted { $0.1 > $1.1 }
-        .prefix(8)
-        let found = Set(scored.map(\.0.id))
-        for index in memories.indices where found.contains(memories[index].id) {
-            memories[index].deep = nil
-            memories[index].used = Now.ms
-        }
-        if !found.isEmpty {
-            settleMemory()
-            saveMemory()
-        }
-        return scored.map(\.0.text)
-    }
-
-    func setDeep(_ id: String, _ deep: Bool) {
-        guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
-        memories[index].deep = deep ? true : nil
-        memories[index].used = Now.ms
-        if !deep { settleMemory() }
-        saveMemory()
-    }
-
-    func forget(about words: String) -> [String] {
-        let needle = words.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return [] }
-        let gone = memories.filter { $0.text.localizedCaseInsensitiveContains(needle) }
-        memories.removeAll { gone.contains($0) }
-        removeReviewDetails(Set(gone.map(\.id)))
-        saveMemory()
-        return gone.map(\.text)
-    }
-
-    /// Takes back one thing a companion wrote into 拾遗 (from its step in the trace).
-    @discardableResult
-    /// 撤回 under a turn: only what a companion wrote and you have not touched; your own entries are never taken.
-    func unremember(_ id: String, fact: String) -> Bool {
-        guard let memory = memories.first(where: { $0.id == id }),
-              memory.text == fact, memory.by != nil, memory.editedByUser != true else { return false }
-        deleteMemory(id)
-        return true
-    }
-
-    func deleteMemory(_ id: String) {
-        memories.removeAll { $0.id == id }
-        removeReviewDetails([id])
-        saveMemory()
-    }
-
-    private func removeReviewDetails(_ ids: Set<String>) {
-        for index in memoryBook.reviews.indices {
-            memoryBook.reviews[index].added.removeAll { ids.contains($0.memoryID) }
-            memoryBook.reviews[index].merged.removeAll { ids.contains($0.memoryID) }
-        }
-        memoryReviews = memoryBook.reviews
-    }
-
-    // MARK: Chats
-
-    func history(_ key: String) -> [Entry] {
-        if let kept = entries[key] { return kept }
-        let loaded = keeping ? Disk.loadChat(key) : []
-        entries[key] = loaded
-        return loaded
-    }
-
-    func loadHistory(_ key: String) async -> [Entry] {
-        if let kept = entries[key] { return kept }
-        guard keeping else { return [] }
-        let loaded = await Task.detached(priority: .userInitiated) {
-            Disk.loadChat(key)
-        }.value
-        if let newer = entries[key] { return newer }
-        if !Task.isCancelled { entries[key] = loaded }
-        return loaded
-    }
-
-    // MARK: Archive
-
-    /// Conversations put away from the desk's list. Speaking in one brings it back.
-    @Published private(set) var archived: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "desk.archived") ?? [])
-    @Published private(set) var threadLabels: [String: String] = UserDefaults.standard.dictionary(forKey: "desk.threadLabels") as? [String: String] ?? [:]
-
-    func setThreadLabel(_ label: String, for key: String) {
-        threadLabels[key] = label.isEmpty ? nil : label
-        UserDefaults.standard.set(threadLabels, forKey: "desk.threadLabels")
-    }
-
-
-    /// Conversations kept at the top of the list, in the order they were pinned.
-    @Published private(set) var pinned: [String] = UserDefaults.standard.stringArray(forKey: "desk.pinned") ?? []
-
-    func pin(_ key: String, _ on: Bool) {
-        if on { if !pinned.contains(key) { pinned.append(key) } } else { pinned.removeAll { $0 == key } }
-        UserDefaults.standard.set(pinned, forKey: "desk.pinned")
-        Haptics.tick(0.5)
-    }
-
-    func archive(_ key: String, _ on: Bool) {
-        if on { archived.insert(key) } else { archived.remove(key) }
-        UserDefaults.standard.set(Array(archived), forKey: "desk.archived")
-    }
-
-    // MARK: This conversation's own settings
-
-    /// What the user set for one conversation only: abilities switched off, and a model of its own.
-    struct ChatOptions: Codable, Equatable {
-        /// `Grant` names turned off in this conversation.
-        var off: [String] = []
-        /// `endpointId/modelId`; nil follows the companion.
-        var model: String?
-        /// Where the work happens (`WorkPlace.code`); nil is 书案.
-        var place: String?
-        /// The current conversation's title, written by the model after the first exchange (12 characters at most).
-        var title: String?
-        /// Tokens this conversation has used, as the services reported them (counted from 0.27 on).
-        var spend: Spend?
-        /// How hard the model thinks here; nil: the model's own default.
-        var thinking: Thinking?
-
-        var web: Bool { !off.contains(Grant.web.rawValue) && !off.contains(Grant.browser.rawValue) }
-    }
-
-    private var optionBook: [String: ChatOptions] = [:]
-    private static func optionsFile(_ key: String) -> String { "chats/\(key)~options.json" }
-
-    func options(_ key: String) -> ChatOptions {
-        if let kept = optionBook[key] { return kept }
-        let loaded = keeping ? (Disk.load(ChatOptions.self, Self.optionsFile(key)) ?? ChatOptions()) : ChatOptions()
-        optionBook[key] = loaded
-        return loaded
-    }
-
-    /// What every conversation has used, biggest first: 「团子 · 1.2M 输入 · 80K 输出」.
-    func allSpend() -> [(name: String, spend: Spend)] {
-        let keys = bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) }
-        return keys.compactMap { key in
-            guard let spend = options(key).spend, spend.input + spend.output > 0 else { return nil }
-            return (chatName(key), spend)
-        }
-        .sorted { $0.spend.input + $0.spend.output > $1.spend.input + $1.spend.output }
-    }
-
-    func setOptions(_ key: String, _ value: ChatOptions) {
-        objectWillChange.send()
-        optionBook[key] = value
-        if keeping { Disk.save(value, Self.optionsFile(key)) }
-    }
-
-    /// Switches one ability on or off for this conversation.
-    func setAbility(_ grant: Grant, on: Bool, in key: String) {
-        var value = options(key)
-        value.off.removeAll { $0 == grant.rawValue }
-        if !on { value.off.append(grant.rawValue) }
-        setOptions(key, value)
-    }
-
-    /// 联网: searching, reading pages and 远游 together.
-    func setWeb(_ on: Bool, in key: String) {
-        var value = options(key)
-        value.off.removeAll { $0 == Grant.web.rawValue || $0 == Grant.browser.rawValue }
-        if !on { value.off += [Grant.web.rawValue, Grant.browser.rawValue] }
-        setOptions(key, value)
-    }
-
-    func setModel(_ ref: String?, in key: String) {
-        var value = options(key)
-        value.model = ref
-        setOptions(key, value)
-    }
-
-    func setPlace(_ place: WorkPlace, in key: String) {
-        var value = options(key)
-        value.place = place.code
-        setOptions(key, value)
-    }
-
-    func place(of key: String) -> WorkPlace { WorkPlace(code: options(key).place) }
-
-    /// The model this conversation will use.
-    func model(for key: String, bot: BotInfo) -> String? { options(key).model ?? bot.model ?? settings.defaultModel }
-
-    func setThinking(_ level: Thinking?, in key: String) {
-        var value = options(key)
-        value.thinking = level == .auto ? nil : level
-        setOptions(key, value)
-    }
-
-    /// The service and model a chat would use now, with what the model can do.
-    func current(_ key: String, bot: BotInfo) -> (endpoint: Endpoint, model: String, traits: ModelTraits)? {
-        guard let found = resolve(model(for: key, bot: bot)) ?? resolve(settings.defaultModel) else { return nil }
-        return (found.endpoint, found.model, found.endpoint.traits(found.model))
-    }
-
-    private func offBlock(_ key: String) -> String {
-        let off = options(key).off.compactMap(Grant.init(rawValue:))
-        guard !off.isEmpty else { return "" }
-        return "\n\n在这段絮语里，用户关掉了这些本事：" + off.map(\.title).joined(separator: "、") + "。需要用到时，告诉用户可以在输入框下的「本事」里打开，不要假装做了。"
-    }
-
-    // MARK: Searching
-
-    struct Hit: Identifiable, Sendable {
-        let id = UUID()
-        var key: String
-        var name: String
-        var snippet: String
-        var at: Double
-        /// In a leaf put aside, not the conversation now.
-        var leaf: String?
-    }
-
-    /// Finds the words in every conversation, now and put aside. Newest first. The reading and matching happen off
-    /// the main thread, and conversations not open are read for this search only, not kept in memory.
-    func search(_ words: String) async -> [Hit] {
-        let needle = words.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard needle.count >= 1 else { return [] }
-        var chats: [(String, String)] = bots.map { (Self.key(bot: $0.id), $0.name) }
-        chats += rooms.map { (Self.key(room: $0.id), $0.name) }
-        let keeping = self.keeping
-        let sources = chats.map { key, name in
-            (key: key, name: name, open: entries[key], leaves: leaves(key).map { (id: $0.id, title: $0.title, at: $0.at) })
-        }
-        return await Task.detached(priority: .userInitiated) {
-            var hits: [Hit] = []
-            func scan(_ list: [Entry], key: String, name: String, leaf: String?) {
-                for entry in list.reversed() where entry.note != true && entry.message.role != .tool {
-                    if Task.isCancelled || hits.count > 200 { return }
-                    let text = entry.message.text
-                    guard let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
-                    let start = text.index(range.lowerBound, offsetBy: -24, limitedBy: text.startIndex) ?? text.startIndex
-                    let end = text.index(range.upperBound, offsetBy: 60, limitedBy: text.endIndex) ?? text.endIndex
-                    let snippet = (start == text.startIndex ? "" : "…") + text[start..<end].replacingOccurrences(of: "\n", with: " ") + (end == text.endIndex ? "" : "…")
-                    hits.append(Hit(key: key, name: name, snippet: snippet, at: entry.at, leaf: leaf))
-                }
-            }
-            for source in sources {
-                if Task.isCancelled { break }
-                scan(source.open ?? (keeping ? Disk.loadChat(source.key) : []), key: source.key, name: source.name, leaf: nil)
-                for leaf in source.leaves {
-                    if leaf.title.localizedCaseInsensitiveContains(needle) {
-                        hits.append(Hit(key: source.key, name: source.name, snippet: leaf.title, at: leaf.at, leaf: leaf.id))
-                    }
-                    if keeping, let kept = Disk.load([Entry].self, Self.leafFile(source.key, leaf.id)) {
-                        scan(kept, key: source.key, name: source.name, leaf: leaf.id)
-                    }
-                }
-            }
-            return Array(hits.sorted { $0.at > $1.at }.prefix(80))
-        }.value
-    }
-
-    // MARK: Compressing
-
-    private var summaryBook: [String: String] = [:]
-    @Published private(set) var compressing: Set<String> = []
-
-    private static func summaryFile(_ key: String) -> String { "chats/\(key)~summary.json" }
-
-    /// The digest of the part of this conversation that was folded away.
-    func summary(_ key: String) -> String? {
-        if let kept = summaryBook[key] { return kept.isEmpty ? nil : kept }
-        let loaded = keeping ? (Disk.load(String.self, Self.summaryFile(key)) ?? "") : ""
-        summaryBook[key] = loaded
-        return loaded.isEmpty ? nil : loaded
-    }
-
-    private func setSummary(_ key: String, _ text: String?) {
-        objectWillChange.send()
-        summaryBook[key] = text ?? ""
-        guard keeping else { return }
-        if let text, !text.isEmpty { Disk.save(text, Self.summaryFile(key)) } else { Disk.remove(Self.summaryFile(key)) }
-    }
-
-    private func summaryBlock(_ key: String) -> String {
-        guard let summary = summary(key) else { return "" }
-        return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文还在对话里，用户能往上翻到）：\n" + summary
-    }
-
-    /// How long the conversation is, in characters.
-    func size(of key: String) -> Int { Turns.size(Array(live(key))) }
-
-    /// The part of the chat the model reads word for word: after the newest compression line. Everything before it
-    /// stays in the conversation for you to scroll back to; the model has it as the 前情提要.
-    func live(_ key: String) -> ArraySlice<Entry> {
-        let all = history(key)
-        let start = all.lastIndex(where: { $0.fold == true }).map { $0 + 1 } ?? 0
-        return all[start...]
-    }
-
-    /// When to tidy up: before the model's window starts dropping the oldest lines, so nothing slips out unsummarised.
-    func foldAt(_ key: String) -> Int {
-        let total = window(of: key)
-        return min(Int(Double(total) * Pref.compressShare), Self.budget(window: total, share: Pref.contextShare) * 9 / 10)
-    }
-
-    /// The window of the model this chat talks to, in tokens.
-    func window(of key: String) -> Int {
-        speaker(of: key)?.found.map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
-    }
-
-    /// The default model's window, for the settings page to say what each share comes to.
-    var defaultWindow: Int {
-        resolve(settings.defaultModel).map { $0.endpoint.traits($0.model).window } ?? Tokens.window(for: "")
-    }
-
-    /// How much of the chat goes with a request, counted in characters (a character is about a token or less, so
-    /// it errs short): the share of the window the user picked, always leaving room for the instructions, the tools
-    /// and the reply, so a full window never leaves the model nothing to answer with.
-    static func budget(window: Int, share: Double) -> Int {
-        let reply = Pref.maxOutput > 0 ? max(Pref.maxOutput, 8_192) : 16_384
-        let room = window - reply - 16_000
-        return max(8_000, min(Int(Double(window) * share), room))
-    }
-
-    /// Compresses quietly, never in the way: it waits for nothing, and a turn goes on meanwhile with the chat as it is.
-    func foldQuietly(_ key: String) {
-        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt(key) else { return }
-        Task { [weak self] in _ = try? await self?.compress(key) }
-    }
-
-    private static func foldSummary(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary.json" }
-
-    /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
-    @discardableResult
-    func compress(_ key: String) async throws -> Int {
-        guard !compressing.contains(key) else { return 0 }
-        let all = Array(live(key))
-        let firstCut: Int
-        switch Turns.foldCut(all, keep: Pref.keepRecent) {
-        case .success(let found): firstCut = found
-        case .failure(let problem): throw TeamError(message: problem.words)
-        }
-
-        let speakerBot: BotInfo? = {
-            if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) { return bot }
-            if let room = rooms.first(where: { Self.key(room: $0.id) == key }) { return bots.first { $0.id == room.members?.first } }
-            return nil
-        }()
-        guard let bot = speakerBot, let found = resolve(bot.model ?? settings.defaultModel) ?? resolve(settings.defaultModel),
-              let apiKey = apiKey(for: found.endpoint.id), !apiKey.isEmpty else {
-            throw TeamError(message: "没有能用的模型来写前情提要。")
-        }
-        compressing.insert(key)
-        defer { compressing.remove(key) }
-
-        let crew = bots
-        let speaker = { (entry: Entry) in entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name }
-        // Only what the model will read is marked as folded: a part too long moves the cut earlier.
-        let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
-        let (transcript, folded) = Turns.transcript(all[..<cut], name: speaker, label: \.label)
-        let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
-        let prompt = """
-        \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
-        要保留：用户说过的关于自己的事、偏好、做过的决定、约定和待办、没解决的问题、重要的数字、名字、地址和链接。
-        要略去：寒暄、反复的过程、已经过时的内容。
-        用条目写，第三人称，900 字以内，只输出提要本身。
-
-        \(transcript)
-        """
-        let agent = Agent(provider: found.endpoint.provider(key: apiKey), model: found.model, system: "你擅长把长对话整理成准确、简洁的提要。")
-        let digest = try await agent.ask(prompt)
-        guard !digest.isEmpty else { throw TeamError(message: "模型没给出提要。") }
-
-        // Nothing is taken away: a line goes in before the first message kept word for word. The chat may have
-        // moved on while the summary was written; a turn still running is left to finish first.
-        let firstKept = all[cut].id
-        while runs[key] != nil { try? await Task.sleep(nanoseconds: 500_000_000) }
-        var current = history(key)
-        guard let at = current.firstIndex(where: { $0.id == firstKept }) else {
-            throw TeamError(message: "整理的时候聊天变了，下次再整理。")
-        }
-        let markerId = UUID().uuidString
-        if keeping, let old = summary(key) { Disk.save(old, Self.foldSummary(key, markerId)) }
-        let marker = Entry(id: markerId, at: current[at].at - 1,
-                           message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)
-        current.insert(marker, at: at)
-        entries[key] = current
-        if keeping { ChatDisk.save(current, chat: key) }
-        setSummary(key, digest)
-        notify(key, .changed)
-        return folded
-    }
-
     // MARK: Leaves
 
     /// An earlier conversation put aside, so the current one can start fresh.
@@ -1099,7 +244,7 @@ final class TeamModel: ObservableObject {
         var marker: String?
     }
 
-    private var leafBook: [String: [Leaf]] = [:]
+    var leafBook: [String: [Leaf]] = [:]
 
     func leaves(_ key: String) -> [Leaf] {
         if let kept = leafBook[key] { return kept }
@@ -1108,15 +253,15 @@ final class TeamModel: ObservableObject {
         return loaded
     }
 
-    private static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
-    nonisolated private static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
+    static func leafList(_ key: String) -> String { "chats/\(key)~leaves.json" }
+    nonisolated static func leafFile(_ key: String, _ id: String) -> String { Disk.chatFile("\(key)~\(id)") }
 
     func entries(in leaf: Leaf, of key: String) -> [Entry] {
         Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []
     }
-    private static func leafSummary(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary.json" }
+    static func leafSummary(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary.json" }
 
-    private func setLeaves(_ key: String, _ list: [Leaf]) {
+    func setLeaves(_ key: String, _ list: [Leaf]) {
         objectWillChange.send()
         leafBook[key] = list
         if keeping { Disk.save(list, Self.leafList(key)) }
@@ -1144,7 +289,7 @@ final class TeamModel: ObservableObject {
         return true
     }
 
-    private func writeEditedLeaves(_ key: String, _ list: [Leaf]) -> Bool {
+    func writeEditedLeaves(_ key: String, _ list: [Leaf]) -> Bool {
         do {
             if keeping { try Disk.write(list, Self.leafList(key)) }
         } catch {
@@ -1217,7 +362,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// After the first exchange of a new conversation, one small request writes its title.
-    private func nameChatIfNew(_ key: String) {
+    func nameChatIfNew(_ key: String) {
         guard options(key).title == nil else { return }
         let said = history(key).filter { $0.note != true && $0.message.role != .tool && !$0.message.text.isEmpty }
         guard said.filter({ $0.message.role == .user }).count == 1, said.contains(where: { $0.message.role == .assistant }),
@@ -1362,7 +507,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// Gives a leaf put aside a short title written by the model, in place of its first words.
-    private func nameLeaf(_ key: String, _ id: String, from entries: [Entry]) {
+    func nameLeaf(_ key: String, _ id: String, from entries: [Entry]) {
         let lines = entries.filter { $0.note != true && $0.message.role != .tool && !$0.message.text.isEmpty }
             .prefix(12)
             .map { ($0.message.role == .user ? "用户：" : "旅伴：") + String($0.message.text.prefix(300)) }
@@ -1388,7 +533,7 @@ final class TeamModel: ObservableObject {
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
     }
 
-    private func clearPreview(_ key: String) {
+    func clearPreview(_ key: String) {
         if let index = bots.firstIndex(where: { Self.key(bot: $0.id) == key }) {
             bots[index].preview = nil
             saveBots()
@@ -1398,7 +543,7 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private func append(_ entry: Entry, to key: String) {
+    func append(_ entry: Entry, to key: String) {
         var list = history(key)
         list.append(entry)
         entries[key] = list
@@ -1414,12 +559,12 @@ final class TeamModel: ObservableObject {
 
     func unlisten(_ id: UUID) { feeds[id] = nil }
 
-    private func notify(_ key: String, _ event: TurnEvent) {
+    func notify(_ key: String, _ event: TurnEvent) {
         for feed in feeds.values where feed.key == key { feed.handler(event) }
     }
 
     /// The chat's last words go on the home screen.
-    private func touch(_ key: String, preview: String?, speaker: String? = nil) {
+    func touch(_ key: String, preview: String?, speaker: String? = nil) {
         let now = Now.ms
         let line = preview.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120)) }
         if key.hasPrefix("bot-"), let index = bots.firstIndex(where: { Self.key(bot: $0.id) == key }) {
@@ -1449,9 +594,9 @@ final class TeamModel: ObservableObject {
     }
 
     /// Messages waiting for the turn in progress to finish, by chat.
-    @Published private(set) var queued: [String: [Queued]] = [:]
+    @Published var queued: [String: [Queued]] = [:]
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
-    private var sendQueuedNow: Set<String> = []
+    var sendQueuedNow: Set<String> = []
 
     func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
         if archived.contains(key) { archive(key, false) }
@@ -1506,7 +651,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// Everything queued goes out as one message, as if written at once.
-    private func flushQueue(_ key: String) {
+    func flushQueue(_ key: String) {
         guard let waiting = queued[key], !waiting.isEmpty else { return }
         withAnimation(.smooth) { queued[key] = nil }
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -1523,7 +668,7 @@ final class TeamModel: ObservableObject {
         runs[key]?.task.cancel()
     }
 
-    private func start(_ key: String, userInitiated: Bool = true) {
+    func start(_ key: String, userInitiated: Bool = true) {
         let previous = runs[key]?.task
         stop(key)
         let token = UUID()
@@ -1550,23 +695,23 @@ final class TeamModel: ObservableObject {
     }
 
     /// Extra time iOS gives a turn after the app leaves the screen, by turn.
-    private var graces: [UUID: UIBackgroundTaskIdentifier] = [:]
+    var graces: [UUID: UIBackgroundTaskIdentifier] = [:]
     /// What each chat's reply has streamed so far and not yet kept as a message, and who is writing it.
-    private var streamed: [String: (speaker: String?, text: String)] = [:]
+    var streamed: [String: (speaker: String?, text: String)] = [:]
     /// Chats being paused because the background time is running out, with what each was doing then.
     /// Their cancel adds no 「被你叫停了」, and the partial reply the agent hands back is already kept.
-    private var pausing: [String: (doing: String, saved: Bool)] = [:]
+    var pausing: [String: (doing: String, saved: Bool)] = [:]
     /// Turns iOS paused while Clio was away: they go on by themselves when Clio is back on screen.
-    private var pausedAway: Set<String> = []
+    var pausedAway: Set<String> = []
     /// Watches the background time while turns are going and the app is away.
-    private var watching: Task<Void, Never>?
+    var watching: Task<Void, Never>?
 
     /// What a chat is called: the companion's name, or the gathering's.
     func chatName(_ key: String) -> String {
         key.hasPrefix("room-") ? (rooms.first { Self.key(room: $0.id) == key }?.name ?? L.t("nav.groupChat")) : (bots.first { Self.key(bot: $0.id) == key }?.name ?? L.t("nav.assistant"))
     }
 
-    private func endGrace(_ token: UUID) {
+    func endGrace(_ token: UUID) {
         if let grace = graces.removeValue(forKey: token), grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
     }
 
@@ -1590,7 +735,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// iOS takes the time back now: the last chance to keep what was written (if the watch missed it), then the time goes back.
-    private func graceRunsOut(_ key: String, token: UUID) {
+    func graceRunsOut(_ key: String, token: UUID) {
         // Kept awake by 后台保持运行: the clock on this grace ran out, but the app is not being frozen; take a fresh one.
         if KeepAwake.playing, runs[key]?.token == token {
             endGrace(token)
@@ -1606,7 +751,7 @@ final class TeamModel: ObservableObject {
     /// The background time is nearly gone and this chat's turn is not done: keep the reply written so far,
     /// stop cleanly, and say so; back in Clio, 「接着做」 goes on from there. A turn waiting for 候印 is left
     /// as it is: nothing is in flight, and the card is still there on return.
-    private func pause(_ key: String) {
+    func pause(_ key: String) {
         guard runs[key] != nil, pausing[key] == nil, !approvals.contains(where: { $0.chat == key }) else { return }
         // Kept now, before iOS freezes the app; the cancel below would hand the same text back only later.
         let kept = streamed.removeValue(forKey: key)
@@ -1624,7 +769,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// The note under a paused turn, with its 「接着做」 button; written once the turn has wound down, so it is the last line.
-    private func notePause(_ key: String) {
+    func notePause(_ key: String) {
         guard let paused = pausing.removeValue(forKey: key) else { return }
         let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
         append(Entry(
@@ -1642,7 +787,7 @@ final class TeamModel: ObservableObject {
         start(key, userInitiated: false)
     }
 
-    private func run(_ key: String, token: UUID, userInitiated: Bool) async {
+    func run(_ key: String, token: UUID, userInitiated: Bool) async {
         if userInitiated, !Task.isCancelled, runs[key]?.token == token {
             BackgroundTurn.begin(chat: key, name: chatName(key), token: token)
         }
@@ -1720,7 +865,7 @@ final class TeamModel: ObservableObject {
 
     /// One Bot speaks once. False when the group should not go on.
     @discardableResult
-    private func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil) async -> Bool {
+    func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil) async -> Bool {
         runs[key]?.companion = bot.id
         let picked = forced ?? options(key).model ?? bot.model ?? settings.defaultModel
         guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
@@ -1821,7 +966,7 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private func fail(_ key: String, _ raw: String, next: Explain.Next? = nil) {
+    func fail(_ key: String, _ raw: String, next: Explain.Next? = nil) {
         let text = Words.t(raw)
         Diag.note(text.replacingOccurrences(of: "\n", with: "；"))
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
@@ -1838,9 +983,9 @@ final class TeamModel: ObservableObject {
         Shell.mask(Shell.clip(text, max: 60_000), secrets: Vault.allStrings())
     }
 
-    private var toolTails: [String: ToolTail] = [:]
+    var toolTails: [String: ToolTail] = [:]
     /// Companions working for another one right now (请别的旅伴帮忙): their own chat waits.
-    private var helping: Set<String> = []
+    var helping: Set<String> = []
 
     func toolTail(for key: String) -> ToolTail {
         if let tail = toolTails[key] { return tail }
@@ -1849,7 +994,7 @@ final class TeamModel: ObservableObject {
         return tail
     }
 
-    private func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
+    func hear(_ event: AgentEvent, chat key: String, speaker: String?) {
         heard[key] = Date()
         switch event {
         case .text(let raw):
@@ -1945,7 +1090,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// Puts the turn's token count on its last reply.
-    private func settleUsage(_ key: String) {
+    func settleUsage(_ key: String) {
         guard let total = written.removeValue(forKey: key), total > 0 else { return }
         var list = history(key)
         guard let index = list.lastIndex(where: { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }) else { return }
@@ -1990,7 +1135,7 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private func noteRestore(_ key: String, _ result: (restored: Int, failed: [String])) {
+    func noteRestore(_ key: String, _ result: (restored: Int, failed: [String])) {
         var words = "把这轮改过的 \(result.restored) 个文件还原了。"
         if !result.failed.isEmpty {
             words += "没还原成的：" + result.failed.joined(separator: "、") + "。它们的旧版本还留着，连上后再点一次重答会再试；所以这轮先没重新开始，不管它们也可以直接发一句「继续」。"
@@ -2021,7 +1166,7 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    private struct RequestContext: Sendable {
+    struct RequestContext: Sendable {
         var messages: [Message] = []
         var photos: [Int: [String]] = [:]
 
@@ -2047,7 +1192,7 @@ final class TeamModel: ObservableObject {
     }
 
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
-    private func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
+    func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
         let all = live(key).filter { $0.note != true }
         let start = Conversation.windowStart(all.map(\.message), maxChars: Self.budget(window: window(of: key), share: Pref.contextShare), maxCount: Pref.contextCount)
         let recent = Array(all[start...])
@@ -2081,7 +1226,7 @@ final class TeamModel: ObservableObject {
     /// Every tool call gets its answer, even one cut off when a turn was stopped.
     static func paired(_ messages: [Message]) -> [Message] { Conversation.paired(messages) }
 
-    private func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
+    func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
         var parts: [String] = []
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
         parts.append("你是「\(bot.name)」\(role)。你住在用户的 iPhone 里，是用户的旅伴之一。")
@@ -2143,7 +1288,7 @@ final class TeamModel: ObservableObject {
         return parts.joined(separator: "\n\n")
     }
 
-    private func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
+    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
         let botId = bot.id
         var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
@@ -2274,117 +1419,16 @@ final class TeamModel: ObservableObject {
         return ToolOutput(answer.isEmpty ? "\(helper.name)做完了，但没写回复。" : "\(helper.name)的回复（它的完整过程在它自己的絮语里）：\n\n\(answer)")
     }
 
-    private func helping(_ key: String, _ words: String) { doing[key] = words }
-
-    // MARK: 用量
-
-    /// About how big the next request will be, by part, and how much of the model's window that is.
-    struct ContextEstimate: Equatable, Sendable {
-        var system = 0
-        var tools = 0
-        var messages = 0
-        var window = Tokens.window(for: "")
-        var model = ""
-
-        var total: Int { system + tools + messages }
-        var share: Double { window > 0 ? Double(total) / Double(window) : 0 }
-    }
-
-    /// Who answers in a chat and with which model: the companion, or a gathering's first member.
-    private func speaker(of key: String) -> (bot: BotInfo, room: RoomInfo?, found: (endpoint: Endpoint, model: String)?)? {
-        let room = rooms.first { Self.key(room: $0.id) == key }
-        let bot = room.flatMap { room in bots.first { $0.id == room.members?.first } } ?? bots.first { Self.key(bot: $0.id) == key }
-        guard let bot else { return nil }
-        let picked = options(key).model ?? bot.model ?? settings.defaultModel
-        return (bot, room, resolve(picked) ?? resolve(settings.defaultModel))
-    }
-
-    /// Minimal snapshot for the black status window, using the real turn start and speaker.
-    func alwaysOnTurn(_ key: String) -> (started: Date?, bot: BotInfo?) {
-        let run = runs[key]
-        let current = run?.companion.flatMap { id in bots.first { $0.id == id } }
-        return (run?.started, current ?? speaker(of: key)?.bot)
-    }
-
-    /// The model service a chat talks to.
-    func chatEndpoint(_ key: String) -> Endpoint? { speaker(of: key)?.found?.endpoint }
-
-    func contextEstimate(_ key: String) async -> ContextEstimate {
-        _ = await loadHistory(key)
-        guard !Task.isCancelled else { return ContextEstimate() }
-        await Task.detached(priority: .utility) { _ = SkillShelf.enabled }.value
-        var estimate = ContextEstimate()
-        guard !Task.isCancelled, let who = speaker(of: key) else { return estimate }
-        let (bot, room, found) = (who.bot, who.room, who.found)
-        let traits = found.map { $0.endpoint.traits($0.model) }
-        let vision = traits?.sees ?? false
-        let echoes = found?.endpoint.thinkingStyle.echoesReasoning ?? false
-        estimate.model = found?.model ?? ""
-        estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
-        let prompt = system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue))
-            + summaryBlock(key) + offBlock(key) + place(of: key).promptLine
-        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision).map(\.spec)
-        let context = context(for: key, bot: bot, room: room, vision: vision)
-        let base = estimate
-        return await Task.detached(priority: .utility) {
-            var estimate = base
-            estimate.system = Tokens.estimate(prompt)
-            estimate.tools = specs.reduce(0) { total, spec in
-                let schema = (try? JSONEncoder().encode(spec.parameters)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-                return total + Tokens.estimate(spec.name + spec.description + schema)
-            }
-            estimate.messages = context.estimatedTokens(echoes: echoes)
-            return estimate
-        }.value
-    }
-
-    /// What is left on the account of `endpoint`, for the services that tell (DeepSeek, Moonshot, SiliconFlow, OpenRouter).
-    func balance(_ endpoint: Endpoint) async throws -> Balance.Reading {
-        guard let source = Balance.source(baseURL: endpoint.baseURL) else { throw TeamError(message: "\(endpoint.name) 不提供余额查询。") }
-        guard let secret = apiKey(for: endpoint.id), !secret.isEmpty else { throw TeamError(message: "\(endpoint.name) 的密钥找不到了。") }
-        var request = URLRequest(url: source.url, timeoutInterval: 15)
-        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200, let reading = Balance.parse(String(decoding: data, as: UTF8.self), baseURL: endpoint.baseURL) else {
-            throw TeamError(message: status == 401 ? "密钥不对，查不了余额。" : "没查到余额（\(status)）。")
-        }
-        return reading
-    }
-
-    /// The reminder line for a service's balance; 0 is off.
-    static func balanceFloor(_ endpointId: String) -> Double { UserDefaults.standard.double(forKey: "balance.alert.\(endpointId)") }
-    static func setBalanceFloor(_ endpointId: String, _ value: Double) { UserDefaults.standard.set(value, forKey: "balance.alert.\(endpointId)") }
-
-    private var balanceCheckedAt: [String: Date] = [:]
-
-    /// After a turn: at most every half hour, look at the balance of a service with a reminder line set, and say so once it is under.
-    private func watchBalance(_ key: String) {
-        guard let endpoint = chatEndpoint(key), Balance.source(baseURL: endpoint.baseURL) != nil else { return }
-        let floor = Self.balanceFloor(endpoint.id)
-        guard floor > 0 else { return }
-        if let last = balanceCheckedAt[endpoint.id], Date().timeIntervalSince(last) < 1800 { return }
-        balanceCheckedAt[endpoint.id] = Date()
-        Task { [weak self] in
-            guard let self, let reading = try? await self.balance(endpoint), reading.amount < floor else { return }
-            let warned = "balance.warned.\(endpoint.id)"
-            let now = Date().timeIntervalSince1970
-            guard now - UserDefaults.standard.double(forKey: warned) > 12 * 3600 else { return }
-            UserDefaults.standard.set(now, forKey: warned)
-            Notify.now("\(endpoint.name) 余额只剩 \(reading.shown)", "低于你设的提醒线 \(reading.symbol)\(Int(floor))，记得去充值。", chat: key)
-            Diag.note("\(endpoint.name) 余额 \(reading.shown)，低于提醒线")
-        }
-    }
+    func helping(_ key: String, _ words: String) { doing[key] = words }
 
     // MARK: Approvals
 
     // MARK: Standing permission
 
     /// Tools the user said may always go ahead, by name.
-    @Published private(set) var alwaysAllowed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "always.allowed") ?? [])
+    @Published var alwaysAllowed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "always.allowed") ?? [])
     /// Chats where everything goes ahead until the app is closed.
-    @Published private(set) var trusted: Set<String> = []
+    @Published var trusted: Set<String> = []
 
     func allowAlways(_ tool: String) {
         alwaysAllowed.insert(tool)
@@ -2401,9 +1445,9 @@ final class TeamModel: ObservableObject {
     }
 
     /// Chats whose current turn has read the web (see `Taint`).
-    private let taint = TaintBook()
+    let taint = TaintBook()
 
-    private func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
+    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
         if !ask.forced, alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
         let id = UUID().uuidString
         let approval = Approval(
@@ -2467,214 +1511,15 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    // MARK: Later
-
-    private func later(_ text: String, at date: Date, bot: String, chat: String) {
-        let item = Later(id: UUID().uuidString, chat: chat, botId: bot, text: text, at: date.timeIntervalSince1970)
-        laters.append(item)
-        saveLaters()
-        Notify.schedule(item, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
-    }
-
-    /// Messages whose time has come go into their chats.
-    func deliverDue() {
-        guard keeping else { return }
-        let now = Date().timeIntervalSince1970
-        let due = laters.filter { $0.at <= now }.sorted { $0.at < $1.at }
-        guard !due.isEmpty else { return }
-        laters.removeAll { item in due.contains { $0.id == item.id } }
-        saveLaters()
-        for item in due {
-            let speaker = item.chat.hasPrefix("room-") ? item.botId : nil
-            append(Entry(id: UUID().uuidString, at: item.at * 1000, message: .assistant(item.text), speaker: speaker), to: item.chat)
-            touch(item.chat, preview: item.text, speaker: speaker)
-        }
-    }
-
-    /// The soonest message a companion has set for later.
-    var nextLetter: Later? { laters.min { $0.at < $1.at } }
-
-    // MARK: 定时
-
-    /// Adds a routine, or changes the one with its id.
-    func setRoutine(_ routine: Routine) {
-        if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = routine } else { routines.append(routine) }
-        saveRoutines()
-        Notify.schedule(routine, from: bots.first { $0.id == routine.botId }?.name ?? L.t("nav.assistant"))
-    }
-
-    func removeRoutine(_ id: String) {
-        routines.removeAll { $0.id == id }
-        saveRoutines()
-        Notify.unschedule(routine: id)
-    }
-
-    /// Routines whose time has come start now, one per conversation at a time; a busy conversation waits for the next look.
-    func routinesIfDue() {
-        guard keeping, phase == .ready else { return }
-        let now = Date()
-        for routine in routines {
-            guard let due = routine.due(now: now), bots.contains(where: { $0.id == routine.botId }) else { continue }
-            let key = Self.key(bot: routine.botId)
-            guard !isWorking(key) else { continue }
-            var done = routine
-            done.lastRun = now.timeIntervalSince1970
-            if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = done }
-            saveRoutines()
-            var words = "【定时 · \(routine.title)】\(routine.prompt)"
-            if now.timeIntervalSince(due.at) > 600 { words += "\n（本该 \(When.show(due.at)) 做，现在补上。）" }
-            if due.missed > 0 { words += "\n（之前还错过了 \(due.missed) 次，没有补。）" }
-            send(words, photos: [], to: key, userInitiated: false)
-            Diag.note("定时任务开始：\(routine.title)")
-        }
-    }
-
-    /// Called when the app comes back to the front.
-    func wake() {
-        guard !loading else { return }
-        BackgroundTurn.stop = { [weak self] key, token in
-            guard let self, runs[key]?.token == token else { return }
-            stop(key)
-        }
-        LiveTurns.sweep()
-        deliverDue()
-        routinesIfDue()
-        morningIfDue()
-        TideBook.shared.refresh()
-        resumePaused()
-    }
-
-    /// Back on screen: each turn iOS paused goes on from where it stopped, without a tap.
-    private func resumePaused() {
-        let waiting = pausedAway
-        pausedAway.removeAll()
-        for key in waiting {
-            // Still winding down: picked up when it has (see where the pause note is written).
-            if runs[key] == nil { resume(key) } else { pausedAway.insert(key) }
-        }
-    }
-
-    // MARK: 晨信
-
-    /// Once a day, after the hour the user chose, the main companion writes a short morning letter.
-    func morningIfDue() {
-        guard phase == .ready, Pref.morningOn, let main = mainBotId, bots.contains(where: { $0.id == main }) else { return }
-        let now = Date()
-        guard Calendar.current.component(.hour, from: now) >= Pref.morningHour else { return }
-        let today = now.formatted(.iso8601.year().month().day())
-        guard UserDefaults.standard.string(forKey: "morning.last") != today else { return }
-        let key = Self.key(bot: main)
-        // Busy (a routine, say): tried again on the next look, not marked done for the day.
-        guard !isWorking(key) else { return }
-        UserDefaults.standard.set(today, forKey: "morning.last")
-        send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key, userInitiated: false)
-    }
-
-    /// The daily nudge, at the hour the user chose; opening it lets the letter be written.
-    static func scheduleMorning() {
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ["clio.morning"])
-        guard Pref.morningOn else { return }
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-        let content = UNMutableNotificationContent()
-        content.title = L.t("agent.morningBrief")
-        content.body = Words.t("新的一天，打开看看旅伴给你写了什么。")
-        content.sound = .default
-        var parts = DateComponents()
-        parts.hour = Pref.morningHour
-        parts.minute = 0
-        center.add(UNNotificationRequest(identifier: "clio.morning", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
-    }
-
-    // MARK: Demo
-
-    func showDemo() {
-        phase = .demo
-        bots = [
-            BotInfo(id: "chief", name: "团子", role: "贴身助理", color: "orange", main: true, preview: "明早 8 点叫你起床，记得带伞哦", lastAt: Now.ms - 600_000),
-            BotInfo(id: "scout", name: "小探", role: "查资料 · 逛网页", color: "magenta"),
-            BotInfo(id: "writer", name: "墨墨", role: "写东西 · 改稿子", color: "violet"),
-            BotInfo(id: "chef", name: "饭团", role: "吃什么 · 怎么做", color: "green"),
-        ]
-        settings.mainBotId = "chief"
-        rooms = [RoomInfo(id: "trip", name: "周末去哪玩", preview: "小探：查到三个地方", members: ["chief", "scout"])]
-        approvals = [
-            Approval(id: "a1", botId: "chief", tool: "新建日程", reason: "周六 10:00  和朋友去磁器口", detail: .init(text: "提前 60 分钟提醒"), at: Now.ms, answerable: true),
-            Approval(id: "a2", botId: "chef", tool: "添加提醒事项", reason: "今晚 18:30  泡黄豆", at: Now.ms, answerable: true),
-        ]
-        doing = [Self.key(bot: "scout"): "搜索：周末天气"]
-        if Shots.name == "sidebar-past" {
-            let key = Self.key(bot: "chief")
-            pinned = [key]
-            leafBook[key] = [
-                Leaf(id: "shot-old-route", title: "周末路线和雨天备选", at: Now.ms - 86_400_000, count: 7),
-                Leaf(id: "shot-old-list", title: "带给同行朋友的清单", at: Now.ms - 172_800_000, count: 4),
-            ]
-        }
-    }
-
-    private func fillDemoError() {
-        let key = Self.key(bot: "chief")
-        let advice = Explain.model(ProviderError(status: 429, "slow down"), service: "演示服务")
-        append(Entry(id: UUID().uuidString, at: Now.ms - 1_000, message: .user("帮我看看周末的天气。")), to: key)
-        append(Entry(id: UUID().uuidString, at: Now.ms,
-                     message: .assistant(advice.title + "\n" + advice.detail),
-                     note: true, next: advice.next?.rawValue), to: key)
-    }
-
-    /// For screenshots: one conversation with every kind of thing a reply can hold (steps, sources, 心绪,
-    /// thinking, a heading, a list, a table, code, files written), and a checklist under way.
-    func fillDemoChat() {
-        let key = Self.key(bot: "chief")
-        guard history(key).isEmpty else { return }
-        var at = Now.ms - 300_000
-        func add(_ message: Message, label: String? = nil, pulse: String? = nil, tokens: Int? = nil) {
-            at += 4_000
-            var entry = Entry(id: UUID().uuidString, at: at, message: message, speaker: message.role == .user ? nil : "chief", photos: [], label: label)
-            entry.pulse = pulse
-            entry.tokens = tokens
-            append(entry, to: key)
-        }
-        add(.user("这周六想带朋友在重庆转一天，帮我看看天气，排个不太累的路线"))
-        let search = ToolCall(id: "c1", name: "web_search", arguments: #"{"query":"重庆 周六 天气"}"#)
-        add(.assistant("", toolCalls: [search], reasoning: "先查周六的天气，再按天气决定室内还是室外。"))
-        add(.toolResult("周六 多云转小雨 14–19°C，下午 3 点后有雨。来源：https://www.weather.com.cn/weather/101040100.shtml", for: search), label: "搜索：重庆 周六 天气")
-        let read = ToolCall(id: "c2", name: "web_read", arguments: #"{"url":"https://www.mafengwo.cn/travel-scenic-spot/mafengwo/10208.html"}"#)
-        add(.assistant("", toolCalls: [read]))
-        add(.toolResult("磁器口古镇……鹅岭二厂……重庆中国三峡博物馆…… https://www.mafengwo.cn/travel-scenic-spot/mafengwo/10208.html https://www.dianping.com/chongqing", for: read), label: "读网页：mafengwo.cn")
-        let write = ToolCall(id: "c3", name: "write_file", arguments: #"{"path":"行程/周六.md"}"#)
-        add(.assistant("", toolCalls: [write]))
-        add(.toolResult("写好了：行程/周六.md", for: write), label: "书案：写 行程/周六.md")
-        add(.assistant("""
-        ## 周六路线：上午在外面，下午躲雨
-
-        周六**多云转小雨**，下午三点后有雨，所以把要走路的放上午，下午进室内。
-
-        1. **10:00 鹅岭二厂**：拍照的地方多，人还不挤
-        2. **12:30 午饭**：附近的小面和豆花饭，吃完歇一会
-        3. **14:30 三峡博物馆**：下雨也不怕，看完大概两小时
-
-        | 时段 | 去哪 | 走路 |
-        | :-- | :-- | --: |
-        | 上午 | 鹅岭二厂 | 约 3 千步 |
-        | 下午 | 三峡博物馆 | 约 4 千步 |
-
-        记得带伞。路线我存进了 `行程/周六.md`，想改哪一段直接告诉我。
-        """), pulse: "感受：想让这一天别被雨搅了\n回响：\n  - 上午的光适合拍照\n  - 博物馆比商场更像出来玩\n  - 豆花饭是重庆的底气\n读到：\n  - 朋友可能不常来重庆\n  - 「不太累」比「去得多」重要\n  - 也许想留点时间聊天\n想要：\n  - 把雨变成去博物馆的理由\n  - 让路线有余地", tokens: 2380)
-        add(.user("再帮我把要带的东西列个清单"))
-        setPlan(key, [
-            PlanStep(text: "看一下周六下午的降雨时段", state: "done"),
-            PlanStep(text: "按路线列出要带的东西", state: "doing"),
-            PlanStep(text: "存进行程文件，加到提醒事项", state: "todo"),
-        ])
-    }
-
-    func leaveDemo() {
-        doing = [:]
-        loading = true
-        startup = Task.detached(priority: .userInitiated) { InitialData.read() }
-        Task { await prepare() }
-    }
+    /// Conversations put away from the desk's list. Speaking in one brings it back.
+    @Published var archived: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "desk.archived") ?? [])
+    @Published var threadLabels: [String: String] = UserDefaults.standard.dictionary(forKey: "desk.threadLabels") as? [String: String] ?? [:]
+    /// Conversations kept at the top of the list, in the order they were pinned.
+    @Published var pinned: [String] = UserDefaults.standard.stringArray(forKey: "desk.pinned") ?? []
+    var optionBook: [String: ChatOptions] = [:]
+    var summaryBook: [String: String] = [:]
+    @Published var compressing: Set<String> = []
+    var balanceCheckedAt: [String: Date] = [:]
 }
 
 /// The conversation's lines, as the shared scheduling logic in Craft reads them.
