@@ -885,13 +885,19 @@ struct ChatPage: View {
     private var header: some View {
         let layout = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
             AnyLayout(HStackLayout(spacing: Ink.Space.s))
-        return layout {
-            HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
-                headerBack
-                headerIdentity
+        return VStack(alignment: .leading, spacing: 0) {
+            layout {
+                HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
+                    headerBack
+                    headerIdentity
+                }
+                if !largeText { Spacer(minLength: 0) }
+                headerControls
             }
-            if !largeText { Spacer(minLength: 0) }
-            headerControls
+            modelMenu
+        }
+        .onChange(of: offeredThinking, initial: true) { _, offered in
+            resetUnavailableThinking(in: offered)
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
@@ -938,11 +944,26 @@ struct ChatPage: View {
                                openDetail: { glancing = false; detailOpen = true })
                         .presentationCompactAdaptation(.popover)
                 }
+            headerTitle
+        }
+        .padding(.leading, -Ink.Space.xs)
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, largeText ? Ink.Space.s : 0)
+        .frame(minHeight: Ink.Bar.height)
+        .glassFace(in: Capsule())
+    }
+
+    private var headerTitle: some View {
+        Button {
+            Haptics.light()
+            typing = false
+            detailOpen = true
+        } label: {
             VStack(alignment: .leading, spacing: 0) {
-                // One line: a long name wrapping pushed the status line out of the capsule.
-                Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold)).foregroundStyle(Ink.ink)
+                Text(bot.name).font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold))
+                    .foregroundStyle(Ink.ink)
                     .lineLimit(1)
-                HStack(spacing: 4) {
+                HStack(spacing: Ink.Space.xs) {
                     Circle().fill(working ? Ink.accent : Ink.ok).frame(width: 6, height: 6)
                     Text(headerLine)
                         .font(largeText ? .footnote : Ink.footnote)
@@ -953,20 +974,10 @@ struct ChatPage: View {
                 }
                 .animation(.easeInOut(duration: 0.5), value: headerLine)
             }
+            .contentShape(Rectangle())
         }
-        .padding(.leading, -Ink.Space.xs)
-        .padding(.horizontal, Ink.Space.m)
-        .padding(.vertical, largeText ? Ink.Space.s : 0)
-        .frame(minHeight: Ink.Bar.height)
-        .glassFace(in: Capsule())
-        .contentShape(.capsule)
-        .onTapGesture {
-            Haptics.light()
-            typing = false
-            detailOpen = true
-        }
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("点一下看对话详情")
+        .buttonStyle(.plain)
+        .accessibilityHint(L.t("chat.details"))
     }
 
     private var headerControls: some View {
@@ -1075,100 +1086,99 @@ struct ChatPage: View {
 
 
 
-    private func shortName(_ ref: String?) -> String {
-        guard let found = team.resolve(ref) else { return "选模型" }
-        let name = found.model
-        return name.count > 16 ? String(name.prefix(15)) + "…" : name
-    }
+    private var modelSpeaker: BotInfo { isRoom ? team.alwaysOnTurn(chat.key).bot ?? bot : bot }
 
-    private var modelChip: some View {
+    private var modelMenu: some View {
         let own = options.model
-        let level = options.thinking ?? .auto
-        let current = team.model(for: chat.key, bot: bot)
-        return Menu {
-            Section(Words.t("这段絮语用哪个模型")) {
-                Button {
-                    Haptics.tick(0.5)
-                    team.setModel(nil, in: chat.key)
-                    say("跟着\(bot.name)走：用 \(shortName(bot.model ?? team.settings.defaultModel))。")
-                } label: {
-                    if own == nil { Label("跟着\(bot.name)走", systemImage: "checkmark") } else { Text("跟着\(bot.name)走") }
-                }
-            }
-            Menu {
-                thinkingChoices
-            } label: {
-                Label("思考：\(level.title)", systemImage: level.symbol)
-                Text(level.line)
-            }
-            ModelChoices(team: team, current: own) { ref in
-                Haptics.tick(0.5)
-                team.setModel(ref, in: chat.key)
-                let found = team.resolve(ref)
-                let sight = (found.map { $0.endpoint.traits($0.model).sees } ?? false) ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
-                say(Words.t("这段絮语改用 \(found?.model ?? ref)（\(sight)），\(bot.name)别处的絮语不变。"))
-            }
-        } label: {
-            // Just the service's icon; the name is in the menu. A dot when this conversation has its own model or depth.
-            let found = team.resolve(current)
-            ZStack(alignment: .topTrailing) {
-                ModelIcon(model: found?.model, service: found.flatMap { Service.of($0.endpoint) }, size: 22, name: found?.endpoint.name)
-                    .frame(width: 32, height: 32)
-                if own != nil || level != .auto {
-                    Circle().fill(Ink.accent).frame(width: 7, height: 7).offset(x: -3, y: 4)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .accessibilityLabel("模型：\(shortName(current))，经由\(team.resolve(current)?.endpoint.name ?? "")\(level == .auto ? "" : "，思考\(level.title)")")
-    }
-
-    /// How hard the model thinks in this conversation: on its own in a gathering, inside the model menu otherwise.
-    private var thinkChip: some View {
+        let name = team.current(chat.key, bot: modelSpeaker)?.model ?? L.t("settings.models")
         let level = options.thinking ?? .auto
         return Menu {
             thinkingChoices
+            if !isRoom {
+                Section(L.t("settings.models")) {
+                    Button {
+                        selectModel(nil)
+                    } label: {
+                        let label = "跟着\(bot.name)走"
+                        if own == nil { Label(label, systemImage: "checkmark") } else { Text(label) }
+                    }
+                }
+                ModelChoices(team: team, current: own) { ref in selectModel(ref) }
+            }
         } label: {
-            chip(level == .auto ? "brain" : level.symbol, nil, lit: level != .auto)
+            HStack(spacing: Ink.Space.xs) {
+                Text(name)
+                    .font(Ink.mono(Ink.Size.micro))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if level != .auto {
+                    Image(systemName: level.symbol)
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(Ink.accent)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: Ink.Size.micro, weight: .medium))
+            }
+            .foregroundStyle(Ink.inkSoft)
+            .padding(.horizontal, Ink.Space.s)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
-        .accessibilityLabel("思考强度：\(level.title)")
+        .menuOrder(.fixed)
+        .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+        .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
     }
 
-    @ViewBuilder
+    private func selectModel(_ reference: String?) {
+        Haptics.tick(0.5)
+        team.setModel(reference, in: chat.key)
+        resetUnavailableThinking(in: offeredThinking)
+        if let current = team.current(chat.key, bot: modelSpeaker) {
+            let sight = current.traits.sees ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
+            say(Words.t("这段絮语用 \(current.model)（\(sight)），别处的絮语不变。"))
+        }
+    }
+
+    private func resetUnavailableThinking(in offered: [Thinking]) {
+        if let selection = options.thinking, !offered.contains(selection) {
+            team.setThinking(.auto, in: chat.key)
+        }
+    }
+
+    private var offeredThinking: [Thinking] {
+        let speakers: [BotInfo]
+        if let roomID = chat.roomId, options.model == nil,
+           let members = team.rooms.first(where: { $0.id == roomID })?.members, !members.isEmpty {
+            speakers = members.compactMap { id in team.bots.first { $0.id == id } }
+        } else {
+            speakers = [modelSpeaker]
+        }
+        guard !speakers.isEmpty else { return [.auto] }
+        return speakers.reduce(Thinking.allCases) { offered, speaker in
+            guard let current = team.current(chat.key, bot: speaker) else { return [.auto] }
+            let levels: [Thinking]
+            if let tested = current.traits.levels {
+                levels = [.auto] + tested.compactMap(Thinking.init(rawValue:))
+            } else if current.endpoint.kind == .openai {
+                levels = current.endpoint.thinkingStyle.levels(thinks: current.traits.thinks)
+            } else {
+                levels = current.traits.thinks ? Thinking.allCases : [.auto]
+            }
+            return offered.filter { levels.contains($0) }
+        }
+    }
+
     private var thinkingChoices: some View {
         let level = options.thinking ?? .auto
-        let now = isRoom ? nil : team.current(chat.key, bot: bot)
-        // Only the levels this model's service really tells apart (the one chosen stays visible).
-        let offered: [Thinking] = {
-            guard let now else { return Thinking.allCases }
-            // Tested in 模型 › 试一试: exactly the levels the service took.
-            if let tested = now.traits.levels {
-                return Thinking.allCases.filter { $0 == .auto || tested.contains($0.rawValue) || $0 == level }
-            }
-            guard now.endpoint.kind == .openai else { return Thinking.allCases }
-            let levels = now.endpoint.thinkingStyle.levels(thinks: now.traits.thinks)
-            return Thinking.allCases.filter { levels.contains($0) || $0 == level }
-        }()
-        Section(Words.t("这段絮语想多深")) {
-            ForEach(offered, id: \.self) { option in
+        return Section(L.t("chat.thinking")) {
+            ForEach(offeredThinking, id: \.self) { option in
                 Button {
                     Haptics.tick(0.5)
                     team.setThinking(option, in: chat.key)
                     say(option == .auto ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。")
                 } label: {
-                    if option == level { Label(option.title, systemImage: "checkmark") } else { Label(option.title, systemImage: option.symbol) }
+                    Label(option.title, systemImage: option == level ? "checkmark" : option.symbol)
                     Text(option.line)
-                }
-            }
-        }
-        if let now {
-            Section {
-                if !now.traits.thinks {
-                    Text("\(now.model) 好像不会思考，选了也许没变化。")
-                } else if now.endpoint.kind == .openai, !now.endpoint.thinkingStyle.canStop {
-                    Text("\(now.endpoint.name) 的模型总要想一想，「不想」会按「浅想」来。")
-                } else {
-                    Text("模型不接受某一档时，会自动改回默认，并在对话里说一声。")
                 }
             }
         }
@@ -2353,13 +2363,9 @@ struct ChatPage: View {
                         if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
                     }
                     if !largeText { ChatSection { draftField } }
-                    // While writing: what it goes out with, as small icons in the same row, not a row of their own.
-                    if composing {
-                        HStack(spacing: 2) {
-                            if isRoom { thinkChip } else { modelChip }
-                            if team.place(of: chat.key) != .desk { placeChip }
-                        }
-                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    if composing, team.place(of: chat.key) != .desk {
+                        placeChip
+                            .transition(.opacity.combined(with: .scale(scale: 0.8)))
                     }
                     Button {
                         Haptics.light()
