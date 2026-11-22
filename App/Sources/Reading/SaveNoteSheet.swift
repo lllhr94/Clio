@@ -1,3 +1,4 @@
+import Craft
 import SwiftUI
 
 /// Saves a reply as a Markdown note into 书案 or any mounted external folder (e.g. Obsidian / iCloud Drive).
@@ -277,17 +278,12 @@ struct SaveNoteSheet: View {
     }
 
     private func buildMarkdown() -> String {
-        let trimmedBody = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard includeHeader else { return trimmedBody + "\n" }
-        let stamp = Date().formatted(date: .numeric, time: .shortened)
-        var lines: [String] = ["---", "date: \(stamp)", "from: \(sender)", "---", ""]
-        if let q = question?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
-            let quoted = q.components(separatedBy: "\n").map { "> \($0)" }.joined(separator: "\n")
-            lines.append(quoted)
-            lines.append("")
-        }
-        lines.append(trimmedBody)
-        return lines.joined(separator: "\n") + "\n"
+        NoteExport.markdown(
+            body: text,
+            question: question,
+            sender: sender,
+            includeHeader: includeHeader
+        )
     }
 
     private func cleanFileName(_ raw: String) -> String {
@@ -320,35 +316,39 @@ struct SaveNoteSheet: View {
         return name + ".md"
     }
 
-    /// Writes atomically and appends ` 2`, ` 3`, ... if a file with the same name already exists.
+    /// Exclusively creates a new Markdown note (never overwrites an existing file even on collision or concurrency).
     nonisolated private static func writeUnique(base: String, subfolder: String, fileName: String, content: String) throws -> String {
         let full = ensureExtension(fileName)
-        let ext = (full as NSString).pathExtension
-        let stem = (full as NSString).deletingPathExtension
         let folder = subfolder.isEmpty ? base : "\(base)/\(subfolder)"
+        let payload = Data(content.utf8)
 
-        var candidate = "\(folder)/\(full)"
-        var suffix = 2
-        while fileExists(at: candidate) && suffix < 100 {
-            candidate = "\(folder)/\(stem) \(suffix).\(ext)"
-            suffix += 1
-        }
-        try Workspace.writeBytes(candidate, data: Data(content.utf8))
-        return candidate
-    }
+        switch try Workspace.parse(folder) {
+        case .desk(let dirURL, _):
+            guard Workspace.isInsideRealRoot(dirURL, root: Workspace.root) else {
+                throw WorkspaceError.cannot(Words.t("目标目录通过软链接跳出了书案，不能写入。"))
+            }
+            let created = try NoteExport.writeUniqueNewFile(in: dirURL, fileName: full, data: payload) { target in
+                guard Workspace.isInsideRealRoot(target, root: Workspace.root) else {
+                    throw WorkspaceError.cannot(Words.t("目标文件通过软链接跳出了书案，不能写入。"))
+                }
+            }
+            return "\(folder)/\(created)"
 
-    nonisolated private static func fileExists(at relativePath: String) -> Bool {
-        guard let target = try? Workspace.parse(relativePath) else { return false }
-        switch target {
-        case .desk(let url, _):
-            return FileManager.default.fileExists(atPath: url.path)
         case .mountsRoot:
-            return false
+            throw WorkspaceError.cannot("不能直接写到挂载根目录，请选择一个具体的挂载文件夹。")
+
         case .mounted(let mount, let inner, _):
-            guard !inner.isEmpty else { return false }
-            return (try? MountedFolders.withAccess(mount, innerParts: inner) { _, url in
-                FileManager.default.fileExists(atPath: url.path)
-            }) ?? false
+            let created = try MountedFolders.withAccess(mount, innerParts: inner) { rootURL, dirURL in
+                guard Workspace.isInsideRealRoot(dirURL, root: rootURL) else {
+                    throw WorkspaceError.cannot("目标目录通过软链接跳出了挂载文件夹「\(mount.name)」，不能写入。")
+                }
+                return try NoteExport.writeUniqueNewFile(in: dirURL, fileName: full, data: payload) { target in
+                    guard Workspace.isInsideRealRoot(target, root: rootURL) else {
+                        throw WorkspaceError.cannot("目标文件通过软链接跳出了挂载文件夹「\(mount.name)」，不能写入。")
+                    }
+                }
+            }
+            return "\(folder)/\(created)"
         }
     }
 
