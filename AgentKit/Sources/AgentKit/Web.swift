@@ -264,7 +264,10 @@ enum WebFetch {
         guard let url = request.url, url.scheme?.lowercased() == "https" else {
             throw ProviderError("搜索接口只允许使用 https 地址。")
         }
-        if LocalAddress.isLocal(url) || (await LocalAddress.resolvesToLocal(url)) {
+        if LocalAddress.isLocal(url) {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        if await LocalAddress.resolvesToLocal(url) {
             throw ProviderError(LocalAddress.refusal)
         }
         let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic())
