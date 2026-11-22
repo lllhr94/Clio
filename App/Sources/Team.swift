@@ -115,6 +115,8 @@ final class TeamModel: ObservableObject {
 
     var entries: [String: [Entry]] = [:]
     let modelInputLog = ModelInputLog()
+    /// Conversations whose earlier page is being brought back right now (one at a time per conversation).
+    var openingLeaves: Set<String> = []
     var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
     var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
@@ -465,25 +467,46 @@ final class TeamModel: ObservableObject {
 
     /// Brings an earlier conversation back to the front; the current one is put aside in its place.
     func openLeaf(_ key: String, _ leaf: Leaf) {
+        // Reading and saving a long conversation took the main thread long enough to stall the sidebar's tap:
+        // the file work now runs off it, and the steps that change what is on screen stay in order here.
+        guard !openingLeaves.contains(key) else { return }
+        openingLeaves.insert(key)
+        Task { [weak self] in
+            await self?.openLeafNow(key, leaf)
+            self?.openingLeaves.remove(key)
+        }
+    }
+
+    private func openLeafNow(_ key: String, _ leaf: Leaf) async {
         // A leaf that is there but cannot be read stays where it is, untouched: opening it must not throw it away
         // (the review, #15).
         var kept: [Entry] = []
+        var keptSummary: String?
         if keeping {
             let file = Disk.url(Self.leafFile(key, leaf.id))
-            if FileManager.default.fileExists(atPath: file.path) {
-                guard let data = try? Data(contentsOf: file), let read = try? JSONDecoder().decode([Entry].self, from: data) else {
-                    fail(key, "这一段旧絮语读不出来，先留着没动。\n可能是格式不认识或文件坏了；先别删，备份一份。")
-                    return
-                }
-                kept = read
+            let summaryPath = Self.leafSummary(key, leaf.id)
+            let read: (entries: [Entry]?, summary: String?, exists: Bool) = await Task.detached(priority: .userInitiated) {
+                guard FileManager.default.fileExists(atPath: file.path) else { return (nil, Disk.load(String.self, summaryPath), false) }
+                guard let data = try? Data(contentsOf: file), let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return (nil, nil, true) }
+                return (entries, Disk.load(String.self, summaryPath), true)
+            }.value
+            if read.exists, read.entries == nil {
+                fail(key, "这一段旧絮语读不出来，先留着没动。\n可能是格式不认识或文件坏了；先别删，备份一份。")
+                return
             }
+            kept = read.entries ?? []
+            keptSummary = read.summary
         }
-        let keptSummary = keeping ? Disk.load(String.self, Self.leafSummary(key, leaf.id)) : nil
+        guard leaves(key).contains(where: { $0.id == leaf.id }) else { return }
         guard turnLeaf(key) else { return }
         if keeping {
             // The leaf's own file goes only once the page it became is surely saved.
-            do { try ChatDisk.saveAndWait(kept, chat: key) } catch {
-                fail(key, "没能翻回这一段：存不进手机（\(error.localizedDescription)）。它还在絮语页里。")
+            let toSave = kept
+            let saved: Error? = await Task.detached(priority: .userInitiated) {
+                do { try ChatDisk.saveAndWait(toSave, chat: key); return nil } catch { return error }
+            }.value
+            if let saved {
+                fail(key, "没能翻回这一段：存不进手机（\(saved.localizedDescription)）。它还在絮语页里。")
                 return
             }
         }
