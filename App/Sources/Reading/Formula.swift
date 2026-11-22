@@ -11,6 +11,7 @@ struct FormulaBlock: View {
     @State private var near = false
     @State private var contentWidth: CGFloat = 0
     @State private var boxWidth: CGFloat = 0
+    @State private var hasMoreRight = false
     @Environment(\.colorScheme) private var scheme
 
     /// Heights of formulas already typeset, so the stand-in before typesetting takes the same room and nothing shifts.
@@ -49,13 +50,22 @@ struct FormulaBlock: View {
                 .scrollDisabled(!overflows)
                 .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    let remaining = geometry.contentSize.width + geometry.contentInsets.trailing - geometry.visibleRect.maxX
+                    return geometry.contentSize.width > geometry.containerSize.width + 1 && remaining > 2
+                } action: { _, more in
+                    hasMoreRight = more
+                }
                 .mask {
+                    let trailingEdge: Color = (overflows && hasMoreRight) ? .clear : .black
                     HStack(spacing: 0) {
                         Color.black
-                        if overflows {
-                            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                                .frame(width: Ink.Space.xl)
-                        }
+                        LinearGradient(
+                            colors: [.black, trailingEdge],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: Ink.Space.xl)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
