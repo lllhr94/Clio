@@ -184,9 +184,17 @@ struct CarePage: View {
                     // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
                     let outcome = await StorageMaintenance.run {
                         Result {
-                            let summary = try Backup.restore(from: url)
-                            let report = QueuedStore.isolatePreRestoreQueues()
-                            return (summary, report)
+                            let previouslyBlocked = QueuedStore.loadBlockedSlots()
+                            let armed = try QueuedStore.armPreRestoreBarrier()
+                            do {
+                                let summary = try Backup.restore(from: url)
+                                QueuedStore.clearAllPendingLeafOpens()
+                                let report = QueuedStore.isolatePreRestoreQueues()
+                                return (summary, report)
+                            } catch {
+                                QueuedStore.disarmPreRestoreBarrier(newlyArmed: armed, previouslyBlocked: previouslyBlocked)
+                                throw error
+                            }
                         }
                     }
                     switch outcome {
@@ -408,8 +416,8 @@ struct CarePage: View {
         davChoices = []
         davBusy = true
         restoringBusy = true
-        team.beginBackupRestore()
         Task {
+            var armedRestoreGate = false
             defer {
                 davBusy = false
                 restoringBusy = false
@@ -417,16 +425,28 @@ struct CarePage: View {
             do {
                 let file = try await WebDAV.download(name)
                 await stopCleanBeforeRestore()
+                team.beginBackupRestore()
+                armedRestoreGate = true
                 let (summary, report) = try await StorageMaintenance.runThrowing {
-                    let summary = try Backup.restore(from: file)
-                    let report = QueuedStore.isolatePreRestoreQueues()
-                    return (summary, report)
+                    let previouslyBlocked = QueuedStore.loadBlockedSlots()
+                    let armed = try QueuedStore.armPreRestoreBarrier()
+                    do {
+                        let summary = try Backup.restore(from: file)
+                        QueuedStore.clearAllPendingLeafOpens()
+                        let report = QueuedStore.isolatePreRestoreQueues()
+                        return (summary, report)
+                    } catch {
+                        QueuedStore.disarmPreRestoreBarrier(newlyArmed: armed, previouslyBlocked: previouslyBlocked)
+                        throw error
+                    }
                 }
                 team.finishBackupRestoreSucceeded()
                 restored = true
                 notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + Self.isolationNotice(report)
             } catch {
-                team.finishBackupRestoreFailed()
+                if armedRestoreGate {
+                    team.finishBackupRestoreFailed()
+                }
                 notice = "没恢复成：\(error.localizedDescription)"
             }
         }

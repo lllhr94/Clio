@@ -545,6 +545,10 @@ extension ChatPage {
         typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening || dictation.transcribing
     }
 
+    var sendingBlocked: Bool {
+        !chat.demo && !team.canAcceptInput(for: chat.key)
+    }
+
     var canSend: Bool {
         draftState.hasSendableText || !photos.isEmpty || !files.isEmpty
     }
@@ -582,21 +586,23 @@ extension ChatPage {
                     chat.stop()
                 }
             case 2:
+                guard !sendingBlocked else { return }
                 Haptics.grab()
+                let accepted: Bool
                 if let editing {
-                    redo(from: editing, text: draft)
-                    self.editing = nil
+                    accepted = redo(from: editing, text: draft)
+                    if accepted { self.editing = nil }
                 } else if let quote {
                     let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
-                    chat.send(quoted + "\n\n" + draft + fileNote, photos: photos)
-                    self.quote = nil
+                    accepted = chat.send(quoted + "\n\n" + draft + fileNote, photos: photos)
+                    if accepted { self.quote = nil }
                 } else if working {
                     // While it works, a plain tap is 插话: heard after the step in progress.
-                    chat.interject(outgoing, photos: photos)
+                    accepted = chat.interject(outgoing, photos: photos)
                 } else {
-                    chat.send(outgoing, photos: photos)
+                    accepted = chat.send(outgoing, photos: photos)
                 }
-                clearComposer()
+                if accepted { clearComposer() }
             default:
                 listen()
             }
@@ -622,7 +628,9 @@ extension ChatPage {
                 }
             }
             .frame(width: 34, height: 34)
+            .opacity(mode == 2 && sendingBlocked ? 0.45 : 1)
         }
+        .disabled(mode == 2 && sendingBlocked)
         .buttonStyle(PressStyle(haptic: false))
         .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
             Button(L.t("chat.stopNow"), role: .destructive) {
@@ -636,19 +644,16 @@ extension ChatPage {
         .animation(Ink.Motion.press, value: mode)
         .accessibilityLabel(label)
         .contextMenu {
-            if working && canSend && editing == nil && quote == nil {
+            if working && canSend && !sendingBlocked && editing == nil && quote == nil {
                 Button("插话：这一步做完就递给它", systemImage: "text.bubble") {
-                    chat.interject(outgoing, photos: photos)
-                    clearComposer()
+                    if chat.interject(outgoing, photos: photos) { clearComposer() }
                 }
                 Button("中断并发送", systemImage: "bolt") {
                     Haptics.thud()
-                    chat.sendNow(outgoing, photos: photos)
-                    clearComposer()
+                    if chat.sendNow(outgoing, photos: photos) { clearComposer() }
                 }
                 Button("排队：这轮做完再发", systemImage: "tray") {
-                    chat.send(outgoing, photos: photos)
-                    clearComposer()
+                    if chat.send(outgoing, photos: photos) { clearComposer() }
                 }
             }
         }

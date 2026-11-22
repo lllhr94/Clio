@@ -82,7 +82,7 @@ extension TeamModel {
     /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
     @discardableResult
     func compress(_ key: String) async throws -> Int {
-        guard !compressing.contains(key) else { return 0 }
+        guard !compressing.contains(key), canAcceptInput(for: key) else { return 0 }
         let all = Array(live(key))
         let firstCut: Int
         switch Turns.foldCut(all, keep: Pref.keepRecent) {
@@ -124,6 +124,7 @@ extension TeamModel {
         // moved on while the summary was written; a turn still running is left to finish first.
         let firstKept = all[cut].id
         while runs[key] != nil { try? await Task.sleep(nanoseconds: 500_000_000) }
+        guard canAcceptInput(for: key) else { return 0 }
         var current = history(key)
         guard let at = current.firstIndex(where: { $0.id == firstKept }) else {
             throw TeamError(message: "整理的时候聊天变了，下次再整理。")

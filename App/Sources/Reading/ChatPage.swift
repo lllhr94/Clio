@@ -579,10 +579,13 @@ struct ChatPage: View {
                     team.sendQueueNow(chat.key)
                 }
                 .fontWeight(.semibold)
+                .disabled(sendingBlocked)
             }
             .font(.system(size: Ink.Size.small))
             .foregroundStyle(Ink.accent)
             .buttonStyle(TapStyle())
+            .opacity(sendingBlocked ? 0.45 : 1)
+            .disabled(sendingBlocked)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, Ink.Space.huge)

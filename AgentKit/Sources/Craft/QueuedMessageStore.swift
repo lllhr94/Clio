@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Serializable snapshot of a message queued while a conversation turn is running.
 public struct StoredQueuedMessage: Equatable, Sendable {
@@ -100,18 +105,47 @@ public struct IsolationReport: Equatable, Sendable {
 }
 
 /// Durable journal record written before multi-step `openLeafNow` writes so a crash or failed leaf-index write
-/// can cleanly roll back (or finish committing) without duplicating the conversation or its queue across restarts.
+/// can cleanly roll back ONLY the exact active files written by this transaction (never deleting later user turns
+/// or files restored by a backup).
 public struct PendingLeafOpen: Codable, Equatable, Sendable {
     public var chatKey: String
     public var leafId: String
     public var leafKey: String
     public var priorActiveQueuedIds: [UUID]
+    /// Entry IDs this transaction wrote into `chats/<chatKey>.json`; rollback requires exact match.
+    public var writtenChatEntryIds: [String]
+    /// Queued item IDs this transaction wrote into `ClioQueued/<chatKey>`; rollback requires exact match.
+    public var writtenActiveQueuedIds: [UUID]
+    /// POSIX inode of `chats/<chatKey>.json` captured right after this transaction wrote it; prevents deleting
+    /// a different file (e.g. from a restored backup) that happens to share identical entry IDs.
+    public var writtenChatInode: UInt64?
+    /// POSIX inode of `Team/chats` captured before writes started; if `Backup.restore` swapped `Team/`,
+    /// the directory inode changes so stale markers are discarded without touching restored files.
+    public var chatsDirInode: UInt64?
+    /// POSIX inode of the source leaf file `chats/<leafKey>.json` captured before writes started;
+    /// forward cleanup only removes the exact leaf file opened by this transaction.
+    public var leafChatInode: UInt64?
 
-    public init(chatKey: String, leafId: String, leafKey: String, priorActiveQueuedIds: [UUID] = []) {
+    public init(
+        chatKey: String,
+        leafId: String,
+        leafKey: String,
+        priorActiveQueuedIds: [UUID] = [],
+        writtenChatEntryIds: [String] = [],
+        writtenActiveQueuedIds: [UUID] = [],
+        writtenChatInode: UInt64? = nil,
+        chatsDirInode: UInt64? = nil,
+        leafChatInode: UInt64? = nil
+    ) {
         self.chatKey = chatKey
         self.leafId = leafId
         self.leafKey = leafKey
         self.priorActiveQueuedIds = priorActiveQueuedIds
+        self.writtenChatEntryIds = writtenChatEntryIds
+        self.writtenActiveQueuedIds = writtenActiveQueuedIds
+        self.writtenChatInode = writtenChatInode
+        self.chatsDirInode = chatsDirInode
+        self.leafChatInode = leafChatInode
     }
 }
 
@@ -309,20 +343,46 @@ public enum QueuedMessageStore {
         return Set(keys)
     }
 
-    /// Persists the set of blocked slot keys under `root` (removing the marker file once empty).
-    public static func saveBlockedSlots(_ slots: Set<String>, under root: URL) {
+    /// Atomically persists the set of blocked slot keys under `root` (or deletes the marker when empty), throwing on error.
+    public static func saveBlockedSlotsThrowing(_ slots: Set<String>, under root: URL) throws {
         let fm = FileManager.default
         let file = blockedSlotsFile(under: root)
         guard !slots.isEmpty else {
             if fm.fileExists(atPath: file.path) {
-                try? fm.removeItem(at: file)
+                try fm.removeItem(at: file)
             }
             return
         }
-        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(slots.sorted()) {
-            try? data.write(to: file, options: fileWriteOptions)
-        }
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(slots.sorted())
+        try data.write(to: file, options: fileWriteOptions)
+    }
+
+    /// Best-effort wrapper around `saveBlockedSlotsThrowing`.
+    public static func saveBlockedSlots(_ slots: Set<String>, under root: URL) {
+        try? saveBlockedSlotsThrowing(slots, under: root)
+    }
+
+    /// Atomically persists every currently queued slot key into `.restore-blocked.json` BEFORE `Backup.restore`
+    /// replaces `Team/`. Returns the newly armed slot keys (empty if nothing is queued).
+    @discardableResult
+    public static func armPreRestoreBarrier(under root: URL) throws -> Set<String> {
+        let existingSlots = Set(loadAllSlots(from: root).keys)
+        guard !existingSlots.isEmpty else { return [] }
+        let previouslyBlocked = loadBlockedSlots(from: root)
+        let combined = previouslyBlocked.union(existingSlots)
+        try saveBlockedSlotsThrowing(combined, under: root)
+        return existingSlots.subtracting(previouslyBlocked)
+    }
+
+    /// Rolls back newly armed barrier entries if `Backup.restore` failed before replacing `Team/`,
+    /// keeping any previously blocked slots intact.
+    public static func disarmPreRestoreBarrier(newlyArmed: Set<String>, previouslyBlocked: Set<String>, under root: URL) {
+        guard !newlyArmed.isEmpty else { return }
+        var current = loadBlockedSlots(from: root)
+        current.subtract(newlyArmed)
+        current.formUnion(previouslyBlocked)
+        saveBlockedSlots(current, under: root)
     }
 
     /// Fail-closed startup decision for a persisted queue slot.
@@ -525,6 +585,24 @@ public enum QueuedMessageStore {
         }
     }
 
+    /// Returns the POSIX inode of a regular (non-symlink) file at `url`, or `nil` if absent/not a regular file.
+    public static func fileInode(at url: URL) -> UInt64? {
+        var st = stat()
+        guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+            return nil
+        }
+        return UInt64(truncatingIfNeeded: st.st_ino)
+    }
+
+    /// Returns the POSIX inode of a (non-symlink) directory at `url`, or `nil` if absent/not a directory.
+    public static func directoryInode(at url: URL) -> UInt64? {
+        var st = stat()
+        guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
+            return nil
+        }
+        return UInt64(truncatingIfNeeded: st.st_ino)
+    }
+
     /// Removes the `openLeafNow` transaction marker for `chatKey`.
     public static func clearPendingLeafOpen(for chatKey: String, under root: URL) {
         let fm = FileManager.default
@@ -534,18 +612,36 @@ public enum QueuedMessageStore {
         }
     }
 
+    /// Removes all `openLeafNow` transaction markers under `root` (e.g. after `Backup.restore` replaces `Team/`).
+    public static func clearAllPendingLeafOpens(under root: URL) {
+        let fm = FileManager.default
+        let dir = pendingLeafOpenDir(under: root)
+        if fm.fileExists(atPath: dir.path) {
+            try? fm.removeItem(at: dir)
+        }
+    }
+
     /// Reconciles any interrupted or partially failed `openLeafNow` transactions on startup:
+    /// - If `Team/chats` itself was replaced (e.g. by a backup restore), discards the stale marker without touching files.
     /// - If the leaf is still listed in `<chatKey>~leaves.json` and its leaf chat file still exists on disk,
-    ///   rolls back the uncommitted active chat and active queue copy so no duplicate conversation or queue remains.
+    ///   rolls back ONLY the exact active chat file and active queue copy written by this transaction (verified by
+    ///   entry IDs, queue item IDs, and POSIX inode) so newer turns or restored backups are never deleted.
     /// - If the leaf was already removed from `<chatKey>~leaves.json`, completes cleanup of the leftover leaf files and queue.
     public static func reconcilePendingLeafOpens(teamRoot: URL, queuedRoot: URL) {
         let transactions = loadPendingLeafOpens(from: queuedRoot)
         guard !transactions.isEmpty else { return }
         let fm = FileManager.default
         let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let currentChatsDirInode = directoryInode(at: chatsDir)
         let slots = loadAllSlots(from: queuedRoot)
 
         for tx in transactions {
+            if let expectedDirInode = tx.chatsDirInode, currentChatsDirInode != expectedDirInode {
+                // `Team/chats` was replaced (for example by `Backup.restore`): discard stale marker safely.
+                clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
+                continue
+            }
+
             let safeChat = tx.chatKey.replacingOccurrences(of: "/", with: "_")
             let safeLeaf = tx.leafKey.replacingOccurrences(of: "/", with: "_")
             let activeChatURL = chatsDir.appendingPathComponent("\(safeChat).json")
@@ -567,13 +663,25 @@ public enum QueuedMessageStore {
             }
 
             if leafStillInIndex && fm.fileExists(atPath: leafChatURL.path) {
-                // Index write never committed: roll back partially written active chat and active queue.
+                // Index write never committed: roll back active chat / queue ONLY if they still match this transaction.
                 var rollbackOk = true
                 if fm.fileExists(atPath: activeChatURL.path) {
-                    try? fm.removeItem(at: activeChatURL)
-                    if fm.fileExists(atPath: activeChatURL.path) { rollbackOk = false }
+                    if let chatData = try? Data(contentsOf: activeChatURL),
+                       let records = try? JSONDecoder().decode([LeafIDRecord].self, from: chatData) {
+                        let matchesEntries = records.map(\.id) == tx.writtenChatEntryIds
+                        let matchesInode = tx.writtenChatInode == nil || fileInode(at: activeChatURL) == tx.writtenChatInode
+                        if matchesEntries && matchesInode {
+                            try? fm.removeItem(at: activeChatURL)
+                            if fm.fileExists(atPath: activeChatURL.path) { rollbackOk = false }
+                        }
+                    } else {
+                        // Active chat exists but cannot be decoded: fail closed, do not delete.
+                        rollbackOk = false
+                    }
                 }
-                if let activeSlot = slots[tx.chatKey] {
+                if !tx.writtenActiveQueuedIds.isEmpty,
+                   let activeSlot = slots[tx.chatKey],
+                   activeSlot.items.map(\.id) == tx.writtenActiveQueuedIds {
                     let keepIds = Set(tx.priorActiveQueuedIds)
                     let restoredPrior = activeSlot.items.filter { keepIds.contains($0.id) }
                     do {
@@ -587,10 +695,20 @@ public enum QueuedMessageStore {
                 }
             } else if !leafStillInIndex {
                 // Index write already committed before crash: finish deleting leftover leaf files and leaf queue.
-                if fm.fileExists(atPath: leafChatURL.path) { try? fm.removeItem(at: leafChatURL) }
-                if fm.fileExists(atPath: leafSummaryURL.path) { try? fm.removeItem(at: leafSummaryURL) }
-                try? save([], for: tx.leafKey, under: queuedRoot)
-                if !fm.fileExists(atPath: leafChatURL.path), !fm.fileExists(atPath: folder(for: tx.leafKey, under: queuedRoot).path) {
+                let leafMatchesInode = tx.leafChatInode == nil || fileInode(at: leafChatURL) == tx.leafChatInode
+                if fm.fileExists(atPath: leafChatURL.path), leafMatchesInode {
+                    try? fm.removeItem(at: leafChatURL)
+                }
+                if fm.fileExists(atPath: leafSummaryURL.path), leafMatchesInode {
+                    try? fm.removeItem(at: leafSummaryURL)
+                }
+                if !fm.fileExists(atPath: leafChatURL.path) {
+                    try? save([], for: tx.leafKey, under: queuedRoot)
+                }
+                if !leafMatchesInode {
+                    clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
+                } else if !fm.fileExists(atPath: leafChatURL.path),
+                          !fm.fileExists(atPath: folder(for: tx.leafKey, under: queuedRoot).path) {
                     clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
                 }
             } else {

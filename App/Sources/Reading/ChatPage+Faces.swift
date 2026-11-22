@@ -172,14 +172,18 @@ extension ChatPage {
     }
 
     /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
-    func redo(from entry: String? = nil, text: String? = nil) {
+    @discardableResult
+    func redo(from entry: String? = nil, text: String? = nil) -> Bool {
+        guard !sendingBlocked else { return false }
         following = true
         let changed = team.changedFiles(chat.key, from: entry)
         guard !changed.isEmpty else {
-            if let entry, let text { chat.resend(entry, text: text) } else { chat.retry() }
-            return
+            if let entry, let text { return chat.resend(entry, text: text) }
+            chat.retry()
+            return true
         }
         undoAsk = UndoAsk(entry: entry, text: text, files: changed.map { WorkPlace(code: $0.place).title + "：" + $0.path })
+        return true
     }
 
     func finishRedo(_ ask: UndoAsk, restoring: Bool) {

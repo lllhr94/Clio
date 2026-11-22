@@ -97,13 +97,56 @@ enum QueuedStore {
 
     private static let blockedDefaultsKey = "clio.blockedPreRestoreQueues"
 
+    /// Atomically writes every currently persisted queue slot into `.restore-blocked.json` BEFORE `Backup.restore`
+    /// replaces `Team/`. Throws if the barrier cannot be persisted so restore aborts cleanly instead of leaving
+    /// an unprotected window where a crash could attach old queues to restored conversations.
+    nonisolated static func armPreRestoreBarrier() throws -> Set<String> {
+        var result: Set<String> = []
+        var failure: Error?
+        writer.sync {
+            do {
+                result = try QueuedMessageStore.armPreRestoreBarrier(under: root)
+                if !result.isEmpty {
+                    recordBlockedSlotsInDefaults(Array(result))
+                }
+            } catch {
+                failure = error
+            }
+        }
+        if let failure { throw failure }
+        return result
+    }
+
+    /// Rolls back newly armed pre-restore barrier entries when `Backup.restore` fails and leaves `Team/` untouched.
+    nonisolated static func disarmPreRestoreBarrier(newlyArmed: Set<String>, previouslyBlocked: Set<String>) {
+        guard !newlyArmed.isEmpty else { return }
+        writer.sync {
+            QueuedMessageStore.disarmPreRestoreBarrier(
+                newlyArmed: newlyArmed,
+                previouslyBlocked: previouslyBlocked,
+                under: root
+            )
+            if previouslyBlocked.isEmpty {
+                UserDefaults.standard.removeObject(forKey: blockedDefaultsKey)
+            } else {
+                UserDefaults.standard.set(previouslyBlocked.sorted(), forKey: blockedDefaultsKey)
+            }
+        }
+    }
+
     /// Isolates all pre-restore queued messages out of active `ClioQueued` right after `Backup.restore` succeeds
     /// so pre-restore queues can never attach to or auto-send into a restored backup's conversations.
     @discardableResult
     nonisolated static func isolatePreRestoreQueues() -> IsolationReport {
         writer.sync {
             let report = QueuedMessageStore.isolateAll(from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
-            recordBlockedSlotsInDefaults(report.failedSlots)
+            let remainingBlocked = QueuedMessageStore.loadBlockedSlots(from: root)
+            if remainingBlocked.isEmpty && report.failedSlots.isEmpty {
+                UserDefaults.standard.removeObject(forKey: blockedDefaultsKey)
+            } else {
+                let union = remainingBlocked.union(report.failedSlots)
+                UserDefaults.standard.set(union.sorted(), forKey: blockedDefaultsKey)
+            }
             return report
         }
     }
@@ -144,6 +187,10 @@ enum QueuedStore {
     nonisolated static func savePendingLeafOpen(_ tx: PendingLeafOpen) throws {
         var failure: Error?
         writer.sync {
+            guard !Disk.frozen else {
+                failure = TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+                return
+            }
             do {
                 try QueuedMessageStore.savePendingLeafOpen(tx, under: root)
             } catch {
@@ -156,6 +203,12 @@ enum QueuedStore {
     nonisolated static func clearPendingLeafOpen(for chatKey: String) {
         writer.sync {
             QueuedMessageStore.clearPendingLeafOpen(for: chatKey, under: root)
+        }
+    }
+
+    nonisolated static func clearAllPendingLeafOpens() {
+        writer.sync {
+            QueuedMessageStore.clearAllPendingLeafOpens(under: root)
         }
     }
 

@@ -287,6 +287,7 @@ extension TeamModel {
         queued = restored
         inFlightQueued = [:]
         pendingInterjects = [:]
+        unresolvedLeafOpenChats = []
         sortBots()
         deliverDue()
     }

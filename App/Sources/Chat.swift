@@ -515,27 +515,31 @@ final class ChatModel {
 
     // MARK: Sending
 
-    func send(_ text: String, photos: [Data] = []) {
+    @discardableResult
+    func send(_ text: String, photos: [Data] = []) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !photos.isEmpty else { return }
+        guard !trimmed.isEmpty || !photos.isEmpty else { return false }
         withAnimation(.smooth) { error = nil }
-        if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return }
+        if demo { sendDemo(Self.withPhotos(trimmed, photos.count)); return true }
         // While the companion works, the message queues and waits; the reply being written is left alone.
-        team.send(trimmed, photos: photos, to: key)
+        return team.send(trimmed, photos: photos, to: key)
     }
 
     /// 插话: reaches the companion between its steps. Photos can't go in passing; they wait for the turn to end.
-    func interject(_ text: String, photos: [Data] = []) {
+    @discardableResult
+    func interject(_ text: String, photos: [Data] = []) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !photos.isEmpty else { return }
-        if demo || !photos.isEmpty { send(trimmed, photos: photos); return }
-        team.interject(trimmed, to: key)
+        guard !trimmed.isEmpty || !photos.isEmpty else { return false }
+        if demo || !photos.isEmpty { return send(trimmed, photos: photos) }
+        return team.interject(trimmed, to: key)
     }
 
     /// 中断并发送: stop what it is doing and send this now.
-    func sendNow(_ text: String, photos: [Data] = []) {
-        send(text, photos: photos)
+    @discardableResult
+    func sendNow(_ text: String, photos: [Data] = []) -> Bool {
+        guard send(text, photos: photos) else { return false }
         team.sendQueueNow(key)
+        return true
     }
 
     func retry(_ id: String) {}
@@ -560,13 +564,15 @@ final class ChatModel {
     }
 
     /// Changes something already said, and answers from there.
-    func resend(_ id: String, text: String, restoring: Bool = false) {
+    @discardableResult
+    func resend(_ id: String, text: String, restoring: Bool = false) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !demo, !trimmed.isEmpty else { return }
+        guard !demo, !trimmed.isEmpty else { return false }
+        guard team.canAcceptInput(for: key) else { return false }
         withAnimation(.smooth) { error = nil }
         target = ""
         streaming = ""
-        team.resend(key, entry: id, text: trimmed, restoring: restoring)
+        return team.resend(key, entry: id, text: trimmed, restoring: restoring)
     }
 
     func stop() {

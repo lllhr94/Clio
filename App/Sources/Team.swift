@@ -142,7 +142,10 @@ final class TeamModel: ObservableObject {
     var entries: [String: [Entry]] = [:]
     let modelInputLog = ModelInputLog()
     /// Conversations whose earlier page is being brought back right now (one at a time per conversation).
-    var openingLeaves: Set<String> = []
+    @Published var openingLeaves: Set<String> = []
+    /// Conversations whose `openLeafNow` rollback failed and left a pending transaction on disk;
+    /// paused from new writes until relaunch reconciles them so newer turns cannot collide with rollback.
+    @Published var unresolvedLeafOpenChats: Set<String> = []
     var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
     var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
@@ -298,7 +301,7 @@ final class TeamModel: ObservableObject {
 
     @discardableResult
     func renameLeaf(_ key: String, id: String, to title: String) -> Bool {
-        guard !openingLeaves.contains(key) else { return false }
+        guard canAcceptInput(for: key) else { return false }
         var list = leaves(key)
         guard let index = list.firstIndex(where: { $0.id == id && $0.marker == nil }) else { return false }
         let title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
@@ -309,7 +312,7 @@ final class TeamModel: ObservableObject {
 
     @discardableResult
     func deleteLeaf(_ key: String, id: String) -> Bool {
-        guard !openingLeaves.contains(key) else { return false }
+        guard canAcceptInput(for: key) else { return false }
         let list = leaves(key)
         guard list.contains(where: { $0.id == id && $0.marker == nil }),
               writeEditedLeaves(key, list.filter { $0.id != id }) else { return false }
@@ -340,7 +343,7 @@ final class TeamModel: ObservableObject {
 
     /// Takes the newest compression line out: the model reads those lines word for word again.
     func unfoldLine(_ key: String) {
-        guard let line = undoableLine(key) else { return }
+        guard canAcceptInput(for: key), let line = undoableLine(key) else { return }
         let rest = history(key).filter { $0.id != line.id }
         entries[key] = rest
         if keeping {
@@ -363,7 +366,7 @@ final class TeamModel: ObservableObject {
 
     /// Undoes a compression: the full text comes back, with everything said since; the summary goes back to what it was before.
     func unfold(_ key: String, _ leaf: Leaf) {
-        guard keeping, let marker = leaf.marker, let original = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) else { return }
+        guard keeping, canAcceptInput(for: key), let marker = leaf.marker, let original = Disk.load([Entry].self, Self.leafFile(key, leaf.id)) else { return }
         stop(key)
         let restored = Turns.unfolded(original: original, current: history(key), marker: marker)
         // The kept original is deleted below: only once the restored conversation is surely saved.
@@ -420,11 +423,12 @@ final class TeamModel: ObservableObject {
     /// conversation could not be put aside (the disk is full, say): then it stays as it is.
     @discardableResult
     func turnLeaf(_ key: String) -> Bool {
-        guard !openingLeaves.contains(key) else { return false }
+        guard canAcceptInput(for: key) else { return false }
         return shelveCurrent(key)
     }
 
     private func shelveCurrent(_ key: String) -> Bool {
+        guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return false }
         stop(key)
         restoreUnemittedInterjects(for: key)
         epochs[key, default: 0] += 1
@@ -509,7 +513,7 @@ final class TeamModel: ObservableObject {
     /// Empties the current conversation. The legacy clear action can also remove every conversation put aside.
     @discardableResult
     func clearChat(_ key: String, includingLeaves: Bool = true) -> Bool {
-        guard !openingLeaves.contains(key) else { return false }
+        guard canAcceptInput(for: key) else { return false }
         clearQueuedSlot(key)
         stop(key)
         epochs[key, default: 0] += 1
@@ -544,7 +548,7 @@ final class TeamModel: ObservableObject {
     func openLeaf(_ key: String, _ leaf: Leaf) {
         // Reading and saving a long conversation took the main thread long enough to stall the sidebar's tap:
         // the file work now runs off it, and the steps that change what is on screen stay in order here.
-        guard !openingLeaves.contains(key) else { return }
+        guard canAcceptInput(for: key) else { return }
         openingLeaves.insert(key)
         Task { [weak self] in
             await self?.openLeafNow(key, leaf)
@@ -572,6 +576,7 @@ final class TeamModel: ObservableObject {
             kept = read.entries ?? []
             keptSummary = read.summary
         }
+        guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return }
         guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
         guard shelveCurrent(key) else { return }
         let leafKey = Self.threadKey(key, leaf: leaf.id)
@@ -588,25 +593,36 @@ final class TeamModel: ObservableObject {
             let toSave = kept
             let saveQueue = !persistSnapshot.isEmpty
             let listPath = Self.leafList(key)
-            let tx = PendingLeafOpen(
+            let chatsDirURL = Disk.root.appendingPathComponent("chats", isDirectory: true)
+            let activeChatURL = Disk.url(Disk.chatFile(key))
+            let leafChatURL = Disk.url(Self.leafFile(key, leaf.id))
+            let initialTx = PendingLeafOpen(
                 chatKey: key,
                 leafId: leaf.id,
                 leafKey: leafKey,
-                priorActiveQueuedIds: priorQueued.map(\.id)
+                priorActiveQueuedIds: priorQueued.map(\.id),
+                writtenChatEntryIds: toSave.map(\.id),
+                writtenActiveQueuedIds: saveQueue ? persistSnapshot.map(\.id) : [],
+                writtenChatInode: nil,
+                chatsDirInode: QueuedMessageStore.directoryInode(at: chatsDirURL),
+                leafChatInode: QueuedMessageStore.fileInode(at: leafChatURL)
             )
-            let saved: Error? = await Task.detached(priority: .userInitiated) {
+            let saved: (error: Error?, unresolvedRollback: Bool) = await Task.detached(priority: .userInitiated) {
                 var wroteChat = false
                 var wroteQueue = false
+                var tx = initialTx
                 do {
                     try QueuedStore.savePendingLeafOpen(tx)
                     try ChatDisk.saveAndWait(toSave, chat: key)
                     wroteChat = true
+                    tx.writtenChatInode = QueuedMessageStore.fileInode(at: activeChatURL)
+                    try QueuedStore.savePendingLeafOpen(tx)
                     if saveQueue {
                         try QueuedStore.saveAndWait(persistSnapshot, for: key, anchor: targetAnchor)
                         wroteQueue = true
                     }
                     try Disk.write(remainingLeaves, listPath)
-                    return nil
+                    return (nil, false)
                 } catch {
                     var rollbackClean = true
                     if wroteQueue {
@@ -619,7 +635,7 @@ final class TeamModel: ObservableObject {
                     if wroteChat {
                         if priorEntries.isEmpty {
                             ChatDisk.removeAndWait(key)
-                            if FileManager.default.fileExists(atPath: Disk.url(Disk.chatFile(key)).path) {
+                            if FileManager.default.fileExists(atPath: activeChatURL.path) {
                                 rollbackClean = false
                             }
                         } else {
@@ -633,11 +649,20 @@ final class TeamModel: ObservableObject {
                     if rollbackClean {
                         QueuedStore.clearPendingLeafOpen(for: key)
                     }
-                    return error
+                    return (error, !rollbackClean)
                 }
             }.value
-            if let saved {
-                fail(key, "没能翻回这一段：存不进手机（\(saved.localizedDescription)）。它还在絮语页里。")
+            if let error = saved.error {
+                if saved.unresolvedRollback {
+                    // Pause further writes to this chat without touching chats/<key>.json until relaunch reconciles it.
+                    unresolvedLeafOpenChats.insert(key)
+                    let text = Words.t("没能翻回这一段，且清理临时写入也失败（\(error.localizedDescription)）。它还在絮语页里；为防覆盖，已暂停这段对话的新发送，请腾出空间后重启 Clio。")
+                    Diag.note(text)
+                    notify(key, .failed(text))
+                    PetNews.shared.post(.failed, chat: key, title: chatName(key))
+                } else {
+                    fail(key, "没能翻回这一段：存不进手机（\(error.localizedDescription)）。它还在絮语页里。")
+                }
                 return
             }
         }
@@ -693,7 +718,7 @@ final class TeamModel: ObservableObject {
         Task { [weak self] in
             guard let title = try? await agent.ask("给下面这段对话起个标题：\n\n" + transcript) else { return }
             let clean = title.trimmingCharacters(in: CharacterSet(charactersIn: "「」\"'《》 \n。.")).prefix(20)
-            guard let self, !clean.isEmpty else { return }
+            guard let self, self.canAcceptInput(for: key), !clean.isEmpty else { return }
             var list = self.leaves(key)
             guard let index = list.firstIndex(where: { $0.id == id }), list[index].title == initialTitle else { return }
             list[index].title = String(clean)
@@ -702,7 +727,7 @@ final class TeamModel: ObservableObject {
     }
 
     func dropLeaf(_ key: String, _ leaf: Leaf) {
-        guard !openingLeaves.contains(key) else { return }
+        guard canAcceptInput(for: key) else { return }
         if keeping {
             Disk.remove(Self.leafFile(key, leaf.id))
             Disk.remove(Self.leafSummary(key, leaf.id))
@@ -796,10 +821,14 @@ final class TeamModel: ObservableObject {
     /// Chats whose queue goes out as soon as the stopped turn has wound down (「立即发送」).
     var sendQueuedNow: Set<String> = []
     /// True while a backup restore is running or after it succeeded until relaunch: blocks all queue dispatch and new turns.
-    var queueDispatchSuspended = false
+    @Published var queueDispatchSuspended = false
 
     private var canDispatchQueue: Bool {
         QueuedMessageStore.canDispatchQueue(isFrozen: Disk.frozen, isRestoring: queueDispatchSuspended)
+    }
+
+    func canAcceptInput(for key: String) -> Bool {
+        canDispatchQueue && !openingLeaves.contains(key) && !unresolvedLeafOpenChats.contains(key)
     }
 
     func beginBackupRestore() {
@@ -815,6 +844,7 @@ final class TeamModel: ObservableObject {
         pendingInterjects.removeAll()
         inFlightQueued.removeAll()
         queued.removeAll()
+        unresolvedLeafOpenChats.removeAll()
     }
 
     func finishBackupRestoreFailed() {
@@ -875,14 +905,15 @@ final class TeamModel: ObservableObject {
         if keeping { QueuedStore.clear(key) }
     }
 
-    func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) {
+    @discardableResult
+    func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) -> Bool {
+        guard phase != .demo, canAcceptInput(for: key) else { return false }
         if archived.contains(key) { archive(key, false) }
-        guard phase != .demo, canDispatchQueue else { return }
         // Busy with its own turn, or helping another companion: the message waits its turn.
         if runs[key] != nil || helping.contains(key) {
             withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated)) }
             persistQueued(key)
-            return
+            return true
         }
         let names = keeping ? photos.map(Disk.keepPhoto) : []
         // A finished checklist goes when the next thing is asked; one still under way stays.
@@ -890,20 +921,23 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
         touch(key, preview: nil)
         start(key, userInitiated: userInitiated)
+        return true
     }
 
     /// 插话: said while the companion works. It reaches the companion after the step in progress, without
     /// stopping it; if the turn ends first, it goes out as the next message like anything queued.
-    func interject(_ text: String, to key: String) {
-        guard canDispatchQueue else { return }
-        guard runs[key] != nil else { send(text, photos: [], to: key); return }
+    @discardableResult
+    func interject(_ text: String, to key: String) -> Bool {
+        guard phase != .demo, canAcceptInput(for: key) else { return false }
+        guard runs[key] != nil else { return send(text, photos: [], to: key) }
         withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: [], interject: true)) }
         persistQueued(key)
+        return true
     }
 
     /// What was said in passing, taken out of the queue for the companion to read now.
     func takeInbox(_ key: String) -> [String] {
-        guard canDispatchQueue else { return [] }
+        guard canAcceptInput(for: key) else { return [] }
         guard let list = queued[key], list.contains(where: \.interject) else { return [] }
         let taken = list.filter(\.interject)
         let rest = list.filter { !$0.interject }
@@ -920,7 +954,7 @@ final class TeamModel: ObservableObject {
 
     /// 「立即发送」: stop the turn in progress and send what is queued now.
     func sendQueueNow(_ key: String) {
-        guard canDispatchQueue else { return }
+        guard canAcceptInput(for: key) else { return }
         guard queued[key]?.isEmpty == false else { return }
         if runs[key] != nil {
             sendQueuedNow.insert(key)
@@ -933,6 +967,7 @@ final class TeamModel: ObservableObject {
     /// 「撤回」: a queued message comes back out of the queue, for the composer.
     /// Pass `deferRemoval: true` when the caller must persist the draft first and then call `confirmQueuedRemoved`.
     func unqueue(_ key: String, _ id: UUID, deferRemoval: Bool = false) -> Queued? {
+        guard canAcceptInput(for: key) else { return nil }
         guard let index = queued[key]?.firstIndex(where: { $0.id == id }) else { return nil }
         var list = queued[key] ?? []
         let item = list.remove(at: index)
@@ -947,7 +982,7 @@ final class TeamModel: ObservableObject {
 
     /// Everything queued goes out as one message, as if written at once.
     func flushQueue(_ key: String) {
-        guard phase != .demo, canDispatchQueue else { return }
+        guard phase != .demo, canAcceptInput(for: key) else { return }
         guard runs[key] == nil, !helping.contains(key) else { return }
         guard let waiting = queued[key], !waiting.isEmpty else { return }
         let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -999,7 +1034,7 @@ final class TeamModel: ObservableObject {
     }
 
     func start(_ key: String, userInitiated: Bool = true) {
-        guard canDispatchQueue else { return }
+        guard canAcceptInput(for: key) else { return }
         let previous = runs[key]?.task
         stop(key)
         let token = UUID()
@@ -1112,7 +1147,7 @@ final class TeamModel: ObservableObject {
 
     /// 「接着做」: a turn iOS cut short in the background goes on from where it stopped.
     func resume(_ key: String) {
-        guard runs[key] == nil else { return }
+        guard canAcceptInput(for: key), runs[key] == nil else { return }
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user("接着做：刚才 app 在后台被系统暂停了，请从停下的地方继续，写过的不用重复。")), to: key)
         touch(key, preview: nil)
         start(key, userInitiated: false)
@@ -1190,7 +1225,7 @@ final class TeamModel: ObservableObject {
         // Told in the other conversations when the user comes back to them (你不在时).
         if !cancelled { record(ok ? .done : .failed, in: key) }
         // If a turn stopped after `takeInbox` before `hear` received its user message, return it to the queue.
-        guard canDispatchQueue else { return }
+        guard canAcceptInput(for: key) else { return }
         if runs[key] == nil { restoreUnemittedInterjects(for: key) }
         // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
         // A turn that failed or was stopped leaves the queue for the user to send or take back.
@@ -1505,7 +1540,7 @@ final class TeamModel: ObservableObject {
     }
 
     func retry(_ key: String, restoring: Bool = false) {
-        guard phase != .demo else { return }
+        guard phase != .demo, canAcceptInput(for: key) else { return }
         stop(key)
         let turns = turnsToUndo(key)
         guard let list = Turns.retried(history(key)) else { return }
@@ -1531,8 +1566,9 @@ final class TeamModel: ObservableObject {
     }
 
     /// Changes something the user said and goes on from there; what came after it is dropped.
-    func resend(_ key: String, entry id: String, text: String, restoring: Bool = false) {
-        guard phase != .demo else { return }
+    @discardableResult
+    func resend(_ key: String, entry id: String, text: String, restoring: Bool = false) -> Bool {
+        guard phase != .demo, canAcceptInput(for: key) else { return false }
         stop(key)
         let turns = turnsToUndo(key, from: id)
         guard let list = Turns.edited(history(key), id: id, change: { entry in
@@ -1540,18 +1576,22 @@ final class TeamModel: ObservableObject {
             edited.message.text = text
             edited.at = Now.ms
             return edited
-        }) else { return }
+        }) else { return false }
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
-        guard restoring else { return start(key) }
+        guard restoring else {
+            start(key)
+            return true
+        }
         Task {
             let result = await Snapshots.shared.restore(key, turns: turns)
             noteRestore(key, result)
             // Files that did not come back: the user decides whether to go on (the review, #14).
             if result.failed.isEmpty { start(key) }
         }
+        return true
     }
 
     struct RequestContext: Sendable {
