@@ -102,36 +102,46 @@ final class Den: ObservableObject {
             if case .broken(let why) = state { return Outcome(code: -1, output: "", errorOutput: why, timedOut: false) }
             return Outcome(code: -1, output: "", errorOutput: Words.t("斗室没醒。"), timedOut: false)
         }
+        let stopped = Outcome(code: -1, output: "", errorOutput: "命令已取消。", timedOut: false)
+        guard !Task.isCancelled else { return stopped }
+        let duration = timeout.isFinite ? max(1, min(timeout, 86_400)) : 120
         if shown { note(.command, command) }
-        var pid: Int32 = -1
-        // What it printed so far, handed back if the time runs out (so the model knows how far it got).
+        let control = CommandControl()
         let printed = PrintedLines()
-        let result: Outcome = await withCheckedContinuation { continuation in
-            let once = Once(continuation)
-            pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: { [weak self] line, isError in
-                printed.add(line)
-                onOutput?(line)
-                guard shown else { return }
-                MainActor.assumeIsolated { self?.note(isError ? .error : .out, line) }
-            }, done: { code, output, errorOutput in
-                once.finish(Outcome(code: code, output: output, errorOutput: errorOutput, timedOut: false))
-            })
-            if pid < 0 {
-                once.finish(Outcome(code: pid, output: "", errorOutput: "命令没能启动（错误 \(pid)）", timedOut: false))
-                return
-            }
-            running.insert(pid)
-            let started = pid
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(max(1, timeout) * 1_000_000_000))
-                if once.finish(Outcome(code: -1, output: printed.value, errorOutput: "", timedOut: true)) {
-                    DenKernel.kill(started)
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let once = Once(continuation)
+                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: { [weak self] line, isError in
+                    printed.add(line)
+                    onOutput?(line)
+                    guard shown else { return }
+                    MainActor.assumeIsolated { self?.note(isError ? .error : .out, line) }
+                }, done: { code, output, errorOutput in
+                    once.finish(Outcome(code: code, output: output, errorOutput: errorOutput, timedOut: false))
+                })
+                guard pid >= 0 else {
+                    once.finish(Outcome(code: pid, output: "", errorOutput: "命令没能启动（错误 \(pid)）", timedOut: false))
+                    return
+                }
+                running.insert(pid)
+                control.pid = pid
+                control.once = once
+                control.timer = Task { @MainActor in
+                    do { try await Task.sleep(for: .seconds(duration)) } catch { return }
+                    control.stop(Outcome(code: -1, output: printed.value, errorOutput: "", timedOut: true))
                 }
             }
+        } onCancel: {
+            Task { @MainActor in
+                control.stop(Outcome(code: -1, output: printed.value, errorOutput: stopped.errorOutput, timedOut: false))
+            }
         }
-        running.remove(pid)
+        control.timer?.cancel()
+        control.timer = nil
+        control.once = nil
+        if let pid = control.pid { running.remove(pid) }
         if shown {
-            if result.timedOut { note(.note, "超过 \(Int(timeout)) 秒，停掉了") } else if result.code != 0 { note(.note, "退出码 \(result.code)") }
+            if result.timedOut { note(.note, "超过 \(Int(duration)) 秒，停掉了") } else if result.code != 0 { note(.note, "退出码 \(result.code)") }
         }
         return result
     }
@@ -145,6 +155,18 @@ final class Den: ObservableObject {
     private func note(_ kind: Line.Kind, _ text: String) {
         log.append(Line(kind: kind, text: text))
         if log.count > 2000 { log.removeFirst(log.count - 2000) }
+    }
+
+    @MainActor
+    private final class CommandControl {
+        var pid: Int32?
+        var once: Once?
+        var timer: Task<Void, Never>?
+
+        func stop(_ outcome: Outcome) {
+            guard let pid, once?.finish(outcome) == true else { return }
+            DenKernel.kill(pid)
+        }
     }
 
     private final class Once: @unchecked Sendable {

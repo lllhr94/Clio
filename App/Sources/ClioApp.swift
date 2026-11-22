@@ -20,22 +20,42 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if let id = info["approval"] as? String, ["allow", "deny"].contains(response.actionIdentifier) {
             let allow = response.actionIdentifier == "allow"
             await MainActor.run {
-                NotificationCenter.default.post(name: .clioAnswerApproval, object: id, userInfo: ["allow": allow])
+                ChatNotificationRoute.enqueue(.answer(id, allow))
             }
             return
         }
-        guard let chat = info["chat"] as? String else { return }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let chat = info["chat"] as? String, !chat.isEmpty else { return }
         await MainActor.run {
-            NotificationCenter.default.post(name: .clioOpenChat, object: chat)
+            ChatNotificationRoute.enqueue(.open(chat))
         }
+    }
+}
+
+/// A cold launch can receive the tap before Desk subscribes.
+@MainActor
+enum ChatNotificationRoute {
+    enum Action {
+        case open(String)
+        case answer(String, Bool)
+    }
+
+    private static var pending: [Action] = []
+
+    static func enqueue(_ action: Action) {
+        pending.append(action)
+        NotificationCenter.default.post(name: .clioOpenChat, object: nil)
+    }
+
+    static func take() -> [Action] {
+        defer { pending.removeAll(keepingCapacity: true) }
+        return pending
     }
 }
 
 extension Notification.Name {
     /// Object: a chat key, `bot-…` or `room-…`.
     static let clioOpenChat = Notification.Name("clio.openChat")
-    /// Object: an approval id; userInfo `allow`: Bool. Answered from a notification.
-    static let clioAnswerApproval = Notification.Name("clio.answerApproval")
 }
 
 @main

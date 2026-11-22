@@ -549,6 +549,7 @@
     "working": "正在处理…"
   },
   "errors": {
+    "exportChat": "这次没能导出对话，请重试。",
     "imagePromptEmpty": "请先说明想画什么。",
     "imageTimeout": "生图超时了，请稍后再试。",
     "imageConnection": "连不上生图服务，检查网络或服务地址后再试。",

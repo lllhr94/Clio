@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Darwin
 import Foundation
 import ImageIO
 import UIKit
@@ -65,6 +66,7 @@ enum Workspace {
         var found: [(path: String, size: Int, date: Date)] = []
         guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
         for case let url as URL in walker {
+            if Task.isCancelled { break }
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             found.append((relative(url), values.fileSize ?? 0, values.contentModificationDate ?? .distantPast))
             if found.count >= cap { break }
@@ -174,67 +176,105 @@ struct DeskTool: AgentTool {
     func run(_ arguments: JSONValue) async throws -> ToolOutput { try await act(arguments) }
 }
 
-/// Runs JavaScript on its own thread, away from the screen, and gives up waiting after ten seconds.
+/// Runs JavaScript off the main thread. The watchdog interrupts JavaScriptCore itself, not just its caller.
 enum Reckoner {
     static func run(_ code: String) async -> ToolOutput {
-        await withCheckedContinuation { (continuation: CheckedContinuation<ToolOutput, Never>) in
-            let once = Once(continuation)
-            let thread = Thread {
-                once.finish(evaluate(code))
+        let run = Run()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let thread = Thread { continuation.resume(returning: evaluate(code, run: run)) }
+                thread.stackSize = 8 << 20
+                thread.start()
             }
-            thread.stackSize = 8 << 20
-            thread.start()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                once.finish(ToolOutput("跑了 10 秒还没完，停止等待。可能有死循环，或者算得太多。", isError: true))
-            }
-        }
+        } onCancel: { run.cancel() }
     }
 
-    private final class Once: @unchecked Sendable {
-        private var continuation: CheckedContinuation<ToolOutput, Never>?
+    private final class Run: @unchecked Sendable {
+        private let deadline = DispatchTime.now() + .seconds(10)
         private let lock = NSLock()
-        init(_ continuation: CheckedContinuation<ToolOutput, Never>) { self.continuation = continuation }
-        func finish(_ output: ToolOutput) {
-            lock.lock()
-            let waiting = continuation
-            continuation = nil
-            lock.unlock()
-            waiting?.resume(returning: output)
+        private var cancelled = false
+
+        func cancel() { lock.withLock { cancelled = true } }
+
+        var interruption: ToolOutput? {
+            if lock.withLock({ cancelled }) { return ToolOutput("演算已取消。", isError: true) }
+            if DispatchTime.now() >= deadline { return ToolOutput("演算超过 10 秒，已停止。", isError: true) }
+            return nil
         }
     }
 
-    private static func evaluate(_ code: String) -> ToolOutput {
-        guard let context = JSContext() else { return ToolOutput("JavaScript 引擎起不来。", isError: true) }
-        var printed: [String] = []
+    // JavaScriptCore's C watchdog is SPI on Apple platforms. Resolve it at runtime and decline to start
+    // if this OS does not provide it: executing with no watchdog leaves a worker running indefinitely.
+    private typealias ShouldTerminate = @convention(c) (OpaquePointer?, UnsafeMutableRawPointer?) -> Bool
+    private typealias SetLimit = @convention(c) (OpaquePointer?, Double, ShouldTerminate?, UnsafeMutableRawPointer?) -> Void
+    private static let setLimit: SetLimit? = {
+        guard let framework = dlopen("/System/Library/Frameworks/JavaScriptCore.framework/JavaScriptCore", RTLD_LAZY | RTLD_LOCAL),
+              let symbol = dlsym(framework, "JSContextGroupSetExecutionTimeLimit") else { return nil }
+        return unsafeBitCast(symbol, to: SetLimit.self)
+    }()
+
+    private static let shouldTerminate: ShouldTerminate = { context, pointer in
+        Reckoner.checkTime(context, pointer)
+    }
+
+    private static func checkTime(_ context: OpaquePointer?, _ pointer: UnsafeMutableRawPointer?) -> Bool {
+        guard let context, let pointer, let group = JSContextGetGroup(context), let setLimit else { return true }
+        let run = Unmanaged<Run>.fromOpaque(pointer).takeUnretainedValue()
+        if run.interruption != nil { return true }
+        // Explicitly re-arm the next check. Some WebKit versions only invoke this callback once otherwise.
+        setLimit(group, 0.25, shouldTerminate, pointer)
+        return false
+    }
+
+    private static func evaluate(_ code: String, run: Run) -> ToolOutput {
+        if let interruption = run.interruption { return interruption }
+        guard let setLimit, let context = JSContext(), let group = JSContextGetGroup(context.jsGlobalContextRef) else {
+            return ToolOutput("这个系统无法为演算设置超时。", isError: true)
+        }
+        setLimit(group, 0.25, shouldTerminate, Unmanaged.passUnretained(run).toOpaque())
+        return withExtendedLifetime(run) { evaluate(code, context: context, run: run) }
+    }
+
+    private static func evaluate(_ code: String, context: JSContext, run: Run) -> ToolOutput {
+        let outputLimit = 12_000
+        var printed = ""
+        var clipped = false
         var failure: String?
         context.exceptionHandler = { _, exception in
+            guard run.interruption == nil else { return }
             let line = exception?.objectForKeyedSubscript("line")?.toString() ?? "?"
             failure = "出错（第 \(line) 行）：\(exception?.toString() ?? "未知错误")"
         }
         let log: @convention(block) () -> Void = {
-            let words = (JSContext.currentArguments() as? [JSValue] ?? []).map(show)
-            printed.append(words.joined(separator: " "))
+            guard printed.count < outputLimit, run.interruption == nil else { clipped = true; return }
+            let words = (JSContext.currentArguments() as? [JSValue] ?? []).map(show).joined(separator: " ")
+            if !printed.isEmpty { printed += "\n" }
+            let left = max(0, outputLimit - printed.count)
+            printed += words.prefix(left)
+            if words.count > left { clipped = true }
         }
         let console = JSValue(newObjectIn: context)
         for name in ["log", "info", "warn", "error"] { console?.setObject(log, forKeyedSubscript: name as NSString) }
         context.setObject(console, forKeyedSubscript: "console" as NSString)
         let readFile: @convention(block) (String) -> Any = { path in
-            guard let file = Workspace.resolve(path), let text = try? String(contentsOf: file, encoding: .utf8) else { return NSNull() }
+            guard run.interruption == nil, let file = Workspace.resolve(path), let text = try? String(contentsOf: file, encoding: .utf8) else { return NSNull() }
             return text
         }
         let writeFile: @convention(block) (String, String) -> Bool = { path, text in
-            guard let file = Workspace.resolve(path) else { return false }
+            guard run.interruption == nil, let file = Workspace.resolve(path) else { return false }
             try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             return (try? Data(text.utf8).write(to: file, options: .atomic)) != nil
         }
         context.setObject(readFile, forKeyedSubscript: "readFile" as NSString)
         context.setObject(writeFile, forKeyedSubscript: "writeFile" as NSString)
         let result = context.evaluateScript(code)
-        var out = printed.joined(separator: "\n")
-        if let result, !result.isUndefined, failure == nil {
+        if let interruption = run.interruption { return interruption }
+        var out = printed
+        if let result, !result.isUndefined, failure == nil, !clipped {
             out += (out.isEmpty ? "" : "\n") + "→ " + show(result)
         }
-        if out.count > 12000 { out = String(out.prefix(12000)) + "\n……（输出太长，截断了）" }
+        if let interruption = run.interruption { return interruption }
+        if clipped || out.count > outputLimit { out = String(out.prefix(outputLimit)) + "\n……（输出太长，截断了）" }
         if let failure { return ToolOutput((out.isEmpty ? "" : out + "\n") + failure, isError: true) }
         return ToolOutput(out.isEmpty ? "（跑完了，没有输出）" : out)
     }

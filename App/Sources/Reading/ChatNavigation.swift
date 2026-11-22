@@ -24,10 +24,13 @@ struct ChatBrowserIndicator: View {
 }
 
 struct ChatShareSheet: UIViewControllerRepresentable {
-    let url: URL
+    private let items: [Any]
+
+    init(url: URL) { items = [url] }
+    init(image: UIImage) { items = [image] }
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}

@@ -239,48 +239,70 @@ final class HillShell: @unchecked Sendable {
         task = Task.detached {
             do {
                 let client = try await Hills.connect(host)
-                let request = SSHChannelRequestEvent.PseudoTerminalRequest(
-                    wantReply: true,
-                    term: "xterm-256color",
-                    terminalCharacterWidth: max(20, columns),
-                    terminalRowHeight: max(5, rows),
-                    terminalPixelWidth: 0,
-                    terminalPixelHeight: 0,
-                    terminalModes: SSHTerminalModes([:])
-                )
-                try await client.withPTY(request, environment: []) { inbound, outbound in
-                    try await withThrowingTaskGroup(of: Void.self) { group in
-                        group.addTask {
-                            for await event in events {
-                                switch event {
-                                case .bytes(let data):
-                                    try await outbound.write(ByteBuffer(bytes: data))
-                                case .size(let columns, let rows):
-                                    try await outbound.changeSize(cols: columns, rows: rows, pixelWidth: 0, pixelHeight: 0)
+                let connection = Connection(client)
+                do {
+                    try await withTaskCancellationHandler {
+                        try Task.checkCancellation()
+                        let request = SSHChannelRequestEvent.PseudoTerminalRequest(
+                            wantReply: true,
+                            term: "xterm-256color",
+                            terminalCharacterWidth: max(20, columns),
+                            terminalRowHeight: max(5, rows),
+                            terminalPixelWidth: 0,
+                            terminalPixelHeight: 0,
+                            terminalModes: SSHTerminalModes([:])
+                        )
+                        try await client.withPTY(request, environment: []) { inbound, outbound in
+                            try await withThrowingTaskGroup(of: Void.self) { group in
+                                group.addTask {
+                                    for await event in events {
+                                        switch event {
+                                        case .bytes(let data):
+                                            try await outbound.write(ByteBuffer(bytes: data))
+                                        case .size(let columns, let rows):
+                                            try await outbound.changeSize(cols: columns, rows: rows, pixelWidth: 0, pixelHeight: 0)
+                                        }
+                                    }
                                 }
+                                group.addTask {
+                                    for try await chunk in inbound {
+                                        switch chunk {
+                                        case .stdout(let buffer), .stderr(let buffer):
+                                            output(Data(buffer.readableBytesView))
+                                        }
+                                    }
+                                }
+                                _ = try await group.next()
+                                group.cancelAll()
                             }
                         }
-                        group.addTask {
-                            for try await chunk in inbound {
-                                switch chunk {
-                                case .stdout(let buffer), .stderr(let buffer):
-                                    output(Data(buffer.readableBytesView))
-                                }
-                            }
-                        }
-                        _ = try await group.next()
-                        group.cancelAll()
+                    } onCancel: {
+                        Task { await connection.close() }
                     }
+                } catch {
+                    await connection.close()
+                    throw error
                 }
-                try? await client.close()
+                await connection.close()
                 ended(nil)
             } catch is CancellationError {
                 ended(nil)
             } catch let failed as SSHClient.CommandFailed {
-                ended(failed.exitCode == 0 ? nil : "退出码 \(failed.exitCode)")
+                ended(Task.isCancelled || failed.exitCode == 0 ? nil : "退出码 \(failed.exitCode)")
             } catch {
-                ended(error.localizedDescription)
+                ended(Task.isCancelled ? nil : error.localizedDescription)
             }
+        }
+    }
+
+    private actor Connection {
+        private var client: SSHClient?
+        init(_ client: SSHClient) { self.client = client }
+
+        func close() async {
+            guard let client else { return }
+            self.client = nil
+            try? await client.close()
         }
     }
 
