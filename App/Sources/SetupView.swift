@@ -468,7 +468,7 @@ struct SetupView: View {
     }
 
     private func tile(_ item: Service) -> some View {
-        let picked = item.id == choice.id
+        let selected = item.id == choice.id
         let added = team.settings.endpoints.contains { $0.service == item.id && !item.custom }
         return Button {
             Haptics.tick(0.6)
@@ -495,13 +495,13 @@ struct SetupView: View {
                     Text(item.note).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: Ink.Size.title))
-                    .foregroundStyle(picked ? Ink.accent : Ink.rule)
+                    .foregroundStyle(selected ? Ink.accent : Ink.rule)
             }
             .padding(.horizontal, Ink.Space.l)
             .frame(minHeight: Kit.rowHeight + Ink.Space.s)
-            .background(picked ? Ink.accentWash.opacity(0.5) : Color.clear)
+            .background(selected ? Ink.accentWash.opacity(0.5) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
