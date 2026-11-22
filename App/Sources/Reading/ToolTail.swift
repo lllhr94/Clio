@@ -13,7 +13,8 @@ final class ToolTail: ObservableObject {
 
     /// The producer keeps only the newest lines and schedules at most one UI update per burst.
     nonisolated func add(_ text: String) {
-        guard buffer.append(text) else { return }
+        let preview = String(decoding: text.utf8.prefix(1024), as: UTF8.self)
+        guard buffer.append(preview) else { return }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             guard let self else { return }

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Observation
 import UIKit
 import ZIPFoundation
@@ -124,7 +125,8 @@ final class PetLibrary {
     /// checks everything it names, and keeps only those files. The same pack imported again replaces the old one.
     /// A single picture or animation (PNG, GIF, APNG, WebP) becomes a pet that only has its idle state.
     func install(_ zip: URL) async throws -> PetPack {
-        let pack = try await Task.detached(priority: .userInitiated) { try Self.unpack(zip) }.value
+        let job = Task.detached(priority: .userInitiated) { try Self.unpack(zip) }
+        let pack = try await withTaskCancellationHandler { try await job.value } onCancel: { job.cancel() }
         PetSheets.forget(pack.id)
         packs = Self.ordered(packs.filter { $0.id != pack.id } + [pack])
         return pack
@@ -137,7 +139,9 @@ final class PetLibrary {
         try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
         let reading = zip.startAccessingSecurityScopedResource()
         defer { if reading { zip.stopAccessingSecurityScopedResource() } }
-        let size = (try? zip.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard let size = try zip.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            throw PetPack.Problem.bad("读不到宠物包的大小")
+        }
         guard size <= 64 << 20 else { throw PetPack.Problem.bad("包太大了（超过 64 MB）") }
 
         let ext = zip.pathExtension.lowercased()
@@ -147,19 +151,7 @@ final class PetLibrary {
         }
         let archive: Archive? = ext == "zip" ? try? Archive(url: zip, accessMode: .read) : nil
         if ext == "zip", archive == nil { throw PetPack.Problem.bad("打不开这个 zip") }
-        var entries = 0, unpacked = 0
-        for entry in archive.map { Array($0) } ?? [] {
-            entries += 1
-            unpacked += Int(entry.uncompressedSize)
-            guard entries <= 256, unpacked <= 64 << 20 else { throw PetPack.Problem.bad("包里的文件太多或太大") }
-            guard entry.type == .file else { continue }
-            let path = entry.path
-            guard !path.hasPrefix("/"), !path.split(separator: "/").contains(".."), !path.hasPrefix("__MACOSX") else { continue }
-            let target = scratch.appendingPathComponent(path)
-            guard target.standardizedFileURL.path.hasPrefix(scratch.standardizedFileURL.path) else { continue }
-            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            _ = try archive?.extract(entry, to: target)
-        }
+        if let archive { try extract(archive, into: scratch) }
 
         // pack.json at the top, or in exactly one folder.
         var candidates: [URL] = []
@@ -189,11 +181,18 @@ final class PetLibrary {
         guard sheets.count <= 64 else { throw PetPack.Problem.bad("图太多了（最多 64 张）") }
         for name in sheets {
             let url = base.appendingPathComponent(name)
-            guard let bytes = try? Data(contentsOf: url) else { throw PetPack.Problem.bad("少了图：\(name)") }
-            total += bytes.count
-            guard bytes.count <= 8 << 20, total <= 48 << 20 else { throw PetPack.Problem.bad("图太大了：\(name)") }
-            guard bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]), let image = UIImage(data: bytes)?.cgImage else { throw PetPack.Problem.bad("不是能用的 PNG：\(name)") }
-            guard image.width <= 4096, image.height <= 4096 else { throw PetPack.Problem.bad("图的边长超过 4096：\(name)") }
+            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw PetPack.Problem.bad("少了图：\(name)") }
+            total += size
+            guard size <= 8 << 20, total <= 48 << 20 else { throw PetPack.Problem.bad("图太大了：\(name)") }
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let type = CGImageSourceGetType(source), type as String == "public.png",
+                  let dimensions = PetConvert.dimensions(source, at: 0) else {
+                throw PetPack.Problem.bad("不是能用的 PNG：\(name)")
+            }
+            guard dimensions.width <= 4096, dimensions.height <= 4096 else { throw PetPack.Problem.bad("图的边长超过 4096：\(name)") }
+            guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                throw PetPack.Problem.bad("读不出这张 PNG：\(name)")
+            }
             for (animName, anim) in pack.animations where anim.sheet == name {
                 for frame in anim.frames {
                     let col = frame.i % anim.cols, row = frame.i / anim.cols
@@ -208,8 +207,10 @@ final class PetLibrary {
         let folder = packsFolder
         let staging = folder.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
         try data.write(to: staging.appendingPathComponent("pack.json"))
         for name in sheets { try fm.copyItem(at: base.appendingPathComponent(name), to: staging.appendingPathComponent(name)) }
+        try Task.checkCancellation()
         let final = folder.appendingPathComponent(id, isDirectory: true)
         if fm.fileExists(atPath: final.path) {
             _ = try fm.replaceItemAt(final, withItemAt: staging)
@@ -217,6 +218,40 @@ final class PetLibrary {
             try fm.moveItem(at: staging, to: final)
         }
         return try PetPack.parse(data, dir: final, id: id)
+    }
+
+    nonisolated private static func extract(_ archive: Archive, into scratch: URL) throws {
+        let fm = FileManager.default
+        let limit = 64 << 20
+        var written = 0
+        for (index, entry) in archive.enumerated() {
+            try Task.checkCancellation()
+            guard index < 256 else { throw PetPack.Problem.bad("包里的文件太多或太大") }
+            guard entry.type == .file else { continue }
+            let path = entry.path
+            guard !path.hasPrefix("/"), !path.split(separator: "/").contains(".."), !path.hasPrefix("__MACOSX") else { continue }
+            let target = scratch.appendingPathComponent(path).standardizedFileURL
+            guard target.path.hasPrefix(scratch.standardizedFileURL.path + "/") else { continue }
+            guard entry.uncompressedSize <= UInt64(limit - written) else { throw PetPack.Problem.bad("包里的文件太多或太大") }
+
+            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard !fm.fileExists(atPath: target.path), fm.createFile(atPath: target.path, contents: nil) else {
+                throw PetPack.Problem.bad("包里有重复或无效的文件名")
+            }
+            let file = try FileHandle(forWritingTo: target)
+            defer { try? file.close() }
+            var size = 0
+            let checksum = try archive.extract(entry) { chunk in
+                guard chunk.count <= limit - written else { throw PetPack.Problem.bad("解开的文件超过 64 MB") }
+                try Task.checkCancellation()
+                try file.write(contentsOf: chunk)
+                written += chunk.count
+                size += chunk.count
+            }
+            guard UInt64(size) == entry.uncompressedSize, checksum == entry.checksum else {
+                throw PetPack.Problem.bad("包里的文件大小或校验不对")
+            }
+        }
     }
 
     /// A folder name from the pack's id: lowercase letters, digits and dashes, with `user-` in front.

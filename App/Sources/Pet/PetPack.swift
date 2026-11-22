@@ -239,23 +239,46 @@ enum PetSheets {
 /// One drawn pet, playing `anim` since `since`, with a shared scale in points per canvas unit.
 /// Its feet (the pack's baseline) sit on the bottom edge of the view, its middle (anchor x) on the view's middle.
 struct SpritePet: View {
+    @Environment(\.scenePhase) private var scenePhase
     let pack: PetPack
     let anim: String
     let since: Date
     let unit: CGFloat
     var mirrored = false
 
+    private struct Playback: Equatable {
+        let pack: String
+        let animation: String
+        let since: Date
+    }
+
+    @State private var ended: Playback?
+
     var body: some View {
-        let u = unit
-        // The view is as tall as the drawing down to its feet; what lies under the feet (a shadow) hangs below.
-        // Pixel frames hold for a tenth of a second or more: twelve looks a second is plenty, and keeps the phone
-        // from redrawing the pet thirty times a second for nothing.
-        // A single frame, or a one-shot that has played out, has nothing more to draw: the clock stops.
-        let still = pack.animations[anim].map { $0.frames.count <= 1 || (!$0.loop && Date().timeIntervalSince(since) * 1000 > Double($0.total)) } ?? true
-        TimelineView(.animation(minimumInterval: 1 / 12, paused: still)) { timeline in
-            frame(at: timeline.date, unit: u)
+        let playback = Playback(pack: pack.id, animation: anim, since: since)
+        let animation = pack.animations[anim]
+        let finish: Date? = animation.flatMap { $0.loop ? nil : since.addingTimeInterval(Double($0.total) / 1000) }
+        Group {
+            if let animation, scenePhase == .active, ended != playback,
+               let first = animation.frames.first, animation.frames.contains(where: { $0.i != first.i }) {
+                let sleeping = pack.states["sleeping"]?.contains(anim) == true
+                TimelineView(.animation(minimumInterval: sleeping ? 1.0 / 4 : 1.0 / 12)) { timeline in
+                    frame(at: timeline.date, unit: unit)
+                }
+            } else {
+                frame(at: ended == playback ? finish ?? since : since, unit: unit)
+            }
         }
-        .frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.baseline) * u, alignment: .top)
+        .task(id: playback) {
+            guard let finish else { return }
+            let remaining = finish.timeIntervalSinceNow
+            if remaining > 0 {
+                do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            ended = playback
+        }
+        .frame(width: CGFloat(pack.canvasW) * unit, height: CGFloat(pack.baseline) * unit, alignment: .top)
         .scaleEffect(x: mirrored ? -1 : 1, y: 1, anchor: UnitPoint(x: pack.anchorX / pack.canvasW, y: 0.5))
     }
 

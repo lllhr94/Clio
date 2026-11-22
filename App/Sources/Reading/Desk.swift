@@ -17,14 +17,11 @@ enum Opened: Identifiable, Hashable {
 /// The app's root: setting up a model first, then the desk.
 struct ClioRoot: View {
     @ObservedObject private var team = TeamModel.shared
-    @ObservedObject private var asker = Asker.shared
     @AppStorage("look.scheme") private var scheme = "system"
     @AppStorage("look.fps") private var fps = false
     @AppStorage("care.hitches") private var hitches = false
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(SetupView.introSeen) private var introSeen = false
-    @State private var sheetForm: Asker.Form?
-    @State private var dismissedForm: UUID?
 
     var body: some View {
         ZStack {
@@ -55,31 +52,15 @@ struct ClioRoot: View {
         .animation(Ink.Motion.settle, value: introSeen)
         .tint(Ink.accent)
         .clioScheme(scheme)
-        .sheet(item: $sheetForm, onDismiss: {
-            // Swiped away: the slip is put away, and the companion hears so.
-            if let shown = dismissedForm, asker.current?.id == shown { asker.cancel(shown) }
-            dismissedForm = nil
-        }) { form in
-            FormSheet(form: form).onAppear { dismissedForm = form.id }
-        }
-        .onChange(of: asker.current?.id) { _, id in
-            guard let form = asker.current, form.id == id else { sheetForm = nil; return }
-            guard form.inline else { sheetForm = form; return }
-            // A short slip is answered in the conversation if that page is open; otherwise it comes up here.
-            Task {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if asker.current?.id == id, !asker.inlineSeen { sheetForm = asker.current }
-            }
-        }
+        .modifier(FormPresenter(inBrowser: false))
         .onChange(of: scenePhase) { _, now in
             if now == .active {
                 KeepAwake.stop()
                 team.wake()
                 MemoryNight.tick()
             }
-            // Still on screen for a moment: the last chance to ask for time in the background.
-            if now == .inactive { team.keepGoingInBackground() }
             if now == .background {
+                team.keepGoingInBackground()
                 MemoryNight.cancelForeground()
                 MemoryNight.schedule()
                 team.leaving()
@@ -956,8 +937,8 @@ struct Desk: View {
             Text(clearingIsRoom ? Words.t("雅集和里面的话都会删掉，旅伴们还在。") : Words.t("这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。"))
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
-            guard let chat = note.object as? String else { return }
-            if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) } else if chat.hasPrefix("bot-") { opened = .companion(String(chat.dropFirst(4))) }
+            if let chat = note.object as? String { openChat(chat) }
+            takeNotifications()
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
         .onOpenURL { url in
@@ -981,7 +962,24 @@ struct Desk: View {
             default: break
             }
         }
-        .task { answerShortcut() }
+        .task {
+            takeNotifications()
+            answerShortcut()
+        }
+    }
+
+    private func takeNotifications() {
+        for action in ChatNotificationRoute.take() {
+            switch action {
+            case .open(let chat): openChat(chat)
+            case .answer(let id, let allow): team.answerFromNotification(id, allow: allow)
+            }
+        }
+    }
+
+    private func openChat(_ chat: String) {
+        if chat.hasPrefix("room-") { opened = .gathering(String(chat.dropFirst(5))) }
+        if chat.hasPrefix("bot-") { opened = .companion(String(chat.dropFirst(4))) }
     }
 
     /// Siri or a shortcut: the newest conversation, or a fresh leaf with the newest companion. Nothing is sent.

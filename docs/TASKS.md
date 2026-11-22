@@ -163,7 +163,7 @@
 
 - [x] **A1 外观即时生效 + 深色 / 小屏**：改由 Claude 做（11-22 夜），见 `REVIEW-ANTIGRAVITY.md`。
 - [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，现在就可以开始。
-- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`。
+- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`，[PR #33](https://github.com/lllhr94/Clio/pull/33) 待复核。后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
 
 ## 0.34 第四轮（11-22 深夜，Claude 交接前排好）
 

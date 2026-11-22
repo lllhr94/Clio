@@ -26,6 +26,8 @@ final class FrameClock: ObservableObject {
     func stop() {
         link?.invalidate()
         link = nil
+        frames = 0
+        longest = 0
     }
 
     fileprivate func tick(_ time: CFTimeInterval) {
@@ -55,7 +57,8 @@ final class FrameClock: ObservableObject {
 
 /// A small tag in the corner: frames per second, and the longest frame in the last half second.
 struct FrameMeter: View {
-    @StateObject private var clock = FrameClock()
+    @ObservedObject var clock: FrameClock
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 0) {
@@ -70,7 +73,9 @@ struct FrameMeter: View {
         .padding(.vertical, Ink.Space.xs)
         .background(Ink.paperRaised.opacity(0.94), in: Capsule())
         .allowsHitTesting(false)
-        .onAppear { clock.start() }
+        .onChange(of: phase, initial: true) { _, phase in
+            if phase == .active { clock.start() } else { clock.stop() }
+        }
         .onDisappear { clock.stop() }
         .accessibilityHidden(true)
     }
@@ -84,9 +89,12 @@ struct FrameMeter: View {
 @MainActor
 enum MeterWindow {
     private static var window: UIWindow?
+    private static var clock: FrameClock?
 
     static func set(_ on: Bool) {
         if !on {
+            clock?.stop()
+            clock = nil
             window?.isHidden = true
             window = nil
             return
@@ -96,7 +104,9 @@ enum MeterWindow {
         let window = PassThroughWindow(windowScene: scene)
         window.windowLevel = .statusBar + 1
         window.backgroundColor = .clear
-        let host = UIHostingController(rootView: FrameMeter().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, Ink.Space.s).padding(.top, Ink.Space.huge))
+        let clock = FrameClock()
+        self.clock = clock
+        let host = UIHostingController(rootView: FrameMeter(clock: clock).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, Ink.Space.s).padding(.top, Ink.Space.huge))
         host.view.backgroundColor = .clear
         window.rootViewController = host
         window.isUserInteractionEnabled = false

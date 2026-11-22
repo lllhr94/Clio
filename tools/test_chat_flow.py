@@ -48,7 +48,11 @@ def fixture() -> str:
 def run(command: list[str], label: str, timeout: int) -> None:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        if error.stdout:
+            print(error.stdout.decode(errors="replace"), end="")
+        if error.stderr:
+            print(error.stderr.decode(errors="replace"), file=sys.stderr, end="")
         raise SystemExit(f"::error::{label} timed out after {timeout}s")
     print(result.stdout, end="")
     print(result.stderr, file=sys.stderr, end="")
@@ -56,6 +60,22 @@ def run(command: list[str], label: str, timeout: int) -> None:
         # The check annotation is also available when the job log cannot be downloaded.
         detail = (result.stderr or result.stdout).strip()[:1800].replace("\n", "%0A")
         raise SystemExit(f"::error::{label} exited with {result.returncode}: {detail}")
+
+
+def check_reckoner(swiftc: str, directory: Path) -> None:
+    if sys.platform != "darwin":
+        return
+    template = (ROOT / "tools/tests/ReckonerFixture.swift").read_text()
+    implementation = extract(
+        ROOT / "App/Sources/Study/Workspace.swift",
+        r"^enum Reckoner \{\n.*?^\}",
+        "JavaScript watchdog",
+    )
+    source = directory / "ReckonerTests.swift"
+    binary = source.with_suffix("")
+    source.write_text(template.replace("// SOURCE: RECKONER", implementation))
+    run([swiftc, "-swift-version", "5", "-parse-as-library", str(source), "-o", str(binary)], "Compile JavaScript watchdog fixture", 90)
+    run([str(binary)], "Run JavaScript watchdog fixture", 25)
 
 
 def main():
@@ -68,6 +88,7 @@ def main():
         source.write_text(fixture())
         run([args.swiftc, "-swift-version", "5", "-parse-as-library", str(source), "-o", str(binary)], "Compile chat flow fixture", 90)
         run([str(binary)], "Run chat flow fixture", 30)
+        check_reckoner(args.swiftc, Path(directory))
 
 
 if __name__ == "__main__":

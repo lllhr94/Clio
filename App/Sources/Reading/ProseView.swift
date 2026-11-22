@@ -563,51 +563,70 @@ enum Highlight {
         "public", "private", "static", "void", "int", "string", "bool", "fn", "pub", "mut", "impl", "use", "match",
     ]
 
+    private enum Style {
+        case plain, keyword, function, number, string, comment
+
+        var color: Color {
+            switch self {
+            case .plain: Ink.ink
+            case .keyword: Ink.Code.keyword
+            case .function: Ink.Code.function
+            case .number: Ink.Code.number
+            case .string: Ink.Code.string
+            case .comment: Ink.inkFaint
+            }
+        }
+    }
+
     static func code(_ text: String, language: String) -> AttributedString {
         var out = AttributedString()
         var index = text.startIndex
+        var start = index
+        var style: Style = .plain
         let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(language.lowercased())
-        func append(_ piece: Substring, _ color: Color) {
-            var part = AttributedString(String(piece))
-            part.foregroundColor = color
+        func flush(upTo end: String.Index) {
+            guard start < end else { return }
+            var part = AttributedString(String(text[start..<end]))
+            part.foregroundColor = style.color
+            if style == .comment { part.font = Ink.mono(max(12, Pref.size - 3)).italic() }
             out += part
         }
         while index < text.endIndex {
             let rest = text[index...]
             let character = text[index]
+            let next: Style
+            var end: String.Index
             if rest.hasPrefix("//") || (hashComments && character == "#") {
-                let end = rest.firstIndex(of: "\n") ?? text.endIndex
-                // Comments in faint italics: notes in the margin, not the code.
-                var part = AttributedString(String(text[index..<end]))
-                part.foregroundColor = Ink.inkFaint
-                part.font = Ink.mono(CGFloat(max(12, Pref.size - 3))).italic()
-                out += part
-                index = end
+                end = rest.firstIndex(of: "\n") ?? text.endIndex
+                next = .comment
             } else if character == "\"" || character == "'" || character == "`" {
-                var end = text.index(after: index)
+                end = text.index(after: index)
                 while end < text.endIndex, text[end] != character, text[end] != "\n" {
                     if text[end] == "\\" { end = text.index(after: end) }
                     if end < text.endIndex { end = text.index(after: end) }
                 }
                 if end < text.endIndex, text[end] == character { end = text.index(after: end) }
-                append(text[index..<end], Ink.Code.string)
-                index = end
+                next = .string
             } else if character.isLetter || character == "_" {
-                let end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
+                end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
                 let word = text[index..<end]
-                // A name called with ( is a function.
                 let calls = end < text.endIndex && text[end] == "("
-                append(word, keywords.contains(String(word)) ? Ink.Code.keyword : (calls ? Ink.Code.function : Ink.ink))
-                index = end
+                next = keywords.contains(String(word)) ? .keyword : (calls ? .function : .plain)
             } else if character.isNumber {
-                let end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
-                append(text[index..<end], Ink.Code.number)
-                index = end
+                end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
+                next = .number
             } else {
-                append(text[index...index], Ink.ink)
-                index = text.index(after: index)
+                end = text.index(after: index)
+                next = .plain
             }
+            if next != style {
+                flush(upTo: index)
+                start = index
+                style = next
+            }
+            index = end
         }
+        flush(upTo: index)
         return out
     }
 }

@@ -15,9 +15,11 @@ struct ChatDetail: View {
     @State private var tab = Tab.steps
     @State private var files: [Snapshots.Kept] = []
     @State private var usage = false
-    @State private var exported: URL?
     @State private var renaming = false
     @State private var renameText = ""
+    @State private var sharing: ExportedChat?
+    @State private var exporting = false
+    @State private var exportFailed = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case steps, files
@@ -57,18 +59,24 @@ struct ChatDetail: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .background(Ink.paper.ignoresSafeArea())
-            .task(id: title) { exported = exportFile() }
             .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Written once when the page opens, not on every redraw of it.
-                    if let exported {
-                        ShareLink(item: exported, preview: SharePreview("\(title).md")) {
-                            Label("导出", systemImage: "square.and.arrow.up")
+                    Button(L.t("actions.export"), systemImage: "square.and.arrow.up") {
+                        let name = team.title(of: chat.key) ?? title
+                        exporting = true
+                        Task {
+                            defer { exporting = false }
+                            if let url = await team.exportChat(chat.key, title: name) {
+                                sharing = ExportedChat(url: url)
+                            } else {
+                                exportFailed = true
+                            }
                         }
                     }
+                    .disabled(exporting)
                 }
             }
         }
@@ -79,6 +87,10 @@ struct ChatDetail: View {
         }
         .sheet(isPresented: $usage) {
             UsageSheet(team: team, key: chat.key).presentationDetents([.medium, .large])
+        }
+        .sheet(item: $sharing) { item in ChatShareSheet(url: item.url) }
+        .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
+            Button(L.t("actions.done"), role: .cancel) {}
         }
         .task { files = team.allChangedFiles(chat.key) }
     }
@@ -214,39 +226,47 @@ struct ChatDetail: View {
     }
 }
 
-extension ChatDetail {
-    /// The conversation as a Markdown file in the temporary folder: what was said, what was done; notes and
-    /// tool output stay out. Never the vault.
-    func exportFile() -> URL { team.exportChat(chat.key, title: title) }
+private struct ExportedChat: Identifiable {
+    let url: URL
+    var id: URL { url }
 }
 
 extension TeamModel {
-    func exportChat(_ key: String, title: String) -> URL {
-        let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
-        try? markdown(key, title: title).write(to: url, atomically: true, encoding: .utf8)
-        return url
-    }
-
-    func markdown(_ key: String, title: String) -> String {
-        let when = DateFormatter()
-        when.dateFormat = "yyyy-MM-dd HH:mm"
-        var out = "# \(title)\n\n"
-        for entry in history(key) where entry.note != true {
-            let message = entry.message
-            let time = when.string(from: Date(timeIntervalSince1970: entry.at / 1000))
-            switch message.role {
-            case .user:
-                guard !message.text.isEmpty else { continue }
-                out += "## 我 · \(time)\n\n\(message.text)\n\n"
-            case .assistant:
-                let who = entry.speaker.flatMap { id in bots.first(where: { $0.id == id })?.name } ?? L.t("nav.assistant")
-                if !message.text.isEmpty { out += "## \(Words.t(who)) · \(time)\n\n\(message.text)\n\n" }
-                for call in message.toolCalls { out += "> 做了：\(entry.label ?? call.name)\n\n" }
-            default:
-                continue
+    /// Only called on an export tap. Keep the current log and speaker names, then format and write them off the UI thread.
+    func exportChat(_ key: String, title: String) async -> URL? {
+        let entries = history(key)
+        let names = Dictionary(bots.map { ($0.id, Words.t($0.name)) }, uniquingKeysWith: { first, _ in first })
+        let fallback = L.t("nav.assistant")
+        return await Task.detached(priority: .userInitiated) {
+            let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let url = folder.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
+            let when = DateFormatter()
+            when.dateFormat = "yyyy-MM-dd HH:mm"
+            var out = "# \(title)\n\n"
+            for entry in entries where entry.note != true {
+                let message = entry.message
+                let time = when.string(from: Date(timeIntervalSince1970: entry.at / 1000))
+                switch message.role {
+                case .user:
+                    guard !message.text.isEmpty else { continue }
+                    out += "## 我 · \(time)\n\n\(message.text)\n\n"
+                case .assistant:
+                    let who = entry.speaker.flatMap { names[$0] } ?? fallback
+                    if !message.text.isEmpty { out += "## \(who) · \(time)\n\n\(message.text)\n\n" }
+                    for call in message.toolCalls { out += "> 做了：\(entry.label ?? call.name)\n\n" }
+                default:
+                    continue
+                }
             }
-        }
-        return out
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try out.write(to: url, atomically: true, encoding: .utf8)
+                return url
+            } catch {
+                try? FileManager.default.removeItem(at: folder)
+                return nil
+            }
+        }.value
     }
 }

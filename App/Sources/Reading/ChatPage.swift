@@ -486,6 +486,7 @@ struct ChatPage: View {
 
     /// Starts dictation; what is heard is added after what was already written.
     private func listen() {
+        guard !dictation.busy else { return }
         Haptics.grab()
         typing = false
         spokenBase = draft
@@ -643,6 +644,10 @@ struct ChatPage: View {
             }
         }
         .onChange(of: scenePhase) {
+            if scenePhase == .background {
+                dictation.cancel()
+                _ = voice.stopSpeaking(at: .immediate)
+            }
             if scenePhase != .active {
                 draftState.flush()
                 DraftAttachments.save(photos: photos, files: files, chat: chat.key)
@@ -660,7 +665,8 @@ struct ChatPage: View {
             cancelFindTasks()
             pasteTask?.cancel()
             selecting.removeAll()
-            if dictation.listening { dictation.stop() }
+            dictation.cancel()
+            _ = voice.stopSpeaking(at: .immediate)
         }
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
@@ -676,6 +682,9 @@ struct ChatPage: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $cardOpen) { NameCardSheet(team: team, bot: bot) }
+        .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
+            Button(L.t("actions.done"), role: .cancel) {}
+        }
         .alert("重命名对话", isPresented: $renaming) {
             TextField("对话标题", text: $renameText)
             Button(L.t("actions.cancel"), role: .cancel) {}
@@ -840,6 +849,7 @@ struct ChatPage: View {
         }
     }
 
+    @State private var exportFailed = false
     private struct ShareFile: Identifiable { let url: URL; var id: URL { url } }
 
     private struct Viewing: Identifiable { let id: String }
@@ -864,7 +874,8 @@ struct ChatPage: View {
 
     private func leave() {
         typing = false
-        if dictation.listening { dictation.stop() }
+        dictation.cancel()
+        _ = voice.stopSpeaking(at: .immediate)
         Haptics.light()
         back()
     }
@@ -972,7 +983,13 @@ struct ChatPage: View {
                     }
                     chatMenuButton("actions.share", icon: "square.and.arrow.up") {
                         let title = team.title(of: chat.key) ?? bot.name
-                        sharing = ShareFile(url: team.exportChat(chat.key, title: title))
+                        Task {
+                            if let url = await team.exportChat(chat.key, title: title) {
+                                sharing = ShareFile(url: url)
+                            } else {
+                                exportFailed = true
+                            }
+                        }
                     }
                     chatMenuButton("chat.find", icon: "magnifyingglass") { startFinding() }
                     if !following { chatMenuButton("chat.latest", icon: "arrow.down.to.line") { returnToLatest() } }
@@ -2700,12 +2717,13 @@ struct ChatPage: View {
             let skills = await Task.detached(priority: .userInitiated) { SkillShelf.enabled }.value
             if !Task.isCancelled { draftState.skills = skills }
         case .files:
-            let paths = await Task.detached(priority: .userInitiated) {
+            let job = Task.detached(priority: .userInitiated) {
                 Workspace.files(under: Workspace.root, cap: 800)
                     .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
                     .sorted { $0.date > $1.date }
                     .map(\.path)
-            }.value
+            }
+            let paths = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
             if !Task.isCancelled { draftState.files = paths }
         case nil:
             draftState.files = []
@@ -2852,8 +2870,8 @@ private struct Trace: View {
     }
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
-    private struct Keepsake: Identifiable {
-        enum Kind { case event, reminder, file, remoteFile, command, health, weather }
+    private struct Keepsake: Identifiable, Sendable {
+        enum Kind: Sendable { case event, reminder, file, remoteFile, command, health, weather }
         let id: Int
         let kind: Kind
         let title: String
@@ -2954,9 +2972,17 @@ private struct Trace: View {
         .font(Ink.mono(Ink.Size.small))
     }
 
-    private var keepsakes: [Keepsake] {
+    private struct KeepsakeInput: Equatable, Sendable {
+        let line: ChatLine
+        let desk: String
+    }
+
+    @State private var keepsakes: [Keepsake] = []
+
+    nonisolated private static func buildKeepsakes(_ line: ChatLine, desk: String) -> [Keepsake] {
         var out: [Keepsake] = []
         for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
+            if Task.isCancelled { break }
             let output = index < line.details.count ? line.details[index].output : ""
             let full = index < line.details.count ? line.details[index].full : nil
             if tool.hasPrefix("新建日程：") {
@@ -2972,9 +2998,9 @@ private struct Trace: View {
                 if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
                     if let kept = out.firstIndex(where: { $0.url == file }) {
-                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: Words.t("书案/") + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
+                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: desk + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
                     } else {
-                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: Words.t("书案/") + Workspace.relative(file) + change, url: file, diff: full))
+                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: desk + Workspace.relative(file) + change, url: file, diff: full))
                     }
                 }
             } else if tool.hasPrefix("斗室：") || tool.hasPrefix("远山 · ") {
@@ -3077,6 +3103,13 @@ private struct Trace: View {
             }
         }
         .clipped()
+        .task(id: line.live ? nil : KeepsakeInput(line: line, desk: Words.t("书案/"))) {
+            guard !line.live else { keepsakes = []; return }
+            let input = KeepsakeInput(line: line, desk: Words.t("书案/"))
+            let job = Task.detached(priority: .utility) { Self.buildKeepsakes(input.line, desk: input.desk) }
+            let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            if !Task.isCancelled { keepsakes = result }
+        }
         .animation(Ink.Motion.settle, value: line.tools.count)
         // Done: everything folds into the one line again.
         .onChange(of: line.live) { _, live in
