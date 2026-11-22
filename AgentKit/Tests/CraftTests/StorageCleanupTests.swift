@@ -125,4 +125,67 @@ final class StorageCleanupTests: XCTestCase {
         XCTAssertEqual(cleaned.removedMediaCount, 0)
         XCTAssertTrue(FileManager.default.fileExists(atPath: box.media.appendingPathComponent(photo).path))
     }
+
+    func testCleanAbortsWhenAbortFlagTrips() throws {
+        let box = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: box.appSupport) }
+
+        let now = Date()
+        let orphan = "88888888-8888-8888-8888-888888888888.jpg"
+        try writeFile(box.media.appendingPathComponent(orphan), contents: Data(repeating: 0x22, count: 1024), ageSeconds: 600, now: now)
+        try writeFile(box.doccache.appendingPathComponent("cache.txt"), contents: Data("abc".utf8), ageSeconds: 10, now: now)
+
+        let cleaned = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now, abortIf: { true })
+        XCTAssertEqual(cleaned.removedMediaCount, 0)
+        XCTAssertEqual(cleaned.removedDocCacheCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: box.media.appendingPathComponent(orphan).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: box.doccache.appendingPathComponent("cache.txt").path))
+    }
+
+    func testCleanAbortsAndPreservesRestoredPhotoWhenTeamDirectorySwaps() throws {
+        let box = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: box.appSupport) }
+
+        let now = Date()
+        let sharedName = "99999999-9999-9999-9999-999999999999.jpg"
+        try writeFile(box.media.appendingPathComponent(sharedName), contents: Data("old-orphan".utf8), ageSeconds: 600, now: now)
+        try Data("[]".utf8).write(to: box.chats.appendingPathComponent("bot-a.json"))
+
+        // Prepare a replacement Team/ directory simulating Backup.restore swapping in a backup that references the same photo name.
+        let restoredStaging = box.appSupport.appendingPathComponent("Team-restored", isDirectory: true)
+        let restoredMedia = restoredStaging.appendingPathComponent("media", isDirectory: true)
+        let restoredChats = restoredStaging.appendingPathComponent("chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: restoredMedia, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: restoredChats, withIntermediateDirectories: true)
+        try writeFile(restoredMedia.appendingPathComponent(sharedName), contents: Data("restored-precious-photo".utf8), ageSeconds: 600, now: now)
+        try Data("[{\"photos\":[\"\(sharedName)\"]}]".utf8).write(to: restoredChats.appendingPathComponent("bot-a.json"))
+
+        let oldAside = box.appSupport.appendingPathComponent("Team-old", isDirectory: true)
+        final class SwapBox: @unchecked Sendable {
+            let lock = NSLock()
+            var checks = 0
+            var swapped = false
+        }
+        let state = SwapBox()
+
+        // Simulate a swap right between orphan scan and delete, while abortIf still returns false,
+        // proving inode verification on Team/ and media/ independently stops deletion of restored files.
+        let cleaned = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now) {
+            state.lock.withLock {
+                state.checks += 1
+                // Check 1 is at entry, check 2 is inside findOrphanMedia (1 chat file), check 3 is right before unlink.
+                if state.checks == 3, !state.swapped {
+                    state.swapped = true
+                    try? FileManager.default.moveItem(at: box.team, to: oldAside)
+                    try? FileManager.default.moveItem(at: restoredStaging, to: box.team)
+                }
+            }
+            return false
+        }
+
+        XCTAssertTrue(state.lock.withLock { state.swapped })
+        XCTAssertEqual(cleaned.removedMediaCount, 0)
+        let surviving = try Data(contentsOf: box.team.appendingPathComponent("media/\(sharedName)"))
+        XCTAssertEqual(surviving, Data("restored-precious-photo".utf8))
+    }
 }

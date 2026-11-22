@@ -16,8 +16,10 @@ struct CarePage: View {
     @State private var sizeText = ""
     @State private var storage: StorageBreakdown?
     @State private var cleaningCache = false
+    @State private var cleanTask: Task<Void, Never>?
     @State private var making = false
     @State private var restoring = false
+    @State private var restoringBusy = false
     @State private var restored = false
     @State private var notice: String?
     @State private var probes: [String: String] = [:]
@@ -33,17 +35,23 @@ struct CarePage: View {
     @State private var probing = false
     @State private var copied = false
 
+    private var backupOrRestoreBusy: Bool {
+        making || restoring || restoringBusy || davBusy || !davChoices.isEmpty || restored || Disk.frozen
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 PaperRows {
                 Section {
                     Toggle(L.t("settings.backupIncludesKeys"), isOn: $withKeys)
-                    Button(making ? L.t("loading.preparingBackup") : L.t("actions.createBackup")) { make() }.disabled(making)
+                    Button(making ? L.t("loading.preparingBackup") : L.t("actions.createBackup")) { make() }
+                        .disabled(making || cleaningCache || restoringBusy || restored)
                     if let made {
                         ShareLink(item: made) { Label("存到「文件」或发出去", systemImage: "square.and.arrow.up") }
                     }
                     Button(L.t("actions.restoreBackup")) { restoring = true }
+                        .disabled(cleaningCache || restoringBusy || davBusy || making || restored)
                 } header: { Text(L.t("settings.backup")) } footer: {
                     Text(L.t("settings.backupPrivacy"))
                 }
@@ -59,9 +67,9 @@ struct CarePage: View {
                         Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
                     }
                     Button(davBusy ? L.t("loading.working") : L.t("actions.davUpload")) { davUpload() }
-                        .disabled(davBusy || !davReady)
+                        .disabled(davBusy || !davReady || cleaningCache || restoringBusy || restored)
                     Button(davBusy ? L.t("loading.working") : L.t("actions.davRestore")) { davRestore() }
-                        .disabled(davBusy || !davReady)
+                        .disabled(davBusy || !davReady || cleaningCache || restoringBusy || making || restored)
                 } header: { Text(L.t("settings.davBackup")) } footer: {
                     Text(L.t("settings.davNote"))
                 }
@@ -157,7 +165,10 @@ struct CarePage: View {
                 davPassword = await Task.detached { WebDAV.password }.value
                 davPasswordLoaded = true
             }
-            .onDisappear { if davPasswordLoaded { WebDAV.setPassword(davPassword) } }
+            .onDisappear {
+                cleanTask?.cancel()
+                if davPasswordLoaded { WebDAV.setPassword(davPassword) }
+            }
             .task {
                 guard openRestore else { return }
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
@@ -165,9 +176,12 @@ struct CarePage: View {
             }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
                 guard case .success(let url) = result else { return }
+                restoringBusy = true
                 Task {
-                    // Off the main thread: a large backup takes a while to check and write.
-                    let outcome = await Task.detached { Result { try Backup.restore(from: url) } }.value
+                    defer { restoringBusy = false }
+                    await stopCleanBeforeRestore()
+                    // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
+                    let outcome = await StorageMaintenance.run { Result { try Backup.restore(from: url) } }
                     switch outcome {
                     case .success(let summary):
                         restored = true
@@ -232,7 +246,7 @@ struct CarePage: View {
                         Text(L.t("careStorage.cleanNothing"))
                     }
                 }
-                .disabled(cleaningCache || storage.cleanableBytes == 0 || Disk.frozen)
+                .disabled(cleaningCache || storage.cleanableBytes == 0 || backupOrRestoreBusy)
             } else {
                 row(L.t("careStorage.total"), L.t("loading.calculating"))
             }
@@ -275,23 +289,42 @@ struct CarePage: View {
         }
     }
 
+    private func stopCleanBeforeRestore() async {
+        if let pending = cleanTask {
+            pending.cancel()
+            await pending.value
+        }
+    }
+
     private func cleanCache() {
-        guard !cleaningCache, !Disk.frozen else { return }
+        guard !cleaningCache, !backupOrRestoreBusy else { return }
         cleaningCache = true
         let referenced = team.referencedMediaNames()
         let teamRoot = Disk.root
-        Task {
-            let outcome = await Task.detached(priority: .userInitiated) {
-                let hasWriteFailures = ChatDisk.finishWritesReportingFailures() > 0
-                return StorageCleanup.clean(
-                    teamRoot: teamRoot,
-                    extraReferencedMedia: referenced,
-                    skipOrphanMedia: hasWriteFailures
-                )
-            }.value
+        cleanTask = Task {
+            defer {
+                cleaningCache = false
+                cleanTask = nil
+            }
+            let cancelFlag = CleanupCancelFlag()
+            let outcome = await withTaskCancellationHandler {
+                await StorageMaintenance.run {
+                    guard !cancelFlag.isSet, !Disk.frozen else { return CleanupResult() }
+                    let hasWriteFailures = ChatDisk.finishWritesReportingFailures() > 0
+                    return StorageCleanup.clean(
+                        teamRoot: teamRoot,
+                        extraReferencedMedia: referenced,
+                        skipOrphanMedia: hasWriteFailures,
+                        abortIf: { Disk.frozen || cancelFlag.isSet }
+                    )
+                }
+            } onCancel: {
+                cancelFlag.set()
+            }
+            guard !Task.isCancelled, !Disk.frozen else { return }
             Disk.forgetPhotos()
             await measureStorage()
-            cleaningCache = false
+            guard !Task.isCancelled, !Disk.frozen else { return }
             if outcome.removedMediaCount > 0 || outcome.removedDocCacheCount > 0 {
                 Haptics.thud()
                 notice = L.format(
@@ -335,8 +368,9 @@ struct CarePage: View {
         let ids = team.settings.endpoints.map(\.id)
         Task {
             do {
+                await stopCleanBeforeRestore()
                 // Never with the model keys: a file on a drive is out of the phone's keychain (the review, #4).
-                let (url, summary) = try await Task.detached { try Backup.make(withKeys: false, endpoints: ids) }.value
+                let (url, summary) = try await StorageMaintenance.runThrowing { try Backup.make(withKeys: false, endpoints: ids) }
                 try await WebDAV.upload(url)
                 notice = "备份到网盘了：\(url.lastPathComponent)，\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。"
             } catch {
@@ -364,16 +398,21 @@ struct CarePage: View {
     private func davRestore(_ name: String) {
         davChoices = []
         davBusy = true
+        restoringBusy = true
         Task {
+            defer {
+                davBusy = false
+                restoringBusy = false
+            }
             do {
                 let file = try await WebDAV.download(name)
-                let summary = try await Task.detached { try Backup.restore(from: file) }.value
+                await stopCleanBeforeRestore()
+                let summary = try await StorageMaintenance.runThrowing { try Backup.restore(from: file) }
                 restored = true
                 notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。"
             } catch {
                 notice = "没恢复成：\(error.localizedDescription)"
             }
-            davBusy = false
         }
     }
 
@@ -393,17 +432,16 @@ struct CarePage: View {
         making = true
         let ids = team.settings.endpoints.map(\.id)
         let keys = withKeys
-        Task.detached {
-            let result = Result { try Backup.make(withKeys: keys, endpoints: ids) }
-            await MainActor.run {
-                making = false
-                switch result {
-                case .success(let (url, summary)):
-                    made = url
-                    notice = "打包好了：\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。点「存到文件或发出去」保存。"
-                case .failure(let error):
-                    notice = "没打包成：\(error.localizedDescription)"
-                }
+        Task {
+            await stopCleanBeforeRestore()
+            let result = await StorageMaintenance.run { Result { try Backup.make(withKeys: keys, endpoints: ids) } }
+            making = false
+            switch result {
+            case .success(let (url, summary)):
+                made = url
+                notice = "打包好了：\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。点「存到文件或发出去」保存。"
+            case .failure(let error):
+                notice = "没打包成：\(error.localizedDescription)"
             }
         }
     }
@@ -439,6 +477,39 @@ struct CarePage: View {
                 }
             }
             probing = false
+        }
+    }
+}
+
+private final class CleanupCancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    func set() { lock.withLock { cancelled = true } }
+    var isSet: Bool { lock.withLock { cancelled } }
+}
+
+/// Globally serializes cache cleanup against backup creation and restoration across CarePage lifetimes
+/// so `StorageCleanup.clean` can never overlap `Backup.restore` swapping `Team/`.
+private enum StorageMaintenance {
+    private static let queue = DispatchQueue(label: "clio.storage-maintenance", qos: .userInitiated)
+
+    static func run<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+
+    static func runThrowing<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 }

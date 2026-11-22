@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Breakdown of app storage under Application Support, highlighting safely reclaimable caches.
 public struct StorageBreakdown: Equatable, Sendable {
@@ -48,11 +53,17 @@ public struct CleanupResult: Equatable, Sendable {
 /// Measures Clio's storage and safely reclaims unreferenced `media/` images and regenerable `doccache/` text extracts.
 /// Never touches conversation JSONs, memories, notes, or referenced photos; fails closed if any chat file is unreadable.
 public enum StorageCleanup {
+    private struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
     private struct FileInfo {
         let url: URL
         let name: String
         let bytes: Int64
         let modified: Date
+        let identity: FileIdentity
     }
 
     /// Inspects storage breakdown under `appSupportRoot` and `teamRoot` without deleting anything.
@@ -97,25 +108,34 @@ public enum StorageCleanup {
     }
 
     /// Removes only unreferenced `media/` files older than `graceSeconds` and regenerable `doccache/` files.
+    /// Verifies `abortIf`, task cancellation, `teamRoot`/subdirectory identity, and per-file inode before each delete
+    /// so a concurrent backup restore swapping `Team/` can never lose restored files.
     public static func clean(
         teamRoot: URL,
         extraReferencedMedia: Set<String> = [],
         skipOrphanMedia: Bool = false,
         graceSeconds: TimeInterval = 60,
-        now: Date = Date()
+        now: Date = Date(),
+        abortIf: @Sendable () -> Bool = { false }
     ) -> CleanupResult {
+        guard !abortIf(), !Task.isCancelled, let teamIdentity = directoryIdentity(teamRoot) else {
+            return CleanupResult()
+        }
         let fm = FileManager.default
-        let mediaFiles = regularFiles(in: teamRoot.appendingPathComponent("media", isDirectory: true))
+        let mediaDir = teamRoot.appendingPathComponent("media", isDirectory: true)
+        let mediaIdentity = directoryIdentity(mediaDir)
+        let mediaFiles = mediaIdentity != nil ? regularFiles(in: mediaDir) : []
         let orphanScan: (orphans: [FileInfo], skipped: Bool)
-        if skipOrphanMedia {
-            orphanScan = ([], true)
+        if skipOrphanMedia || mediaFiles.isEmpty {
+            orphanScan = ([], skipOrphanMedia)
         } else {
             orphanScan = findOrphanMedia(
                 mediaFiles: mediaFiles,
                 chatsDir: teamRoot.appendingPathComponent("chats", isDirectory: true),
                 extraReferenced: extraReferencedMedia,
                 graceSeconds: graceSeconds,
-                now: now
+                now: now,
+                abortIf: abortIf
             )
         }
 
@@ -123,20 +143,41 @@ public enum StorageCleanup {
         var removedDocCache = 0
         var freed: Int64 = 0
 
-        for file in orphanScan.orphans {
-            guard isSafeRegularFile(file.url) else { continue }
-            if (try? fm.removeItem(at: file.url)) != nil {
-                removedMedia += 1
-                freed += file.bytes
+        if let mediaIdentity {
+            for file in orphanScan.orphans {
+                guard !abortIf(),
+                      !Task.isCancelled,
+                      directoryIdentity(teamRoot) == teamIdentity,
+                      directoryIdentity(mediaDir) == mediaIdentity else {
+                    return CleanupResult(
+                        removedMediaCount: removedMedia,
+                        removedDocCacheCount: removedDocCache,
+                        freedBytes: freed
+                    )
+                }
+                guard regularFileIdentity(file.url) == file.identity else { continue }
+                if (try? fm.removeItem(at: file.url)) != nil {
+                    removedMedia += 1
+                    freed += file.bytes
+                }
             }
         }
 
-        let docCacheFiles = regularFiles(in: teamRoot.appendingPathComponent("doccache", isDirectory: true))
-        for file in docCacheFiles {
-            guard isSafeRegularFile(file.url) else { continue }
-            if (try? fm.removeItem(at: file.url)) != nil {
-                removedDocCache += 1
-                freed += file.bytes
+        let docCacheDir = teamRoot.appendingPathComponent("doccache", isDirectory: true)
+        if let docCacheIdentity = directoryIdentity(docCacheDir) {
+            let docCacheFiles = regularFiles(in: docCacheDir)
+            for file in docCacheFiles {
+                guard !abortIf(),
+                      !Task.isCancelled,
+                      directoryIdentity(teamRoot) == teamIdentity,
+                      directoryIdentity(docCacheDir) == docCacheIdentity else {
+                    break
+                }
+                guard regularFileIdentity(file.url) == file.identity else { continue }
+                if (try? fm.removeItem(at: file.url)) != nil {
+                    removedDocCache += 1
+                    freed += file.bytes
+                }
             }
         }
 
@@ -154,7 +195,8 @@ public enum StorageCleanup {
         chatsDir: URL,
         extraReferenced: Set<String>,
         graceSeconds: TimeInterval,
-        now: Date
+        now: Date,
+        abortIf: @Sendable () -> Bool = { false }
     ) -> (orphans: [FileInfo], skipped: Bool) {
         let cutoff = now.addingTimeInterval(-max(0, graceSeconds))
         let eligible = mediaFiles.filter { !extraReferenced.contains($0.name) && $0.modified <= cutoff }
@@ -173,6 +215,9 @@ public enum StorageCleanup {
                 return ([], true)
             }
             for item in items where item.pathExtension.lowercased() == "json" {
+                if abortIf() || Task.isCancelled {
+                    return ([], true)
+                }
                 guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
                       values.isRegularFile == true, values.isSymbolicLink != true else {
                     continue
@@ -263,21 +308,37 @@ public enum StorageCleanup {
         for url in items {
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]),
                   values.isRegularFile == true,
-                  values.isSymbolicLink != true else {
+                  values.isSymbolicLink != true,
+                  let identity = regularFileIdentity(url) else {
                 continue
             }
             let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
             let modified = values.contentModificationDate ?? .distantPast
-            result.append(FileInfo(url: url, name: url.lastPathComponent, bytes: size, modified: modified))
+            result.append(FileInfo(url: url, name: url.lastPathComponent, bytes: size, modified: modified, identity: identity))
         }
         return result
     }
 
-    private static func isSafeRegularFile(_ url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
-            return false
+    private static func directoryIdentity(_ url: URL) -> FileIdentity? {
+        var st = stat()
+        guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
+            return nil
         }
-        return values.isRegularFile == true && values.isSymbolicLink != true
+        return FileIdentity(
+            device: UInt64(truncatingIfNeeded: st.st_dev),
+            inode: UInt64(truncatingIfNeeded: st.st_ino)
+        )
+    }
+
+    private static func regularFileIdentity(_ url: URL) -> FileIdentity? {
+        var st = stat()
+        guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+            return nil
+        }
+        return FileIdentity(
+            device: UInt64(truncatingIfNeeded: st.st_dev),
+            inode: UInt64(truncatingIfNeeded: st.st_ino)
+        )
     }
 
     private static func directorySize(_ root: URL) -> Int64 {
