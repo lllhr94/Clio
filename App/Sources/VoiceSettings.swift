@@ -1,3 +1,4 @@
+import AgentKit
 import Foundation
 import SwiftUI
 import UIKit
@@ -83,11 +84,14 @@ enum VoiceTranscription {
         }.value
     }
 
-    nonisolated static func endpointURL(from rawBase: String) -> URL? {
+    nonisolated static func validateEndpoint(_ rawBase: String) -> Result<URL, Problem> {
         var trimmed = rawBase.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
-        guard !trimmed.isEmpty else { return nil }
-        if !trimmed.lowercased().hasPrefix("http://") && !trimmed.lowercased().hasPrefix("https://") {
+        guard !trimmed.isEmpty else {
+            return .failure(.message("还没填语音转写接口地址，请去 设置 › 对话显示与反馈 › 语音输入与转写 配置。"))
+        }
+        let lowerInitial = trimmed.lowercased()
+        if !lowerInitial.hasPrefix("http://") && !lowerInitial.hasPrefix("https://") {
             trimmed = "https://" + trimmed
         }
         let lower = trimmed.lowercased()
@@ -100,9 +104,19 @@ enum VoiceTranscription {
             full = trimmed + "/v1/audio/transcriptions"
         }
         guard let url = URL(string: full),
-              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-              url.host != nil else { return nil }
-        return url
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              url.host != nil else {
+            return .failure(.message("语音转写接口地址格式不对，请填写完整的 https:// 地址。"))
+        }
+        if scheme == "http" && !LocalAddress.isLocal(url) {
+            return .failure(.message("公网语音转写地址必须使用 https://，只有本机或局域网地址允许 http://。"))
+        }
+        return .success(url)
+    }
+
+    nonisolated static func endpointURL(from rawBase: String) -> URL? {
+        try? validateEndpoint(rawBase).get()
     }
 
     static func mask(_ key: String) -> String {
@@ -121,8 +135,44 @@ enum VoiceTranscription {
         }
     }
 
+    /// Blocks redirects that downgrade a public endpoint to plaintext HTTP or cross hosts with credentials.
+    private final class TransportRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest
+        ) async -> URLRequest? {
+            guard let next = request.url, let scheme = next.scheme?.lowercased(), next.host != nil else {
+                return nil
+            }
+            if scheme == "https" {
+                return request
+            }
+            if scheme == "http" {
+                guard LocalAddress.isLocal(next) else { return nil }
+                let resolvedLocal = await LocalAddress.resolvesToLocal(next)
+                return resolvedLocal ? request : nil
+            }
+            return nil
+        }
+    }
+
     /// Uploads a recorded `.m4a` file to an OpenAI-compatible `/audio/transcriptions` endpoint.
     nonisolated static func transcribe(fileURL: URL, endpoint: URL, apiKey: String, model: String, language: String) async throws -> String {
+        guard let scheme = endpoint.scheme?.lowercased(), scheme == "https" || scheme == "http", endpoint.host != nil else {
+            throw Problem.message("语音转写接口地址格式不对。")
+        }
+        if scheme == "http" {
+            guard LocalAddress.isLocal(endpoint) else {
+                throw Problem.message("公网语音转写地址必须使用 https://，只有本机或局域网地址允许 http://。")
+            }
+            let resolvedLocal = await LocalAddress.resolvesToLocal(endpoint)
+            guard resolvedLocal else {
+                throw Problem.message("这个 http 地址解析到了公网 IP，请改用 https://。")
+            }
+        }
+
         let audioData = try Data(contentsOf: fileURL)
         guard !audioData.isEmpty else {
             throw Problem.message("没有录到声音，请再说一次。")
@@ -163,12 +213,15 @@ enum VoiceTranscription {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 35
         config.timeoutIntervalForResource = 60
-        let session = URLSession(configuration: config)
+        let session = URLSession(configuration: config, delegate: TransportRedirectGuard(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw Problem.message("语音转写失败：服务器没有正常回应。")
+        }
+        if (300..<400).contains(http.statusCode) {
+            throw Problem.message("语音转写接口试图跳转到不安全的 http 地址，已中止。")
         }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 || http.statusCode == 403 {
@@ -316,11 +369,19 @@ struct VoiceSettingsPage: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
-                if let resolved = VoiceTranscription.endpointURL(from: baseURL) {
-                    Text("实际请求：\(resolved.absoluteString)")
-                        .font(Ink.mono(Ink.Size.small))
-                        .foregroundStyle(Ink.inkFaint)
-                        .fixedSize(horizontal: false, vertical: true)
+                if !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    switch VoiceTranscription.validateEndpoint(baseURL) {
+                    case .success(let resolved):
+                        Text("实际请求：\(resolved.absoluteString)")
+                            .font(Ink.mono(Ink.Size.small))
+                            .foregroundStyle(Ink.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .failure(let err):
+                        Text(err.localizedDescription)
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.stop)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Kit.rule(inset: 0)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
@@ -335,6 +396,11 @@ struct VoiceSettingsPage: View {
             }
             .padding(Ink.Space.l)
             .paperCard()
+            Text("公网接口必须使用 https://；只有本机或局域网自建转写服务允许 http://。")
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

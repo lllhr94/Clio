@@ -112,8 +112,12 @@ final class Dictation: ObservableObject {
     }
 
     private func startCloud(id: UUID) async {
-        guard let endpoint = VoiceTranscription.endpointURL(from: VoiceTranscription.baseURL) else {
-            problem = "还没填语音转写接口地址，请去 设置 › 对话显示与反馈 › 语音输入与转写 配置。"
+        let endpoint: URL
+        switch VoiceTranscription.validateEndpoint(VoiceTranscription.baseURL) {
+        case .success(let url):
+            endpoint = url
+        case .failure(let err):
+            problem = err.localizedDescription
             cancel()
             return
         }
