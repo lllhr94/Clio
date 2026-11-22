@@ -420,8 +420,9 @@ final class WorkspaceToolTests: XCTestCase {
         let data = try await shellOnly.readFile("a.txt")
         XCTAssertEqual(String(data: data, encoding: .utf8), "你好")
         try await shellOnly.writeFile("dir/b.txt", Data("嗨".utf8))
-        XCTAssertTrue(host.commands.contains { $0.contains("base64 -d >> 'dir/b.txt.clio-part'") })
-        XCTAssertTrue(host.commands.last?.contains("mv -f 'dir/b.txt.clio-part' 'dir/b.txt'") == true)
+        XCTAssertTrue(host.commands.contains { $0.contains("base64 -d >> 'dir/b.txt.clio-part-") })
+        XCTAssertTrue(host.commands.last?.contains("mv -f -- 'dir/b.txt.clio-part-") == true)
+        XCTAssertTrue(host.commands.last?.contains("' 'dir/b.txt'") == true)
     }
 }
 
