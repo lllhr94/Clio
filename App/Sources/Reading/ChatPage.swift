@@ -885,13 +885,19 @@ struct ChatPage: View {
     private var header: some View {
         let layout = largeText ? AnyLayout(VStackLayout(alignment: .leading, spacing: Ink.Space.s)) :
             AnyLayout(HStackLayout(spacing: Ink.Space.s))
-        return layout {
-            HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
-                headerBack
-                headerIdentity
+        return VStack(alignment: .leading, spacing: 0) {
+            layout {
+                HStack(alignment: largeText ? .top : .center, spacing: Ink.Space.s) {
+                    headerBack
+                    headerIdentity
+                }
+                if !largeText { Spacer(minLength: 0) }
+                headerControls
             }
-            if !largeText { Spacer(minLength: 0) }
-            headerControls
+            modelMenu
+        }
+        .onChange(of: offeredThinking, initial: true) { _, offered in
+            resetUnavailableThinking(in: offered)
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.s)
@@ -938,14 +944,11 @@ struct ChatPage: View {
                                openDetail: { glancing = false; detailOpen = true })
                         .presentationCompactAdaptation(.popover)
                 }
-            VStack(alignment: .leading, spacing: 0) {
-                headerTitle
-                modelMenu
-            }
+            headerTitle
         }
         .padding(.leading, -Ink.Space.xs)
         .padding(.horizontal, Ink.Space.m)
-        .padding(.vertical, Ink.Space.xs)
+        .padding(.vertical, largeText ? Ink.Space.s : 0)
         .frame(minHeight: Ink.Bar.height)
         .glassFace(in: Capsule())
     }
@@ -1088,6 +1091,7 @@ struct ChatPage: View {
     private var modelMenu: some View {
         let own = options.model
         let name = team.current(chat.key, bot: modelSpeaker)?.model ?? L.t("settings.models")
+        let level = options.thinking ?? .auto
         return Menu {
             thinkingChoices
             if !isRoom {
@@ -1107,23 +1111,38 @@ struct ChatPage: View {
                     .font(Ink.mono(Ink.Size.micro))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                if level != .auto {
+                    Image(systemName: level.symbol)
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(Ink.accent)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: Ink.Size.micro, weight: .medium))
             }
             .foregroundStyle(Ink.inkSoft)
+            .padding(.horizontal, Ink.Space.s)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .menuOrder(.fixed)
         .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+        .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
     }
 
     private func selectModel(_ reference: String?) {
         Haptics.tick(0.5)
         team.setModel(reference, in: chat.key)
-        if let selected = options.thinking, !offeredThinking.contains(selected) {
+        resetUnavailableThinking(in: offeredThinking)
+        if let current = team.current(chat.key, bot: modelSpeaker) {
+            let sight = current.traits.sees ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
+            say(Words.t("这段絮语用 \(current.model)（\(sight)），别处的絮语不变。"))
+        }
+    }
+
+    private func resetUnavailableThinking(in offered: [Thinking]) {
+        if let selection = options.thinking, !offered.contains(selection) {
             team.setThinking(.auto, in: chat.key)
         }
-        if let current = team.current(chat.key, bot: modelSpeaker) { say(current.model) }
     }
 
     private var offeredThinking: [Thinking] {
