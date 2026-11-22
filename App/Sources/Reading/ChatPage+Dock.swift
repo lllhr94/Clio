@@ -546,7 +546,7 @@ extension ChatPage {
     }
 
     var sendingBlocked: Bool {
-        !chat.demo && !team.canAcceptInput(for: chat.key)
+        team.phase != .demo && !team.canAcceptInput(for: chat.key)
     }
 
     var canSend: Bool {
