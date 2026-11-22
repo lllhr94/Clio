@@ -250,7 +250,7 @@ struct VoiceSettingsPage: View {
             modeRaw = item.rawValue
         } label: {
             HStack(spacing: Ink.Space.m) {
-                IconBadge(item == .system ? "waveform" : "sparkles", tint: active ? Ink.Tile.mo : Ink.Tile.dai)
+                IconBadge(symbol: item == .system ? "waveform" : "sparkles", tint: active ? Ink.Tile.mo : Ink.Tile.dai)
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(item.title)
                         .font(.system(size: Ink.Size.body, weight: active ? .semibold : .regular))
