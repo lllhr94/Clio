@@ -259,6 +259,68 @@ enum WebFetch {
     /// The most a page or file read from the web may be.
     static let limit = 15_000_000
 
+    /// Performs a public HTTPS JSON API call; redirects are restricted to the exact same HTTPS origin so search queries
+    /// and custom auth headers (`x-api-key`, `X-Subscription-Token`, `Authorization`) can never leak to another host or HTTP.
+    static func json(_ request: URLRequest, limit: Int = 2_000_000) async throws -> (status: Int, data: Data) {
+        guard let url = request.url, url.scheme?.lowercased() == "https", url.host != nil else {
+            throw ProviderError("搜索接口只允许使用 https 地址。")
+        }
+        if LocalAddress.isLocal(url) {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        if await LocalAddress.resolvesToLocal(url) {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: SameOriginHTTPSRedirect(origin: url))
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        if (300..<400).contains(status) {
+            throw ProviderError(status: status, "搜索接口试图跳转到其他主机或非 https 地址，已中止。")
+        }
+        if response.expectedContentLength > limit {
+            throw ProviderError("搜索返回的内容太大了，已忽略。")
+        }
+        var data = Data()
+        if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            data.append(byte)
+            if data.count > limit {
+                throw ProviderError("搜索返回的内容太大了，已忽略。")
+            }
+        }
+        return (status, data)
+    }
+
+    /// True only when a redirect keeps the exact same public HTTPS origin (scheme, host, port) without embedded credentials.
+    static func allowsSameHTTPSOriginRedirect(from origin: URL, to next: URL) -> Bool {
+        guard origin.scheme?.lowercased() == "https",
+              next.scheme?.lowercased() == "https",
+              let originHost = origin.host?.lowercased(),
+              let nextHost = next.host?.lowercased(),
+              originHost == nextHost,
+              (origin.port ?? 443) == (next.port ?? 443),
+              next.user == nil, next.password == nil,
+              !LocalAddress.isLocal(next) else {
+            return false
+        }
+        return true
+    }
+
+    private final class SameOriginHTTPSRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let origin: URL
+        init(origin: URL) { self.origin = origin }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let next = request.url, WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: next) else {
+                return nil
+            }
+            if await LocalAddress.resolvesToLocal(next) { return nil }
+            return request
+        }
+    }
+
     private final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
@@ -266,6 +328,228 @@ enum WebFetch {
             if await LocalAddress.resolvesToLocal(next) { return nil }
             return request
         }
+    }
+}
+
+/// Supported web search backends. Built-in Bing / DuckDuckGo is the default; third-party providers are opt-in.
+public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifiable {
+    case builtin
+    case anysearch
+    case tavily
+    case exa
+    case brave
+
+    public var id: String { rawValue }
+
+    public var name: String {
+        switch self {
+        case .builtin: "内置网页（Bing / DuckDuckGo）"
+        case .anysearch: "AnySearch"
+        case .tavily: "Tavily"
+        case .exa: "Exa"
+        case .brave: "Brave"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .builtin: "内置网页"
+        case .anysearch: "AnySearch"
+        case .tavily: "Tavily"
+        case .exa: "Exa"
+        case .brave: "Brave"
+        }
+    }
+
+    /// True when this provider requires an API key to run.
+    public var needsKey: Bool {
+        switch self {
+        case .tavily, .exa, .brave: true
+        case .anysearch, .builtin: false
+        }
+    }
+
+    /// True when the user may enter an API key for this provider.
+    public var supportsKey: Bool { self != .builtin }
+
+    public var summary: String {
+        switch self {
+        case .builtin: "默认选项，直接抓取 Bing / DuckDuckGo，不经第三方搜索 API"
+        case .anysearch: "免密钥直接可用；填免费密钥每天 1000 次"
+        case .tavily: "面向 AI 整理的搜索摘要，免费版每月 1000 次"
+        case .exa: "语义搜索，查英文技术文档和论文效果好"
+        case .brave: "独立网页索引，响应快、无广告追踪"
+        }
+    }
+
+    public var consoleHost: String {
+        switch self {
+        case .builtin: ""
+        case .anysearch: "anysearch.com/console/api-keys"
+        case .tavily: "app.tavily.com"
+        case .exa: "dashboard.exa.ai/api-keys"
+        case .brave: "api-dashboard.search.brave.com"
+        }
+    }
+}
+
+/// Active web search configuration loaded for each `web_search` tool invocation.
+public struct WebSearchConfig: Sendable, Equatable {
+    public var primary: WebSearchProvider
+    public var apiKey: String?
+    public var fallbackToBuiltin: Bool
+
+    public init(primary: WebSearchProvider = .builtin, apiKey: String? = nil, fallbackToBuiltin: Bool = true) {
+        self.primary = primary
+        self.apiKey = apiKey
+        self.fallbackToBuiltin = fallbackToBuiltin
+    }
+}
+
+/// Request builders and JSON parsers for structured search APIs.
+enum WebSearchAPI {
+    static func buildRequest(provider: WebSearchProvider, query: String, apiKey: String?, maxResults: Int = 8) throws -> URLRequest {
+        let trimmedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch provider {
+        case .anysearch:
+            let url = URL(string: "https://api.anysearch.com/v1/search")!
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if !trimmedKey.isEmpty {
+                request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "query": query,
+                "max_results": maxResults,
+            ])
+            return request
+
+        case .tavily:
+            guard !trimmedKey.isEmpty else { throw ProviderError("还没有填写 Tavily 的 API 密钥。") }
+            let url = URL(string: "https://api.tavily.com/search")!
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "query": query,
+                "max_results": maxResults,
+                "search_depth": "basic",
+            ])
+            return request
+
+        case .exa:
+            guard !trimmedKey.isEmpty else { throw ProviderError("还没有填写 Exa 的 API 密钥。") }
+            let url = URL(string: "https://api.exa.ai/search")!
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(trimmedKey, forHTTPHeaderField: "x-api-key")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "query": query,
+                "type": "auto",
+                "numResults": maxResults,
+                "contents": ["highlights": true],
+            ])
+            return request
+
+        case .brave:
+            guard !trimmedKey.isEmpty else { throw ProviderError("还没有填写 Brave 的 API 密钥。") }
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "&+=?#")
+            let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+            let url = URL(string: "https://api.search.brave.com/res/v1/web/search?q=\(encoded)&count=\(maxResults)")!
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(trimmedKey, forHTTPHeaderField: "X-Subscription-Token")
+            return request
+
+        case .builtin:
+            throw ProviderError("内置网页搜索不走 JSON 接口。")
+        }
+    }
+
+    /// Parses structured search JSON responses while redacting status-only errors (never leaking AnySearch HTTP 402 bodies).
+    static func parseResponse(provider: WebSearchProvider, status: Int, data: Data) throws -> [WebText.Result] {
+        guard (200..<300).contains(status) else {
+            switch (provider, status) {
+            case (.anysearch, 402):
+                // AnySearch HTTP 402 bodies can contain auto-generated credentials; never surface raw body text.
+                throw ProviderError(status: 402, "AnySearch 免费额度暂时用完（HTTP 402）")
+            case (_, 401), (_, 403):
+                throw ProviderError(status: status, "\(provider.shortName) 密钥无效或无权限（HTTP \(status)）")
+            case (_, 402):
+                throw ProviderError(status: 402, "\(provider.shortName) 额度已用完（HTTP 402）")
+            case (_, 429):
+                throw ProviderError(status: 429, "\(provider.shortName) 请求过于频繁或已达限额（HTTP 429）")
+            default:
+                throw ProviderError(status: status, "\(provider.shortName) 暂时不可用（HTTP \(status)）")
+            }
+        }
+
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderError("\(provider.shortName) 返回的数据格式不对。")
+        }
+
+        let rawItems: [[String: Any]]
+        switch provider {
+        case .anysearch:
+            let payload = root["data"] as? [String: Any]
+            rawItems = (payload?["results"] as? [[String: Any]]) ?? (root["results"] as? [[String: Any]]) ?? []
+        case .tavily, .exa:
+            rawItems = (root["results"] as? [[String: Any]]) ?? []
+        case .brave:
+            let web = root["web"] as? [String: Any]
+            rawItems = (web?["results"] as? [[String: Any]]) ?? []
+        case .builtin:
+            rawItems = []
+        }
+
+        var results: [WebText.Result] = []
+        var seen: Set<String> = []
+        for item in rawItems {
+            guard let rawURL = item["url"] as? String else { continue }
+            let link = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let parsed = URL(string: link),
+                  let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  seen.insert(link).inserted else { continue }
+
+            let rawTitle = (item["title"] as? String) ?? ""
+            let title = cleanSnippet(rawTitle, maxChars: 160)
+            let finalTitle = title.isEmpty ? (parsed.host ?? link) : title
+
+            let snippet: String
+            switch provider {
+            case .anysearch:
+                let primary = (item["snippet"] as? String) ?? ""
+                let fallback = (item["content"] as? String) ?? ""
+                snippet = cleanSnippet(primary.isEmpty ? fallback : primary, maxChars: 360)
+            case .tavily:
+                snippet = cleanSnippet((item["content"] as? String) ?? "", maxChars: 360)
+            case .exa:
+                let highlights = (item["highlights"] as? [String])?.joined(separator: " ") ?? ""
+                let text = (item["text"] as? String) ?? ""
+                snippet = cleanSnippet(highlights.isEmpty ? text : highlights, maxChars: 360)
+            case .brave:
+                let description = (item["description"] as? String) ?? ""
+                snippet = cleanSnippet(WebText.plain(description), maxChars: 360)
+            case .builtin:
+                snippet = ""
+            }
+            results.append(WebText.Result(title: finalTitle, url: link, snippet: snippet))
+        }
+        return results
+    }
+
+    private static func cleanSnippet(_ raw: String, maxChars: Int) -> String {
+        let singleLine = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard singleLine.count > maxChars else { return singleLine }
+        return String(singleLine.prefix(maxChars - 1)) + "…"
     }
 }
 
@@ -308,11 +592,47 @@ private struct SearchRelevance {
     }
 }
 
-/// Searches the web: international Bing, mainland Bing, then DuckDuckGo.
+private final class SearchConfigBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loader: (@Sendable () async -> WebSearchConfig)?
+
+    func set(_ next: (@Sendable () async -> WebSearchConfig)?) {
+        lock.lock()
+        loader = next
+        lock.unlock()
+    }
+
+    func load() async -> WebSearchConfig {
+        lock.lock()
+        let current = loader
+        lock.unlock()
+        return await current?() ?? WebSearchConfig()
+    }
+}
+
+/// Searches the web using the configured provider (default: AnySearch free tier) with optional fallback to Bing / DuckDuckGo.
 public struct WebSearchTool: AgentTool {
+    public struct ProbeResult: Sendable {
+        public var ok: Bool
+        public var source: String
+        public var count: Int
+        public var detail: String
+    }
+
+    private static let configBox = SearchConfigBox()
+
+    /// Registers a global async config loader (called by the app at launch so every `WebSearchTool()` picks up live settings).
+    public static func setConfigLoader(_ loader: (@Sendable () async -> WebSearchConfig)?) {
+        configBox.set(loader)
+    }
+
+    private let loadConfig: @Sendable () async -> WebSearchConfig
+    private let sendJSON: @Sendable (URLRequest) async throws -> (status: Int, data: Data)
     private let fetchHTML: @Sendable (URL) async throws -> String
 
     public init() {
+        loadConfig = { await Self.configBox.load() }
+        sendJSON = { try await WebFetch.json($0) }
         fetchHTML = { url in
             let page = try await WebFetch.get(url, timeout: 12)
             return WebText.decode(page.data, encodingName: page.encoding)
@@ -320,7 +640,49 @@ public struct WebSearchTool: AgentTool {
     }
 
     init(fetchHTML: @escaping @Sendable (URL) async throws -> String) {
+        loadConfig = { WebSearchConfig(primary: .builtin, apiKey: nil, fallbackToBuiltin: true) }
+        sendJSON = { _ in throw ProviderError("测试环境未配置 JSON 搜索。") }
         self.fetchHTML = fetchHTML
+    }
+
+    init(
+        config: WebSearchConfig,
+        sendJSON: @escaping @Sendable (URLRequest) async throws -> (status: Int, data: Data),
+        fetchHTML: @escaping @Sendable (URL) async throws -> String = { _ in "" }
+    ) {
+        loadConfig = { config }
+        self.sendJSON = sendJSON
+        self.fetchHTML = fetchHTML
+    }
+
+    /// Runs a live single-provider probe (no fallback) for the Settings page "试搜一下" check.
+    public static func probe(query: String = "Swift", config: WebSearchConfig) async -> ProbeResult {
+        var direct = config
+        direct.fallbackToBuiltin = false
+        let tool = WebSearchTool(
+            config: direct,
+            sendJSON: { try await WebFetch.json($0) },
+            fetchHTML: { url in
+                let page = try await WebFetch.get(url, timeout: 12)
+                return WebText.decode(page.data, encodingName: page.encoding)
+            }
+        )
+        do {
+            let output = try await tool.run(.object(["query": .string(query)]))
+            if output.isError {
+                return ProbeResult(ok: false, source: config.primary.shortName, count: 0, detail: output.text)
+            }
+            let lines = output.text.components(separatedBy: "\n")
+            let sourceLine = lines.first?.replacingOccurrences(of: "搜索来源：", with: "") ?? config.primary.shortName
+            let titles = lines.filter { $0.range(of: #"^\d+\.\s+"#, options: .regularExpression) != nil }
+            if titles.isEmpty {
+                return ProbeResult(ok: false, source: sourceLine, count: 0, detail: output.text)
+            }
+            let firstTitle = titles[0].replacingOccurrences(of: #"^\d+\.\s+"#, with: "", options: .regularExpression)
+            return ProbeResult(ok: true, source: sourceLine, count: titles.count, detail: "首条结果：\(firstTitle)")
+        } catch {
+            return ProbeResult(ok: false, source: config.primary.shortName, count: 0, detail: error.localizedDescription)
+        }
     }
 
     public var spec: ToolSpec {
@@ -345,11 +707,39 @@ public struct WebSearchTool: AgentTool {
         guard let query = arguments["query"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
             return ToolOutput("没有给搜索词。", isError: true)
         }
+        let config = await loadConfig()
+        var failures: [String] = []
+
+        if config.primary != .builtin {
+            do {
+                try Task.checkCancellation()
+                let request = try WebSearchAPI.buildRequest(provider: config.primary, query: query, apiKey: config.apiKey, maxResults: 8)
+                let response = try await sendJSON(request)
+                let results = try WebSearchAPI.parseResponse(provider: config.primary, status: response.status, data: response.data)
+                if !results.isEmpty {
+                    let hasKey = !(config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    let sourceName = (config.primary == .anysearch && !hasKey) ? "AnySearch（免费通道）" : config.primary.shortName
+                    return format(results: results, source: sourceName)
+                }
+                failures.append("\(config.primary.shortName) 未返回结果")
+            } catch {
+                try Task.checkCancellation()
+                failures.append(error.localizedDescription)
+            }
+            if !config.fallbackToBuiltin {
+                return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
+            }
+        }
+
+        return try await runBuiltin(query: query, priorFailures: failures)
+    }
+
+    private func runBuiltin(query: String, priorFailures: [String]) async throws -> ToolOutput {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&+=?#")
         let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
         let relevance = SearchRelevance(query: query)
-        var failures: [String] = []
+        var failures = priorFailures
         var hadUnrelatedResults = false
         for (source, address, parse) in [
             ("Bing 国际站", "https://www.bing.com/search?q=\(encoded)&setlang=zh-Hans", WebText.bingResults),
@@ -365,10 +755,7 @@ public struct WebSearchTool: AgentTool {
                     hadUnrelatedResults = hadUnrelatedResults || !raw.isEmpty
                     continue
                 }
-                let lines = results.prefix(8).enumerated().map { index, result in
-                    "\(index + 1). \(result.title)\n   \(result.url)\n   \(result.snippet)"
-                }
-                return ToolOutput((["搜索来源：\(source)"] + lines).joined(separator: "\n"))
+                return format(results: results, source: source)
             } catch {
                 try Task.checkCancellation()
                 failures.append(error.localizedDescription)
@@ -378,6 +765,16 @@ public struct WebSearchTool: AgentTool {
             return ToolOutput("没有找到与搜索词足够相关的结果。可以补上地点、名称或日期再搜。")
         }
         return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
+    }
+
+    private func format(results: [WebText.Result], source: String) -> ToolOutput {
+        let lines = results.prefix(8).enumerated().map { index, result in
+            if result.snippet.isEmpty {
+                return "\(index + 1). \(result.title)\n   \(result.url)"
+            }
+            return "\(index + 1). \(result.title)\n   \(result.url)\n   \(result.snippet)"
+        }
+        return ToolOutput((["搜索来源：\(source)"] + lines).joined(separator: "\n"))
     }
 }
 

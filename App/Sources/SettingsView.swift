@@ -26,7 +26,7 @@ struct SettingsView: View {
         ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .pet, .morning]),
         ("settings.appearance", Ink.Tile.teng, [.theme, .font, .size, .tone]),
         ("settingsHome.chatGroup", Ink.Tile.mo, [.display, .context]),
-        ("agent.capabilities", Ink.Tile.xiang, [.grants, .connectors, .skills, .timing, .hosts]),
+        ("agent.capabilities", Ink.Tile.xiang, [.grants, .searchEngine, .connectors, .skills, .timing, .hosts]),
         ("settingsHome.privacyGroup", Ink.Tile.zhu, [.notifications, .lock, .care]),
     ]
 
@@ -170,6 +170,8 @@ struct SettingsView: View {
             ChatDisplayPage()
         case .context:
             ChatContextPage()
+        case .searchEngine:
+            SearchSettingsPage()
         case .notifications:
             NotificationSettingsPage()
         case .morning:
@@ -343,7 +345,7 @@ struct SettingsView: View {
 
 private enum SettingsPage: String, Identifiable {
     case services, models, image, companions, rooms, pet, theme, font, size, tone
-    case display, context, grants, connectors, skills, timing, hosts, notifications, morning, lock, care
+    case display, context, grants, searchEngine, connectors, skills, timing, hosts, notifications, morning, lock, care
     case memory, vault, add
 
     var id: Self { self }
@@ -351,6 +353,7 @@ private enum SettingsPage: String, Identifiable {
     init?(link: String) {
         switch link {
         case "model": self = .models
+        case "search": self = .searchEngine
         case "look": self = .theme
         case "look#font": self = .font
         case "look#size", "look#ui": self = .size
@@ -408,6 +411,7 @@ private enum SettingsPage: String, Identifiable {
         case .display: "bubble.left"
         case .context: "text.alignleft"
         case .grants: "checkmark.shield"
+        case .searchEngine: "magnifyingglass"
         case .connectors: "powerplug"
         case .skills: "books.vertical"
         case .timing: "alarm"
@@ -437,6 +441,7 @@ private enum SettingsPage: String, Identifiable {
         case .display: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 帧率"
         case .context: "压缩 上下文 温度 输出 长度"
         case .grants: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室"
+        case .searchEngine: "联网 搜索 引擎 anysearch tavily exa brave bing duckduckgo 查资料 密钥 key"
         case .connectors: "连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp"
         case .skills: "skill 本事"
         case .timing: "每天 每周 到点"
