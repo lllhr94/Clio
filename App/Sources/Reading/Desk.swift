@@ -379,28 +379,16 @@ struct Desk: View {
                         sideNav("books.vertical", Words.t("书案")) { closeSide(); studying = true }
                         sideNav("terminal", Words.t("斗室")) { closeSide(); denning = true }
                     }
-                    ForEach(Self.grouped(sideThreads, pinned: team.pinned), id: \.title) { group in
-                        Text(group.title)
+                    ForEach(sideSections, id: \.title) { section in
+                        Text(section.title)
                             .font(.system(size: Ink.Size.small, weight: .semibold))
                             .foregroundStyle(Ink.inkFaint)
                             .padding(.horizontal, Ink.Space.l)
                             .padding(.top, Ink.Space.l)
                             .padding(.bottom, Ink.Space.xs)
-                        ForEach(group.items, id: \.id) { item in
-                            sideThread(item)
-                        }
-                    }
-                    if !pastLeaves.isEmpty {
-                        // Put-aside conversations follow on under 对话, after the ones open with each companion.
-                        if !sideThreads.contains(where: { !team.pinned.contains($0.id.id) }) {
-                            Text("对话")
-                                .font(.system(size: Ink.Size.small, weight: .semibold))
-                                .foregroundStyle(Ink.inkFaint)
-                                .padding(.horizontal, Ink.Space.l)
-                                .padding(.top, Ink.Space.l)
-                                .padding(.bottom, Ink.Space.xs)
-                        }
-                        ForEach(pastLeaves) { past in pastRow(past) }
+                        ForEach(section.threads, id: \.id) { item in sideThread(item) }
+                        // Conversations put aside by 新对话, in the same 最近 / 更早 as the ones open now.
+                        ForEach(section.past) { past in pastRow(past) }
                     }
                     if sideThreads.isEmpty && pastLeaves.isEmpty {
                         Text(sideQuery.isEmpty ? "还没有对话。" : "没找到「\(sideQuery)」。")
@@ -1170,12 +1158,47 @@ struct Desk: View {
     }
 
     /// 置顶 first (in the order pinned), then the rest.
+    /// 主人定, the way most agent apps do it: 置顶 (only when there is any), 最近 (the last seven days), 更早.
     static func grouped(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)], pinned: [String]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
         let top = pinned.compactMap { key in items.first { $0.id.id == key } }
-        // 主人定: no 今天 / 昨天 / 本周 — just 置顶 (when there is any) and the rest, newest first.
         let others = items.filter { !pinned.contains($0.id.id) }
-        let rest: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = others.isEmpty ? [] : [("对话", others)]
-        return top.isEmpty ? rest : [("置顶", top)] + rest
+        let recent = others.filter { isRecent($0.at) }
+        let older = others.filter { !isRecent($0.at) }
+        var groups: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = []
+        if !top.isEmpty { groups.append(("置顶", top)) }
+        if !recent.isEmpty { groups.append(("最近", recent)) }
+        if !older.isEmpty { groups.append(("更早", older)) }
+        return groups
+    }
+
+    /// Within the last seven days (milliseconds since 1970).
+    static func isRecent(_ at: Double) -> Bool {
+        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        return Date(timeIntervalSince1970: at / 1000) >= weekAgo
+    }
+
+    private struct SideSection {
+        let title: String
+        let threads: [Thread]
+        let past: [PastLeaf]
+    }
+
+    /// The sidebar's groups: the open conversations, then the ones put aside, each under 最近 or 更早.
+    private var sideSections: [SideSection] {
+        let groups = Self.grouped(sideThreads, pinned: team.pinned)
+        let past = pastLeaves
+        var sections: [SideSection] = []
+        for title in ["置顶", "最近", "更早"] {
+            let threads = groups.first { $0.title == title }?.items ?? []
+            let leaves: [PastLeaf]
+            switch title {
+            case "最近": leaves = past.filter { Self.isRecent($0.leaf.at) }
+            case "更早": leaves = past.filter { !Self.isRecent($0.leaf.at) }
+            default: leaves = []
+            }
+            if !threads.isEmpty || !leaves.isEmpty { sections.append(SideSection(title: title, threads: threads, past: leaves)) }
+        }
+        return sections
     }
 
     private func thread(_ item: (id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)) -> some View {
