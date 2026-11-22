@@ -106,8 +106,40 @@ struct StudyFolder: View {
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarItems }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: handleImport)
-        .fileImporter(isPresented: $pickingMount, allowedContentTypes: [.folder], allowsMultipleSelection: false, onCompletion: handlePickMount)
+        .background {
+            Color.clear
+                .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: handleImport)
+            Color.clear
+                .fileImporter(isPresented: $pickingMount, allowedContentTypes: [.folder], allowsMultipleSelection: false, onCompletion: handlePickMount)
+            Color.clear
+                .confirmationDialog(
+                    L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""),
+                    isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    Button(L.t("actions.delete"), role: .destructive) {
+                        deleteSelectedItem()
+                    }
+                    Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
+                }
+            Color.clear
+                .confirmationDialog(
+                    "取消挂载「\(unmounting?.name ?? "")」？只会删掉书签连接，不会删除原文件夹里的任何文件。",
+                    isPresented: Binding(get: { unmounting != nil }, set: { if !$0 { unmounting = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    Button("取消挂载", role: .destructive) {
+                        if let target = unmounting {
+                            MountedFolders.remove(id: target.id)
+                            mountNotice = "已取消挂载「\(target.name)」，原文件夹里的文件未受影响。"
+                            Haptics.lock()
+                            Task { await load() }
+                        }
+                        unmounting = nil
+                    }
+                    Button(L.t("actions.cancel"), role: .cancel) { unmounting = nil }
+                }
+        }
         .alert(L.t("actions.newFolder"), isPresented: $naming) {
             TextField(L.t("files.folderName"), text: $newFolder)
             Button(L.t("actions.create")) { createSubfolder() }
@@ -123,37 +155,12 @@ struct StudyFolder: View {
             scope = nil
         }
         .refreshable { await load() }
-        .confirmationDialog(
-            L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""),
-            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button(L.t("actions.delete"), role: .destructive) {
-                deleteSelectedItem()
-            }
-            Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
-        }
-        .confirmationDialog(
-            "取消挂载「\(unmounting?.name ?? "")」？只会删掉书签连接，不会删除原文件夹里的任何文件。",
-            isPresented: Binding(get: { unmounting != nil }, set: { if !$0 { unmounting = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("取消挂载", role: .destructive) {
-                if let target = unmounting {
-                    MountedFolders.remove(id: target.id)
-                    mountNotice = "已取消挂载「\(target.name)」，原文件夹里的文件未受影响。"
-                    Haptics.lock()
-                    Task { await load() }
-                }
-                unmounting = nil
-            }
-            Button(L.t("actions.cancel"), role: .cancel) { unmounting = nil }
-        }
     }
 
     private var navigationTitle: String {
         if top { return L.t("nav.files") }
-        if let mount, let mountRoot, folder.standardizedFileURL.path == mountRoot.standardizedFileURL.path {
+        if let mount, let mountRoot,
+           folder.resolvingSymlinksInPath().standardizedFileURL.path == mountRoot.resolvingSymlinksInPath().standardizedFileURL.path {
             return mount.name
         }
         return folder.lastPathComponent
@@ -374,7 +381,7 @@ struct StudyFolder: View {
         if let item = deleting {
             let activeRoot = mountRoot ?? Workspace.root
             if Workspace.isInsideRealRoot(item.url, root: activeRoot),
-               item.url.standardizedFileURL.path != activeRoot.standardizedFileURL.path {
+               item.url.resolvingSymlinksInPath().standardizedFileURL.path != activeRoot.resolvingSymlinksInPath().standardizedFileURL.path {
                 try? FileManager.default.removeItem(at: item.url)
                 Haptics.lock()
                 Task { await load() }
@@ -449,6 +456,7 @@ struct StudyFile: View {
     @State private var plain = false
     @State private var picture: UIImage?
     @State private var loaded = false
+    @State private var mountBroken = false
     @State private var scope: MountedFolders.ScopeToken?
 
     private var ext: String { url.pathExtension.lowercased() }
@@ -463,7 +471,13 @@ struct StudyFile: View {
     var body: some View {
         ZStack {
             Ink.paper.ignoresSafeArea()
-            if let picture {
+            if mountBroken {
+                Text(Words.t("外部文件夹的授权已失效，请回到书案首页重新选择文件夹。"))
+                    .font(Ink.secondary)
+                    .foregroundStyle(Ink.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .padding(Ink.Space.page)
+            } else if let picture {
                 ScrollView([.horizontal, .vertical]) {
                     Image(uiImage: picture)
                         .resizable()
@@ -511,25 +525,38 @@ struct StudyFile: View {
                 if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
-                ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("分享文件")
+                if !mountBroken {
+                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel("分享文件")
+                }
             }
         }
         .task(id: url) {
             let url = self.url
             let mount = self.mount
-            let opened = await Task.detached(priority: .utility) { () -> (MountedFolders.ScopeToken?, URL)? in
-                guard let mount, let result = MountedFolders.openForUI(mount) else { return nil }
-                return (result.token, result.url)
-            }.value
-            guard !Task.isCancelled else {
-                opened?.0?.stop()
+            if let mount {
+                let opened = await Task.detached(priority: .utility) { MountedFolders.openForUI(mount) }.value
+                guard !Task.isCancelled else {
+                    opened?.token.stop()
+                    return
+                }
+                scope?.stop()
+                guard let opened else {
+                    scope = nil
+                    mountBroken = true
+                    loaded = true
+                    return
+                }
+                scope = opened.token
+                mountBroken = false
+                let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: opened.url) }.value
+                guard !Task.isCancelled else { return }
+                picture = result.picture
+                text = result.text
+                loaded = true
                 return
             }
-            scope?.stop()
-            scope = opened?.0
-            let activeRoot = opened?.1 ?? Workspace.root
-            let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: activeRoot) }.value
+            let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: Workspace.root) }.value
             guard !Task.isCancelled else { return }
             picture = result.picture
             text = result.text
