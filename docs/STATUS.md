@@ -1,5 +1,7 @@
 # 现状与交接
 
+**A8 互动预览卡**（`codex/a8-interactive-preview`）：回答里的 HTML、SVG 文件有静态缩略图，点开可在独立离线页面操作、缩放、横屏和分享。书案文件也使用这套预览。待审查和真机核对 WebKit 下的缩略图、横屏及隔离。
+
 **11-22 深夜最后（Claude）**：0.35 集成包编过、已发 probe（run 45007305614）。合进来的：A2–A7（Antigravity）、C32–C36（Codex）；Claude 拆完 `ChatPage.swift`、`Team.swift`（只搬家），加了 Anthropic 缓存、领券和防骗规矩、通知里不能批读过外部内容的单子、挂载文件夹的写入在读过外部内容后要问、网盘恢复可选份。等主人真机试。下一步见 `docs/TASKS.md`；Claude 回来先做：备份带上技能、复查这一个月合进来的安全相关改动。
 
 
