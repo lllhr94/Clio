@@ -26,9 +26,11 @@ struct SetupView: View {
     /// The service's model list, fetched as soon as there is a key: models are picked before anything is saved.
     @State private var fetched: [String]?
     @State private var fetchedImageModels: [String]?
+    @State private var fetchedWindows: [String: Int] = [:]
     @State private var picked: Set<String> = []
     @State private var fetching = false
     @State private var fetchNote: String?
+    @State private var fetchFailed = false
     @State private var modelSearch = ""
     @FocusState private var keyFocused: Bool
 
@@ -312,30 +314,52 @@ struct SetupView: View {
     /// Fetches the list once key and address are there, a moment after typing stops.
     private var fetchKey: String { "\(choice.id)|\(address)|\(key.trimmingCharacters(in: .whitespacesAndNewlines))" }
 
+    private func loadCatalog(for endpoint: Endpoint, secret: String) async throws -> (ids: [String], windows: [String: Int]) {
+        let provider = endpoint.provider(key: secret)
+        if let openAI = provider as? OpenAIProvider {
+            let catalog = try await openAI.catalog()
+            return (catalog.ids, catalog.windows)
+        }
+        return (try await provider.models(), [:])
+    }
+
     private func fetchModels() async {
         let secret = self.secret
-        guard secret.count >= 8 || choice.keyless, address.hasPrefix("http") else { fetched = nil; fetchedImageModels = nil; fetchNote = nil; return }
+        guard secret.count >= 8 || choice.keyless, address.hasPrefix("http") else {
+            fetched = nil
+            fetchedImageModels = nil
+            fetchedWindows = [:]
+            fetchNote = nil
+            fetchFailed = false
+            return
+        }
         try? await Task.sleep(nanoseconds: 700_000_000)
         guard !Task.isCancelled else { return }
         fetching = true
         fetchNote = nil
+        fetchFailed = false
         let probe = Endpoint(id: "probe", name: choice.name, kind: choice.kind, baseURL: address, models: [], service: custom ? nil : choice.id)
         do {
-            let raw = try await probe.provider(key: secret).models()
-            let listed = TeamModel.keep(raw, for: probe)
+            let result = try await loadCatalog(for: probe, secret: secret)
+            let listed = TeamModel.keep(result.ids, for: probe)
             guard !Task.isCancelled else { return }
-            fetchedImageModels = probe.kind == .openai ? raw : nil
+            fetchedImageModels = probe.kind == .openai ? result.ids : nil
+            fetchedWindows = result.windows
             if listed.isEmpty {
                 fetched = nil
+                fetchFailed = true
                 fetchNote = "连上了，但它没给模型列表，下面填个模型名就行"
             } else {
                 fetched = listed
+                fetchFailed = false
                 picked = Set(TeamModel.firstPicks(listed, service: custom ? nil : choice))
             }
         } catch {
             guard !Task.isCancelled else { return }
             fetched = nil
             fetchedImageModels = nil
+            fetchedWindows = [:]
+            fetchFailed = true
             let advice = Explain.model(error, service: choice.name)
             fetchNote = "拿不到模型列表：\(advice.displayTitle)\n也可以直接填模型名。"
         }
@@ -372,7 +396,7 @@ struct SetupView: View {
                                     .foregroundStyle(on ? Ink.accent : Ink.inkFaint)
                                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     Text(model).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1)
-                                    Text(ModelTraits.known(model).summary).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                                    Text(traitsSummary(for: model)).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)
                             }
@@ -387,8 +411,23 @@ struct SetupView: View {
             }
             .transition(.opacity)
         } else if let fetchNote {
-            Text(fetchNote).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            VStack(alignment: .leading, spacing: Ink.Space.s) {
+                Text(fetchNote).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                if fetchFailed && !(custom || choice.asksModel) {
+                    TextField(choice.modelHint ?? "手动填一个模型名，比如 \(choice.suggested.first ?? "gpt-5")", text: $modelName)
+                        .font(Ink.mono(Ink.Size.sub))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .paperField()
+                }
+            }
         }
+    }
+
+    private func traitsSummary(for model: String) -> String {
+        var traits = ModelTraits.known(model)
+        if let reported = fetchedWindows[model] { traits.window = reported }
+        return traits.summary
     }
 
     private var connectButton: some View {
@@ -437,6 +476,13 @@ struct SetupView: View {
                 choice = item
                 region = 0
                 advice = nil
+                fetched = nil
+                fetchedImageModels = nil
+                fetchedWindows = [:]
+                picked = []
+                fetchNote = nil
+                fetchFailed = false
+                modelSearch = ""
             }
         } label: {
             HStack(spacing: Ink.Space.m) {
@@ -486,7 +532,7 @@ struct SetupView: View {
                 Haptics.thud()
                 onDone()
             } label: {
-                Text(first ? Words.t("去案头，见见旅伴") : "好了")
+                Text(first ? Words.t("去案头，见见旅伴") : L.t("actions.done"))
                     .font(.system(size: Ink.Size.body, weight: .semibold))
                     .foregroundStyle(Ink.paper)
                     .frame(maxWidth: .infinity)
@@ -519,6 +565,7 @@ struct SetupView: View {
         if let fetched, !picked.isEmpty {
             endpoint.listed = fetched
             endpoint.imageModels = fetchedImageModels
+            endpoint.windows = fetchedWindows.isEmpty ? nil : fetchedWindows
             var models = fetched.filter(picked.contains)
             if !typed.isEmpty, !models.contains(typed) { models.insert(typed, at: 0) }
             endpoint.models = models
@@ -527,9 +574,10 @@ struct SetupView: View {
         }
         Task {
             do {
-                let raw = try await endpoint.provider(key: secret).models()
-                let listed = TeamModel.keep(raw, for: endpoint)
-                if endpoint.kind == .openai { endpoint.imageModels = raw }
+                let result = try await loadCatalog(for: endpoint, secret: secret)
+                let listed = TeamModel.keep(result.ids, for: endpoint)
+                if endpoint.kind == .openai { endpoint.imageModels = result.ids }
+                endpoint.windows = result.windows.isEmpty ? nil : result.windows
                 var models = TeamModel.firstPicks(listed, service: service)
                 if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
                 guard !models.isEmpty else { throw TeamError(message: "连上了，但没找到能聊天的模型。请填上模型名再试。") }
