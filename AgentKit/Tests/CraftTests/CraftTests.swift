@@ -906,6 +906,8 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
         var commands: [String] = []
         var responder: (String) -> ExecResult = { _ in ExecResult(code: 0, output: "CLIO_OK\n") }
 
+        func isInside(_ path: String) -> Bool { true }
+
         func execStream(_ command: String, timeout: Double, onOutput: @escaping @Sendable (String) -> Void) async throws -> ExecResult {
             let reply: ExecResult = lock.withLock {
                 commands.append(command)
