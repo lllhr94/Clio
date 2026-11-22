@@ -50,6 +50,8 @@
     "filesAndTerminal": "文件与终端"
   },
   "chat": {
+    "planExpanded": "已展开",
+    "planCollapsed": "已收起",
     "untitled": "没有标题的对话",
     "titleField": "对话标题",
     "deleteConversationConfirm": "删除这段对话？",
