@@ -551,7 +551,7 @@ struct Connector: Identifiable, Hashable {
         Connector(id: "zapier", name: "Zapier", icon: "bolt.horizontal", line: "在 Zapier 里挑好要给的动作（发邮件、记表格…），每次调用扣 Zapier 的额度", url: "https://mcp.zapier.com/api/v1/connect",
                   auth: .key(title: "连接令牌", page: "https://mcp.zapier.com", query: nil,
                              steps: ["打开 mcp.zapier.com，新建一个 MCP 服务，AI 选「Other」。",
-                                     "在里面加上你想让旅伴用的 App 和动作（比如 Gmail 发信）。",
+                                     Words.t("在里面加上你想让旅伴用的 App 和动作（比如 Gmail 发信）。"),
                                      "到 Settings 生成令牌，只显示一次，复制粘到下面。"]), group: "一个账号连一堆"),
 
         Connector(id: "notion", name: "Notion", icon: "doc.text", line: "搜索、读写你的页面和数据库", url: "https://mcp.notion.com/mcp", auth: .oauth, group: "文档与资料"),

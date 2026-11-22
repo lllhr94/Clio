@@ -97,7 +97,7 @@ enum Workspace {
         let pathParameter: JSONValue = ["type": "string", "description": "书案里的相对路径，比如 notes/旅行.md"]
         var tools: [AgentTool] = []
         tools.append(DeskTool(name: "desk_delete", description: "删掉书案里的文件或文件夹。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：删 \($0["path"]?.string ?? "")" }, approval: { arguments in
-            ApprovalAsk(title: "删掉书案里的东西", reason: arguments["path"]?.string ?? "")
+            ApprovalAsk(title: Words.t("删掉书案里的东西"), reason: arguments["path"]?.string ?? "")
         }) { arguments in
             guard let file = resolve(arguments["path"]?.string), relative(file) != "/" else { return ToolOutput("不能删整个书案。", isError: true) }
             guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个：\(relative(file))", isError: true) }

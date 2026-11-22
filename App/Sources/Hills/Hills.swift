@@ -390,8 +390,8 @@ final class Hills: ObservableObject {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
             })
-            tools.append(DeskTool(name: "ssh_job_stop", description: "停掉远山上的一个后台任务。", parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { "远山：停掉后台任务 \($0["job"]?.string ?? "")" }, approval: { arguments in
-                ApprovalAsk(title: "停掉远山的后台任务", reason: "\(arguments["host"]?.string ?? "") · \(arguments["job"]?.string ?? "")")
+            tools.append(DeskTool(name: "ssh_job_stop", description: "停掉远山上的一个后台任务。", parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }, approval: { arguments in
+                ApprovalAsk(title: Words.t("停掉远山的后台任务"), reason: "\(arguments["host"]?.string ?? "") · \(arguments["job"]?.string ?? "")")
             }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
@@ -412,7 +412,7 @@ final class Hills: ObservableObject {
                 let url = server.url
                 let remote = tool.name
                 let title = server.name
-                let shown = server.connector == nil ? "远山：\(title) · \(remote)" : "\(title)：\(remote)"
+                let shown = server.connector == nil ? Words.t("远山：\(title) · \(remote)") : "\(title)：\(remote)"
                 // A connector reaches the person's own account: anything not marked read-only asks first.
                 let asks = server.connector != nil && tool.readOnly != true
                 let what = String(tool.description.prefix(80))
@@ -661,7 +661,7 @@ final class HostKeyKeeper: NIOSSHClientServerAuthenticationDelegate, @unchecked 
             if known == seen {
                 validationCompletePromise.succeed(())
             } else {
-                validationCompletePromise.fail(ProviderError("\(host) 的服务器指纹变了（以前 \(Self.fingerprint(known))，现在 \(Self.fingerprint(seen))）。可能是重装了系统，也可能有人在中间冒充。确认没问题后，到「远山」里点这台主机的「重新信任」。"))
+                validationCompletePromise.fail(ProviderError(Words.t("\(host) 的服务器指纹变了（以前 \(Self.fingerprint(known))，现在 \(Self.fingerprint(seen))）。可能是重装了系统，也可能有人在中间冒充。确认没问题后，到「远山」里点这台主机的「重新信任」。")))
             }
         } else {
             UserDefaults.standard.set(seen, forKey: slot)

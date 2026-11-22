@@ -33,7 +33,7 @@ struct NameCardView: View {
         .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
         .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bot.name)的名帖")
+        .accessibilityLabel(Words.t("\(bot.name)的名帖"))
     }
 
     /// The face on its colour: a pet drawn large, or a photo filling the frame.
@@ -105,7 +105,7 @@ struct NameCardView: View {
     /// 落款: where it is from, when it came, and the seal.
     private var footer: some View {
         HStack(alignment: .center, spacing: Ink.Space.s) {
-            Text("Clio · 名帖")
+            Text(Words.t("Clio · 名帖"))
                 .font(Ink.wordmark(Ink.Size.small))
                 .foregroundStyle(Ink.inkFaint)
             Spacer(minLength: Ink.Space.s)

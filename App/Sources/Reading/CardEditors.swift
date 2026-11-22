@@ -59,13 +59,15 @@ struct BotEditor: View {
     @State private var seal: String
 
     /// Ways to begin a card, for when a blank page is hard.
-    private static let samples: [(title: String, role: String, words: String)] = [
-        ("温和管家", "照看日程和琐事", "说话温和、简洁。替我记着日程、提醒和待办；能用手机里的本事就直接去做，做之前简单说一声。"),
-        ("研究员", "查资料、写总结", "严谨，先查证再下结论，给出处。回答先给结论，再分点说理由；不确定就直说，不要编。"),
-        ("写作伙伴", "改文章、出点子", "文字有画面感，擅长润色和起标题。改稿时先说改了什么、为什么，保留我的语气。"),
-        ("代码搭子", "写代码、跑脚本", "务实。能在斗室里跑的先跑一遍再给我；代码给完整可运行的，解释简短。"),
-        ("直言的朋友", "说真话的朋友", "说话直接，带点幽默，不客套。我的想法有漏洞时直接指出来，再给更好的办法。"),
-    ]
+    private static var samples: [(title: String, role: String, words: String)] {
+        [
+            ("温和管家", "照看日程和琐事", "说话温和、简洁。替我记着日程、提醒和待办；能用手机里的本事就直接去做，做之前简单说一声。"),
+            ("研究员", "查资料、写总结", "严谨，先查证再下结论，给出处。回答先给结论，再分点说理由；不确定就直说，不要编。"),
+            ("写作伙伴", "改文章、出点子", "文字有画面感，擅长润色和起标题。改稿时先说改了什么、为什么，保留我的语气。"),
+            ("代码搭子", "写代码、跑脚本", Words.t("务实。能在斗室里跑的先跑一遍再给我；代码给完整可运行的，解释简短。")),
+            ("直言的朋友", "说真话的朋友", "说话直接，带点幽默，不客套。我的想法有漏洞时直接指出来，再给更好的办法。"),
+        ]
+    }
 
     init(team: TeamModel, bot: BotInfo?) {
         self.team = team
@@ -333,7 +335,7 @@ struct BotEditor: View {
     /// 朱印: the character on its seal, first of its name unless another is written.
     private var sealField: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "朱印", note: "盖在名帖落款上；默认是名字的第一个字")
+            FieldTitle(text: "朱印", note: Words.t("盖在名帖落款上；默认是名字的第一个字"))
             HStack(spacing: Ink.Space.m) {
                 ClioSeal(size: 44, tilt: -3, character: sealShown)
                 TextField(String(trimmed.first.map(String.init) ?? "克"), text: $seal)

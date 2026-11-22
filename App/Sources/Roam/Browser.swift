@@ -620,10 +620,10 @@ enum RoamTools {
             },
             RoamTool(name: "browser_tabs", description: "远游的多个标签：action 为 list 看有哪些标签；new 新开一个（可带 url，同时开几个网页对比时用）；switch 换到第 index 个；close 关掉第 index 个。之后的读、点、填都在你手上的这个标签上（不是用户屏幕上看的那个）。别的对话正在用的标签不能拿。", parameters: ["type": "object", "properties": ["action": ["type": "string", "enum": ["list", "new", "switch", "close"]], "url": ["type": "string"], "index": ["type": "number", "description": "从 1 数起"]], "required": ["action"]], label: { arguments in
                 switch arguments["action"]?.string {
-                case "new": return "远游：新标签"
-                case "switch": return "远游：换到第 \(Whole.int(arguments["index"]) ?? 0) 个标签"
-                case "close": return "远游：关掉第 \(Whole.int(arguments["index"]) ?? 0) 个标签"
-                default: return "远游：看标签"
+                case "new": return Words.t("远游：新标签")
+                case "switch": return Words.t("远游：换到第 \(Whole.int(arguments["index"]) ?? 0) 个标签")
+                case "close": return Words.t("远游：关掉第 \(Whole.int(arguments["index"]) ?? 0) 个标签")
+                default: return Words.t("远游：看标签")
                 }
             }) { arguments in
                 let action = arguments["action"]?.string

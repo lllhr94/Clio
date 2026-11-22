@@ -207,8 +207,8 @@ struct CarePage: View {
         var lines = ["Clio 诊断 \(Date().formatted())"]
         lines.append("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
         lines.append("\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-        lines.append("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)")
-        lines.append("斗室：\(denText)")
+        lines.append(Words.t("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)"))
+        lines.append(Words.t("斗室：\(denText)"))
         for endpoint in team.settings.endpoints {
             lines.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
         }
