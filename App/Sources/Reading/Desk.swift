@@ -456,8 +456,8 @@ struct Desk: View {
         var id: String { TeamModel.threadKey(owner.id, leaf: leaf.id) }
     }
 
-    private var pastLeaves: [PastLeaf] {
-        let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func pastLeaves(matching query: String) -> [PastLeaf] {
+        let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let owners = team.bots.map { (Opened.companion($0.id), $0.name) }
             + team.rooms.map { (Opened.gathering($0.id), $0.name) }
         return owners.flatMap { owner, name in
@@ -756,22 +756,25 @@ struct Desk: View {
         } else {
             TideChip(keeper: team.bots.first { $0.id == team.mainBotId }?.name ?? team.bots.first?.name ?? Words.t("旅伴"))
             filterChips
-            if shownThreads.isEmpty {
+            let sections = sections(shownThreads, past: pastLeaves(matching: ""), byDate: true)
+            if sections.isEmpty {
                 EmptyNote(
                     symbol: recent.isEmpty ? "bubble.left.and.bubble.right" : "archivebox",
                     words: recent.isEmpty ? L.t("empty.startConversation") : L.t("empty.activeConversations")
                 )
             }
-            ForEach(Self.grouped(shownThreads, pinned: team.pinned), id: \.title) { group in
-                Text(group.title)
+            // Every conversation, not one row per companion: the ones put aside by 新对话 sit in 最近 / 更早 too.
+            ForEach(sections, id: \.title) { section in
+                Text(section.title)
                     .font(.system(size: Ink.Size.small, weight: .medium))
                     .foregroundStyle(Ink.inkFaint)
                     .padding(.top, Ink.Space.m)
-                ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                    thread(item)
-                    if index != group.items.count - 1 {
-                        Kit.rule(inset: 40)
+                ForEach(section.rows) { row in
+                    switch row {
+                    case .current(let item): thread(item)
+                    case .past(let past): pastRow(past)
                     }
+                    if row.id != section.rows.last?.id { Kit.rule(inset: 40) }
                 }
             }
             if !archivedThreads.isEmpty {
@@ -1261,20 +1264,6 @@ struct Desk: View {
         ]
     }
 
-    /// 置顶 first (in the order pinned), then the rest.
-    /// 主人定, the way most agent apps do it: 置顶 (only when there is any), 最近 (the last seven days), 更早.
-    static func grouped(_ items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)], pinned: [String]) -> [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] {
-        let top = pinned.compactMap { key in items.first { $0.id.id == key } }
-        let others = items.filter { !pinned.contains($0.id.id) }
-        let recent = others.filter { isRecent($0.at) }
-        let older = others.filter { !isRecent($0.at) }
-        var groups: [(title: String, items: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)])] = []
-        if !top.isEmpty { groups.append(("置顶", top)) }
-        if !recent.isEmpty { groups.append(("最近", recent)) }
-        if !older.isEmpty { groups.append(("更早", older)) }
-        return groups
-    }
-
     /// Within the last seven days (milliseconds since 1970).
     static func isRecent(_ at: Double) -> Bool {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Calendar.current.startOfDay(for: Date())) ?? Date()
@@ -1306,14 +1295,25 @@ struct Desk: View {
     }
 
     private var sideSections: [SideSection] {
-        let rows = sideThreads.map(SideConversation.current) + pastLeaves.map(SideConversation.past)
+        sections(sideThreads, past: pastLeaves(matching: sideQuery), byDate: false)
+    }
+
+    private func sections(_ threads: [Thread], past: [PastLeaf], byDate: Bool) -> [SideSection] {
+        let rows = threads.map(SideConversation.current) + past.map(SideConversation.past)
         let byKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         let pinned = team.pinned.compactMap { byKey[$0] }.filter { !team.archived.contains($0.id) }
         let keys = Set(pinned.map(\.id))
         let others = rows.filter { !keys.contains($0.id) }.sorted { $0.at > $1.at }
         var sections: [SideSection] = []
         if !pinned.isEmpty { sections.append(SideSection(title: L.t("homeThreads.pin"), rows: pinned)) }
-        if !others.isEmpty { sections.append(SideSection(title: L.t("homeThreads.conversations"), rows: others)) }
+        if byDate {
+            let recent = others.filter { Self.isRecent($0.at) }
+            let older = others.filter { !Self.isRecent($0.at) }
+            if !recent.isEmpty { sections.append(SideSection(title: "最近", rows: recent)) }
+            if !older.isEmpty { sections.append(SideSection(title: "更早", rows: older)) }
+        } else if !others.isEmpty {
+            sections.append(SideSection(title: L.t("homeThreads.conversations"), rows: others))
+        }
         return sections
     }
 
