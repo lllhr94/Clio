@@ -37,10 +37,7 @@ extension ChatPage {
             if !Task.isCancelled { draftState.skills = skills }
         case .files:
             let job = Task.detached(priority: .userInitiated) {
-                Workspace.files(under: Workspace.root, cap: 800)
-                    .filter { !$0.path.hasPrefix("技能/") && !$0.path.hasSuffix(".pdf.txt") }
-                    .sorted { $0.date > $1.date }
-                    .map(\.path)
+                DeskPicker.readFiles(capPerMount: 400, totalCap: 1200).map(\.path)
             }
             let paths = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
             if !Task.isCancelled { draftState.files = paths }
@@ -78,9 +75,11 @@ extension ChatPage {
             }
             return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
         } else {
-            let all = draftState.files.lazy.filter { typed.isEmpty || $0.lowercased().contains(typed) }.prefix(6)
+            let mountPrefix = MountedFolders.virtualFolder + "/"
+            let all = draftState.files.lazy.filter { typed.isEmpty || $0.lowercased().contains(typed) }.prefix(8)
             return all.map { file in
-                Hint(id: "file-" + file, icon: "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
+                let isMounted = file.hasPrefix(mountPrefix)
+                return Hint(id: "file-" + file, icon: isMounted ? "link" : "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
                     if let at = draft.lastIndex(of: "@") { draft = String(draft[..<at]) }
                     if !files.contains(file) { withAnimation(Ink.Motion.settle) { files.append(file) } }
                 }
