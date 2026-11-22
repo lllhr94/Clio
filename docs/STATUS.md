@@ -1,5 +1,8 @@
 # 现状与交接
 
+**11-22 深夜最后（Claude）**：0.35 集成包编过、已发 probe（run 45007305614）。合进来的：A2–A7（Antigravity）、C32–C36（Codex）；Claude 拆完 `ChatPage.swift`、`Team.swift`（只搬家），加了 Anthropic 缓存、领券和防骗规矩、通知里不能批读过外部内容的单子、挂载文件夹的写入在读过外部内容后要问、网盘恢复可选份。等主人真机试。下一步见 `docs/TASKS.md`；Claude 回来先做：备份带上技能、复查这一个月合进来的安全相关改动。
+
+
 > **0.34 已发布（11-22，v0.34 / latest，`main` = `ae7a7d6`）。** 新的集成分支是 `batch-0.35`，版本号已改成 0.35（37）。latest 的说明文字里版本号显示成乱码，是 CI 里 `$VERSION（` 的毛病，已改成 `${VERSION}（`，下次发版就好；这次的会话不能改 Release，主人可以在网页上手动改一下。
 
 > **2026-11-23 起约一个月 Claude 不在**，交接见 `docs/HANDOFF.md`：Codex 临时合并和打包，Antigravity 照常领任务，正式发版仍只等主人说「发」。
