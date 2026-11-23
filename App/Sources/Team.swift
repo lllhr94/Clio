@@ -143,6 +143,7 @@ final class TeamModel: ObservableObject {
     let modelInputLog = ModelInputLog()
     /// Conversations whose earlier page is being brought back right now (one at a time per conversation).
     @Published var openingLeaves: Set<String> = []
+    private var openingLeafTasks: [String: Task<Void, Never>] = [:]
     /// Conversations whose `openLeafNow` rollback failed and left a pending transaction on disk;
     /// paused from new writes until relaunch reconciles them so newer turns cannot collide with rollback.
     @Published var unresolvedLeafOpenChats: Set<String> = []
@@ -550,9 +551,22 @@ final class TeamModel: ObservableObject {
         // the file work now runs off it, and the steps that change what is on screen stay in order here.
         guard canAcceptInput(for: key) else { return }
         openingLeaves.insert(key)
-        Task { [weak self] in
+        let task = Task { [weak self] in
             await self?.openLeafNow(key, leaf)
             self?.openingLeaves.remove(key)
+            self?.openingLeafTasks[key] = nil
+        }
+        openingLeafTasks[key] = task
+    }
+
+    /// Waits for any already-running `openLeafNow` transactions to finish committing or rolling back
+    /// before a backup restore arms its barrier and replaces `Team/`.
+    func waitForOpeningLeaves() async {
+        while !openingLeafTasks.isEmpty {
+            let pending = Array(openingLeafTasks.values)
+            for task in pending {
+                await task.value
+            }
         }
     }
 

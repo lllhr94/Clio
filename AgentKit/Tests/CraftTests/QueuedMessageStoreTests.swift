@@ -430,9 +430,12 @@ final class QueuedMessageStoreTests: XCTestCase {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
+        let teamRoot = root.appendingPathComponent("Team", isDirectory: true)
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
         let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
         let quarantineRoot = root.appendingPathComponent("ClioQueuedIsolated", isDirectory: true)
         let exportRoot = root.appendingPathComponent("Export", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
 
         // Both a legacy (nil-anchor) queue AND an anchored queue matching the restored backup.
         let legacyItem = StoredQueuedMessage(text: "无锚点旧队列")
@@ -441,13 +444,39 @@ final class QueuedMessageStoreTests: XCTestCase {
         try QueuedMessageStore.save([matchingItem], for: "bot-match", anchor: ConversationAnchor.from(entryIds: ["a1", "a2"]), under: queuedRoot)
 
         // Step 1: Arm barrier atomically BEFORE Backup.restore swaps Team/.
-        let previouslyBlocked = QueuedMessageStore.loadBlockedSlots(from: queuedRoot)
-        let armed = try QueuedMessageStore.armPreRestoreBarrier(under: queuedRoot)
-        XCTAssertEqual(armed, Set(["bot-legacy", "bot-match"]))
+        let barrier = try QueuedMessageStore.armPreRestoreBarrier(teamRoot: teamRoot, under: queuedRoot)
+        XCTAssertEqual(Set(barrier.slots), Set(["bot-legacy", "bot-match"]))
+        XCTAssertTrue(QueuedMessageStore.isPreRestoreBarrierActive(under: queuedRoot))
 
-        // Step 2: Simulate Backup.restore replacing Team/ and app getting KILLED before isolateAll ever runs!
-        // On restart, blocked slots already contain BOTH keys even though isolateAll never ran.
-        let blockedOnRestart = QueuedMessageStore.loadBlockedSlots(from: queuedRoot)
+        // Step 2 (P1 regression): An already-in-flight openLeafNow attempts to copy a leaf queue into a brand-new
+        // active slot ("bot-late") AFTER the barrier was armed and BEFORE Backup.restore freezes Disk -> MUST be rejected!
+        let lateItem = StoredQueuedMessage(text: "翻页在途延迟写入")
+        XCTAssertThrowsError(
+            try QueuedMessageStore.save([lateItem], for: "bot-late", anchor: ConversationAnchor.from(entryIds: ["a1", "a2"]), under: queuedRoot)
+        ) { error in
+            XCTAssertEqual(error as? QueuedMessageStoreError, .restoreBarrierActive)
+        }
+        XCTAssertThrowsError(
+            try QueuedMessageStore.savePendingLeafOpen(
+                PendingLeafOpen(chatKey: "bot-late", leafId: "leaf-late", leafKey: "bot-late~leaf-late"),
+                under: queuedRoot
+            )
+        ) { error in
+            XCTAssertEqual(error as? QueuedMessageStoreError, .restoreBarrierActive)
+        }
+        XCTAssertNil(QueuedMessageStore.loadAllSlots(from: queuedRoot)["bot-late"])
+
+        // Step 3: Simulate Backup.restore replacing Team/ (new Team/chats directory inode) and app getting KILLED
+        // before finishPreRestoreIsolation ever runs!
+        let freshTeam = root.appendingPathComponent("Team-restored", isDirectory: true)
+        try FileManager.default.createDirectory(at: freshTeam.appendingPathComponent("chats", isDirectory: true), withIntermediateDirectories: true)
+        _ = try FileManager.default.replaceItemAt(teamRoot, withItemAt: freshTeam)
+
+        // Step 4: On restart, reconcilePreRestoreBarrier detects Team/chats changed -> promotes slots into .restore-blocked.json!
+        let promoted = QueuedMessageStore.reconcilePreRestoreBarrier(teamRoot: teamRoot, queuedRoot: queuedRoot)
+        XCTAssertEqual(promoted, Set(["bot-legacy", "bot-match"]))
+        XCTAssertFalse(QueuedMessageStore.isPreRestoreBarrierActive(under: queuedRoot))
+        let blockedOnRestart = QueuedMessageStore.loadBlockedSlots(from: queuedRoot).union(promoted)
         XCTAssertEqual(blockedOnRestart, Set(["bot-legacy", "bot-match"]))
         for key in ["bot-legacy", "bot-match"] {
             XCTAssertEqual(
@@ -464,23 +493,58 @@ final class QueuedMessageStoreTests: XCTestCase {
         }
 
         // Startup retries isolation and unblocks each slot once verified moved out.
-        let report = QueuedMessageStore.isolateAll(from: queuedRoot, to: quarantineRoot, readableExportRoot: exportRoot)
+        let report = QueuedMessageStore.finishPreRestoreIsolation(from: queuedRoot, to: quarantineRoot, readableExportRoot: exportRoot)
         XCTAssertEqual(report.isolatedMessages, 2)
         XCTAssertEqual(report.failedMessages, 0)
         XCTAssertTrue(QueuedMessageStore.loadAll(from: queuedRoot).isEmpty)
         XCTAssertTrue(QueuedMessageStore.loadBlockedSlots(from: queuedRoot).isEmpty)
+    }
 
-        // Verify disarmPreRestoreBarrier rolls back newly armed slots if Backup.restore failed, while keeping prior blocks.
-        let nextItem = StoredQueuedMessage(text: "新排队")
-        try QueuedMessageStore.save([nextItem], for: "bot-new", under: queuedRoot)
+    func testPreRestoreBarrierDisarmsAndPreservesValidQueuesWhenKilledBeforeTeamSwap() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let teamRoot = root.appendingPathComponent("Team", isDirectory: true)
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let queuedRoot = root.appendingPathComponent("ClioQueued", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let validItem = StoredQueuedMessage(text: "原对话有效待发")
+        let anchor = ConversationAnchor.from(entryIds: ["e1", "e2"])
+        try QueuedMessageStore.save([validItem], for: "bot-valid", anchor: anchor, under: queuedRoot)
+        // Preserve an older pre-existing blocked slot across the aborted restore.
         try QueuedMessageStore.saveBlockedSlotsThrowing(["bot-older-block"], under: queuedRoot)
-        let prior = QueuedMessageStore.loadBlockedSlots(from: queuedRoot)
-        let armedForFailedRestore = try QueuedMessageStore.armPreRestoreBarrier(under: queuedRoot)
-        XCTAssertEqual(armedForFailedRestore, Set(["bot-new"]))
-        XCTAssertEqual(QueuedMessageStore.loadBlockedSlots(from: queuedRoot), Set(["bot-older-block", "bot-new"]))
-        QueuedMessageStore.disarmPreRestoreBarrier(newlyArmed: armedForFailedRestore, previouslyBlocked: prior, under: queuedRoot)
+
+        // Arm barrier before Backup.restore begins validating/unpacking the archive.
+        _ = try QueuedMessageStore.armPreRestoreBarrier(teamRoot: teamRoot, under: queuedRoot)
+        XCTAssertTrue(QueuedMessageStore.isPreRestoreBarrierActive(under: queuedRoot))
+
+        // App is killed BEFORE Backup.restore swaps Team/ (Team/chats directory identity is unchanged!).
+        let promoted = QueuedMessageStore.reconcilePreRestoreBarrier(teamRoot: teamRoot, queuedRoot: queuedRoot)
+        XCTAssertTrue(promoted.isEmpty)
+        XCTAssertFalse(QueuedMessageStore.isPreRestoreBarrierActive(under: queuedRoot))
+
+        // Older blocked slot stays blocked, while valid pre-restore queue is NOT blocked and restores cleanly.
+        let blockedAfterRestart = QueuedMessageStore.loadBlockedSlots(from: queuedRoot)
+        XCTAssertEqual(blockedAfterRestart, Set(["bot-older-block"]))
+        XCTAssertEqual(
+            QueuedMessageStore.evaluateSlot(
+                existsInIndex: true,
+                indexReadable: true,
+                chatFileExists: true,
+                anchor: QueuedMessageStore.loadAllSlots(from: queuedRoot)["bot-valid"]?.anchor,
+                chatEntryIds: ["e1", "e2"],
+                isBlockedByRestore: blockedAfterRestart.contains("bot-valid")
+            ),
+            .restore
+        )
+
+        // Normal in-process failure path: disarmPreRestoreBarrier restores writeability and keeps older blocks intact.
+        _ = try QueuedMessageStore.armPreRestoreBarrier(teamRoot: teamRoot, under: queuedRoot)
+        QueuedMessageStore.disarmPreRestoreBarrier(under: queuedRoot)
+        XCTAssertFalse(QueuedMessageStore.isPreRestoreBarrierActive(under: queuedRoot))
         XCTAssertEqual(QueuedMessageStore.loadBlockedSlots(from: queuedRoot), Set(["bot-older-block"]))
-        _ = previouslyBlocked
+        try QueuedMessageStore.save([validItem], for: "bot-valid", anchor: anchor, under: queuedRoot)
     }
 
     func testPendingLeafOpenDoesNotDeleteNewerChatOrRestoredBackupOnFingerprintMismatch() throws {

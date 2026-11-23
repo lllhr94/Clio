@@ -181,18 +181,18 @@ struct CarePage: View {
                 Task {
                     defer { restoringBusy = false }
                     await stopCleanBeforeRestore()
+                    await team.waitForOpeningLeaves()
                     // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
                     let outcome = await StorageMaintenance.run {
                         Result {
-                            let previouslyBlocked = QueuedStore.loadBlockedSlots()
-                            let armed = try QueuedStore.armPreRestoreBarrier()
+                            try QueuedStore.armPreRestoreBarrier(teamRoot: Disk.root)
                             do {
                                 let summary = try Backup.restore(from: url)
                                 QueuedStore.clearAllPendingLeafOpens()
                                 let report = QueuedStore.isolatePreRestoreQueues()
                                 return (summary, report)
                             } catch {
-                                QueuedStore.disarmPreRestoreBarrier(newlyArmed: armed, previouslyBlocked: previouslyBlocked)
+                                QueuedStore.disarmPreRestoreBarrier()
                                 throw error
                             }
                         }
@@ -427,16 +427,16 @@ struct CarePage: View {
                 await stopCleanBeforeRestore()
                 team.beginBackupRestore()
                 armedRestoreGate = true
+                await team.waitForOpeningLeaves()
                 let (summary, report) = try await StorageMaintenance.runThrowing {
-                    let previouslyBlocked = QueuedStore.loadBlockedSlots()
-                    let armed = try QueuedStore.armPreRestoreBarrier()
+                    try QueuedStore.armPreRestoreBarrier(teamRoot: Disk.root)
                     do {
                         let summary = try Backup.restore(from: file)
                         QueuedStore.clearAllPendingLeafOpens()
                         let report = QueuedStore.isolatePreRestoreQueues()
                         return (summary, report)
                     } catch {
-                        QueuedStore.disarmPreRestoreBarrier(newlyArmed: armed, previouslyBlocked: previouslyBlocked)
+                        QueuedStore.disarmPreRestoreBarrier()
                         throw error
                     }
                 }

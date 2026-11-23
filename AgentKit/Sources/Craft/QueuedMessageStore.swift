@@ -149,6 +149,39 @@ public struct PendingLeafOpen: Codable, Equatable, Sendable {
     }
 }
 
+/// Errors thrown by `QueuedMessageStore` when a write is disallowed by an active restore barrier.
+public enum QueuedMessageStoreError: Error, LocalizedError, Equatable, Sendable {
+    case restoreBarrierActive
+
+    public var errorDescription: String? {
+        switch self {
+        case .restoreBarrierActive:
+            return "正在恢复备份，暂不能保存排队消息。"
+        }
+    }
+}
+
+/// Durable pre-restore barrier written BEFORE `Backup.restore` touches `Team/`.
+/// Records both the queued slots present at arm time and the pre-restore `Team/chats` directory identity
+/// (`device`, `inode`) so startup can distinguish:
+/// - App killed BEFORE `Backup.restore` swapped `Team/` (directory identity unchanged) -> disarm barrier, preserve valid queues.
+/// - App killed AFTER `Backup.restore` swapped `Team/` (directory identity changed) -> promote slots into `.restore-blocked.json` and isolate.
+public struct PreRestoreBarrier: Codable, Equatable, Sendable {
+    public var slots: [String]
+    public var preRestoreChatsDirDevice: UInt64?
+    public var preRestoreChatsDirInode: UInt64?
+
+    public init(
+        slots: [String] = [],
+        preRestoreChatsDirDevice: UInt64? = nil,
+        preRestoreChatsDirInode: UInt64? = nil
+    ) {
+        self.slots = slots
+        self.preRestoreChatsDirDevice = preRestoreChatsDirDevice
+        self.preRestoreChatsDirInode = preRestoreChatsDirInode
+    }
+}
+
 /// Atomically persists per-chat queued messages (text + raw photo attachments) so messages queued during a turn
 /// survive app termination instead of being lost in memory.
 public enum QueuedMessageStore {
@@ -201,12 +234,21 @@ public enum QueuedMessageStore {
         root.appendingPathComponent(".restore-blocked.json")
     }
 
+    private static func preRestoreBarrierFile(under root: URL) -> URL {
+        root.appendingPathComponent(".restore-barrier.json")
+    }
+
     private static func pendingLeafOpenDir(under root: URL) -> URL {
         root.appendingPathComponent(".pending-leaf-open", isDirectory: true)
     }
 
     private static func pendingLeafOpenFile(for chatKey: String, under root: URL) -> URL {
         pendingLeafOpenDir(under: root).appendingPathComponent(folderName(for: chatKey) + ".json")
+    }
+
+    /// True while a pre-restore barrier file exists under `root`, blocking all new queue and pending-leaf writes.
+    public static func isPreRestoreBarrierActive(under root: URL) -> Bool {
+        FileManager.default.fileExists(atPath: preRestoreBarrierFile(under: root).path)
     }
 
     /// True only when queued messages are allowed to be flushed or handed to a model turn.
@@ -216,12 +258,16 @@ public enum QueuedMessageStore {
     }
 
     /// Saves `items` for `chatKey` atomically (temp folder + `replaceItemAt`), or deletes the folder when empty.
+    /// Throws `QueuedMessageStoreError.restoreBarrierActive` while a backup restore barrier is armed.
     public static func save(
         _ items: [StoredQueuedMessage],
         for chatKey: String,
         anchor: ConversationAnchor? = nil,
         under root: URL
     ) throws {
+        guard !isPreRestoreBarrierActive(under: root) else {
+            throw QueuedMessageStoreError.restoreBarrierActive
+        }
         let fm = FileManager.default
         let target = folder(for: chatKey, under: root)
         guard !items.isEmpty else {
@@ -363,26 +409,98 @@ public enum QueuedMessageStore {
         try? saveBlockedSlotsThrowing(slots, under: root)
     }
 
-    /// Atomically persists every currently queued slot key into `.restore-blocked.json` BEFORE `Backup.restore`
-    /// replaces `Team/`. Returns the newly armed slot keys (empty if nothing is queued).
+    /// Atomically writes `.restore-barrier.json` BEFORE `Backup.restore` touches `Team/`.
+    /// Captures all currently queued slots AND the pre-restore `Team/chats` directory identity (`device`, `inode`).
+    /// While `.restore-barrier.json` exists, `save(...)` and `savePendingLeafOpen(...)` refuse writes so no
+    /// in-flight transaction (such as `openLeafNow`) can slip an unblocked queue slot in after arming.
     @discardableResult
-    public static func armPreRestoreBarrier(under root: URL) throws -> Set<String> {
-        let existingSlots = Set(loadAllSlots(from: root).keys)
-        guard !existingSlots.isEmpty else { return [] }
-        let previouslyBlocked = loadBlockedSlots(from: root)
-        let combined = previouslyBlocked.union(existingSlots)
-        try saveBlockedSlotsThrowing(combined, under: root)
-        return existingSlots.subtracting(previouslyBlocked)
+    public static func armPreRestoreBarrier(teamRoot: URL, under root: URL) throws -> PreRestoreBarrier {
+        let fm = FileManager.default
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let identity = directoryIdentity(at: chatsDir)
+        let slots = loadAllSlots(from: root).keys.sorted()
+        let barrier = PreRestoreBarrier(
+            slots: slots,
+            preRestoreChatsDirDevice: identity?.device,
+            preRestoreChatsDirInode: identity?.inode
+        )
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(barrier)
+        try data.write(to: preRestoreBarrierFile(under: root), options: fileWriteOptions)
+        return barrier
     }
 
-    /// Rolls back newly armed barrier entries if `Backup.restore` failed before replacing `Team/`,
-    /// keeping any previously blocked slots intact.
-    public static func disarmPreRestoreBarrier(newlyArmed: Set<String>, previouslyBlocked: Set<String>, under root: URL) {
-        guard !newlyArmed.isEmpty else { return }
-        var current = loadBlockedSlots(from: root)
-        current.subtract(newlyArmed)
-        current.formUnion(previouslyBlocked)
-        saveBlockedSlots(current, under: root)
+    /// Removes `.restore-barrier.json` (used when `Backup.restore` failed before replacing `Team/`,
+    /// or after post-restore isolation has either cleared all slots or persisted remaining blocks in `.restore-blocked.json`).
+    /// Leaves any pre-existing `.restore-blocked.json` entries untouched.
+    public static func disarmPreRestoreBarrier(under root: URL) {
+        let fm = FileManager.default
+        let file = preRestoreBarrierFile(under: root)
+        if fm.fileExists(atPath: file.path) {
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    /// Reconciles an unfinished `.restore-barrier.json` on app startup:
+    /// - If `Team/chats` STILL has the exact `(device, inode)` recorded before restore began, `Backup.restore`
+    ///   never swapped `Team/` (app terminated during archive check/unpack): disarms the barrier and preserves valid queues.
+    /// - If `Team/chats` changed (or the barrier is unreadable / lacked pre-restore identity), `Backup.restore` replaced
+    ///   `Team/` before isolation finished: promotes all barrier/on-disk slots into `.restore-blocked.json` and returns them.
+    public static func reconcilePreRestoreBarrier(teamRoot: URL, queuedRoot: URL) -> Set<String> {
+        let fm = FileManager.default
+        let file = preRestoreBarrierFile(under: queuedRoot)
+        guard fm.fileExists(atPath: file.path) else { return [] }
+
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let currentIdentity = directoryIdentity(at: chatsDir)
+        let decoded = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(PreRestoreBarrier.self, from: $0) }
+
+        if let barrier = decoded,
+           let expectedDev = barrier.preRestoreChatsDirDevice,
+           let expectedIno = barrier.preRestoreChatsDirInode,
+           let currentIdentity,
+           currentIdentity.device == expectedDev,
+           currentIdentity.inode == expectedIno {
+            disarmPreRestoreBarrier(under: queuedRoot)
+            return []
+        }
+
+        let existing = Set(loadAllSlots(from: queuedRoot).keys)
+        let promoted = Set(decoded?.slots ?? []).union(existing)
+        if promoted.isEmpty {
+            disarmPreRestoreBarrier(under: queuedRoot)
+            return []
+        }
+        let combined = loadBlockedSlots(from: queuedRoot).union(promoted)
+        if (try? saveBlockedSlotsThrowing(combined, under: queuedRoot)) != nil {
+            disarmPreRestoreBarrier(under: queuedRoot)
+        }
+        return promoted
+    }
+
+    /// Runs `isolateAll` after `Backup.restore` succeeds and disarms `.restore-barrier.json` ONLY once every
+    /// pre-restore slot has either been verified removed from `root` or durably recorded in `.restore-blocked.json`.
+    @discardableResult
+    public static func finishPreRestoreIsolation(
+        from root: URL,
+        to quarantineRoot: URL,
+        readableExportRoot: URL? = nil,
+        now: Date = Date()
+    ) -> IsolationReport {
+        let report = isolateAll(
+            from: root,
+            to: quarantineRoot,
+            readableExportRoot: readableExportRoot,
+            now: now
+        )
+        let remainingOnDisk = Set(loadAllSlots(from: root).keys)
+        let stillBlocked = loadBlockedSlots(from: root).union(report.failedSlots).union(remainingOnDisk)
+        if stillBlocked.isEmpty {
+            disarmPreRestoreBarrier(under: root)
+        } else if (try? saveBlockedSlotsThrowing(stillBlocked, under: root)) != nil {
+            disarmPreRestoreBarrier(under: root)
+        }
+        return report
     }
 
     /// Fail-closed startup decision for a persisted queue slot.
@@ -560,7 +678,11 @@ public enum QueuedMessageStore {
 
     /// Saves a transaction marker before multi-step `openLeafNow` writes so an interrupted or partially failed
     /// leaf restore can be cleanly rolled back or finished on next launch.
+    /// Throws `QueuedMessageStoreError.restoreBarrierActive` while a backup restore barrier is armed.
     public static func savePendingLeafOpen(_ tx: PendingLeafOpen, under root: URL) throws {
+        guard !isPreRestoreBarrierActive(under: root) else {
+            throw QueuedMessageStoreError.restoreBarrierActive
+        }
         let fm = FileManager.default
         let dir = pendingLeafOpenDir(under: root)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -594,13 +716,21 @@ public enum QueuedMessageStore {
         return UInt64(truncatingIfNeeded: st.st_ino)
     }
 
-    /// Returns the POSIX inode of a (non-symlink) directory at `url`, or `nil` if absent/not a directory.
-    public static func directoryInode(at url: URL) -> UInt64? {
+    /// Returns the POSIX `(device, inode)` of a (non-symlink) directory at `url`, or `nil` if absent/not a directory.
+    public static func directoryIdentity(at url: URL) -> (device: UInt64, inode: UInt64)? {
         var st = stat()
         guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
             return nil
         }
-        return UInt64(truncatingIfNeeded: st.st_ino)
+        return (
+            device: UInt64(truncatingIfNeeded: st.st_dev),
+            inode: UInt64(truncatingIfNeeded: st.st_ino)
+        )
+    }
+
+    /// Returns the POSIX inode of a (non-symlink) directory at `url`, or `nil` if absent/not a directory.
+    public static func directoryInode(at url: URL) -> UInt64? {
+        directoryIdentity(at: url)?.inode
     }
 
     /// Removes the `openLeafNow` transaction marker for `chatKey`.

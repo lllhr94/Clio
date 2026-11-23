@@ -55,6 +55,8 @@ enum QueuedStore {
             guard !Disk.frozen else { return }
             do {
                 try QueuedMessageStore.save(snapshots, for: chatKey, anchor: anchor, under: base)
+            } catch QueuedMessageStoreError.restoreBarrierActive {
+                return
             } catch {
                 let reason = error.localizedDescription
                 DispatchQueue.main.async {
@@ -97,49 +99,51 @@ enum QueuedStore {
 
     private static let blockedDefaultsKey = "clio.blockedPreRestoreQueues"
 
-    /// Atomically writes every currently persisted queue slot into `.restore-blocked.json` BEFORE `Backup.restore`
-    /// replaces `Team/`. Throws if the barrier cannot be persisted so restore aborts cleanly instead of leaving
-    /// an unprotected window where a crash could attach old queues to restored conversations.
-    nonisolated static func armPreRestoreBarrier() throws -> Set<String> {
-        var result: Set<String> = []
+    /// Atomically writes `.restore-barrier.json` (recording existing slots and pre-restore `Team/chats` identity)
+    /// BEFORE `Backup.restore` touches `Team/`. Serializes on `writer.sync` to drain earlier async queue writes,
+    /// and blocks all subsequent queue / pending-leaf writes until disarmed or post-restore isolation completes.
+    nonisolated static func armPreRestoreBarrier(teamRoot: URL) throws {
         var failure: Error?
         writer.sync {
             do {
-                result = try QueuedMessageStore.armPreRestoreBarrier(under: root)
-                if !result.isEmpty {
-                    recordBlockedSlotsInDefaults(Array(result))
-                }
+                _ = try QueuedMessageStore.armPreRestoreBarrier(teamRoot: teamRoot, under: root)
             } catch {
                 failure = error
             }
         }
         if let failure { throw failure }
-        return result
     }
 
-    /// Rolls back newly armed pre-restore barrier entries when `Backup.restore` fails and leaves `Team/` untouched.
-    nonisolated static func disarmPreRestoreBarrier(newlyArmed: Set<String>, previouslyBlocked: Set<String>) {
-        guard !newlyArmed.isEmpty else { return }
+    /// Removes `.restore-barrier.json` when `Backup.restore` fails and leaves `Team/` untouched,
+    /// preserving any previously blocked slots in `.restore-blocked.json`.
+    nonisolated static func disarmPreRestoreBarrier() {
         writer.sync {
-            QueuedMessageStore.disarmPreRestoreBarrier(
-                newlyArmed: newlyArmed,
-                previouslyBlocked: previouslyBlocked,
-                under: root
-            )
-            if previouslyBlocked.isEmpty {
-                UserDefaults.standard.removeObject(forKey: blockedDefaultsKey)
-            } else {
-                UserDefaults.standard.set(previouslyBlocked.sorted(), forKey: blockedDefaultsKey)
+            QueuedMessageStore.disarmPreRestoreBarrier(under: root)
+        }
+    }
+
+    /// Reconciles an unfinished `.restore-barrier.json` on startup: disarms if `Team/chats` was never swapped,
+    /// or promotes pre-restore slots into `.restore-blocked.json` (and `UserDefaults` fallback) if `Team/` changed.
+    nonisolated static func reconcilePreRestoreBarrier(teamRoot: URL) -> Set<String> {
+        writer.sync {
+            let promoted = QueuedMessageStore.reconcilePreRestoreBarrier(teamRoot: teamRoot, queuedRoot: root)
+            if !promoted.isEmpty {
+                recordBlockedSlotsInDefaults(Array(promoted))
             }
+            return promoted
         }
     }
 
     /// Isolates all pre-restore queued messages out of active `ClioQueued` right after `Backup.restore` succeeds
-    /// so pre-restore queues can never attach to or auto-send into a restored backup's conversations.
+    /// and disarms `.restore-barrier.json` once every slot is either removed or durably recorded as blocked.
     @discardableResult
     nonisolated static func isolatePreRestoreQueues() -> IsolationReport {
         writer.sync {
-            let report = QueuedMessageStore.isolateAll(from: root, to: quarantineRoot, readableExportRoot: readableExportRoot)
+            let report = QueuedMessageStore.finishPreRestoreIsolation(
+                from: root,
+                to: quarantineRoot,
+                readableExportRoot: readableExportRoot
+            )
             let remainingBlocked = QueuedMessageStore.loadBlockedSlots(from: root)
             if remainingBlocked.isEmpty && report.failedSlots.isEmpty {
                 UserDefaults.standard.removeObject(forKey: blockedDefaultsKey)

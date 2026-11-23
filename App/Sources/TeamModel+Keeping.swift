@@ -17,6 +17,7 @@ extension TeamModel {
         let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
+            let barrierBlocked = QueuedStore.reconcilePreRestoreBarrier(teamRoot: Disk.root)
             QueuedStore.reconcilePendingLeafOpens(teamRoot: Disk.root)
             let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
             let botsIndex = loadIndex([BotInfo].self, "bots.json")
@@ -27,7 +28,7 @@ extension TeamModel {
             let laters = Disk.load([Later].self, "later.json") ?? []
             let routines = Disk.load([Routine].self, "routines.json") ?? []
             let rawSlots = QueuedStore.loadAllSlots()
-            let blockedSlots = QueuedStore.loadBlockedSlots()
+            let blockedSlots = QueuedStore.loadBlockedSlots().union(barrierBlocked)
 
             let queued = reconcileQueued(
                 rawSlots,
