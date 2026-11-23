@@ -243,10 +243,14 @@ struct PetPerchAnchor: UIViewRepresentable {
             if perch.suppressed != (quiet || blocked) { perch.suppressed = quiet || blocked }
 
             let sceneWindows = source.windowScene?.windows ?? []
+            // Only Clio's own covers (lock curtain, always-on) count; the system keyboard windows also sit above .alert.
             let alertCovering = sceneWindows.contains { other in
-                other !== window && !other.isHidden && other.alpha > 0.01 && other.windowLevel >= .alert
+                guard other !== window, !other.isHidden, other.alpha > 0.01, other.windowLevel >= .alert else { return false }
+                let kind = String(describing: type(of: other))
+                return !kind.contains("Keyboard") && !kind.contains("TextEffects")
             }
-            let menuActive = window.hasContextMenu || window.isKeyWindow
+            let menuOpen = window.hasContextMenu
+            let menuActive = menuOpen || window.isKeyWindow
             if wasMenuActive, !menuActive, !source.isKeyWindow, !alertCovering {
                 source.makeKey()
             }
@@ -269,7 +273,7 @@ struct PetPerchAnchor: UIViewRepresentable {
                 if perch.rising { perch.rising = false }
             }
             // A new drag, keyboard notification or layout change wakes the sampler from rest.
-            if now > awakeUntil, catchUp == nil, travelStart == nil, !menuActive {
+            if now > awakeUntil, catchUp == nil, travelStart == nil, !menuOpen {
                 clock.isPaused = true
             }
         }

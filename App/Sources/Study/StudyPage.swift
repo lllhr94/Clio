@@ -27,10 +27,13 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
         } else {
             let rootPath = Workspace.root.path
             let rootReal = Workspace.root.resolvingSymlinksInPath().standardizedFileURL.path
+            let rootPrivate = rootReal.hasPrefix("/var/") ? "/private" + rootReal : rootReal
             if trimmed.hasPrefix(rootPath + "/") {
                 candidates.append(String(trimmed.dropFirst(rootPath.count + 1)))
             } else if trimmed.hasPrefix(rootReal + "/") {
                 candidates.append(String(trimmed.dropFirst(rootReal.count + 1)))
+            } else if trimmed.hasPrefix(rootPrivate + "/") {
+                candidates.append(String(trimmed.dropFirst(rootPrivate.count + 1)))
             } else {
                 candidates.append(trimmed)
                 for prefix in ["文件/", "/文件/"] where trimmed.hasPrefix(prefix) {
