@@ -8,8 +8,34 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
 
-/// Copies external files safely into `书案/收件` while the caller holds any temporary security scope.
+/// Copies external files safely into `书案/收件` while holding any temporary security scope
+/// acquired synchronously on the UI callback until the background copy finishes.
 enum InboxImport {
+    final class ScopedLease: @unchecked Sendable {
+        let url: URL
+        private let lock = NSLock()
+        private var active: Bool
+
+        init(_ url: URL) {
+            self.url = url
+            self.active = url.startAccessingSecurityScopedResource()
+        }
+
+        func release() {
+            lock.lock()
+            let shouldStop = active
+            active = false
+            lock.unlock()
+            if shouldStop {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        deinit {
+            release()
+        }
+    }
+
     nonisolated static func sanitizeFilename(_ raw: String) -> String {
         var cleaned = raw
             .replacingOccurrences(of: "/", with: "-")
@@ -25,6 +51,11 @@ enum InboxImport {
     }
 
     nonisolated static func copyOne(_ url: URL) throws -> String {
+        try copyOne(ScopedLease(url))
+    }
+
+    nonisolated static func copyOne(_ lease: ScopedLease) throws -> String {
+        defer { lease.release() }
         guard !Disk.frozen else {
             throw WorkspaceError.cannot("正在恢复数据，请稍后再试。")
         }
@@ -33,24 +64,49 @@ enum InboxImport {
         guard Workspace.isInsideRealRoot(inbox, root: Workspace.root) else {
             throw WorkspaceError.cannot("收件目录不可用。")
         }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
-        let safeName = sanitizeFilename(url.lastPathComponent)
+        let safeName = sanitizeFilename(lease.url.lastPathComponent)
         let safeURL = URL(fileURLWithPath: safeName)
         let base = safeURL.deletingPathExtension().lastPathComponent
         let ext = safeURL.pathExtension
-        var target = inbox.appendingPathComponent(safeName)
-        var number = 2
-        while FileManager.default.fileExists(atPath: target.path) {
-            let candidate = ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)"
-            target = inbox.appendingPathComponent(candidate)
-            number += 1
+
+        var coordError: NSError?
+        var copyError: Error?
+        var copiedTarget: URL?
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(readingItemAt: lease.url, options: [], error: &coordError) { coordinatedURL in
+            var number = 1
+            while number <= 10_000 {
+                let candidate = number == 1
+                    ? safeName
+                    : (ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                let target = inbox.appendingPathComponent(candidate)
+                guard Workspace.isInsideRealRoot(target, root: inbox) else {
+                    copyError = WorkspaceError.cannot("目标路径不安全。")
+                    return
+                }
+                do {
+                    try FileManager.default.copyItem(at: coordinatedURL, to: target)
+                    copiedTarget = target
+                    return
+                } catch let err as NSError where err.domain == NSCocoaErrorDomain && err.code == NSFileWriteFileExistsError {
+                    number += 1
+                    continue
+                } catch {
+                    copyError = error
+                    return
+                }
+            }
+            copyError = WorkspaceError.cannot("同名文件过多，请先清理收件目录。")
         }
-        guard Workspace.isInsideRealRoot(target, root: inbox) else {
-            throw WorkspaceError.cannot("目标路径不安全。")
+        if let copyError { throw copyError }
+        if let coordError { throw coordError }
+        guard let target = copiedTarget else {
+            throw WorkspaceError.cannot("无法读取共享文件。")
         }
-        try FileManager.default.copyItem(at: url, to: target)
+        // Release external security scope as soon as our local sandbox copy is complete.
+        lease.release()
+
         try? FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: target.path
@@ -127,18 +183,34 @@ extension ChatPage {
 
     /// Files picked from the Files app land in 书案/收件, and the companion is told where.
     func receive(_ urls: [URL]) {
-        guard !Disk.frozen else { return }
-        var addedAny = false
-        for url in urls {
-            do {
-                let rel = try InboxImport.copyOne(url)
-                if !files.contains(rel) { files.append(rel) }
+        guard !Disk.frozen, !urls.isEmpty else { return }
+        let leases = urls.map(InboxImport.ScopedLease.init)
+        let revision = attachmentRevision
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) { () -> (paths: [String], failed: [String]) in
+                var paths: [String] = []
+                var failed: [String] = []
+                for lease in leases {
+                    do {
+                        let rel = try InboxImport.copyOne(lease)
+                        paths.append(rel)
+                    } catch {
+                        failed.append("没拿到「\(lease.url.lastPathComponent)」：\(error.localizedDescription)")
+                    }
+                }
+                return (paths, failed)
+            }.value
+            guard revision == attachmentRevision else { return }
+            var addedAny = false
+            for rel in outcome.paths where !files.contains(rel) {
+                files.append(rel)
                 addedAny = true
-            } catch {
-                say("没拿到「\(url.lastPathComponent)」：\(error.localizedDescription)")
             }
+            if let firstError = outcome.failed.first {
+                say(firstError)
+            }
+            if addedAny { Haptics.tick(0.6) }
         }
-        if addedAny { Haptics.tick(0.6) }
     }
 
     /// What goes after the message so the companion knows about the files.

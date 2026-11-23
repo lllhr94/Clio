@@ -91,12 +91,22 @@ struct ClioRoot: View {
 
     private func handleIncomingURL(_ url: URL) {
         if url.isFileURL {
-            do {
-                let rel = try InboxImport.copyOne(url)
-                ShortcutDoor.knock(.importedFiles(paths: [rel], failed: []))
-            } catch {
-                let message = "没拿到「\(url.lastPathComponent)」：\(error.localizedDescription)"
-                ShortcutDoor.knock(.importedFiles(paths: [], failed: [message]))
+            // Acquire security-scoped access synchronously during the UI callback, then move
+            // File Provider download, copy, and PDF text extraction off the main thread.
+            let lease = InboxImport.ScopedLease(url)
+            let filename = url.lastPathComponent
+            Task.detached(priority: .userInitiated) {
+                do {
+                    let rel = try InboxImport.copyOne(lease)
+                    await MainActor.run {
+                        ShortcutDoor.knock(.importedFiles(paths: [rel], failed: []))
+                    }
+                } catch {
+                    let message = "没拿到「\(filename)」：\(error.localizedDescription)"
+                    await MainActor.run {
+                        ShortcutDoor.knock(.importedFiles(paths: [], failed: [message]))
+                    }
+                }
             }
             return
         }

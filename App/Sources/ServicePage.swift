@@ -61,7 +61,7 @@ struct ServicePage: View {
         }
         .task { await loadBalance() }
         .task(id: id) {
-            let key = await Vault.readString("key-\(id)")
+            let key = await team.readAPIKey(for: id)
             if !Task.isCancelled, let key, key.count > 8, keySuffix == nil { keySuffix = String(key.suffix(4)) }
         }
         .sheet(isPresented: $managingModels) {
@@ -391,31 +391,52 @@ struct ServicePage: View {
     @discardableResult
     private func save(_ endpoint: Endpoint, quiet: Bool = false) -> Bool {
         let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ok = team.editEndpoint(
+        let outcome = team.editEndpoint(
             endpoint.id,
             name: name,
             baseURL: address,
             style: style,
             key: trimmedKey.isEmpty ? nil : trimmedKey
         )
-        guard ok else {
+        switch outcome {
+        case .saved(let normalizedURL, let keyUpdated):
+            address = normalizedURL
+            if keyUpdated {
+                keySuffix = trimmedKey.count > 8 ? String(trimmedKey.suffix(4)) : nil
+                newKey = ""
+            }
+            if note == L.t("servicePage.invalidAddress")
+                || note == L.t("servicePage.keyRequiredForNewHost")
+                || note == L.t("servicePage.keySaveFailed")
+                || note == L.t("servicePage.settingsSaveFailed") {
+                note = nil
+            }
+            return true
+        case .invalidAddress:
             if !quiet {
                 note = L.t("servicePage.invalidAddress")
                 Haptics.lock()
             }
             return false
+        case .keyRequiredForNewHost:
+            if !quiet {
+                note = L.t("servicePage.keyRequiredForNewHost")
+                Haptics.lock()
+            }
+            return false
+        case .keySaveFailed:
+            if !quiet {
+                note = L.t("servicePage.keySaveFailed")
+                Haptics.lock()
+            }
+            return false
+        case .settingsSaveFailed:
+            if !quiet {
+                note = L.t("servicePage.settingsSaveFailed")
+                Haptics.lock()
+            }
+            return false
         }
-        if let updated = team.settings.endpoints.first(where: { $0.id == endpoint.id }) {
-            address = updated.baseURL
-        }
-        if !trimmedKey.isEmpty {
-            keySuffix = trimmedKey.count > 8 ? String(trimmedKey.suffix(4)) : nil
-            newKey = ""
-        }
-        if note == L.t("servicePage.invalidAddress") {
-            note = nil
-        }
-        return true
     }
 
     private func replaceKey(_ endpoint: Endpoint) {

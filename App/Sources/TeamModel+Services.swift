@@ -7,12 +7,58 @@ import UIKit
 extension TeamModel {
     // MARK: Model services
 
-    func apiKey(for endpoint: String) -> String? { Vault.load(String.self, key: "key-\(endpoint)") }
+    private nonisolated static func keyOriginDefaultsKey(_ id: String) -> String { "endpoint.keyOrigin.\(id)" }
+
+    nonisolated static func boundKeyOrigin(for id: String) -> String? {
+        UserDefaults.standard.string(forKey: keyOriginDefaultsKey(id))
+    }
+
+    nonisolated static func setBoundKeyOrigin(_ origin: String?, for id: String) {
+        let key = keyOriginDefaultsKey(id)
+        if let origin {
+            UserDefaults.standard.set(origin, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    private nonisolated static func writeAndVerifyKey(_ slot: String, _ value: String) -> Bool {
+        Vault.save(value, as: slot)
+        return Vault.load(String.self, key: slot) == value
+    }
+
+    func apiKey(for endpoint: String) -> String? {
+        guard let found = settings.endpoints.first(where: { $0.id == endpoint }) else {
+            return Vault.load(String.self, key: EndpointKeyCoordinator.keySlot(for: endpoint))
+        }
+        return EndpointKeyCoordinator.resolveBoundKey(
+            endpointID: found.id,
+            baseURL: found.baseURL,
+            readKey: { Vault.load(String.self, key: $0) },
+            readBoundOrigin: Self.boundKeyOrigin(for:)
+        )
+    }
+
+    func readAPIKey(for endpointID: String) async -> String? {
+        let baseURL = settings.endpoints.first(where: { $0.id == endpointID })?.baseURL
+        return await Task.detached(priority: .userInitiated) {
+            guard let baseURL else {
+                return Vault.load(String.self, key: EndpointKeyCoordinator.keySlot(for: endpointID))
+            }
+            return EndpointKeyCoordinator.resolveBoundKey(
+                endpointID: endpointID,
+                baseURL: baseURL,
+                readKey: { Vault.load(String.self, key: $0) },
+                readBoundOrigin: Self.boundKeyOrigin(for:)
+            )
+        }.value
+    }
 
     func addEndpoint(_ endpoint: Endpoint, key: String) {
         settings.endpoints.removeAll { $0.id == endpoint.id }
         settings.endpoints.append(endpoint)
-        Vault.save(key, as: "key-\(endpoint.id)")
+        Vault.save(key, as: EndpointKeyCoordinator.keySlot(for: endpoint.id))
+        Self.setBoundKeyOrigin(EndpointAddressPolicy.rawOrigin(endpoint.baseURL), for: endpoint.id)
         if resolveActive(settings.defaultModel) == nil, let pick = Self.preferred(endpoint) {
             settings.defaultModel = "\(endpoint.id)/\(pick)"
         }
@@ -24,7 +70,9 @@ extension TeamModel {
     func removeEndpoint(_ id: String) {
         let prefix = id + "/"
         settings.endpoints.removeAll { $0.id == id }
-        Vault.remove("key-\(id)")
+        Vault.remove(EndpointKeyCoordinator.keySlot(for: id))
+        Vault.remove(EndpointKeyCoordinator.stagingSlot(for: id))
+        Self.setBoundKeyOrigin(nil, for: id)
         if settings.backupModel?.hasPrefix(prefix) == true { settings.backupModel = nil }
         if settings.imageModel?.hasPrefix(prefix) == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(prefix) == true { settings.memoryModel = nil }
@@ -40,7 +88,7 @@ extension TeamModel {
     func refreshModels(_ id: String) async throws -> Int {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
-        guard let key = await Vault.readString("key-\(id)"), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
+        guard let key = await readAPIKey(for: id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
         var reported: [String: Int] = [:]
         let raw: [String]
@@ -65,7 +113,7 @@ extension TeamModel {
     /// Refreshes a service's images candidates without changing its chat model selection.
     func refreshImageModels(_ id: String) async throws {
         guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.kind == .openai }),
-              let key = await Vault.readString("key-\(id)"), !key.isEmpty else {
+              let key = await readAPIKey(for: id), !key.isEmpty else {
             throw TeamError(message: L.t("errors.invalidApiKey"))
         }
         let listed = try await endpoint.provider(key: key).models()
@@ -160,48 +208,75 @@ extension TeamModel {
     }
 
     static func normalizedEndpointAddress(_ raw: String) -> String? {
-        var clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        while clean.count > 8 && clean.hasSuffix("/") { clean.removeLast() }
-        guard !clean.isEmpty,
-              clean.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-              let url = URL(string: clean),
-              let scheme = url.scheme?.lowercased(),
-              let host = url.host, !host.isEmpty,
-              url.user == nil, url.password == nil else {
-            return nil
-        }
-        if scheme == "https" { return clean }
-        if scheme == "http" && LocalAddress.isLocal(url) { return clean }
-        return nil
+        EndpointAddressPolicy.normalize(raw)
     }
 
     /// Changes a service's name, address, thinking style, and optionally its API key.
-    /// Validates the address before modifying settings or writing the new key so an invalid address
-    /// never overwrites the previous service's stored key.
+    /// Same-origin path adjustments keep the existing key; cross-host changes require a new key
+    /// and clear the old key before committing the new host so a failure or crash never sends
+    /// the previous service's key to a new host.
     @discardableResult
-    func editEndpoint(_ id: String, name: String, baseURL: String, style: ThinkingStyle?, key: String? = nil) -> Bool {
-        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return false }
-        guard let normalized = Self.normalizedEndpointAddress(baseURL) else { return false }
+    func editEndpoint(_ id: String, name: String, baseURL: String, style: ThinkingStyle?, key: String? = nil) -> EndpointKeyEditOutcome {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return .invalidAddress }
+        let original = settings.endpoints[index]
         let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !given.isEmpty { settings.endpoints[index].name = given }
-        let oldURL = settings.endpoints[index].baseURL
-        let oldStyle = settings.endpoints[index].style
-        settings.endpoints[index].baseURL = normalized
-        settings.endpoints[index].style = style
-        if settings.endpoints[index].baseURL != oldURL || settings.endpoints[index].style != oldStyle,
-           var overrides = settings.endpoints[index].overrides {
-            for (model, var custom) in overrides where custom.levels != nil {
-                custom.levels = nil
-                let baseline = settings.endpoints[index].traits(model, ignoringCorrection: true)
-                overrides[model] = (custom == baseline) ? nil : custom
+        let allowKeyless = Service.of(original)?.keyless == true
+        var appliedForward = false
+
+        let store = EndpointKeyCoordinator.Store(
+            readKey: { Vault.load(String.self, key: $0) },
+            writeKey: { Self.writeAndVerifyKey($0, $1) },
+            removeKey: { Vault.remove($0) },
+            readBoundOrigin: Self.boundKeyOrigin(for:),
+            writeBoundOrigin: { Self.setBoundKeyOrigin($1, for: $0) },
+            commitSettings: { nextURL in
+                MainActor.assumeIsolated {
+                    guard let idx = self.settings.endpoints.firstIndex(where: { $0.id == id }) else { return false }
+                    var candidate = self.settings
+                    if appliedForward && nextURL == original.baseURL {
+                        candidate.endpoints[idx] = original
+                    } else {
+                        if !given.isEmpty { candidate.endpoints[idx].name = given }
+                        let oldURL = candidate.endpoints[idx].baseURL
+                        let oldStyle = candidate.endpoints[idx].style
+                        candidate.endpoints[idx].baseURL = nextURL
+                        candidate.endpoints[idx].style = style
+                        if candidate.endpoints[idx].baseURL != oldURL || candidate.endpoints[idx].style != oldStyle,
+                           var overrides = candidate.endpoints[idx].overrides {
+                            for (model, var custom) in overrides where custom.levels != nil {
+                                custom.levels = nil
+                                let baseline = candidate.endpoints[idx].traits(model, ignoringCorrection: true)
+                                overrides[model] = (custom == baseline) ? nil : custom
+                            }
+                            candidate.endpoints[idx].overrides = overrides.isEmpty ? nil : overrides
+                        }
+                    }
+                    if self.keeping {
+                        do {
+                            try Disk.write(candidate, "settings.json")
+                        } catch {
+                            return false
+                        }
+                    }
+                    self.settings = candidate
+                    appliedForward = true
+                    return true
+                }
             }
-            settings.endpoints[index].overrides = overrides.isEmpty ? nil : overrides
+        )
+
+        let outcome = EndpointKeyCoordinator.applyEdit(
+            endpointID: id,
+            currentBaseURL: original.baseURL,
+            newBaseURL: baseURL,
+            replacementKey: key,
+            allowKeylessLocalReuse: allowKeyless,
+            store: store
+        )
+        if case .saved(_, let keyUpdated) = outcome, keyUpdated {
+            objectWillChange.send()
         }
-        saveSettings()
-        if let cleanKey = key?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanKey.isEmpty {
-            replaceKey(id, cleanKey)
-        }
-        return true
+        return outcome
     }
 
     /// Brings settings kept by an older Clio up to date. True when something changed.
@@ -224,7 +299,10 @@ extension TeamModel {
     }
 
     func replaceKey(_ id: String, _ key: String) {
-        Vault.save(key, as: "key-\(id)")
+        if Self.writeAndVerifyKey(EndpointKeyCoordinator.keySlot(for: id), key),
+           let endpoint = settings.endpoints.first(where: { $0.id == id }) {
+            Self.setBoundKeyOrigin(EndpointAddressPolicy.rawOrigin(endpoint.baseURL), for: id)
+        }
         objectWillChange.send()
     }
 

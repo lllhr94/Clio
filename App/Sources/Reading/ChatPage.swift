@@ -25,8 +25,7 @@ struct ChatPage: View {
 
     @State var draftState = ChatDraft()
     var draft: String { get { draftState.text } nonmutating set { draftState.text = newValue } }
-    @State var spokenBase = ""
-    @State var lastSpokenDraft: String?
+    @State var dictationMerger = DictationDraftMerger()
     @State var speakingText: String?
     @State var headerHeight: CGFloat = 0
     @State var photos: [Data] = []
@@ -606,15 +605,9 @@ struct ChatPage: View {
         }
         Haptics.grab()
         typing = false
-        spokenBase = draft
-        lastSpokenDraft = draft
+        dictationMerger.start(initialDraft: draft)
         dictation.onText = { heard in
-            if let expected = lastSpokenDraft, draft != expected {
-                spokenBase = draft.isEmpty ? "" : draft + " "
-            }
-            let updated = spokenBase + heard
-            lastSpokenDraft = updated
-            draft = updated
+            draft = dictationMerger.merge(currentDraft: draft, heard: heard)
         }
         Task { await dictation.start() }
     }
