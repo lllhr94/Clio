@@ -73,7 +73,7 @@ struct ServicePage: View {
         }
         // A name or address typed and left without pressing return is kept, not lost.
         .onDisappear {
-            if let endpoint, !removing, (!name.isEmpty || !address.isEmpty),
+            if let endpoint, !removing,
                name != endpoint.name || address != endpoint.baseURL || style != endpoint.style {
                 _ = save(endpoint, quiet: true)
             }
@@ -391,27 +391,37 @@ struct ServicePage: View {
     @discardableResult
     private func save(_ endpoint: Endpoint, quiet: Bool = false) -> Bool {
         let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = team.editEndpoint(
+            endpoint.id,
+            name: name,
+            baseURL: address,
+            style: style,
+            key: trimmedKey.isEmpty ? nil : trimmedKey
+        )
+        guard ok else {
+            if !quiet {
+                note = L.t("servicePage.invalidAddress")
+                Haptics.lock()
+            }
+            return false
+        }
+        if let updated = team.settings.endpoints.first(where: { $0.id == endpoint.id }) {
+            address = updated.baseURL
+        }
         if !trimmedKey.isEmpty {
-            team.replaceKey(endpoint.id, trimmedKey)
             keySuffix = trimmedKey.count > 8 ? String(trimmedKey.suffix(4)) : nil
             newKey = ""
         }
-        let ok = team.editEndpoint(endpoint.id, name: name, baseURL: address, style: style)
-        if !ok && !quiet {
-            note = L.t("servicePage.invalidAddress")
-            Haptics.lock()
-        } else if ok, let updated = team.settings.endpoints.first(where: { $0.id == endpoint.id }) {
-            address = updated.baseURL
+        if note == L.t("servicePage.invalidAddress") {
+            note = nil
         }
-        return ok
+        return true
     }
 
     private func replaceKey(_ endpoint: Endpoint) {
         let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
-        team.replaceKey(endpoint.id, key)
-        keySuffix = key.count > 8 ? String(key.suffix(4)) : nil
-        newKey = ""
+        guard save(endpoint) else { return }
         Haptics.thud()
         note = L.t("servicePage.keyReplacedNotice")
     }

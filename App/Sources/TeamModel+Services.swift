@@ -162,7 +162,9 @@ extension TeamModel {
     static func normalizedEndpointAddress(_ raw: String) -> String? {
         var clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while clean.count > 8 && clean.hasSuffix("/") { clean.removeLast() }
-        guard let url = URL(string: clean),
+        guard !clean.isEmpty,
+              clean.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              let url = URL(string: clean),
               let scheme = url.scheme?.lowercased(),
               let host = url.host, !host.isEmpty,
               url.user == nil, url.password == nil else {
@@ -173,23 +175,18 @@ extension TeamModel {
         return nil
     }
 
-    /// Changes a service's name, address or thinking style. Returns false when a non-empty address is invalid.
+    /// Changes a service's name, address, thinking style, and optionally its API key.
+    /// Validates the address before modifying settings or writing the new key so an invalid address
+    /// never overwrites the previous service's stored key.
     @discardableResult
-    func editEndpoint(_ id: String, name: String, baseURL: String, style: ThinkingStyle?) -> Bool {
+    func editEndpoint(_ id: String, name: String, baseURL: String, style: ThinkingStyle?, key: String? = nil) -> Bool {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return false }
-        let trimmedAddress = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let validAddress: String?
-        if trimmedAddress.isEmpty {
-            validAddress = nil
-        } else {
-            guard let normalized = Self.normalizedEndpointAddress(trimmedAddress) else { return false }
-            validAddress = normalized
-        }
+        guard let normalized = Self.normalizedEndpointAddress(baseURL) else { return false }
         let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !given.isEmpty { settings.endpoints[index].name = given }
         let oldURL = settings.endpoints[index].baseURL
         let oldStyle = settings.endpoints[index].style
-        if let validAddress { settings.endpoints[index].baseURL = validAddress }
+        settings.endpoints[index].baseURL = normalized
         settings.endpoints[index].style = style
         if settings.endpoints[index].baseURL != oldURL || settings.endpoints[index].style != oldStyle,
            var overrides = settings.endpoints[index].overrides {
@@ -201,6 +198,9 @@ extension TeamModel {
             settings.endpoints[index].overrides = overrides.isEmpty ? nil : overrides
         }
         saveSettings()
+        if let cleanKey = key?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanKey.isEmpty {
+            replaceKey(id, cleanKey)
+        }
         return true
     }
 
