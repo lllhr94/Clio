@@ -474,7 +474,12 @@ private struct ServerEditor: View {
                         Hills.shared.save(server, token: cleanToken.isEmpty ? nil : cleanToken)
                         let saved = server
                         Task {
-                            let hasSavedToken = !cleanToken.isEmpty || (await Vault.readString("mcp.\(saved.id)") != nil)
+                            let hasSavedToken: Bool
+                            if !cleanToken.isEmpty {
+                                hasSavedToken = true
+                            } else {
+                                hasSavedToken = await Vault.readString("mcp.\(saved.id)") != nil
+                            }
                             _ = await Connecting.connect(saved, signIn: saved.tunnelHost == nil && !hasSavedToken)
                         }
                         Haptics.thud()

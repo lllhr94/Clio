@@ -611,7 +611,11 @@ struct MCPClient: Sendable {
                   let host = target.host, !host.isEmpty else {
                 throw MCPError.rpc(Words.t("未开启远山隧道时，MCP 服务必须使用 https 公网地址。"))
             }
-            if LocalAddress.isLocal(target) || (await LocalAddress.resolvesToLocal(target)) {
+            var isLocalTarget = LocalAddress.isLocal(target)
+            if !isLocalTarget {
+                isLocalTarget = await LocalAddress.resolvesToLocal(target)
+            }
+            if isLocalTarget {
                 throw MCPError.rpc(Words.t("MCP 服务地址指向本机或局域网，已拒绝。若在远程机器内网，请开启远山 SSH 隧道。"))
             }
         }

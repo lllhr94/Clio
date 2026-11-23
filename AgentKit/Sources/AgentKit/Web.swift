@@ -400,7 +400,11 @@ public enum Web {
               url.user == nil, url.password == nil else {
             throw ProviderError("不安全的下载地址。")
         }
-        if LocalAddress.isLocal(url) || (await LocalAddress.resolvesToLocal(url)) {
+        var isLocalTarget = LocalAddress.isLocal(url)
+        if !isLocalTarget {
+            isLocalTarget = await LocalAddress.resolvesToLocal(url)
+        }
+        if isLocalTarget {
             throw ProviderError(LocalAddress.refusal)
         }
         var request = URLRequest(url: url, timeoutInterval: timeout)
@@ -707,10 +711,14 @@ private final class SearchConfigBox: @unchecked Sendable {
         lock.unlock()
     }
 
-    func load() async -> WebSearchConfig {
+    private func currentLoader() -> (@Sendable () async -> WebSearchConfig)? {
         lock.lock()
-        let current = loader
-        lock.unlock()
+        defer { lock.unlock() }
+        return loader
+    }
+
+    func load() async -> WebSearchConfig {
+        let current = currentLoader()
         return await current?() ?? WebSearchConfig()
     }
 }
