@@ -13,6 +13,14 @@
        environment:(nullable NSDictionary<NSString *, NSString *> *)environment
             onLine:(nullable DenLine)onLine
               done:(DenDone)done {
+    return [self run:command environment:environment maxOutput:400000 onLine:onLine done:done];
+}
+
++ (int)run:(NSString *)command
+       environment:(nullable NSDictionary<NSString *, NSString *> *)environment
+         maxOutput:(NSUInteger)maxOutput
+            onLine:(nullable DenLine)onLine
+              done:(DenDone)done {
     dispatch_async(dispatch_get_main_queue(), ^{ done(-38, @"", @"模拟器里没有斗室。"); });
     return -38;
 }

@@ -98,7 +98,7 @@ final class Den: ObservableObject {
 
     /// Runs a shell command. Stops waiting after `timeout` seconds and kills it.
     /// Runs one command. `onOutput` hears each line as it is printed.
-    func run(_ command: String, timeout: Double = 120, shown: Bool = true, onOutput: (@Sendable (String) -> Void)? = nil) async -> Outcome {
+    func run(_ command: String, timeout: Double = 120, keep: Int = 400_000, shown: Bool = true, onOutput: (@Sendable (String) -> Void)? = nil) async -> Outcome {
         guard await wake() else {
             if case .broken(let why) = state { return Outcome(code: -1, output: "", errorOutput: why, timedOut: false) }
             return Outcome(code: -1, output: "", errorOutput: Words.t("斗室没醒。"), timedOut: false)
@@ -106,6 +106,7 @@ final class Den: ObservableObject {
         let stopped = Outcome(code: -1, output: "", errorOutput: "命令已取消。", timedOut: false)
         guard !Task.isCancelled else { return stopped }
         let duration = timeout.isFinite ? max(1, min(timeout, 86_400)) : 120
+        let maxKeep = UInt(max(1, keep))
         if shown { note(.command, command) }
         let control = CommandControl()
         let printed = PrintedLines()
@@ -117,7 +118,7 @@ final class Den: ObservableObject {
         let result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let once = Once(continuation)
-                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, onLine: receive, done: { code, output, errorOutput in
+                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, maxOutput: maxKeep, onLine: receive, done: { code, output, errorOutput in
                     once.finish(Outcome(code: code, output: output, errorOutput: errorOutput, timedOut: false))
                 })
                 guard pid >= 0 else {
@@ -232,10 +233,36 @@ final class Den: ObservableObject {
 }
 
 
-/// Lines a running command printed, kept for the timer that may stop it.
+/// Lines a running command printed, kept for the timer that may stop it (first 2000 + last 2000 lines).
 private final class PrintedLines: @unchecked Sendable {
+    private static let cap = 2000
     private let lock = NSLock()
-    private var lines: [String] = []
-    func add(_ line: String) { lock.withLock { if lines.count < 4000 { lines.append(line) } } }
-    var value: String { lock.withLock { lines.joined(separator: "\n") } }
+    private var head: [String] = []
+    private var tail: [String] = []
+    private var tailStart = 0
+    private var omitted = 0
+
+    func add(_ line: String) {
+        lock.withLock {
+            if head.count < Self.cap {
+                head.append(line)
+            } else if tail.count < Self.cap {
+                tail.append(line)
+            } else {
+                tail[tailStart] = line
+                tailStart = (tailStart + 1) % Self.cap
+                omitted += 1
+            }
+        }
+    }
+
+    var value: String {
+        lock.withLock {
+            let orderedTail = tailStart == 0 ? tail : Array(tail[tailStart...] + tail[..<tailStart])
+            if omitted > 0 {
+                return (head + ["…（中间省略 \(omitted) 行）…"] + orderedTail).joined(separator: "\n")
+            }
+            return (head + orderedTail).joined(separator: "\n")
+        }
+    }
 }

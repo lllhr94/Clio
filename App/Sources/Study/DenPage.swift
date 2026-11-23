@@ -66,6 +66,8 @@ struct DenPage: View {
             if !den.running.isEmpty {
                 Button(L.t("actions.stop")) {
                     Haptics.lock()
+                    line?.cancel()
+                    line = nil
                     den.stopAll()
                 }
                 .font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -201,7 +203,12 @@ struct DenPage: View {
     private func queue(_ typed: String) {
         let before = self.line
         self.line = Task {
-            await before?.value
+            await withTaskCancellationHandler {
+                await before?.value
+            } onCancel: {
+                before?.cancel()
+            }
+            guard !Task.isCancelled else { return }
             _ = await den.run(typed, timeout: 900)
         }
     }

@@ -1,4 +1,5 @@
 import AgentKit
+import Darwin
 import Foundation
 import Prose
 import UIKit
@@ -11,7 +12,7 @@ enum DocMaker {
         var ext: String { self == .word ? "doc" : rawValue }
     }
 
-    static func tool() -> AgentTool {
+    static func tool(beforeChange: (@Sendable (String) async -> Void)? = nil) -> AgentTool {
         DeskTool(name: "make_document", description: """
         把你写好的内容做成文件存进书案/文稿：pdf（排好版的 PDF）、word（Word 能直接打开的 .doc）、html（网页）、csv（表格，取内容里第一张 Markdown 表格）。
         内容用 Markdown 写：标题、段落、列表、表格、代码都行。用户要「做成文档 / 导出 PDF / 给我一个 Word / 做成表格」时用。做好后告诉用户文件名。
@@ -32,8 +33,22 @@ enum DocMaker {
             let markdown = arguments["markdown"]?.string ?? ""
             guard !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return ToolOutput("内容是空的。", isError: true) }
             let folder = Workspace.root.appendingPathComponent("文稿", isDirectory: true)
+            var folderStat = stat()
+            if lstat(folder.path, &folderStat) == 0, (folderStat.st_mode & S_IFMT) == S_IFLNK {
+                return ToolOutput(Words.t("书案/文稿 是软链接，不能写入。"), isError: true)
+            }
+            guard Workspace.isInsideRealRoot(folder, root: Workspace.root) else {
+                return ToolOutput(Words.t("书案/文稿 路径异常，不能写入。"), isError: true)
+            }
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let file = folder.appendingPathComponent("\(title).\(format.ext)")
+            var fileStat = stat()
+            if lstat(file.path, &fileStat) == 0, (fileStat.st_mode & S_IFMT) == S_IFLNK {
+                return ToolOutput("目标文件是软链接，不能覆盖。", isError: true)
+            }
+            guard Workspace.isInsideRealRoot(file, root: Workspace.root) else {
+                return ToolOutput(Words.t("目标路径跳出了书案，不能写入。"), isError: true)
+            }
             let data: Data
             switch format {
             case .pdf: data = await pdf(html(markdown, title: title))
@@ -44,14 +59,38 @@ enum DocMaker {
                 // With a byte-order mark, so Excel and Numbers read the Chinese right.
                 data = Data([0xEF, 0xBB, 0xBF]) + Data(csv.utf8)
             }
+            let relativePath = "文稿/\(file.lastPathComponent)"
+            await beforeChange?(relativePath)
+            var postStat = stat()
+            if lstat(file.path, &postStat) == 0, (postStat.st_mode & S_IFMT) == S_IFLNK {
+                return ToolOutput("目标文件是软链接，不能覆盖。", isError: true)
+            }
+            guard Workspace.isInsideRealRoot(file, root: Workspace.root) else {
+                return ToolOutput(Words.t("目标路径跳出了书案，不能写入。"), isError: true)
+            }
             try data.write(to: file, options: .atomic)
-            return ToolOutput("做好了：书案/文稿/\(file.lastPathComponent)（\(Workspace.size(data.count))）")
+            return ToolOutput("做好了：书案/\(relativePath)（\(Workspace.size(data.count))）")
         }
     }
 
     private static func name(_ raw: String?) -> String {
-        let cleaned = (raw ?? "").replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "文稿" : String(cleaned.prefix(60))
+        let forbidden = CharacterSet(charactersIn: "/\\:?*\"<>|").union(.controlCharacters)
+        var cleaned = (raw ?? "")
+            .components(separatedBy: forbidden)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+        while let last = cleaned.last, last == "." || last.isWhitespace {
+            cleaned.removeLast()
+        }
+        cleaned = String(cleaned.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = cleaned.last, last == "." || last.isWhitespace {
+            cleaned.removeLast()
+        }
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return "文稿"
+        }
+        return cleaned
     }
 
     // MARK: HTML
@@ -100,7 +139,10 @@ enum DocMaker {
     }
 
     private static func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// Bold, italics, code and links.
@@ -111,7 +153,7 @@ enum DocMaker {
             ("\\*\\*([^*]+)\\*\\*", "<b>$1</b>"),
             ("(?<![*\\w])\\*([^*\\n]+)\\*(?!\\w)", "<i>$1</i>"),
             ("~~([^~]+)~~", "<s>$1</s>"),
-            ("\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)", "<a href=\"$2\">$1</a>"),
+            ("\\[([^\\]]+)\\]\\((https?://(?:(?!&quot;)[^)\\s\"'<>])+)\\)", "<a href=\"$2\">$1</a>"),
         ]
         for (pattern, template) in rules {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }

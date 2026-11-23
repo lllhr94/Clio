@@ -45,6 +45,7 @@ enum SkillShelf {
         let entries = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         let switchedOff = off
         for entry in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            guard Workspace.isInsideRealRoot(entry, root: folder) else { continue }
             var file = entry
             var fallback = entry.deletingPathExtension().lastPathComponent
             if (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
@@ -54,7 +55,8 @@ enum SkillShelf {
             } else if !["md", "markdown", "txt"].contains(entry.pathExtension.lowercased()) {
                 continue
             }
-            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            guard Workspace.isInsideRealRoot(file, root: folder),
+                  let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
             let path = Workspace.relative(file)
             items.append(Item(id: path, skill: Skill.parse(text, fallback: fallback), on: !switchedOff.contains(path), file: file))
         }
@@ -77,11 +79,12 @@ enum SkillShelf {
     /// Writes a skill: over its own file, or as a new 技能/名字.md.
     @discardableResult
     static func save(_ skill: Skill, over file: URL?) -> URL {
-        var target = file ?? folder.appendingPathComponent(safe(skill.name) + ".md")
+        let baseName = safe(skill.name)
+        var target = file ?? folder.appendingPathComponent(baseName + ".md")
         if file == nil {
             var number = 2
             while FileManager.default.fileExists(atPath: target.path) {
-                target = folder.appendingPathComponent("\(safe(skill.name)) \(number).md")
+                target = folder.appendingPathComponent("\(baseName) \(number).md")
                 number += 1
             }
         }
@@ -94,13 +97,30 @@ enum SkillShelf {
         let parent = item.file.deletingLastPathComponent()
         // A skill kept as a folder goes with its folder.
         let target = parent.standardizedFileURL == folder.standardizedFileURL ? item.file : parent
+        guard Workspace.isInsideRealRoot(target, root: folder),
+              target.standardizedFileURL.path != folder.standardizedFileURL.path else { return }
         try? FileManager.default.removeItem(at: target)
         invalidate()
     }
 
     static func safe(_ name: String) -> String {
-        let cleaned = name.components(separatedBy: CharacterSet(charactersIn: "/\\:?*\"<>|")).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "技能" : String(cleaned.prefix(40))
+        let forbidden = CharacterSet(charactersIn: "/\\:?*\"<>|").union(.controlCharacters)
+        var cleaned = name
+            .components(separatedBy: forbidden)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+        while let last = cleaned.last, last == "." || last.isWhitespace {
+            cleaned.removeLast()
+        }
+        cleaned = String(cleaned.prefix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = cleaned.last, last == "." || last.isWhitespace {
+            cleaned.removeLast()
+        }
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return "技能"
+        }
+        return cleaned
     }
 
     /// The lines for the system prompt; empty without skills.
@@ -185,7 +205,15 @@ struct UseSkillTool: AgentTool {
     func run(_ arguments: JSONValue) async throws -> ToolOutput {
         let wanted = arguments["name"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let items = SkillShelf.enabled
-        guard let item = items.first(where: { $0.skill.name == wanted }) ?? items.first(where: { $0.skill.name.contains(wanted) || wanted.contains($0.skill.name) }), !wanted.isEmpty else {
+        let matched: SkillShelf.Item?
+        if wanted.isEmpty {
+            matched = nil
+        } else {
+            matched = items.first(where: { $0.skill.name == wanted })
+                ?? items.first(where: { $0.skill.name.localizedCaseInsensitiveCompare(wanted) == .orderedSame })
+                ?? items.first(where: { $0.skill.name.localizedCaseInsensitiveContains(wanted) || wanted.localizedCaseInsensitiveContains($0.skill.name) })
+        }
+        guard let item = matched else {
             return ToolOutput("没有叫「\(wanted)」的技能。有的是：" + items.map(\.skill.name).joined(separator: "、"), isError: true)
         }
         var text = "技能「\(item.skill.name)」（\(item.id)）：\n\n\(item.skill.body)"
@@ -195,7 +223,8 @@ struct UseSkillTool: AgentTool {
             var others: [String] = []
             if let walker = FileManager.default.enumerator(at: parent, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
                 for case let url as URL in walker {
-                    guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                    guard Workspace.isInsideRealRoot(url, root: parent),
+                          (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
                     let std = url.standardizedFileURL.path
                     guard std != item.file.standardizedFileURL.path, std.hasPrefix(parentPath + "/") else { continue }
                     others.append(String(std.dropFirst(parentPath.count + 1)))
