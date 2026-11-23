@@ -13,9 +13,9 @@ public enum Taint {
     }
 
     /// Whether this step must be asked about after the turn read the web: commands, filling in a kept secret,
-    /// anything on a far computer, and writing outside the workspace.
+    /// anything on a far computer, any MCP tool, and writing outside the workspace.
     public static func needsSeal(tool: String, arguments: JSONValue, isInside: (String) -> Bool) -> Bool {
-        if tool == "shell" || tool == "browser_fill_secret" || tool.hasPrefix("ssh_") { return true }
+        if tool == "shell" || tool == "browser_fill_secret" || tool.hasPrefix("ssh_") || tool.hasPrefix("mcp_") { return true }
         // Things that last or go out: a memory, a routine, a message later, mail, the calendar, contacts, a link opened.
         if ["remember", "forget", "schedule_task", "message_later", "gmail_send", "gmail_draft", "calendar_add", "reminder_add",
             "contacts_add", "clipboard_write", "photos_save", "open_link", "browser_type"].contains(tool) { return true }
@@ -24,6 +24,20 @@ public enum Taint {
             return !isInside(path)
         }
         return false
+    }
+
+    public static func codePayload(tool name: String, arguments: JSONValue) -> String? {
+        if name == "shell" || name == "ssh_run" || name == "ssh_job_start" {
+            if let command = arguments["command"]?.string, !command.isEmpty { return command }
+        }
+        if name == "run_js", let script = arguments["code"]?.string, !script.isEmpty {
+            return script
+        }
+        if name.hasPrefix("mcp_") {
+            let compact = arguments.compact
+            if !compact.isEmpty, compact != "{}" { return compact }
+        }
+        return nil
     }
 
     public static let reason = "这一轮读过外部网页。网页里可能藏着冲着模型写的指令，所以这一步不管之前怎么放行，都要你亲自点头。"
@@ -73,6 +87,9 @@ public struct TaintGuard: AgentTool {
         // normally asks: a page could be steering it (sending mail, adding a routine, writing a memory).
         guard book.isTainted(key), own != nil || Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside) else { return own }
         var ask = own ?? ApprovalAsk(title: "这一步要你点头", reason: inner.label(for: arguments))
+        if ask.code == nil {
+            ask.code = Taint.codePayload(tool: spec.name, arguments: arguments)
+        }
         ask.forced = true
         ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")
         return ask

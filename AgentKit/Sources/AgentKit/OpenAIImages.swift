@@ -10,29 +10,53 @@ extension OpenAIProvider {
         try await generateImage(model: model, prompt: prompt, size: size, session: HTTP.session)
     }
 
+    private static let maxImageBytes = 32_000_000
+    private static let maxJSONEnvelopeBytes = 48_000_000
+
     func generateImage(model: String, prompt: String, size: String, session: URLSession) async throws -> Data {
         let request = try imageRequest(model: model, prompt: prompt, size: size)
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if response.expectedContentLength > Int64(Self.maxJSONEnvelopeBytes) {
+            throw ImageGenerationError.invalidResponse
+        }
+        var data = Data()
+        for try await byte in bytes {
+            if (data.count & 0xFFF) == 0 { try Task.checkCancellation() }
+            data.append(byte)
+            if data.count > Self.maxJSONEnvelopeBytes {
+                throw ImageGenerationError.invalidResponse
+            }
+        }
         let json = JSONValue.parse(String(decoding: data, as: UTF8.self))
         guard (200..<300).contains(status), json?["error"] == nil || json?["error"] == .null else {
             throw Self.imageFailure(status: status, json: json)
         }
         guard let item = json?["data"]?.array?.first else { throw ImageGenerationError.invalidResponse }
         if let encoded = item["b64_json"]?.string, let decoded = Data(base64Encoded: encoded), !decoded.isEmpty {
+            guard decoded.count <= Self.maxImageBytes else { throw ImageGenerationError.invalidResponse }
             return decoded
         }
         guard let address = item["url"]?.string, let url = Self.imageURL(address) else {
             throw ImageGenerationError.invalidResponse
         }
 
-        // The download may be on a CDN. Keep the model key on the generation request.
-        let (image, download) = try await session.data(from: url)
-        let downloadStatus = (download as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(downloadStatus), !image.isEmpty else {
-            throw downloadStatus == 408 || downloadStatus == 504 ? ImageGenerationError.timeout : .invalidResponse
+        // The download may be on a CDN. Keep the model key on the generation request, and block local/private SSRF & >32 MB payloads.
+        do {
+            let image = try await Web.publicBytes(from: url, limit: Self.maxImageBytes, timeout: 60, session: session)
+            guard !image.isEmpty else { throw ImageGenerationError.invalidResponse }
+            return image
+        } catch let failure as ProviderError {
+            if failure.status == 408 || failure.status == 504 { throw ImageGenerationError.timeout }
+            throw ImageGenerationError.invalidResponse
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw ImageGenerationError.timeout
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw ImageGenerationError.invalidResponse
         }
-        return image
     }
 
     func imageRequest(model: String, prompt: String, size: String) throws -> URLRequest {

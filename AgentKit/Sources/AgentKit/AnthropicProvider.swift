@@ -37,7 +37,8 @@ public struct AnthropicProvider: ModelProvider {
     /// Anthropic's own service keeps a prompt it has seen for a few minutes and charges a tenth for reading it back.
     /// Other services that speak this format may not take the marks, so they are left plain.
     static func caches(_ baseURL: String) -> Bool {
-        URL(string: baseURL)?.host?.lowercased().hasSuffix("anthropic.com") == true
+        guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
+        return host == "anthropic.com" || host.hasSuffix(".anthropic.com")
     }
 
     /// `cache`: marks the instructions, the tools and the conversation so far as reusable. A turn calls the model
@@ -75,7 +76,10 @@ public struct AnthropicProvider: ModelProvider {
                         blocks.append(["type": "redacted_thinking", "data": data])
                     }
                 }
-                if !message.text.isEmpty { blocks.append(["type": "text", "text": message.text]) }
+                let hasNonWhitespaceText = !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if !message.text.isEmpty, (hasNonWhitespaceText || message.toolCalls.isEmpty) {
+                    blocks.append(["type": "text", "text": message.text])
+                }
                 for call in message.toolCalls {
                     var input: Any = [String: Any]()
                     if let parsed = JSONValue.parse(call.arguments), case .object = parsed { input = parsed.any }
@@ -102,7 +106,8 @@ public struct AnthropicProvider: ModelProvider {
             "messages": turns.map { ["role": $0.role, "content": $0.blocks] },
         ]
         if !request.system.isEmpty {
-            body["system"] = cache ? [["type": "text", "text": request.system, "cache_control": ["type": "ephemeral"]]] as [[String: Any]] : request.system
+            let canCacheSystem = cache && !request.system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            body["system"] = canCacheSystem ? [["type": "text", "text": request.system, "cache_control": ["type": "ephemeral"]]] as [[String: Any]] : request.system
         }
         if let temperature = request.temperature, !thinking { body["temperature"] = min(1, temperature) }
         switch request.thinking {
@@ -129,7 +134,14 @@ public struct AnthropicProvider: ModelProvider {
             body["tools"] = tools
         }
         // The newest block of the conversation: the next call starts from here, so all of it up to here is reused.
-        if cache, var last = turns.last, let index = last.blocks.lastIndex(where: { ["text", "image", "tool_result", "tool_use"].contains($0["type"] as? String ?? "") }) {
+        if cache, var last = turns.last, let index = last.blocks.lastIndex(where: { block in
+            let type = block["type"] as? String ?? ""
+            if type == "text" {
+                let text = block["text"] as? String ?? ""
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return ["image", "tool_result", "tool_use"].contains(type)
+        }) {
             last.blocks[index]["cache_control"] = ["type": "ephemeral"]
             turns[turns.count - 1] = last
             body["messages"] = turns.map { ["role": $0.role, "content": $0.blocks] }

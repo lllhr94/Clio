@@ -188,4 +188,26 @@ final class StorageCleanupTests: XCTestCase {
         let surviving = try Data(contentsOf: box.team.appendingPathComponent("media/\(sharedName)"))
         XCTAssertEqual(surviving, Data("restored-precious-photo".utf8))
     }
+
+    func testFailClosedWhenChatFileIsSymlink() throws {
+        let box = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: box.appSupport) }
+
+        let now = Date()
+        let photo = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jpg"
+        try writeFile(box.media.appendingPathComponent(photo), contents: Data(repeating: 0x33, count: 1024), ageSeconds: 600, now: now)
+
+        let externalChat = box.appSupport.appendingPathComponent("external-chat.json")
+        try Data("[{\"photos\":[\"\(photo)\"]}]".utf8).write(to: externalChat)
+        let symlinkChat = box.chats.appendingPathComponent("bot-symlink.json")
+        try FileManager.default.createSymbolicLink(at: symlinkChat, withDestinationURL: externalChat)
+
+        let breakdown = StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, graceSeconds: 60, now: now)
+        XCTAssertTrue(breakdown.scanSkippedOrphans)
+        XCTAssertEqual(breakdown.orphanMediaCount, 0)
+
+        let cleaned = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now)
+        XCTAssertEqual(cleaned.removedMediaCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: box.media.appendingPathComponent(photo).path))
+    }
 }

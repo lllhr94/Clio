@@ -126,6 +126,43 @@ enum HTTP {
         try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
     }
 
+    static let maxJSONBytes = 32_000_000
+
+    /// Splits a raw byte buffer into lines strictly on ASCII `\r`, `\n`, or `\r\n` (never `U+2028`/`U+2029`).
+    static func splitASCIILines(_ data: Data) -> [String] {
+        var lines: [String] = []
+        var current: [UInt8] = []
+        var pendingCR = false
+        for byte in data {
+            if byte == 0x0D {
+                lines.append(String(decoding: current, as: UTF8.self))
+                current.removeAll(keepingCapacity: true)
+                pendingCR = true
+            } else if byte == 0x0A {
+                if pendingCR {
+                    pendingCR = false
+                } else {
+                    lines.append(String(decoding: current, as: UTF8.self))
+                    current.removeAll(keepingCapacity: true)
+                }
+            } else {
+                pendingCR = false
+                current.append(byte)
+            }
+        }
+        if !current.isEmpty {
+            lines.append(String(decoding: current, as: UTF8.self))
+        }
+        return lines
+    }
+
+    private static func hasFinish(_ events: [StreamEvent]) -> Bool {
+        events.contains { event in
+            if case .finish = event { return true }
+            return false
+        }
+    }
+
     /// Runs a streaming request and passes each SSE data line to `decode`.
     static func stream(_ request: URLRequest, acceptsJSON: Bool = false, session: URLSession = HTTP.session, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -135,25 +172,76 @@ enum HTTP {
                     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                     guard status == 200 else { throw await failure(status: status, bytes: bytes) }
                     if acceptsJSON, response.mimeType == "application/json" {
+                        if response.expectedContentLength > Int64(maxJSONBytes) {
+                            throw ProviderError("模型服务返回的数据太大（超过 \(maxJSONBytes / 1_000_000) MB）。")
+                        }
                         var body = Data()
-                        for try await byte in bytes { body.append(byte) }
-                        for event in try decode(String(decoding: body, as: UTF8.self)) { continuation.yield(event) }
+                        for try await byte in bytes {
+                            if (body.count & 0xFFF) == 0 { try Task.checkCancellation() }
+                            body.append(byte)
+                            if body.count > maxJSONBytes {
+                                throw ProviderError("模型服务返回的数据太大（超过 \(maxJSONBytes / 1_000_000) MB）。")
+                            }
+                        }
+                        try Task.checkCancellation()
+                        let events = try decode(String(decoding: body, as: UTF8.self))
+                        for event in events { continuation.yield(event) }
+                        if !events.isEmpty && !hasFinish(events) {
+                            continuation.yield(.finish(reason: "done"))
+                        }
                         continuation.finish()
                         return
                     }
                     var sawSSE = false
                     var plain = ""
-                    for try await line in bytes.lines {
+                    var lineBuffer: [UInt8] = []
+                    var pendingCR = false
+                    var byteCounter = 0
+
+                    func handleLine(_ line: String) throws {
                         try Task.checkCancellation()
                         if let payload = SSE.payload(of: line) {
                             sawSSE = true
                             // 「[DONE]」 is the service saying the answer is complete, for those that send no finish reason.
-                            if payload == "[DONE]" { continuation.yield(.finish(reason: "done")); continue }
+                            if payload == "[DONE]" {
+                                continuation.yield(.finish(reason: "done"))
+                                return
+                            }
                             for event in try decode(payload) { continuation.yield(event) }
                         } else if !sawSSE, plain.utf8.count < 16_000 {
                             if !plain.isEmpty { plain.append("\n") }
                             plain.append(line)
                         }
+                    }
+
+                    for try await byte in bytes {
+                        byteCounter &+= 1
+                        if (byteCounter & 0xFFF) == 0 { try Task.checkCancellation() }
+                        if byte == 0x0D {
+                            let line = String(decoding: lineBuffer, as: UTF8.self)
+                            lineBuffer.removeAll(keepingCapacity: true)
+                            pendingCR = true
+                            try handleLine(line)
+                        } else if byte == 0x0A {
+                            if pendingCR {
+                                pendingCR = false
+                            } else {
+                                let line = String(decoding: lineBuffer, as: UTF8.self)
+                                lineBuffer.removeAll(keepingCapacity: true)
+                                try handleLine(line)
+                            }
+                        } else {
+                            pendingCR = false
+                            lineBuffer.append(byte)
+                            if lineBuffer.count > maxJSONBytes {
+                                throw ProviderError("模型服务单行数据过大（超过 \(maxJSONBytes / 1_000_000) MB）。")
+                            }
+                        }
+                    }
+                    if !lineBuffer.isEmpty {
+                        let line = String(decoding: lineBuffer, as: UTF8.self)
+                        lineBuffer.removeAll()
+                        try handleLine(line)
                     }
                     if !sawSSE {
                         let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -161,7 +249,10 @@ enum HTTP {
                             let events = try decode(trimmed)
                             if !events.isEmpty {
                                 for event in events { continuation.yield(event) }
-                            } else if json["error"] != nil || json["message"]?.string != nil || json["msg"]?.string != nil {
+                                if !hasFinish(events) {
+                                    continuation.yield(.finish(reason: "done"))
+                                }
+                            } else if (json["error"] != nil && json["error"] != .null) || json["message"]?.string != nil || json["msg"]?.string != nil {
                                 throw failure(status: 200, data: Data(trimmed.utf8))
                             }
                         }

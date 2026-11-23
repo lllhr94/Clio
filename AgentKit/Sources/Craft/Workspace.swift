@@ -135,11 +135,25 @@ extension WorkspaceHost {
     /// Base64 of the file, so any bytes come back whole. At most 4 MB.
     public func readFile(_ path: String) async throws -> Data {
         let quoted = Shell.quote(path)
-        let result = try await exec("[ -f \(quoted) ] || { echo CLIO_NOFILE; exit 3; }; s=$(wc -c < \(quoted)); [ \"$s\" -gt 4000000 ] && { echo CLIO_TOOBIG; exit 4; }; base64 < \(quoted)", timeout: 60)
+        let result = try await exec("[ -f \(quoted) ] || { echo CLIO_NOFILE; exit 3; }; s=$(wc -c < \(quoted)) || exit 5; [ \"$s\" -gt 4000000 ] && { echo CLIO_TOOBIG; exit 4; }; printf 'CLIO_SIZE:%s\\n' \"$s\"; base64 < \(quoted)", timeout: 60)
         if result.output.hasPrefix("CLIO_NOFILE") { throw WorkspaceError.missing(path) }
         if result.output.hasPrefix("CLIO_TOOBIG") { throw WorkspaceError.tooBig(path) }
-        guard result.code == 0, let data = Data(base64Encoded: result.output.filter { !$0.isWhitespace }) else {
+        guard result.code == 0 else {
             throw WorkspaceError.cannot("读不出 \(path)：\(result.output.prefix(300))")
+        }
+        let firstNewline = result.output.firstIndex(of: "\n")
+        let header = firstNewline.map { result.output[..<$0] } ?? result.output[...]
+        let body = firstNewline.map { result.output[result.output.index(after: $0)...] } ?? ""[...]
+        guard header.hasPrefix("CLIO_SIZE:"),
+              let expectedSize = Int(header.dropFirst("CLIO_SIZE:".count).trimmingCharacters(in: .whitespacesAndNewlines)),
+              expectedSize >= 0 else {
+            throw WorkspaceError.cannot("读不出 \(path)：\(result.output.prefix(300))")
+        }
+        guard let data = Data(base64Encoded: body.filter { !$0.isWhitespace }) else {
+            throw WorkspaceError.cannot("读不出 \(path)：\(result.output.prefix(300))")
+        }
+        guard data.count == expectedSize else {
+            throw WorkspaceError.cannot("读 \(path) 时内容不完整（拿到 \(data.count) / \(expectedSize) 字节）")
         }
         return data
     }
@@ -155,7 +169,7 @@ extension WorkspaceHost {
         }
         var index = text.startIndex
         while index < text.endIndex {
-            let end = text.index(index, offsetBy: 60_000, limitedBy: text.endIndex) ?? text.endIndex
+            let end = text.index(index, offsetBy: 32_768, limitedBy: text.endIndex) ?? text.endIndex
             let result = try await exec("printf '%s' '\(text[index..<end])' | base64 -d >> \(part)", timeout: 60)
             if result.code != 0 {
                 _ = try? await exec("rm -f -- \(part)", timeout: 15)

@@ -205,10 +205,16 @@ public enum StorageCleanup {
         var remaining = Set(eligible.map(\.name))
         let fm = FileManager.default
         var isDir: ObjCBool = false
+        var dirStat = stat()
+        if lstat(chatsDir.path, &dirStat) == 0 {
+            if (dirStat.st_mode & S_IFMT) == S_IFLNK {
+                return ([], true)
+            }
+        }
         if fm.fileExists(atPath: chatsDir.path, isDirectory: &isDir), isDir.boolValue {
             guard let items = try? fm.contentsOfDirectory(
                 at: chatsDir,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey],
                 options: [.skipsHiddenFiles]
             ) else {
                 // Fail closed: cannot verify chat references safely.
@@ -218,11 +224,19 @@ public enum StorageCleanup {
                 if abortIf() || Task.isCancelled {
                     return ([], true)
                 }
-                guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
-                      values.isRegularFile == true, values.isSymbolicLink != true else {
-                    continue
+                var itemStat = stat()
+                guard lstat(item.path, &itemStat) == 0 else {
+                    return ([], true)
                 }
-                guard let data = try? Data(contentsOf: item) else {
+                if (itemStat.st_mode & S_IFMT) == S_IFLNK {
+                    return ([], true)
+                }
+                guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey]),
+                      values.isSymbolicLink != true else {
+                    return ([], true)
+                }
+                if values.isDirectory == true { continue }
+                guard values.isRegularFile == true, let data = try? Data(contentsOf: item) else {
                     // Fail closed: an unreadable chat file might still reference media files.
                     return ([], true)
                 }
