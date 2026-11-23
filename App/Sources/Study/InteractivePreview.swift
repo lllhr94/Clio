@@ -6,6 +6,7 @@ import WebKit
 struct InteractiveDocument: Equatable, Sendable {
     let url: URL
     var root = Workspace.root
+    var mount: MountedFolder? = nil
 
     static func supports(_ url: URL) -> Bool {
         ["html", "htm", "svg"].contains(url.pathExtension.lowercased())
@@ -17,7 +18,18 @@ struct InteractiveDocument: Equatable, Sendable {
     }
 
     fileprivate var fileInfo: (url: URL, revision: String)? {
-        guard Self.supports(url), let path = shareURL,
+        guard Self.supports(url) else { return nil }
+        if let mount {
+            guard let opened = MountedFolders.openForUI(mount) else { return nil }
+            defer { opened.token.stop() }
+            let resolved = url.resolvingSymlinksInPath()
+            guard Workspace.isInsideRealRoot(resolved, root: opened.url),
+                  let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+                  values.isRegularFile == true, let size = values.fileSize, size <= PreparedPreview.limit else { return nil }
+            let changed = values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+            return (resolved, "\(resolved.path)|\(size)|\(changed)")
+        }
+        guard let path = shareURL,
               let values = try? path.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
               values.isRegularFile == true, let size = values.fileSize, size <= PreparedPreview.limit else { return nil }
         let changed = values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
@@ -35,8 +47,15 @@ private final class PreparedPreview: Sendable {
     deinit { try? FileManager.default.removeItem(at: file) }
 
     static func make(_ document: InteractiveDocument) -> PreparedPreview? {
-        guard let original = document.fileInfo?.url,
-              let reader = try? FileHandle(forReadingFrom: original) else { return nil }
+        let mountScope = document.mount.flatMap { MountedFolders.openForUI($0) }
+        defer { mountScope?.token.stop() }
+        if document.mount != nil, mountScope == nil { return nil }
+        let effectiveRoot = mountScope?.url ?? document.root
+        let resolved = document.url.resolvingSymlinksInPath()
+        guard Self.supports(document.url), Workspace.isInsideRealRoot(resolved, root: effectiveRoot),
+              let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, let size = values.fileSize, size <= limit,
+              let reader = try? FileHandle(forReadingFrom: resolved) else { return nil }
         defer { try? reader.close() }
         guard let data = try? reader.read(upToCount: limit + 1), data.count <= limit,
               let source = String(data: data, encoding: .utf8) else { return nil }
@@ -67,6 +86,10 @@ private final class PreparedPreview: Sendable {
         let preview = PreparedPreview(file: file)
         guard (try? Data(html.utf8).write(to: file, options: [.atomic, .completeFileProtection])) != nil else { return nil }
         return preview
+    }
+
+    private static func supports(_ url: URL) -> Bool {
+        InteractiveDocument.supports(url)
     }
 
     // The outer and inner documents both need inline styles and scripts. The child inherits the outer policy,
@@ -111,20 +134,42 @@ private final class OfflineWebPreview: NSObject, WKNavigationDelegate {
     private var snapshot: CheckedContinuation<UIImage?, Never>?
     private var snapshotTimer: Task<Void, Never>?
 
-    init(_ preview: PreparedPreview, rules: WKContentRuleList, frame: CGRect = .zero) {
+    init(_ preview: PreparedPreview, rules: WKContentRuleList, frame: CGRect = .zero, muted: Bool = false) {
         self.preview = preview
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.ignoresViewportScaleLimits = true
+        if muted {
+            configuration.mediaTypesRequiringUserActionForPlayback = .all
+        }
         configuration.userContentController.add(rules)
         // WebRTC transports are separate from HTTP loading. Remove their entry points in every frame.
-        configuration.userContentController.addUserScript(WKUserScript(source: """
+        var script = """
         for (const key of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection',
                            'RTCIceGatherer', 'RTCIceTransport', 'WebTransport']) {
-            if (key in globalThis) Object.defineProperty(globalThis, key, {value: undefined, configurable: false, writable: false});
+            if (key in globalThis) {
+                try { Object.defineProperty(globalThis, key, {value: undefined, configurable: false, writable: false}); } catch (_) {}
+            }
         }
-        """, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
+        """
+        if muted {
+            script += """
+            \nfor (const key of ['AudioContext', 'webkitAudioContext', 'OfflineAudioContext', 'speechSynthesis']) {
+                try {
+                    if (key === 'speechSynthesis' && globalThis.speechSynthesis) {
+                        globalThis.speechSynthesis.speak = function() {};
+                        globalThis.speechSynthesis.cancel = function() {};
+                    }
+                    Object.defineProperty(globalThis, key, {value: undefined, configurable: false, writable: false});
+                } catch (_) {}
+            }
+            if (typeof HTMLMediaElement !== 'undefined') {
+                try { HTMLMediaElement.prototype.play = function() { return Promise.reject(); }; } catch (_) {}
+            }
+            """
+        }
+        configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         view = WKWebView(frame: frame, configuration: configuration)
         super.init()
         view.navigationDelegate = self
@@ -255,7 +300,7 @@ final class InteractiveThumbnails {
         let prepared = await Task.detached(priority: .utility) { PreparedPreview.make(document) }.value
         guard let prepared, !Task.isCancelled, let rules = await PreviewRules.get(), !Task.isCancelled else { return nil }
         let frame = CGRect(x: 0, y: 0, width: 440, height: 264)
-        let web = OfflineWebPreview(prepared, rules: rules, frame: frame)
+        let web = OfflineWebPreview(prepared, rules: rules, frame: frame, muted: true)
         // WebKit needs a window for canvas and compositing. Put this view behind the app's content.
         let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
         guard let window = windows.first(where: { $0.isKeyWindow }) else { return nil }
@@ -272,6 +317,12 @@ final class InteractiveThumbnails {
 struct InteractivePreviewPage: View {
     let document: InteractiveDocument
     @Environment(\.dismiss) private var dismiss
+    @State private var scope: MountedFolders.ScopeToken?
+
+    private var shareTarget: URL? {
+        if document.mount != nil, scope == nil { return nil }
+        return document.shareURL
+    }
 
     var body: some View {
         NavigationStack {
@@ -281,12 +332,21 @@ struct InteractivePreviewPage: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        if let url = document.shareURL {
+                        if let url = shareTarget {
                             ShareLink(item: url) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
                         }
                         Button(L.t("actions.done")) { dismiss() }
                     }
                 }
+        }
+        .onAppear {
+            if let mount = document.mount {
+                scope = MountedFolders.openForUI(mount)?.token
+            }
+        }
+        .onDisappear {
+            scope?.stop()
+            scope = nil
         }
     }
 }
@@ -309,7 +369,7 @@ struct InteractivePreviewThumbnail: View {
             }
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .accessibilityHidden(true)
-            .task(id: document.url) {
+            .task(id: document) {
                 let preview = await InteractiveThumbnails.shared.image(for: document)
                 if !Task.isCancelled { image = preview }
             }
@@ -340,17 +400,20 @@ struct InteractivePreviewContent: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { InteractivePreviewRotation() }
-        .task(id: document.url) {
+        .task(id: document) {
+            web?.stop()
+            web = nil
             ready = false
             failed = false
             let prepared = await Task.detached(priority: .userInitiated) { PreparedPreview.make(document) }.value
             let rules = await PreviewRules.get()
             guard !Task.isCancelled else { return }
             guard let prepared, let rules else { failed = true; return }
+            web?.stop()
             let page = OfflineWebPreview(prepared, rules: rules)
             web = page
             let loaded = await page.load()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { page.stop(); return }
             ready = loaded
             failed = !loaded
         }

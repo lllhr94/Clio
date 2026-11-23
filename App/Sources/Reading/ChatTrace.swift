@@ -12,10 +12,23 @@ import VisionKit
 struct Trace: View {
     let line: ChatLine
     var visit: (URL) -> Void = { _ in }
-    var openFile: (URL) -> Void = { _ in }
+    var openFile: (URL, MountedFolder?) -> Void = { _, _ in }
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
     var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
+
+    /// Normalizes a step label's leading place/tool prefix across daily and literary tones.
+    nonisolated static func canonicalKind(of label: String) -> String? {
+        let head = String(label.split(separator: "：", maxSplits: 1).first ?? Substring(label)).trimmingCharacters(in: .whitespaces)
+        let prefix = String(head.split(separator: "·", maxSplits: 1).first ?? Substring(head)).trimmingCharacters(in: .whitespaces)
+        switch prefix {
+        case "书案", "文件": return "书案"
+        case "斗室", "终端": return "斗室"
+        case "远山", "远程主机", "别馆": return "远山"
+        case "远游", "浏览器", "漫游": return "远游"
+        default: return nil
+        }
+    }
 
     private func forget(_ memory: Remembered, with unremember: (String, String) -> Bool) {
         Haptics.light()
@@ -53,6 +66,7 @@ struct Trace: View {
         let title: String
         let detail: String
         var url: URL?
+        var mount: MountedFolder?
         /// A changed file's whole comparison.
         var diff: String?
         var place: String?
@@ -67,6 +81,7 @@ struct Trace: View {
         let place: String
         let diff: String
         let url: URL?
+        let mount: MountedFolder?
     }
     @State private var diffing: DiffShow?
 
@@ -113,9 +128,9 @@ struct Trace: View {
                 Button {
                     Haptics.light()
                     if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                        diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url)
+                        diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url, mount: item.mount)
                     } else if let url = item.url {
-                        openFile(url)
+                        openFile(url, item.mount)
                     }
                 } label: {
                     HStack(spacing: Ink.Space.m) {
@@ -158,42 +173,161 @@ struct Trace: View {
 
     @State private var keepsakes: [Keepsake] = []
 
+    nonisolated private static func upsertLocalFile(
+        into out: inout [Keepsake],
+        index: Int,
+        ref: WorkspaceFileRef,
+        desk: String,
+        output: String,
+        full: String?
+    ) {
+        let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
+        let pathText = desk + ref.relativePath
+        if let kept = out.firstIndex(where: { $0.url == ref.url && $0.mount?.id == ref.mount?.id }) {
+            out[kept] = Keepsake(
+                id: out[kept].id,
+                kind: .file,
+                title: ref.url.lastPathComponent,
+                detail: pathText + " · 改了几次，这是最后一次",
+                url: ref.url,
+                mount: ref.mount,
+                diff: full ?? out[kept].diff
+            )
+        } else {
+            out.append(Keepsake(
+                id: index,
+                kind: .file,
+                title: ref.url.lastPathComponent,
+                detail: pathText + change,
+                url: ref.url,
+                mount: ref.mount,
+                diff: full
+            ))
+        }
+    }
+
     nonisolated private static func buildKeepsakes(_ line: ChatLine, desk: String) -> [Keepsake] {
         var out: [Keepsake] = []
         for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
             if Task.isCancelled { break }
-            let output = index < line.details.count ? line.details[index].output : ""
-            let full = index < line.details.count ? line.details[index].full : nil
+            let detail = index < line.details.count ? line.details[index] : nil
+            let output = detail?.output ?? ""
+            let full = detail?.full
+            let parts = tool.split(separator: "：", maxSplits: 1).map(String.init)
+            let head = parts.first ?? tool
+            let rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : tool
+            let kind = canonicalKind(of: tool)
+
             if tool.hasPrefix("新建日程：") {
                 out.append(Keepsake(id: index, kind: .event, title: String(tool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
+                continue
             } else if tool.hasPrefix("加提醒：") {
                 out.append(Keepsake(id: index, kind: .reminder, title: String(tool.dropFirst(4)), detail: "已加进提醒事项", url: URL(string: "x-apple-reminderkit://")))
+                continue
             } else if tool.hasPrefix("查天气："), !output.isEmpty, !output.hasPrefix("没找到") {
                 out.append(Keepsake(id: index, kind: .weather, title: String(tool.dropFirst(4)), detail: output))
+                continue
             } else if tool.hasPrefix("健康："), !output.isEmpty {
                 out.append(Keepsake(id: index, kind: .health, title: String(tool.dropFirst(3)), detail: output, url: URL(string: "x-apple-health://"), diff: full))
-            } else if tool.hasPrefix("书案：写 ") || tool.hasPrefix("书案：改 ") {
-                let path = String(tool.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-                if let file = Workspace.resolve(path), FileManager.default.fileExists(atPath: file.path) {
-                    let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
-                    if let kept = out.firstIndex(where: { $0.url == file }) {
-                        out[kept] = Keepsake(id: out[kept].id, kind: .file, title: file.lastPathComponent, detail: desk + Workspace.relative(file) + " · 改了几次，这是最后一次", url: file, diff: full ?? out[kept].diff)
-                    } else {
-                        out.append(Keepsake(id: index, kind: .file, title: file.lastPathComponent, detail: desk + Workspace.relative(file) + change, url: file, diff: full))
+                continue
+            }
+
+            if let toolName = detail?.tool, !toolName.isEmpty {
+                let args = detail.flatMap { JSONValue.parse($0.input) }
+                switch toolName {
+                case "write_file", "edit_file":
+                    let fallbackPath = (rest.hasPrefix("写 ") || rest.hasPrefix("改 ")) ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces) : ""
+                    let rawPath = (args?["path"]?.string ?? fallbackPath).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !rawPath.isEmpty else { continue }
+                    if kind == "斗室" || kind == "远山" {
+                        let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
+                        let localRef = kind == "斗室" ? WorkspaceFileRef.resolve(rawPath) : nil
+                        out.append(Keepsake(
+                            id: index,
+                            kind: .remoteFile,
+                            title: (rawPath as NSString).lastPathComponent,
+                            detail: rawPath + change,
+                            url: localRef?.url,
+                            mount: localRef?.mount,
+                            diff: full,
+                            place: head
+                        ))
+                    } else if let ref = WorkspaceFileRef.resolve(rawPath) {
+                        upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
                     }
+                case "make_document":
+                    var docPath = rest.hasPrefix("写 ") ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces) : ""
+                    if docPath.isEmpty, output.hasPrefix("做好了：") {
+                        let after = String(output.dropFirst(4))
+                        docPath = String(after.split(separator: "（", maxSplits: 1).first ?? Substring(after)).trimmingCharacters(in: .whitespaces)
+                    }
+                    if !docPath.isEmpty, let ref = WorkspaceFileRef.resolve(docPath) {
+                        upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
+                    }
+                case "shell":
+                    if args?["background"]?.bool == true { continue }
+                    let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cmdFirst = cmd.split(separator: "\n").first.map { String($0.prefix(80)) } ?? ""
+                    let titleText = !cmdFirst.isEmpty ? cmdFirst : rest
+                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    out.append(Keepsake(
+                        id: index,
+                        kind: .command,
+                        title: titleText,
+                        detail: tail.isEmpty ? "（没有输出）" : tail,
+                        place: kind == "远山" ? head : nil
+                    ))
+                case "ssh_run":
+                    let hostName = (args?["host"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cmdFirst = cmd.split(separator: "\n").first.map { String($0.prefix(80)) } ?? ""
+                    let titleText = !cmdFirst.isEmpty ? cmdFirst : rest
+                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    let placeText = hostName.isEmpty ? head : "\(head) · \(hostName)"
+                    out.append(Keepsake(
+                        id: index,
+                        kind: .command,
+                        title: titleText,
+                        detail: tail.isEmpty ? "（没有输出）" : tail,
+                        place: placeText
+                    ))
+                default:
+                    break
                 }
-            } else if tool.hasPrefix("斗室：") || tool.hasPrefix("远山 · ") {
-                let rest = tool.split(separator: "：", maxSplits: 1).last.map(String.init) ?? tool
+                continue
+            }
+
+            if kind == "书案", rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
+                let rawPath = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                if let ref = WorkspaceFileRef.resolve(rawPath) {
+                    upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
+                }
+            } else if kind == "斗室" || kind == "远山" {
                 if ["读 ", "找 ", "搜 ", "翻看 ", "看图 ", "看后台任务", "看看后台任务", "停掉后台任务", "后台跑"].contains(where: { rest.hasPrefix($0) }) { continue }
                 if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
-                    let where_ = tool.split(separator: "：", maxSplits: 1).first.map(String.init) ?? ""
+                    let rawPath = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
-                    out.append(Keepsake(id: index, kind: .remoteFile, title: (String(rest.dropFirst(2)) as NSString).lastPathComponent, detail: String(rest.dropFirst(2)) + change, diff: full, place: where_))
+                    let localRef = kind == "斗室" ? WorkspaceFileRef.resolve(rawPath) : nil
+                    out.append(Keepsake(
+                        id: index,
+                        kind: .remoteFile,
+                        title: (rawPath as NSString).lastPathComponent,
+                        detail: rawPath + change,
+                        url: localRef?.url,
+                        mount: localRef?.mount,
+                        diff: full,
+                        place: head
+                    ))
                     continue
                 }
-                guard tool.hasPrefix("斗室：") else { continue }
                 let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
-                out.append(Keepsake(id: index, kind: .command, title: rest, detail: tail.isEmpty ? "（没有输出）" : tail))
+                out.append(Keepsake(
+                    id: index,
+                    kind: .command,
+                    title: rest,
+                    detail: tail.isEmpty ? "（没有输出）" : tail,
+                    place: kind == "远山" ? head : nil
+                ))
             }
         }
         return out
@@ -223,8 +357,21 @@ struct Trace: View {
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
     private var pages: [URL] {
         var seen: [URL] = []
-        for tool in line.tools where tool.hasPrefix("远游：http") && !tool.hasSuffix("（没成功）") {
-            if let url = URL(string: String(tool.dropFirst(3)).trimmingCharacters(in: .whitespaces)), !seen.contains(url) { seen.append(url) }
+        for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
+            let detail = index < line.details.count ? line.details[index] : nil
+            if detail?.tool == "browser_open",
+               let rawURL = JSONValue.parse(detail?.input ?? "")?["url"]?.string,
+               let url = URL(string: rawURL), !seen.contains(url) {
+                seen.append(url)
+                continue
+            }
+            guard Self.canonicalKind(of: tool) == "远游" else { continue }
+            let parts = tool.split(separator: "：", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let target = parts[1].trimmingCharacters(in: .whitespaces)
+            if target.hasPrefix("http"), let url = URL(string: target), !seen.contains(url) {
+                seen.append(url)
+            }
         }
         return seen
     }
@@ -304,9 +451,9 @@ struct Trace: View {
                     switch item.kind {
                     case .file, .remoteFile:
                         if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                            diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url)
+                            diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url, mount: item.mount)
                         } else if let url = item.url {
-                            openFile(url)
+                            openFile(url, item.mount)
                         }
                     case .event, .reminder, .health: if let url = item.url { UIApplication.shared.open(url) }
                     case .weather: break
@@ -335,7 +482,7 @@ struct Trace: View {
                             }
                         }
                         Spacer(minLength: 0)
-                        if item.kind != .command, item.kind != .remoteFile || item.diff != nil {
+                        if item.kind != .command, item.kind != .remoteFile || item.diff != nil || item.url != nil {
                             Image(systemName: "chevron.right").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                         }
                     }
@@ -385,7 +532,7 @@ struct Trace: View {
             .sheet(item: $diffing) { show in
                 DiffSheet(title: show.title, place: show.place, diff: show.diff, url: show.url) { url in
                     diffing = nil
-                    openFile(url)
+                    openFile(url, show.mount)
                 }
             }
         if !pages.isEmpty {
@@ -437,7 +584,7 @@ struct Trace: View {
                 // One line per step: what kind of thing, then what exactly. Time only when it was worth waiting for.
                 HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
                     (Text(Words.t(Self.word(for: name))).foregroundStyle(Ink.ink).fontWeight(.medium)
-                        + Text(detail.map { "  " + $0 } ?? "").foregroundStyle(Ink.inkSoft))
+                        + Text(detail.map { "  " + Words.t($0) } ?? "").foregroundStyle(Ink.inkSoft))
                         .font(.system(size: Ink.Size.sub))
                         .lineLimit(shown ? nil : 1)
                     Spacer(minLength: 0)
@@ -520,26 +667,35 @@ struct Trace: View {
     }
 
     private static func poeticIcon(_ label: String) -> String {
+        if let kind = canonicalKind(of: label) {
+            switch kind {
+            case "远游": return "safari"
+            case "书案": return "books.vertical"
+            case "斗室": return "terminal"
+            case "远山": return "mountain.2"
+            default: break
+            }
+        }
         switch Words.poetic(label) {
-        case "搜索": "magnifyingglass"
-        case "读网页": "globe"
-        case "远游": "safari"
-        case "书案": "books.vertical"
-        case "斗室": "terminal"
-        case "所在": "location"
-        case "远山": "mountain.2"
-        case "递笺": "square.and.pencil"
-        case "信匣": "lock.rectangle.stack"
-        case "通讯录": "person.crop.circle"
-        case "相册": "photo.on.rectangle"
-        case "步数": "figure.walk"
-        case "剪贴板": "doc.on.clipboard"
-        case "打开": "arrow.up.forward.app"
-        case "手机": "iphone"
-        case "记住", "忘掉": "bookmark"
-        case "看日历", "新建日程": "calendar"
-        case "看提醒事项", "加提醒": "checklist"
-        default: label.hasPrefix("约好") ? "envelope" : "wrench.and.screwdriver"
+        case "搜索", "寻访": return "magnifyingglass"
+        case "读网页": return "globe"
+        case "远游", "漫游": return "safari"
+        case "书案": return "books.vertical"
+        case "斗室": return "terminal"
+        case "所在", "位置": return "location"
+        case "远山", "别馆": return "mountain.2"
+        case "递笺", "便笺", "回笺": return "square.and.pencil"
+        case "信匣", "密匣", "密码箱": return "lock.rectangle.stack"
+        case "通讯录": return "person.crop.circle"
+        case "相册": return "photo.on.rectangle"
+        case "步数": return "figure.walk"
+        case "剪贴板": return "doc.on.clipboard"
+        case "打开": return "arrow.up.forward.app"
+        case "手机": return "iphone"
+        case "记住", "忘掉", "拾遗": return "bookmark"
+        case "看日历", "新建日程": return "calendar"
+        case "看提醒事项", "加提醒": return "checklist"
+        default: return label.hasPrefix("约好") ? "envelope" : "wrench.and.screwdriver"
         }
     }
 }
