@@ -80,6 +80,31 @@ enum MemoryReviewRules {
         }
     }
 
+    static func decodeProposals(_ raw: String) throws -> [MemoryReviewProposal] {
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```") {
+            if let firstNewline = cleaned.firstIndex(of: "\n") {
+                cleaned = String(cleaned[cleaned.index(after: firstNewline)...])
+            } else {
+                cleaned = String(cleaned.dropFirst(3))
+            }
+            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.hasSuffix("```") {
+                cleaned = String(cleaned.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        if let decoded = try? JSONDecoder().decode([MemoryReviewProposal].self, from: Data(cleaned.utf8)) {
+            return decoded
+        }
+        if let openBracket = cleaned.firstIndex(of: "["),
+           let closeBracket = cleaned.lastIndex(of: "]"),
+           openBracket <= closeBracket {
+            let slice = String(cleaned[openBracket...closeBracket])
+            return try JSONDecoder().decode([MemoryReviewProposal].self, from: Data(slice.utf8))
+        }
+        return try JSONDecoder().decode([MemoryReviewProposal].self, from: Data(cleaned.utf8))
+    }
+
     static func apply(_ proposals: [MemoryReviewProposal], seen: [String: String], to memories: inout [Memory],
                       at now: Double, secrets: [String]) -> (added: [MemoryReviewLog.Addition], merged: [MemoryReviewLog.Change]) {
         var added: [MemoryReviewLog.Addition] = []

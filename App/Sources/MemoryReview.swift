@@ -73,9 +73,7 @@ enum MemoryNight {
         scheduleQuery = nil
         pending = false
         let now = Date()
-        if let night = diaryDay(at: now, catchUp: true) {
-            UserDefaults.standard.set(night, forKey: lastDelivery)
-        }
+        let night = diaryDay(at: now, catchUp: true)
         backgroundRunning = true
         let previous = foreground
         previous?.cancel()
@@ -83,9 +81,17 @@ enum MemoryNight {
             defer { backgroundRunning = false }
             await previous?.value
             await TeamModel.shared.prepare()
-            submit(earliest: nextEvening(after: now))
             await TeamModel.shared.reviewMemories(nightly: true, background: true)
-            task.setTaskCompleted(success: !Task.isCancelled)
+            let finished = !Task.isCancelled
+            if finished {
+                if let night {
+                    UserDefaults.standard.set(night, forKey: lastDelivery)
+                }
+                submit(earliest: nextEvening(after: Date()))
+            } else {
+                submit(earliest: Date().addingTimeInterval(1800))
+            }
+            task.setTaskCompleted(success: finished)
         }
         task.expirationHandler = { work.cancel() }
     }
