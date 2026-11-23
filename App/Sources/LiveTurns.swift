@@ -6,6 +6,7 @@ import UIKit
 @MainActor
 enum LiveTurns {
     private static var running: [String: Activity<TurnAttributes>] = [:]
+    private static var ending: [String: (activity: Activity<TurnAttributes>, task: Task<Void, Never>)] = [:]
     private static var states: [String: TurnAttributes.ContentState] = [:]
     private static var sent: [String: Date] = [:]
 
@@ -16,6 +17,18 @@ enum LiveTurns {
         guard on, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let initialDoing = L.plain ? "正在思考" : L.t("chat.thinking")
         let state = TurnAttributes.ContentState(doing: initialDoing, phase: .working, steps: 0, started: Date(), ring: Date())
+        if let pending = ending.removeValue(forKey: chat) {
+            pending.task.cancel()
+            if pending.activity.activityState == .active {
+                running[chat] = pending.activity
+                states[chat] = state
+                sent[chat] = Date()
+                Task { await pending.activity.update(ActivityContent(state: state, staleDate: nil)) }
+                return
+            } else {
+                Task { await pending.activity.end(nil, dismissalPolicy: .immediate) }
+            }
+        }
         if let activity = running[chat] {
             // A new turn in the same conversation: the same card, a fresh clock.
             states[chat] = state
@@ -75,6 +88,7 @@ enum LiveTurns {
     static func end(chat: String, ok: Bool, line: String?) {
         guard let activity = running.removeValue(forKey: chat), var state = states.removeValue(forKey: chat) else { return }
         sent[chat] = nil
+        ending.removeValue(forKey: chat)?.task.cancel()
         state.phase = ok ? .done : .failed
         state.ended = Date()
         let words = (line ?? "").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
@@ -83,16 +97,30 @@ enum LiveTurns {
         // The island shows ✓ (or !) for a few seconds before the card leaves it; the lock screen keeps it a while.
         let grace = UIApplication.shared.beginBackgroundTask(withName: "clio-live-end")
         let final = ActivityContent(state: state, staleDate: nil)
-        Task {
+        let task = Task { @MainActor in
+            defer {
+                if grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
+            }
             await activity.update(final)
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+            } catch {
+                return
+            }
+            if ending[chat]?.activity.id == activity.id {
+                ending.removeValue(forKey: chat)
+            }
             await activity.end(final, dismissalPolicy: .after(Date().addingTimeInterval(8 * 60)))
-            if grace != .invalid { UIApplication.shared.endBackgroundTask(grace) }
         }
+        ending[chat] = (activity, task)
     }
 
     /// Cards left from a run that ended while Clio was closed.
     static func sweep() {
+        for (chat, pending) in ending {
+            pending.task.cancel()
+            ending.removeValue(forKey: chat)
+        }
         for activity in Activity<TurnAttributes>.activities where running[activity.attributes.chat] == nil {
             Task { await activity.end(nil, dismissalPolicy: .immediate) }
         }

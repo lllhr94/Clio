@@ -419,7 +419,7 @@ extension TeamModel {
     func writeDiary(_ botId: String) async throws {
         guard let bot = bots.first(where: { $0.id == botId }) else { return }
         let day = Tide.day(of: Date())
-        let said = diaryEntries(for: bot, day: day, includeLeaves: false)
+        let said = diaryEntries(for: bot, day: day, includeLeaves: true)
         guard said.contains(where: { $0.message.role == .user }) else { throw TeamError(message: "今天还没和\(bot.name)聊过，没什么可写的。") }
         try await writeDiary(bot, day: day, said: said, automatic: false)
     }
@@ -468,8 +468,9 @@ extension TeamModel {
             guard Pref.diaryOn, bots.contains(where: { $0.id == bot.id }),
                   !current.contains(where: { $0.day == day }) else { return }
         }
+        let keptReply = current.first(where: { $0.day == day })?.reply
         var pages = current.filter { $0.day != day }
-        pages.append(DiaryPage(day: day, text: text))
+        pages.append(DiaryPage(day: day, text: text, reply: keptReply))
         pages.sort { $0.day > $1.day }
         try Disk.write(Array(pages.prefix(365)), Self.diaryFile(bot.id))
     }

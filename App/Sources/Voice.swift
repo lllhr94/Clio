@@ -34,6 +34,27 @@ final class Dictation: ObservableObject {
     private var recordingSessionActive = false
     private var finishing: Task<Void, Never>?
 
+    init() {
+        Task.detached(priority: .utility) {
+            Self.cleanupStaleRecordings()
+        }
+    }
+
+    nonisolated private static func cleanupStaleRecordings() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        guard let urls = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+            return
+        }
+        let cutoff = Date().addingTimeInterval(-300)
+        for url in urls where url.lastPathComponent.hasPrefix("clio-voice-") && url.pathExtension.lowercased() == "m4a" {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if modified < cutoff {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
+
     var busy: Bool { sessionID != nil }
 
     func start() async {
@@ -159,6 +180,10 @@ final class Dictation: ObservableObject {
                 cancel()
                 return
             }
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: fileURL.path
+            )
             recorder = rec
             cloudFile = fileURL
             cloudEndpoint = endpoint
@@ -258,7 +283,9 @@ final class Dictation: ObservableObject {
             level = 0
         }
         if recordingSessionActive {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.ambient, mode: .default)
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
             recordingSessionActive = false
         }
     }
