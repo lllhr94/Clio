@@ -65,6 +65,9 @@ struct ClioRoot: View {
                 MemoryNight.schedule()
                 team.leaving()
                 ChatDisk.finishBeforeSuspension()
+                QueuedStore.finishBeforeSuspension()
+                DraftTextStore.finishBeforeSuspension()
+                DraftAttachments.finishBeforeSuspension()
                 Hitches.shared.save()
                 WidgetFeed.publish(team)
             }

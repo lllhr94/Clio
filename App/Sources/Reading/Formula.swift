@@ -9,10 +9,15 @@ struct FormulaBlock: View {
     var streaming = false
     @State private var failed = false
     @State private var near = false
+    @State private var contentWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+    @State private var hasMoreRight = false
     @Environment(\.colorScheme) private var scheme
 
     /// Heights of formulas already typeset, so the stand-in before typesetting takes the same room and nothing shifts.
     @MainActor static var heights: [String: CGFloat] = [:]
+
+    private var overflows: Bool { boxWidth > 0 && contentWidth > boxWidth + 1 }
 
     var body: some View {
         Group {
@@ -32,17 +37,43 @@ struct FormulaBlock: View {
                     // A formula that changed (a reply finished writing it) gets another try at being typeset.
                     .onChange(of: latex) { failed = false }
             } else {
+                // Only slide sideways when the typeset formula is genuinely wider than the card; otherwise never steal vertical chat scroll.
                 ScrollView(.horizontal) {
                     FormulaLabel(latex: latex, size: CGFloat(Pref.size) + 2, color: UIColor(Ink.ink), failed: $failed)
                         .padding(.vertical, Ink.Space.m)
-                        .padding(.horizontal, Ink.Space.s)
+                        .padding(.horizontal, Ink.Space.m)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+                        .frame(minWidth: boxWidth > 0 ? boxWidth : nil, alignment: overflows ? .leading : .center)
                 }
                 .scrollIndicators(.hidden)
+                .scrollDisabled(!overflows)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    let remaining = geometry.contentSize.width + geometry.contentInsets.trailing - geometry.visibleRect.maxX
+                    return geometry.contentSize.width > geometry.containerSize.width + 1 && remaining > 2
+                } action: { _, more in
+                    hasMoreRight = more
+                }
+                .mask {
+                    let trailingEdge: Color = (overflows && hasMoreRight) ? .clear : .black
+                    HStack(spacing: 0) {
+                        Color.black
+                        LinearGradient(
+                            colors: [.black, trailingEdge],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: Ink.Space.xl)
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .center)
                 .id(scheme)
             }
         }
         .background(Ink.accentWash.opacity(0.4), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
         .onGeometryChange(for: Bool.self) { proxy in
             // Within about a screen of the visible area.
             let frame = proxy.frame(in: .global)

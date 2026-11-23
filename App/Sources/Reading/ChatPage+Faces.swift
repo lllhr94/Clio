@@ -172,14 +172,18 @@ extension ChatPage {
     }
 
     /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
-    func redo(from entry: String? = nil, text: String? = nil) {
+    @discardableResult
+    func redo(from entry: String? = nil, text: String? = nil) -> Bool {
+        guard !sendingBlocked else { return false }
         following = true
         let changed = team.changedFiles(chat.key, from: entry)
         guard !changed.isEmpty else {
-            if let entry, let text { chat.resend(entry, text: text) } else { chat.retry() }
-            return
+            if let entry, let text { return chat.resend(entry, text: text) }
+            chat.retry()
+            return true
         }
         undoAsk = UndoAsk(entry: entry, text: text, files: changed.map { WorkPlace(code: $0.place).title + "：" + $0.path })
+        return true
     }
 
     func finishRedo(_ ask: UndoAsk, restoring: Bool) {
@@ -249,7 +253,7 @@ extension ChatPage {
     func replyMenu(_ line: ChatLine) -> some View {
         Button("朗读", systemImage: "speaker.wave.2") { speak(line.text) }
         Button("引用追问", systemImage: "text.quote") { quoting = Noting(id: line.id, text: line.text) }
-        Button("存成笔记", systemImage: "square.and.arrow.down.on.square") { savingNote = Noting(id: line.id, text: line.text) }
+        Button(L.t("saveNote.title"), systemImage: "square.and.arrow.down.on.square") { savingNote = Noting(id: line.id, text: line.text) }
         Button(Words.t("做成长图"), systemImage: "photo.on.rectangle") { noting = Noting(id: line.id, text: line.text) }
         ShareLink(item: line.text) { Label("分享", systemImage: "square.and.arrow.up") }
         if !isRoom {

@@ -213,7 +213,7 @@ struct ChatDisplayPage: View {
         let mode = VoiceTranscription.Mode(rawValue: voiceModeRaw) ?? .system
         if mode == .cloud {
             let trimmed = voiceModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "云端转写" : trimmed
+            return trimmed.isEmpty ? L.t("voiceSettings.cloudShort") : trimmed
         }
         return mode.title
     }
@@ -235,7 +235,7 @@ struct ChatDisplayPage: View {
                     VoiceSettingsPage()
                 } label: {
                     HStack {
-                        Text("语音输入与转写")
+                        Text(L.t("voiceSettings.title"))
                             .foregroundStyle(Ink.ink)
                         Spacer(minLength: Ink.Space.s)
                         Text(voiceSummary)
@@ -245,7 +245,7 @@ struct ChatDisplayPage: View {
                     }
                 }
             } footer: {
-                Text("默认用苹果系统听写；也可以单独填写 Whisper / SenseVoice 等转写接口，提升中英混说准确度。")
+                Text(L.t("voiceSettings.rowFooter"))
             }
         }
     }

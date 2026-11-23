@@ -52,14 +52,15 @@ extension ChatPage {
         if query.source == .skills {
             var list: [Hint] = [
                 Hint(id: "leaf", icon: "square.and.pencil", title: "/新对话", note: Words.t("另起一叶，眼下的收起来")) {
-                    draft = ""
-                    team.turnLeaf(chat.key)
+                    if team.turnLeaf(chat.key) { draft = "" }
                 },
                 Hint(id: "redo", icon: "arrow.clockwise", title: "/重来", note: "最后一句重新回答") {
+                    guard !sendingBlocked else { return }
                     draft = ""
                     chat.retry()
                 },
                 Hint(id: "squeeze", icon: "rectangle.compress.vertical", title: "/压缩", note: "把较早的话写成提要，省上下文") {
+                    guard !sendingBlocked else { return }
                     draft = ""
                     Task { _ = try? await team.compress(chat.key) }
                 },
@@ -128,6 +129,7 @@ extension ChatPage {
         draft = ""
         photos = []
         files = []
+        draftAttachmentQueuedIds = []
         DraftAttachments.clear(chat.key)
         following = true
         followToEnd()

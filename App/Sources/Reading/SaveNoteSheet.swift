@@ -31,7 +31,7 @@ struct SaveNoteSheet: View {
         var list: [Destination] = [
             Destination(
                 id: "desk",
-                title: Words.t("书案 · 笔记"),
+                title: L.t("saveNote.deskDestination"),
                 baseRelative: "笔记",
                 icon: "books.vertical",
                 tint: Ink.Tile.mo
@@ -55,7 +55,7 @@ struct SaveNoteSheet: View {
 
     private var previewPath: String {
         let relative = buildRelativePath(fileStem: cleanFileName(fileName))
-        return Words.t("书案/") + relative
+        return L.t("nav.files") + "/" + relative
     }
 
     var body: some View {
@@ -75,7 +75,7 @@ struct SaveNoteSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("存成笔记")
+            .navigationTitle(L.t("saveNote.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -99,7 +99,7 @@ struct SaveNoteSheet: View {
 
     private var destinationSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("存到哪里")
+            SectionTitle(L.t("saveNote.destinationSection"))
             VStack(spacing: 0) {
                 ForEach(Array(destinations.enumerated()), id: \.element.id) { index, dest in
                     if index > 0 { Kit.divider }
@@ -108,7 +108,7 @@ struct SaveNoteSheet: View {
             }
             .paperCard()
             if mounts.isEmpty {
-                Text(Words.t("在书案里挂载 Obsidian 或 iCloud 文件夹后，这里就可以一键存进去。"))
+                Text(L.t("saveNote.mountHint"))
                     .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
                     .padding(.horizontal, Ink.Space.l)
@@ -130,7 +130,7 @@ struct SaveNoteSheet: View {
                     Text(dest.title)
                         .font(.system(size: Ink.Size.body, weight: isSelected ? .semibold : .regular))
                         .foregroundStyle(Ink.ink)
-                    Text(Words.t("书案/") + dest.baseRelative)
+                    Text(L.t("nav.files") + "/" + dest.baseRelative)
                         .font(Ink.mono(Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
@@ -152,23 +152,23 @@ struct SaveNoteSheet: View {
 
     private var fileSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("文件位置")
+            SectionTitle(L.t("saveNote.fileSection"))
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    Text("文件名")
+                    Text(L.t("saveNote.fileNameLabel"))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    TextField("笔记标题", text: $fileName)
+                    TextField(L.t("saveNote.fileNamePlaceholder"), text: $fileName)
                         .font(.system(size: Ink.Size.body))
                         .foregroundStyle(Ink.ink)
                         .submitLabel(.done)
                 }
                 Kit.rule(inset: 0)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    Text("子文件夹（可选，例如 Inbox 或 Clio）")
+                    Text(L.t("saveNote.subfolderLabel"))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    TextField("留空直接存在根目录", text: $subfolder)
+                    TextField(L.t("saveNote.subfolderPlaceholder"), text: $subfolder)
                         .font(.system(size: Ink.Size.sub))
                         .foregroundStyle(Ink.ink)
                         .textInputAutocapitalization(.never)
@@ -187,8 +187,8 @@ struct SaveNoteSheet: View {
 
     private var optionsSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle("内容格式")
-            Toggle("开头附上日期与提问", isOn: $includeHeader)
+            SectionTitle(L.t("saveNote.optionsSection"))
+            Toggle(L.t("saveNote.includeHeaderToggle"), isOn: $includeHeader)
                 .font(.system(size: Ink.Size.body))
                 .foregroundStyle(Ink.ink)
                 .tint(Ink.accent)

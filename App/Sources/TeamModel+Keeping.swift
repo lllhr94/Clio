@@ -14,16 +14,240 @@ extension TeamModel {
         let memory: MemoryBook
         let laters: [Later]
         let routines: [Routine]
+        let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
-            Self(
-                settings: Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings(),
-                bots: Disk.load([BotInfo].self, "bots.json") ?? [],
-                rooms: Disk.load([RoomInfo].self, "rooms.json") ?? [],
-                memory: Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? []),
-                laters: Disk.load([Later].self, "later.json") ?? [],
-                routines: Disk.load([Routine].self, "routines.json") ?? []
+            let barrierBlocked = QueuedStore.reconcilePreRestoreBarrier(teamRoot: Disk.root)
+            QueuedStore.reconcilePendingLeafOpens(teamRoot: Disk.root)
+            let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
+            let botsIndex = loadIndex([BotInfo].self, "bots.json")
+            let roomsIndex = loadIndex([RoomInfo].self, "rooms.json")
+            let bots = botsIndex.value ?? []
+            let rooms = roomsIndex.value ?? []
+            let memory = Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
+            let laters = Disk.load([Later].self, "later.json") ?? []
+            let routines = Disk.load([Routine].self, "routines.json") ?? []
+            let rawSlots = QueuedStore.loadAllSlots()
+            let blockedSlots = QueuedStore.loadBlockedSlots().union(barrierBlocked)
+
+            let queued = reconcileQueued(
+                rawSlots,
+                blockedSlots: blockedSlots,
+                bots: bots,
+                rooms: rooms,
+                botsReadable: botsIndex.readable,
+                roomsReadable: roomsIndex.readable
             )
+
+            return Self(
+                settings: settings,
+                bots: bots,
+                rooms: rooms,
+                memory: memory,
+                laters: laters,
+                routines: routines,
+                queued: queued
+            )
+        }
+
+        private struct LeafID: Decodable { let id: String }
+
+        private nonisolated static func loadIndex<Value: Decodable>(_ type: Value.Type, _ name: String) -> (value: Value?, readable: Bool) {
+            let url = Disk.url(name)
+            guard FileManager.default.fileExists(atPath: url.path) else { return (nil, true) }
+            guard let data = try? Data(contentsOf: url),
+                  let decoded = try? JSONDecoder().decode(type, from: data) else {
+                return (nil, false)
+            }
+            return (decoded, true)
+        }
+
+        private nonisolated static func reconcileQueued(
+            _ raw: [String: StoredQueuedSlot],
+            blockedSlots: Set<String>,
+            bots: [BotInfo],
+            rooms: [RoomInfo],
+            botsReadable: Bool,
+            roomsReadable: Bool
+        ) -> [String: [StoredQueuedMessage]] {
+            // Clear stale blocked markers whose slot folders are already gone.
+            for slotKey in blockedSlots where raw[slotKey] == nil {
+                QueuedStore.clearBlockedSlot(slotKey)
+            }
+            guard !raw.isEmpty else { return [:] }
+            let baseKeys = bots.map { TeamModel.key(bot: $0.id) } + rooms.map { TeamModel.key(room: $0.id) }
+            let validBaseKeys = Set(baseKeys)
+            var validLeafKeys: Set<String> = []
+            var leavesByBase: [String: [String]] = [:]
+            var leafIndexReadable: [String: Bool] = [:]
+            for base in baseKeys {
+                let index = loadIndex([LeafID].self, TeamModel.leafList(base))
+                leafIndexReadable[base] = index.readable
+                let ids = (index.value ?? []).map(\.id)
+                leavesByBase[base] = ids
+                for leafId in ids {
+                    validLeafKeys.insert(TeamModel.threadKey(base, leaf: leafId))
+                }
+            }
+
+            let fm = FileManager.default
+            var kept: [String: [StoredQueuedMessage]] = [:]
+            for (chatKey, slot) in raw {
+                let parts = chatKey.split(separator: "~", maxSplits: 1)
+                let isLeafSlot = parts.count == 2
+                let baseKey = String(parts[0])
+                let baseIndexReadable = baseKey.hasPrefix("bot-") ? botsReadable : roomsReadable
+                let existsInIndex: Bool
+                let indexReadable: Bool
+                if isLeafSlot {
+                    existsInIndex = validLeafKeys.contains(chatKey)
+                    let baseExists = validBaseKeys.contains(baseKey)
+                    let leafReadable = baseExists ? (leafIndexReadable[baseKey] ?? false) : baseIndexReadable
+                    indexReadable = baseIndexReadable && leafReadable
+                } else {
+                    existsInIndex = validBaseKeys.contains(chatKey)
+                    indexReadable = baseIndexReadable
+                }
+
+                let chatFileURL = Disk.url(Disk.chatFile(chatKey))
+                let chatFileExists = fm.fileExists(atPath: chatFileURL.path)
+                let loadedEntries: [Entry]?
+                if !chatFileExists {
+                    loadedEntries = []
+                } else if (try? Data(contentsOf: chatFileURL)) != nil {
+                    loadedEntries = Disk.loadChat(chatKey)
+                } else {
+                    loadedEntries = nil
+                }
+
+                let disposition = QueuedMessageStore.evaluateSlot(
+                    existsInIndex: existsInIndex,
+                    indexReadable: indexReadable,
+                    chatFileExists: chatFileExists,
+                    anchor: slot.anchor,
+                    chatEntryIds: loadedEntries?.map(\.id),
+                    isBlockedByRestore: blockedSlots.contains(chatKey)
+                )
+
+                switch disposition {
+                case .deleteOrphan:
+                    QueuedStore.saveDetached([], for: chatKey)
+                    continue
+                case .retryIsolation:
+                    let report = QueuedStore.isolateSlot(chatKey)
+                    if report.failedMessages == 0 {
+                        QueuedStore.clearBlockedSlot(chatKey)
+                        if report.isolatedMessages > 0 {
+                            let exportHint = report.readableExportSucceeded
+                                ? Words.t("并另存到书案「恢复前排队」")
+                                : Words.t("（导出到书案失败，原始副本留在应用隔离目录）")
+                            DispatchQueue.main.async {
+                                Diag.note("启动检查：已完成 \(chatKey) 恢复前 \(report.isolatedMessages) 条排队消息的隔离\(exportHint)。")
+                            }
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            Diag.note("启动检查：\(chatKey) 的 \(report.failedMessages) 条恢复前排队消息仍未能移出，已继续拦截不会自动发出。")
+                        }
+                    }
+                    continue
+                case .preserveUnreadable:
+                    DispatchQueue.main.async {
+                        Diag.note("启动检查：\(chatKey) 的对话索引暂时不可读，已保留排队文件未清理。")
+                    }
+                    continue
+                case .isolateMismatched:
+                    // If a crash occurred right after shelving/opening a leaf (moving the queue to a sibling slot)
+                    // and before clearing the source slot, every item is already safely in the sibling slot: clear without exporting.
+                    let siblingIds: Set<UUID>
+                    if isLeafSlot {
+                        siblingIds = Set(raw[baseKey]?.items.map(\.id) ?? [])
+                    } else {
+                        let leafIds = leavesByBase[chatKey] ?? []
+                        var ids: Set<UUID> = []
+                        for leafId in leafIds {
+                            let leafKey = TeamModel.threadKey(chatKey, leaf: leafId)
+                            if let leafSlot = raw[leafKey] {
+                                ids.formUnion(leafSlot.items.map(\.id))
+                            }
+                        }
+                        siblingIds = ids
+                    }
+                    if !slot.items.isEmpty && slot.items.allSatisfy({ siblingIds.contains($0.id) }) {
+                        QueuedStore.saveDetached([], for: chatKey)
+                        continue
+                    }
+                    let report = QueuedStore.isolateSlot(chatKey)
+                    if report.isolatedMessages > 0 {
+                        let exportHint = report.readableExportSucceeded
+                            ? Words.t("已隔离到书案「恢复前排队」")
+                            : Words.t("已移出活跃队列（导出到书案失败，原始副本保留在隔离目录）")
+                        DispatchQueue.main.async {
+                            Diag.note("启动检查：\(chatKey) 的 \(report.isolatedMessages) 条排队消息不属于当前对话（可能恢复了旧备份），\(exportHint)。")
+                        }
+                    } else if report.failedMessages > 0 {
+                        DispatchQueue.main.async {
+                            Diag.note("启动检查：\(chatKey) 的 \(report.failedMessages) 条不匹配排队消息未能移出，已标记拦截不会自动发出。")
+                        }
+                    }
+                    continue
+                case .restore:
+                    break
+                }
+
+                var persistedInChat = Set((loadedEntries ?? []).flatMap { $0.queuedIds ?? [] })
+                if !isLeafSlot, let leafIds = leavesByBase[chatKey] {
+                    // If a crash occurred right after shelving an entry whose queued IDs had not yet been cleared,
+                    // also check shelved leaves under this conversation so we never duplicate it.
+                    for leafId in leafIds {
+                        let leafKey = TeamModel.threadKey(chatKey, leaf: leafId)
+                        for entry in Disk.loadChat(leafKey) {
+                            if let ids = entry.queuedIds { persistedInChat.formUnion(ids) }
+                        }
+                    }
+                }
+                let persistedInDraftText = isLeafSlot ? Set<UUID>() : DraftTextStore.storedQueuedIds(for: chatKey)
+                let persistedInDraftAttachments = isLeafSlot ? Set<UUID>() : DraftAttachments.storedQueuedIds(for: chatKey)
+                let cleaned = QueuedMessageStore.deduplicated(
+                    slot.items,
+                    persistedInChat: persistedInChat,
+                    persistedInDraftText: persistedInDraftText,
+                    persistedInDraftAttachments: persistedInDraftAttachments
+                )
+                if cleaned != slot.items {
+                    QueuedStore.saveDetached(cleaned, for: chatKey, anchor: slot.anchor)
+                }
+                if !cleaned.isEmpty {
+                    kept[chatKey] = cleaned
+                }
+            }
+            // If a crash happened after writing a destination slot during shelve/openLeaf and before clearing the source slot,
+            // deduplicate any ID appearing in both `base` and `base~leaf`.
+            for (base, leafIds) in leavesByBase {
+                guard let activeItems = kept[base], !activeItems.isEmpty else { continue }
+                let activeIsEmptyOnDisk = Disk.loadChat(base).isEmpty
+                var activeFiltered = activeItems
+                for leafId in leafIds {
+                    let leafKey = TeamModel.threadKey(base, leaf: leafId)
+                    guard let leafItems = kept[leafKey], !leafItems.isEmpty else { continue }
+                    let leafIdsSet = Set(leafItems.map(\.id))
+                    let activeIdsSet = Set(activeFiltered.map(\.id))
+                    let overlap = activeIdsSet.intersection(leafIdsSet)
+                    guard !overlap.isEmpty else { continue }
+                    if activeIsEmptyOnDisk {
+                        activeFiltered.removeAll { overlap.contains($0.id) }
+                    } else {
+                        let dedupedLeaf = leafItems.filter { !overlap.contains($0.id) }
+                        QueuedStore.saveDetached(dedupedLeaf, for: leafKey, anchor: raw[leafKey]?.anchor)
+                        kept[leafKey] = dedupedLeaf.isEmpty ? nil : dedupedLeaf
+                    }
+                }
+                if activeFiltered != activeItems {
+                    QueuedStore.saveDetached(activeFiltered, for: base, anchor: raw[base]?.anchor)
+                    kept[base] = activeFiltered.isEmpty ? nil : activeFiltered
+                }
+            }
+            return kept
         }
     }
 
@@ -55,6 +279,16 @@ extension TeamModel {
         modelInputLog.reset()
         approvals = []
         phase = settings.endpoints.isEmpty ? .setup : .ready
+        var restored: [String: [Queued]] = [:]
+        for (chatKey, stored) in data.queued {
+            restored[chatKey] = stored.map {
+                Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
+            }
+        }
+        queued = restored
+        inFlightQueued = [:]
+        pendingInterjects = [:]
+        unresolvedLeafOpenChats = []
         sortBots()
         deliverDue()
     }

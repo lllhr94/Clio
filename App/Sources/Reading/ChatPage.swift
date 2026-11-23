@@ -27,6 +27,7 @@ struct ChatPage: View {
     var draft: String { get { draftState.text } nonmutating set { draftState.text = newValue } }
     @State var spokenBase = ""
     @State var photos: [Data] = []
+    @State var draftAttachmentQueuedIds: [UUID] = []
     @State var picks: [PhotosPickerItem] = []
     @State var attachmentRevision = UUID()
     @State var pasteTask: Task<Void, Never>?
@@ -491,10 +492,86 @@ struct ChatPage: View {
             HStack(spacing: Ink.Space.m) {
                 Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                 Button("撤回", systemImage: "arrow.uturn.backward") {
-                    if let back = team.unqueue(chat.key, item.id) {
+                    guard let back = team.unqueue(chat.key, item.id, deferRemoval: true) else { return }
+                    let chatKey = chat.key
+                    draftState.load(chatKey)
+                    let textSnapshot: StoredTextDraft?
+                    if !back.text.isEmpty {
                         draft = draft.isEmpty ? back.text : draft + "\n" + back.text
-                        typing = true
+                        draftState.recordQueuedId(back.id)
+                        textSnapshot = draftState.prepareAtomicSave()
+                    } else {
+                        textSnapshot = nil
                     }
+                    if !back.photos.isEmpty {
+                        let previousCount = photos.count
+                        photos.append(contentsOf: back.photos)
+                        if !draftAttachmentQueuedIds.contains(back.id) {
+                            draftAttachmentQueuedIds.append(back.id)
+                        }
+                        let snapshotPhotos = photos
+                        let snapshotFiles = files
+                        let snapshotIds = draftAttachmentQueuedIds
+                        Task {
+                            let textOk: Bool
+                            if let textSnapshot {
+                                textOk = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
+                            } else {
+                                textOk = true
+                            }
+                            let photosOk: Bool
+                            if textOk {
+                                photosOk = await DraftAttachments.saveResult(
+                                    photos: snapshotPhotos,
+                                    files: snapshotFiles,
+                                    chat: chatKey,
+                                    queuedIds: snapshotIds
+                                )
+                            } else {
+                                photosOk = false
+                            }
+                            if textOk && photosOk {
+                                team.confirmQueuedRemoved([back.id], for: chatKey)
+                            } else {
+                                draftAttachmentQueuedIds.removeAll { $0 == back.id }
+                                draftState.removeQueuedId(back.id)
+                                if !back.text.isEmpty {
+                                    if draft == back.text {
+                                        draft = ""
+                                    } else if draft.hasSuffix("\n" + back.text) {
+                                        draft = String(draft.dropLast(back.text.count + 1))
+                                    }
+                                }
+                                draftState.flush()
+                                if photos.count >= previousCount + back.photos.count,
+                                   Array(photos[previousCount..<(previousCount + back.photos.count)]) == back.photos {
+                                    photos.removeSubrange(previousCount..<(previousCount + back.photos.count))
+                                }
+                                team.restoreInFlightQueued([back.id], to: chatKey)
+                                Diag.note("撤回的草稿没存进手机，原消息已留在排队里。")
+                            }
+                        }
+                    } else if let textSnapshot {
+                        Task {
+                            let ok = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
+                            if ok {
+                                team.confirmQueuedRemoved([back.id], for: chatKey)
+                            } else {
+                                draftState.removeQueuedId(back.id)
+                                if draft == back.text {
+                                    draft = ""
+                                } else if draft.hasSuffix("\n" + back.text) {
+                                    draft = String(draft.dropLast(back.text.count + 1))
+                                }
+                                draftState.flush()
+                                team.restoreInFlightQueued([back.id], to: chatKey)
+                                Diag.note("撤回的草稿文字没存进手机，原消息已留在排队里。")
+                            }
+                        }
+                    } else {
+                        team.confirmQueuedRemoved([back.id], for: chatKey)
+                    }
+                    typing = true
                 }
                 Button("立即发送", systemImage: "paperplane.fill") {
                     Haptics.thud()
@@ -502,10 +579,13 @@ struct ChatPage: View {
                     team.sendQueueNow(chat.key)
                 }
                 .fontWeight(.semibold)
+                .disabled(sendingBlocked)
             }
             .font(.system(size: Ink.Size.small))
             .foregroundStyle(Ink.accent)
             .buttonStyle(TapStyle())
+            .opacity(sendingBlocked ? 0.45 : 1)
+            .disabled(sendingBlocked)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, Ink.Space.huge)
@@ -588,7 +668,10 @@ struct ChatPage: View {
     }
 
     var estimateTrigger: String {
-        "\(chat.loaded)|\(working)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(usageOpen)"
+        let folding = team.compressing.contains(chat.key)
+        let lastFold = chat.lines.last(where: { $0.fold })?.id ?? ""
+        let summaryLen = team.cachedSummaryLength(chat.key)
+        return "\(chat.loaded)|\(working)|\(folding)|\(lastFold)|\(summaryLen)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(Pref.contextShare)|\(usageOpen)"
     }
 
     var dockedForm: Asker.Form? {
@@ -671,6 +754,7 @@ struct ChatPage: View {
                 let kept = DraftAttachments.load(chat.key)
                 photos = kept.photos
                 files = kept.files
+                draftAttachmentQueuedIds = kept.queuedIds
             }
         }
         .onChange(of: scenePhase) {
@@ -680,14 +764,14 @@ struct ChatPage: View {
             }
             if scenePhase != .active {
                 draftState.flush()
-                DraftAttachments.save(photos: photos, files: files, chat: chat.key)
+                DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             }
         }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
             draftState.flush()
-            DraftAttachments.save(photos: photos, files: files, chat: chat.key)
+            DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             chat.close()
             team.markSeen(chat.key)
             hideJumps?.cancel()
@@ -984,22 +1068,122 @@ final class ChatDraft {
     var skills: [SkillShelf.Item] = []
     var files: [String] = []
     @ObservationIgnored private var key: String?
+    @ObservationIgnored private var chatKey: String?
+    @ObservationIgnored private var queuedIds: [UUID] = []
     @ObservationIgnored private var save: Task<Void, Never>?
 
     func load(_ chat: String) {
         guard key == nil else { return }
-        text = UserDefaults.standard.string(forKey: "draft." + chat) ?? ""
+        chatKey = chat
+        let loaded = DraftTextStore.load(for: chat)
+        text = loaded.text
+        queuedIds = loaded.queuedIds
         key = "draft." + chat
+    }
+
+    func recordQueuedId(_ id: UUID) {
+        if !queuedIds.contains(id) { queuedIds.append(id) }
+    }
+
+    func removeQueuedId(_ id: UUID) {
+        queuedIds.removeAll { $0 == id }
+    }
+
+    /// Cancels any debounced save and captures a snapshot for atomic write-then-confirm unqueue flows.
+    func prepareAtomicSave() -> StoredTextDraft {
+        save?.cancel()
+        save = nil
+        return StoredTextDraft(text: text, queuedIds: queuedIds)
     }
 
     func flush() {
         save?.cancel()
         save = nil
-        guard let key else { return }
+        guard let chatKey else { return }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            UserDefaults.standard.removeObject(forKey: key)
+            queuedIds.removeAll()
+            DraftTextStore.save(StoredTextDraft(text: "", queuedIds: []), for: chatKey)
         } else {
-            UserDefaults.standard.set(text, forKey: key)
+            DraftTextStore.save(StoredTextDraft(text: text, queuedIds: queuedIds), for: chatKey)
+        }
+    }
+}
+
+/// Atomically stores per-chat text drafts and unqueued IDs on disk (under Application Support/ClioDrafts),
+/// replacing non-durable `UserDefaults` so pure-text unqueues only delete the source queue after disk confirmation.
+enum DraftTextStore {
+    private static let queue = DispatchQueue(label: "clio.draft-text", qos: .utility)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var pendingCount = 0
+
+    private static var root: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ClioDrafts", isDirectory: true)
+    }
+
+    static func save(
+        _ draft: StoredTextDraft,
+        for chat: String,
+        onSaved: (@Sendable (Bool) -> Void)? = nil
+    ) {
+        let base = root
+        lock.withLock { pendingCount += 1 }
+        queue.async {
+            defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
+            do {
+                try QueuedMessageStore.saveTextDraft(draft, for: chat, under: base)
+                UserDefaults.standard.removeObject(forKey: "draft." + chat)
+                UserDefaults.standard.removeObject(forKey: "draft.queuedIds." + chat)
+                onSaved?(true)
+            } catch {
+                onSaved?(false)
+            }
+        }
+    }
+
+    static func saveResult(_ draft: StoredTextDraft, for chat: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            save(draft, for: chat) { ok in
+                continuation.resume(returning: ok)
+            }
+        }
+    }
+
+    static func load(for chat: String) -> StoredTextDraft {
+        queue.sync {}
+        if let saved = QueuedMessageStore.loadTextDraft(for: chat, under: root) {
+            return saved
+        }
+        // Migrate any legacy draft previously stored in UserDefaults.
+        let legacyText = UserDefaults.standard.string(forKey: "draft." + chat) ?? ""
+        guard !legacyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return StoredTextDraft(text: "", queuedIds: [])
+        }
+        return StoredTextDraft(text: legacyText, queuedIds: [])
+    }
+
+    /// Queued message IDs confirmed in the atomic on-disk text draft file for `chat`.
+    static func storedQueuedIds(for chat: String) -> Set<UUID> {
+        queue.sync {}
+        guard let saved = QueuedMessageStore.loadTextDraft(for: chat, under: root) else {
+            return []
+        }
+        return Set(saved.queuedIds)
+    }
+
+    @MainActor
+    static func finishBeforeSuspension() {
+        guard lock.withLock({ pendingCount > 0 }) else { return }
+        let app = UIApplication.shared
+        var token = UIBackgroundTaskIdentifier.invalid
+        func end() {
+            guard token != .invalid else { return }
+            app.endBackgroundTask(token)
+            token = .invalid
+        }
+        token = app.beginBackgroundTask(withName: "clio-draft-text") { end() }
+        queue.async {
+            DispatchQueue.main.async { end() }
         }
     }
 }
@@ -1038,50 +1222,82 @@ enum DraftInput {
     }
 }
 
-/// Pictures and files picked for a message not yet sent, kept with the conversation like its words
-/// (in Caches: they are only waiting to be sent).
 /// Pictures and files picked for a message not sent yet, kept across leaving the page or the app being closed.
+/// Stored under Application Support/ClioDrafts so iOS cache purges cannot drop unqueued draft photos.
 /// Saved off the main thread into a fresh folder that replaces the old one only once every picture is written, so a
 /// failed or cut-short save leaves the last good copy (the review, #7). The file list lives in the same folder.
 enum DraftAttachments {
     private static let queue = DispatchQueue(label: "clio.draft-attachments", qos: .utility)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var pendingCount = 0
 
     private static var root: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("drafts", isDirectory: true)
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ClioDrafts", isDirectory: true)
     }
 
-    private static func folder(_ chat: String) -> URL {
-        root.appendingPathComponent(chat.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
+    private static var legacyRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("drafts", isDirectory: true)
+    }
+
+    private static func folder(_ chat: String, under base: URL = root) -> URL {
+        base.appendingPathComponent(chat.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
     }
 
     private struct Manifest: Codable {
         var photos: Int
         var files: [String]
+        var queuedIds: [UUID]?
     }
 
-    static func save(photos: [Data], files: [String], chat: String) {
+    static func save(
+        photos: [Data],
+        files: [String],
+        chat: String,
+        queuedIds: [UUID] = [],
+        onSaved: (@Sendable (Bool) -> Void)? = nil
+    ) {
         let dir = folder(chat)
+        let legacyDir = folder(chat, under: legacyRoot)
+        lock.withLock { pendingCount += 1 }
         queue.async {
+            defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
             let manager = FileManager.default
             UserDefaults.standard.removeObject(forKey: "draftFiles." + chat)
             guard !photos.isEmpty || !files.isEmpty else {
                 try? manager.removeItem(at: dir)
+                try? manager.removeItem(at: legacyDir)
+                onSaved?(true)
                 return
             }
             let fresh = root.appendingPathComponent(".new-" + UUID().uuidString, isDirectory: true)
             do {
                 try manager.createDirectory(at: fresh, withIntermediateDirectories: true)
+                let writeOptions: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
                 for (index, data) in photos.enumerated() {
-                    try data.write(to: fresh.appendingPathComponent("\(index).img"))
+                    try data.write(to: fresh.appendingPathComponent("\(index).img"), options: writeOptions)
                 }
-                try JSONEncoder().encode(Manifest(photos: photos.count, files: files)).write(to: fresh.appendingPathComponent("draft.json"))
+                let manifest = Manifest(photos: photos.count, files: files, queuedIds: queuedIds.isEmpty ? nil : queuedIds)
+                try JSONEncoder().encode(manifest).write(to: fresh.appendingPathComponent("draft.json"), options: writeOptions)
                 if manager.fileExists(atPath: dir.path) {
                     _ = try manager.replaceItemAt(dir, withItemAt: fresh)
                 } else {
                     try manager.moveItem(at: fresh, to: dir)
                 }
+                try? manager.removeItem(at: legacyDir)
+                onSaved?(true)
             } catch {
                 try? manager.removeItem(at: fresh)
+                onSaved?(false)
+            }
+        }
+    }
+
+    static func saveResult(photos: [Data], files: [String], chat: String, queuedIds: [UUID] = []) async -> Bool {
+        await withCheckedContinuation { continuation in
+            save(photos: photos, files: files, chat: chat, queuedIds: queuedIds) { ok in
+                continuation.resume(returning: ok)
             }
         }
     }
@@ -1091,21 +1307,67 @@ enum DraftAttachments {
         save(photos: [], files: [], chat: chat)
     }
 
-    static func load(_ chat: String) -> (photos: [Data], files: [String]) {
+    static func load(_ chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID]) {
         queue.sync {}
-        let dir = folder(chat)
+        let primary = folder(chat)
+        if let loaded = loadFrom(dir: primary, chat: chat) {
+            return loaded
+        }
+        let legacy = folder(chat, under: legacyRoot)
+        if let loaded = loadFrom(dir: legacy, chat: chat) {
+            return loaded
+        }
+        let files = UserDefaults.standard.stringArray(forKey: "draftFiles." + chat) ?? []
+        return ([], files, [])
+    }
+
+    private static func loadFrom(dir: URL, chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID])? {
         if let data = try? Data(contentsOf: dir.appendingPathComponent("draft.json")),
            let manifest = try? JSONDecoder().decode(Manifest.self, from: data) {
             let photos = (0..<manifest.photos).compactMap { try? Data(contentsOf: dir.appendingPathComponent("\($0).img")) }
-            return (photos, manifest.files)
+            return (photos, manifest.files, manifest.queuedIds ?? [])
         }
-        // Saved by an earlier version: pictures alone in the folder, the file list in the settings.
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
             .filter { $0.hasSuffix(".img") }
             .sorted { (Int($0.dropLast(4)) ?? 0) < (Int($1.dropLast(4)) ?? 0) }
+        guard !names.isEmpty else { return nil }
         let photos = names.compactMap { try? Data(contentsOf: dir.appendingPathComponent($0)) }
         let files = UserDefaults.standard.stringArray(forKey: "draftFiles." + chat) ?? []
-        return (photos, files)
+        return (photos, files, [])
+    }
+
+    /// Queued message IDs whose draft attachments are completely persisted on disk.
+    static func storedQueuedIds(for chat: String) -> Set<UUID> {
+        queue.sync {}
+        let dir = folder(chat)
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("draft.json")),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
+              let ids = manifest.queuedIds,
+              !ids.isEmpty else {
+            return []
+        }
+        for index in 0..<manifest.photos {
+            guard let img = try? Data(contentsOf: dir.appendingPathComponent("\(index).img")), !img.isEmpty else {
+                return []
+            }
+        }
+        return Set(ids)
+    }
+
+    @MainActor
+    static func finishBeforeSuspension() {
+        guard lock.withLock({ pendingCount > 0 }) else { return }
+        let app = UIApplication.shared
+        var token = UIBackgroundTaskIdentifier.invalid
+        func end() {
+            guard token != .invalid else { return }
+            app.endBackgroundTask(token)
+            token = .invalid
+        }
+        token = app.beginBackgroundTask(withName: "clio-draft-attachments") { end() }
+        queue.async {
+            DispatchQueue.main.async { end() }
+        }
     }
 }
 
