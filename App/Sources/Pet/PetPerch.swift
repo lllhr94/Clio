@@ -105,6 +105,7 @@ struct PetPerchAnchor: UIViewRepresentable {
         private var catchUp: (from: CGFloat, to: CGFloat, start: CFTimeInterval)?
         private var keyboardDuration: CFTimeInterval = 0.24
         private var keyboardUntil: CFTimeInterval = 0
+        private var wasMenuActive = false
 
         init(_ perch: PetPerch) {
             self.perch = perch
@@ -171,6 +172,7 @@ struct PetPerchAnchor: UIViewRepresentable {
             previousTop = nil
             travelStart = nil
             catchUp = nil
+            wasMenuActive = false
         }
 
         private func wake() {
@@ -228,16 +230,35 @@ struct PetPerchAnchor: UIViewRepresentable {
             let presented = presentation(above: source.rootViewController)
             let sheet = presented?.sheetPresentationController
             let host = (sheet?.presentedView).flatMap { $0.window === source ? $0 : nil }
-            let isBottomSheet = showingSheet || sheet?.detents.contains(where: { $0.identifier == .medium }) == true
+            let isBottomSheet: Bool
+            if let presented {
+                isBottomSheet = presented.modalPresentationStyle != .fullScreen
+                    && presented.modalPresentationStyle != .overFullScreen
+                    && sheet?.detents.contains(where: { $0.identifier == .medium }) == true
+            } else {
+                isBottomSheet = showingSheet
+            }
             let blocked = covered || (presented != nil && !isBottomSheet)
             watchSheetDrag(in: source, active: host != nil && isBottomSheet && !blocked)
             if perch.suppressed != (quiet || blocked) { perch.suppressed = quiet || blocked }
+
+            let sceneWindows = source.windowScene?.windows ?? []
+            let alertCovering = sceneWindows.contains { other in
+                other !== window && !other.isHidden && other.alpha > 0.01 && other.windowLevel >= .alert
+            }
+            let menuActive = window.hasContextMenu || window.isKeyWindow
+            if wasMenuActive, !menuActive, !source.isKeyWindow, !alertCovering {
+                source.makeKey()
+            }
+            wasMenuActive = menuActive
+            let keyBelowAlert = sceneWindows.first(where: \.isKeyWindow).map { $0.windowLevel < .alert } ?? false
+            let sourceActive = (source.isKeyWindow || menuActive || keyBelowAlert) && !alertCovering
 
             let markerOrigin = origin(of: marker, in: source)
             let composer = markerOrigin.y
             let top = min(composer, isBottomSheet ? host.map { self.origin(of: $0, in: source).y } ?? composer : composer)
             if perch.chatOffset != markerOrigin.x { perch.chatOffset = markerOrigin.x }
-            if source.isKeyWindow, composer > 0, !blocked {
+            if sourceActive, composer > 0, !blocked {
                 move(to: max(0, top), at: now, calm: UIAccessibility.isReduceMotionEnabled)
                 if window.isHidden { window.isHidden = false }
             } else {
@@ -248,7 +269,7 @@ struct PetPerchAnchor: UIViewRepresentable {
                 if perch.rising { perch.rising = false }
             }
             // A new drag, keyboard notification or layout change wakes the sampler from rest.
-            if now > awakeUntil, catchUp == nil, travelStart == nil {
+            if now > awakeUntil, catchUp == nil, travelStart == nil, !menuActive {
                 clock.isPaused = true
             }
         }
@@ -319,9 +340,15 @@ struct PetPerchAnchor: UIViewRepresentable {
     private final class Surface: UIWindow {
         weak var perch: PetPerch?
 
+        var hasContextMenu: Bool {
+            if rootViewController?.presentedViewController != nil { return true }
+            let rootView = rootViewController?.view
+            return subviews.contains { $0 !== rootView }
+        }
+
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard let perch else { return nil }
-            if rootViewController?.presentedViewController != nil { return super.hitTest(point, with: event) }
+            if hasContextMenu { return super.hitTest(point, with: event) }
             guard !perch.suppressed, abs(perch.chatOffset) < 1, !perch.replyActions.contains(point),
                   perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
             return super.hitTest(point, with: event)

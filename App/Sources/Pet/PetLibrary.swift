@@ -108,7 +108,10 @@ final class PetLibrary {
     }
 
     func canDelete(_ pack: PetPack) -> Bool {
-        pack.id.hasPrefix("user-") && pack.dir.deletingLastPathComponent() == Self.packsFolder
+        guard pack.id.hasPrefix("user-") else { return false }
+        let parentPath = pack.dir.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        let rootPath = Self.packsFolder.resolvingSymlinksInPath().standardizedFileURL.path
+        return parentPath == rootPath
     }
 
     func delete(_ id: String) {
@@ -179,25 +182,28 @@ final class PetLibrary {
         var total = 0
         let sheets = Set(pack.animations.values.map(\.sheet))
         guard sheets.count <= 64 else { throw PetPack.Problem.bad("图太多了（最多 64 张）") }
+        let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
         for name in sheets {
-            let url = base.appendingPathComponent(name)
-            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw PetPack.Problem.bad("少了图：\(name)") }
-            total += size
-            guard size <= 8 << 20, total <= 48 << 20 else { throw PetPack.Problem.bad("图太大了：\(name)") }
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let type = CGImageSourceGetType(source), type as String == "public.png",
-                  let dimensions = PetConvert.dimensions(source, at: 0) else {
-                throw PetPack.Problem.bad("不是能用的 PNG：\(name)")
-            }
-            guard dimensions.width <= 4096, dimensions.height <= 4096 else { throw PetPack.Problem.bad("图的边长超过 4096：\(name)") }
-            guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-                throw PetPack.Problem.bad("读不出这张 PNG：\(name)")
-            }
-            for (animName, anim) in pack.animations where anim.sheet == name {
-                for frame in anim.frames {
-                    let col = frame.i % anim.cols, row = frame.i / anim.cols
-                    guard (col + 1) * anim.frameW <= image.width, (row + 1) * anim.frameH <= image.height else {
-                        throw PetPack.Problem.bad("动画「\(animName)」有一帧落在图外面")
+            try autoreleasepool {
+                let url = base.appendingPathComponent(name)
+                guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw PetPack.Problem.bad("少了图：\(name)") }
+                total += size
+                guard size <= 8 << 20, total <= 48 << 20 else { throw PetPack.Problem.bad("图太大了：\(name)") }
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, noCache),
+                      let type = CGImageSourceGetType(source), type as String == "public.png",
+                      let dimensions = PetConvert.dimensions(source, at: 0) else {
+                    throw PetPack.Problem.bad("不是能用的 PNG：\(name)")
+                }
+                guard dimensions.width <= 4096, dimensions.height <= 4096 else { throw PetPack.Problem.bad("图的边长超过 4096：\(name)") }
+                guard CGImageSourceCreateImageAtIndex(source, 0, noCache) != nil else {
+                    throw PetPack.Problem.bad("读不出这张 PNG：\(name)")
+                }
+                for (animName, anim) in pack.animations where anim.sheet == name {
+                    for frame in anim.frames {
+                        let col = frame.i % anim.cols, row = frame.i / anim.cols
+                        guard (col + 1) * anim.frameW <= dimensions.width, (row + 1) * anim.frameH <= dimensions.height else {
+                            throw PetPack.Problem.bad("动画「\(animName)」有一帧落在图外面")
+                        }
                     }
                 }
             }

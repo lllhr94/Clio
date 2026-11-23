@@ -173,6 +173,10 @@ struct PetPack: Identifiable, Sendable {
         let anchor = root["anchor"] as? [String: Any] ?? [:]
         let roam = root["roam"] as? [String: Any] ?? [:]
         let content = box(root["contentBox"]) ?? Box(x: 0, y: 0, w: cw, h: ch)
+        let rawAnchorX = num(anchor["x"]) ?? content.x + content.w / 2
+        let rawBaseline = num(anchor["baseline"]) ?? content.y + content.h
+        let clampedAnchorX = min(cw, max(0, rawAnchorX))
+        let clampedBaseline = min(ch * 2, max(1, rawBaseline))
         return PetPack(
             id: id, dir: dir,
             name: root["name"] as? String ?? id,
@@ -181,8 +185,8 @@ struct PetPack: Identifiable, Sendable {
             source: root["source"] as? String ?? "",
             pixelArt: root["pixelArt"] as? Bool ?? true,
             scale: scale, canvasW: cw, canvasH: ch,
-            anchorX: num(anchor["x"]) ?? content.x + content.w / 2,
-            baseline: num(anchor["baseline"]) ?? content.y + content.h,
+            anchorX: clampedAnchorX,
+            baseline: clampedBaseline,
             content: content, animations: animations, states: states, tiers: tiers,
             minDisplay: ints(timings["minDisplay"]), autoReturn: ints(timings["autoReturn"]),
             wakeMs: Int(num(timings["wakeMs"]) ?? 1500), reactions: reactions,
