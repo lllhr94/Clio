@@ -42,9 +42,19 @@ public enum Shell {
             return clip(maskSorted(text, sortedSecrets: valid), max: limit)
         }
         let half = limit / 2
-        let window = half + longest
-        let maskedHead = maskSorted(String(text.prefix(window)), sortedSecrets: valid)
-        let maskedTail = maskSorted(String(text.suffix(window)), sortedSecrets: valid)
+        // Masking shortens the window; a secret cut at its edge must still end up outside the kept part,
+        // so grow the window until the masked text is at least half + longest.
+        func masked(_ take: (Int) -> Substring) -> String {
+            var extra = longest
+            while true {
+                let window = half + extra
+                let out = maskSorted(String(take(window)), sortedSecrets: valid)
+                if out.count >= half + longest || window >= text.count { return out }
+                extra *= 2
+            }
+        }
+        let maskedHead = masked { text.prefix($0) }
+        let maskedTail = masked { text.suffix($0) }
         let headKept = String(maskedHead.prefix(half))
         let tailKept = String(maskedTail.suffix(half))
         let omitted = Swift.max(1, text.count - half * 2)

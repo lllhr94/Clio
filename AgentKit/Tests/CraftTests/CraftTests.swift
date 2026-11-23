@@ -1042,6 +1042,16 @@ final class A13CraftRegressionTests: XCTestCase {
         XCTAssertTrue(result.contains(Shell.hidden))
     }
 
+    func testShellMaskedClipDoesNotLeakSecretCutAfterEarlierMaskShrinks() {
+        let long = "sk-" + String(repeating: "L", count: 57)            // 60 chars, masked to 7
+        let short = "SECRETB-" + String(repeating: "q", count: 22)     // 30 chars
+        // Short secret starts after half (5000) and crosses the first window edge (5000 + 60).
+        let input = long + String(repeating: "x", count: 5045 - long.count) + short + String(repeating: "m", count: 30_000)
+        let result = Shell.maskedClip(input, max: 10_000, secrets: [long, short])
+        XCTAssertFalse(result.contains("SECRETB"))
+        XCTAssertFalse(result.contains("LLLLLL"))
+    }
+
     func testRoutineRejectsInvalidDaysAndGuardsDecodedOutOfBoundsDays() throws {
         XCTAssertNil(Routine.days(from: "每个月1号"))
         XCTAssertNil(Routine.days(from: "tomorrow"))

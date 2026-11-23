@@ -16,6 +16,8 @@ actor Tunnels {
         let port: Int
         var client: SSHClient?
         var connectingClient: Task<SSHClient, Error>?
+        /// Which connect attempt `connectingClient` belongs to, so a superseded attempt never clears a newer one.
+        var connectingToken: UUID?
         var closed = false
         init(listener: NWListener, port: Int) {
             self.listener = listener
@@ -235,21 +237,29 @@ actor Tunnels {
             tunnel.client = nil
             Task { try? await staleClient.close() }
         }
+        let token = UUID()
         let task = Task<SSHClient, Error> {
             do {
                 let connected = try await Hills.connect(host)
-                return try await self.finishSSHClient(key: key, tunnel: tunnel, client: connected)
+                return try await self.finishSSHClient(key: key, tunnel: tunnel, client: connected, token: token)
             } catch {
-                await self.clearSSHClientTask(tunnel: tunnel)
+                await self.clearSSHClientTask(tunnel: tunnel, token: token)
                 throw error
             }
         }
         tunnel.connectingClient = task
+        tunnel.connectingToken = token
         return (try await task.value, false)
     }
 
-    private func finishSSHClient(key: String, tunnel: Open, client: SSHClient) async throws -> SSHClient {
+    private func finishSSHClient(key: String, tunnel: Open, client: SSHClient, token: UUID) async throws -> SSHClient {
+        guard tunnel.connectingToken == token else {
+            // A newer attempt took over; this connection is not installed and must not close the newer one.
+            try? await client.close()
+            throw CancellationError()
+        }
         tunnel.connectingClient = nil
+        tunnel.connectingToken = nil
         guard open[key] === tunnel, !tunnel.closed else {
             try? await client.close()
             throw ProviderError("隧道已经关闭")
@@ -261,8 +271,10 @@ actor Tunnels {
         return client
     }
 
-    private func clearSSHClientTask(tunnel: Open) {
+    private func clearSSHClientTask(tunnel: Open, token: UUID) {
+        guard tunnel.connectingToken == token else { return }
         tunnel.connectingClient = nil
+        tunnel.connectingToken = nil
     }
 
     /// Phone → far side.

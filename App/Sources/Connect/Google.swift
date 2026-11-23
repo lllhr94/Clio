@@ -202,7 +202,11 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             return try await performCall(target, method: method, body: body, bearer: try await access(), maxBytes: maxBytes)
         } catch let retry as UnauthorizedRetry {
             _ = retry
-            return try await performCall(target, method: method, body: body, bearer: try await access(stale: true), maxBytes: maxBytes)
+            do {
+                return try await performCall(target, method: method, body: body, bearer: try await access(stale: true), maxBytes: maxBytes)
+            } catch is UnauthorizedRetry {
+                throw ProviderError("谷歌拒绝了访问，请在连接器里重新登录 Google。")
+            }
         }
     }
 

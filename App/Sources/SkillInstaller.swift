@@ -208,7 +208,12 @@ enum SkillInstaller {
             try data.write(to: destination, options: .atomic)
         }
 
-        // Remove any case-variant directories or legacy single-file skills with the same case-insensitive name.
+        if fm.fileExists(atPath: finalFolder.path) {
+            _ = try fm.replaceItemAt(finalFolder, withItemAt: tempTarget)
+        } else {
+            try fm.moveItem(at: tempTarget, to: finalFolder)
+        }
+        // Only after the new skill is in place: remove any case-variant directories or legacy single-file skills with the same case-insensitive name.
         if let existingEntries = try? fm.contentsOfDirectory(at: skillsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             for existing in existingEntries {
                 let existingName = existing.lastPathComponent
@@ -223,11 +228,6 @@ enum SkillInstaller {
             }
         }
 
-        if fm.fileExists(atPath: finalFolder.path) {
-            _ = try fm.replaceItemAt(finalFolder, withItemAt: tempTarget)
-        } else {
-            try fm.moveItem(at: tempTarget, to: finalFolder)
-        }
         let legacySingle = skillsRoot.appendingPathComponent(folderName + ".md")
         if Workspace.isInsideRealRoot(legacySingle, root: skillsRoot), fm.fileExists(atPath: legacySingle.path) {
             try? fm.removeItem(at: legacySingle)
