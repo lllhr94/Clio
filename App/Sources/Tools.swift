@@ -363,7 +363,12 @@ enum Notify {
         content.body = String((summary.isEmpty ? L.t("approval.requestedAction") : summary).prefix(180))
         content.sound = .default
         content.userInfo = ["chat": approval.chat ?? "", "approval": approval.id]
-        if approval.forced != true, approval.detail?.code == nil {
+        let toolName = approval.toolName ?? ""
+        let requiresOpenApp = approval.forced == true
+            || approval.detail?.code != nil
+            || toolName == "shell"
+            || toolName.hasPrefix("ssh_")
+        if !requiresOpenApp {
             content.categoryIdentifier = approvalCategory
             content.body += "\n长按可以直接同意或不同意。"
         }

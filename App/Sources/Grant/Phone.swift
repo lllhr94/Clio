@@ -12,7 +12,8 @@ final class Spot: NSObject, CLLocationManagerDelegate {
     static let shared = Spot()
     private let manager = CLLocationManager()
     private var authorizing: [CheckedContinuation<Bool, Never>] = []
-    private var locating: [CheckedContinuation<Result<CLLocation, Error>, Never>] = []
+    private var locating: [(id: UUID, continuation: CheckedContinuation<Result<CLLocation, Error>, Never>)] = []
+    private var locateTimeout: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -35,11 +36,50 @@ final class Spot: NSObject, CLLocationManagerDelegate {
 
     func locate() async throws -> CLLocation {
         guard await authorize() else { throw ProviderError("没有定位权限。请用户在「设置 › Clio › 位置」里打开。") }
-        let result = await withCheckedContinuation { continuation in
-            locating.append(continuation)
-            if locating.count == 1 { manager.requestLocation() }
+        try Task.checkCancellation()
+        let waiterID = UUID()
+        let result: Result<CLLocation, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: .failure(CancellationError()))
+                    return
+                }
+                locating.append((waiterID, continuation))
+                if locating.count == 1 {
+                    manager.requestLocation()
+                    startTimeout()
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelWaiter(waiterID)
+            }
         }
         return try result.get()
+    }
+
+    private func startTimeout() {
+        locateTimeout?.cancel()
+        locateTimeout = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(15))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.deliver(.failure(ProviderError("定位超时了（超过 15 秒），请到信号更好的地方再试。")))
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = locating.firstIndex(where: { $0.id == id }) else { return }
+        let removed = locating.remove(at: index)
+        if locating.isEmpty {
+            locateTimeout?.cancel()
+            locateTimeout = nil
+            manager.stopUpdatingLocation()
+        }
+        removed.continuation.resume(returning: .failure(CancellationError()))
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -62,8 +102,11 @@ final class Spot: NSObject, CLLocationManagerDelegate {
     }
 
     private func deliver(_ result: Result<CLLocation, Error>) {
-        for continuation in locating { continuation.resume(returning: result) }
+        locateTimeout?.cancel()
+        locateTimeout = nil
+        let waiters = locating
         locating = []
+        for waiter in waiters { waiter.continuation.resume(returning: result) }
     }
 }
 
@@ -121,7 +164,7 @@ enum Phone {
                 }
                 return ToolOutput(lines.joined(separator: "\n"))
             },
-            DeskTool(name: "contacts_add", description: "在用户通讯录里新建一个联系人。", parameters: ["type": "object", "properties": ["name": ["type": "string"], "phone": ["type": "string"], "email": ["type": "string"], "organization": ["type": "string"], "note": ["type": "string"]], "required": ["name"]], label: { "通讯录：加「\($0["name"]?.string ?? "")」" }, approval: { arguments in
+            DeskTool(name: "contacts_add", description: "在用户通讯录里新建一个联系人。", parameters: ["type": "object", "properties": ["name": ["type": "string"], "phone": ["type": "string"], "email": ["type": "string"], "organization": ["type": "string"]], "required": ["name"]], label: { "通讯录：加「\($0["name"]?.string ?? "")」" }, approval: { arguments in
                 ApprovalAsk(title: "加一个联系人", reason: [arguments["name"]?.string, arguments["phone"]?.string, arguments["email"]?.string].compactMap { $0 }.joined(separator: " · "))
             }) { arguments in
                 let store = CNContactStore()
@@ -142,11 +185,17 @@ enum Phone {
                 do { try store.execute(request) } catch { return ToolOutput("没加上：\(error.localizedDescription)", isError: true) }
                 return ToolOutput("加好了：\(name)")
             },
-            DeskTool(name: "photos_save", description: "把书案里的一张图片存进用户的相册。", parameters: ["type": "object", "properties": ["path": ["type": "string", "description": "书案里的图片路径"]], "required": ["path"]], label: { "相册：存「\($0["path"]?.string ?? "")」" }, approval: { arguments in
+            DeskTool(name: "photos_save", description: "把书案（或挂载文件夹）里的一张图片存进用户的相册。", parameters: ["type": "object", "properties": ["path": ["type": "string", "description": "书案或挂载文件夹里的图片路径"]], "required": ["path"]], label: { "相册：存「\($0["path"]?.string ?? "")」" }, approval: { arguments in
                 ApprovalAsk(title: "存一张图到相册", reason: arguments["path"]?.string ?? "")
             }) { arguments in
-                guard let file = Workspace.resolve(arguments["path"]?.string), let data = try? Data(contentsOf: file), UIImage(data: data) != nil else {
-                    return ToolOutput("书案里没有这张图，或者它不是图片。", isError: true)
+                let data: Data
+                do {
+                    data = try Workspace.readBytes(arguments["path"]?.string).data
+                } catch {
+                    return ToolOutput(error.localizedDescription, isError: true)
+                }
+                guard UIImage(data: data) != nil else {
+                    return ToolOutput(Words.t("书案里没有这张图，或者它不是图片。"), isError: true)
                 }
                 do {
                     try await PHPhotoLibrary.shared().performChanges {

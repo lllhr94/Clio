@@ -55,7 +55,7 @@ final class Secrets: ObservableObject {
 
     func remove(_ item: Item) {
         items.removeAll { $0.id == item.id }
-        Vault.save("", as: "secret.\(item.id)")
+        Vault.remove("secret.\(item.id)")
         Disk.save(items, "secrets.json")
     }
 
@@ -128,8 +128,8 @@ final class Asker: ObservableObject {
 
     /// The slip on show; others wait their turn behind it.
     @Published private(set) var current: Form?
-    /// A conversation page is showing the current slip inline, so no sheet is needed.
-    var inlineSeen = false
+    /// Forms currently rendered inline inside a conversation page, tracked by `form.id`.
+    var inlineSeen: Set<UUID> = []
     /// Every slip still waiting for the user, in the order asked. Two companions asking at once each get their own
     /// answer: a new slip no longer pushes out the one before (the review, #21).
     private var line: [(form: Form, continuation: CheckedContinuation<Answer, Never>)] = []
@@ -142,13 +142,13 @@ final class Asker: ObservableObject {
     }
 
     private func showNext() {
-        inlineSeen = false
         current = line.first?.form
         if current != nil { Haptics.tick(0.8) }
     }
 
     /// Answers one slip by its id; an answer from a slip that is no longer waiting goes nowhere.
     func answer(_ values: Answer, to id: UUID) {
+        inlineSeen.remove(id)
         guard let index = line.firstIndex(where: { $0.form.id == id }) else { return }
         let item = line.remove(at: index)
         if current?.id == id { showNext() }
@@ -185,15 +185,18 @@ enum SecretTools {
                     ], "required": ["key", "label"]]],
                 ],
                 "required": ["title", "fields"],
-            ], label: { "递笺：\($0["title"]?.string ?? "")" }) { arguments in
+            ], label: { Words.t("递笺：\($0["title"]?.string ?? "")") }) { arguments in
+                var seenKeys: Set<String> = []
                 let fields: [Asker.Field] = (arguments["fields"]?.array ?? []).compactMap { item in
-                    guard let key = item["key"]?.string, !key.isEmpty else { return nil }
-                    let label = item["label"]?.string ?? key
+                    guard let rawKey = item["key"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !rawKey.isEmpty,
+                          seenKeys.insert(rawKey).inserted else { return nil }
+                    let label = item["label"]?.string ?? rawKey
                     // A field that asks for a password, a code or a card number is kept in 信匣 whatever the model said:
                     // otherwise its answer would go back to the model as plain text.
-                    let words = (key + " " + label + " " + (item["placeholder"]?.string ?? "")).lowercased()
+                    let words = (rawKey + " " + label + " " + (item["placeholder"]?.string ?? "")).lowercased()
                     let sensitive = ["密码", "口令", "password", "passwd", "验证码", "otp", "pin码", "pin code", "卡号", "安全码", "cvv", "token", "令牌", "密钥", "api key", "apikey", "secret"].contains { words.contains($0) }
-                    return Asker.Field(key: key, label: label, secret: (item["secret"]?.bool ?? false) || sensitive,
+                    return Asker.Field(key: rawKey, label: label, secret: (item["secret"]?.bool ?? false) || sensitive,
                                        placeholder: item["placeholder"]?.string ?? "", value: item["value"]?.string ?? "",
                                        choices: (item["choices"]?.array ?? []).compactMap(\.string))
                 }
@@ -212,7 +215,7 @@ enum SecretTools {
                 }
                 return ToolOutput("用户填好了：\n" + lines.joined(separator: "\n"))
             },
-            DeskTool(name: "vault_list", description: "看信匣里存了哪些账号和密钥：编号、名字、地址、用户名。看不到密码。", parameters: ["type": "object", "properties": [:]], label: { _ in "信匣：翻看" }) { _ in
+            DeskTool(name: "vault_list", description: "看信匣里存了哪些账号和密钥：编号、名字、地址、用户名。看不到密码。", parameters: ["type": "object", "properties": [:]], label: { _ in Words.t("信匣：翻看") }) { _ in
                 let items = await Secrets.shared.items
                 guard !items.isEmpty else { return ToolOutput("信匣是空的。") }
                 return ToolOutput(items.map(Secrets.describe).joined(separator: "\n"))
@@ -225,7 +228,7 @@ enum SecretTools {
                     "port": ["type": "number"],
                     "user": ["type": "string"],
                 ],
-            ], label: { "远山：添主机 \($0["address"]?.string ?? "")" }) { arguments in
+            ], label: { Words.t("远山：添主机 \($0["address"]?.string ?? "")") }) { arguments in
                 let form = Asker.Form(
                     title: "添一台主机",
                     reason: Words.t("存好后，旅伴就能用 SSH 在这台主机上替你跑命令。密码只存在这台手机里。"),
@@ -246,8 +249,11 @@ enum SecretTools {
                 let address = (values["address"] ?? "").trimmingCharacters(in: .whitespaces)
                 guard !address.isEmpty else { return ToolOutput("地址是空的。", isError: true) }
                 let useKey = values["auth"] == "钥匙"
-                var host = Hills.Host(name: (values["name"] ?? "").isEmpty ? address : values["name"]!, address: address, user: (values["user"] ?? "").isEmpty ? "root" : values["user"]!)
-                host.port = Int(values["port"] ?? "") ?? 22
+                let trimmedName = (values["name"] ?? "").trimmingCharacters(in: .whitespaces)
+                let trimmedUser = (values["user"] ?? "").trimmingCharacters(in: .whitespaces)
+                var host = Hills.Host(name: trimmedName.isEmpty ? address : trimmedName, address: address, user: trimmedUser.isEmpty ? "root" : trimmedUser)
+                let parsedPort = Int((values["port"] ?? "").trimmingCharacters(in: .whitespaces)) ?? 22
+                host.port = (1...65535).contains(parsedPort) ? parsedPort : 22
                 host.useKey = useKey
                 var password: String?
                 if let saved = values["password"], saved.hasPrefix("secret:") { password = Secrets.secret(String(saved.dropFirst(7))) }
@@ -266,7 +272,7 @@ enum SecretTools {
                     "submit": ["type": "boolean"],
                 ],
                 "required": ["ref", "id"],
-            ], label: { "远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]" }, approval: { arguments in
+            ], label: { Words.t("远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]") }, approval: { arguments in
                 ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: Words.t("信匣编号 ") + "\(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")")
             }) { arguments in
                 let id = arguments["id"]?.string ?? ""
