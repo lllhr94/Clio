@@ -104,8 +104,11 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
 
     /// The access token for a signed-in service, renewed when it ran out (or when `stale`, after a 401).
     nonisolated static func bearer(_ id: String, stale: Bool = false) async throws -> String? {
-        guard let data = Vault.load(Data.self, key: "mcp.oauth.\(id)"), var saved = try? JSONDecoder().decode(Saved.self, from: data) else { return nil }
-        if !stale, saved.until.map({ $0 > Date() }) ?? true { return saved.access }
+        try await MCPRefreshCoordinator.shared.bearer(id, stale: stale)
+    }
+
+    fileprivate nonisolated static func refreshBearerNow(_ id: String, saved initial: Saved) async throws -> String {
+        var saved = initial
         guard let refresh = saved.refresh else { throw ProviderError("登录过期了，去「连接器」里重新登录。") }
         var form = ["grant_type": "refresh_token", "refresh_token": refresh, "client_id": saved.clientId, "resource": saved.resource]
         if let secret = saved.clientSecret { form["client_secret"] = secret }
@@ -181,7 +184,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Clio","version":"1.0"}}}"#.utf8)
-        guard let (_, response) = try? await URLSession.shared.data(for: request),
+        guard let (_, response) = try? await URLSession.shared.data(for: request, delegate: PublicHTTPSRedirectDelegate(sameHostOnlyFrom: nil)),
               let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "WWW-Authenticate"),
               let range = header.range(of: #"resource_metadata="([^"]+)""#, options: .regularExpression) else { return nil }
         return String(header[range].dropFirst("resource_metadata=\"".count).dropLast())
@@ -203,9 +206,13 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
             "token_endpoint_auth_method": "none",
         ]
         request.httpBody = Data(body.compact.utf8)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request, delegate: PublicHTTPSRedirectDelegate(sameHostOnlyFrom: target))
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (300..<400).contains(status) {
+            throw ProviderError("登记地址试图跳转到不安全或其他主机，已拒绝。")
+        }
         let answer = JSONValue.parse(String(decoding: data, as: UTF8.self))
-        guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0), let id = answer?["client_id"]?.string else {
+        guard (200..<300).contains(status), let id = answer?["client_id"]?.string else {
             let said = answer?["error_description"]?.string ?? answer?["error"]?.string ?? String(decoding: data.prefix(160), as: UTF8.self)
             throw ProviderError("那边不让 Clio 登记：\(said)")
         }
@@ -217,7 +224,7 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
         var request = URLRequest(url: target, timeoutInterval: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await URLSession.shared.data(for: request, delegate: PublicHTTPSRedirectDelegate(sameHostOnlyFrom: nil)),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         let value = JSONValue.parse(String(decoding: data, as: UTF8.self))
         if case .object = value { return value }
@@ -233,10 +240,14 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         request.httpBody = Data(form.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0.value)" }.joined(separator: "&").utf8)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request, delegate: PublicHTTPSRedirectDelegate(sameHostOnlyFrom: target))
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (300..<400).contains(status) {
+            throw ProviderError("令牌地址试图跳转到不安全或其他主机，已拒绝。")
+        }
         let answer = JSONValue.parse(String(decoding: data, as: UTF8.self)) ?? .null
-        guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
-            throw ProviderError(answer["error_description"]?.string ?? answer["error"]?.string ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        guard (200..<300).contains(status) else {
+            throw ProviderError(answer["error_description"]?.string ?? answer["error"]?.string ?? "HTTP \(status)")
         }
         return answer
     }
@@ -245,5 +256,58 @@ final class MCPAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
         var bytes = [UInt8](repeating: 0, count: count)
         _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         return Data(bytes).base64URL
+    }
+}
+
+private actor MCPRefreshCoordinator {
+    static let shared = MCPRefreshCoordinator()
+    private var inFlight: [String: Task<String, Error>] = [:]
+
+    func bearer(_ id: String, stale: Bool) async throws -> String? {
+        if let running = inFlight[id] {
+            return try await running.value
+        }
+        guard let data = Vault.load(Data.self, key: "mcp.oauth.\(id)"),
+              let saved = try? JSONDecoder().decode(MCPAuth.Saved.self, from: data) else {
+            return nil
+        }
+        if !stale, saved.until.map({ $0 > Date() }) ?? true {
+            return saved.access
+        }
+        let task = Task<String, Error> {
+            try await MCPAuth.refreshBearerNow(id, saved: saved)
+        }
+        inFlight[id] = task
+        defer { inFlight[id] = nil }
+        return try await task.value
+    }
+}
+
+private final class PublicHTTPSRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let sameHostOnlyFrom: URL?
+
+    init(sameHostOnlyFrom: URL?) {
+        self.sameHostOnlyFrom = sameHostOnlyFrom
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        guard let next = request.url,
+              next.scheme?.lowercased() == "https",
+              let nextHost = next.host?.lowercased(), !nextHost.isEmpty,
+              next.user == nil, next.password == nil,
+              !LocalAddress.isLocal(next) else {
+            return nil
+        }
+        if let origin = sameHostOnlyFrom {
+            guard origin.host?.lowercased() == nextHost,
+                  (origin.port ?? 443) == (next.port ?? 443) else {
+                return nil
+            }
+        }
+        if await LocalAddress.resolvesToLocal(next) {
+            return nil
+        }
+        return request
     }
 }

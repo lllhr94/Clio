@@ -61,8 +61,13 @@ enum GoogleTools {
     }, approval: { arguments in
         ApprovalAsk(title: "在 Gmail 存草稿", reason: mailReason(arguments), detail: arguments["body"]?.string)
     }) { arguments in
-        let raw = try mime(arguments)
-        let data = try await Google.call(gmail + "/drafts", method: "POST", body: ["message": ["raw": .string(raw)]])
+        let reply = try await replyContext(for: arguments)
+        let raw = try mime(arguments, inReplyTo: reply.inReplyTo, references: reply.references)
+        var message: [String: JSONValue] = ["raw": .string(raw)]
+        if let threadId = reply.threadId, !threadId.isEmpty {
+            message["threadId"] = .string(threadId)
+        }
+        let data = try await Google.call(gmail + "/drafts", method: "POST", body: ["message": .object(message)])
         let id = JSONValue.parse(String(decoding: data, as: UTF8.self))?["id"]?.string ?? ""
         return ToolOutput("草稿存好了（\(id)），用户可以在 Gmail 的草稿箱里检查后发送。")
     }
@@ -73,8 +78,13 @@ enum GoogleTools {
         // Sending can't be taken back: always asked, even where the person said 「以后都允许」.
         ApprovalAsk(title: "用 Gmail 发信", reason: mailReason(arguments), detail: arguments["body"]?.string, forced: true)
     }) { arguments in
-        let raw = try mime(arguments)
-        _ = try await Google.call(gmail + "/messages/send", method: "POST", body: ["raw": .string(raw)])
+        let reply = try await replyContext(for: arguments)
+        let raw = try mime(arguments, inReplyTo: reply.inReplyTo, references: reply.references)
+        var payload: [String: JSONValue] = ["raw": .string(raw)]
+        if let threadId = reply.threadId, !threadId.isEmpty {
+            payload["threadId"] = .string(threadId)
+        }
+        _ = try await Google.call(gmail + "/messages/send", method: "POST", body: .object(payload))
         return ToolOutput("已发出。")
     }
 
@@ -105,8 +115,39 @@ enum GoogleTools {
         return cc.isEmpty ? "给 \(to)：\(subject)" : "给 \(to)（抄送 \(cc)）：\(subject)"
     }
 
+    private static func replyContext(for arguments: JSONValue) async throws -> (threadId: String?, inReplyTo: String?, references: String?) {
+        guard let rawReplyId = arguments["reply_to_id"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawReplyId.isEmpty else {
+            return (nil, nil, nil)
+        }
+        guard validID(rawReplyId) else {
+            throw ProviderError("回复的邮件 id 不对。")
+        }
+        let original = try await Google.get(gmail + "/messages/\(rawReplyId)?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Message-Id&metadataHeaders=References")
+        let headers = header(original)
+        let threadId = original["threadId"]?.string
+        let msgId = cleanHeader(headerValue(headers, named: "Message-ID") ?? "")
+        let existingRefs = cleanHeader(headerValue(headers, named: "References") ?? "")
+        let inReplyTo = msgId.isEmpty ? nil : msgId
+        let references: String?
+        if !existingRefs.isEmpty && !msgId.isEmpty {
+            references = existingRefs.contains(msgId) ? existingRefs : "\(existingRefs) \(msgId)"
+        } else if !existingRefs.isEmpty {
+            references = existingRefs
+        } else if !msgId.isEmpty {
+            references = msgId
+        } else {
+            references = nil
+        }
+        return (threadId, inReplyTo, references)
+    }
+
+    private static func headerValue(_ headers: [String: String], named target: String) -> String? {
+        headers.first(where: { $0.key.caseInsensitiveCompare(target) == .orderedSame })?.value
+    }
+
     /// The email as Gmail wants it: RFC 2822, base64url.
-    private static func mime(_ arguments: JSONValue) throws -> String {
+    private static func mime(_ arguments: JSONValue, inReplyTo: String? = nil, references: String? = nil) throws -> String {
         let to = cleanHeader(arguments["to"]?.string ?? "")
         guard to.contains("@") else { throw ProviderError("收件人不对。") }
         func encoded(_ text: String) -> String { "=?UTF-8?B?" + Data(text.utf8).base64EncodedString() + "?=" }
@@ -114,6 +155,8 @@ enum GoogleTools {
         let cc = cleanHeader(arguments["cc"]?.string ?? "")
         if !cc.isEmpty { lines.append("Cc: \(cc)") }
         lines.append("Subject: " + encoded(cleanHeader(arguments["subject"]?.string ?? "")))
+        if let inReplyTo, !inReplyTo.isEmpty { lines.append("In-Reply-To: \(inReplyTo)") }
+        if let references, !references.isEmpty { lines.append("References: \(references)") }
         lines += ["MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", ""]
         let body = Data((arguments["body"]?.string ?? "").utf8).base64EncodedString(options: .lineLength76Characters)
         return Data((lines.joined(separator: "\r\n") + "\r\n" + body).utf8).base64URL
@@ -167,7 +210,9 @@ enum GoogleTools {
             "max": ["type": "integer", "description": "最多几个，默认 10"],
         ],
     ], label: { arguments in "云端硬盘：找 " + (arguments["query"]?.string ?? "最近的文件") }) { arguments in
-        let words = (arguments["query"]?.string ?? "").replacingOccurrences(of: "'", with: "\\'")
+        let words = (arguments["query"]?.string ?? "")
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
         let limit = min(30, max(1, (arguments["max"]?.int ?? 10)))
         var parts = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
         var items = [
@@ -189,7 +234,9 @@ enum GoogleTools {
         }.joined(separator: "\n"))
     }
 
-    static let driveRead = DeskTool(name: "drive_read", description: "读云端硬盘里的一个文件（用 drive_search 拿到的 id）。谷歌文档、表格、幻灯片读成文字；其他文件下载到书案/收件，PDF 和文本会读出内容。", parameters: [
+    private static let maxDriveBytes = 25_000_000
+
+    static let driveRead = DeskTool(name: "drive_read", description: Words.t("读云端硬盘里的一个文件（用 drive_search 拿到的 id）。谷歌文档、表格、幻灯片读成文字；其他文件下载到书案/收件，PDF 和文本会读出内容。"), parameters: [
         "type": "object",
         "properties": ["id": ["type": "string"]],
         "required": ["id"],
@@ -205,20 +252,32 @@ enum GoogleTools {
             "application/vnd.google-apps.presentation": "text/plain",
         ]
         if let target = exports[type] {
-            let data = try await Google.call(base + "/export?mimeType=" + (target.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? target))
+            let encodedTarget = target.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? target
+            let data = try await Google.call(base + "/export?mimeType=" + encodedTarget, maxBytes: maxDriveBytes)
             let text = String(decoding: data, as: UTF8.self)
             return ToolOutput("《\(name)》\n\n" + (text.count > 15000 ? String(text.prefix(15000)) + "\n……（后面还有）" : text))
         }
         if type.hasPrefix("application/vnd.google-apps.") { return ToolOutput("「\(name)」这种谷歌文件读不了。", isError: true) }
-        if let size = meta["size"]?.string.flatMap(Double.init), size > 25_000_000 {
+        if let size = meta["size"]?.string.flatMap(Double.init), size > Double(maxDriveBytes) {
             return ToolOutput("「\(name)」有 \(Int(size / 1_000_000)) MB，太大了，没有下载。", isError: true)
         }
-        let data = try await Google.call(base + "?alt=media")
+        let data = try await Google.call(base + "?alt=media", maxBytes: maxDriveBytes)
         let folder = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+        var folderStat = stat()
+        if lstat(folder.path, &folderStat) == 0, (folderStat.st_mode & S_IFMT) == S_IFLNK {
+            throw ProviderError(Words.t("书案/收件 是软链接，拒绝写入。"))
+        }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let file = folder.appendingPathComponent(name.replacingOccurrences(of: "/", with: "-"))
+        guard Workspace.isInsideRealRoot(folder, root: Workspace.root) else {
+            throw ProviderError(Words.t("书案/收件 路径越界，拒绝写入。"))
+        }
+        let safeName = safeDriveFileName(name)
+        let file = uniqueInboxFile(in: folder, name: safeName)
+        guard Workspace.isInsideRealRoot(file, root: Workspace.root) else {
+            throw ProviderError(Words.t("保存路径越界，拒绝写入。"))
+        }
         try data.write(to: file, options: .atomic)
-        var out = "下载到了 书案/收件/\(file.lastPathComponent)（\(Workspace.size(data.count))）。"
+        var out = Words.t("下载到了 书案/收件/\(file.lastPathComponent)（\(Workspace.size(data.count))）。")
         if type == "application/pdf", let text = PDFText.extract(file), !text.isEmpty {
             out += "\n\n" + (text.count > 15000 ? String(text.prefix(15000)) + "\n……（后面还有）" : text)
         } else if type.hasPrefix("text/") || type == "application/json" {
@@ -226,5 +285,53 @@ enum GoogleTools {
             out += "\n\n" + (text.count > 15000 ? String(text.prefix(15000)) + "\n……（后面还有）" : text)
         }
         return ToolOutput(out)
+    }
+
+    private static func safeDriveFileName(_ raw: String) -> String {
+        let filteredScalars = raw.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }
+        var cleaned = String(String.UnicodeScalarView(filteredScalars))
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        while let first = cleaned.first, first == "." || first.isWhitespace {
+            cleaned.removeFirst()
+        }
+        while let last = cleaned.last, last == "." || last.isWhitespace {
+            cleaned.removeLast()
+        }
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return "文件"
+        }
+        if cleaned.count > 160 {
+            let ext = (cleaned as NSString).pathExtension
+            let stem = (cleaned as NSString).deletingPathExtension
+            if !ext.isEmpty && ext.count < 20 {
+                cleaned = String(stem.prefix(160 - ext.count - 1)) + "." + ext
+            } else {
+                cleaned = String(cleaned.prefix(160))
+            }
+        }
+        return cleaned
+    }
+
+    private static func uniqueInboxFile(in folder: URL, name: String) -> URL {
+        let ext = (name as NSString).pathExtension
+        let stem = (name as NSString).deletingPathExtension
+        for index in 1...10_000 {
+            let candidateName: String
+            if index == 1 {
+                candidateName = name
+            } else if ext.isEmpty {
+                candidateName = "\(stem) \(index)"
+            } else {
+                candidateName = "\(stem) \(index).\(ext)"
+            }
+            let candidate = folder.appendingPathComponent(candidateName)
+            var st = stat()
+            if !FileManager.default.fileExists(atPath: candidate.path) && lstat(candidate.path, &st) != 0 {
+                return candidate
+            }
+        }
+        return folder.appendingPathComponent("\(UUID().uuidString)-\(name)")
     }
 }

@@ -12,8 +12,18 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     static let shared = Google()
 
     @Published private(set) var account: String? = UserDefaults.standard.string(forKey: "google.account")
+    @Published private(set) var expired: Bool = UserDefaults.standard.bool(forKey: "google.expired")
     @Published private(set) var busy = false
     @Published var problem: String?
+
+    fileprivate func setExpired(_ value: Bool) {
+        expired = value
+        if value {
+            UserDefaults.standard.set(true, forKey: "google.expired")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "google.expired")
+        }
+    }
 
     /// What the sign-in asks for: enough for Clio's own Gmail and Drive tools and for Google's official
     /// MCP services (Gmail, Drive, Calendar, Docs, Sheets, Slides).
@@ -101,8 +111,10 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             guard let refresh = tokens["refresh_token"]?.string else { problem = "谷歌没给长期令牌，重新登录一次试试。"; return }
             Vault.save(refresh, as: "google.refresh")
             if let access = tokens["access_token"]?.string {
-                Self.cache = (access, Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60))
+                let until = Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60)
+                await GoogleTokenBox.shared.store(token: access, until: until)
             }
+            setExpired(false)
             let me = try? await Self.get("https://www.googleapis.com/oauth2/v3/userinfo")
             account = me?["email"]?.string ?? "已登录"
             UserDefaults.standard.set(Self.scopesVersion, forKey: "google.scopes")
@@ -128,7 +140,8 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             Task { _ = try? await URLSession.shared.data(for: request) }
         }
         Vault.remove("google.refresh")
-        Self.cache = nil
+        Task { await GoogleTokenBox.shared.invalidate() }
+        setExpired(false)
         account = nil
         UserDefaults.standard.removeObject(forKey: "google.account")
     }
@@ -152,15 +165,13 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
 
     // MARK: Talking to Google
 
-    nonisolated(unsafe) private static var cache: (token: String, until: Date)?
-
     private static func random(_ count: Int) -> String {
         var bytes = [UInt8](repeating: 0, count: count)
         _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         return Data(bytes).base64URL
     }
 
-    nonisolated private static func token(_ form: [String: String]) async throws -> JSONValue {
+    nonisolated fileprivate static func token(_ form: [String: String]) async throws -> JSONValue {
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -172,6 +183,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let said = body["error_description"]?.string ?? body["error"]?.string ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
             if body["error"]?.string == "invalid_grant" {
+                await MainActor.run { Google.shared.setExpired(true) }
                 throw ProviderError("谷歌的登录过期了（测试模式的应用 7 天就过期），去「连接器 → 谷歌」重新登录。")
             }
             throw ProviderError("谷歌登录出错：\(said)")
@@ -180,28 +192,69 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     }
 
     /// A fresh access token, renewed with the long-lived one when it has run out.
-    nonisolated static func access() async throws -> String {
-        if let cache, cache.until > Date() { return cache.token }
-        guard let refresh = Vault.load(String.self, key: "google.refresh") else { throw ProviderError(Words.t("还没登录谷歌：在「调弦 → 连接器」里登录。")) }
-        let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
-        let body = try await token(["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"])
-        guard let access = body["access_token"]?.string else { throw ProviderError("谷歌没给访问令牌。") }
-        cache = (access, Date().addingTimeInterval((body["expires_in"]?.number ?? 3000) - 60))
-        return access
+    nonisolated static func access(stale: Bool = false) async throws -> String {
+        try await GoogleTokenBox.shared.access(forceRefresh: stale)
     }
 
-    nonisolated static func call(_ url: String, method: String = "GET", body: JSONValue? = nil) async throws -> Data {
+    nonisolated static func call(_ url: String, method: String = "GET", body: JSONValue? = nil, maxBytes: Int? = nil) async throws -> Data {
         guard let target = URL(string: url) else { throw ProviderError("地址不对。") }
+        do {
+            return try await performCall(target, method: method, body: body, bearer: try await access(), maxBytes: maxBytes)
+        } catch let retry as UnauthorizedRetry {
+            _ = retry
+            return try await performCall(target, method: method, body: body, bearer: try await access(stale: true), maxBytes: maxBytes)
+        }
+    }
+
+    private struct UnauthorizedRetry: Error {}
+
+    nonisolated private static func performCall(_ target: URL, method: String, body: JSONValue?, bearer: String, maxBytes: Int?) async throws -> Data {
         var request = URLRequest(url: target, timeoutInterval: 60)
         request.httpMethod = method
-        request.setValue("Bearer \(try await access())", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(body.compact.utf8)
         }
+        if let maxBytes {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            if status == 401 {
+                await GoogleTokenBox.shared.invalidate()
+                throw UnauthorizedRetry()
+            }
+            if !(200..<300).contains(status) {
+                var errData = Data()
+                for try await byte in bytes {
+                    errData.append(byte)
+                    if errData.count >= 4096 { break }
+                }
+                let said = JSONValue.parse(String(decoding: errData, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: errData.prefix(200), as: UTF8.self)
+                if status == 403, said.contains("has not been used") || said.contains("disabled") {
+                    throw ProviderError("这个接口还没在你的 Google Cloud 项目里启用：\(said)")
+                }
+                throw ProviderError("谷歌回了 \(status)：\(said)")
+            }
+            if let expected = http?.expectedContentLength, expected > Int64(maxBytes) {
+                throw ProviderError("文件有 \(Int(expected / 1_000_000)) MB，超过 \(maxBytes / 1_000_000) MB 上限，没有下载。")
+            }
+            var out = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                out.append(byte)
+                if out.count > maxBytes {
+                    throw ProviderError("文件内容超过 \(maxBytes / 1_000_000) MB 上限，已停止下载。")
+                }
+            }
+            return out
+        }
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 401 { cache = nil }
+        if status == 401 {
+            await GoogleTokenBox.shared.invalidate()
+            throw UnauthorizedRetry()
+        }
         guard (200..<300).contains(status) else {
             let said = JSONValue.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: data.prefix(200), as: UTF8.self)
             if status == 403, said.contains("has not been used") || said.contains("disabled") {
@@ -215,6 +268,49 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     nonisolated static func get(_ url: String) async throws -> JSONValue {
         let data = try await call(url)
         return JSONValue.parse(String(decoding: data, as: UTF8.self)) ?? .null
+    }
+}
+
+private actor GoogleTokenBox {
+    static let shared = GoogleTokenBox()
+    private var cached: (token: String, until: Date)?
+    private var refreshing: Task<String, Error>?
+
+    func store(token: String, until: Date) {
+        cached = (token, until)
+    }
+
+    func invalidate() {
+        cached = nil
+    }
+
+    func access(forceRefresh: Bool = false) async throws -> String {
+        if !forceRefresh, let cached, cached.until > Date() {
+            return cached.token
+        }
+        if forceRefresh {
+            cached = nil
+        }
+        if let inFlight = refreshing {
+            return try await inFlight.value
+        }
+        let task = Task<String, Error> {
+            guard let refresh = Vault.load(String.self, key: "google.refresh") else {
+                throw ProviderError(Words.t("还没登录谷歌：在「调弦 → 连接器」里登录。"))
+            }
+            let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
+            let body = try await Google.token(["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"])
+            guard let access = body["access_token"]?.string else {
+                throw ProviderError("谷歌没给访问令牌。")
+            }
+            let until = Date().addingTimeInterval((body["expires_in"]?.number ?? 3000) - 60)
+            await self.store(token: access, until: until)
+            await MainActor.run { Google.shared.setExpired(false) }
+            return access
+        }
+        refreshing = task
+        defer { refreshing = nil }
+        return try await task.value
     }
 }
 

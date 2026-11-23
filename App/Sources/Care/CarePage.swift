@@ -388,6 +388,8 @@ struct CarePage: View {
                 await stopCleanBeforeRestore()
                 // Never with the model keys: a file on a drive is out of the phone's keychain (the review, #4).
                 let (url, summary) = try await StorageMaintenance.runThrowing { try Backup.make(withKeys: false, endpoints: ids) }
+                defer { try? FileManager.default.removeItem(at: url) }
+                if made == url { made = nil }
                 try await WebDAV.upload(url)
                 notice = "备份到网盘了：\(url.lastPathComponent)，\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。"
             } catch {
@@ -424,6 +426,7 @@ struct CarePage: View {
             }
             do {
                 let file = try await WebDAV.download(name)
+                defer { try? FileManager.default.removeItem(at: file) }
                 await stopCleanBeforeRestore()
                 team.beginBackupRestore()
                 armedRestoreGate = true
