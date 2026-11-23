@@ -477,10 +477,12 @@ final class Hills: ObservableObject {
         let saved = Vault.load(String.self, key: "mcp.\(id)")
         // Google's own MCP services: the token from the Google sign-in in 连接器.
         if saved == Hills.googleToken {
+            let first = try await Google.accessLease()
             do {
-                return try await work(try await Google.access())
+                return try await work(first.token)
             } catch MCPClient.MCPError.http(let code, _) where code == 401 {
-                return try await work(try await Google.access(stale: true))
+                let refreshed = try await Google.accessLease(stale: true, expectedEpoch: first.epoch)
+                return try await work(refreshed.token)
             }
         }
         return try await work(saved)

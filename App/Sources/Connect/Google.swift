@@ -1,5 +1,6 @@
 import AgentKit
 import AuthenticationServices
+import Craft
 import CryptoKit
 import Foundation
 import UIKit
@@ -110,12 +111,16 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             ])
             guard let refresh = tokens["refresh_token"]?.string else { problem = "谷歌没给长期令牌，重新登录一次试试。"; return }
             Vault.save(refresh, as: "google.refresh")
-            if let access = tokens["access_token"]?.string {
-                let until = Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60)
-                await GoogleTokenBox.shared.store(token: access, until: until)
-            }
+            // Synchronously bump the session epoch right after replacing the refresh token so any
+            // older in-flight refresh cannot commit back or overwrite the new account's cache.
+            let sessionEpoch = GoogleTokenBox.shared.invalidateSessionSynchronously()
+            let access = tokens["access_token"]?.string
+            let until = access.map { _ in Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60) }
+            await GoogleTokenBox.shared.store(token: access, expiresAt: until, epoch: sessionEpoch)
+            guard GoogleTokenBox.shared.currentEpoch() == sessionEpoch else { return }
             setExpired(false)
             let me = try? await Self.get("https://www.googleapis.com/oauth2/v3/userinfo")
+            guard GoogleTokenBox.shared.currentEpoch() == sessionEpoch else { return }
             account = me?["email"]?.string ?? "已登录"
             UserDefaults.standard.set(Self.scopesVersion, forKey: "google.scopes")
             UserDefaults.standard.set(account, forKey: "google.account")
@@ -128,7 +133,13 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     }
 
     func signOut() {
-        if let refresh = Vault.load(String.self, key: "google.refresh"),
+        let oldRefresh = Vault.load(String.self, key: "google.refresh")
+        Vault.remove("google.refresh")
+        GoogleTokenBox.shared.invalidateSessionSynchronously()
+        setExpired(false)
+        account = nil
+        UserDefaults.standard.removeObject(forKey: "google.account")
+        if let refresh = oldRefresh,
            let url = URL(string: "https://oauth2.googleapis.com/revoke") {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -139,11 +150,6 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             request.httpBody = Data("token=\(encoded)".utf8)
             Task { _ = try? await URLSession.shared.data(for: request) }
         }
-        Vault.remove("google.refresh")
-        Task { await GoogleTokenBox.shared.invalidate() }
-        setExpired(false)
-        account = nil
-        UserDefaults.standard.removeObject(forKey: "google.account")
     }
 
     private func authenticate(_ url: URL, scheme: String) async throws -> URL {
@@ -171,7 +177,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         return Data(bytes).base64URL
     }
 
-    nonisolated fileprivate static func token(_ form: [String: String]) async throws -> JSONValue {
+    nonisolated fileprivate static func token(_ form: [String: String], sessionEpoch: UInt64? = nil) async throws -> JSONValue {
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -183,7 +189,13 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let said = body["error_description"]?.string ?? body["error"]?.string ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
             if body["error"]?.string == "invalid_grant" {
-                await MainActor.run { Google.shared.setExpired(true) }
+                if let sessionEpoch {
+                    await MainActor.run {
+                        if GoogleTokenBox.shared.currentEpoch() == sessionEpoch {
+                            Google.shared.setExpired(true)
+                        }
+                    }
+                }
                 throw ProviderError("谷歌的登录过期了（测试模式的应用 7 天就过期），去「连接器 → 谷歌」重新登录。")
             }
             throw ProviderError("谷歌登录出错：\(said)")
@@ -191,31 +203,73 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         return body
     }
 
+    private nonisolated static let sessionChangedMessage = "谷歌账号已退出或切换，请重试。"
+
     /// A fresh access token, renewed with the long-lived one when it has run out.
     nonisolated static func access(stale: Bool = false) async throws -> String {
-        try await GoogleTokenBox.shared.access(forceRefresh: stale)
+        try await accessLease(stale: stale).token
+    }
+
+    /// A fresh access token paired with the Google login epoch it belongs to.
+    nonisolated static func accessLease(stale: Bool = false, expectedEpoch: UInt64? = nil) async throws -> SessionTokenGate.Lease {
+        do {
+            return try await GoogleTokenBox.shared.access(
+                forceRefresh: stale,
+                expectedEpoch: expectedEpoch,
+                refresh: { epoch in
+                    guard let refresh = Vault.load(String.self, key: "google.refresh") else {
+                        throw ProviderError(Words.t("还没登录谷歌：在「调弦 → 连接器」里登录。"))
+                    }
+                    guard GoogleTokenBox.shared.currentEpoch() == epoch else {
+                        throw SessionTokenGate.GateError.sessionChanged
+                    }
+                    let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
+                    let body = try await Google.token(
+                        ["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"],
+                        sessionEpoch: epoch
+                    )
+                    guard let access = body["access_token"]?.string else {
+                        throw ProviderError("谷歌没给访问令牌。")
+                    }
+                    let until = Date().addingTimeInterval((body["expires_in"]?.number ?? 3000) - 60)
+                    return SessionTokenGate.RefreshOutput(token: access, expiresAt: until)
+                },
+                onCommitted: { epoch in
+                    await MainActor.run {
+                        if GoogleTokenBox.shared.currentEpoch() == epoch {
+                            Google.shared.setExpired(false)
+                        }
+                    }
+                }
+            )
+        } catch SessionTokenGate.GateError.sessionChanged {
+            throw ProviderError(sessionChangedMessage)
+        }
     }
 
     nonisolated static func call(_ url: String, method: String = "GET", body: JSONValue? = nil, maxBytes: Int? = nil) async throws -> Data {
         guard let target = URL(string: url) else { throw ProviderError("地址不对。") }
+        let first = try await accessLease()
         do {
-            return try await performCall(target, method: method, body: body, bearer: try await access(), maxBytes: maxBytes)
+            return try await performCall(target, method: method, body: body, lease: first, maxBytes: maxBytes)
         } catch let retry as UnauthorizedRetry {
-            _ = retry
             do {
-                return try await performCall(target, method: method, body: body, bearer: try await access(stale: true), maxBytes: maxBytes)
+                let refreshed = try await accessLease(stale: true, expectedEpoch: retry.epoch)
+                return try await performCall(target, method: method, body: body, lease: refreshed, maxBytes: maxBytes)
             } catch is UnauthorizedRetry {
                 throw ProviderError("谷歌拒绝了访问，请在连接器里重新登录 Google。")
             }
         }
     }
 
-    private struct UnauthorizedRetry: Error {}
+    private struct UnauthorizedRetry: Error {
+        let epoch: UInt64
+    }
 
-    nonisolated private static func performCall(_ target: URL, method: String, body: JSONValue?, bearer: String, maxBytes: Int?) async throws -> Data {
+    nonisolated private static func performCall(_ target: URL, method: String, body: JSONValue?, lease: SessionTokenGate.Lease, maxBytes: Int?) async throws -> Data {
         var request = URLRequest(url: target, timeoutInterval: 60)
         request.httpMethod = method
-        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(lease.token)", forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(body.compact.utf8)
@@ -225,8 +279,8 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 0
             if status == 401 {
-                await GoogleTokenBox.shared.invalidate()
-                throw UnauthorizedRetry()
+                await GoogleTokenBox.shared.invalidateCached(token: lease.token, epoch: lease.epoch)
+                throw UnauthorizedRetry(epoch: lease.epoch)
             }
             if !(200..<300).contains(status) {
                 var errData = Data()
@@ -256,8 +310,8 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 {
-            await GoogleTokenBox.shared.invalidate()
-            throw UnauthorizedRetry()
+            await GoogleTokenBox.shared.invalidateCached(token: lease.token, epoch: lease.epoch)
+            throw UnauthorizedRetry(epoch: lease.epoch)
         }
         guard (200..<300).contains(status) else {
             let said = JSONValue.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: data.prefix(200), as: UTF8.self)
@@ -275,47 +329,8 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     }
 }
 
-private actor GoogleTokenBox {
-    static let shared = GoogleTokenBox()
-    private var cached: (token: String, until: Date)?
-    private var refreshing: Task<String, Error>?
-
-    func store(token: String, until: Date) {
-        cached = (token, until)
-    }
-
-    func invalidate() {
-        cached = nil
-    }
-
-    func access(forceRefresh: Bool = false) async throws -> String {
-        if !forceRefresh, let cached, cached.until > Date() {
-            return cached.token
-        }
-        if forceRefresh {
-            cached = nil
-        }
-        if let inFlight = refreshing {
-            return try await inFlight.value
-        }
-        let task = Task<String, Error> {
-            guard let refresh = Vault.load(String.self, key: "google.refresh") else {
-                throw ProviderError(Words.t("还没登录谷歌：在「调弦 → 连接器」里登录。"))
-            }
-            let client = UserDefaults.standard.string(forKey: "google.client") ?? ""
-            let body = try await Google.token(["refresh_token": refresh, "client_id": client, "grant_type": "refresh_token"])
-            guard let access = body["access_token"]?.string else {
-                throw ProviderError("谷歌没给访问令牌。")
-            }
-            let until = Date().addingTimeInterval((body["expires_in"]?.number ?? 3000) - 60)
-            await self.store(token: access, until: until)
-            await MainActor.run { Google.shared.setExpired(false) }
-            return access
-        }
-        refreshing = task
-        defer { refreshing = nil }
-        return try await task.value
-    }
+private enum GoogleTokenBox {
+    static let shared = SessionTokenGate()
 }
 
 extension Data {

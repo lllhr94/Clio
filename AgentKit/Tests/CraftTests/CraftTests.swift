@@ -1106,3 +1106,219 @@ final class A13CraftRegressionTests: XCTestCase {
         XCTAssertEqual(reassembled, payload)
     }
 }
+
+final class SessionTokenGateTests: XCTestCase {
+    private actor DelayedTrigger {
+        private var enteredContinuation: CheckedContinuation<Void, Never>?
+        private var hasEntered = false
+        private var releaseContinuation: CheckedContinuation<Void, Never>?
+        private var released = false
+
+        func enterAndWait() async {
+            hasEntered = true
+            enteredContinuation?.resume()
+            enteredContinuation = nil
+            if released { return }
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+        }
+
+        func waitUntilEntered() async {
+            if hasEntered { return }
+            await withCheckedContinuation { continuation in
+                enteredContinuation = continuation
+            }
+        }
+
+        func release() {
+            released = true
+            releaseContinuation?.resume()
+            releaseContinuation = nil
+        }
+    }
+
+    private final class CounterBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+        func load() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    func testSignOutDuringDelayedRefreshRejectsStaleTokenAndSkipsCommit() async throws {
+        let gate = SessionTokenGate()
+        let trigger = DelayedTrigger()
+        let commitCalls = CounterBox()
+        let refreshCalls = CounterBox()
+        let future = Date().addingTimeInterval(3600)
+
+        let inFlightCaller = Task<SessionTokenGate.Lease, Error> {
+            try await gate.access(
+                refresh: { _ in
+                    _ = refreshCalls.increment()
+                    await trigger.enterAndWait()
+                    // Intentionally ignore task cancellation to simulate a network response arriving
+                    // right after synchronous signOut() bumps the session epoch.
+                    return SessionTokenGate.RefreshOutput(token: "old-account-token", expiresAt: future)
+                },
+                onCommitted: { _ in
+                    _ = commitCalls.increment()
+                }
+            )
+        }
+
+        await trigger.waitUntilEntered()
+        // Exact synchronous invalidation path used by Google.signOut().
+        let newEpoch = gate.invalidateSessionSynchronously()
+        XCTAssertGreaterThan(newEpoch, 0)
+
+        await trigger.release()
+
+        do {
+            let lease = try await inFlightCaller.value
+            XCTFail("Expected stale refresh to fail after sign-out, got \(lease.token)")
+        } catch let error as SessionTokenGate.GateError {
+            XCTAssertEqual(error, .sessionChanged)
+        }
+
+        XCTAssertEqual(commitCalls.load(), 0, "Stale refresh must not trigger onCommitted after sign-out")
+
+        // Next access must NOT see old-account-token in cache.
+        let fresh = try await gate.access(
+            refresh: { _ in
+                _ = refreshCalls.increment()
+                return SessionTokenGate.RefreshOutput(token: "fresh-after-signout", expiresAt: future)
+            }
+        )
+        XCTAssertEqual(fresh.token, "fresh-after-signout")
+        XCTAssertEqual(fresh.epoch, newEpoch)
+        XCTAssertEqual(refreshCalls.load(), 2)
+    }
+
+    func testAccountSwitchDuringDelayedRefreshPreservesNewAccountToken() async throws {
+        let gate = SessionTokenGate()
+        let trigger = DelayedTrigger()
+        let oldCommitted = CounterBox()
+        let future = Date().addingTimeInterval(3600)
+
+        let oldCaller = Task<SessionTokenGate.Lease, Error> {
+            try await gate.access(
+                refresh: { _ in
+                    await trigger.enterAndWait()
+                    return SessionTokenGate.RefreshOutput(token: "token-account-A", expiresAt: future)
+                },
+                onCommitted: { _ in
+                    _ = oldCommitted.increment()
+                }
+            )
+        }
+
+        await trigger.waitUntilEntered()
+
+        // Switch to Account B while Account A's refresh is still in flight.
+        let epochB = gate.invalidateSessionSynchronously()
+        await gate.store(token: "token-account-B", expiresAt: future, epoch: epochB)
+
+        // Now Account A's old network refresh finally returns.
+        await trigger.release()
+
+        do {
+            let lease = try await oldCaller.value
+            XCTFail("Old account caller should not receive stale token, got \(lease.token)")
+        } catch let error as SessionTokenGate.GateError {
+            XCTAssertEqual(error, .sessionChanged)
+        }
+
+        XCTAssertEqual(oldCommitted.load(), 0, "Old account refresh must not clear expiry or commit")
+
+        // Subsequent callers must get Account B's token from cache without invoking refresh.
+        let unexpectedRefresh = CounterBox()
+        let active = try await gate.access(
+            refresh: { _ in
+                _ = unexpectedRefresh.increment()
+                return SessionTokenGate.RefreshOutput(token: "unexpected", expiresAt: future)
+            }
+        )
+        XCTAssertEqual(active.token, "token-account-B")
+        XCTAssertEqual(active.epoch, epochB)
+        XCTAssertEqual(unexpectedRefresh.load(), 0)
+    }
+
+    func testSharedWaitersAnd401RetryRespectSessionEpoch() async throws {
+        let gate = SessionTokenGate()
+        let trigger = DelayedTrigger()
+        let refreshCalls = CounterBox()
+        let future = Date().addingTimeInterval(3600)
+
+        // Two callers join the same single-flight refresh, then session resets.
+        let caller1 = Task<SessionTokenGate.Lease, Error> {
+            try await gate.access(refresh: { _ in
+                _ = refreshCalls.increment()
+                await trigger.enterAndWait()
+                return SessionTokenGate.RefreshOutput(token: "stale-shared", expiresAt: future)
+            })
+        }
+        await trigger.waitUntilEntered()
+        let caller2 = Task<SessionTokenGate.Lease, Error> {
+            try await gate.access(refresh: { _ in
+                _ = refreshCalls.increment()
+                return SessionTokenGate.RefreshOutput(token: "should-not-run", expiresAt: future)
+            })
+        }
+        // Let caller2 join inFlight before resetting.
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(refreshCalls.load(), 1)
+
+        let epochA = await gate.replaceSession(token: "token-A", expiresAt: future)
+        await trigger.release()
+
+        for caller in [caller1, caller2] {
+            do {
+                _ = try await caller.value
+                XCTFail("Waiter from old session must fail with sessionChanged")
+            } catch let error as SessionTokenGate.GateError {
+                XCTAssertEqual(error, .sessionChanged)
+            }
+        }
+
+        // Now Account A got a lease, then user switches to Account B before Account A retries 401.
+        let leaseA = try await gate.access(refresh: { _ in
+            XCTFail("Should hit cache for Account A")
+            return SessionTokenGate.RefreshOutput(token: "bad", expiresAt: future)
+        })
+        XCTAssertEqual(leaseA.token, "token-A")
+        XCTAssertEqual(leaseA.epoch, epochA)
+
+        let epochB = await gate.replaceSession(token: "token-B", expiresAt: future)
+        XCTAssertNotEqual(epochA, epochB)
+
+        // Account A's 401 cache invalidation must NOT wipe Account B's cached token.
+        await gate.invalidateCached(token: leaseA.token, epoch: leaseA.epoch)
+        let stillB = try await gate.access(refresh: { _ in
+            XCTFail("Account B cache must remain intact after Account A's 401")
+            return SessionTokenGate.RefreshOutput(token: "bad", expiresAt: future)
+        })
+        XCTAssertEqual(stillB.token, "token-B")
+
+        // Account A's 401 forced retry with expectedEpoch must refuse to run against Account B.
+        do {
+            _ = try await gate.access(forceRefresh: true, expectedEpoch: leaseA.epoch, refresh: { _ in
+                XCTFail("Retry for old epoch must not invoke refresh")
+                return SessionTokenGate.RefreshOutput(token: "bad", expiresAt: future)
+            })
+            XCTFail("Expected sessionChanged on cross-account 401 retry")
+        } catch let error as SessionTokenGate.GateError {
+            XCTAssertEqual(error, .sessionChanged)
+        }
+    }
+}
+
