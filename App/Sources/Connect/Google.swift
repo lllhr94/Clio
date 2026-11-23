@@ -64,10 +64,12 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
     // MARK: Signing in
 
     func signIn() async {
+        guard !busy else { return }
         guard let scheme else {
             problem = "Client ID 不对：应该以 .apps.googleusercontent.com 结尾，而且要是「iOS」类型的。"
             return
         }
+        let attempt = GoogleTokenBox.shared.beginSignIn()
         busy = true
         problem = nil
         defer { busy = false }
@@ -95,6 +97,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         }
         do {
             let back = try await authenticate(authURL, scheme: scheme)
+            guard GoogleTokenBox.shared.isSignInActive(attempt) else { return }
             let items = URLComponents(url: back, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let said = items.first(where: { $0.name == "error" })?.value {
                 problem = said == "access_denied" ? "你在谷歌那边没同意。" : "谷歌没给登录码（\(said)）。"
@@ -109,11 +112,24 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
                 "code": code, "client_id": clientId, "redirect_uri": redirect,
                 "grant_type": "authorization_code", "code_verifier": verifier,
             ])
-            guard let refresh = tokens["refresh_token"]?.string else { problem = "谷歌没给长期令牌，重新登录一次试试。"; return }
+            guard let refresh = tokens["refresh_token"]?.string else {
+                guard GoogleTokenBox.shared.isSignInActive(attempt) else { return }
+                problem = "谷歌没给长期令牌，重新登录一次试试。"
+                return
+            }
+            // Reject late token exchange if the user signed out while waiting for Google's response.
+            // Both `signIn()` and `signOut()` run on MainActor with no suspension between check,
+            // Vault write, and atomic epoch commit.
+            guard GoogleTokenBox.shared.isSignInActive(attempt) else {
+                Self.revokeToken(refresh)
+                return
+            }
             Vault.save(refresh, as: "google.refresh")
-            // Synchronously bump the session epoch right after replacing the refresh token so any
-            // older in-flight refresh cannot commit back or overwrite the new account's cache.
-            let sessionEpoch = GoogleTokenBox.shared.invalidateSessionSynchronously()
+            guard let sessionEpoch = GoogleTokenBox.shared.commitSignInSynchronously(attempt) else {
+                Vault.remove("google.refresh")
+                Self.revokeToken(refresh)
+                return
+            }
             let access = tokens["access_token"]?.string
             let until = access.map { _ in Date().addingTimeInterval((tokens["expires_in"]?.number ?? 3000) - 60) }
             await GoogleTokenBox.shared.store(token: access, expiresAt: until, epoch: sessionEpoch)
@@ -128,6 +144,7 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             return
         } catch {
+            guard GoogleTokenBox.shared.isSignInActive(attempt) else { return }
             problem = error.localizedDescription
         }
     }
@@ -139,17 +156,21 @@ final class Google: NSObject, ObservableObject, ASWebAuthenticationPresentationC
         setExpired(false)
         account = nil
         UserDefaults.standard.removeObject(forKey: "google.account")
-        if let refresh = oldRefresh,
-           let url = URL(string: "https://oauth2.googleapis.com/revoke") {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            var allowed = CharacterSet.alphanumerics
-            allowed.insert(charactersIn: "-._~")
-            let encoded = refresh.addingPercentEncoding(withAllowedCharacters: allowed) ?? refresh
-            request.httpBody = Data("token=\(encoded)".utf8)
-            Task { _ = try? await URLSession.shared.data(for: request) }
+        if let refresh = oldRefresh {
+            Self.revokeToken(refresh)
         }
+    }
+
+    private nonisolated static func revokeToken(_ refresh: String) {
+        guard let url = URL(string: "https://oauth2.googleapis.com/revoke") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        let encoded = refresh.addingPercentEncoding(withAllowedCharacters: allowed) ?? refresh
+        request.httpBody = Data("token=\(encoded)".utf8)
+        Task { _ = try? await URLSession.shared.data(for: request) }
     }
 
     private func authenticate(_ url: URL, scheme: String) async throws -> URL {

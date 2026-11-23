@@ -1320,5 +1320,106 @@ final class SessionTokenGateTests: XCTestCase {
             XCTAssertEqual(error, .sessionChanged)
         }
     }
+
+    func testSignOutDuringDelayedSignInTokenExchangeDoesNotRestoreCredentialsOrAccount() async throws {
+        final class FakeSessionState: @unchecked Sendable {
+            private let lock = NSLock()
+            var savedRefresh: String? = "old-refresh"
+            var account: String? = "old@example.com"
+            var revoked: [String] = []
+
+            func signOut(using gate: SessionTokenGate) {
+                lock.lock()
+                let old = savedRefresh
+                savedRefresh = nil
+                account = nil
+                if let old { revoked.append(old) }
+                lock.unlock()
+                gate.invalidateSessionSynchronously()
+            }
+
+            func persistRefresh(_ value: String) {
+                lock.lock()
+                savedRefresh = value
+                lock.unlock()
+            }
+
+            func clearRefresh() {
+                lock.lock()
+                savedRefresh = nil
+                lock.unlock()
+            }
+
+            func setAccount(_ email: String) {
+                lock.lock()
+                account = email
+                lock.unlock()
+            }
+
+            func recordRevoked(_ value: String) {
+                lock.lock()
+                revoked.append(value)
+                lock.unlock()
+            }
+
+            func snapshot() -> (refresh: String?, account: String?, revoked: [String]) {
+                lock.lock()
+                defer { lock.unlock() }
+                return (savedRefresh, account, revoked)
+            }
+        }
+
+        let gate = SessionTokenGate()
+        let state = FakeSessionState()
+        let tokenExchange = DelayedTrigger()
+        let future = Date().addingTimeInterval(3600)
+
+        // Start re-login while already signed in as old@example.com.
+        let signInTask = Task {
+            let attempt = gate.beginSignIn()
+            // Simulated delayed OAuth code -> token exchange.
+            await tokenExchange.enterAndWait()
+            let newRefresh = "late-relogin-refresh"
+            let newAccess = "late-relogin-access"
+
+            guard gate.isSignInActive(attempt) else {
+                state.recordRevoked(newRefresh)
+                return
+            }
+            state.persistRefresh(newRefresh)
+            guard let sessionEpoch = gate.commitSignInSynchronously(attempt) else {
+                state.clearRefresh()
+                state.recordRevoked(newRefresh)
+                return
+            }
+            await gate.store(token: newAccess, expiresAt: future, epoch: sessionEpoch)
+            guard gate.currentEpoch() == sessionEpoch else { return }
+            state.setAccount("relogged@example.com")
+        }
+
+        await tokenExchange.waitUntilEntered()
+
+        // User taps Sign Out while waiting for Google's token exchange response.
+        state.signOut(using: gate)
+
+        // Now the late token exchange response arrives.
+        await tokenExchange.release()
+        await signInTask.value
+
+        let snap = state.snapshot()
+        XCTAssertNil(snap.refresh, "Late sign-in response must not restore refresh token after sign-out")
+        XCTAssertNil(snap.account, "Late sign-in response must not restore account after sign-out")
+        XCTAssertEqual(snap.revoked, ["old-refresh", "late-relogin-refresh"])
+
+        // Token cache must not serve the late access token.
+        let refreshInvoked = CounterBox()
+        let tokenAfterSignOut = try await gate.access(refresh: { _ in
+            _ = refreshInvoked.increment()
+            return SessionTokenGate.RefreshOutput(token: "explicit-new-login", expiresAt: future)
+        })
+        XCTAssertEqual(tokenAfterSignOut.token, "explicit-new-login")
+        XCTAssertEqual(refreshInvoked.load(), 1)
+    }
 }
+
 

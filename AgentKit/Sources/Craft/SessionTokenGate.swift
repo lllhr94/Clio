@@ -25,6 +25,14 @@ public actor SessionTokenGate {
         }
     }
 
+    public struct SignInAttempt: Sendable, Equatable {
+        public let baseEpoch: UInt64
+
+        public init(baseEpoch: UInt64) {
+            self.baseEpoch = baseEpoch
+        }
+    }
+
     public enum GateError: Error, Equatable, Sendable {
         case sessionChanged
     }
@@ -58,6 +66,14 @@ public actor SessionTokenGate {
             value &+= 1
             return value
         }
+
+        func compareAndBump(expected: UInt64) -> UInt64? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard value == expected else { return nil }
+            value &+= 1
+            return value
+        }
     }
 
     private let epochCounter = AtomicEpoch()
@@ -69,6 +85,28 @@ public actor SessionTokenGate {
     /// Current session epoch. Safe to read from any context.
     public nonisolated func currentEpoch() -> UInt64 {
         epochCounter.load()
+    }
+
+    /// Captures the current session epoch before starting an interactive sign-in / re-login flow.
+    /// If `signOut()` bumps the epoch while OAuth authorization or token exchange is in flight,
+    /// `isSignInActive(_:)` and `commitSignInSynchronously(_:)` will reject the stale login.
+    public nonisolated func beginSignIn() -> SignInAttempt {
+        SignInAttempt(baseEpoch: epochCounter.load())
+    }
+
+    /// Returns true while no sign-out or competing sign-in has bumped the epoch since `beginSignIn()`.
+    public nonisolated func isSignInActive(_ attempt: SignInAttempt) -> Bool {
+        epochCounter.load() == attempt.baseEpoch
+    }
+
+    /// Atomically verifies that `attempt` is still active and advances the session epoch to
+    /// supersede any older refresh tasks. Returns nil if the user signed out or another login won.
+    public nonisolated func commitSignInSynchronously(_ attempt: SignInAttempt) -> UInt64? {
+        guard let next = epochCounter.compareAndBump(expected: attempt.baseEpoch) else {
+            return nil
+        }
+        Task { await self.discardState(before: next) }
+        return next
     }
 
     /// Synchronously invalidates the current session (e.g. from synchronous `signOut()`
