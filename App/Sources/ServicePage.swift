@@ -73,9 +73,12 @@ struct ServicePage: View {
         }
         // A name or address typed and left without pressing return is kept, not lost.
         .onDisappear {
-            if let endpoint, !removing, !name.isEmpty, !address.isEmpty, name != endpoint.name || address != endpoint.baseURL { save(endpoint) }
+            if let endpoint, !removing, (!name.isEmpty || !address.isEmpty),
+               name != endpoint.name || address != endpoint.baseURL || style != endpoint.style {
+                _ = save(endpoint, quiet: true)
+            }
         }
-        .confirmationDialog(Words.t("删掉 \(endpoint?.name ?? "")？用它的旅伴会改用默认模型，密钥也一起删掉。"), isPresented: $removing, titleVisibility: .visible) {
+        .confirmationDialog(L.format("servicePage.removeConfirm", endpoint?.name ?? ""), isPresented: $removing, titleVisibility: .visible) {
             Button(L.t("actions.delete"), role: .destructive) {
                 team.removeEndpoint(id)
                 dismiss()
@@ -128,7 +131,7 @@ struct ServicePage: View {
                 .buttonStyle(TapStyle())
             }
             .paperCard()
-            Text("选模型时只列这些。点一个查看能力或实测。")
+            Text(L.t("servicePage.activeModelsNote"))
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.l)
@@ -184,19 +187,19 @@ struct ServicePage: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("settings.connectionAndKey"))
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                labeled("称呼") {
-                    TextField("称呼", text: $name)
+                labeled(L.t("servicePage.nameLabel")) {
+                    TextField(L.t("servicePage.nameLabel"), text: $name)
                         .font(.system(size: Ink.Size.sub))
-                        .onSubmit { save(endpoint) }
+                        .onSubmit { _ = save(endpoint) }
                 }
                 Kit.rule(inset: 0)
-                labeled("地址") {
+                labeled(L.t("servicePage.addressLabel")) {
                     TextField("https://…", text: $address)
                         .font(Ink.mono(Ink.Size.sub))
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onSubmit { save(endpoint) }
+                        .onSubmit { _ = save(endpoint) }
                 }
                 if let service, service.addresses.count > 1 {
                     HStack(spacing: Ink.Space.s) {
@@ -204,7 +207,7 @@ struct ServicePage: View {
                             Button(option.label) {
                                 Haptics.tick(0.5)
                                 address = option.url
-                                save(endpoint)
+                                _ = save(endpoint)
                             }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(address == option.url ? Ink.accent : Ink.inkSoft)
@@ -214,12 +217,12 @@ struct ServicePage: View {
                         }
                     }
                 }
-                Text("实际请求：" + finalURL(endpoint))
+                Text(L.format("servicePage.resolvedURL", finalURL(endpoint)))
                     .font(Ink.mono(Ink.Size.small))
                     .foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
                 Kit.rule(inset: 0)
-                labeled("密钥") {
+                labeled(L.t("servicePage.keyLabel")) {
                     HStack(spacing: Ink.Space.s) {
                         SecureField(maskedKey, text: $newKey)
                             .font(Ink.mono(Ink.Size.sub))
@@ -240,7 +243,7 @@ struct ServicePage: View {
                     pill("试连", "bolt.horizontal") { probe(endpoint) }
                     pill("刷新模型列表", "arrow.clockwise") { refresh(endpoint) }
                     if let page = service?.keyPage, let url = URL(string: page) {
-                        pill("管理密钥", "arrow.up.right") { openURL(url) }
+                        pill(L.t("servicePage.manageKeys"), "arrow.up.right") { openURL(url) }
                     }
                 }
                 if let note {
@@ -286,7 +289,7 @@ struct ServicePage: View {
                             .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(Ink.ink)
                         Spacer()
-                        Text(endpoint.kind == .anthropic ? "Claude 接口" : "OpenAI 兼容接口")
+                        Text(endpoint.kind == .anthropic ? L.t("servicePage.apiAnthropic") : L.t("servicePage.apiOpenAI"))
                             .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(Ink.inkSoft)
                     }
@@ -307,7 +310,8 @@ struct ServicePage: View {
     }
 
     private func thinkingStyleRow(_ endpoint: Endpoint) -> some View {
-        HStack(alignment: .top, spacing: Ink.Space.m) {
+        let followLabel = L.format("servicePage.followServiceStyle", endpoint.thinkingStyleGuess.title)
+        return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                 Text(L.t("settings.thinkingFormat"))
                     .font(.system(size: Ink.Size.sub))
@@ -320,18 +324,18 @@ struct ServicePage: View {
             Menu {
                 Button {
                     style = nil
-                    save(endpoint)
+                    _ = save(endpoint)
                 } label: {
                     if style == nil {
-                        Label("跟着服务（\(endpoint.thinkingStyleGuess.title)）", systemImage: "checkmark")
+                        Label(followLabel, systemImage: "checkmark")
                     } else {
-                        Text("跟着服务（\(endpoint.thinkingStyleGuess.title)）")
+                        Text(followLabel)
                     }
                 }
                 ForEach(ThinkingStyle.allCases, id: \.self) { option in
                     Button {
                         style = option
-                        save(endpoint)
+                        _ = save(endpoint)
                     } label: {
                         if style == option {
                             Label(option.title, systemImage: "checkmark")
@@ -357,10 +361,10 @@ struct ServicePage: View {
     private func thinkingLevelsSummary(_ endpoint: Endpoint) -> String {
         let effective = style ?? endpoint.thinkingStyleGuess
         if effective == .none {
-            return "不发送思考参数，仅保留「默认」。"
+            return L.t("servicePage.thinkingNoneSummary")
         }
         let offered = effective.levels(thinks: true).map(\.title).joined(separator: " · ")
-        return "支持思考的模型默认提供：\(offered)"
+        return L.format("servicePage.thinkingOfferedSummary", offered)
     }
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -380,12 +384,26 @@ struct ServicePage: View {
     }
 
     private var maskedKey: String {
-        guard let keySuffix else { return "粘贴新的密钥来换掉" }
-        return "已存 ••••" + keySuffix + "，粘贴新的来换"
+        guard let keySuffix else { return L.t("servicePage.pasteNewKey") }
+        return L.format("servicePage.savedKeyPlaceholder", keySuffix)
     }
 
-    private func save(_ endpoint: Endpoint) {
-        team.editEndpoint(endpoint.id, name: name, baseURL: address, style: style)
+    @discardableResult
+    private func save(_ endpoint: Endpoint, quiet: Bool = false) -> Bool {
+        let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedKey.isEmpty {
+            team.replaceKey(endpoint.id, trimmedKey)
+            keySuffix = trimmedKey.count > 8 ? String(trimmedKey.suffix(4)) : nil
+            newKey = ""
+        }
+        let ok = team.editEndpoint(endpoint.id, name: name, baseURL: address, style: style)
+        if !ok && !quiet {
+            note = L.t("servicePage.invalidAddress")
+            Haptics.lock()
+        } else if ok, let updated = team.settings.endpoints.first(where: { $0.id == endpoint.id }) {
+            address = updated.baseURL
+        }
+        return ok
     }
 
     private func replaceKey(_ endpoint: Endpoint) {
@@ -395,7 +413,7 @@ struct ServicePage: View {
         keySuffix = key.count > 8 ? String(key.suffix(4)) : nil
         newKey = ""
         Haptics.thud()
-        note = "密钥换好了。点「试连」看看通不通。"
+        note = L.t("servicePage.keyReplacedNotice")
     }
 
     // MARK: Balance
@@ -414,7 +432,7 @@ struct ServicePage: View {
                 }
                 Spacer()
                 if let source = Balance.source(baseURL: endpoint.baseURL) {
-                    Link("去充值", destination: source.topUp)
+                    Link(L.t("servicePage.topUp"), destination: source.topUp)
                         .font(.system(size: Ink.Size.sub, weight: .medium))
                         .foregroundStyle(Ink.accent)
                 }
@@ -436,30 +454,36 @@ struct ServicePage: View {
     // MARK: Doing
 
     private func refresh(_ endpoint: Endpoint) {
+        guard save(endpoint) else { return }
+        let current = team.settings.endpoints.first { $0.id == endpoint.id } ?? endpoint
         working = true
         note = L.t("loading.fetchingModels")
         Task {
             do {
-                let count = try await team.refreshModels(endpoint.id)
-                let fresh = team.settings.endpoints.first { $0.id == endpoint.id }
+                let count = try await team.refreshModels(current.id)
+                let fresh = team.settings.endpoints.first { $0.id == current.id }
                 let waiting = (fresh?.listed ?? []).filter { !(fresh?.models ?? []).contains($0) }.count
-                note = "列表里有 \(count) 个能聊天的模型" + (waiting > 0 ? "，在用的之外还有 \(waiting) 个，点「管理 / 添模型」勾选。" : "。")
+                note = waiting > 0
+                    ? L.format("servicePage.modelsFetchedMore", count, waiting)
+                    : L.format("servicePage.modelsFetchedSummary", count)
             } catch {
-                note = Explain.model(error, service: endpoint.name).displayTitle
+                note = Explain.model(error, service: current.name).displayTitle
             }
             working = false
         }
     }
 
     private func probe(_ endpoint: Endpoint) {
-        guard let model = (team.resolve(team.settings.defaultModel).flatMap { $0.endpoint.id == endpoint.id ? $0.model : nil }) ?? endpoint.models.first else {
-            note = "还没有在用的模型：点「管理 / 添模型」勾选或手动添一个。"
+        guard save(endpoint) else { return }
+        let current = team.settings.endpoints.first { $0.id == endpoint.id } ?? endpoint
+        guard let model = (team.resolveActive(team.settings.defaultModel).flatMap { $0.endpoint.id == current.id ? $0.model : nil }) ?? current.models.first else {
+            note = L.t("servicePage.noActiveModelsForProbe")
             return
         }
         working = true
-        note = "在用 \(model) 试…"
+        note = L.format("servicePage.probingModel", model)
         Task {
-            let result = await team.probe(endpoint, model: model)
+            let result = await team.probe(current, model: model)
             note = result.note
             if result.ok { Haptics.thud() } else { Haptics.lock() }
             working = false
@@ -503,9 +527,9 @@ private struct ManageModelsSheet: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("settings.manageModels"))
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜模型名，比如 qwen、vl、flash")
+            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: L.t("servicePage.searchPrompt"))
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     if let endpoint {
                         Button {
                             Haptics.light()
@@ -520,8 +544,6 @@ private struct ManageModelsSheet: View {
                         .disabled(refreshing)
                         .accessibilityLabel(L.t("settings.refreshImageModels"))
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.done")) {
                         Haptics.light()
                         dismiss()
@@ -535,7 +557,7 @@ private struct ManageModelsSheet: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("settings.imageModelManual"))
             HStack(spacing: Ink.Space.s) {
-                TextField(service?.modelHint ?? "手动添一个模型名", text: $typed)
+                TextField(service?.modelHint ?? L.t("servicePage.manualModelHint"), text: $typed)
                     .font(Ink.mono(Ink.Size.sub))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -558,11 +580,11 @@ private struct ManageModelsSheet: View {
         let found = words.isEmpty ? all : all.filter { $0.lowercased().contains(words) }
         let shown = Array(found.prefix(100))
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle(all.isEmpty ? L.t("settings.imageModelAvailable") : "共 \(all.count) 个，已启用 \(endpoint.models.count) 个")
+            SectionTitle(all.isEmpty ? L.t("settings.imageModelAvailable") : L.format("servicePage.catalogSummary", all.count, endpoint.models.count))
             VStack(spacing: 0) {
                 if all.isEmpty {
                     VStack(alignment: .leading, spacing: Ink.Space.s) {
-                        Text("还没有拉到模型列表，可以点左上角刷新，或在上面直接手填模型名。")
+                        Text(L.t("servicePage.catalogEmpty"))
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
                         Button("刷新模型列表") { refresh(endpoint) }
@@ -573,7 +595,7 @@ private struct ManageModelsSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Ink.Space.l)
                 } else if found.isEmpty {
-                    Text("没有名字里带「\(search)」的。")
+                    Text(L.format("servicePage.catalogNoMatch", search))
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.inkFaint)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -585,7 +607,7 @@ private struct ManageModelsSheet: View {
                     }
                     if found.count > shown.count {
                         Kit.rule(inset: Ink.Space.l)
-                        Text("还有 \(found.count - shown.count) 个，搜一搜就能找到。")
+                        Text(L.format("servicePage.catalogMore", found.count - shown.count))
                             .font(Ink.footnote)
                             .foregroundStyle(Ink.inkFaint)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -638,12 +660,12 @@ private struct ManageModelsSheet: View {
         guard !model.isEmpty else { return }
         typed = ""
         guard !endpoint.models.contains(model) else {
-            note = "\(model) 已经在常用模型里了。"
+            note = L.format("servicePage.modelAlreadyActive", model)
             return
         }
         Haptics.tick(0.6)
         withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
-        note = "添上了 \(model)。回到服务页点开它，可以查看或实测能力。"
+        note = L.format("servicePage.modelAddedNotice", model)
     }
 
     private func refresh(_ endpoint: Endpoint) {
@@ -652,7 +674,7 @@ private struct ManageModelsSheet: View {
         Task {
             do {
                 let count = try await team.refreshModels(endpoint.id)
-                note = "刷新好了，列表里共有 \(count) 个模型。"
+                note = L.format("servicePage.catalogRefreshedNotice", count)
             } catch {
                 note = Explain.model(error, service: endpoint.name).displayTitle
             }
@@ -677,11 +699,11 @@ struct TraitChips: View {
 
     var body: some View {
         HStack(spacing: Ink.Space.xs) {
-            tag(traits.sees ? L.t("settings.modelVision") : "不看图", traits.sees ? "eye" : "eye.slash", on: traits.sees)
-            if traits.thinks { tag("思考", "brain", on: true) }
-            if !traits.tools { tag("不用工具", "wrench.and.screwdriver", on: false) }
+            tag(traits.sees ? L.t("settings.modelVision") : L.t("servicePage.noVisionTag"), traits.sees ? "eye" : "eye.slash", on: traits.sees)
+            if traits.thinks { tag(L.t("settings.modelReasoning"), "brain", on: true) }
+            if !traits.tools { tag(L.t("servicePage.noToolsTag"), "wrench.and.screwdriver", on: false) }
             tag(Tokens.short(traits.window).replacingOccurrences(of: ".05M", with: "M").replacingOccurrences(of: ".00M", with: "M"), "text.alignleft", on: true)
-            if corrected { Text("改过").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint) }
+            if corrected { Text(L.t("servicePage.modifiedTag")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint) }
         }
     }
 
@@ -736,6 +758,13 @@ struct ModelSheet: View {
             }
         }
         .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.known(model) }
+        .onChange(of: traits.thinks) { _, thinks in
+            if !thinks && traits.levels != nil {
+                traits.levels = nil
+            } else if thinks && traits.levels?.isEmpty == true {
+                traits.levels = nil
+            }
+        }
         .onChange(of: traits) { _, value in
             guard value != endpoint?.traits(model) else { return }
             let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
@@ -817,17 +846,18 @@ struct ModelSheet: View {
     }
 
     private var displayedThinkingLevels: String {
+        guard traits.thinks else { return L.t("settings.thinkingLevelsOnlyAuto") }
         if let rawLevels = traits.levels {
-            let parsed = rawLevels.compactMap(Thinking.init(rawValue:))
+            let parsed = rawLevels.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
             if parsed.isEmpty { return L.t("settings.thinkingLevelsOnlyAuto") }
-            return ([Thinking.auto] + parsed.filter { $0 != .auto }).map(\.title).joined(separator: " · ")
+            return ([Thinking.auto] + parsed).map(\.title).joined(separator: " · ")
         }
         guard let endpoint else { return L.t("settings.thinkingLevelsOnlyAuto") }
         let levels: [Thinking]
         if endpoint.kind == .anthropic {
-            levels = traits.thinks ? Thinking.allCases : [.auto]
+            levels = Thinking.allCases
         } else {
-            levels = endpoint.thinkingStyle.levels(thinks: traits.thinks)
+            levels = endpoint.thinkingStyle.levels(thinks: true)
         }
         return levels.map(\.title).joined(separator: " · ")
     }
@@ -910,17 +940,17 @@ struct ModelSheet: View {
     }
 
     private var capabilitySource: String {
-        if endpoint?.corrected(model) == true { return "来源：已手动修改或实测。" }
+        if endpoint?.corrected(model) == true { return L.t("servicePage.sourceModified") }
         let hasAPIWindow = endpoint?.windows?[model] != nil
         let hasCatalog = ModelsDev.lookup(model) != nil
-        if hasAPIWindow && hasCatalog { return "来源：服务接口与模型资料库。" }
-        if hasAPIWindow { return "来源：服务接口与名称识别。" }
-        if hasCatalog { return "来源：模型资料库（models.dev）。" }
-        return "来源：按模型名自动识别。"
+        if hasAPIWindow && hasCatalog { return L.t("servicePage.sourceAPIAndCatalog") }
+        if hasAPIWindow { return L.t("servicePage.sourceAPIAndName") }
+        if hasCatalog { return L.t("servicePage.sourceCatalog") }
+        return L.t("servicePage.sourceName")
     }
 
     private var footer: String {
-        capabilitySource + Words.t("不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。")
+        capabilitySource + L.t("servicePage.capabilitiesFooter")
     }
 
     /// Every ability in one go: answers at all, sees a picture, calls a tool, thinks (and can stop). What it finds
@@ -1038,7 +1068,16 @@ extension TeamModel {
                 return (0, false, true)
             }
         }
-        let tried: [Thinking] = [.off, .low, .medium, .high, .max]
+        let styleCandidates: [Thinking] = endpoint.kind == .openai
+            ? endpoint.thinkingStyle.levels(thinks: true).filter { $0 != .auto }
+            : [.off, .low, .medium, .high, .max]
+        if styleCandidates.isEmpty {
+            let autoRun = await thought(.auto)
+            if autoRun.failed { return (nil, "思考没试成：连不上。", nil) }
+            if autoRun.chars > 0 { return (true, "会思考（当前接口风格仅提供「默认」）。", nil) }
+            return (false, "没看到思考内容：已标成不会思考，思考菜单只留「默认」。", [])
+        }
+        let tried = styleCandidates
         var results: [Thinking: (chars: Int, refused: Bool, failed: Bool)] = [:]
         for level in tried { results[level] = await thought(level) }
         if results.values.allSatisfy({ $0.failed }) { return (nil, "思考没试成：连不上。", nil) }

@@ -67,7 +67,7 @@ struct FrameMeter: View {
                 .foregroundStyle(color)
             Text(String(format: "最长 %.0f ms", clock.worst))
                 .font(Ink.mono(Ink.Size.micro))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Ink.inkSoft)
         }
         .padding(.horizontal, Ink.Space.s)
         .padding(.vertical, Ink.Space.xs)

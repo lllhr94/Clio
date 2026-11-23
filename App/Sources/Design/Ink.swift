@@ -100,11 +100,30 @@ final class Theme {
     }
 
     private func refresh() {
+        let defaults = UserDefaults.standard
         let size = Self.number("look.size", 17)
         if size != self.size { self.size = size }
         let line = Self.number("look.lineHeight", Pref.defaultLineHeight)
         if line != lineHeight { lineHeight = line }
-        let scheme = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
+        let nextKey = defaults.string(forKey: "look.accent") ?? "dai"
+        if nextKey != key { key = nextKey }
+        let nextPlain = defaults.bool(forKey: "look.plainNames")
+        if nextPlain != plain { plain = nextPlain }
+        let nextHint = defaults.object(forKey: "look.toneHint") as? Bool ?? true
+        if nextHint != hint { hint = nextHint }
+        let nextOled = defaults.bool(forKey: "look.oled")
+        if nextOled != oled { oled = nextOled }
+        let nextWhite = defaults.bool(forKey: "look.white")
+        if nextWhite != white { white = nextWhite }
+        let nextBubble = defaults.string(forKey: "look.bubble") ?? ""
+        if nextBubble != bubble { bubble = nextBubble }
+        let nextFace = Pref.Face(rawValue: defaults.string(forKey: "look.face") ?? "") ?? .serif
+        if nextFace != face { face = nextFace }
+        let nextMark = Pref.Face(rawValue: defaults.string(forKey: "look.mark") ?? "") ?? .wenkai
+        if nextMark != mark { mark = nextMark }
+        let nextCode = Pref.Code(rawValue: defaults.string(forKey: "look.code") ?? "") ?? .maple
+        if nextCode != code { code = nextCode }
+        let scheme = defaults.string(forKey: "look.scheme") ?? "system"
         if scheme != self.scheme {
             self.scheme = scheme
             applyScheme()

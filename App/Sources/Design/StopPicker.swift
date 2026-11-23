@@ -54,9 +54,15 @@ struct StopRow<Value: Hashable>: View {
         .popover(isPresented: $open, attachmentAnchor: .point(UnitPoint(x: 0.92, y: 0.5))) {
             // No title inside: the row it opens from already says what it is, and the card stays short enough
             // to fit above or below the row (the system picks the side with room).
-            StopRuler(value: $value, stops: stops, name: title)
-                .fixedSize()
-                .presentationCompactAdaptation(.popover)
+            ViewThatFits(in: .vertical) {
+                StopRuler(value: $value, stops: stops, name: title)
+                    .fixedSize()
+                ScrollView(.vertical, showsIndicators: false) {
+                    StopRuler(value: $value, stops: stops, name: title)
+                }
+                .frame(maxHeight: 340)
+            }
+            .presentationCompactAdaptation(.popover)
         }
     }
 

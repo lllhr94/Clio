@@ -261,9 +261,14 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         // While a companion is at work on its own tab, a click or a redirect may not take it to the phone itself or
         // the home network (a router's page, a NAS); the user can still go there by hand.
         if actors > 0, owners[ObjectIdentifier(webView)] != nil, let target = navigationAction.request.url,
-           target.scheme?.hasPrefix("http") == true,
-           (LocalAddress.isLocal(target) || await LocalAddress.resolvesToLocal(target)) {
-            return (.cancel, preferences)
+           target.scheme?.hasPrefix("http") == true {
+            var isLocalTarget = LocalAddress.isLocal(target)
+            if !isLocalTarget {
+                isLocalTarget = await LocalAddress.resolvesToLocal(target)
+            }
+            if isLocalTarget {
+                return (.cancel, preferences)
+            }
         }
         return (navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
@@ -614,7 +619,9 @@ enum RoamTools {
                 return ApprovalAsk(title: Words.t("让旅伴去 \(site.host)"), reason: "这一轮头一次打开这个网站。同意后，这一轮里它可以在这个网站上看页面、点按钮；填字和登录照旧另外问你。")
             }) { arguments in
                 guard let site = Self.site(arguments["url"]?.string) else { return ToolOutput("网址不对：\(arguments["url"]?.string ?? "")", isError: true) }
-                if LocalAddress.isLocal(site.url) || await LocalAddress.resolvesToLocal(site.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+                var isLocalOpen = LocalAddress.isLocal(site.url)
+                if !isLocalOpen { isLocalOpen = await LocalAddress.resolvesToLocal(site.url) }
+                if isLocalOpen { return ToolOutput(LocalAddress.refusal, isError: true) }
                 sites.allow(site.host, chat: chat)
                 let url = site.url
                 let address = url.absoluteString
@@ -653,7 +660,9 @@ enum RoamTools {
                 switch action {
                 case "new":
                     if let written = arguments["url"]?.string, let site = Self.site(written) {
-                        if LocalAddress.isLocal(site.url) || await LocalAddress.resolvesToLocal(site.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+                        var isLocalNewTab = LocalAddress.isLocal(site.url)
+                        if !isLocalNewTab { isLocalNewTab = await LocalAddress.resolvesToLocal(site.url) }
+                        if isLocalNewTab { return ToolOutput(LocalAddress.refusal, isError: true) }
                         guard sites.allows(site.host, chat: chat) else { return ToolOutput("这一轮还没去过 \(site.host)：先用 browser_open 打开它（会问用户），再开新标签。", isError: true) }
                         _ = await browser.newTab(for: chat, site.url)
                     } else {
