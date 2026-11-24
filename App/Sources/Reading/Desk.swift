@@ -165,6 +165,7 @@ struct Desk: View {
     @AppStorage("desk.threadFilter") private var listFilter = 0
     @AppStorage("desk.threadColorFilter") private var labelFilter = ""
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var addingService = false
     @State private var archiveUndo: ArchiveUndo?
 
@@ -335,6 +336,15 @@ struct Desk: View {
     /// How far right the conversation sits.
     private var shift: CGFloat { max(0, (sideOpen ? sideWidth : 0) + pull) }
 
+    /// Normalized sidebar reveal progress (0 = closed, 1 = open).
+    private var sideProgress: CGFloat {
+        min(1, max(0, shift / max(1, sideWidth)))
+    }
+
+    private var sideMotion: Animation? {
+        reduceMotion ? nil : Ink.Motion.unfold
+    }
+
     private func startRename(_ key: String) {
         renameText = team.title(of: key) ?? ""
         renaming = .current(key)
@@ -343,19 +353,19 @@ struct Desk: View {
     private func openSide() {
         Haptics.light()
         DiagTrail.record("开侧边栏")
-        withAnimation(Ink.Motion.unfold) { sideOpen = true; pull = 0 }
+        withAnimation(sideMotion) { sideOpen = true; pull = 0 }
     }
 
     private func closeSide() {
         DiagTrail.record("关侧边栏")
-        withAnimation(Ink.Motion.unfold) { sideOpen = false; pull = 0 }
+        withAnimation(sideMotion) { sideOpen = false; pull = 0 }
     }
 
     /// Goes to a conversation from the sidebar.
     private func jump(_ target: Opened?) {
         closeSide()
         guard target != opened else { return }
-        withAnimation(Ink.Motion.unfold) { opened = target }
+        withAnimation(sideMotion) { opened = target }
     }
 
     private var sideThreads: [Thread] {
@@ -496,7 +506,7 @@ struct Desk: View {
     private func begin(_ target: Opened, memory: Bool) {
         guard team.turnLeaf(target.id) else { return }
         team.setAbility(.memory, on: memory, in: target.id)
-        withAnimation(Ink.Motion.unfold) { opened = target }
+        withAnimation(sideMotion) { opened = target }
     }
 
     /// A conversation put aside by 新对话: kept in its companion's 对话记录. Listed here one by one, newest first,
@@ -900,8 +910,87 @@ struct Desk: View {
         .padding(.top, Ink.Space.xxl)
     }
 
+    @ViewBuilder
+    private func sidebarLayer(progress: CGFloat) -> some View {
+        let parallaxX: CGFloat = reduceMotion ? 0 : -(1 - progress) * sideWidth * 0.14
+        let sideScale: CGFloat = reduceMotion ? 1 : (0.96 + 0.04 * progress)
+        let sideOpacity: Double = reduceMotion
+            ? (sideOpen ? 1 : Double(progress))
+            : min(1, Double(progress) * 1.3)
+        sidebar
+            .frame(width: sideWidth)
+            .scaleEffect(sideScale, anchor: .leading)
+            .offset(x: parallaxX)
+            .opacity(sideOpacity)
+            .animation(reduceMotion ? .easeOut(duration: 0.15) : nil, value: sideOpen)
+            .frame(width: sideWidth)
+            .mask { Rectangle().ignoresSafeArea() }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .allowsHitTesting(sideOpen)
+            .accessibilityHidden(!sideOpen && progress <= 0.01)
+    }
+
+    @ViewBuilder
+    private func sidebarDimVeil(progress: CGFloat) -> some View {
+        if progress > 0 || sideOpen {
+            Ink.Artwork.black
+                .opacity(0.18 * Double(progress))
+                .ignoresSafeArea()
+                .animation(reduceMotion ? .easeOut(duration: 0.15) : nil, value: sideOpen)
+                .contentShape(Rectangle())
+                .allowsHitTesting(sideOpen)
+                .onTapGesture {
+                    if sideOpen { closeSide() }
+                }
+        }
+    }
+
+    private var sideDragGesture: some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { value in
+                let across = value.translation.width
+                guard abs(value.translation.height) < max(60, abs(across)) else { return }
+                if sideOpen {
+                    pull = min(0, across)
+                } else if value.startLocation.x < 32, across > 0 {
+                    pull = min(across, sideWidth)
+                }
+            }
+            .onEnded { value in
+                guard pull != 0, sideWidth > 0 else { return }
+                let fling = value.predictedEndTranslation.width
+                let settleAnimation: Animation? = reduceMotion ? nil : Ink.Motion.settle
+                if sideOpen {
+                    if -pull > sideWidth * 0.3 || fling < -180 { closeSide() } else { withAnimation(settleAnimation) { pull = 0 } }
+                } else {
+                    if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 { openSide() } else { withAnimation(settleAnimation) { pull = 0 } }
+                }
+            }
+    }
+
+    private func openedConversationLayer(for target: Opened, progress: CGFloat) -> some View {
+        let corner: CGFloat = shift > 0 ? Ink.Radius.card : 0
+        return page(for: target)
+            .overlay {
+                sidebarDimVeil(progress: progress)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            // The shadow is cast by a plain rounded sheet of paper under the page, not by the page itself:
+            // shadowing the page made iOS trace every word and button for each frame of the slide.
+            .background {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .fill(Ink.paper)
+                    .shadow(color: Ink.Artwork.black.opacity(0.22 * Double(progress)), radius: 20, x: -4)
+            }
+            .offset(x: shift)
+            .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing)))
+            .zIndex(1)
+            .simultaneousGesture(sideDragGesture)
+    }
+
     private var deskContent: some View {
-        ZStack {
+        let progress = sideProgress
+        return ZStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if team.phase == .setup {
@@ -915,57 +1004,15 @@ struct Desk: View {
             }
             .scrollIndicators(.hidden)
             .opacity(opened == nil ? 1 : 0)
-            .scaleEffect(opened == nil ? 1 : 0.96)
+            .scaleEffect(opened == nil ? 1 : (reduceMotion ? 1 : 0.96))
 
             // The sidebar lies under the conversation and comes out as the conversation slides to the right.
             if opened != nil {
-                sidebar
-                    .frame(width: sideWidth)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(sideWidth > 0 ? min(1, shift / sideWidth * 1.3) : 0)
+                sidebarLayer(progress: progress)
             }
 
             if let opened {
-                page(for: opened)
-                    .clipShape(RoundedRectangle(cornerRadius: shift > 0 ? Ink.Radius.card : 0, style: .continuous))
-                    // The shadow is cast by a plain rounded sheet of paper under the page, not by the page itself:
-                    // shadowing the page made iOS trace every word and button for each frame of the slide.
-                    .background {
-                        RoundedRectangle(cornerRadius: shift > 0 ? Ink.Radius.card : 0, style: .continuous)
-                            .fill(Ink.paper)
-                            .shadow(color: Ink.Artwork.black.opacity(shift > 0 ? 0.22 : 0), radius: 20, x: -4)
-                    }
-                    .overlay {
-                        // Open sidebar: a tap on the conversation's edge closes it.
-                        if sideOpen {
-                            Ink.ink.opacity(0.001)
-                                .onTapGesture { closeSide() }
-                        }
-                    }
-                    .offset(x: shift)
-                    .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing)))
-                    .zIndex(1)
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 10, coordinateSpace: .global)
-                            .onChanged { value in
-                                let across = value.translation.width
-                                guard abs(value.translation.height) < max(60, abs(across)) else { return }
-                                if sideOpen {
-                                    pull = min(0, across)
-                                } else if value.startLocation.x < 32, across > 0 {
-                                    pull = min(across, sideWidth)
-                                }
-                            }
-                            .onEnded { value in
-                                guard pull != 0, sideWidth > 0 else { return }
-                                let fling = value.predictedEndTranslation.width
-                                if sideOpen {
-                                    if -pull > sideWidth * 0.3 || fling < -180 { closeSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
-                                } else {
-                                    if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 { openSide() } else { withAnimation(Ink.Motion.settle) { pull = 0 } }
-                                }
-                            }
-                    )
+                openedConversationLayer(for: opened, progress: progress)
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { deskWidth = $0 }
@@ -984,7 +1031,7 @@ struct Desk: View {
 
     var body: some View {
         deskContent
-        .animation(Ink.Motion.unfold, value: opened)
+        .animation(sideMotion, value: opened)
         .onAppear {
             sideControl.open = { openSide() }
             sideControl.fresh = { startFresh(first: $0) }
