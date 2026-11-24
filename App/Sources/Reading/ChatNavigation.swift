@@ -4,6 +4,22 @@ import UIKit
 final class ChatViewport {
     var ids: [String] = []
     var needsEndCorrection = false
+    private var jump: (source: String, at: TimeInterval)?
+
+    func recordJump(_ source: String) {
+        jump = (source, ProcessInfo.processInfo.systemUptime)
+    }
+
+    var recentJump: String? {
+        guard let jump, ProcessInfo.processInfo.systemUptime - jump.at < 1 else { return nil }
+        return jump.source
+    }
+}
+
+struct ChatScrollSample: Equatable {
+    let offset: CGFloat
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
 }
 
 struct ChatBrowserIndicator: View {

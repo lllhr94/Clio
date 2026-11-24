@@ -733,6 +733,10 @@
     "writeToday": "现在写今天的"
   },
   "permissions": {
+    "smartShort": "智能",
+    "smartTitle": "智能审批",
+    "smartNote": "常见的查询直接做",
+    "freeNote": "能力直接放行，强制审批还要点头",
     "onPhone": "手机里的事",
     "personal": "身边与身体",
     "alwaysAllowed": "落款时选了「以后都允许」的",

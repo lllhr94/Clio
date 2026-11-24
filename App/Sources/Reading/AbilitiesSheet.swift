@@ -106,6 +106,8 @@ struct AbilitiesSheet: View {
                     Text(grant.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(global == .off ? Ink.inkFaint : Ink.ink)
                     if global == .ask {
                         Text("用前会问你").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
+                    } else if global == .smart {
+                        Text(L.t("permissions.smartShort")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
                     }
                 }
                 Text(global == .off ? Words.t("在「应许」里关着") : grant.note)

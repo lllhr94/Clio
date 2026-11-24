@@ -103,6 +103,7 @@ extension ChatPage {
         findScrollTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled, finding else { return }
+            viewport.recordJump("点了搜索结果")
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
         }
     }
