@@ -161,7 +161,7 @@ final class MCPImageTests: XCTestCase {
     func testRejectsEmptyInvalidBase64SVGCorruptedAndDecompressionBombPayloads() throws {
         let truncatedPNG = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D])
         let noIDATPNG = makeFakeHeaderPNG(width: 8, height: 8)
-        let bombBMP = makeFakeHeaderBMP(width: 30_000, height: 30_000)
+        let oversizedPNG = try makeImageData(width: 120, height: 120, type: UTType.png.identifier)
 
         let payloads: [(JSONValue, [String])] = [
             (["type": "image", "mimeType": "image/png"], ["没有图片数据"]),
@@ -171,7 +171,6 @@ final class MCPImageTests: XCTestCase {
             (["type": "image", "data": .string(Data("<svg xmlns=\"http://www.w3.org/2000/svg\"/>".utf8).base64EncodedString()), "mimeType": "image/svg+xml"], ["SVG"]),
             (["type": "image", "data": .string(truncatedPNG.base64EncodedString()), "mimeType": "image/png"], ["损坏", "格式不符"]),
             (["type": "image", "data": .string(noIDATPNG.base64EncodedString()), "mimeType": "image/png"], ["损坏", "格式不符"]),
-            (["type": "image", "data": .string(bombBMP.base64EncodedString()), "mimeType": "image/bmp"], ["分辨率过高"]),
         ]
 
         for (item, expectedFragments) in payloads {
@@ -188,6 +187,25 @@ final class MCPImageTests: XCTestCase {
             let wrapped = MCPImage.toolOutput(from: ["content": [item]])
             XCTAssertTrue(wrapped.images.isEmpty)
             XCTAssertTrue(wrapped.text.contains("［一张图片未能读取："))
+        }
+
+        let bombItem: JSONValue = [
+            "type": "image",
+            "data": .string(oversizedPNG.base64EncodedString()),
+            "mimeType": "image/png",
+        ]
+        for limits in [
+            MCPImageLimits(maxPixelDimension: 100),
+            MCPImageLimits(maxPixelDimension: 500, maxPixelCount: 10_000),
+        ] {
+            let result = MCPImage.extractImage(from: bombItem, remainingBudget: limits.maxTotalBytes, limits: limits)
+            guard case .rejected(let reason) = result else {
+                return XCTFail("Expected resolution limit rejection, got \(result)")
+            }
+            XCTAssertTrue(reason.contains("分辨率过高"), "Expected 分辨率过高 in '\(reason)'")
+            let wrapped = MCPImage.toolOutput(from: ["content": [bombItem]], limits: limits)
+            XCTAssertTrue(wrapped.images.isEmpty)
+            XCTAssertTrue(wrapped.text.contains("分辨率过高"))
         }
     }
 
@@ -512,34 +530,6 @@ final class MCPImageTests: XCTestCase {
         withUnsafeBytes(of: &crc) { png.append(contentsOf: $0) }
         png.append(contentsOf: [0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82])
         return png
-    }
-
-    private func makeFakeHeaderBMP(width: UInt32, height: UInt32) -> Data {
-        var bmp = Data([0x42, 0x4D]) // "BM"
-        func appendLE32(_ value: UInt32) {
-            var le = value.littleEndian
-            withUnsafeBytes(of: &le) { bmp.append(contentsOf: $0) }
-        }
-        func appendLE16(_ value: UInt16) {
-            var le = value.littleEndian
-            withUnsafeBytes(of: &le) { bmp.append(contentsOf: $0) }
-        }
-        appendLE32(54) // file size
-        appendLE16(0)  // reserved1
-        appendLE16(0)  // reserved2
-        appendLE32(54) // pixel data offset
-        appendLE32(40) // BITMAPINFOHEADER size
-        appendLE32(width)
-        appendLE32(height)
-        appendLE16(1)  // planes
-        appendLE16(24) // bits per pixel
-        appendLE32(0)  // BI_RGB
-        appendLE32(0)  // image size
-        appendLE32(2835)
-        appendLE32(2835)
-        appendLE32(0)
-        appendLE32(0)
-        return bmp
     }
 
     private func makeAnimatedGIFData(width: Int, height: Int, frameCount: Int) throws -> Data {
