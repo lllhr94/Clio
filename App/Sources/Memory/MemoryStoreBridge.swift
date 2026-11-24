@@ -4,6 +4,26 @@ import CryptoKit
 import Foundation
 import UIKit
 
+enum MemoryCommitMutation {
+    case none
+    case remember(memory: Memory, explicitUserAction: Bool, nowMs: Double)
+    case recall(ids: Set<String>, nowMs: Double)
+    case setDeep(id: String, deep: Bool, nowMs: Double)
+    case pin(id: String, pinned: Bool, nowMs: Double)
+    case layerAndMetadata(
+        id: String,
+        layer: MemoryLayer,
+        kind: String?,
+        topic: String?,
+        confidence: Double?,
+        fallbackMemory: Memory?,
+        nowMs: Double
+    )
+    case restore(id: String, memory: Memory, nowMs: Double)
+    case softDelete(items: [(id: String, text: String?)], reason: String, nowMs: Double)
+    case edit(id: String, text: String, editedByUser: Bool, nowMs: Double)
+}
+
 /// Off-MainActor coordinator for authoritative `ClioMemory/clio-memory.db` (`MemoryStore`),
 /// canonical `Team/memory.json` bidirectional synchronization, Vault secret redaction,
 /// and private `ClioMemory/Mirrors/` Markdown mirrors.
@@ -48,7 +68,6 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private var syncSequence: UInt64 = 0
     private var botSummaries: [MemoryMirrorBot] = []
     private var canonicalLoadFailed: Bool = false
-    private var sqliteNeedsReconcile: Bool = false
 
     @MainActor private var observerCancellables: Set<AnyCancellable> = []
     @MainActor private weak var observedTeam: TeamModel?
@@ -64,6 +83,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     // MARK: - Synchronous Shadow Reads (Thread-Safe)
+
+    var isCanonicalReadOnly: Bool {
+        stateLock.withLock { canonicalLoadFailed }
+    }
 
     func pinnedIDsSnapshot() -> Set<String> {
         stateLock.lock()
@@ -196,8 +219,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             updateShadowState(
                 liveRecords: liveRecords,
                 tombstones: reconciled.tombstones,
-                appBook: appBook,
-                sqliteFailed: false
+                appBook: appBook
             )
 
             let currentBots = stateLock.withLock { botSummaries }
@@ -317,277 +339,47 @@ final class MemoryStoreBridge: @unchecked Sendable {
         }
     }
 
-    // MARK: - Explicit Mutation Hooks (MainActor callers -> synchronous shadow + async SQLite)
+    // MARK: - Read-Only Snapshot Helpers (Never mutate shadow or SQLite)
 
-    func recordRemember(
-        memory: Memory,
-        explicitUserAction: Bool,
-        layer: MemoryLayer? = nil,
-        kind: String = "fact",
-        topic: String = "",
-        sourceChat: String? = nil,
-        sourceEntryID: String? = nil,
-        nowMs: Double = Now.ms
-    ) {
-        let hash = MemorySafety.retractionHash(memory.text)
-        let resolvedLayer = layer ?? (memory.deep == true ? .deep : .surface)
-
-        stateLock.lock()
-        let existing = recordShadowByID[memory.id]
-        let finalLayer: MemoryLayer = (existing?.pinned == true && layer == nil) ? .pinned : resolvedLayer
-        let record = MemoryRecord(
-            id: memory.id,
-            text: memory.text,
-            textSHA256: hash,
-            layer: finalLayer,
-            pinned: finalLayer == .pinned,
-            kind: kind == "fact" ? (existing?.kind ?? "fact") : kind,
-            topic: topic.isEmpty ? (existing?.topic ?? "") : topic,
-            sourceChat: sourceChat ?? existing?.sourceChat,
-            sourceEntryID: sourceEntryID ?? existing?.sourceEntryID,
-            confidence: existing?.confidence ?? 1.0,
-            createdAtMs: memory.at,
-            updatedAtMs: max(existing?.updatedAtMs ?? 0, nowMs),
-            usedAtMs: memory.used ?? nowMs,
-            byBot: memory.by ?? existing?.byBot,
-            automatic: memory.automatic == true,
-            editedByUser: memory.editedByUser == true || existing?.editedByUser == true,
-            deletedAtMs: nil
-        )
-        recordShadowByID[record.id] = record
-        if record.pinned {
-            pinnedIDs.insert(record.id)
-        } else {
-            pinnedIDs.remove(record.id)
-        }
-        if let tomb = tombstoneShadow[hash] {
-            if explicitUserAction || (!record.automatic && nowMs > tomb.deletedAtMs) {
-                tombstoneShadow.removeValue(forKey: hash)
-            }
-        }
-        stateLock.unlock()
-
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            let secrets = Self.orderedSecrets(Vault.allStrings())
-            _ = try? self.store.upsert(record, explicitUserAction: explicitUserAction, secrets: secrets)
+    func hasRecordSnapshot(id: String) -> Bool {
+        stateLock.withLock {
+            recordShadowByID[id] != nil || archivedRecords.contains(where: { $0.id == id })
         }
     }
 
-    func recordRecall(ids: Set<String>, nowMs: Double = Now.ms) {
-        guard !ids.isEmpty else { return }
-        var updates: [(id: String, layer: MemoryLayer, record: MemoryRecord)] = []
-
-        stateLock.lock()
-        for id in ids {
-            guard var record = recordShadowByID[id] else { continue }
-            let nextLayer: MemoryLayer = record.pinned ? .pinned : .surface
-            record.layer = nextLayer
-            record.usedAtMs = nowMs
-            record.updatedAtMs = max(record.updatedAtMs, nowMs)
-            recordShadowByID[id] = record
-            updates.append((id, nextLayer, record))
+    func restorableMemorySnapshot(id: String) -> Memory? {
+        let secrets = Self.orderedSecrets(Vault.allStrings())
+        let archivedCopy: MemoryRecord? = stateLock.withLock {
+            archivedRecords.first(where: { $0.id == id })
         }
-        stateLock.unlock()
-
-        guard !updates.isEmpty else { return }
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            let secrets = Self.orderedSecrets(Vault.allStrings())
-            for item in updates {
-                if (try? self.store.setLayer(id: item.id, layer: item.layer, nowMs: nowMs)) == nil {
-                    _ = try? self.store.upsert(item.record, explicitUserAction: true, secrets: secrets)
-                }
-            }
+        if let archivedCopy {
+            var restored = Self.toAppMemory(archivedCopy)
+            restored.text = Self.redact(restored.text, orderedSecrets: secrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return restored.text.isEmpty ? nil : restored
         }
+        guard !Disk.frozen else { return nil }
+        let dbRecord: MemoryRecord? = queue.sync {
+            try? store.record(id: id, includeDeleted: true)
+        }
+        guard let dbRecord, dbRecord.layer == .archived || dbRecord.deletedAtMs != nil else {
+            return nil
+        }
+        var restored = Self.toAppMemory(dbRecord)
+        restored.text = Self.redact(restored.text, orderedSecrets: secrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return restored.text.isEmpty ? nil : restored
     }
 
-    func recordSetDeep(id: String, deep: Bool, nowMs: Double = Now.ms) {
-        let nextLayer: MemoryLayer = deep ? .deep : .surface
-        stateLock.lock()
-        if var record = recordShadowByID[id] {
-            record.layer = nextLayer
-            record.pinned = false
-            record.usedAtMs = nowMs
-            record.updatedAtMs = max(record.updatedAtMs, nowMs)
-            recordShadowByID[id] = record
-        }
-        pinnedIDs.remove(id)
-        stateLock.unlock()
-
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            _ = try? self.store.setLayer(id: id, layer: nextLayer, nowMs: nowMs)
-        }
-    }
-
-    func recordPin(id: String, pinned: Bool, nowMs: Double = Now.ms) {
-        let nextLayer: MemoryLayer = pinned ? .pinned : .surface
-        stateLock.lock()
-        if var record = recordShadowByID[id] {
-            record.pinned = pinned
-            record.layer = nextLayer
-            record.usedAtMs = nowMs
-            record.updatedAtMs = max(record.updatedAtMs, nowMs)
-            recordShadowByID[id] = record
-        }
-        if pinned {
-            pinnedIDs.insert(id)
-        } else {
-            pinnedIDs.remove(id)
-        }
-        stateLock.unlock()
-
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            _ = try? self.store.pin(id: id, pinned: pinned, nowMs: nowMs)
-        }
-    }
-
-    func recordLayerAndMetadata(
-        id: String,
-        layer: MemoryLayer,
-        kind: String? = nil,
-        topic: String? = nil,
-        confidence: Double? = nil,
-        nowMs: Double = Now.ms
-    ) {
-        stateLock.lock()
-        if var record = recordShadowByID[id] {
-            record.layer = layer
-            record.pinned = (layer == .pinned)
-            if let kind, !kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                record.kind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            if let topic {
-                record.topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            if let confidence {
-                record.confidence = min(1.0, max(0.0, confidence))
-            }
-            record.updatedAtMs = max(record.updatedAtMs, nowMs)
-            if layer == .archived {
-                recordShadowByID.removeValue(forKey: id)
-                archivedRecords.removeAll { $0.id == id }
-                archivedRecords.append(record)
-            } else {
-                archivedRecords.removeAll { $0.id == id }
-                recordShadowByID[id] = record
-            }
-        }
-        if layer == .pinned {
-            pinnedIDs.insert(id)
-        } else {
-            pinnedIDs.remove(id)
-        }
-        stateLock.unlock()
-
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            let secrets = Self.orderedSecrets(Vault.allStrings())
-            _ = try? self.store.setLayer(id: id, layer: layer, nowMs: nowMs)
-            if kind != nil || topic != nil || confidence != nil {
-                _ = try? self.store.setMetadata(
-                    id: id,
-                    kind: kind,
-                    topic: topic,
-                    confidence: confidence,
-                    nowMs: nowMs,
-                    secrets: secrets
-                )
-            }
-        }
-    }
-
-    func recordArchive(id: String, nowMs: Double = Now.ms) {
-        recordLayerAndMetadata(id: id, layer: .archived, nowMs: nowMs)
-    }
-
-    func recordRestore(id: String, nowMs: Double = Now.ms) -> Memory? {
-        var restoredMemory: Memory?
-        stateLock.lock()
-        if let idx = archivedRecords.firstIndex(where: { $0.id == id }) {
-            var rec = archivedRecords.remove(at: idx)
-            rec.layer = .surface
-            rec.pinned = false
-            rec.deletedAtMs = nil
-            rec.updatedAtMs = max(rec.updatedAtMs, nowMs)
-            rec.usedAtMs = nowMs
-            recordShadowByID[rec.id] = rec
-            tombstoneShadow.removeValue(forKey: rec.textSHA256)
-            restoredMemory = Self.toAppMemory(rec)
-        }
-        stateLock.unlock()
-
-        if let restoredMemory {
-            queue.async { [weak self] in
-                guard let self, !Disk.frozen else { return }
-                _ = try? self.store.restore(id: id, layer: .surface, nowMs: nowMs)
-            }
-            return restoredMemory
-        }
-
-        let restoredFromDB: MemoryRecord? = queue.sync {
-            guard !Disk.frozen else { return nil }
-            return try? store.restore(id: id, layer: .surface, nowMs: nowMs)
-        }
-        guard let restoredFromDB else { return nil }
-        stateLock.lock()
-        recordShadowByID[restoredFromDB.id] = restoredFromDB
-        tombstoneShadow.removeValue(forKey: restoredFromDB.textSHA256)
-        stateLock.unlock()
-        return Self.toAppMemory(restoredFromDB)
-    }
-
-    func recordSoftDelete(
-        items: [(id: String, text: String?)],
-        nowMs: Double = Now.ms,
-        reason: String = "user_delete"
-    ) {
-        guard !items.isEmpty else { return }
-        var idsToDelete: Set<String> = []
-
-        stateLock.lock()
-        for item in items {
-            idsToDelete.insert(item.id)
-            let removedShadow = recordShadowByID.removeValue(forKey: item.id)
-            archivedRecords.removeAll { $0.id == item.id }
-            pinnedIDs.remove(item.id)
-            let textToHash = item.text ?? removedShadow?.text
-            if let textToHash {
-                let hash = MemorySafety.retractionHash(textToHash)
-                if !hash.isEmpty {
-                    tombstoneShadow[hash] = MemoryTombstone(
-                        textSHA256: hash,
-                        memoryID: item.id,
-                        deletedAtMs: nowMs,
-                        reason: reason
-                    )
-                }
-            }
-        }
-        stateLock.unlock()
-
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            let secrets = Self.orderedSecrets(Vault.allStrings())
-            for item in items {
-                if (try? self.store.softDelete(id: item.id, nowMs: nowMs, reason: reason, secrets: secrets)) == nil,
-                   let text = item.text {
-                    _ = try? self.store.softDelete(text: text, nowMs: nowMs, reason: reason, secrets: secrets)
-                }
-            }
-            try? self.store.pruneReviewDetails(memoryIDs: idsToDelete)
-        }
-    }
-
-    // MARK: - Unified Canonical Book Commit (Throws on disk failure before mutating caller state)
+    // MARK: - Unified Canonical Book Commit (Throws on disk failure before mutating caller or SQLite state)
 
     @discardableResult
     @MainActor
     func commitAppBook(
         _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
         suppressedHashes: Set<String>,
+        promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
         mainBotId: String?,
         secrets: [String]
@@ -602,10 +394,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
         let orderedSecrets = Self.orderedSecrets(secrets)
         let summaries = Self.makeBotSummaries(bots: bots, mainBotId: mainBotId)
-        let nowMs = Now.ms
+        let nowMs = mutationNowMs(mutation) ?? Now.ms
 
         let prepared = buildCommitSnapshot(
             book: book,
+            mutation: mutation,
             suppressedHashes: suppressedHashes,
             botSummaries: summaries,
             secrets: orderedSecrets,
@@ -617,10 +410,23 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
         applyCommittedShadow(prepared.shadowUpdate)
 
+        if let promptState {
+            for item in prepared.retractItems {
+                promptState.retract(id: item.id, textForInFlightGuard: item.textForInFlightGuard)
+            }
+            for clear in prepared.clearRetractions {
+                promptState.clearRetraction(id: clear.id, text: clear.text)
+            }
+            if prepared.shouldInvalidatePromptCache && prepared.retractItems.isEmpty && prepared.clearRetractions.isEmpty {
+                promptState.invalidate()
+            }
+        }
+
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
+        let existingRetracted = loadRetractedHashes(at: retractedURL)
         syncRetractedHashesFileIfNeeded(
             Set(prepared.canonical.suppressedFlushHashes),
-            existing: suppressedHashes,
+            existing: existingRetracted,
             at: retractedURL
         )
 
@@ -633,18 +439,18 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 secrets: orderedSecrets,
                 jsonDigest: writtenDigest,
                 sequence: prepared.shadowUpdate.seq,
-                editEvents: prepared.editEvents,
-                layerEvents: prepared.layerEvents,
+                sqliteActions: prepared.sqliteActions,
                 nowMs: nowMs
             )
         }
 
-        return (prepared.sanitizedAppBook, prepared.editEvents.map(\.text))
+        return (prepared.sanitizedAppBook, prepared.clearRetractions.map(\.text))
     }
 
     @MainActor
     func resetAll(team: TeamModel) {
         let summaries = Self.makeBotSummaries(bots: team.bots, mainBotId: team.mainBotId)
+        let secrets = Self.orderedSecrets(Vault.allStrings())
         stateLock.withLock {
             pinnedIDs.removeAll()
             archivedRecords.removeAll()
@@ -654,7 +460,6 @@ final class MemoryStoreBridge: @unchecked Sendable {
             lastSyncedBookDigest = Self.bookDigest(MemoryBook())
             botSummaries = summaries
             canonicalLoadFailed = false
-            sqliteNeedsReconcile = false
             syncSequence &+= 1
         }
         guard !Disk.frozen else { return }
@@ -664,7 +469,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, !Disk.frozen else { return }
             try? self.store.resetAll(clearTombstones: true)
-            MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: [], mirrorsRoot: self.mirrorRoot)
+            MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
         }
     }
 
@@ -673,6 +478,37 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     // MARK: - Private Sync Helpers
+
+    private struct SQLitePersistActions {
+        var upsertRecords: [(record: MemoryRecord, explicitUserAction: Bool)] = []
+        var recallUpdates: [(id: String, layer: MemoryLayer, record: MemoryRecord, nowMs: Double)] = []
+        var editEvents: [(id: String, text: String, editedByUser: Bool)] = []
+        var pinEvents: [(id: String, pinned: Bool, nowMs: Double)] = []
+        var layerEvents: [(id: String, layer: MemoryLayer, nowMs: Double)] = []
+        var layerMetadataEvents: [(
+            id: String,
+            layer: MemoryLayer,
+            kind: String?,
+            topic: String?,
+            confidence: Double?,
+            fallbackRecord: MemoryRecord?,
+            nowMs: Double
+        )] = []
+        var restoreEvents: [(id: String, layer: MemoryLayer, nowMs: Double)] = []
+        var softDeleteEvents: [(id: String, text: String?, reason: String, nowMs: Double)] = []
+        var prunedReviewMemoryIDs: Set<String> = []
+    }
+
+    private struct PreparedCommit {
+        let canonical: CanonicalMemoryBook
+        let sanitizedAppBook: MemoryBook
+        let liveRecords: [MemoryRecord]
+        let sqliteActions: SQLitePersistActions
+        let retractItems: [(id: String, textForInFlightGuard: String?)]
+        let clearRetractions: [(id: String?, text: String)]
+        let shouldInvalidatePromptCache: Bool
+        let shadowUpdate: CommittedShadowUpdate
+    }
 
     private struct CommittedShadowUpdate {
         let nextShadowByID: [String: MemoryRecord]
@@ -686,7 +522,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     @MainActor
     private func handlePossibleExternalMemoryMutation(on team: TeamModel) {
-        guard team.keeping, !Disk.frozen else { return }
+        guard team.keeping, !Disk.frozen, !isCanonicalReadOnly else { return }
         let currentBookDigest = Self.bookDigest(team.memoryBook)
         let alreadyHandled: Bool = stateLock.withLock {
             team.memories == lastSyncedMemories && currentBookDigest == lastSyncedBookDigest
@@ -700,6 +536,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         guard let result = try? commitAppBook(
             book,
             suppressedHashes: suppressed,
+            promptState: team.memoryPromptState,
             bots: team.bots,
             mainBotId: team.mainBotId,
             secrets: orderedSecrets
@@ -711,32 +548,308 @@ final class MemoryStoreBridge: @unchecked Sendable {
         }
         if team.memories != result.book.memories {
             team.memories = result.book.memories
-            team.invalidateMemoryPromptCache()
+        }
+        team.memoryReviews = result.book.reviews
+        team.syncLivePromptsFromMemories()
+    }
+
+    private func mutationNowMs(_ mutation: MemoryCommitMutation) -> Double? {
+        switch mutation {
+        case .none:
+            return nil
+        case .remember(_, _, let nowMs),
+             .recall(_, let nowMs),
+             .setDeep(_, _, let nowMs),
+             .pin(_, _, let nowMs),
+             .layerAndMetadata(_, _, _, _, _, _, let nowMs),
+             .restore(_, _, let nowMs),
+             .softDelete(_, _, let nowMs),
+             .edit(_, _, _, let nowMs):
+            return nowMs
+        }
+    }
+
+    private func applyPreLoopMutation(
+        _ mutation: MemoryCommitMutation,
+        workingRecordsByID: inout [String: MemoryRecord],
+        workingArchived: inout [MemoryRecord],
+        workingPinnedIDs: inout Set<String>,
+        workingTombstones: inout [String: MemoryTombstone],
+        effectiveSuppressedHashes: inout Set<String>,
+        sqliteActions: inout SQLitePersistActions,
+        retractItems: inout [(id: String, textForInFlightGuard: String?)],
+        clearRetractions: inout [(id: String?, text: String)],
+        shouldInvalidatePromptCache: inout Bool,
+        secrets: [String]
+    ) {
+        switch mutation {
+        case .none:
+            break
+
+        case .remember(let memory, let explicitUserAction, _):
+            let safeText = Self.redact(memory.text, orderedSecrets: secrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hash = MemorySafety.retractionHash(safeText)
+            if explicitUserAction, !hash.isEmpty {
+                workingTombstones.removeValue(forKey: hash)
+                effectiveSuppressedHashes.remove(hash)
+                clearRetractions.append((id: memory.id, text: safeText))
+            } else if !explicitUserAction {
+                shouldInvalidatePromptCache = true
+            }
+
+        case .recall(let ids, let recallNow):
+            for id in ids {
+                if var existing = workingRecordsByID[id] {
+                    existing.layer = existing.pinned ? .pinned : .surface
+                    existing.usedAtMs = recallNow
+                    existing.updatedAtMs = max(existing.updatedAtMs, recallNow)
+                    workingRecordsByID[id] = existing
+                }
+            }
+            if !ids.isEmpty {
+                shouldInvalidatePromptCache = true
+            }
+
+        case .setDeep(let id, let deep, let setNow):
+            let targetLayer: MemoryLayer = deep ? .deep : .surface
+            workingPinnedIDs.remove(id)
+            if var existing = workingRecordsByID[id] {
+                existing.layer = targetLayer
+                existing.pinned = false
+                existing.usedAtMs = setNow
+                existing.updatedAtMs = max(existing.updatedAtMs, setNow)
+                workingRecordsByID[id] = existing
+            }
+            sqliteActions.layerEvents.append((id: id, layer: targetLayer, nowMs: setNow))
+            shouldInvalidatePromptCache = true
+
+        case .pin(let id, let pinned, let pinNow):
+            let targetLayer: MemoryLayer = pinned ? .pinned : .surface
+            if pinned {
+                workingPinnedIDs.insert(id)
+            } else {
+                workingPinnedIDs.remove(id)
+            }
+            if var existing = workingRecordsByID[id] {
+                existing.pinned = pinned
+                existing.layer = targetLayer
+                existing.usedAtMs = pinNow
+                existing.updatedAtMs = max(existing.updatedAtMs, pinNow)
+                workingRecordsByID[id] = existing
+            }
+            sqliteActions.pinEvents.append((id: id, pinned: pinned, nowMs: pinNow))
+            shouldInvalidatePromptCache = true
+
+        case .layerAndMetadata(let id, let layer, let kind, let topic, let confidence, let fallbackMemory, let layerNow):
+            if layer == .pinned {
+                workingPinnedIDs.insert(id)
+            } else {
+                workingPinnedIDs.remove(id)
+            }
+            var target: MemoryRecord?
+            if let active = workingRecordsByID[id] {
+                target = active
+            } else if let idx = workingArchived.firstIndex(where: { $0.id == id }) {
+                target = workingArchived.remove(at: idx)
+            } else if let fallbackMemory {
+                let safeText = Self.redact(fallbackMemory.text, orderedSecrets: secrets)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let hash = MemorySafety.retractionHash(safeText)
+                if !safeText.isEmpty, !hash.isEmpty {
+                    target = MemoryRecord(
+                        id: fallbackMemory.id,
+                        text: safeText,
+                        textSHA256: hash,
+                        layer: layer,
+                        pinned: layer == .pinned,
+                        kind: "fact",
+                        topic: "",
+                        createdAtMs: fallbackMemory.at,
+                        updatedAtMs: layerNow,
+                        usedAtMs: fallbackMemory.used ?? layerNow,
+                        byBot: fallbackMemory.by,
+                        automatic: fallbackMemory.automatic == true,
+                        editedByUser: fallbackMemory.editedByUser == true,
+                        deletedAtMs: nil
+                    )
+                }
+            }
+            if var updated = target {
+                updated.layer = layer
+                updated.pinned = (layer == .pinned)
+                if let kind {
+                    let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleanKind.isEmpty { updated.kind = cleanKind }
+                }
+                if let topic {
+                    updated.topic = Self.redact(topic, orderedSecrets: secrets)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if let confidence {
+                    updated.confidence = min(1.0, max(0.0, confidence))
+                }
+                if layer == .pinned || layer == .surface {
+                    updated.usedAtMs = max(updated.usedAtMs ?? 0, layerNow)
+                }
+                updated.updatedAtMs = max(updated.updatedAtMs, layerNow)
+                if layer == .archived {
+                    workingRecordsByID.removeValue(forKey: id)
+                    workingArchived.removeAll { $0.id == id }
+                    workingArchived.append(updated)
+                } else {
+                    workingArchived.removeAll { $0.id == id }
+                    workingRecordsByID[id] = updated
+                }
+                target = updated
+            }
+            sqliteActions.layerMetadataEvents.append((
+                id: id,
+                layer: layer,
+                kind: kind,
+                topic: topic,
+                confidence: confidence,
+                fallbackRecord: target,
+                nowMs: layerNow
+            ))
+            shouldInvalidatePromptCache = true
+
+        case .restore(let id, let memory, let restoreNow):
+            let safeText = Self.redact(memory.text, orderedSecrets: secrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hash = MemorySafety.retractionHash(safeText)
+            var restoredFromArchive: MemoryRecord?
+            if let idx = workingArchived.firstIndex(where: { $0.id == id }) {
+                restoredFromArchive = workingArchived.remove(at: idx)
+            }
+            workingPinnedIDs.remove(id)
+            if !hash.isEmpty {
+                workingTombstones.removeValue(forKey: hash)
+                effectiveSuppressedHashes.remove(hash)
+            }
+            if !safeText.isEmpty && !hash.isEmpty {
+                var rec = restoredFromArchive ?? MemoryRecord(
+                    id: id,
+                    text: safeText,
+                    textSHA256: hash,
+                    layer: .surface,
+                    pinned: false,
+                    createdAtMs: memory.at,
+                    updatedAtMs: restoreNow,
+                    usedAtMs: restoreNow,
+                    byBot: memory.by,
+                    automatic: memory.automatic == true,
+                    editedByUser: memory.editedByUser == true,
+                    deletedAtMs: nil
+                )
+                rec.text = safeText
+                rec.textSHA256 = hash
+                rec.layer = .surface
+                rec.pinned = false
+                rec.deletedAtMs = nil
+                rec.usedAtMs = restoreNow
+                rec.updatedAtMs = max(rec.updatedAtMs, restoreNow)
+                workingRecordsByID[id] = rec
+                clearRetractions.append((id: id, text: safeText))
+            }
+            sqliteActions.restoreEvents.append((id: id, layer: .surface, nowMs: restoreNow))
+
+        case .softDelete(let items, let reason, let deleteNow):
+            let safeReason = Self.redact(reason, orderedSecrets: secrets)
+            for item in items {
+                sqliteActions.prunedReviewMemoryIDs.insert(item.id)
+                let removedShadow = workingRecordsByID.removeValue(forKey: item.id)
+                var removedArchived: MemoryRecord?
+                if let idx = workingArchived.firstIndex(where: { $0.id == item.id }) {
+                    removedArchived = workingArchived.remove(at: idx)
+                }
+                workingPinnedIDs.remove(item.id)
+                let rawText = item.text ?? removedShadow?.text ?? removedArchived?.text
+                let safeText = rawText
+                    .map { Self.redact($0, orderedSecrets: secrets).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+                if let safeText {
+                    let hash = MemorySafety.retractionHash(safeText)
+                    if !hash.isEmpty {
+                        workingTombstones[hash] = MemoryTombstone(
+                            textSHA256: hash,
+                            memoryID: item.id,
+                            deletedAtMs: deleteNow,
+                            reason: safeReason
+                        )
+                        effectiveSuppressedHashes.insert(hash)
+                    }
+                    retractItems.append((id: item.id, textForInFlightGuard: safeText))
+                } else if !item.id.isEmpty {
+                    retractItems.append((id: item.id, textForInFlightGuard: nil))
+                }
+                sqliteActions.softDeleteEvents.append((
+                    id: item.id,
+                    text: safeText,
+                    reason: safeReason,
+                    nowMs: deleteNow
+                ))
+            }
+
+        case .edit(let id, let text, let editedByUser, let editNow):
+            let safeText = Self.redact(text, orderedSecrets: secrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let newHash = MemorySafety.retractionHash(safeText)
+            if !safeText.isEmpty && !newHash.isEmpty {
+                workingTombstones.removeValue(forKey: newHash)
+                effectiveSuppressedHashes.remove(newHash)
+                sqliteActions.editEvents.append((id: id, text: safeText, editedByUser: editedByUser))
+                clearRetractions.append((id: id, text: safeText))
+                if var existing = workingRecordsByID[id] {
+                    existing.updatedAtMs = max(existing.updatedAtMs, editNow)
+                    if editedByUser { existing.editedByUser = true }
+                    workingRecordsByID[id] = existing
+                }
+            }
         }
     }
 
     private func buildCommitSnapshot(
         book: MemoryBook,
+        mutation: MemoryCommitMutation,
         suppressedHashes: Set<String>,
         botSummaries: [MemoryMirrorBot],
         secrets: [String],
         nowMs: Double
-    ) -> (
-        canonical: CanonicalMemoryBook,
-        sanitizedAppBook: MemoryBook,
-        liveRecords: [MemoryRecord],
-        editEvents: [(id: String, text: String, editedByUser: Bool)],
-        layerEvents: [(id: String, layer: MemoryLayer)],
-        shadowUpdate: CommittedShadowUpdate
-    ) {
+    ) -> PreparedCommit {
         stateLock.lock()
         defer { stateLock.unlock() }
 
+        var workingRecordsByID = recordShadowByID
+        var workingArchived = archivedRecords
+        var workingPinnedIDs = pinnedIDs
         var workingTombstones = tombstoneShadow
+        var effectiveSuppressedHashes = Set(suppressedHashes.compactMap { raw -> String? in
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return MemorySafety.isSHA256Hex(clean) ? clean : nil
+        })
+
+        var sqliteActions = SQLitePersistActions()
+        var retractItems: [(id: String, textForInFlightGuard: String?)] = []
+        var clearRetractions: [(id: String?, text: String)] = []
+        var shouldInvalidatePromptCache = false
+
+        applyPreLoopMutation(
+            mutation,
+            workingRecordsByID: &workingRecordsByID,
+            workingArchived: &workingArchived,
+            workingPinnedIDs: &workingPinnedIDs,
+            workingTombstones: &workingTombstones,
+            effectiveSuppressedHashes: &effectiveSuppressedHashes,
+            sqliteActions: &sqliteActions,
+            retractItems: &retractItems,
+            clearRetractions: &clearRetractions,
+            shouldInvalidatePromptCache: &shouldInvalidatePromptCache,
+            secrets: secrets
+        )
+
         var nextShadowByID: [String: MemoryRecord] = [:]
         var nextPinnedIDs: Set<String> = []
-        var editEvents: [(id: String, text: String, editedByUser: Bool)] = []
-        var layerEvents: [(id: String, layer: MemoryLayer)] = []
         var canonicalItems: [CanonicalMemoryItem] = []
 
         for mem in book.memories {
@@ -750,15 +863,16 @@ final class MemoryStoreBridge: @unchecked Sendable {
             if let tomb = workingTombstones[hash] {
                 let effectiveUpdated = max(mem.used ?? mem.at, mem.at)
                 let isAutomaticOnly = (mem.automatic == true) && (mem.editedByUser != true)
-                let existingEditedText = recordShadowByID[mem.id].map { $0.text != safeText } ?? false
+                let existingEditedText = workingRecordsByID[mem.id].map { $0.text != safeText } ?? false
                 if !existingEditedText && (isAutomaticOnly || tomb.deletedAtMs >= effectiveUpdated) {
                     continue
                 }
                 workingTombstones.removeValue(forKey: hash)
+                effectiveSuppressedHashes.remove(hash)
             }
 
-            let existing = recordShadowByID[mem.id]
-            let isPinned = (pinnedIDs.contains(mem.id) || existing?.pinned == true) && mem.deep != true
+            let existing = workingRecordsByID[mem.id]
+            let isPinned = (workingPinnedIDs.contains(mem.id) || existing?.pinned == true) && mem.deep != true
             let layer: MemoryLayer
             if isPinned {
                 layer = .pinned
@@ -771,12 +885,14 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
             let textChanged = existing != nil && existing?.text != safeText
             let layerChanged = existing != nil && existing?.layer != layer
-            if textChanged {
-                editEvents.append((mem.id, safeText, mem.editedByUser == true))
+            if textChanged && !sqliteActions.editEvents.contains(where: { $0.id == mem.id }) {
+                sqliteActions.editEvents.append((mem.id, safeText, mem.editedByUser == true))
                 workingTombstones.removeValue(forKey: hash)
+                effectiveSuppressedHashes.remove(hash)
+                clearRetractions.append((id: mem.id, text: safeText))
             }
-            if layerChanged {
-                layerEvents.append((mem.id, layer))
+            if layerChanged && !sqliteActions.layerEvents.contains(where: { $0.id == mem.id }) && !sqliteActions.pinEvents.contains(where: { $0.id == mem.id }) {
+                sqliteActions.layerEvents.append((mem.id, layer, nowMs))
             }
 
             let updatedAt: Double
@@ -810,8 +926,19 @@ final class MemoryStoreBridge: @unchecked Sendable {
             canonicalItems.append(CanonicalMemoryItem(from: record))
         }
 
+        if case .remember(let mem, let explicitUserAction, _) = mutation,
+           let committed = nextShadowByID[mem.id] {
+            sqliteActions.upsertRecords.append((record: committed, explicitUserAction: explicitUserAction))
+        } else if case .recall(let ids, let recallNow) = mutation {
+            for id in ids {
+                if let committed = nextShadowByID[id] {
+                    sqliteActions.recallUpdates.append((id: id, layer: committed.layer, record: committed, nowMs: recallNow))
+                }
+            }
+        }
+
         // Also re-redact any retained archived items and tombstone reasons against live Vault secrets.
-        let scrubbedArchived: [MemoryRecord] = archivedRecords.compactMap { archived in
+        let scrubbedArchived: [MemoryRecord] = workingArchived.compactMap { archived in
             let safeText = Self.redact(archived.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let safeHash = MemorySafety.retractionHash(safeText)
@@ -836,11 +963,9 @@ final class MemoryStoreBridge: @unchecked Sendable {
             }
         }
 
-        // Seed untimestamped suppressedHashes not already live or in workingTombstones.
-        for rawHash in suppressedHashes {
-            let clean = rawHash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard MemorySafety.isSHA256Hex(clean),
-                  workingTombstones[clean] == nil,
+        // Seed untimestamped effectiveSuppressedHashes not already live or in workingTombstones.
+        for clean in effectiveSuppressedHashes {
+            guard workingTombstones[clean] == nil,
                   !nextShadowByID.values.contains(where: { $0.textSHA256 == clean }) else { continue }
             workingTombstones[clean] = MemoryTombstone(
                 textSHA256: clean,
@@ -855,28 +980,31 @@ final class MemoryStoreBridge: @unchecked Sendable {
             return $0.textSHA256 < $1.textSHA256
         }
         var combinedHashes = Set(workingTombstones.keys)
-        combinedHashes.formUnion(suppressedHashes.filter(MemorySafety.isSHA256Hex))
-        for edit in editEvents {
-            let editedHash = MemorySafety.retractionHash(edit.text)
-            if !editedHash.isEmpty { combinedHashes.remove(editedHash) }
+        combinedHashes.formUnion(effectiveSuppressedHashes)
+        for clear in clearRetractions {
+            let clearedHash = MemorySafety.retractionHash(clear.text)
+            if !clearedHash.isEmpty { combinedHashes.remove(clearedHash) }
         }
 
+        let prunedIDs = sqliteActions.prunedReviewMemoryIDs
         let canonicalReviews = book.reviews.map { log in
             CanonicalMemoryReviewLog(
                 id: log.id,
                 at: log.at,
                 day: log.day,
                 conversation: Self.redact(log.conversation, orderedSecrets: secrets),
-                added: log.added.map {
-                    .init(memoryID: $0.memoryID, text: Self.redact($0.text, orderedSecrets: secrets))
-                },
-                merged: log.merged.map {
-                    .init(
-                        memoryID: $0.memoryID,
-                        before: Self.redact($0.before, orderedSecrets: secrets),
-                        after: Self.redact($0.after, orderedSecrets: secrets)
-                    )
-                }
+                added: log.added
+                    .filter { !prunedIDs.contains($0.memoryID) }
+                    .map { .init(memoryID: $0.memoryID, text: Self.redact($0.text, orderedSecrets: secrets)) },
+                merged: log.merged
+                    .filter { !prunedIDs.contains($0.memoryID) }
+                    .map {
+                        .init(
+                            memoryID: $0.memoryID,
+                            before: Self.redact($0.before, orderedSecrets: secrets),
+                            after: Self.redact($0.after, orderedSecrets: secrets)
+                        )
+                    }
             )
         }
 
@@ -904,7 +1032,16 @@ final class MemoryStoreBridge: @unchecked Sendable {
             botSummaries: botSummaries,
             seq: nextSeq
         )
-        return (canonical, sanitizedAppBook, liveRecords, editEvents, layerEvents, shadowUpdate)
+        return PreparedCommit(
+            canonical: canonical,
+            sanitizedAppBook: sanitizedAppBook,
+            liveRecords: liveRecords,
+            sqliteActions: sqliteActions,
+            retractItems: retractItems,
+            clearRetractions: clearRetractions,
+            shouldInvalidatePromptCache: shouldInvalidatePromptCache,
+            shadowUpdate: shadowUpdate
+        )
     }
 
     private func applyCommittedShadow(_ update: CommittedShadowUpdate) {
@@ -927,13 +1064,15 @@ final class MemoryStoreBridge: @unchecked Sendable {
         secrets: [String],
         jsonDigest: String,
         sequence: UInt64,
-        editEvents: [(id: String, text: String, editedByUser: Bool)],
-        layerEvents: [(id: String, layer: MemoryLayer)],
+        sqliteActions: SQLitePersistActions,
         nowMs: Double
     ) {
         do {
             _ = try store.openOrRecover()
-            for edit in editEvents {
+            for restoreEvent in sqliteActions.restoreEvents {
+                _ = try store.restore(id: restoreEvent.id, layer: restoreEvent.layer, nowMs: restoreEvent.nowMs)
+            }
+            for edit in sqliteActions.editEvents {
                 _ = try store.editText(
                     id: edit.id,
                     text: edit.text,
@@ -942,8 +1081,44 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     secrets: secrets
                 )
             }
-            for layerEvent in layerEvents {
-                _ = try store.setLayer(id: layerEvent.id, layer: layerEvent.layer, nowMs: nowMs)
+            for pinEvent in sqliteActions.pinEvents {
+                _ = try store.pin(id: pinEvent.id, pinned: pinEvent.pinned, nowMs: pinEvent.nowMs)
+            }
+            for layerEvent in sqliteActions.layerEvents {
+                _ = try store.setLayer(id: layerEvent.id, layer: layerEvent.layer, nowMs: layerEvent.nowMs)
+            }
+            for metaEvent in sqliteActions.layerMetadataEvents {
+                if (try? store.setLayer(id: metaEvent.id, layer: metaEvent.layer, nowMs: metaEvent.nowMs)) == nil,
+                   let fallback = metaEvent.fallbackRecord {
+                    _ = try store.upsert(fallback, explicitUserAction: true, secrets: secrets)
+                }
+                if metaEvent.kind != nil || metaEvent.topic != nil || metaEvent.confidence != nil {
+                    _ = try store.setMetadata(
+                        id: metaEvent.id,
+                        kind: metaEvent.kind,
+                        topic: metaEvent.topic,
+                        confidence: metaEvent.confidence,
+                        nowMs: metaEvent.nowMs,
+                        secrets: secrets
+                    )
+                }
+            }
+            for recallEvent in sqliteActions.recallUpdates {
+                if (try? store.setLayer(id: recallEvent.id, layer: recallEvent.layer, nowMs: recallEvent.nowMs)) == nil {
+                    _ = try store.upsert(recallEvent.record, explicitUserAction: true, secrets: secrets)
+                }
+            }
+            for upsert in sqliteActions.upsertRecords {
+                _ = try store.upsert(upsert.record, explicitUserAction: upsert.explicitUserAction, secrets: secrets)
+            }
+            for del in sqliteActions.softDeleteEvents {
+                if (try? store.softDelete(id: del.id, nowMs: del.nowMs, reason: del.reason, secrets: secrets)) == nil,
+                   let text = del.text {
+                    _ = try store.softDelete(text: text, nowMs: del.nowMs, reason: del.reason, secrets: secrets)
+                }
+            }
+            if !sqliteActions.prunedReviewMemoryIDs.isEmpty {
+                try store.pruneReviewDetails(memoryIDs: sqliteActions.prunedReviewMemoryIDs)
             }
             _ = try store.reconcile(
                 book: canonical,
@@ -952,10 +1127,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 jsonDigest: jsonDigest
             )
             try? store.checkpoint()
-            stateLock.withLock { self.sqliteNeedsReconcile = false }
         } catch {
-            // Canonical Team/memory.json is already written atomically; mark for reconcile when DB recovers.
-            stateLock.withLock { self.sqliteNeedsReconcile = true }
+            // Canonical Team/memory.json is already written atomically and will reconcile on next launch.
         }
 
         let isLatest = stateLock.withLock { sequence == syncSequence }
@@ -1010,77 +1183,121 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 reason: Self.redact(tomb.reason, orderedSecrets: secrets)
             )
         }
-        var combinedSuppressed = Set(tombstonesByHash.keys)
-        combinedSuppressed.formUnion(canonical.suppressedFlushHashes.filter(MemorySafety.isSHA256Hex))
-        combinedSuppressed.formUnion(retractedHashes.filter(MemorySafety.isSHA256Hex))
 
+        var retainedMemories: [CanonicalMemoryItem] = []
+        retainedMemories.reserveCapacity(canonical.memories.count)
         for item in canonical.memories {
             let safeText = Self.redact(item.text, orderedSecrets: secrets).trimmingCharacters(in: .whitespacesAndNewlines)
             let hash = MemorySafety.retractionHash(safeText)
             guard !safeText.isEmpty, !hash.isEmpty else { continue }
-            let layer = item.resolvedLayer
-            if layer == .pinned { pins.insert(item.id) }
+            if let tomb = tombstonesByHash[hash] {
+                let isAutomaticOnly = (item.automatic == true) && (item.editedByUser != true)
+                if isAutomaticOnly || tomb.deletedAtMs >= item.effectiveUpdatedAtMs {
+                    continue
+                }
+                tombstonesByHash.removeValue(forKey: hash)
+            }
+            var sanitized = item
+            sanitized.text = safeText
+            if let topic = item.topic {
+                sanitized.topic = Self.redact(topic, orderedSecrets: secrets)
+            }
+            retainedMemories.append(sanitized)
+
+            let layer = sanitized.resolvedLayer
+            if layer == .pinned { pins.insert(sanitized.id) }
             liveRecords.append(MemoryRecord(
-                id: item.id,
+                id: sanitized.id,
                 text: safeText,
                 textSHA256: hash,
                 layer: layer,
                 pinned: layer == .pinned,
-                kind: item.kind ?? "fact",
-                topic: Self.redact(item.topic ?? "", orderedSecrets: secrets),
-                sourceChat: item.sourceChat,
-                sourceEntryID: item.sourceEntryID,
-                confidence: item.confidence ?? 1.0,
-                createdAtMs: item.at,
-                updatedAtMs: item.effectiveUpdatedAtMs,
-                usedAtMs: item.used,
-                byBot: item.by,
-                automatic: item.automatic == true,
-                editedByUser: item.editedByUser == true,
+                kind: sanitized.kind ?? "fact",
+                topic: Self.redact(sanitized.topic ?? "", orderedSecrets: secrets),
+                sourceChat: sanitized.sourceChat,
+                sourceEntryID: sanitized.sourceEntryID,
+                confidence: sanitized.confidence ?? 1.0,
+                createdAtMs: sanitized.at,
+                updatedAtMs: sanitized.effectiveUpdatedAtMs,
+                usedAtMs: sanitized.used,
+                byBot: sanitized.by,
+                automatic: sanitized.automatic == true,
+                editedByUser: sanitized.editedByUser == true,
                 deletedAtMs: nil
             ))
         }
+
+        var retainedArchived: [CanonicalMemoryItem] = []
+        retainedArchived.reserveCapacity(canonical.archived.count)
         for item in canonical.archived {
             let safeText = Self.redact(item.text, orderedSecrets: secrets).trimmingCharacters(in: .whitespacesAndNewlines)
             let hash = MemorySafety.retractionHash(safeText)
             guard !safeText.isEmpty, !hash.isEmpty else { continue }
+            if let tomb = tombstonesByHash[hash] {
+                let isAutomaticOnly = (item.automatic == true) && (item.editedByUser != true)
+                if isAutomaticOnly || tomb.deletedAtMs >= item.effectiveUpdatedAtMs {
+                    continue
+                }
+                tombstonesByHash.removeValue(forKey: hash)
+            }
+            var sanitized = item
+            sanitized.text = safeText
+            if let topic = item.topic {
+                sanitized.topic = Self.redact(topic, orderedSecrets: secrets)
+            }
+            retainedArchived.append(sanitized)
+
             liveRecords.append(MemoryRecord(
-                id: item.id,
+                id: sanitized.id,
                 text: safeText,
                 textSHA256: hash,
                 layer: .archived,
                 pinned: false,
-                kind: item.kind ?? "fact",
-                topic: Self.redact(item.topic ?? "", orderedSecrets: secrets),
-                sourceChat: item.sourceChat,
-                sourceEntryID: item.sourceEntryID,
-                confidence: item.confidence ?? 1.0,
-                createdAtMs: item.at,
-                updatedAtMs: item.effectiveUpdatedAtMs,
-                usedAtMs: item.used,
-                byBot: item.by,
-                automatic: item.automatic == true,
-                editedByUser: item.editedByUser == true,
+                kind: sanitized.kind ?? "fact",
+                topic: Self.redact(sanitized.topic ?? "", orderedSecrets: secrets),
+                sourceChat: sanitized.sourceChat,
+                sourceEntryID: sanitized.sourceEntryID,
+                confidence: sanitized.confidence ?? 1.0,
+                createdAtMs: sanitized.at,
+                updatedAtMs: sanitized.effectiveUpdatedAtMs,
+                usedAtMs: sanitized.used,
+                byBot: sanitized.by,
+                automatic: sanitized.automatic == true,
+                editedByUser: sanitized.editedByUser == true,
                 deletedAtMs: nil
             ))
         }
+
+        var combinedSuppressed = Set(tombstonesByHash.keys)
+        let activeHashes = Set(liveRecords.map(\.textSHA256))
+        for rawHash in canonical.suppressedFlushHashes + Array(retractedHashes) {
+            let clean = rawHash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard MemorySafety.isSHA256Hex(clean), !activeHashes.contains(clean) else { continue }
+            combinedSuppressed.insert(clean)
+        }
         for hash in combinedSuppressed where tombstonesByHash[hash] == nil {
-            if !liveRecords.contains(where: { $0.textSHA256 == hash }) {
-                tombstonesByHash[hash] = MemoryTombstone(
-                    textSHA256: hash,
-                    memoryID: nil,
-                    deletedAtMs: nowMs,
-                    reason: "retracted"
-                )
-            }
+            tombstonesByHash[hash] = MemoryTombstone(
+                textSHA256: hash,
+                memoryID: nil,
+                deletedAtMs: nowMs,
+                reason: "retracted"
+            )
         }
 
-        let appBook = Self.toAppMemoryBook(canonical)
+        var filteredCanonical = canonical
+        filteredCanonical.memories = retainedMemories
+        filteredCanonical.archived = retainedArchived
+        filteredCanonical.suppressedFlushHashes = combinedSuppressed.sorted()
+        filteredCanonical.tombstones = tombstonesByHash.values.sorted {
+            if $0.deletedAtMs != $1.deletedAtMs { return $0.deletedAtMs > $1.deletedAtMs }
+            return $0.textSHA256 < $1.textSHA256
+        }
+
+        let appBook = Self.toAppMemoryBook(filteredCanonical)
         updateShadowState(
             liveRecords: liveRecords,
-            tombstones: Array(tombstonesByHash.values),
-            appBook: appBook,
-            sqliteFailed: true
+            tombstones: filteredCanonical.tombstones,
+            appBook: appBook
         )
         return (
             BootstrapResult(book: appBook, suppressedHashes: combinedSuppressed, pinnedIDs: pins),
@@ -1091,8 +1308,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private func updateShadowState(
         liveRecords: [MemoryRecord],
         tombstones: [MemoryTombstone],
-        appBook: MemoryBook,
-        sqliteFailed: Bool
+        appBook: MemoryBook
     ) {
         stateLock.lock()
         var byID: [String: MemoryRecord] = [:]
@@ -1114,7 +1330,6 @@ final class MemoryStoreBridge: @unchecked Sendable {
         })
         lastSyncedMemories = appBook.memories
         lastSyncedBookDigest = Self.bookDigest(appBook)
-        sqliteNeedsReconcile = sqliteFailed
         stateLock.unlock()
     }
 

@@ -745,4 +745,41 @@ final class MemoryStoreTests: XCTestCase {
             existing: merged
         ))
     }
+
+    // MARK: 9. PromptState Suppressed Hash Merging & ID Retraction Clearing
+
+    func testPromptStateMergeSuppressedHashesAndClearRetractionByID() {
+        let state = MemorySafety.PromptState()
+        let initialGeneration = state.currentGeneration
+        let existingHash = MemorySafety.retractionHash("不要提旧公司")
+
+        state.mergeSuppressedFlushHashes([
+            existingHash.uppercased(),
+            "周三开早会",
+            "   ",
+        ])
+
+        XCTAssertGreaterThan(state.currentGeneration, initialGeneration)
+        let suppressed = state.suppressedFlushHashesSnapshot()
+        XCTAssertTrue(suppressed.contains(existingHash))
+        XCTAssertTrue(suppressed.contains(MemorySafety.retractionHash("周三开早会")))
+        XCTAssertEqual(suppressed.count, 2)
+
+        // Merging duplicate hashes must not spuriously advance generation.
+        let mergedGen = state.currentGeneration
+        state.mergeSuppressedFlushHashes([existingHash])
+        XCTAssertEqual(state.currentGeneration, mergedGen)
+
+        // Retracting by ID + clearing via `clearRetraction(id:text:)` clears BOTH `retractedIDs` and hash suppressions.
+        let fact = MemorySafety.Fact(id: "m-restore", text: "平时喝乌龙茶", at: 1_000)
+        state.retract(id: fact.id, textForInFlightGuard: fact.text)
+        XCTAssertTrue(state.retractedIDsSnapshot().contains("m-restore"))
+        XCTAssertTrue(state.suppressedFlushHashesSnapshot().contains(MemorySafety.retractionHash("平时喝乌龙茶")))
+        XCTAssertTrue(state.renderMemoryBlock(from: [fact], enabled: true).fullBlock.isEmpty)
+
+        state.clearRetraction(id: "m-restore", text: "平时喝乌龙茶")
+        XCTAssertFalse(state.retractedIDsSnapshot().contains("m-restore"))
+        XCTAssertFalse(state.suppressedFlushHashesSnapshot().contains(MemorySafety.retractionHash("平时喝乌龙茶")))
+        XCTAssertTrue(state.renderMemoryBlock(from: [fact], enabled: true).fullBlock.contains("平时喝乌龙茶"))
+    }
 }

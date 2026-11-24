@@ -299,6 +299,7 @@ extension TeamModel {
         unresolvedLeafOpenChats = []
         sortBots()
         ensureRetractedFlushHashesLoaded()
+        memoryPromptState.mergeSuppressedFlushHashes(Array(data.suppressedMemoryHashes))
         MemoryStoreBridge.shared.attach(
             to: self,
             pinnedIDs: data.pinnedMemoryIDs,
@@ -313,23 +314,31 @@ extension TeamModel {
     func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
     func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
     func saveMemory() {
-        guard keeping, !Disk.frozen else { return }
+        guard keeping, !Disk.frozen, !MemoryStoreBridge.shared.isCanonicalReadOnly else { return }
         var book = memoryBook
         book.memories = memories
         _ = try? commitMemoryBook(book)
     }
 
     @discardableResult
-    func commitMemoryBook(_ book: MemoryBook) throws -> MemoryBook {
+    func commitMemoryBook(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none
+    ) throws -> MemoryBook {
         guard keeping, !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
+        guard !MemoryStoreBridge.shared.isCanonicalReadOnly else {
+            throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
         }
         ensureRetractedFlushHashesLoaded()
         let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
         let committed = try MemoryStoreBridge.shared.commitAppBook(
             book,
+            mutation: mutation,
             suppressedHashes: suppressed,
+            promptState: memoryPromptState,
             bots: bots,
             mainBotId: mainBotId,
             secrets: orderedSecrets
@@ -339,9 +348,7 @@ extension TeamModel {
             memories = committed.book.memories
         }
         memoryReviews = committed.book.reviews
-        for edited in committed.editedTexts {
-            clearMemoryRetraction(text: edited)
-        }
+        syncLivePromptsFromMemories()
         return committed.book
     }
 

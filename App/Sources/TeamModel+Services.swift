@@ -450,16 +450,31 @@ extension TeamModel {
     }
 
     func editMemory(_ id: String, _ text: String) {
+        guard canMutateMemoryState else { return }
         guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
-        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if words.isEmpty {
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let safeWords = MemorySafety.redactSecrets(text, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if safeWords.isEmpty {
             deleteMemory(id)
             return
-        } else {
-            memories[index].text = words
-            memories[index].editedByUser = true
         }
-        saveMemory()
+        var nextMemories = memories
+        nextMemories[index].text = safeWords
+        nextMemories[index].editedByUser = true
+        if !keeping {
+            memories = nextMemories
+            memoryBook.memories = nextMemories
+            memoryPromptState.clearRetraction(id: id, text: safeWords)
+            syncLivePromptsFromMemories()
+            return
+        }
+        var nextBook = memoryBook
+        nextBook.memories = nextMemories
+        _ = try? commitMemoryBook(
+            nextBook,
+            mutation: .edit(id: id, text: safeWords, editedByUser: true, nowMs: Now.ms)
+        )
     }
 
     func setDefaultModel(_ ref: String) {
