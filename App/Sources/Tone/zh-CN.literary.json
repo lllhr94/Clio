@@ -935,6 +935,8 @@
     "manageKeys": "管理密钥",
     "apiAnthropic": "Claude 接口",
     "apiOpenAI": "OpenAI 兼容接口",
+    "promptCache": "提示词缓存",
+    "promptCacheNote": "默认官方接口开启、第三方中转关闭；确认中转支持 Anthropic Prompt Caching 后可开启，如遇 400/不兼容报错请关闭。",
     "followServiceStyle": "跟着服务（%@）",
     "thinkingNoneSummary": "不发送思考参数，仅保留「默认」。",
     "thinkingOfferedSummary": "支持思考的模型默认提供：%@",
