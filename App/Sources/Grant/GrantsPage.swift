@@ -123,11 +123,11 @@ struct GrantsPage: View {
         }
     }
 
-    /// 谨慎 / 平常 / 放手: everything at once; the items below can still be set one by one.
+    /// Presets for the abilities below, which can also be set one by one.
     private var presets: some View {
         let current = Grant.Preset.current
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            HStack(spacing: Ink.Space.s) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: Ink.Space.s) {
                 ForEach(Grant.Preset.allCases) { preset in
                     Button {
                         Haptics.tick(0.6)

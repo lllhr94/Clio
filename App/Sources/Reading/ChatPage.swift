@@ -444,6 +444,13 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
+            .onChange(of: waiting?.id) {
+                // The composer inset moves when the approval card arrives or leaves.
+                // Replace any jump based on the previous inset with a check after layout.
+                followPending?.cancel()
+                settleEnd?.cancel()
+                followToEnd()
+            }
             .onAppear { scroller = proxy }
             .task { await playShot() }
         }
@@ -958,8 +965,9 @@ struct ChatPage: View {
         .fullScreenCover(isPresented: $roaming) {
             RoamPage(browser: team.browser)
         }
-        .fullScreenCover(item: $approving) { approval in
+        .sheet(item: $approving, onDismiss: { followToEnd() }) { approval in
             ApproveView(approval: approval, team: team)
+                .presentationDetents([.large])
         }
         .fullScreenCover(isPresented: $takingPhoto) {
             let revision = attachmentRevision

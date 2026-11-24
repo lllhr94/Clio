@@ -24,6 +24,13 @@ private enum Words {
     static func t(_ text: String) -> String { text }
 }
 
+private enum Grant {
+    case web, desk, device, den, hills, mcp
+// RULE: SMART_QUERY
+}
+
+private struct Approval: Equatable {}
+
 private struct Hitches {
     static let shared = Self()
     func doing(_ text: String?, as key: String) {}
@@ -167,6 +174,8 @@ private final class FlowFixture {
     var jumpVisible = false
     var selecting: Set<UUID> = []
     var historyPage: [String]?
+    var approving: Approval?
+    var typing = false
     let viewport = Viewport()
 
     final class Viewport {
@@ -214,6 +223,8 @@ private final class FlowFixture {
         return followPending
     }
 
+    func showApproval() { presentApproval(Approval()) }
+
     private func toEnd(animated: Bool = false) {
         scrolls.append(animated)
     }
@@ -222,6 +233,7 @@ private final class FlowFixture {
 // RULE: END_ALIGNMENT
 // RULE: END_ALIGNMENT_CHANGED
 // RULE: SELECTION_CHANGED
+// RULE: PRESENT_APPROVAL
 // RULE: FOLLOW
 // RULE: CLEAR_COMPOSER
 }
@@ -286,11 +298,49 @@ private enum ChatFlowTests {
             try replyHandoff()
             try replyBoundaries()
             try PetSurfaceFixture.checkPassThrough()
+            try await approvalPausesFollowing()
+            try smartApprovalQueries()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    @MainActor
+    static func approvalPausesFollowing() async throws {
+        let flow = FlowFixture()
+        flow.typing = true
+        let before = flow.requestFollow()
+        await flow.clock.waitForSleepers(1)
+        flow.showApproval()
+        try check(flow.typing, false, "Opening the approval removes keyboard focus")
+        try check(before?.isCancelled, true, "Opening the approval cancels an outdated jump")
+        try flow.clock.advance(32_000_000)
+        await before?.value
+        try check(flow.requestFollow()?.isCancelled, true, "Open approval prevents a new automatic jump")
+        try check(flow.scrolls, [], "No automatic scroll under the approval")
+
+        flow.approving = nil
+        let afterward = flow.requestFollow()
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(32_000_000)
+        await afterward?.value
+        try check(flow.scrolls, [false], "Dismissal recovers a reader who was following")
+
+        flow.following = false
+        flow.showApproval()
+        flow.approving = nil
+        try check(flow.requestFollow() == nil, true, "Reading history is preserved after approval")
+    }
+
+    static func smartApprovalQueries() throws {
+        try check(Grant.allowsSmartQuery("weather", grant: .web), true, "Public query")
+        try check(Grant.allowsSmartQuery("read_file", grant: .desk), true, "Read local workspace")
+        try check(Grant.allowsSmartQuery("read_file", grant: .hills), false, "The same tool on a remote host still asks")
+        try check(Grant.allowsSmartQuery("shell", grant: .den), false, "Commands still ask")
+        try check(Grant.allowsSmartQuery("edit_file", grant: .desk), false, "Writes still ask")
+        try check(Grant.allowsSmartQuery("mcp_read", grant: .mcp), false, "An external tool cannot self-authorize")
     }
 
     @MainActor

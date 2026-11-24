@@ -85,8 +85,7 @@ extension ChatPage {
                 if waiting.forced == true || waiting.answerable == false {
                     Button {
                         Haptics.grab()
-                        typing = false
-                        approving = waiting
+                        presentApproval(waiting)
                     } label: {
                         HStack(spacing: Ink.Space.m) {
                             Image(systemName: "seal").foregroundStyle(Ink.warn)
@@ -106,8 +105,7 @@ extension ChatPage {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else {
                     InlineApproval(approval: waiting, team: team, name: team.bots.first { $0.id == waiting.botId }?.name ?? bot.name) {
-                        typing = false
-                        approving = waiting
+                        presentApproval(waiting)
                     }
                     .id(waiting.id)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -544,6 +542,13 @@ extension ChatPage {
         if viewport.needsEndCorrection, followPending?.isCancelled != false { followToEnd(settle: false) }
     }
 
+    private func presentApproval(_ approval: Approval) {
+        followPending?.cancel()
+        settleEnd?.cancel()
+        typing = false
+        approving = approval
+    }
+
     func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
             selecting.insert(id)
@@ -555,13 +560,13 @@ extension ChatPage {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     func followToEnd(settle: Bool = true) {
-        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty else { return }
+        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty, approving == nil else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             defer { if !Task.isCancelled { followPending = nil } }
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  viewport.needsEndCorrection else { return }
+                  approving == nil, viewport.needsEndCorrection else { return }
             toEnd()
         }
     }
@@ -580,7 +585,7 @@ extension ChatPage {
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  viewport.needsEndCorrection else { return }
+                  approving == nil, viewport.needsEndCorrection else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }
