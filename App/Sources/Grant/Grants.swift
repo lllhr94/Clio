@@ -404,6 +404,7 @@ struct Asking: AgentTool {
     let grant: Grant?
 
     var spec: ToolSpec { inner.spec }
+    var isReadOnlySafe: Bool { false }
     func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
     func approval(for arguments: JSONValue) -> ApprovalAsk? {
         if let existing = inner.approval(for: arguments) {

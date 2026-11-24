@@ -272,6 +272,7 @@ struct RecallTool: AgentTool {
 struct SearchHistoryTool: AgentTool {
     let helping: Bool
     let find: @Sendable (_ query: String, _ includeAllChats: Bool, _ limit: Int) async -> String
+    var isReadOnlySafe: Bool { true }
 
     var spec: ToolSpec {
         let scopeDescription: String
