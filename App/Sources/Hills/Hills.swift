@@ -377,8 +377,9 @@ final class Hills: ObservableObject {
 
     // MARK: Tools
 
-    func tools() -> [AgentTool] {
+    func tools(canSee: Bool = true) -> [AgentTool] {
         var tools: [AgentTool] = []
+        let turnBudget = MCPImageTurnBudget()
         let snapshotHosts = hosts
         if !hosts.isEmpty {
             let names = hosts.map { "\($0.name)（\($0.user)@\($0.address)）" }.joined(separator: "、")
@@ -468,7 +469,8 @@ final class Hills: ObservableObject {
                         let address = try await Hills.address(url, through: tunnelHost)
                         let isTunneled = tunnelHost != nil
                         return try await Hills.withCredential(serverId) { token in
-                            try await MCPClient(url: address, token: token, tunneled: isTunneled).call(remote, arguments: arguments)
+                            try await MCPClient(url: address, token: token, tunneled: isTunneled)
+                                .call(remote, arguments: arguments, canSee: canSee, turnBudget: turnBudget)
                         }
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
@@ -562,7 +564,12 @@ struct MCPClient: Sendable {
         return tools
     }
 
-    func call(_ name: String, arguments: JSONValue) async throws -> ToolOutput {
+    func call(
+        _ name: String,
+        arguments: JSONValue,
+        canSee: Bool = true,
+        turnBudget: MCPImageTurnBudget? = nil
+    ) async throws -> ToolOutput {
         if Self.sessions.get(url) == nil { try await start() }
         let result: JSONValue
         do {
@@ -571,19 +578,12 @@ struct MCPClient: Sendable {
             try await start()
             result = try await send("tools/call", ["name": .string(name), "arguments": arguments])
         }
-        var parts: [String] = []
-        for item in result["content"]?.array ?? [] {
-            switch item["type"]?.string {
-            case "text": parts.append(item["text"]?.string ?? "")
-            case "image": parts.append("［一张图片，\(item["mimeType"]?.string ?? "")］")
-            case "resource": parts.append(item["resource"]?["text"]?.string ?? "［资源］")
-            default: parts.append(item.compact)
-            }
-        }
-        if parts.isEmpty, let structured = result["structuredContent"] { parts.append(structured.compact) }
-        var text = parts.joined(separator: "\n")
-        if text.count > 16000 { text = String(text.prefix(16000)) + "\n……（太长，截断了）" }
-        return ToolOutput(text.isEmpty ? "（没有内容）" : text, isError: result["isError"]?.bool ?? false)
+        return MCPImage.toolOutput(
+            from: result,
+            canSee: canSee,
+            skipImages: Task.isCancelled,
+            turnBudget: turnBudget
+        )
     }
 
     enum MCPError: LocalizedError {
