@@ -1310,7 +1310,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         activeKeyboardStartOverlap = beginOverlap
         activeKeyboardEndOverlap = endOverlap
         activeKeyboardDuration = duration
-        activeKeyboardDeadline = CACurrentMediaTime() + max(0.08, duration) + 0.12
+        if duration > 0.01 {
+            activeKeyboardDeadline = CACurrentMediaTime() + duration + 0.12
+        } else {
+            activeKeyboardDeadline = 0
+        }
 
         if insetDisplayLink != nil && abs(insetCatchUpToBottom - insetCatchUpFromBottom) > 0.5 && duration > 0.01 {
             insetCatchUpDuration = max(0.08, duration)
@@ -1435,8 +1439,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         let now = CACurrentMediaTime()
         let inKeyboardWindow = now <= activeKeyboardDeadline
+            && activeKeyboardDuration > 0.01
             && abs(activeKeyboardEndOverlap - activeKeyboardStartOverlap) > 1
-        let isInteractiveFingerFollow = collectionView.isDragging && !inKeyboardWindow && abs(bottomDelta) < 36
+        let isInteractiveFingerFollow = collectionView.isDragging && !inKeyboardWindow
         let shouldSnapImmediately = isInteractiveFingerFollow || (reduceMotionEnabled && (!inKeyboardWindow || activeKeyboardDuration <= 0.01))
 
         if shouldSnapImmediately {
@@ -1887,7 +1892,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             for uuid in user.activeSelectionOwnerIDs() {
                 handleSelectionChanged(uuid, false)
             }
-            if let heroID = actions.currentPreparedHeroID(), user.containsAttachment(heroID) {
+            if let heroID = actions.currentPreparedHeroID(),
+               user.containsAttachment(heroID),
+               actions.bridge.activeViewingPhotoID != heroID {
                 if lastReportedHeroTarget?.id == heroID {
                     lastReportedHeroTarget = nil
                 }
@@ -1953,6 +1960,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if let matchedHeroTarget, lastReportedHeroTarget != matchedHeroTarget {
             lastReportedHeroTarget = matchedHeroTarget
             actions.onPreparePhotoHero(matchedHeroTarget)
+        } else if trackedHeroID == nil {
+            lastReportedHeroTarget = nil
         }
 
         let distanceFromBottom = bottomOffsetY(for: collectionView) - collectionView.contentOffset.y

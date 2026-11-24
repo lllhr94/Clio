@@ -146,6 +146,12 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
                     guard let actions, let pv, let rect = pv.frameInWindow() else { return }
                     actions.onPreparePhotoHero(ChatPhotoHeroTarget(id: ref, globalRect: rect, image: pv.currentImage))
                 }
+                pv.onCancelTouch = { [weak actions] ref in
+                    guard let actions else { return }
+                    if actions.bridge.activeViewingPhotoID != ref {
+                        actions.onClearPhotoHero(ref)
+                    }
+                }
                 pv.onTap = { [weak actions, weak pv] ref in
                     guard let actions else { return }
                     if let pv, let rect = pv.frameInWindow() {

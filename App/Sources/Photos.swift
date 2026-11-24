@@ -94,6 +94,9 @@ struct PhotoViewer: View {
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
     @State private var isPinching = false
+    @State private var isDragging = false
+    @State private var dragSawPinch = false
+    @State private var dragEligibleForDismiss = false
     @State private var panOffset: CGSize = .zero
     @State private var dragDelta: CGSize = .zero
     @State private var pull: CGSize = .zero
@@ -140,6 +143,7 @@ struct PhotoViewer: View {
         .overlay(alignment: .topTrailing) {
             closeButton(opacity: max(0, 1 - progress * 2.4))
         }
+        .interactiveDismissDisabled(zoom > 1.01 || isPinching)
         .task {
             await loadImage()
         }
@@ -230,7 +234,17 @@ struct PhotoViewer: View {
                 guard image != nil else { return }
                 if !isPinching {
                     isPinching = true
+                    dragSawPinch = true
+                    dragEligibleForDismiss = false
                     pull = .zero
+                    if dragDelta != .zero {
+                        let committed = CGSize(
+                            width: panOffset.width + dragDelta.width,
+                            height: panOffset.height + dragDelta.height
+                        )
+                        panOffset = clampedPan(committed, scale: zoom)
+                        dragDelta = .zero
+                    }
                 }
                 pinch = value.magnification
             }
@@ -259,20 +273,36 @@ struct PhotoViewer: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
-                guard image != nil, !isPinching else { return }
-                if zoom <= 1.01 {
+                guard image != nil else { return }
+                if !isDragging {
+                    isDragging = true
+                    dragSawPinch = isPinching
+                    dragEligibleForDismiss = !isPinching && zoom <= 1.01
+                }
+                if isPinching {
+                    dragSawPinch = true
+                    dragEligibleForDismiss = false
+                    pull = .zero
+                    return
+                }
+                if dragEligibleForDismiss {
                     pull = value.translation
-                } else {
+                } else if zoom > 1.01 && !dragSawPinch {
                     dragDelta = value.translation
                 }
             }
             .onEnded { value in
-                guard image != nil, !isPinching else {
+                let shouldDismissCheck = dragEligibleForDismiss && !dragSawPinch && !isPinching && zoom <= 1.01
+                let shouldPanCommit = !dragSawPinch && !isPinching && zoom > 1.01
+                isDragging = false
+                dragEligibleForDismiss = false
+                dragSawPinch = false
+                guard image != nil else {
                     pull = .zero
                     dragDelta = .zero
                     return
                 }
-                if zoom <= 1.01 {
+                if shouldDismissCheck {
                     let verticalDrag = abs(value.translation.height)
                     let predictedVertical = abs(value.predictedEndTranslation.height)
                     if verticalDrag > 110 || predictedVertical > 240 {
@@ -282,7 +312,7 @@ struct PhotoViewer: View {
                             pull = .zero
                         }
                     }
-                } else {
+                } else if shouldPanCommit {
                     let combined = CGSize(
                         width: panOffset.width + value.translation.width,
                         height: panOffset.height + value.translation.height
@@ -291,6 +321,13 @@ struct PhotoViewer: View {
                     dragDelta = .zero
                     withAnimation(settleAnimation) {
                         panOffset = clamped
+                    }
+                } else {
+                    dragDelta = .zero
+                    if pull != .zero {
+                        withAnimation(settleAnimation) {
+                            pull = .zero
+                        }
                     }
                 }
             }

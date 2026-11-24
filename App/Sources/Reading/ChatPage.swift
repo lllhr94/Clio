@@ -36,6 +36,7 @@ struct ChatPage: View {
     @State var takingPhoto = false
     @State var approving: Approval?
     @State var viewing: String?
+    @State var presentedViewing: Viewing?
     @Namespace private var photoZoom
     /// The message being changed and sent again.
     @State var editing: String?
@@ -863,7 +864,11 @@ struct ChatPage: View {
         let filesBinding = $files
         let queuedIdsBinding = $draftAttachmentQueuedIds
 
-        bridge.onViewPhoto = { ref in viewingBinding.wrappedValue = ref }
+        let bridgeRef = bridge
+        bridge.onViewPhoto = { [weak bridgeRef] ref in
+            bridgeRef?.activeViewingPhotoID = ref
+            viewingBinding.wrappedValue = ref
+        }
         bridge.onQuote = { id, text in quotingBinding.wrappedValue = Noting(id: id, text: text) }
         bridge.onEdit = { [weak draftRef] id, text in
             withAnimation(Ink.Motion.settle) {
@@ -1196,13 +1201,30 @@ struct ChatPage: View {
             }
             .ignoresSafeArea()
         }
-        .fullScreenCover(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
+        .onChange(of: viewing) { _, next in
+            if let next {
+                bridge.activeViewingPhotoID = next
+                if presentedViewing?.id != next {
+                    presentedViewing = Viewing(id: next, canZoom: !calmPetMotion && canZoomPhoto(next))
+                }
+            } else {
+                presentedViewing = nil
+            }
+        }
+        .fullScreenCover(item: $presentedViewing, onDismiss: {
+            let dismissedID = bridge.activeViewingPhotoID
+            bridge.activeViewingPhotoID = nil
+            viewing = nil
+            if let dismissedID {
+                bridge.onDismissPhotoHero?(dismissedID)
+            }
+        }) { item in
             PhotoViewer(chat: chat, attachmentId: item.id)
                 .presentationBackground(.clear)
                 .modifier(PhotoZoomDestinationModifier(
                     id: item.id,
                     namespace: photoZoom,
-                    enabled: !calmPetMotion && canZoomPhoto(item.id)
+                    enabled: item.canZoom
                 ))
         }
         .onChange(of: finding) { _, now in
@@ -1225,7 +1247,7 @@ struct ChatPage: View {
     @State var exportFailed = false
     struct ShareFile: Identifiable { let url: URL; var id: URL { url } }
 
-    struct Viewing: Identifiable { let id: String }
+    struct Viewing: Identifiable { let id: String; let canZoom: Bool }
     struct Noting: Identifiable { let id: String; let text: String }
 
     private func canZoomPhoto(_ id: String) -> Bool {
@@ -1341,6 +1363,8 @@ final class ChatDictationSlot {
 @MainActor
 final class ChatRowBridge {
     var matchedHeroID: String?
+    var activeViewingPhotoID: String?
+    var onDismissPhotoHero: ((String) -> Void)?
     var onViewPhoto: (String) -> Void = { _ in }
     var onQuote: (String, String) -> Void = { _, _ in }
     var onEdit: (String, String) -> Void = { _, _ in }
@@ -1361,6 +1385,8 @@ final class ChatRowBridge {
 
     func unbind() {
         matchedHeroID = nil
+        activeViewingPhotoID = nil
+        onDismissPhotoHero = nil
         onViewPhoto = { _ in }
         onQuote = { _, _ in }
         onEdit = { _, _ in }

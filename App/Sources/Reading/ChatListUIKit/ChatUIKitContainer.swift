@@ -876,6 +876,16 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             guard let coordinator, !coordinator.isDismantled else { return nil }
             return photoHero?.id
         }
+
+        bridge.onDismissPhotoHero = { [weak coordinator] dismissedID in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if bridge.matchedHeroID == dismissedID {
+                bridge.matchedHeroID = nil
+            }
+            if photoHero?.id == dismissedID {
+                photoHero = nil
+            }
+        }
     }
 
     @MainActor

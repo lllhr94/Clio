@@ -275,6 +275,7 @@ final class ChatRemotePhotoView: UIView {
     private static let cache = NSCache<NSString, UIImage>()
 
     var onPrepareTouch: ((String) -> Void)?
+    var onCancelTouch: ((String) -> Void)?
     var onTap: ((String) -> Void)?
     var currentImage: UIImage? { imageView.image }
 
@@ -320,6 +321,10 @@ final class ChatRemotePhotoView: UIView {
             guard let self, !self.currentAttachmentID.isEmpty else { return }
             self.onPrepareTouch?(self.currentAttachmentID)
         }, for: .touchDown)
+        tapButton.addAction(UIAction { [weak self] _ in
+            guard let self, !self.currentAttachmentID.isEmpty else { return }
+            self.onCancelTouch?(self.currentAttachmentID)
+        }, for: [.touchUpOutside, .touchCancel])
         tapButton.addAction(UIAction { [weak self] _ in
             guard let self, !self.currentAttachmentID.isEmpty else { return }
             Haptics.tick(0.5)
@@ -372,6 +377,7 @@ final class ChatRemotePhotoView: UIView {
         placeholderIcon.isHidden = true
         spinner.stopAnimating()
         onPrepareTouch = nil
+        onCancelTouch = nil
         onTap = nil
     }
 
