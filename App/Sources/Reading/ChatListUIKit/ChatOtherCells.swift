@@ -91,6 +91,19 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         richTextView.clearSelectionIfNeeded()
     }
 
+    func photoHeroTarget(for attachmentID: String) -> ChatPhotoHeroTarget? {
+        guard let row = currentRow,
+              let idx = row.line.refs.firstIndex(of: attachmentID),
+              idx < photoViews.count else { return nil }
+        let pv = photoViews[idx]
+        guard !pv.isHidden, let rect = pv.frameInWindow() else { return nil }
+        return ChatPhotoHeroTarget(id: attachmentID, globalRect: rect, image: pv.currentImage)
+    }
+
+    func containsAttachment(_ attachmentID: String) -> Bool {
+        currentRow?.line.refs.contains(attachmentID) == true
+    }
+
     func configure(
         row: ChatListRowItem,
         entry: ChatLayoutCache.UserLayoutEntry,
@@ -129,8 +142,23 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         for (idx, pv) in photoViews.enumerated() {
             if idx < refs.count {
                 pv.isHidden = false
-                pv.onTap = { [weak actions] ref in
-                    actions?.bridge.onViewPhoto(ref)
+                pv.onPrepareTouch = { [weak actions, weak pv] ref in
+                    guard let actions, let pv, let rect = pv.frameInWindow() else { return }
+                    actions.onPreparePhotoHero(ChatPhotoHeroTarget(id: ref, globalRect: rect, image: pv.currentImage))
+                }
+                pv.onTap = { [weak actions, weak pv] ref in
+                    guard let actions else { return }
+                    if let pv, let rect = pv.frameInWindow() {
+                        let needsDefer = actions.currentPreparedHeroID() != ref
+                        actions.onPreparePhotoHero(ChatPhotoHeroTarget(id: ref, globalRect: rect, image: pv.currentImage))
+                        if needsDefer {
+                            DispatchQueue.main.async {
+                                actions.bridge.onViewPhoto(ref)
+                            }
+                            return
+                        }
+                    }
+                    actions.bridge.onViewPhoto(ref)
                 }
                 pv.configure(chat: actions.chat, attachmentID: refs[idx])
             } else {

@@ -177,6 +177,17 @@ struct ChatListState {
     let reduceMotion: Bool
 }
 
+/// Snapshot of a tapped UIKit photo thumbnail for SwiftUI Hero zoom transition.
+struct ChatPhotoHeroTarget: Equatable {
+    let id: String
+    let globalRect: CGRect
+    let image: UIImage?
+
+    static func == (lhs: ChatPhotoHeroTarget, rhs: ChatPhotoHeroTarget) -> Bool {
+        lhs.id == rhs.id && lhs.globalRect == rhs.globalRect && lhs.image === rhs.image
+    }
+}
+
 /// Callbacks and dependencies bridging UIKit cells & scroll events back to `ChatPage`.
 @MainActor
 final class ChatListActions {
@@ -202,6 +213,9 @@ final class ChatListActions {
     var onDragStarted: () -> Void = {}
     var onScrollEnded: () -> Void = {}
     var onPickStarter: (String) -> Void = { _ in }
+    var onPreparePhotoHero: (ChatPhotoHeroTarget) -> Void = { _ in }
+    var onClearPhotoHero: (String) -> Void = { _ in }
+    var currentPreparedHeroID: () -> String? = { nil }
 
     init(
         chat: ChatModel,

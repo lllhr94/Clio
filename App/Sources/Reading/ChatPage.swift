@@ -36,6 +36,7 @@ struct ChatPage: View {
     @State var takingPhoto = false
     @State var approving: Approval?
     @State var viewing: String?
+    @Namespace private var photoZoom
     /// The message being changed and sent again.
     @State var editing: String?
     @State var scroller: ChatScroller?
@@ -421,8 +422,10 @@ struct ChatPage: View {
     var conversation: some View {
         if useUIKitChatList {
             uikitConversation
+                .environment(\.photoZoomNamespace, photoZoom)
         } else {
             swiftUIConversation
+                .environment(\.photoZoomNamespace, photoZoom)
         }
     }
 
@@ -1193,8 +1196,14 @@ struct ChatPage: View {
             }
             .ignoresSafeArea()
         }
-        .sheet(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
+        .fullScreenCover(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
             PhotoViewer(chat: chat, attachmentId: item.id)
+                .presentationBackground(.clear)
+                .modifier(PhotoZoomDestinationModifier(
+                    id: item.id,
+                    namespace: photoZoom,
+                    enabled: !calmPetMotion && canZoomPhoto(item.id)
+                ))
         }
         .onChange(of: finding) { _, now in
             DiagTrail.record(now ? "开查找" : "关查找")
@@ -1218,6 +1227,10 @@ struct ChatPage: View {
 
     struct Viewing: Identifiable { let id: String }
     struct Noting: Identifiable { let id: String; let text: String }
+
+    private func canZoomPhoto(_ id: String) -> Bool {
+        useUIKitChatList ? (bridge.matchedHeroID == id) : true
+    }
 
     /// What you asked just before a reply, for the picture of the exchange.
     func askedBefore(_ id: String) -> String? {
@@ -1327,6 +1340,7 @@ final class ChatDictationSlot {
 
 @MainActor
 final class ChatRowBridge {
+    var matchedHeroID: String?
     var onViewPhoto: (String) -> Void = { _ in }
     var onQuote: (String, String) -> Void = { _, _ in }
     var onEdit: (String, String) -> Void = { _, _ in }
@@ -1346,6 +1360,7 @@ final class ChatRowBridge {
     var onSendQueuedNow: () -> Void = {}
 
     func unbind() {
+        matchedHeroID = nil
         onViewPhoto = { _ in }
         onQuote = { _, _ in }
         onEdit = { _, _ in }

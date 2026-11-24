@@ -37,6 +37,7 @@ extension ChatPage {
 struct ChatAwayCardView: View {
     @ObservedObject var team: TeamModel
     let awayState: ChatAwayState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if !awayState.items.isEmpty {
@@ -45,7 +46,7 @@ struct ChatAwayCardView: View {
                     Text("你不在时").font(Ink.serif(14, bold: true)).foregroundStyle(Ink.inkSoft)
                     Spacer()
                     Button {
-                        withAnimation(Ink.Motion.settle) { awayState.items = [] }
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Ink.Motion.settle) { awayState.items = [] }
                     } label: {
                         Image(systemName: "xmark").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint).frame(width: 28, height: 28)
                     }
@@ -55,7 +56,7 @@ struct ChatAwayCardView: View {
                 ForEach(awayState.items) { item in
                     Button {
                         Haptics.tick(0.6)
-                        withAnimation(Ink.Motion.settle) { awayState.items = [] }
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Ink.Motion.settle) { awayState.items = [] }
                         NotificationCenter.default.post(name: .clioOpenChat, object: item.chat)
                     } label: {
                         HStack(spacing: Ink.Space.s) {
@@ -73,7 +74,7 @@ struct ChatAwayCardView: View {
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, Ink.Space.s)
             .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
         }
     }
 }
