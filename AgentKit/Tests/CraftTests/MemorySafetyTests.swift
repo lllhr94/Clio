@@ -79,7 +79,8 @@ final class MemorySafetyTests: XCTestCase {
         XCTAssertFalse(first.prefix.contains("现在是 "))
         XCTAssertFalse(first.prefix.contains("日记"))
         XCTAssertFalse(first.prefix.contains("前情提要"))
-        XCTAssertFalse(first.prefix.contains("工作地点"))
+        XCTAssertFalse(first.prefix.contains("这段絮语的工作地点是书案。"))
+        XCTAssertTrue(first.volatileTail.contains("这段絮语的工作地点是书案。"))
         XCTAssertFalse(first.prefix.contains("【连接器】"))
 
         // Verify ModelInputSections compatibility: skills and memory sit directly before "\n\n做事：\n".
