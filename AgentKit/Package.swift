@@ -12,9 +12,17 @@ let package = Package(
     targets: [
         .target(name: "AgentKit"),
         .target(name: "Prose"),
-        .target(name: "Craft", dependencies: ["AgentKit"]),
+        .target(
+            name: "Craft",
+            dependencies: ["AgentKit"],
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .testTarget(name: "AgentKitTests", dependencies: ["AgentKit"]),
         .testTarget(name: "ProseTests", dependencies: ["Prose"]),
-        .testTarget(name: "CraftTests", dependencies: ["Craft", "AgentKit"]),
+        .testTarget(
+            name: "CraftTests",
+            dependencies: ["Craft", "AgentKit"],
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
     ]
 )
