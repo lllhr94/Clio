@@ -213,13 +213,13 @@ final class ChatModel {
     /// Lets a few more characters out. False when there is nothing left to let out.
     private func step() -> Bool {
         if let settling = fresh, settling.shown != nil {
-            guard shown < finalCount else {
+            shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
+            if shown >= finalCount {
                 // The same layout stays in place. No crossfade over the finished text.
                 fresh?.shown = nil
                 return false
             }
-            shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
-            if shown >= finalCount || due() { fresh?.shown = shown }
+            if due() { fresh?.shown = shown }
             return true
         }
         let goal = target.count

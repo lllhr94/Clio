@@ -150,7 +150,7 @@ private enum Haptics {
 private final class ReplyFixture {
     struct Fresh {
         let id: String
-        let shown: Int?
+        var shown: Int?
     }
 
     var target = "abcdef"
@@ -164,9 +164,12 @@ private final class ReplyFixture {
     var lines: [ChatLine] = []
 
     func update(_ next: [ChatLine], event: TurnEvent) { updateKeptRows(next, event: event) }
+    func advance() -> Bool { step() }
     func apply(_ next: [ChatLine]) { lines = next }
     func type() {}
+    func due() -> Bool { true }
 // RULE: KEPT_ROWS
+// RULE: TYPING_STEP
 }
 
 @main
@@ -212,6 +215,10 @@ private enum ChatFlowTests {
         try check(flow.fresh?.id, reply.id, "Only the committed row replaces the stream")
         try check(flow.fresh?.shown, 3, "The saved row starts at the last visible character")
         try check(flow.streaming, "", "The live row retires when its replacement is present")
+        try check(flow.advance(), true, "The rest of the kept reply can still animate")
+        try check(flow.fresh?.shown, 4, "The reply shows the next character")
+        try check(flow.advance(), false, "The completed reply stops animating on the final character")
+        try check(flow.fresh?.shown, nil, "The final character and settled row appear together")
 
         let fast = ReplyFixture()
         fast.publishedShown = 0
