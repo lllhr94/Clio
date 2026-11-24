@@ -515,7 +515,8 @@ extension ChatPage {
         followPending?.cancel()
         followPending = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
-            guard following, !touchScrolling else { return }
+            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
+                  viewport.needsEndCorrection else { return }
             toEnd()
         }
     }
@@ -529,11 +530,12 @@ extension ChatPage {
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
         // The first jump goes by guessed heights of rows not drawn yet; once they are drawn the foot may sit elsewhere.
-        // One more look a moment later puts the page on the real foot instead of a blank stretch.
+        // Correct once if the real foot still differs after those rows have been drawn.
         settleEnd?.cancel()
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
-            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty else { return }
+            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
+                  viewport.needsEndCorrection else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }

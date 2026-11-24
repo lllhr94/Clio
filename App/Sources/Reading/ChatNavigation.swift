@@ -3,6 +3,7 @@ import UIKit
 
 final class ChatViewport {
     var ids: [String] = []
+    var needsEndCorrection = true
 }
 
 struct ChatBrowserIndicator: View {

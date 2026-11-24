@@ -372,9 +372,10 @@ struct ChatPage: View {
             // Size changes already use the bottom anchor while following. Only schedule a correction
             // when the viewport actually leaves the bottom, rather than scrolling again on every reflow.
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                Self.below(geometry) > 2
-            } action: { _, behind in
-                if behind { followToEnd(settle: false) }
+                abs(Self.below(geometry)) > 2
+            } action: { _, needsCorrection in
+                viewport.needsEndCorrection = needsCorrection
+                if needsCorrection { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) >= 80

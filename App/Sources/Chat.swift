@@ -172,6 +172,11 @@ final class ChatModel {
             } else {
                 lines = build(newest)
             }
+            // A reply can arrive while the initial history is loading and there is no listener yet.
+            target = team.streamed[key]?.text ?? ""
+            shown = target.count
+            publishedShown = shown
+            streaming = target
             loaded = true
             opening = nil
         }
@@ -189,6 +194,7 @@ final class ChatModel {
         clearThinking()
         typing?.cancel()
         typing = nil
+        fresh = nil
     }
 
     // MARK: Even pace
@@ -200,7 +206,7 @@ final class ChatModel {
             while !Task.isCancelled, let self, self.step() {
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self?.typing = nil
+            if !Task.isCancelled { self?.typing = nil }
         }
     }
 
@@ -381,10 +387,6 @@ final class ChatModel {
         }
     }
 
-    private static func same(_ left: String, _ right: String) -> Bool {
-        left.trimmingCharacters(in: .whitespacesAndNewlines) == right.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     // MARK: Live
 
     private func showThinking(_ piece: String) {
@@ -458,7 +460,7 @@ final class ChatModel {
             clearThinking()
             running = label
             rebuildToolRows(team.history(key))
-        case .changed:
+        case .changed, .replyCommitted:
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
             if target.isEmpty, let last = all.last?.message,
@@ -467,29 +469,7 @@ final class ChatModel {
                 return
             }
             cancelToolRows()
-            let next = build(all)
-            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
-                // The kept row takes over exactly where the streaming one stood. Not only when the words match to
-                // the letter: the kept text can differ a little (a 心绪 taken out, trailing spaces, a sources list
-                // tidied), and waiting for an exact match left both rows up, then dropped the streaming one, so the
-                // answer seemed to vanish and come back.
-                finalCount = reply.text.count
-                if !Self.same(reply.text, target) { shown = min(shown, finalCount) }
-                fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
-                target = ""
-                streaming = ""
-                pulse = ""
-                heldRows = nil
-                lines = next
-                if fresh?.shown != nil { type() }
-                Haptics.tick(0.6)
-            } else {
-                if all.last?.note == true {
-                    target = ""
-                    streaming = ""
-                }
-                apply(next)
-            }
+            updateKeptRows(build(all), event: event)
         case .finished:
             running = nil
             clearThinking()
@@ -506,6 +486,26 @@ final class ChatModel {
             withAnimation(.smooth) { error = message }
             Haptics.lock()
         }
+    }
+
+    private func updateKeptRows(_ next: [ChatLine], event: TurnEvent) {
+        guard !target.isEmpty, case let .replyCommitted(id) = event,
+              let reply = next.first(where: { $0.id == id && $0.kind == .bot }) else {
+            // A timed delivery or a status note can arrive while a different reply is still being written.
+            apply(next)
+            return
+        }
+        // Continue from the last visible character, even if the saved version has been tidied.
+        finalCount = reply.text.count
+        shown = min(publishedShown, finalCount)
+        fresh = Fresh(id: id, shown: shown > 0 && shown < finalCount ? shown : nil)
+        target = ""
+        streaming = ""
+        pulse = ""
+        heldRows = nil
+        lines = next
+        if fresh?.shown != nil { type() }
+        Haptics.tick(0.6)
     }
 
     /// A kept photo. `preview` is ignored: the phone has the whole photo.

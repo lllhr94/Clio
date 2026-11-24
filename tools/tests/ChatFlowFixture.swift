@@ -4,6 +4,7 @@ import Foundation
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
 // RULE: STREAM_BLOCKS
 // RULE: DRAFT_INPUT
+// RULE: TURN_EVENT
 
 private enum ScrollPhase { case idle, interacting, decelerating, animating }
 
@@ -92,6 +93,11 @@ private final class FlowFixture {
     var jumpVisible = false
     var selecting: Set<UUID> = []
     var historyPage: [String]?
+    let viewport = Viewport()
+
+    final class Viewport {
+        var needsEndCorrection = true
+    }
 
     func lingerJumpButtons() {}
     func invalidatePhotoSelection() {}
@@ -130,6 +136,39 @@ private final class FlowFixture {
 // RULE: CLEAR_COMPOSER
 }
 
+private struct ChatLine {
+    enum Kind { case bot, note }
+    let id: String
+    let kind: Kind
+    let text: String
+}
+
+private enum Haptics {
+    static func tick(_ strength: Double) {}
+}
+
+private final class ReplyFixture {
+    struct Fresh {
+        let id: String
+        let shown: Int?
+    }
+
+    var target = "abcdef"
+    var streaming = "abc"
+    var pulse = ""
+    var finalCount = 0
+    var shown = 4
+    var publishedShown = 3
+    var fresh: Fresh?
+    var heldRows: [ChatLine]?
+    var lines: [ChatLine] = []
+
+    func update(_ next: [ChatLine], event: TurnEvent) { updateKeptRows(next, event: event) }
+    func apply(_ next: [ChatLine]) { lines = next }
+    func type() {}
+// RULE: KEPT_ROWS
+}
+
 @main
 private enum ChatFlowTests {
     static func main() async {
@@ -139,11 +178,46 @@ private enum ChatFlowTests {
             try await followingTheReader()
             try await latestFollowWins()
             try await sendingCoalesces()
+            try await skipFollowOnceAligned()
+            try replyHandoff()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    @MainActor
+    static func skipFollowOnceAligned() async throws {
+        let flow = FlowFixture()
+        let request = flow.requestFollow()
+        await flow.clock.waitForSleepers(1)
+        flow.viewport.needsEndCorrection = false
+        try flow.clock.advance(32_000_000)
+        await request?.value
+        try check(flow.scrolls, [], "The system anchor settled the scroll before the delayed request")
+    }
+
+    static func replyHandoff() throws {
+        let flow = ReplyFixture()
+        let note = ChatLine(id: "note", kind: .note, text: "Status")
+        let scheduled = ChatLine(id: "scheduled", kind: .bot, text: "Scheduled delivery")
+        let reply = ChatLine(id: "reply", kind: .bot, text: "abcde")
+        flow.update([note, scheduled], event: .changed)
+        try check(flow.lines.map(\.id), ["note", "scheduled"], "Independent history changes still appear")
+        try check(flow.streaming, "abc", "A note and scheduled delivery leave the live reply in place")
+        flow.update([note, scheduled], event: .replyCommitted(reply.id))
+        try check(flow.streaming, "abc", "A missing saved row cannot replace the visible stream")
+        flow.update([note, reply, scheduled], event: .replyCommitted(reply.id))
+        try check(flow.fresh?.id, reply.id, "Only the committed row replaces the stream")
+        try check(flow.fresh?.shown, 3, "The saved row starts at the last visible character")
+        try check(flow.streaming, "", "The live row retires when its replacement is present")
+
+        let fast = ReplyFixture()
+        fast.publishedShown = 0
+        fast.streaming = ""
+        fast.update([reply], event: .replyCommitted(reply.id))
+        try check(fast.fresh?.shown, nil, "An instant reply can display in full without an empty frame")
     }
 
     static func paragraphsAndFences() throws {

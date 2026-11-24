@@ -46,6 +46,8 @@ def fixture() -> str:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     fragments = {
+        "TURN_EVENT": extract(ROOT / "App/Sources/Team.swift", r"^enum TurnEvent \{\n.*?^\}", "turn events"),
+        "KEPT_ROWS": member(ROOT / "App/Sources/Chat.swift", "updateKeptRows"),
         "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
         "DRAFT_INPUT": extract(chat, r"^enum DraftInput \{\n.*?^\}", "draft rules"),
         "BELOW": chat_member("below"),
