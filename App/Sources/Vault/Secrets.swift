@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import Foundation
 import LocalAuthentication
 import SwiftUI
@@ -104,6 +105,53 @@ final class Asker: ObservableObject {
         var value = ""
         /// A picker instead of a text field.
         var choices: [String] = []
+        /// Structured v2 question metadata; nil `askKind` infers `.single` when options exist, else `.text`.
+        var askKind: AskFieldKind? = nil
+        var options: [AskOption] = []
+        var allowCustom = false
+        var minSelections: Int? = nil
+        var maxSelections: Int? = nil
+        var defaultSelections: [String] = []
+        var required = false
+        var optionalBadge = false
+
+        var effectiveKind: AskFieldKind {
+            if secret { return .text }
+            if let askKind { return askKind }
+            return effectiveOptions.isEmpty ? .text : .single
+        }
+
+        var effectiveOptions: [AskOption] {
+            if secret { return [] }
+            if !options.isEmpty { return options }
+            return choices.map { AskOption(value: $0) }
+        }
+
+        var askQuestion: AskQuestion {
+            let effectiveRequired: Bool
+            if optionalBadge {
+                effectiveRequired = false
+            } else if askKind == nil && !effectiveOptions.isEmpty {
+                effectiveRequired = true
+            } else {
+                effectiveRequired = required
+            }
+            return AskQuestion(
+                key: key,
+                label: label,
+                kind: effectiveKind,
+                options: effectiveOptions,
+                allowCustom: secret ? false : allowCustom,
+                minSelections: secret ? nil : minSelections,
+                maxSelections: secret ? nil : maxSelections,
+                placeholder: placeholder,
+                defaultValue: secret ? "" : value,
+                defaultSelections: secret ? [] : defaultSelections,
+                required: effectiveRequired,
+                explicitlyOptional: optionalBadge,
+                secret: secret
+            )
+        }
     }
 
     struct Form: Identifiable, Sendable {
@@ -118,9 +166,11 @@ final class Asker: ObservableObject {
         /// The conversation that asked, so its page shows it and stopping it puts it away; nil for the app's own
         /// questions (a download, say).
         var chat: String?
+        /// Forced Vault routing: any prompt asking for a secret or credential MUST stay off inline chat.
+        var requiresVault = false
 
         /// A short slip with nothing secret is answered right in the conversation; the rest get the full sheet.
-        var inline: Bool { kind == .note && fields.count <= 3 && !fields.contains(where: \.secret) }
+        var inline: Bool { !requiresVault && kind == .note && fields.count <= 3 && !fields.contains(where: \.secret) }
     }
 
     /// Filled values by key; nil when the user put the slip away.
@@ -163,57 +213,117 @@ final class Asker: ObservableObject {
     }
 }
 
+extension Asker.Field {
+    init(question: AskQuestion) {
+        self.init(
+            key: question.key,
+            label: question.label,
+            secret: question.secret,
+            placeholder: question.placeholder,
+            value: question.secret ? "" : question.defaultValue,
+            choices: question.secret ? [] : question.options.map(\.value),
+            askKind: question.secret ? .text : question.kind,
+            options: question.secret ? [] : question.options,
+            allowCustom: question.secret ? false : question.allowCustom,
+            minSelections: question.secret ? nil : question.minSelections,
+            maxSelections: question.secret ? nil : question.maxSelections,
+            defaultSelections: question.secret ? [] : question.defaultSelections,
+            required: question.required,
+            optionalBadge: question.explicitlyOptional && !question.secret
+        )
+    }
+}
+
 // MARK: Tools
 
 enum SecretTools {
     static func all(botName: String, chat: String) -> [AgentTool] {
         [
             DeskTool(name: "ask_user", description: """
-            递一张小笺请用户填写信息：比如地址、账号、日期、选项。用户填好你才拿到结果。
-            fields 里每一项：key（结果里的名字）、label（给用户看的名字）、secret（是否机密，如密码、令牌）、placeholder、value（预先填好的）、choices（可选项列表）。
-            机密的项不会交给你：它会存进信匣，你只拿到一个信匣编号，之后可用 browser_fill_secret 或 ssh 相关工具使用它。不要在聊天里让用户直接打出密码。
+            递一张小笺请用户选择或填写信息：支持单选（single）、多选（multi）、自由输入（text）以及多字段表单（fields）。用户填好你才拿到结果。
+            既可以直接传单个问题（question + options/choices + type/allowCustom），也可以传多个字段（fields 数组，每项含 key、label、type、options、choices、allowCustom、minSelections、maxSelections、placeholder、value、required、secret）。
+            options 为结构化对象数组 {label, value?, description?, recommended?}；纯字符串选项列表请传 choices: ["选项A", "选项B"]。设 allowCustom: true 时允许用户选「其他 / 自己写」。
+            机密的项（如密码、密钥、令牌、验证码等）请标 secret: true，它会强制走信匣保存，你只拿到一个信匣编号，永远看不到原文。不要在聊天里让用户直接打出密码。
             """, parameters: [
                 "type": "object",
                 "properties": [
-                    "title": ["type": "string", "description": "笺的标题，比如「登录信息」"],
-                    "reason": ["type": "string", "description": "一句话说明为什么要填"],
+                    "title": ["type": "string", "description": "笺的标题，比如「选择输出方式」或「登录信息」"],
+                    "question": ["type": "string", "description": "单问题时的提问文案（与 fields 二选一）"],
+                    "prompt": ["type": "string", "description": "question 的别名"],
+                    "reason": ["type": "string", "description": "一句话说明为什么要选或要填"],
                     "site": ["type": "string", "description": "这些信息用在哪（网址或主机），可不填"],
+                    "type": ["type": "string", "enum": ["single", "multi", "text"], "description": "单问题时的题型"],
+                    "options": ["type": "array", "description": "结构化可选项数组，每项为 {label, value?, description?, recommended?}", "items": [
+                        "type": "object",
+                        "properties": [
+                            "label": ["type": "string", "description": "展示给用户的选项文案"],
+                            "value": ["type": "string", "description": "回传给你的值，省略时与 label 相同"],
+                            "description": ["type": "string", "description": "可选的补充说明"],
+                            "recommended": ["type": "boolean", "description": "是否标为推荐"],
+                        ],
+                    ]],
+                    "choices": ["type": "array", "items": ["type": "string"], "description": "纯字符串可选项列表，例如 [\"选项A\", \"选项B\"]"],
+                    "allowCustom": ["type": "boolean", "description": "是否允许用户输入自定义内容，默认 false"],
+                    "minSelections": ["type": "integer", "description": "多选最少选几项"],
+                    "maxSelections": ["type": "integer", "description": "多选最多选几项"],
+                    "placeholder": ["type": "string"],
+                    "value": ["type": "string"],
+                    "required": ["type": "boolean"],
+                    "secret": ["type": "boolean"],
                     "fields": ["type": "array", "items": ["type": "object", "properties": [
                         "key": ["type": "string"], "label": ["type": "string"], "secret": ["type": "boolean"],
+                        "type": ["type": "string", "enum": ["single", "multi", "text"]],
+                        "options": ["type": "array", "description": "结构化可选项数组，每项为 {label, value?, description?, recommended?}", "items": [
+                            "type": "object",
+                            "properties": [
+                                "label": ["type": "string", "description": "展示给用户的选项文案"],
+                                "value": ["type": "string", "description": "回传给你的值，省略时与 label 相同"],
+                                "description": ["type": "string", "description": "可选的补充说明"],
+                                "recommended": ["type": "boolean", "description": "是否标为推荐"],
+                            ],
+                        ]],
+                        "choices": ["type": "array", "items": ["type": "string"], "description": "纯字符串可选项列表"],
+                        "allowCustom": ["type": "boolean"],
+                        "minSelections": ["type": "integer"],
+                        "maxSelections": ["type": "integer"],
                         "placeholder": ["type": "string"], "value": ["type": "string"],
-                        "choices": ["type": "array", "items": ["type": "string"]],
+                        "required": ["type": "boolean"],
                     ], "required": ["key", "label"]]],
                 ],
-                "required": ["title", "fields"],
-            ], label: { Words.t("递笺：\($0["title"]?.string ?? "")") }) { arguments in
-                var seenKeys: Set<String> = []
-                let fields: [Asker.Field] = (arguments["fields"]?.array ?? []).compactMap { item in
-                    guard let rawKey = item["key"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-                          !rawKey.isEmpty,
-                          seenKeys.insert(rawKey).inserted else { return nil }
-                    let label = item["label"]?.string ?? rawKey
-                    // A field that asks for a password, a code or a card number is kept in 信匣 whatever the model said:
-                    // otherwise its answer would go back to the model as plain text.
-                    let words = (rawKey + " " + label + " " + (item["placeholder"]?.string ?? "")).lowercased()
-                    let sensitive = ["密码", "口令", "password", "passwd", "验证码", "otp", "pin码", "pin code", "卡号", "安全码", "cvv", "token", "令牌", "密钥", "api key", "apikey", "secret"].contains { words.contains($0) }
-                    return Asker.Field(key: rawKey, label: label, secret: (item["secret"]?.bool ?? false) || sensitive,
-                                       placeholder: item["placeholder"]?.string ?? "", value: item["value"]?.string ?? "",
-                                       choices: (item["choices"]?.array ?? []).compactMap(\.string))
+            ], label: { args in
+                let heading = (args["title"]?.string ?? args["question"]?.string ?? args["prompt"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return Words.t("递笺：\(heading)")
+            }) { arguments in
+                let prompt: AskPrompt
+                switch AskUserRules.parse(arguments) {
+                case .failure(let error):
+                    return ToolOutput(error.userMessage, isError: true)
+                case .success(let parsed):
+                    prompt = parsed
                 }
-                guard !fields.isEmpty else { return ToolOutput("fields 是空的。", isError: true) }
-                let site = arguments["site"]?.string ?? ""
-                let form = Asker.Form(title: arguments["title"]?.string ?? "请填一下", reason: arguments["reason"]?.string ?? "", from: botName,
-                                      fields: fields, kind: site.hasPrefix("http") ? .web : .note, site: site, chat: chat)
-                guard let values = await Asker.shared.ask(form) else { return ToolOutput("用户把笺收起来了，没有填。", isError: true) }
-                let lines = fields.map { field -> String in
-                    let value = values[field.key] ?? ""
-                    if field.secret {
-                        if value.hasPrefix("secret:") { return "\(field.key)：已存进信匣，编号 \(value.dropFirst(7))（你看不到内容）" }
-                        return value.isEmpty ? "\(field.key)：（没填）" : "\(field.key)：（已填）"
-                    }
-                    return "\(field.key)：\(value)"
+                let fields = prompt.questions.map { Asker.Field(question: $0) }
+                let form = Asker.Form(
+                    title: prompt.title,
+                    reason: prompt.reason,
+                    from: botName,
+                    fields: fields,
+                    kind: prompt.site.hasPrefix("http") ? .web : .note,
+                    site: prompt.site,
+                    chat: chat,
+                    requiresVault: prompt.requiresVault
+                )
+                guard !prompt.requiresVault || !form.inline else {
+                    return ToolOutput("安全路由校验未通过。", isError: true)
                 }
-                return ToolOutput("用户填好了：\n" + lines.joined(separator: "\n"))
+                guard let values = await Asker.shared.ask(form) else {
+                    return ToolOutput("用户把笺收起来了，没有填。", isError: true)
+                }
+                switch AskUserRules.formatResult(prompt: prompt, rawValues: values) {
+                case .failure(let error):
+                    return ToolOutput(error.userMessage, isError: true)
+                case .success(let formatted):
+                    return ToolOutput(formatted)
+                }
             },
             DeskTool(name: "vault_list", description: "看信匣里存了哪些账号和密钥：编号、名字、地址、用户名。看不到密码。", parameters: ["type": "object", "properties": [:]], label: { _ in Words.t("信匣：翻看") }) { _ in
                 let items = await Secrets.shared.items
