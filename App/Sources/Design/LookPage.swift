@@ -206,6 +206,7 @@ struct ChatDisplayPage: View {
     @AppStorage("pulse.on") private var pulseOn = true
     @AppStorage("chat.faces") private var faces = false
     @AppStorage("chat.confirmStop") private var confirmStop = true
+    @AppStorage("look.uikitChatList") private var useUIKitChatList = true
     @AppStorage(VoiceTranscription.modeKey) private var voiceModeRaw = VoiceTranscription.Mode.system.rawValue
     @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
 
@@ -229,6 +230,11 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
                 Toggle(L.t("settings.haptics"), isOn: $haptics)
                 Toggle(L.t("settings.showReplyStats"), isOn: $stats)
+            }
+            Section {
+                Toggle(L.t("lookChatList.toggle"), isOn: $useUIKitChatList)
+            } footer: {
+                Text(L.t("lookChatList.note"))
             }
             Section {
                 NavigationLink {
@@ -259,6 +265,7 @@ struct ChatDisplayPage: View {
         pulseOn = true
         faces = false
         confirmStop = true
+        useUIKitChatList = true
     }
 }
 

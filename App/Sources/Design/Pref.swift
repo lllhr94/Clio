@@ -102,6 +102,7 @@ enum Pref {
     static var fade: Bool { bool("look.fade", true) }
     static var stats: Bool { bool("look.stats", true) }
     static var traceOpen: Bool { bool("look.traceOpen", false) }
+    static var useUIKitChatList: Bool { bool("look.uikitChatList", true) }
 
     // MARK: 絮语 — how conversations behave
 

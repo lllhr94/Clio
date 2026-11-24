@@ -1070,5 +1070,9 @@
     "davEmbeddedCredentials": "网址里不要带用户名或密码，填在下面两行就好。",
     "davQueryOrFragment": "网盘地址里不要带 ? 参数或 # 片段，只填根目录地址。",
     "davDownloadTooLarge": "网盘上的备份文件太大，无法安全恢复。"
+  },
+  "lookChatList": {
+    "toggle": "新版絮语列表",
+    "note": "支持更顺滑的翻阅与跨段选字引用；若遇到排版异常，关闭即可立即切回旧版。"
   }
 }
