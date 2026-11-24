@@ -27,6 +27,8 @@ extension TeamModel {
             added = id
         }
         settleMemory()
+        memoryBook.memories = memories
+        clearMemoryRetraction(text: fact)
         saveMemory()
         return added
     }
@@ -67,6 +69,8 @@ extension TeamModel {
         }
         if !found.isEmpty {
             settleMemory()
+            memoryBook.memories = memories
+            invalidateMemoryPromptCache()
             saveMemory()
         }
         return scored.map(\.0.text)
@@ -77,6 +81,8 @@ extension TeamModel {
         memories[index].deep = deep ? true : nil
         memories[index].used = Now.ms
         if !deep { settleMemory() }
+        memoryBook.memories = memories
+        invalidateMemoryPromptCache()
         saveMemory()
     }
 
@@ -89,7 +95,9 @@ extension TeamModel {
         guard !gone.isEmpty else { return [] }
         let goneIds = Set(gone.map(\.id))
         memories.removeAll { goneIds.contains($0.id) }
+        memoryBook.memories = memories
         removeReviewDetails(goneIds)
+        invalidateMemoryPromptCache(retractedItems: gone.map { (id: $0.id, text: $0.text) })
         saveMemory()
         return gone.map(\.text)
     }
@@ -105,8 +113,11 @@ extension TeamModel {
     }
 
     func deleteMemory(_ id: String) {
+        let removed = memories.first { $0.id == id }
         memories.removeAll { $0.id == id }
+        memoryBook.memories = memories
         removeReviewDetails([id])
+        invalidateMemoryPromptCache(retractedID: id, textForInFlightGuard: removed?.text)
         saveMemory()
     }
 

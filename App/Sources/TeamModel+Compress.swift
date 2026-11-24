@@ -107,6 +107,9 @@ extension TeamModel {
         let speaker = { (entry: Entry) in entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name }
         // Only what the model will read is marked as folded: a part too long moves the cut earlier.
         let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
+        await flushMemoriesBeforeCompress(key: key, entries: Array(all[..<cut]), bot: bot)
+        try Task.checkCancellation()
+        guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
         let (transcript, folded) = Turns.transcript(all[..<cut], name: speaker, label: \.label)
         let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
         let prompt = """
