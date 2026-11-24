@@ -18,9 +18,33 @@ extension TeamModel {
         return memories.filter { $0.deep != true && pinned.contains($0.id) }
     }
 
+    var archivedMemories: [MemoryRecord] {
+        guard keeping else { return [] }
+        return MemoryStoreBridge.shared.recordsSnapshot(layer: .archived)
+    }
+
     func isPinnedMemory(_ id: String) -> Bool {
         guard keeping else { return false }
         return MemoryStoreBridge.shared.pinnedIDsSnapshot().contains(id)
+    }
+
+    func memoryRecord(id: String) -> MemoryRecord? {
+        if keeping, let record = MemoryStoreBridge.shared.recordsSnapshot().first(where: { $0.id == id }) {
+            return record
+        }
+        guard let memory = memories.first(where: { $0.id == id }) else { return nil }
+        let pinned = isPinnedMemory(memory.id)
+        return MemoryRecord(
+            id: memory.id,
+            text: memory.text,
+            layer: pinned ? .pinned : (memory.deep == true ? .deep : .surface),
+            pinned: pinned,
+            createdAtMs: memory.at,
+            usedAtMs: memory.used,
+            byBot: memory.by,
+            automatic: memory.automatic == true,
+            editedByUser: memory.editedByUser == true
+        )
     }
 
     var canMutateMemoryState: Bool {
@@ -244,11 +268,23 @@ extension TeamModel {
             return
         }
 
-        guard let index = memories.firstIndex(where: { $0.id == id }) else { return }
         var nextMemories = memories
-        nextMemories[index].deep = (layer == .deep) ? true : nil
-        if layer == .pinned || layer == .surface {
-            nextMemories[index].used = now
+        var fallbackMemory: Memory?
+        if let index = nextMemories.firstIndex(where: { $0.id == id }) {
+            nextMemories[index].deep = (layer == .deep) ? true : nil
+            if layer == .pinned || layer == .surface {
+                nextMemories[index].used = now
+            }
+        } else if keeping, var archived = MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) {
+            archived.deep = (layer == .deep) ? true : nil
+            if layer == .pinned || layer == .surface {
+                archived.used = now
+            }
+            nextMemories.removeAll { $0.id == id }
+            nextMemories.append(archived)
+            fallbackMemory = archived
+        } else {
+            return
         }
 
         if !keeping {
@@ -279,10 +315,186 @@ extension TeamModel {
                 kind: kind,
                 topic: topic,
                 confidence: confidence,
-                fallbackMemory: nil,
+                fallbackMemory: fallbackMemory,
                 nowMs: now
             )
         )
+    }
+
+    func updateMemoryDetail(id: String, text: String, layer: MemoryLayer, kind: String, topic: String) {
+        guard canMutateMemoryState else { return }
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let safeText = MemorySafety.redactSecrets(text, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if safeText.isEmpty {
+            deleteMemory(id)
+            return
+        }
+        let current = memoryRecord(id: id)
+        let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedKind = cleanKind.isEmpty ? "fact" : cleanKind
+        let cleanTopic = MemorySafety.redactSecrets(topic, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let textChanged = current?.text != safeText
+        let metaChanged: Bool
+        if keeping {
+            metaChanged = current == nil
+                || current?.layer != layer
+                || current?.kind != resolvedKind
+                || current?.topic != cleanTopic
+        } else {
+            metaChanged = current == nil || current?.layer != layer
+        }
+
+        if layer == .archived {
+            if !keeping {
+                setMemoryLayer(id, .archived)
+                return
+            }
+            if textChanged {
+                if !memories.contains(where: { $0.id == id }) {
+                    // Temporarily promote through `.deep` so editing text never runs `settleMemory` or bumps `used`.
+                    setMemoryLayer(id, .deep)
+                }
+                editMemory(id, safeText)
+                setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
+            } else if metaChanged {
+                setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
+            }
+            return
+        }
+
+        if !memories.contains(where: { $0.id == id }) {
+            setMemoryLayer(id, layer, kind: resolvedKind, topic: cleanTopic)
+            if textChanged {
+                editMemory(id, safeText)
+            }
+            return
+        }
+
+        if textChanged {
+            editMemory(id, safeText)
+        }
+        if metaChanged {
+            setMemoryLayer(id, layer, kind: resolvedKind, topic: cleanTopic)
+        }
+    }
+
+    @discardableResult
+    func importMemoryCandidates(
+        _ items: [(text: String, layer: MemoryLayer, kind: String, topic: String)]
+    ) -> Int {
+        guard canMutateMemoryState, !items.isEmpty else { return 0 }
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        if keeping {
+            ensureRetractedFlushHashesLoaded()
+        }
+        let suppressedHashes = memoryPromptState.suppressedFlushHashesSnapshot()
+        var existingTexts = memories.map(\.text)
+        if keeping {
+            existingTexts.append(contentsOf: MemoryStoreBridge.shared.recordsSnapshot().map(\.text))
+        }
+        var seenKeys = Set(existingTexts.map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty })
+
+        let now = Now.ms
+        var accepted: [(memory: Memory, layer: MemoryLayer, kind: String, topic: String)] = []
+        for item in items {
+            guard !MemoryImporter.looksLikeSecret(item.text, secrets: orderedSecrets),
+                  !MemoryImporter.looksLikeSecret(item.kind, secrets: orderedSecrets),
+                  !MemoryImporter.looksLikeSecret(item.topic, secrets: orderedSecrets),
+                  let cleanText = MemorySafety.sanitizeProposedFact(item.text, secrets: orderedSecrets) else {
+                continue
+            }
+            let rawKind = item.kind.trimmingCharacters(in: .whitespacesAndNewlines)
+            let redactedKind = MemorySafety.redactSecrets(rawKind, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard redactedKind == rawKind, !redactedKind.contains("〔隐去〕") else { continue }
+            let cleanKind = redactedKind.isEmpty ? "fact" : redactedKind
+
+            let rawTopic = item.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+            let redactedTopic = MemorySafety.redactSecrets(rawTopic, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard redactedTopic == rawTopic, !redactedTopic.contains("〔隐去〕") else { continue }
+
+            let key = MemorySafety.normalizedFactKey(cleanText)
+            let hash = MemorySafety.retractionHash(cleanText)
+            guard !key.isEmpty, !hash.isEmpty else { continue }
+            guard !suppressedHashes.contains(hash) else { continue }
+            if keeping, MemoryStoreBridge.shared.isSuppressedInShadow(text: cleanText) {
+                continue
+            }
+            guard seenKeys.insert(key).inserted else { continue }
+
+            let targetLayer: MemoryLayer
+            if !keeping && item.layer == .pinned {
+                targetLayer = .surface
+            } else {
+                targetLayer = item.layer
+            }
+
+            let deepFlag: Bool? = (targetLayer == .deep) ? true : nil
+            let memory = Memory(
+                id: UUID().uuidString,
+                text: cleanText,
+                at: now,
+                by: nil,
+                deep: deepFlag,
+                used: now,
+                automatic: nil,
+                editedByUser: true
+            )
+            accepted.append((memory: memory, layer: targetLayer, kind: cleanKind, topic: redactedTopic))
+        }
+
+        guard !accepted.isEmpty else { return 0 }
+
+        if !keeping {
+            let activeMemories = accepted.filter { $0.layer != .archived }.map(\.memory)
+            guard !activeMemories.isEmpty else { return 0 }
+            var nextMemories = memories + activeMemories
+            Self.settleMemory(&nextMemories, pinnedIDs: [])
+            memories = nextMemories
+            memoryBook.memories = nextMemories
+            memoryPromptState.invalidate()
+            syncLivePromptsFromMemories()
+            return activeMemories.count
+        }
+
+        let activeEntries = accepted.filter { $0.layer != .archived }
+        let existingPins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+        let newPinIDs = Set(activeEntries.filter { $0.layer == .pinned }.map(\.memory.id))
+        var nextMemories = memories + activeEntries.map(\.memory)
+        Self.settleMemory(&nextMemories, pinnedIDs: existingPins.union(newPinIDs))
+
+        let batchEntries: [MemoryImportBatchEntry] = accepted.map { entry in
+            let finalLayer: MemoryLayer
+            if entry.layer == .surface,
+               let settled = nextMemories.first(where: { $0.id == entry.memory.id }),
+               settled.deep == true {
+                finalLayer = .deep
+            } else {
+                finalLayer = entry.layer
+            }
+            return MemoryImportBatchEntry(
+                memory: entry.memory,
+                layer: finalLayer,
+                kind: entry.kind,
+                topic: entry.topic
+            )
+        }
+
+        var nextBook = memoryBook
+        nextBook.memories = nextMemories
+        guard let committed = try? commitMemoryBook(
+            nextBook,
+            mutation: .importBatch(items: batchEntries, nowMs: now)
+        ) else {
+            return 0
+        }
+
+        var committedIDs = Set(committed.memories.map(\.id))
+        committedIDs.formUnion(MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.id))
+        return accepted.reduce(0) { $0 + (committedIDs.contains($1.memory.id) ? 1 : 0) }
     }
 
     func archiveMemory(_ id: String) {
@@ -367,7 +579,8 @@ extension TeamModel {
 
     private func performDeleteMemory(_ id: String) -> Bool {
         guard canMutateMemoryState else { return false }
-        let removed = memories.first { $0.id == id }
+        let removedText = memories.first(where: { $0.id == id })?.text
+            ?? (keeping ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text : nil)
         let now = Now.ms
         var nextBook = memoryBook
         nextBook.memories.removeAll { $0.id == id }
@@ -377,14 +590,14 @@ extension TeamModel {
             memories = nextBook.memories
             memoryBook = nextBook
             memoryReviews = nextBook.reviews
-            memoryPromptState.retract(id: id, textForInFlightGuard: removed?.text)
+            memoryPromptState.retract(id: id, textForInFlightGuard: removedText)
             syncLivePromptsFromMemories()
             return true
         }
 
         guard (try? commitMemoryBook(
             nextBook,
-            mutation: .softDelete(items: [(id: id, text: removed?.text)], reason: "user_delete", nowMs: now)
+            mutation: .softDelete(items: [(id: id, text: removedText)], reason: "user_delete", nowMs: now)
         )) != nil else {
             return false
         }

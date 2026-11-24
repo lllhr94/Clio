@@ -4,6 +4,13 @@ import CryptoKit
 import Foundation
 import UIKit
 
+struct MemoryImportBatchEntry: Sendable {
+    let memory: Memory
+    let layer: MemoryLayer
+    let kind: String
+    let topic: String
+}
+
 enum MemoryCommitMutation {
     case none
     case remember(memory: Memory, explicitUserAction: Bool, nowMs: Double)
@@ -19,6 +26,7 @@ enum MemoryCommitMutation {
         fallbackMemory: Memory?,
         nowMs: Double
     )
+    case importBatch(items: [MemoryImportBatchEntry], nowMs: Double)
     case restore(id: String, memory: Memory, nowMs: Double)
     case softDelete(items: [(id: String, text: String?)], reason: String, nowMs: Double)
     case edit(id: String, text: String, editedByUser: Bool, nowMs: Double)
@@ -371,6 +379,31 @@ final class MemoryStoreBridge: @unchecked Sendable {
         return restored.text.isEmpty ? nil : restored
     }
 
+    /// Returns a live `.archived` memory (`deletedAtMs == nil`) without ever resurrecting tombstoned rows.
+    func archivedMemorySnapshot(id: String) -> Memory? {
+        let secrets = Self.orderedSecrets(Vault.allStrings())
+        let archivedCopy: MemoryRecord? = stateLock.withLock {
+            archivedRecords.first(where: { $0.id == id && $0.deletedAtMs == nil })
+        }
+        if let archivedCopy {
+            var snapshot = Self.toAppMemory(archivedCopy)
+            snapshot.text = Self.redact(snapshot.text, orderedSecrets: secrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return snapshot.text.isEmpty ? nil : snapshot
+        }
+        guard !Disk.frozen else { return nil }
+        let dbRecord: MemoryRecord? = queue.sync {
+            try? store.record(id: id, includeDeleted: false)
+        }
+        guard let dbRecord, dbRecord.layer == .archived, dbRecord.deletedAtMs == nil else {
+            return nil
+        }
+        var snapshot = Self.toAppMemory(dbRecord)
+        snapshot.text = Self.redact(snapshot.text, orderedSecrets: secrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return snapshot.text.isEmpty ? nil : snapshot
+    }
+
     // MARK: - Unified Canonical Book Commit (Throws on disk failure before mutating caller or SQLite state)
 
     @discardableResult
@@ -562,6 +595,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
              .setDeep(_, _, let nowMs),
              .pin(_, _, let nowMs),
              .layerAndMetadata(_, _, _, _, _, _, let nowMs),
+             .importBatch(_, let nowMs),
              .restore(_, _, let nowMs),
              .softDelete(_, _, let nowMs),
              .edit(_, _, _, let nowMs):
@@ -579,6 +613,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         sqliteActions: inout SQLitePersistActions,
         retractItems: inout [(id: String, textForInFlightGuard: String?)],
         clearRetractions: inout [(id: String?, text: String)],
+        skippedBatchIDs: inout Set<String>,
         shouldInvalidatePromptCache: inout Bool,
         secrets: [String]
     ) {
@@ -714,6 +749,61 @@ final class MemoryStoreBridge: @unchecked Sendable {
             ))
             shouldInvalidatePromptCache = true
 
+        case .importBatch(let items, let importNow):
+            var seenHashes = Set(workingRecordsByID.values.map(\.textSHA256))
+            seenHashes.formUnion(workingArchived.map(\.textSHA256))
+            for item in items {
+                let safeText = Self.redact(item.memory.text, orderedSecrets: secrets)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let hash = MemorySafety.retractionHash(safeText)
+                guard !safeText.isEmpty,
+                      !hash.isEmpty,
+                      workingTombstones[hash] == nil,
+                      !effectiveSuppressedHashes.contains(hash),
+                      workingRecordsByID[item.memory.id] == nil,
+                      !workingArchived.contains(where: { $0.id == item.memory.id }),
+                      seenHashes.insert(hash).inserted else {
+                    skippedBatchIDs.insert(item.memory.id)
+                    continue
+                }
+
+                let rawKind = Self.redact(item.kind, orderedSecrets: secrets)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let safeKind = rawKind.isEmpty ? "fact" : rawKind
+                let safeTopic = Self.redact(item.topic, orderedSecrets: secrets)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let isPinned = item.layer == .pinned
+                let record = MemoryRecord(
+                    id: item.memory.id,
+                    text: safeText,
+                    textSHA256: hash,
+                    layer: item.layer,
+                    pinned: isPinned,
+                    kind: safeKind,
+                    topic: safeTopic,
+                    sourceChat: nil,
+                    sourceEntryID: nil,
+                    confidence: 1.0,
+                    createdAtMs: item.memory.at,
+                    updatedAtMs: max(item.memory.at, importNow),
+                    usedAtMs: item.memory.used ?? importNow,
+                    byBot: item.memory.by,
+                    automatic: false,
+                    editedByUser: true,
+                    deletedAtMs: nil
+                )
+                if item.layer == .archived {
+                    workingArchived.append(record)
+                } else {
+                    if isPinned {
+                        workingPinnedIDs.insert(record.id)
+                    }
+                    workingRecordsByID[record.id] = record
+                }
+                sqliteActions.upsertRecords.append((record: record, explicitUserAction: false))
+                shouldInvalidatePromptCache = true
+            }
+
         case .restore(let id, let memory, let restoreNow):
             let safeText = Self.redact(memory.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -832,6 +922,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         var sqliteActions = SQLitePersistActions()
         var retractItems: [(id: String, textForInFlightGuard: String?)] = []
         var clearRetractions: [(id: String?, text: String)] = []
+        var skippedBatchIDs: Set<String> = []
         var shouldInvalidatePromptCache = false
 
         applyPreLoopMutation(
@@ -844,6 +935,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             sqliteActions: &sqliteActions,
             retractItems: &retractItems,
             clearRetractions: &clearRetractions,
+            skippedBatchIDs: &skippedBatchIDs,
             shouldInvalidatePromptCache: &shouldInvalidatePromptCache,
             secrets: secrets
         )
@@ -853,6 +945,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         var canonicalItems: [CanonicalMemoryItem] = []
 
         for mem in book.memories {
+            guard !skippedBatchIDs.contains(mem.id) else { continue }
             let safeText = Self.redact(mem.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !safeText.isEmpty else { continue }

@@ -1,0 +1,1223 @@
+import Craft
+import SwiftUI
+
+enum MemoryV2Copy {
+    static let commonKinds: [String] = [
+        "fact", "preference", "project", "rule", "goal", "experience", "note",
+    ]
+
+    static func layerTitle(_ layer: MemoryLayer) -> String {
+        switch layer {
+        case .pinned: return L.t("memoryV2.filterPinned")
+        case .surface: return L.t("memoryV2.filterSurface")
+        case .deep: return L.t("memoryV2.filterDeep")
+        case .archived: return L.t("memoryV2.filterArchived")
+        }
+    }
+
+    static func layerHint(_ layer: MemoryLayer) -> String {
+        switch layer {
+        case .pinned: return L.t("memoryV2.layerHintPinned")
+        case .surface: return L.t("memoryV2.layerHintSurface")
+        case .deep: return L.t("memoryV2.layerHintDeep")
+        case .archived: return L.t("memoryV2.layerHintArchived")
+        }
+    }
+
+    static func layerTint(_ layer: MemoryLayer) -> Color {
+        switch layer {
+        case .pinned: return Ink.accent
+        case .surface: return Ink.ok
+        case .deep: return Ink.inkSoft
+        case .archived: return Ink.inkFaint
+        }
+    }
+
+    static func layerWash(_ layer: MemoryLayer) -> Color {
+        switch layer {
+        case .pinned: return Ink.accentWash
+        case .surface: return Ink.ok.opacity(0.14)
+        case .deep: return Ink.rule.opacity(0.6)
+        case .archived: return Ink.rule.opacity(0.4)
+        }
+    }
+
+    static func layerIcon(_ layer: MemoryLayer) -> String {
+        switch layer {
+        case .pinned: return "pin.fill"
+        case .surface: return "tray.fill"
+        case .deep: return "clock.arrow.circlepath"
+        case .archived: return "archivebox.fill"
+        }
+    }
+
+    static func kindTitle(_ kind: String) -> String {
+        switch kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "fact", "": return L.t("memoryV2.kindFact")
+        case "preference": return L.t("memoryV2.kindPreference")
+        case "project": return L.t("memoryV2.kindProject")
+        case "rule": return L.t("memoryV2.kindRule")
+        case "goal": return L.t("memoryV2.kindGoal")
+        case "experience": return L.t("memoryV2.kindExperience")
+        case "note": return L.t("memoryV2.kindNote")
+        default: return kind
+        }
+    }
+
+    static func provenanceText(for record: MemoryRecord, bots: [BotInfo]) -> String {
+        if let botID = record.byBot, !botID.isEmpty {
+            let name = bots.first(where: { $0.id == botID })?.name ?? botID
+            return L.format("memoryV2.botWrittenPrefix", name)
+        }
+        if record.automatic && !record.editedByUser {
+            return L.t("memoryV2.autoBadge")
+        }
+        return L.t("memoryV2.userBadge")
+    }
+}
+
+struct MemoryBadgePill: View {
+    let text: String
+    var foreground: Color = Ink.inkSoft
+    var background: Color = Ink.rule.opacity(0.55)
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: Ink.Size.micro, weight: .medium))
+            .foregroundStyle(foreground)
+            .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+            .padding(.horizontal, Ink.Space.s)
+            .padding(.vertical, Ink.Space.xs / 2)
+            .background(background, in: Capsule())
+    }
+}
+
+struct MemoryPageV2: View {
+    @ObservedObject var team: TeamModel
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private enum LayerFilter: String, CaseIterable, Identifiable {
+        case all, pinned, surface, deep, archived
+
+        var id: Self { self }
+
+        var layer: MemoryLayer? {
+            switch self {
+            case .all: return nil
+            case .pinned: return .pinned
+            case .surface: return .surface
+            case .deep: return .deep
+            case .archived: return .archived
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .all: return L.t("memoryV2.filterAll")
+            case .pinned: return L.t("memoryV2.filterPinned")
+            case .surface: return L.t("memoryV2.filterSurface")
+            case .deep: return L.t("memoryV2.filterDeep")
+            case .archived: return L.t("memoryV2.filterArchived")
+            }
+        }
+    }
+
+    @State private var query = ""
+    @State private var filter: LayerFilter = .all
+    @State private var draft = ""
+    @State private var editingRecord: MemoryRecord?
+    @State private var deletingRecord: MemoryRecord?
+    @State private var showingImport = false
+    @State private var showingMirrors = false
+    @State private var importFeedback: String?
+    @State private var refreshRevision = 0
+
+    @State private var cachedSnapshotByID: [String: MemoryRecord] = [:]
+    @State private var cachedArchived: [MemoryRecord] = []
+    @State private var cachedPinnedIDs: Set<String> = []
+    @State private var snapshotToken = 0
+
+    private var availableFilters: [LayerFilter] {
+        team.keeping ? LayerFilter.allCases : [.all, .surface, .deep]
+    }
+
+    private var allRecords: [MemoryRecord] {
+        var combined: [MemoryRecord] = []
+        var seenIDs = Set<String>()
+        for memory in team.memories {
+            seenIDs.insert(memory.id)
+            if var snapshot = cachedSnapshotByID[memory.id] {
+                snapshot.text = memory.text
+                if snapshot.layer != .pinned {
+                    snapshot.layer = memory.deep == true ? .deep : .surface
+                }
+                combined.append(snapshot)
+            } else {
+                let pinned = team.keeping && cachedPinnedIDs.contains(memory.id)
+                let fallbackLayer: MemoryLayer = pinned ? .pinned : (memory.deep == true ? .deep : .surface)
+                combined.append(
+                    MemoryRecord(
+                        id: memory.id,
+                        text: memory.text,
+                        layer: fallbackLayer,
+                        pinned: pinned,
+                        createdAtMs: memory.at,
+                        usedAtMs: memory.used,
+                        byBot: memory.by,
+                        automatic: memory.automatic == true,
+                        editedByUser: memory.editedByUser == true
+                    )
+                )
+            }
+        }
+        if team.keeping {
+            for archived in cachedArchived where seenIDs.insert(archived.id).inserted {
+                combined.append(archived)
+            }
+        }
+        return combined.sorted { lhs, rhs in
+            let lTime = max(lhs.usedAtMs ?? 0, lhs.createdAtMs)
+            let rTime = max(rhs.usedAtMs ?? 0, rhs.createdAtMs)
+            if lTime != rTime { return lTime > rTime }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func matchesQuery(_ record: MemoryRecord, trimmedQuery: String) -> Bool {
+        if trimmedQuery.isEmpty {
+            return true
+        }
+        if record.text.localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if !record.topic.isEmpty && record.topic.localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if MemoryV2Copy.kindTitle(record.kind).localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if MemoryV2Copy.provenanceText(for: record, bots: team.bots)
+            .localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        return false
+    }
+
+    private func count(for layer: MemoryLayer, in records: [MemoryRecord]) -> Int {
+        records.reduce(0) { $0 + ($1.layer == layer ? 1 : 0) }
+    }
+
+    var body: some View {
+        let recordsSnapshot = allRecords
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let queryMatched = recordsSnapshot.filter { matchesQuery($0, trimmedQuery: trimmedQuery) }
+        let effectiveFilter = availableFilters.contains(filter) ? filter : .all
+        let visibleRecords = queryMatched.filter { record in
+            if let targetLayer = effectiveFilter.layer {
+                return record.layer == targetLayer
+            }
+            return true
+        }
+
+        return contentScrollView(
+            allRecords: recordsSnapshot,
+            visible: visibleRecords,
+            effectiveFilter: effectiveFilter,
+            otherLayerMatchCount: effectiveFilter == .all ? 0 : queryMatched.count,
+            trimmedQuery: trimmedQuery
+        )
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .background(Ink.paper.ignoresSafeArea())
+        .searchable(
+            text: $query,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: L.t("memoryV2.searchPrompt")
+        )
+        .navigationTitle(L.t("nav.memory"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { toolbarItems }
+        .task {
+            await reloadSnapshots()
+        }
+        .onChange(of: team.memories) { _, _ in
+            Task { await reloadSnapshots() }
+        }
+        .onChange(of: refreshRevision) { _, _ in
+            Task { await reloadSnapshots() }
+        }
+        .sheet(item: $editingRecord) { record in
+            MemoryDetailSheet(team: team, record: record) {
+                refreshRevision &+= 1
+            }
+        }
+        .sheet(isPresented: $showingImport) {
+            MemoryImportSheet(team: team) { importedCount in
+                refreshRevision &+= 1
+                importFeedback = L.format("memoryV2.importedToast", importedCount)
+            }
+        }
+        .sheet(isPresented: $showingMirrors) {
+            MemoryMirrorViewerSheet(team: team)
+        }
+        .confirmationDialog(
+            L.t("memoryV2.deleteConfirmTitle"),
+            isPresented: Binding(
+                get: { deletingRecord != nil },
+                set: { if !$0 { deletingRecord = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L.t("actions.delete"), role: .destructive) {
+                if let target = deletingRecord {
+                    withAnimation(Ink.Motion.settle) {
+                        team.deleteMemory(target.id)
+                        refreshRevision &+= 1
+                    }
+                }
+                deletingRecord = nil
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {
+                deletingRecord = nil
+            }
+        } message: {
+            Text(L.t("errors.cannotUndo"))
+        }
+    }
+
+    private func contentScrollView(
+        allRecords recordsSnapshot: [MemoryRecord],
+        visible: [MemoryRecord],
+        effectiveFilter: LayerFilter,
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                if team.phase == .demo {
+                    noticeBanner(L.t("settings.demoData"), tint: Ink.inkSoft)
+                } else if !team.canMutateMemoryState {
+                    noticeBanner(L.t("memoryV2.readOnlyNotice"), tint: Ink.warn)
+                }
+
+                if let importFeedback {
+                    feedbackBanner(importFeedback)
+                }
+
+                layerFilterSection(recordsSnapshot, effectiveFilter: effectiveFilter)
+                quickAddAndToolsSection
+                memoryListSection(
+                    allCount: recordsSnapshot.count,
+                    visible: visible,
+                    effectiveFilter: effectiveFilter,
+                    otherLayerMatchCount: otherLayerMatchCount,
+                    trimmedQuery: trimmedQuery
+                )
+                MemoryReviewHistory(records: team.memoryReviews)
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
+        }
+    }
+
+    // MARK: - Snapshot Sync
+
+    private func reloadSnapshots() async {
+        snapshotToken &+= 1
+        let token = snapshotToken
+        guard team.keeping else {
+            cachedSnapshotByID = [:]
+            cachedArchived = []
+            cachedPinnedIDs = []
+            return
+        }
+        let all = await Task.detached(priority: .userInitiated) {
+            MemoryStoreBridge.shared.recordsSnapshot()
+        }.value
+        guard token == snapshotToken else { return }
+        var byID: [String: MemoryRecord] = [:]
+        var archived: [MemoryRecord] = []
+        var pins = Set<String>()
+        for record in all {
+            byID[record.id] = record
+            if record.layer == .archived {
+                archived.append(record)
+            } else if record.layer == .pinned {
+                pins.insert(record.id)
+            }
+        }
+        cachedSnapshotByID = byID
+        cachedArchived = archived
+        cachedPinnedIDs = pins
+    }
+
+    // MARK: - Toolbar & Banners
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                Haptics.light()
+                showingMirrors = true
+            } label: {
+                Image(systemName: "doc.plaintext")
+            }
+            .accessibilityLabel(L.t("memoryV2.mirrorsButton"))
+
+            Button {
+                Haptics.light()
+                showingImport = true
+            } label: {
+                Image(systemName: "tray.and.arrow.down")
+            }
+            .accessibilityLabel(L.t("memoryV2.importButton"))
+        }
+    }
+
+    private func noticeBanner(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.system(size: Ink.Size.small))
+            .foregroundStyle(tint)
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .paperCard()
+    }
+
+    private func feedbackBanner(_ text: String) -> some View {
+        HStack(spacing: Ink.Space.s) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Ink.ok)
+            Text(text)
+                .font(.system(size: Ink.Size.sub, weight: .medium))
+                .foregroundStyle(Ink.ink)
+            Spacer(minLength: Ink.Space.s)
+            Button {
+                withAnimation(Ink.Motion.settle) {
+                    importFeedback = nil
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.inkFaint)
+            }
+            .buttonStyle(TapStyle(grow: Ink.Space.xs))
+            .accessibilityLabel(L.t("actions.close"))
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+        .paperCard()
+    }
+
+    // MARK: - Filter & Quick-Add
+
+    private func layerFilterSection(_ records: [MemoryRecord], effectiveFilter: LayerFilter) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            if typeSize.isAccessibilitySize {
+                WrapLayout(spacing: Ink.Space.s) {
+                    ForEach(availableFilters) { option in
+                        let selected = effectiveFilter == option
+                        Button {
+                            Haptics.tick(0.45)
+                            filter = option
+                        } label: {
+                            Text(option.title)
+                                .font(.system(size: Ink.Size.sub, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .padding(.vertical, Ink.Space.xs)
+                                .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                        }
+                        .buttonStyle(TapStyle())
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+            } else {
+                Picker(L.t("memoryV2.layerLabel"), selection: $filter) {
+                    ForEach(availableFilters) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            let surfaceCount = count(for: .surface, in: records)
+            let deepCount = count(for: .deep, in: records)
+            if team.keeping {
+                let pinnedCount = count(for: .pinned, in: records)
+                let archivedCount = count(for: .archived, in: records)
+                Text(L.format("memoryV2.countsSummary", pinnedCount, surfaceCount, deepCount, archivedCount))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.horizontal, Ink.Space.l)
+            } else {
+                Text(L.format("settings.memoryCounts", surfaceCount, deepCount))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.horizontal, Ink.Space.l)
+            }
+
+            Text(L.format("memoryV2.surfaceLimitNote", TeamModel.surfaceLimit))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkFaint)
+                .padding(.horizontal, Ink.Space.l)
+        }
+    }
+
+    private var quickAddAndToolsSection: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Ink.Space.s) {
+                TextField(L.t("settings.memoryPlaceholder"), text: $draft)
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.ink)
+                    .submitLabel(.done)
+                    .onSubmit(addQuickMemory)
+
+                Button(L.t("actions.save"), action: addQuickMemory)
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !team.canMutateMemoryState)
+            }
+            .padding(Ink.Space.l)
+
+            Kit.rule(inset: Ink.Space.l)
+
+            Button {
+                Haptics.light()
+                showingImport = true
+            } label: {
+                RowLabel(
+                    "tray.and.arrow.down",
+                    tint: Ink.Tile.dai,
+                    title: L.t("memoryV2.importActionTitle"),
+                    line: L.t("memoryV2.importActionLine")
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+
+            Kit.divider
+
+            Button {
+                Haptics.light()
+                showingMirrors = true
+            } label: {
+                RowLabel(
+                    "doc.plaintext",
+                    tint: Ink.Tile.teng,
+                    title: L.t("memoryV2.mirrorsActionTitle"),
+                    line: L.t("memoryV2.mirrorsActionLine")
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+        .paperCard()
+    }
+
+    // MARK: - Memory List
+
+    @ViewBuilder
+    private func memoryListSection(
+        allCount: Int,
+        visible: [MemoryRecord],
+        effectiveFilter: LayerFilter,
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
+        if visible.isEmpty {
+            emptyStateCard(
+                allCount: allCount,
+                effectiveFilter: effectiveFilter,
+                otherLayerMatchCount: otherLayerMatchCount,
+                trimmedQuery: trimmedQuery
+            )
+        } else if effectiveFilter == .all {
+            let layers: [MemoryLayer] = team.keeping ? MemoryLayer.allCases : [.surface, .deep]
+            VStack(alignment: .leading, spacing: Ink.Space.l) {
+                ForEach(layers, id: \.self) { layer in
+                    let bucket = visible.filter { $0.layer == layer }
+                    if !bucket.isEmpty {
+                        layerBucketCard(title: MemoryV2Copy.layerTitle(layer), records: bucket)
+                    }
+                }
+            }
+        } else if let targetLayer = effectiveFilter.layer {
+            layerBucketCard(title: MemoryV2Copy.layerTitle(targetLayer), records: visible)
+        }
+    }
+
+    private func layerBucketCard(title: String, records: [MemoryRecord]) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(title)
+            VStack(spacing: 0) {
+                ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                    if index > 0 {
+                        Kit.rule(inset: Ink.Space.l)
+                    }
+                    memoryRow(record)
+                }
+            }
+            .paperCard()
+        }
+    }
+
+    private func memoryRow(_ record: MemoryRecord) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+            Text(record.text)
+                .font(.system(size: Ink.Size.sub))
+                .foregroundStyle(record.layer == .archived ? Ink.inkSoft : Ink.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            WrapLayout(spacing: Ink.Space.xs) {
+                MemoryBadgePill(
+                    text: MemoryV2Copy.layerTitle(record.layer),
+                    foreground: MemoryV2Copy.layerTint(record.layer),
+                    background: MemoryV2Copy.layerWash(record.layer)
+                )
+
+                MemoryBadgePill(
+                    text: MemoryV2Copy.provenanceText(for: record, bots: team.bots),
+                    foreground: Ink.inkSoft,
+                    background: Ink.rule.opacity(0.5)
+                )
+
+                if !record.kind.isEmpty && record.kind != "fact" {
+                    MemoryBadgePill(
+                        text: MemoryV2Copy.kindTitle(record.kind),
+                        foreground: Ink.inkSoft,
+                        background: Ink.rule.opacity(0.45)
+                    )
+                }
+
+                if !record.topic.isEmpty {
+                    MemoryBadgePill(
+                        text: record.topic,
+                        foreground: Ink.inkSoft,
+                        background: Ink.rule.opacity(0.4)
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Haptics.light()
+            editingRecord = record
+        }
+        .contextMenu {
+            rowContextMenu(record)
+        }
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(_ record: MemoryRecord) -> some View {
+        Button(L.t("actions.edit"), systemImage: "pencil") {
+            editingRecord = record
+        }
+
+        if team.keeping && record.layer != .pinned {
+            Button(L.t("memoryV2.moveToPinned"), systemImage: "pin") {
+                moveRecord(record.id, to: .pinned)
+            }
+        }
+
+        if record.layer != .surface {
+            if record.layer == .archived {
+                Button(L.t("memoryV2.restoreToSurface"), systemImage: "arrow.uturn.backward") {
+                    withAnimation(Ink.Motion.settle) {
+                        _ = team.restoreMemory(record.id)
+                        refreshRevision &+= 1
+                    }
+                }
+            } else {
+                Button(L.t("memoryV2.moveToSurface"), systemImage: "tray") {
+                    moveRecord(record.id, to: .surface)
+                }
+            }
+        }
+
+        if record.layer != .deep {
+            Button(L.t("memoryV2.moveToDeep"), systemImage: "clock.arrow.circlepath") {
+                moveRecord(record.id, to: .deep)
+            }
+        }
+
+        if team.keeping && record.layer != .archived {
+            Button(L.t("memoryV2.moveToArchived"), systemImage: "archivebox") {
+                withAnimation(Ink.Motion.settle) {
+                    team.archiveMemory(record.id)
+                    refreshRevision &+= 1
+                }
+            }
+        }
+
+        Divider()
+
+        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) {
+            deletingRecord = record
+        }
+    }
+
+    private func emptyStateCard(
+        allCount: Int,
+        effectiveFilter: LayerFilter,
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
+        let message: String
+        let detail: String?
+        if !trimmedQuery.isEmpty {
+            if otherLayerMatchCount > 0 {
+                message = L.format("memoryV2.searchFoundInOtherLayers", otherLayerMatchCount)
+            } else {
+                message = L.t("empty.searchNoResult")
+            }
+            detail = nil
+        } else if allCount == 0 {
+            message = L.t("empty.memory")
+            detail = L.t("settings.memoryEmptyNote")
+        } else if effectiveFilter == .archived {
+            message = L.t("memoryV2.emptyArchived")
+            detail = nil
+        } else {
+            message = L.t("memoryV2.emptyLayer")
+            detail = nil
+        }
+
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(message)
+                .font(.system(size: Ink.Size.sub))
+                .foregroundStyle(Ink.inkSoft)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkFaint)
+            }
+            if !trimmedQuery.isEmpty && otherLayerMatchCount > 0 {
+                Button {
+                    Haptics.light()
+                    withAnimation(Ink.Motion.settle) {
+                        filter = .all
+                    }
+                } label: {
+                    Text(L.t("memoryV2.switchToAll"))
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.xs)
+                        .background(Ink.accentWash, in: Capsule())
+                }
+                .buttonStyle(TapStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ink.Space.l)
+        .paperCard()
+    }
+
+    // MARK: - Actions
+
+    private func addQuickMemory() {
+        let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, team.canMutateMemoryState else { return }
+        withAnimation(Ink.Motion.settle) {
+            _ = team.remember(words, by: nil)
+            refreshRevision &+= 1
+        }
+        draft = ""
+        Haptics.tick(0.6)
+    }
+
+    private func moveRecord(_ id: String, to layer: MemoryLayer) {
+        withAnimation(Ink.Motion.settle) {
+            team.setMemoryLayer(id, layer)
+            refreshRevision &+= 1
+        }
+        Haptics.tick(0.5)
+    }
+}
+
+// MARK: - Detail / Edit Sheet
+
+private struct MemoryDetailSheet: View {
+    @ObservedObject var team: TeamModel
+    let record: MemoryRecord
+    var onChanged: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    @State private var text: String
+    @State private var layer: MemoryLayer
+    @State private var kind: String
+    @State private var topic: String
+    @State private var confirmingDelete = false
+
+    init(team: TeamModel, record: MemoryRecord, onChanged: @escaping () -> Void) {
+        self.team = team
+        self.record = record
+        self.onChanged = onChanged
+        _text = State(initialValue: record.text)
+        let initialLayer: MemoryLayer
+        if team.keeping {
+            initialLayer = record.layer
+        } else {
+            initialLayer = record.layer == .deep ? .deep : .surface
+        }
+        _layer = State(initialValue: initialLayer)
+        _kind = State(initialValue: record.kind.isEmpty ? "fact" : record.kind)
+        _topic = State(initialValue: record.topic)
+    }
+
+    private var availableLayers: [MemoryLayer] {
+        team.keeping ? MemoryLayer.allCases : [.surface, .deep]
+    }
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var utf8Count: Int {
+        trimmedText.utf8.count
+    }
+
+    private var canSave: Bool {
+        !trimmedText.isEmpty && team.canMutateMemoryState
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    contentSection
+                    layerSection
+                    if team.keeping {
+                        metadataSection
+                    }
+                    provenanceSection
+                    deleteSection
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("memoryV2.detailTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.save")) {
+                        save()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSave)
+                }
+            }
+            .confirmationDialog(
+                L.t("memoryV2.deleteConfirmTitle"),
+                isPresented: $confirmingDelete,
+                titleVisibility: .visible
+            ) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    team.deleteMemory(record.id)
+                    Haptics.thud()
+                    onChanged()
+                    dismiss()
+                }
+                Button(L.t("actions.cancel"), role: .cancel) {}
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
+        }
+    }
+
+    private var contentSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("memoryV2.contentLabel"))
+            TextEditor(text: $text)
+                .font(Ink.reading)
+                .foregroundStyle(Ink.ink)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 110, maxHeight: 200)
+                .padding(Ink.Space.m)
+                .paperCard()
+
+            Text(L.format("memoryV2.byteCount", utf8Count, 450))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(utf8Count > 450 ? Ink.stop : Ink.inkFaint)
+                .padding(.horizontal, Ink.Space.l)
+        }
+    }
+
+    private var layerSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("memoryV2.layerLabel"))
+            if typeSize.isAccessibilitySize {
+                WrapLayout(spacing: Ink.Space.s) {
+                    ForEach(availableLayers, id: \.self) { option in
+                        let selected = layer == option
+                        Button {
+                            Haptics.tick(0.45)
+                            layer = option
+                        } label: {
+                            Text(MemoryV2Copy.layerTitle(option))
+                                .font(.system(size: Ink.Size.sub, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .padding(.vertical, Ink.Space.xs)
+                                .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                        }
+                        .buttonStyle(TapStyle())
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+            } else {
+                Picker(L.t("memoryV2.layerLabel"), selection: $layer) {
+                    ForEach(availableLayers, id: \.self) { option in
+                        Text(MemoryV2Copy.layerTitle(option)).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Text(MemoryV2Copy.layerHint(layer))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+        }
+    }
+
+    private var metadataSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("memoryV2.metadataLabel"))
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    Text(L.t("memoryV2.kindLabel"))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
+                        .foregroundStyle(Ink.inkSoft)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        let choices = MemoryV2Copy.commonKinds.contains(kind.lowercased())
+                            ? MemoryV2Copy.commonKinds
+                            : MemoryV2Copy.commonKinds + [kind]
+                        HStack(spacing: Ink.Space.s) {
+                            ForEach(choices, id: \.self) { candidateKind in
+                                let selected = kind.lowercased() == candidateKind.lowercased()
+                                Button {
+                                    Haptics.tick(0.45)
+                                    kind = candidateKind
+                                } label: {
+                                    Text(MemoryV2Copy.kindTitle(candidateKind))
+                                        .font(.system(size: Ink.Size.small, weight: selected ? .semibold : .regular))
+                                        .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                        .padding(.horizontal, Ink.Space.m)
+                                        .padding(.vertical, Ink.Space.s * 0.75)
+                                        .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                                }
+                                .buttonStyle(TapStyle())
+                            }
+                        }
+                    }
+                }
+                .padding(Ink.Space.l)
+
+                Kit.rule(inset: Ink.Space.l)
+
+                HStack(spacing: Ink.Space.m) {
+                    Text(L.t("memoryV2.topicLabel"))
+                        .font(.system(size: Ink.Size.sub))
+                        .foregroundStyle(Ink.inkSoft)
+                    TextField(L.t("memoryV2.topicPlaceholder"), text: $topic)
+                        .font(.system(size: Ink.Size.sub))
+                        .foregroundStyle(Ink.ink)
+                        .multilineTextAlignment(.trailing)
+                }
+                .padding(Ink.Space.l)
+            }
+            .paperCard()
+        }
+    }
+
+    private var provenanceSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("memoryV2.provenanceLabel"))
+            RowCard {
+                RowLabel(
+                    "person.text.rectangle",
+                    tint: Ink.Tile.dai,
+                    title: L.t("memoryV2.sourceLabel"),
+                    end: .value(MemoryV2Copy.provenanceText(for: record, bots: team.bots))
+                )
+                if let sourceChat = record.sourceChat, !sourceChat.isEmpty {
+                    RowLabel(
+                        "bubble.left",
+                        tint: Ink.Tile.mo,
+                        title: L.t("memoryV2.sourceChatLabel"),
+                        end: .value(team.title(of: sourceChat) ?? sourceChat)
+                    )
+                }
+                RowLabel(
+                    "checkmark.seal",
+                    tint: Ink.Tile.zhu,
+                    title: L.t("memoryV2.confidenceLabel"),
+                    end: .value("\(Int((record.confidence * 100).rounded()))%")
+                )
+                RowLabel(
+                    "calendar",
+                    tint: Ink.Tile.xiang,
+                    title: L.t("memoryV2.createdAtLabel"),
+                    end: .value(formatMs(record.createdAtMs))
+                )
+                RowLabel(
+                    "clock",
+                    tint: Ink.Tile.teng,
+                    title: L.t("memoryV2.usedAtLabel"),
+                    end: .value(record.usedAtMs.map(formatMs) ?? L.t("memoryV2.neverUsed"))
+                )
+                RowLabel(
+                    "pencil.circle",
+                    tint: Ink.Tile.yan,
+                    title: L.t("memoryV2.updatedAtLabel"),
+                    end: .value(formatMs(record.updatedAtMs))
+                )
+            }
+        }
+    }
+
+    private var deleteSection: some View {
+        Button {
+            Haptics.light()
+            confirmingDelete = true
+        } label: {
+            Text(L.t("actions.delete"))
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(WideButtonStyle(tint: Ink.stop, filled: false))
+        .disabled(!team.canMutateMemoryState)
+    }
+
+    private func formatMs(_ ms: Double) -> String {
+        guard ms > 0 else { return "-" }
+        return Date(timeIntervalSince1970: ms / 1000)
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func save() {
+        team.updateMemoryDetail(
+            id: record.id,
+            text: text,
+            layer: layer,
+            kind: kind,
+            topic: topic
+        )
+        Haptics.tick(0.7)
+        onChanged()
+        dismiss()
+    }
+}
+
+// MARK: - Read-Only Mirror Viewer Sheet
+
+private struct MemoryMirrorViewerSheet: View {
+    @ObservedObject var team: TeamModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private enum MirrorTab: String, CaseIterable, Identifiable {
+        case dangan, zhenzhi
+        var id: Self { self }
+    }
+
+    @State private var tab: MirrorTab = .dangan
+    @State private var useMonospace = true
+    @State private var content = ""
+    @State private var fileURL: URL?
+    @State private var loading = true
+
+    private var currentFilename: String {
+        switch tab {
+        case .dangan: return MemoryMarkdownMirror.danganFilename
+        case .zhenzhi: return MemoryMarkdownMirror.zhenzhiFilename
+        }
+    }
+
+    private var fontPicker: some View {
+        Picker(L.t("memoryV2.mirrorFontLabel"), selection: $useMonospace) {
+            Text(L.t("memoryV2.mirrorFontCode")).tag(true)
+            Text(L.t("memoryV2.mirrorFontSerif")).tag(false)
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .accessibilityLabel(L.t("memoryV2.mirrorFontLabel"))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                    Picker(L.t("memoryV2.mirrorsTitle"), selection: $tab) {
+                        Text(L.t("memoryV2.mirrorDanganTab")).tag(MirrorTab.dangan)
+                        Text(L.t("memoryV2.mirrorZhenzhiTab")).tag(MirrorTab.zhenzhi)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if typeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: Ink.Space.s) {
+                            Text(L.t("memoryV2.mirrorLocationNote"))
+                                .font(.system(size: Ink.Size.small))
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            fontPicker
+                        }
+                    } else {
+                        HStack(spacing: Ink.Space.m) {
+                            Text(L.t("memoryV2.mirrorLocationNote"))
+                                .font(.system(size: Ink.Size.small))
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            fontPicker
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        if loading {
+                            ProgressView(L.t("loading.generic"))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, Ink.Space.l)
+                        } else if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(L.t("memoryV2.mirrorEmpty"))
+                                .font(.system(size: Ink.Size.sub))
+                                .foregroundStyle(Ink.inkSoft)
+                        } else {
+                            Text(content)
+                                .font(useMonospace ? Ink.mono(Ink.Size.small) : Ink.reading)
+                                .foregroundStyle(Ink.ink)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(Ink.Space.l)
+                    .paperCard()
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .scrollIndicators(.hidden)
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("memoryV2.mirrorsTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let fileURL {
+                        ShareLink(
+                            item: fileURL,
+                            preview: SharePreview(currentFilename)
+                        ) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel(L.t("actions.share"))
+                    } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ShareLink(
+                            item: content,
+                            preview: SharePreview(currentFilename)
+                        ) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel(L.t("actions.share"))
+                    }
+
+                    Button(L.t("actions.done")) {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
+            }
+            .task(id: tab) {
+                await loadMirror()
+            }
+        }
+    }
+
+    private func loadMirror() async {
+        loading = true
+        let selectedTab = tab
+        let keeping = team.keeping
+        let fallbackRecords: [MemoryRecord]
+        if keeping {
+            fallbackRecords = []
+        } else {
+            fallbackRecords = team.memories.map { mem in
+                MemoryRecord(
+                    id: mem.id,
+                    text: mem.text,
+                    layer: mem.deep == true ? .deep : .surface,
+                    createdAtMs: mem.at,
+                    usedAtMs: mem.used,
+                    byBot: mem.by,
+                    automatic: mem.automatic == true,
+                    editedByUser: mem.editedByUser == true
+                )
+            }
+        }
+        let mirrorBots = team.bots.map {
+            MemoryMirrorBot(
+                name: $0.name,
+                role: $0.role,
+                isMain: $0.id == team.mainBotId || $0.main == true
+            )
+        }
+
+        let loaded: (text: String, url: URL?) = await Task.detached(priority: .userInitiated) {
+            let secrets = Vault.allStrings()
+            if keeping {
+                MemoryStoreBridge.shared.flushSync()
+                let records = MemoryStoreBridge.shared.recordsSnapshot()
+                switch selectedTab {
+                case .dangan:
+                    let disk = MemoryMarkdownMirror.readDangan()
+                    let text: String
+                    if let disk, !disk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        text = disk
+                    } else {
+                        text = MemoryMarkdownRenderer.renderDangan(records: records, bots: mirrorBots, secrets: secrets)
+                    }
+                    let url = FileManager.default.fileExists(atPath: MemoryMarkdownMirror.danganURL.path)
+                        ? MemoryMarkdownMirror.danganURL
+                        : nil
+                    return (text, url)
+                case .zhenzhi:
+                    let disk = MemoryMarkdownMirror.readZhenzhi()
+                    let text: String
+                    if let disk, !disk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        text = disk
+                    } else {
+                        text = MemoryMarkdownRenderer.renderZhenzhi(records: records, secrets: secrets)
+                    }
+                    let url = FileManager.default.fileExists(atPath: MemoryMarkdownMirror.zhenzhiURL.path)
+                        ? MemoryMarkdownMirror.zhenzhiURL
+                        : nil
+                    return (text, url)
+                }
+            } else {
+                switch selectedTab {
+                case .dangan:
+                    return (MemoryMarkdownRenderer.renderDangan(records: fallbackRecords, bots: mirrorBots, secrets: secrets), nil)
+                case .zhenzhi:
+                    return (MemoryMarkdownRenderer.renderZhenzhi(records: fallbackRecords, secrets: secrets), nil)
+                }
+            }
+        }.value
+
+        content = loaded.text
+        fileURL = loaded.url
+        loading = false
+    }
+}
