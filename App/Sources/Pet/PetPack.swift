@@ -201,6 +201,31 @@ struct PetPack: Identifiable, Sendable {
     }
 }
 
+private enum PetAtlasGenerations {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var map: [String: UInt64] = [:]
+
+    static func current(for id: String) -> UInt64 {
+        lock.withLock { map[id, default: 0] }
+    }
+
+    static func matches(_ id: String, expected: UInt64) -> Bool {
+        lock.withLock { map[id, default: 0] == expected }
+    }
+
+    static func bump(for id: String) {
+        lock.withLock { map[id, default: 0] &+= 1 }
+    }
+
+    static func bumpAll() {
+        lock.withLock {
+            for key in Array(map.keys) {
+                map[key, default: 0] &+= 1
+            }
+        }
+    }
+}
+
 /// Decoded sheets and cut frames, kept while they are in use.
 /// Only active pet packs retain animation frames (downscaled to display pixels when oversized);
 /// inactive packs keep only compact single-frame still thumbnails so switching or picking never spikes memory.
@@ -247,6 +272,13 @@ enum PetSheets {
     private static let maxPlaceholders = 12
 
     private static let signal = AtlasSignal()
+    private static let atlasDecodeQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "clio.pet-atlas-decode"
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
     private static var primaryPackID: String?
     private static var playbackPackID: String?
     private static var accessTick: UInt64 = 0
@@ -280,10 +312,26 @@ enum PetSheets {
         return true
     }()
 
+    nonisolated private static func currentGeneration(for id: String) -> UInt64 {
+        PetAtlasGenerations.current(for: id)
+    }
+
+    nonisolated private static func bumpGeneration(for id: String) {
+        PetAtlasGenerations.bump(for: id)
+    }
+
+    nonisolated private static func bumpAllGenerations() {
+        PetAtlasGenerations.bumpAll()
+    }
+
     /// Sets the user's selected pack as primary and evicts decoded animation caches for inactive packs.
     static func activate(_ id: String) {
         _ = observersInstalled
         guard primaryPackID != id else { return }
+        if let previous = primaryPackID {
+            bumpGeneration(for: previous)
+        }
+        bumpGeneration(for: id)
         primaryPackID = id
         if let playing = playbackPackID, playing != id {
             playbackPackID = nil
@@ -301,6 +349,7 @@ enum PetSheets {
 
     /// Drops every decoded sheet and frame on memory pressure.
     static func purgeAll() {
+        bumpAllGenerations()
         clearSheets()
         activeCells.removeAllObjects()
         inactiveStills.removeAllObjects()
@@ -444,9 +493,10 @@ enum PetSheets {
         }
 
         let sheetKey = pack.id + "/" + anim.sheet
-        // When a sheet exceeds the uncompressed retention cap (> 4 MiB), avoid repeating full-PNG decodes
-        // on MainActor: slice frames in one deduplicated background pass while returning the nearest cached frame.
-        if sheets[sheetKey] == nil && isOversizedSheet(pack, anim.sheet) {
+        // During live sprite playback, avoid decoding >4 MiB sheets synchronously on MainActor:
+        // schedule a single serialized background batch while returning the nearest cached frame.
+        // One-shot callers (`forPlayback == false`, e.g. LiveFace / PetStill) always decode the exact requested frame.
+        if forPlayback, sheets[sheetKey] == nil && isOversizedSheet(pack, anim.sheet) {
             _ = signal.revision
             let placeholderKey = "\(sheetKey)@\(targetDims.width)x\(targetDims.height)"
             scheduleLargeAtlasBatch(
@@ -525,7 +575,9 @@ enum PetSheets {
         active: Bool,
         placeholderKey: String
     ) {
-        let batchKey = "\(placeholderKey)#\(active ? 1 : 0)"
+        let packID = pack.id
+        let gen = currentGeneration(for: packID)
+        let batchKey = "\(placeholderKey)#\(active ? 1 : 0)#g\(gen)"
         guard !inFlightAtlases.contains(batchKey) else { return }
         inFlightAtlases.insert(batchKey)
 
@@ -546,19 +598,22 @@ enum PetSheets {
             }
         }
         let url = pack.dir.appendingPathComponent(anim.sheet)
-        let packID = pack.id
         let sheetName = anim.sheet
         let pixelArt = pack.pixelArt
         let frameOrder = indices
+        let batchByteLimit = active ? maxAtlasBatchBytes : 512 * 1024
 
-        Task.detached(priority: .userInitiated) {
+        atlasDecodeQueue.addOperation {
+            guard PetAtlasGenerations.matches(packID, expected: gen) else {
+                Task { @MainActor in PetSheets.inFlightAtlases.remove(batchKey) }
+                return
+            }
             let sliced: [SlicedFrame] = autoreleasepool {
                 guard let atlas = Self.decodeSheetImage(at: url) else { return [] }
                 var out: [SlicedFrame] = []
                 var batchBytes = 0
-                let limit = active ? Self.maxAtlasBatchBytes : 512 * 1024
                 for idx in frameOrder {
-                    if Task.isCancelled { break }
+                    if !PetAtlasGenerations.matches(packID, expected: gen) { break }
                     guard let cell = Self.cropCell(
                         from: atlas,
                         anim: anim,
@@ -568,16 +623,17 @@ enum PetSheets {
                         targetHeight: targetHeight
                     ) else { continue }
                     let bytes = max(1, cell.bytesPerRow * cell.height)
-                    if !out.isEmpty && batchBytes + bytes > limit { break }
+                    if !out.isEmpty && batchBytes + bytes > batchByteLimit { break }
                     batchBytes += bytes
                     out.append(SlicedFrame(index: idx, image: cell, bytes: bytes))
                 }
                 return out
             }
 
-            await MainActor.run {
+            Task { @MainActor in
                 PetSheets.inFlightAtlases.remove(batchKey)
                 guard !sliced.isEmpty else { return }
+                guard PetAtlasGenerations.matches(packID, expected: gen) else { return }
                 if active && !PetSheets.isActivePack(packID) { return }
                 for item in sliced {
                     let itemKey = "\(packID)/\(sheetName)#\(item.index)@\(targetWidth)x\(targetHeight)" as NSString
@@ -655,6 +711,7 @@ enum PetSheets {
     }
 
     static func forget(_ id: String) {
+        bumpGeneration(for: id)
         let prefix = id + "/"
         for key in Array(sheets.keys) where key.hasPrefix(prefix) {
             if let removed = sheets.removeValue(forKey: key) {

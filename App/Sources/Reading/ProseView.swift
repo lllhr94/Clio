@@ -796,18 +796,31 @@ enum ProsePrewarm {
         if ProsePrebuiltCache.reply(entryID: entryID, text: text, styleKey: styleKey) != nil {
             return
         }
+        _ = resolveOrBuildReply(entryID: entryID, text: text, styleKey: styleKey)
+    }
+
+    nonisolated static func resolveOrBuildReply(entryID: String, text: String, styleKey: ProseStyleKey) -> PreparsedReply {
+        if let hit = ProsePrebuiltCache.reply(entryID: entryID, text: text, styleKey: styleKey) {
+            return hit
+        }
         let flightKey = ProseReplyCacheKey(entryID: entryID, text: text, styleKey: styleKey)
         lock.lock()
         let inserted = inFlight.insert(flightKey).inserted
         lock.unlock()
-        guard inserted else { return }
+        guard inserted else {
+            return buildReply(text: text, styleKey: styleKey)
+        }
         defer {
             lock.lock()
             inFlight.remove(flightKey)
             lock.unlock()
         }
+        if let hit = ProsePrebuiltCache.reply(entryID: entryID, text: text, styleKey: styleKey) {
+            return hit
+        }
         let built = buildReply(text: text, styleKey: styleKey)
         ProsePrebuiltCache.storeReply(built, entryID: entryID, text: text)
+        return built
     }
 
     nonisolated static func buildReply(text: String, styleKey: ProseStyleKey) -> PreparsedReply {
@@ -1312,23 +1325,9 @@ private struct BlockView: View {
                 .environment(\.noteInk, noteInk ?? Ink.inkSoft)
             }
         case .code(let language, let text, _):
-            let foldedPre: PreparsedCodeModel?
-            let fullPre: PreparsedCodeModel?
-            if case .code(_, _, _, let fModel, let aModel) = preparsed {
-                foldedPre = fModel
-                fullPre = aModel
-            } else {
-                foldedPre = nil
-                fullPre = nil
-            }
-            CodeBlock(language: language, text: text, style: style, live: live, preparsedFolded: foldedPre, preparsedFull: fullPre)
+            let models = codeModels
+            CodeBlock(language: language, text: text, style: style, live: live, preparsedFolded: models.folded, preparsedFull: models.full)
         case .table(let table):
-            let tableModel: PreparsedTableModel?
-            if case .table(_, let model) = preparsed {
-                tableModel = model
-            } else {
-                tableModel = nil
-            }
             TableBlock(table: table, style: style, preparsed: tableModel)
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading || live)
@@ -1342,6 +1341,18 @@ private struct BlockView: View {
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, CGFloat(style.size) * 0.65)
         }
+    }
+
+    private var codeModels: (folded: PreparsedCodeModel?, full: PreparsedCodeModel?) {
+        if case .code(_, _, _, let foldedModel, let fullModel) = preparsed {
+            return (folded: foldedModel, full: fullModel)
+        }
+        return (folded: nil, full: nil)
+    }
+
+    private var tableModel: PreparsedTableModel? {
+        if case .table(_, let model) = preparsed { return model }
+        return nil
     }
 
     private var headingInline: PreparsedInline? {
@@ -2005,27 +2016,27 @@ private struct PictureParagraph: View {
     var preparsedPictures: [PreparsedPictureLink]? = nil
 
     var body: some View {
-        let pictures: [PreparsedPictureLink]
-        let wordsText: String
-        let hasWords: Bool
-        if let preparsedPictures {
-            pictures = preparsedPictures
-            wordsText = ""
-            hasWords = preparsedWords != nil
-        } else {
-            let parts = Self.split(text)
-            pictures = parts.pictures.map { PreparsedPictureLink(label: $0.label, source: $0.source) }
-            wordsText = parts.words
-            hasWords = !parts.words.isEmpty
-        }
+        let resolved = resolvedContent
         VStack(alignment: .leading, spacing: style.size * 0.6) {
-            if hasWords {
-                Inline(text: wordsText, style: style, font: style.readingFont, fading: fading, preparsed: preparsedWords)
+            if resolved.hasWords {
+                Inline(text: resolved.wordsText, style: style, font: style.readingFont, fading: fading, preparsed: preparsedWords)
             }
-            ForEach(Array(pictures.enumerated()), id: \.offset) { _, picture in
+            ForEach(Array(resolved.pictures.enumerated()), id: \.offset) { _, picture in
                 ProsePicture(source: picture.source, label: picture.label)
             }
         }
+    }
+
+    private var resolvedContent: (pictures: [PreparsedPictureLink], wordsText: String, hasWords: Bool) {
+        if let preparsedPictures {
+            return (pictures: preparsedPictures, wordsText: "", hasWords: preparsedWords != nil)
+        }
+        let parts = Self.split(text)
+        return (
+            pictures: parts.pictures.map { PreparsedPictureLink(label: $0.label, source: $0.source) },
+            wordsText: parts.words,
+            hasWords: !parts.words.isEmpty
+        )
     }
 
     nonisolated static func split(_ text: String) -> (words: String, pictures: [(label: String, source: String)]) {
@@ -2626,9 +2637,8 @@ struct SelectableProse: View, Equatable {
     var body: some View {
         let style = envStyle ?? ProseStyle.current(dark: scheme == .dark, reduceMotion: reduceMotion)
         let styleKey = ProseStyleKey.from(style)
-        let preparsed = ProsePrebuiltCache.reply(entryID: entryID ?? "", text: text, styleKey: styleKey)
-        let blocks = preparsed?.rawBlocks ?? ParsedCache.blocks(text)
-        ReplyProseLayout(text: text, blocks: blocks, style: style, preparsedParts: preparsed?.parts)
+        let resolved = ProsePrewarm.resolveOrBuildReply(entryID: entryID ?? "", text: text, styleKey: styleKey)
+        ReplyProseLayout(text: text, blocks: resolved.rawBlocks, style: style, preparsedParts: resolved.parts)
     }
 }
 
@@ -2695,12 +2705,6 @@ private struct ReplyProseLayout: View {
                     )
                 case .block(let block, let preparsedBlock):
                     if case .quote(let inner) = block {
-                        let innerParts: [PreparsedPart]?
-                        if hasPreparsed, case .quote(let pInner) = preparsedBlock {
-                            innerParts = pInner
-                        } else {
-                            innerParts = nil
-                        }
                         QuoteCard {
                             AnyView(
                                 ReplyProseLayout(
@@ -2711,7 +2715,7 @@ private struct ReplyProseLayout: View {
                                     allowFade: live,
                                     quoted: true,
                                     cacheScope: "\(cacheScope)q\(index).",
-                                    preparsedParts: innerParts
+                                    preparsedParts: quoteInnerParts(for: preparsedBlock, hasPreparsed: hasPreparsed)
                                 )
                             )
                         }
@@ -2729,6 +2733,11 @@ private struct ReplyProseLayout: View {
         }
         .id("\(cacheScope)\(quoted ? "q-" : "")\(style.typographyKey)")
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func quoteInnerParts(for block: PreparsedBlockItem, hasPreparsed: Bool) -> [PreparsedPart]? {
+        if hasPreparsed, case .quote(let inner) = block { return inner }
+        return nil
     }
 
     private func unfinished(_ block: Prose.Block, live: Bool) -> Bool {

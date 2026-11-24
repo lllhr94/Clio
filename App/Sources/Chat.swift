@@ -206,16 +206,31 @@ final class ChatModel {
             guard let self else { return }
             let history = await team.loadHistory(key)
             guard !Task.isCancelled else { return }
-            feed = team.listen(key) { [weak self] event in self?.hear(event) }
+            let localFeed = team.listen(key) { [weak self] event in self?.hear(event) }
+            self.feed = localFeed
+            // Seed any already-accumulated stream prefix before awaiting detached work so chunks arriving
+            // mid-suspend append onto the prefix cleanly without duplication or prefix loss.
+            if target.isEmpty, let buffered = team.streamed[key]?.text, !buffered.isEmpty {
+                target = buffered
+                shown = target.count
+                publishedShown = shown
+                streaming = target
+            }
             let pageLimit = limit
             let initialWorking = team.isWorking(key)
             var firstPage: [ChatLine]?
             if !history.isEmpty {
                 firstPage = await Task.detached(priority: .userInitiated) {
-                    Self.buildRows(history.suffix(pageLimit), working: initialWorking, running: nil)
+                    let rows = Self.buildRows(history.suffix(pageLimit), working: initialWorking, running: nil)
+                    if !Task.isCancelled {
+                        // Warm the newest ~10 visible tail rows right alongside buildRows while older rows defer.
+                        ProsePrewarm.prewarm(lines: rows.suffix(10), styleKey: styleKey)
+                    }
+                    return rows
                 }.value
                 guard !Task.isCancelled else {
-                    if let feed { team.unlisten(feed); self.feed = nil }
+                    team.unlisten(localFeed)
+                    if self.feed == localFeed { self.feed = nil }
                     return
                 }
             }
@@ -223,19 +238,18 @@ final class ChatModel {
             if let firstPage, pageLimit == limit, team.isWorking(key) == initialWorking, running == nil, history == newest {
                 hasEarlier = history.count > pageLimit
                 lines = firstPage
+                let olderEnd = max(0, firstPage.count - 10)
+                let olderStart = max(0, firstPage.count - 60)
+                if olderStart < olderEnd {
+                    schedulePrewarm(firstPage[olderStart..<olderEnd], styleKey: styleKey)
+                }
             } else {
-                lines = build(newest)
-            }
-            // A reply can arrive while the initial history is loading and there is no listener yet.
-            if target.isEmpty {
-                target = team.streamed[key]?.text ?? ""
-                shown = target.count
-                publishedShown = shown
-                streaming = target
+                let rebuilt = build(newest)
+                lines = rebuilt
+                schedulePrewarm(rebuilt.suffix(60), styleKey: styleKey)
             }
             loaded = true
             opening = nil
-            schedulePrewarm(lines.suffix(60), styleKey: styleKey)
         }
     }
 
