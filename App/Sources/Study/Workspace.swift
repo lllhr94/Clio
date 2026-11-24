@@ -325,7 +325,7 @@ enum MountedFolders {
 /// 书案: the companions' working folder. It lives in the app's Documents, so the Files app shows it too.
 /// External folders attached via `MountedFolders` appear virtually at `书案/挂载/<name>/…`.
 enum Workspace {
-    enum Target {
+    enum Target: Sendable {
         case desk(url: URL, relative: String)
         case mountsRoot
         case mounted(mount: MountedFolder, innerParts: [String], relative: String)
@@ -677,46 +677,24 @@ enum Workspace {
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
-            let documents: [(path: String, text: String)]
             let scopeName: String
             switch target {
-            case .desk(let folder, let rel):
+            case .desk(_, let rel):
                 scopeName = rel
-                var collected = PaperShelf.documents(under: folder, root: Workspace.root)
-                if rel == "/" {
-                    for mount in MountedFolders.all() {
-                        if let mountedDocs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
-                            PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
-                        }) {
-                            collected.append(contentsOf: mountedDocs)
-                        }
-                    }
-                }
-                documents = collected
             case .mountsRoot:
                 scopeName = MountedFolders.virtualFolder
-                var collected: [(path: String, text: String)] = []
-                for mount in MountedFolders.all() {
-                    if let mountedDocs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
-                        PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
-                    }) {
-                        collected.append(contentsOf: mountedDocs)
-                    }
-                }
-                documents = collected
-            case .mounted(let mount, let inner, let rel):
+            case .mounted(_, _, let rel):
                 scopeName = rel
-                do {
-                    documents = try MountedFolders.withAccess(mount, innerParts: inner) { rootURL, targetURL in
-                        PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
-                    }
-                } catch {
-                    return ToolOutput(error.localizedDescription, isError: true)
-                }
             }
-            guard !documents.isEmpty else { return ToolOutput("\(scopeName) 里还没有能翻的资料（PDF、md、txt 等）。用户可以从文件 App 把资料放进书案，或挂载外部文件夹。") }
-            let hits = DocSearch.find(query, in: documents)
-            return ToolOutput("翻了 \(documents.count) 份资料。" + DocSearch.shown(hits, query: query))
+            do {
+                let result = try await DocSearchIndexService.shared.search(query: query, target: target)
+                guard result.totalCount > 0 else {
+                    return ToolOutput("\(scopeName) 里还没有能翻的资料（PDF、md、txt 等）。用户可以从文件 App 把资料放进书案，或挂载外部文件夹。")
+                }
+                return ToolOutput("翻了 \(result.totalCount) 份资料。" + DocSearch.shown(result.hits, query: query))
+            } catch {
+                return ToolOutput(error.localizedDescription, isError: true)
+            }
         })
         tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 读书案和挂载文件夹里的文件，用 writeFile(path, text) 写书案本地文件（不能写挂载文件夹；写挂载文件夹请改用 write_file 或 edit_file）。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
             let collector = PreReadCollector()
@@ -916,15 +894,29 @@ enum Reckoner {
 enum PaperShelf {
     static let kinds: Set<String> = ["pdf", "txt", "md", "markdown", "csv", "tsv", "json", "html", "htm", "xml", "yaml", "yml", "log", "org", "rst", "tex"]
 
+    struct ScannedEntry {
+        let path: String
+        let url: URL
+        let size: Int
+        let date: Date
+        let ext: String
+
+        var mtimeMs: Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+        var descriptor: DocSearchDocumentDescriptor {
+            DocSearchDocumentDescriptor(path: path, byteCount: size, mtimeMs: mtimeMs)
+        }
+    }
+
     private static var shelf: URL {
         let folder = Disk.url("doccache")
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if !Disk.frozen {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
         return folder
     }
 
-    static func documents(under folder: URL, root baseRoot: URL = Workspace.root, prefix: String = "") -> [(path: String, text: String)] {
-        var found: [(path: String, text: String)] = []
-        var total = 0
+    static func scanEntries(under folder: URL, root baseRoot: URL = Workspace.root, prefix: String = "") -> [ScannedEntry] {
+        var found: [ScannedEntry] = []
         for file in Workspace.files(under: folder, cap: 3000, root: baseRoot, prefix: prefix) {
             let ext = (file.path as NSString).pathExtension.lowercased()
             guard kinds.contains(ext), file.size > 0, file.size < 40_000_000 else { continue }
@@ -941,12 +933,25 @@ enum PaperShelf {
                 let pdfPath = String(url.path.dropLast(4))
                 if FileManager.default.fileExists(atPath: pdfPath) { continue }
             }
-            guard let text = text(of: url, displayPath: file.path, ext: ext, size: file.size, date: file.date), !text.isEmpty else { continue }
-            found.append((file.path, text))
+            found.append(ScannedEntry(path: file.path, url: url, size: file.size, date: file.date, ext: ext))
+        }
+        return found
+    }
+
+    static func documents(under folder: URL, root baseRoot: URL = Workspace.root, prefix: String = "") -> [(path: String, text: String)] {
+        var found: [(path: String, text: String)] = []
+        var total = 0
+        for entry in scanEntries(under: folder, root: baseRoot, prefix: prefix) {
+            guard let text = text(of: entry.url, displayPath: entry.path, ext: entry.ext, size: entry.size, date: entry.date), !text.isEmpty else { continue }
+            found.append((entry.path, text))
             total += text.count
             if total > 30_000_000 { break }
         }
         return found
+    }
+
+    static func text(of entry: ScannedEntry) -> String? {
+        text(of: entry.url, displayPath: entry.path, ext: entry.ext, size: entry.size, date: entry.date)
     }
 
     private static func text(of url: URL, displayPath: String, ext: String, size: Int, date: Date) -> String? {
@@ -959,7 +964,242 @@ enum PaperShelf {
         let kept = shelf.appendingPathComponent(name)
         if let text = try? String(contentsOf: kept, encoding: .utf8) { return text }
         guard let data = try? Data(contentsOf: url), let text = PDFText.all(data) else { return nil }
-        try? Data(text.utf8).write(to: kept, options: .atomic)
+        if !Disk.frozen {
+            try? Data(text.utf8).write(to: kept, options: .atomic)
+        }
         return text
+    }
+}
+
+/// Off-MainActor coordinator for the persistent self-healing FTS5 document index (`clio-docs-fts.db`),
+/// incrementally syncing modified files and falling back transparently to `DocSearch.find` on errors.
+final class DocSearchIndexService: @unchecked Sendable {
+    static let shared = DocSearchIndexService()
+
+    private let index: DocSearchIndex
+    private let queue = DispatchQueue(label: "clio.doc-search-index", qos: .utility)
+
+    init(databaseURL: URL = DocSearchIndex.defaultDatabaseURL) {
+        self.index = DocSearchIndex(databaseURL: databaseURL)
+    }
+
+    func resetForRestore() {
+        queue.async { [weak self] in
+            self?.index.destroyFiles()
+        }
+    }
+
+    func search(query: String, target: Workspace.Target) async throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
+        if Disk.frozen {
+            return try await Task.detached(priority: .userInitiated) {
+                let documents = try Self.collectFallbackDocuments(for: target)
+                guard !documents.isEmpty else { return (0, []) }
+                let secrets = Self.orderedSecrets(Vault.allStrings())
+                let safeDocs = Self.redactDocuments(documents, secrets: secrets)
+                return (documents.count, DocSearch.find(query, in: safeDocs))
+            }.value
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: (0, []))
+                    return
+                }
+                do {
+                    let result = try self.performSearchLocked(query: query, target: target)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Private Queue Execution
+
+    private func performSearchLocked(query: String, target: Workspace.Target) throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
+        let secrets = Self.orderedSecrets(Vault.allStrings())
+        let scopePrefix = Self.scopePrefix(for: target)
+
+        do {
+            let syncedCount = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: false)
+            guard syncedCount > 0 else { return (0, []) }
+
+            var hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
+            if index.consumeUnredactedSecretDetected() || index.needsRebuildFromSource {
+                try? index.resetForSecretRotation()
+                _ = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: true)
+                hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
+            }
+            return (syncedCount, hits)
+        } catch let workspaceError as WorkspaceError {
+            throw workspaceError
+        } catch {
+            // Transparent fallback to in-memory `DocSearch.find` if SQLite index initialization/query ever fails.
+            let documents = try Self.collectFallbackDocuments(for: target)
+            guard !documents.isEmpty else { return (0, []) }
+            let safeDocs = Self.redactDocuments(documents, secrets: secrets)
+            return (documents.count, DocSearch.find(query, in: safeDocs))
+        }
+    }
+
+    private func syncTargetLocked(target: Workspace.Target, scopePrefix: String?, secrets: [String], force: Bool) throws -> Int {
+        var deskEntries: [PaperShelf.ScannedEntry] = []
+        var mountTargets: [(mount: MountedFolder, inner: [String], descriptors: [DocSearchDocumentDescriptor])] = []
+        var allDescriptors: [DocSearchDocumentDescriptor] = []
+
+        switch target {
+        case .desk(let folder, let rel):
+            deskEntries = PaperShelf.scanEntries(under: folder, root: Workspace.root)
+            allDescriptors.append(contentsOf: deskEntries.map(\.descriptor))
+            if rel == "/" {
+                for mount in MountedFolders.all() {
+                    if let mountDescs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
+                        PaperShelf.scanEntries(
+                            under: targetURL,
+                            root: rootURL,
+                            prefix: "\(MountedFolders.virtualFolder)/\(mount.name)"
+                        ).map(\.descriptor)
+                    }) {
+                        mountTargets.append((mount, [], mountDescs))
+                        allDescriptors.append(contentsOf: mountDescs)
+                    }
+                }
+            }
+        case .mountsRoot:
+            for mount in MountedFolders.all() {
+                if let mountDescs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
+                    PaperShelf.scanEntries(
+                        under: targetURL,
+                        root: rootURL,
+                        prefix: "\(MountedFolders.virtualFolder)/\(mount.name)"
+                    ).map(\.descriptor)
+                }) {
+                    mountTargets.append((mount, [], mountDescs))
+                    allDescriptors.append(contentsOf: mountDescs)
+                }
+            }
+        case .mounted(let mount, let inner, _):
+            let mountDescs = try MountedFolders.withAccess(mount, innerParts: inner) { rootURL, targetURL in
+                PaperShelf.scanEntries(
+                    under: targetURL,
+                    root: rootURL,
+                    prefix: "\(MountedFolders.virtualFolder)/\(mount.name)"
+                ).map(\.descriptor)
+            }
+            mountTargets.append((mount, inner, mountDescs))
+            allDescriptors.append(contentsOf: mountDescs)
+        }
+
+        let plan = try index.planSync(descriptors: allDescriptors, scopePrefix: scopePrefix, secrets: secrets, force: force)
+        guard !plan.staleOrNewPaths.isEmpty || !plan.removedPaths.isEmpty else {
+            return allDescriptors.count
+        }
+
+        var upserts: [DocSearchDocumentInput] = []
+        var totalChars = 0
+
+        for entry in deskEntries where plan.staleOrNewPaths.contains(entry.path) {
+            if totalChars > 30_000_000 { break }
+            guard let text = PaperShelf.text(of: entry), !text.isEmpty else { continue }
+            totalChars += text.count
+            upserts.append(DocSearchDocumentInput(
+                path: entry.path,
+                text: text,
+                byteCount: entry.size,
+                mtimeMs: entry.mtimeMs
+            ))
+        }
+
+        for item in mountTargets {
+            let needed = Set(item.descriptors.map(\.path)).intersection(plan.staleOrNewPaths)
+            let remainingBudget = 30_000_000 - totalChars
+            guard !needed.isEmpty, remainingBudget >= 0 else { continue }
+            let loaded: [DocSearchDocumentInput] = (try? MountedFolders.withAccess(item.mount, innerParts: item.inner) { rootURL, targetURL in
+                var list: [DocSearchDocumentInput] = []
+                var listChars = 0
+                let entries = PaperShelf.scanEntries(
+                    under: targetURL,
+                    root: rootURL,
+                    prefix: "\(MountedFolders.virtualFolder)/\(item.mount.name)"
+                )
+                for entry in entries where needed.contains(entry.path) {
+                    if listChars > remainingBudget { break }
+                    guard let text = PaperShelf.text(of: entry), !text.isEmpty else { continue }
+                    listChars += text.count
+                    list.append(DocSearchDocumentInput(
+                        path: entry.path,
+                        text: text,
+                        byteCount: entry.size,
+                        mtimeMs: entry.mtimeMs
+                    ))
+                }
+                return list
+            }) ?? []
+            totalChars += loaded.reduce(0) { $0 + $1.text.count }
+            upserts.append(contentsOf: loaded)
+        }
+
+        try index.applyIncrementalSync(upserts: upserts, removedPaths: plan.removedPaths, secrets: secrets)
+        return allDescriptors.count
+    }
+
+    private static func collectFallbackDocuments(for target: Workspace.Target) throws -> [(path: String, text: String)] {
+        switch target {
+        case .desk(let folder, let rel):
+            var collected = PaperShelf.documents(under: folder, root: Workspace.root)
+            if rel == "/" {
+                for mount in MountedFolders.all() {
+                    if let mountedDocs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
+                        PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
+                    }) {
+                        collected.append(contentsOf: mountedDocs)
+                    }
+                }
+            }
+            return collected
+        case .mountsRoot:
+            var collected: [(path: String, text: String)] = []
+            for mount in MountedFolders.all() {
+                if let mountedDocs = try? MountedFolders.withAccess(mount, body: { rootURL, targetURL in
+                    PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
+                }) {
+                    collected.append(contentsOf: mountedDocs)
+                }
+            }
+            return collected
+        case .mounted(let mount, let inner, _):
+            return try MountedFolders.withAccess(mount, innerParts: inner) { rootURL, targetURL in
+                PaperShelf.documents(under: targetURL, root: rootURL, prefix: "\(MountedFolders.virtualFolder)/\(mount.name)")
+            }
+        }
+    }
+
+    private static func scopePrefix(for target: Workspace.Target) -> String? {
+        switch target {
+        case .desk(_, let rel):
+            return rel == "/" ? nil : rel
+        case .mountsRoot:
+            return MountedFolders.virtualFolder
+        case .mounted(_, _, let rel):
+            return rel
+        }
+    }
+
+    private static func redactDocuments(
+        _ documents: [(path: String, text: String)],
+        secrets: [String]
+    ) -> [(path: String, text: String)] {
+        if secrets.isEmpty {
+            return documents
+        }
+        return documents.map { document in
+            (path: document.path, text: MemorySafety.redactSecrets(document.text, secrets: secrets))
+        }
+    }
+
+    private static func orderedSecrets(_ secrets: [String]) -> [String] {
+        secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
     }
 }

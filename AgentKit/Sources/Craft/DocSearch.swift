@@ -9,6 +9,13 @@ public enum DocSearch {
         public var page: Int?
         public var snippet: String
         public var score: Int
+
+        public init(path: String, page: Int? = nil, snippet: String, score: Int) {
+            self.path = path
+            self.page = page
+            self.snippet = snippet
+            self.score = score
+        }
     }
 
     /// The words of a query: split at spaces and punctuation, lower-cased.
@@ -30,7 +37,7 @@ public enum DocSearch {
     }
 
     /// Paragraphs of a text, none longer than about `size` characters, each with the PDF page it is on.
-    static func passages(_ text: String, size: Int = 600) -> [(page: Int?, text: String)] {
+    public static func passages(_ text: String, size: Int = 600) -> [(page: Int?, text: String)] {
         var found: [(page: Int?, text: String)] = []
         var page: Int?
         var current = ""
@@ -85,7 +92,7 @@ public enum DocSearch {
     }
 
     /// About 300 characters of a passage, around the first word found.
-    static func snippet(_ text: String, around words: [String], width: Int = 300) -> String {
+    public static func snippet(_ text: String, around words: [String], width: Int = 300) -> String {
         let flat = text.replacingOccurrences(of: "\n", with: " ")
         guard flat.count > width else { return flat }
         let lower = flat.lowercased()

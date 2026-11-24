@@ -26,6 +26,7 @@ extension TeamModel {
                 if state.loading { continue }
                 guard state.ready else { return }
                 MemoryIndexService.shared.warmup(catalog: state.catalog)
+                MemoryRecallBridge.shared.warmup()
                 return
             }
         }
@@ -76,6 +77,8 @@ extension TeamModel {
 
     func scheduleIndexResetForRestore() {
         MemoryIndexService.shared.resetForRestore()
+        MemoryRecallBridge.shared.resetForRestore()
+        DocSearchIndexService.shared.resetForRestore()
     }
 
     func searchHistory(

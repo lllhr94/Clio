@@ -109,7 +109,7 @@ final class TeamModel: ObservableObject {
     var memoryBook = MemoryBook()
     let memoryPromptState = MemorySafety.PromptState()
     var memoryTaintedTurns: Set<String> = []
-    var livePromptRefreshers: [UUID: MemorySafety.LivePromptRefresher] = [:]
+    var livePromptRefreshers: [UUID: MemoryRecallPromptRefresher] = [:]
     var reviewingMemory = false
     var memoryReviewAttempts: [String: Date] = [:]
     var cleanReviewTails: [String: ReviewTail] = [:]
@@ -1407,7 +1407,67 @@ final class TeamModel: ObservableObject {
             return false
         }
         hostBindings.set(workplace.hostID, for: key)
-        let (refresher, refresherToken) = registerLivePromptRefresher(for: bot, in: key, room: room, workplace: workplace, memory: usesMemory)
+        let lastUserPrompt = live(key).last(where: {
+            $0.message.role == .user
+                && $0.note != true
+                && $0.delegated != true
+                && $0.tainted != true
+                && !MemorySafety.isLegacyDelegationText($0.message.text)
+                && !$0.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })?.message.text
+        let isKeeping = keeping
+        let fallbackRecords: [MemoryRecord]
+        let fallbackSurfaceTexts: [String]
+        if isKeeping {
+            fallbackRecords = []
+            fallbackSurfaceTexts = []
+        } else {
+            fallbackRecords = MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: [])
+            fallbackSurfaceTexts = memories.filter { $0.deep != true }.map(\.text)
+        }
+        let recalledHints = await MemoryRecallBridge.shared.recallForTurn(
+            query: lastUserPrompt,
+            usesMemory: usesMemory,
+            grantAllowed: Grant.memory.policy != .off,
+            diskFrozen: Disk.frozen,
+            keeping: isKeeping,
+            fallbackRecords: fallbackRecords,
+            fallbackSurfaceTexts: fallbackSurfaceTexts,
+            retractedIDs: memoryPromptState.retractedIDsSnapshot(),
+            suppressedHashes: memoryPromptState.suppressedFlushHashesSnapshot(),
+            recordUsage: false
+        )
+        guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
+        let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue)
+        let recallAllowedNow = liveUsesMemory && Grant.memory.policy != .off && !Disk.frozen
+        let liveDeepIDs = Set(memories.filter { $0.deep == true }.map(\.id))
+        let liveRetracted = memoryPromptState.retractedIDsSnapshot()
+        let liveSuppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let validatedHints: [MemoryRecall.Hit]
+        if recallAllowedNow {
+            validatedHints = recalledHints.filter { hit in
+                guard liveDeepIDs.contains(hit.id), !liveRetracted.contains(hit.id) else {
+                    return false
+                }
+                if !hit.textSHA256.isEmpty && liveSuppressed.contains(hit.textSHA256.lowercased()) {
+                    return false
+                }
+                return true
+            }
+        } else {
+            validatedHints = []
+        }
+        if isKeeping && !validatedHints.isEmpty {
+            MemoryRecallBridge.shared.recordUsageAsync(ids: validatedHints.map(\.id))
+        }
+        let (refresher, refresherToken) = registerLivePromptRefresher(
+            for: bot,
+            in: key,
+            room: room,
+            workplace: workplace,
+            memory: liveUsesMemory,
+            recalledHints: validatedHints
+        )
         defer { unregisterLivePromptRefresher(refresherToken) }
         let assembled = refresher.currentPrompt()
         var agent = Agent(
@@ -1857,7 +1917,7 @@ final class TeamModel: ObservableObject {
     /// Read-only snapshots for the usage sheet, scoped to the open conversation.
     func modelInputs(_ key: String) -> [ModelInput] { modelInputLog.requests(in: key) }
 
-    private func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemorySafety.LivePromptRefresher) -> LivePromptProvider {
+    private func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemoryRecallPromptRefresher) -> LivePromptProvider {
         let epoch = epochs[chat, default: 0]
         let session = modelInputLog.session
         return LivePromptProvider(upstream: provider, refresher: refresher) { [weak self] input in
@@ -2381,6 +2441,9 @@ extension TeamModel {
         let now = Date()
         if Grant.memory.policy == .allow {
             await reviewConversations(now: now, includeLeaves: nightly)
+            if nightly, !Task.isCancelled {
+                applyNightlyPromotionIfNeeded(now: now)
+            }
         }
         if nightly, !Task.isCancelled, Pref.diaryOn,
            let day = MemoryNight.diaryDay(at: now, catchUp: background),
