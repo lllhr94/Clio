@@ -1,5 +1,6 @@
 import AgentKit
 import CoreText
+import Craft
 import Foundation
 import Prose
 import SwiftMath
@@ -535,7 +536,7 @@ final class ChatProseBuilder {
     private func buildTableCellAttributed(
         _ source: AttributedString,
         isHeader: Bool,
-        align: HorizontalAlignment,
+        align: Prose.Table.Align,
         style: ChatListStyle
     ) -> NSAttributedString {
         let cellSize = style.tableCellSize
@@ -544,7 +545,7 @@ final class ChatProseBuilder {
         switch align {
         case .center: pStyle.alignment = .center
         case .trailing: pStyle.alignment = .right
-        default: pStyle.alignment = .left
+        case .leading: pStyle.alignment = .left
         }
 
         let ink = UIColor(Ink.ink)
