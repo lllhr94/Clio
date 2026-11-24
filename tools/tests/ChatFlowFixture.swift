@@ -9,6 +9,7 @@ import CoreGraphics
 // RULE: DRAFT_INPUT
 // RULE: TURN_EVENT
 // RULE: INLINE_APPROVAL
+// RULE: TRACE_STEP_STATUS
 
 private enum ScrollPhase { case idle, interacting, decelerating, animating }
 
@@ -308,10 +309,50 @@ private enum ChatFlowTests {
             try smartApprovalQueries()
             try passiveReadingHasNoResizeAnchor()
             try inlineApprovalRouting()
+            try traceStepStatusRules()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
+        }
+    }
+
+    static func traceStepStatusRules() throws {
+        let unknownEvent = TraceStepStatus.parse("新建日程：明天牙医（结果未知）")
+        try check(unknownEvent.status, .unknown, "An unknown calendar step preserves unknown status")
+        try check(unknownEvent.clean, "新建日程：明天牙医", "The unknown suffix is stripped cleanly")
+        try check(unknownEvent.status.allowsOutcomeCard, false, "An unknown calendar step must not produce a success card")
+
+        let unknownFile = TraceStepStatus.parse("书案：写 notes.md（结果未知）")
+        try check(unknownFile.status, .unknown, "An unknown file edit preserves unknown status")
+        try check(unknownFile.status.allowsOutcomeCard, false, "An unknown file edit must not produce a changed-file card")
+
+        let failedEvent = TraceStepStatus.parse("新建日程：明天牙医（没成功）")
+        try check(failedEvent.status, .failed, "A failed calendar step is marked failed")
+        try check(failedEvent.status.allowsOutcomeCard, false, "A failed calendar step must not produce a success card")
+
+        let okEvent = TraceStepStatus.parse("新建日程：明天牙医")
+        try check(okEvent.status, .ok, "A normal step is marked ok")
+        try check(okEvent.status.allowsOutcomeCard, true, "A succeeded step produces its outcome card")
+
+        let failedCmd = TraceStepStatus.parse("斗室：python3 check.py（没成功）")
+        try check(failedCmd.status, .failed, "A non-zero command is marked failed")
+        try check(TraceStepStatus.shouldKeepCommand(status: failedCmd.status, output: "SyntaxError\n（退出码 1）"),
+                  true, "Executed failed commands appear in the command card")
+
+        let unknownCmd = TraceStepStatus.parse("远山：prod · systemctl restart app（结果未知）")
+        try check(unknownCmd.status, .unknown, "An uncertain command stays distinct from failed")
+        try check(TraceStepStatus.shouldKeepCommand(status: unknownCmd.status, output: "结果未知：这一步可能已经做了"),
+                  true, "Uncertain commands remain inspectable with unknown status")
+
+        for skipped in [
+            "命令是空的。",
+            "用户没有同意这次操作，什么都没做。",
+            "这一轮已经停下，这一步没有做。",
+            "这一步刚才结果未知，同样的事没有再做一次。"
+        ] {
+            try check(TraceStepStatus.shouldKeepCommand(status: .failed, output: skipped),
+                      false, "Unexecuted command is skipped: \(skipped)")
         }
     }
 
