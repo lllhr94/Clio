@@ -75,7 +75,7 @@ enum WebDAV {
         return request
     }
 
-    private static func check(_ response: URLResponse, allowing extra: Set<Int> = []) throws {
+    fileprivate static func check(_ response: URLResponse, allowing extra: Set<Int> = []) throws {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if (200..<300).contains(status) || extra.contains(status) { return }
         if (300..<400).contains(status) {
@@ -132,8 +132,8 @@ enum WebDAV {
         return Array(Set(names)).sorted(by: >)
     }
 
-    /// Streams one backup into a protected temporary file inside `restoreInboxDirectory`,
-    /// checking HTTP status, `expectedContentLength`, and `Backup.maxBackupFileBytes` incrementally.
+    /// Streams one backup in chunks into a protected temporary file inside `restoreInboxDirectory`,
+    /// checking HTTP status, redirect origin, `expectedContentLength`, and `Backup.maxBackupFileBytes`.
     static func download(_ name: String) async throws -> URL {
         guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
         guard name.hasSuffix(".clio-backup"),
@@ -143,76 +143,12 @@ enum WebDAV {
               !name.hasPrefix(".") else {
             throw TeamError(message: "网盘上的文件名不对。")
         }
-        let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
-        let (bytes, response) = try await URLSession.shared.bytes(
-            for: request(base.appendingPathComponent(name), method: "GET"),
-            delegate: delegate
-        )
-        try check(response)
-        if let finalURL = (response as? HTTPURLResponse)?.url,
-           !VoiceEndpoint.allowsRedirect(from: base, to: finalURL) {
-            throw TeamError(message: "网盘试图跳转到其他地址或降级连接，已中止。")
-        }
-        if response.expectedContentLength > Int64(Backup.maxBackupFileBytes) {
-            throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
-        }
 
-        let manager = FileManager.default
         let inbox = restoreInboxDirectory
-        try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
         let target = inbox.appendingPathComponent("dav-\(UUID().uuidString).clio-backup")
-        try? manager.removeItem(at: target)
-        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
-        guard manager.createFile(atPath: target.path, contents: nil, attributes: protection) else {
-            throw TeamError(message: "没能在手机上建网盘恢复暂存文件。")
-        }
-
-        var completed = false
-        defer {
-            if !completed {
-                try? manager.removeItem(at: target)
-            }
-        }
-
-        let handle = try FileHandle(forWritingTo: target)
-        var handleClosed = false
-        defer {
-            if !handleClosed {
-                try? handle.close()
-            }
-        }
-
-        let chunkSize = 65_536
-        var buffer = Data()
-        buffer.reserveCapacity(chunkSize)
-        var total = 0
-
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            total += 1
-            guard total <= Backup.maxBackupFileBytes else {
-                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
-            }
-            buffer.append(byte)
-            if buffer.count >= chunkSize {
-                try handle.write(contentsOf: buffer)
-                buffer.removeAll(keepingCapacity: true)
-            }
-        }
-
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-        }
-        try handle.synchronize()
-        try handle.close()
-        handleClosed = true
-
-        guard total > 0 else {
-            throw TeamError(message: "网盘上的备份文件是空的。")
-        }
-        try? manager.setAttributes(protection, ofItemAtPath: target.path)
-        completed = true
-        return target
+        let delegate = WebDAVDownloadDelegate(origin: base, targetURL: target, maxBytes: Backup.maxBackupFileBytes)
+        return try await delegate.download(request: request(base.appendingPathComponent(name), method: "GET"))
     }
 
     /// Removes any leftover downloaded/staged restore temp files in `restoreInboxDirectory`.
@@ -238,5 +174,212 @@ private final class WebDAVSameOriginRedirectDelegate: NSObject, URLSessionTaskDe
             return nil
         }
         return request
+    }
+}
+
+/// Chunked `URLSessionDataDelegate` downloader enforcing same-origin redirects, HTTP status,
+/// `expectedContentLength`, and `maxBytes` during transfer without byte-by-byte async iteration.
+private final class WebDAVDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let origin: URL
+    private let targetURL: URL
+    private let maxBytes: Int
+    private let lock = NSLock()
+    private let delegateQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
+
+    private var handle: FileHandle?
+    private var totalBytes = 0
+    private var failure: Error?
+    private var cancelled = false
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+
+    init(origin: URL, targetURL: URL, maxBytes: Int) {
+        self.origin = origin
+        self.targetURL = targetURL
+        self.maxBytes = maxBytes
+    }
+
+    func download(request: URLRequest) async throws -> URL {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+                lock.lock()
+                if cancelled {
+                    let ownedSession = session
+                    session = nil
+                    task = nil
+                    lock.unlock()
+                    ownedSession?.finishTasksAndInvalidate()
+                    cont.resume(throwing: CancellationError())
+                    return
+                }
+                continuation = cont
+                let config = URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest = 120
+                let createdSession = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
+                let dataTask = createdSession.dataTask(with: request)
+                session = createdSession
+                task = dataTask
+                lock.unlock()
+                dataTask.resume()
+            }
+        } onCancel: {
+            cancel()
+        }
+    }
+
+    private func cancel() {
+        lock.lock()
+        cancelled = true
+        let activeTask = task
+        lock.unlock()
+        activeTask?.cancel()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let next = request.url, VoiceEndpoint.allowsRedirect(from: origin, to: next) else {
+            lock.lock()
+            if failure == nil {
+                failure = TeamError(message: "网盘试图跳转到其他地址或降级连接，已中止。")
+            }
+            lock.unlock()
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        if cancelled || failure != nil {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        do {
+            try WebDAV.check(response)
+            if let finalURL = (response as? HTTPURLResponse)?.url,
+               !VoiceEndpoint.allowsRedirect(from: origin, to: finalURL) {
+                throw TeamError(message: "网盘试图跳转到其他地址或降级连接，已中止。")
+            }
+            if response.expectedContentLength > Int64(maxBytes) {
+                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+            }
+            let manager = FileManager.default
+            try? manager.removeItem(at: targetURL)
+            let protection: [FileAttributeKey: Any] = [
+                .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
+            ]
+            guard manager.createFile(atPath: targetURL.path, contents: nil, attributes: protection) else {
+                throw TeamError(message: "没能在手机上建网盘恢复暂存文件。")
+            }
+            handle = try FileHandle(forWritingTo: targetURL)
+            lock.unlock()
+            completionHandler(.allow)
+        } catch {
+            failure = error
+            try? FileManager.default.removeItem(at: targetURL)
+            lock.unlock()
+            completionHandler(.cancel)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        var shouldCancel = false
+        lock.lock()
+        if cancelled || failure != nil {
+            shouldCancel = true
+        } else if let currentHandle = handle {
+            if data.count > maxBytes - totalBytes {
+                failure = TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+                try? currentHandle.close()
+                handle = nil
+                try? FileManager.default.removeItem(at: targetURL)
+                shouldCancel = true
+            } else {
+                do {
+                    try currentHandle.write(contentsOf: data)
+                    totalBytes += data.count
+                } catch {
+                    failure = error
+                    try? currentHandle.close()
+                    handle = nil
+                    try? FileManager.default.removeItem(at: targetURL)
+                    shouldCancel = true
+                }
+            }
+        } else {
+            shouldCancel = true
+        }
+        lock.unlock()
+        if shouldCancel {
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        var syncError: Error?
+        if let currentHandle = handle {
+            do {
+                try currentHandle.synchronize()
+                try currentHandle.close()
+            } catch {
+                try? currentHandle.close()
+                syncError = error
+            }
+            handle = nil
+        }
+        let result: Result<URL, Error>
+        if let recorded = failure {
+            try? FileManager.default.removeItem(at: targetURL)
+            result = .failure(recorded)
+        } else if cancelled {
+            try? FileManager.default.removeItem(at: targetURL)
+            result = .failure(CancellationError())
+        } else if let error {
+            try? FileManager.default.removeItem(at: targetURL)
+            result = .failure(error)
+        } else if let syncError {
+            try? FileManager.default.removeItem(at: targetURL)
+            result = .failure(syncError)
+        } else if totalBytes <= 0 {
+            try? FileManager.default.removeItem(at: targetURL)
+            result = .failure(TeamError(message: "网盘上的备份文件是空的。"))
+        } else {
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: targetURL.path
+            )
+            result = .success(targetURL)
+        }
+        let cont = continuation
+        continuation = nil
+        let ownedSession = self.session
+        self.session = nil
+        self.task = nil
+        lock.unlock()
+
+        (ownedSession ?? session).finishTasksAndInvalidate()
+        cont?.resume(with: result)
     }
 }
