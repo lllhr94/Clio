@@ -72,7 +72,7 @@ final class MemoryRecallTests: XCTestCase {
             ),
             MemoryRecord(
                 id: "deep-hotpot-old",
-                text: "周末常去重庆解放碑老店吃麻辣火锅",
+                text: "常去重庆解放碑老店吃麻辣火锅",
                 layer: .deep,
                 topic: "饮食",
                 confidence: 0.9,
@@ -81,7 +81,7 @@ final class MemoryRecallTests: XCTestCase {
             ),
             MemoryRecord(
                 id: "deep-hotpot-recent",
-                text: "喜欢和朋友在重庆吃九宫格牛油火锅",
+                text: "常去重庆九宫格老店吃牛油火锅",
                 layer: .deep,
                 topic: "饮食",
                 confidence: 0.9,
@@ -121,7 +121,7 @@ final class MemoryRecallTests: XCTestCase {
 
         // Conversational prompt matches relevant `.deep` memories, never pinned/surface/archived/tombstoned.
         let hotpotHits = try index.searchDeep(
-            query: "周末我想去重庆吃火锅，有什么推荐吗",
+            query: "想去重庆吃火锅，有什么推荐吗",
             surfaceTexts: ["主力用 Swift 开发重庆本地美食 App"],
             suppressedHashes: [suppressedHash],
             secrets: secrets
