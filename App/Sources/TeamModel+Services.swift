@@ -22,10 +22,10 @@ extension TeamModel {
         return Vault.load(String.self, key: slot) == value
     }
 
-    nonisolated static func resolveEndpointKey(id: String, baseURL: String) -> String? {
+    nonisolated static func resolveEndpointKey(for endpoint: Endpoint) -> String? {
         EndpointKeyCoordinator.resolveBoundKey(
-            endpointID: id,
-            requestURL: baseURL,
+            endpointID: endpoint.credentialID,
+            requestURL: endpoint.baseURL,
             readBoundRecord: { Vault.load(Data.self, key: $0) },
             hasBoundMarker: { Vault.load(Bool.self, key: $0) == true },
             readLegacyKey: { Vault.load(String.self, key: $0) }
@@ -33,7 +33,7 @@ extension TeamModel {
     }
 
     nonisolated static func exportBackupKeys(endpoints: [Endpoint], allowedIDs: [String]) -> [String: String] {
-        let snapshots = endpoints.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
+        let snapshots = endpoints.map { Self.credentialSnapshot($0) }
         return EndpointKeyCoordinator.exportBackupKeys(
             endpoints: snapshots,
             allowedIDs: Set(allowedIDs),
@@ -43,24 +43,56 @@ extension TeamModel {
         )
     }
 
-    nonisolated static func restoreBackupKeys(previous: [Endpoint], restored: [Endpoint], keys: [String: String]?) {
-        let previousSnapshots = previous.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
-        let restoredSnapshots = restored.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
-        EndpointKeyCoordinator.applyBackupRestore(
-            previousEndpoints: previousSnapshots,
-            restoredEndpoints: restoredSnapshots,
+    private nonisolated static func credentialSnapshot(_ endpoint: Endpoint) -> EndpointKeyCoordinator.EndpointSnapshot {
+        .init(id: endpoint.id, baseURL: endpoint.baseURL, credentialSlot: endpoint.credentialSlot)
+    }
+
+    nonisolated static func prepareBackupServices(previous: [Endpoint], restored: [Endpoint], keys: [String: String]?) throws -> [Endpoint] {
+        let prepared = try EndpointKeyCoordinator.prepareBackupRestore(
+            previousEndpoints: previous.map(Self.credentialSnapshot),
+            restoredEndpoints: restored.map(Self.credentialSnapshot),
             restoredKeys: keys,
-            writeBoundRecord: Self.writeAndVerifyData,
-            hasBoundMarker: { Vault.load(Bool.self, key: $0) == true },
-            writeBoundMarker: { Self.writeAndVerifyBool($0, true) },
+            stage: { snapshot, key in
+                if let key, let origin = EndpointAddressPolicy.rawOrigin(snapshot.baseURL) {
+                    return EndpointKeyCoordinator.saveBoundCredential(
+                        endpointID: snapshot.credentialID,
+                        origin: origin,
+                        key: key,
+                        writeBoundRecord: Self.writeAndVerifyData,
+                        writeBoundMarker: { Self.writeAndVerifyBool($0, true) },
+                        writeLegacyKey: Self.writeAndVerifyString,
+                        removeKey: { Vault.remove($0) }
+                    )
+                }
+                return Self.writeAndVerifyBool(EndpointKeyCoordinator.boundMarkerSlot(for: snapshot.credentialID), true)
+            },
+            discard: Self.discardCredential
+        )
+        return zip(restored, prepared).map { endpoint, snapshot in
+            var updated = endpoint
+            updated.credentialSlot = snapshot.credentialSlot
+            return updated
+        }
+    }
+
+    private nonisolated static func discardCredential(_ snapshot: EndpointKeyCoordinator.EndpointSnapshot) {
+        EndpointKeyCoordinator.cleanupCredentials(
+            endpointID: snapshot.credentialID,
+            origin: EndpointAddressPolicy.rawOrigin(snapshot.baseURL),
             readLegacyKey: { Vault.load(String.self, key: $0) },
-            writeLegacyKey: Self.writeAndVerifyString,
             removeKey: { Vault.remove($0) }
         )
     }
 
+    nonisolated static func discardCredentials(from discarded: [Endpoint], keeping active: [Endpoint]) {
+        let activeSlots = Set(active.map(\.credentialID))
+        for endpoint in discarded where !activeSlots.contains(endpoint.credentialID) {
+            discardCredential(credentialSnapshot(endpoint))
+        }
+    }
+
     func apiKey(for endpoint: Endpoint) -> String? {
-        Self.resolveEndpointKey(id: endpoint.id, baseURL: endpoint.baseURL)
+        Self.resolveEndpointKey(for: endpoint)
     }
 
     func apiKey(for endpointID: String) -> String? {
@@ -71,10 +103,8 @@ extension TeamModel {
     }
 
     func readAPIKey(for endpoint: Endpoint) async -> String? {
-        let id = endpoint.id
-        let baseURL = endpoint.baseURL
-        return await Task.detached(priority: .userInitiated) {
-            Self.resolveEndpointKey(id: id, baseURL: baseURL)
+        await Task.detached(priority: .userInitiated) {
+            Self.resolveEndpointKey(for: endpoint)
         }.value
     }
 
@@ -88,7 +118,7 @@ extension TeamModel {
         settings.endpoints.append(endpoint)
         if let origin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL) {
             _ = EndpointKeyCoordinator.saveBoundCredential(
-                endpointID: endpoint.id,
+                endpointID: endpoint.credentialID,
                 origin: origin,
                 key: key,
                 writeBoundRecord: Self.writeAndVerifyData,
@@ -97,7 +127,7 @@ extension TeamModel {
                 removeKey: { Vault.remove($0) }
             )
         } else {
-            Vault.save(key, as: EndpointKeyCoordinator.legacyKeySlot(for: endpoint.id))
+            Vault.save(key, as: EndpointKeyCoordinator.legacyKeySlot(for: endpoint.credentialID))
         }
         if resolveActive(settings.defaultModel) == nil, let pick = Self.preferred(endpoint) {
             settings.defaultModel = "\(endpoint.id)/\(pick)"
@@ -109,14 +139,9 @@ extension TeamModel {
 
     func removeEndpoint(_ id: String) {
         let prefix = id + "/"
-        let oldOrigin = settings.endpoints.first(where: { $0.id == id }).flatMap { EndpointAddressPolicy.rawOrigin($0.baseURL) }
+        let removed = settings.endpoints.filter { $0.id == id }
         settings.endpoints.removeAll { $0.id == id }
-        EndpointKeyCoordinator.cleanupCredentials(
-            endpointID: id,
-            origin: oldOrigin,
-            readLegacyKey: { Vault.load(String.self, key: $0) },
-            removeKey: { Vault.remove($0) }
-        )
+        Self.discardCredentials(from: removed, keeping: settings.endpoints)
         if settings.backupModel?.hasPrefix(prefix) == true { settings.backupModel = nil }
         if settings.imageModel?.hasPrefix(prefix) == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(prefix) == true { settings.memoryModel = nil }
@@ -275,11 +300,14 @@ extension TeamModel {
             writeLegacyKey: Self.writeAndVerifyString,
             removeKey: { Vault.remove($0) },
             makeEndpointID: { UUID().uuidString },
-            commitSettings: { targetID, nextURL in
+            commitSettings: { targetCredentialID, nextURL in
                 MainActor.assumeIsolated {
                     guard let idx = self.settings.endpoints.firstIndex(where: { $0.id == id }) else { return false }
                     var candidate = self.settings
+                    let migrated = targetCredentialID != original.credentialID
+                    let targetID = migrated ? targetCredentialID : id
                     candidate.endpoints[idx].id = targetID
+                    if migrated { candidate.endpoints[idx].credentialSlot = nil }
                     if !given.isEmpty { candidate.endpoints[idx].name = given }
                     let oldURL = candidate.endpoints[idx].baseURL
                     let oldStyle = candidate.endpoints[idx].style
@@ -323,15 +351,17 @@ extension TeamModel {
         )
 
         let outcome = EndpointKeyCoordinator.applyEdit(
-            endpointID: id,
+            endpointID: original.credentialID,
             currentBaseURL: original.baseURL,
             newBaseURL: baseURL,
             replacementKey: key,
             allowKeylessLocalReuse: allowKeyless,
             store: store
         )
-        if case .saved(_, _, let keyUpdated) = outcome, keyUpdated {
-            objectWillChange.send()
+        if case .saved(let credentialID, let normalizedURL, let keyUpdated) = outcome {
+            if keyUpdated { objectWillChange.send() }
+            let endpointID = credentialID == original.credentialID ? id : credentialID
+            return .saved(endpointID: endpointID, normalizedURL: normalizedURL, keyUpdated: keyUpdated)
         }
         return outcome
     }
@@ -395,10 +425,10 @@ extension TeamModel {
     }
 
     func replaceKey(_ id: String, _ key: String) {
-        if let endpoint = settings.endpoints.first(where: { $0.id == id }),
-           let origin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL) {
+        guard let endpoint = settings.endpoints.first(where: { $0.id == id }) else { return }
+        if let origin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL) {
             _ = EndpointKeyCoordinator.saveBoundCredential(
-                endpointID: id,
+                endpointID: endpoint.credentialID,
                 origin: origin,
                 key: key,
                 writeBoundRecord: Self.writeAndVerifyData,
@@ -407,7 +437,7 @@ extension TeamModel {
                 removeKey: { Vault.remove($0) }
             )
         } else {
-            Vault.save(key, as: EndpointKeyCoordinator.legacyKeySlot(for: id))
+            Vault.save(key, as: EndpointKeyCoordinator.legacyKeySlot(for: endpoint.credentialID))
         }
         objectWillChange.send()
     }

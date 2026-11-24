@@ -129,6 +129,10 @@ public enum EndpointKeyCoordinator {
         }
     }
 
+    public static func credentialID(for endpointID: String, slot: UUID?) -> String {
+        slot.map { "restored-\($0.uuidString)" } ?? endpointID
+    }
+
     public static func legacyKeySlot(for endpointID: String) -> String { "key-\(endpointID)" }
     public static func boundMarkerSlot(for endpointID: String) -> String { "bound-\(endpointID)" }
 
@@ -210,10 +214,13 @@ public enum EndpointKeyCoordinator {
     public struct EndpointSnapshot: Equatable, Sendable {
         public let id: String
         public let baseURL: String
+        public var credentialSlot: UUID?
+        public var credentialID: String { EndpointKeyCoordinator.credentialID(for: id, slot: credentialSlot) }
 
-        public init(id: String, baseURL: String) {
+        public init(id: String, baseURL: String, credentialSlot: UUID? = nil) {
             self.id = id
             self.baseURL = baseURL
+            self.credentialSlot = credentialSlot
         }
     }
 
@@ -230,7 +237,7 @@ public enum EndpointKeyCoordinator {
         for endpoint in endpoints {
             if let allowedIDs, !allowedIDs.contains(endpoint.id) { continue }
             if let key = resolveBoundKey(
-                endpointID: endpoint.id,
+                endpointID: endpoint.credentialID,
                 requestURL: endpoint.baseURL,
                 readBoundRecord: readBoundRecord,
                 hasBoundMarker: hasBoundMarker,
@@ -242,118 +249,50 @@ public enum EndpointKeyCoordinator {
         return exported
     }
 
-    /// Reconciles origin-bound credentials after a backup's `settings.json` has been swapped onto disk.
-    /// - When `#keys` supplies a key for a restored endpoint, imports it as an origin-bound credential
-    ///   for the restored endpoint's `baseURL` (updating bound record, marker, and legacy mirror together)
-    ///   and cleans up any prior different-origin bound slot for the same ID.
-    /// - When `#keys` is absent or omits a restored endpoint:
-    ///   - If the same endpoint ID previously had the same origin on this device, preserves that credential
-    ///     (opportunistically upgrading an unbound legacy key into a bound record).
-    ///   - If the restored endpoint's origin differs from the previous endpoint on this device (or was not
-    ///     present on this device), sets the bound marker and clears legacy/old-origin slots so an existing
-    ///     key for another host can never be sent to the restored host.
-    /// - For previous endpoints removed by the restore, opportunistically binds any pre-upgrade legacy key
-    ///   to its previous origin so a later keyless restore cannot attach it to a different host.
-    public static func applyBackupRestore(
+    public enum BackupCredentialError: Error {
+        case duplicateEndpoint
+        case invalidOrigin(String)
+        case couldNotSave(String)
+    }
+
+    /// New credentials get independent slots. Until the caller publishes
+    /// the returned selectors in settings, all existing requests still use the previous slots.
+    public static func prepareBackupRestore(
         previousEndpoints: [EndpointSnapshot],
         restoredEndpoints: [EndpointSnapshot],
         restoredKeys: [String: String]?,
-        writeBoundRecord: (String, Data) -> Bool,
-        hasBoundMarker: (String) -> Bool,
-        writeBoundMarker: (String) -> Bool,
-        readLegacyKey: (String) -> String?,
-        writeLegacyKey: (String, String) -> Bool,
-        removeKey: (String) -> Void
-    ) {
-        var previousOriginByID: [String: String] = [:]
-        for previous in previousEndpoints {
-            if let origin = EndpointAddressPolicy.rawOrigin(previous.baseURL) {
-                previousOriginByID[previous.id] = origin
-            }
+        stage: (EndpointSnapshot, String?) -> Bool,
+        discard: (EndpointSnapshot) -> Void
+    ) throws -> [EndpointSnapshot] {
+        guard Set(restoredEndpoints.map(\.id)).count == restoredEndpoints.count else {
+            throw BackupCredentialError.duplicateEndpoint
         }
-        let restoredIDs = Set(restoredEndpoints.map(\.id))
-
-        for endpoint in restoredEndpoints {
-            let id = endpoint.id
-            let restoredOrigin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL)
-            let previousOrigin = previousOriginByID[id]
-            let markerSlot = boundMarkerSlot(for: id)
-            let legacySlot = legacyKeySlot(for: id)
-            let rawProvided = restoredKeys?[id]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let providedKey: String? = (rawProvided?.isEmpty == false) ? rawProvided : nil
-
-            if let providedKey {
-                // Remove any credential bound to a different previous origin before writing the restored origin.
-                if let previousOrigin, previousOrigin != restoredOrigin {
-                    _ = writeBoundMarker(markerSlot)
-                    removeKey(boundRecordSlot(for: id, origin: previousOrigin))
-                    removeKey(legacySlot)
+        let previousByID = Dictionary(previousEndpoints.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var prepared: [EndpointSnapshot] = []
+        var staged: [EndpointSnapshot] = []
+        do {
+            for var endpoint in restoredEndpoints {
+                let origin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL)
+                let key = restoredKeys?[endpoint.id]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let supplied = key?.isEmpty == false ? key : nil
+                if supplied == nil, let origin, let previous = previousByID[endpoint.id],
+                   origin == EndpointAddressPolicy.rawOrigin(previous.baseURL) {
+                    // A keyless backup of the same service keeps the slot already in use on this device.
+                    endpoint.credentialSlot = previous.credentialSlot
+                } else {
+                    if supplied != nil, origin == nil { throw BackupCredentialError.invalidOrigin(endpoint.id) }
+                    // Ignore the archived selector. It names a slot local to its source device.
+                    endpoint.credentialSlot = UUID()
+                    staged.append(endpoint)
+                    guard stage(endpoint, supplied) else { throw BackupCredentialError.couldNotSave(endpoint.id) }
                 }
-                guard let restoredOrigin else {
-                    // Restored endpoint has no valid HTTP(S) origin: refuse to store an unbound key.
-                    _ = writeBoundMarker(markerSlot)
-                    removeKey(legacySlot)
-                    continue
-                }
-                let saved = saveBoundCredential(
-                    endpointID: id,
-                    origin: restoredOrigin,
-                    key: providedKey,
-                    writeBoundRecord: writeBoundRecord,
-                    writeBoundMarker: writeBoundMarker,
-                    writeLegacyKey: writeLegacyKey,
-                    removeKey: removeKey
-                )
-                if !saved {
-                    _ = writeBoundMarker(markerSlot)
-                }
-                continue
+                prepared.append(endpoint)
             }
-
-            // No key provided in backup for this endpoint.
-            if let previousOrigin, previousOrigin != restoredOrigin {
-                // Same endpoint ID now points to a different origin (or invalid URL) without a restored key.
-                // Mark bound first so even if removing the legacy slot fails, readers refuse to send
-                // the previous host's key to the restored host.
-                _ = writeBoundMarker(markerSlot)
-                removeKey(boundRecordSlot(for: id, origin: previousOrigin))
-                removeKey(legacySlot)
-            } else if let restoredOrigin, previousOrigin == restoredOrigin {
-                // Same ID and same origin on this device: keep existing credential, upgrading legacy keys in place.
-                if !hasBoundMarker(markerSlot),
-                   let legacy = readLegacyKey(legacySlot), !legacy.isEmpty,
-                   let data = BoundEndpointCredential(origin: restoredOrigin, accessToken: legacy).encodedData() {
-                    if writeBoundRecord(boundRecordSlot(for: id, origin: restoredOrigin), data) {
-                        _ = writeBoundMarker(markerSlot)
-                    }
-                }
-            } else {
-                // Endpoint did not previously exist on this device (or had no valid origin).
-                // Never allow a leftover unbound legacy key from another host to attach to this restored endpoint.
-                // (An existing origin-scoped `boundRecordSlot(id, restoredOrigin)` from a prior reinstall on the
-                // same host remains valid because its embedded `origin` already matches `restoredOrigin`.)
-                _ = writeBoundMarker(markerSlot)
-                removeKey(legacySlot)
-            }
+        } catch {
+            staged.forEach(discard)
+            throw error
         }
-
-        // For previous endpoints removed by this restore, lock any unbound legacy key to its prior origin
-        // so it can never later fall back onto a different host if another keyless backup reintroduces that ID.
-        for previous in previousEndpoints where !restoredIDs.contains(previous.id) {
-            let id = previous.id
-            let markerSlot = boundMarkerSlot(for: id)
-            let legacySlot = legacyKeySlot(for: id)
-            guard !hasBoundMarker(markerSlot),
-                  let legacy = readLegacyKey(legacySlot), !legacy.isEmpty else { continue }
-            if let previousOrigin = previousOriginByID[id],
-               let data = BoundEndpointCredential(origin: previousOrigin, accessToken: legacy).encodedData(),
-               writeBoundRecord(boundRecordSlot(for: id, origin: previousOrigin), data) {
-                _ = writeBoundMarker(markerSlot)
-            } else {
-                _ = writeBoundMarker(markerSlot)
-                removeKey(legacySlot)
-            }
-        }
+        return prepared
     }
 
     public static func applyEdit(
