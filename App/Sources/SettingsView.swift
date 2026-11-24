@@ -17,9 +17,6 @@ struct SettingsView: View {
     @State private var editingBot: BotInfo?
     @State private var creatingRoom = false
     @State private var editingRoom: RoomInfo?
-    @State private var memoryDraft = ""
-    @State private var editingMemory: Memory?
-    @State private var memoryText = ""
 
     private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
         ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models]),
@@ -75,16 +72,6 @@ struct SettingsView: View {
         .sheet(item: $editingBot) { BotEditor(team: team, bot: $0) }
         .sheet(isPresented: $creatingRoom) { RoomEditor(team: team) }
         .sheet(item: $editingRoom) { RoomEditor(team: team, room: $0) }
-        .alert(L.t("settingsHome.editMemory"), isPresented: Binding(get: { editingMemory != nil }, set: { if !$0 { editingMemory = nil } })) {
-            TextField("", text: $memoryText)
-            Button(L.t("actions.save")) {
-                if let editingMemory { team.editMemory(editingMemory.id, memoryText) }
-                editingMemory = nil
-            }
-            Button(L.t("actions.cancel"), role: .cancel) { editingMemory = nil }
-        } message: {
-            Text(L.t("settings.clearMemoryNote"))
-        }
     }
 
     private var found: [SettingsPage] {
@@ -184,7 +171,7 @@ struct SettingsView: View {
                     .padding(.horizontal, -Ink.Space.l)
             }
         case .memory:
-            subpage(page) { memory }
+            MemoryPageV2(team: team)
         default:
             EmptyView()
         }
@@ -267,62 +254,6 @@ struct SettingsView: View {
         }
     }
 
-    private var memory: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: L.t("nav.memory"), note: L.format("settings.memoryCounts", team.surfaceMemories.count, team.deepMemories.count))
-            VStack(spacing: 0) {
-                HStack(spacing: Ink.Space.s) {
-                    TextField(L.t("settings.memoryPlaceholder"), text: $memoryDraft)
-                        .font(.system(size: Ink.Size.sub))
-                        .submitLabel(.done)
-                        .onSubmit(addMemory)
-                    Button(L.t("actions.save"), action: addMemory)
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.accent)
-                        .disabled(memoryDraft.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                .padding(Ink.Space.l)
-                if !team.memories.isEmpty { Rectangle().fill(Ink.rule).frame(height: 1) }
-                ForEach(team.surfaceMemories + team.deepMemories) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: Ink.Space.s) {
-                        Text(item.text)
-                            .font(.system(size: Ink.Size.sub))
-                            .foregroundStyle(item.deep == true ? Ink.inkSoft : Ink.ink)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if item.deep == true {
-                            Text(L.t("organize.earlier")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint)
-                                .padding(.horizontal, Ink.Space.s).padding(.vertical, Ink.Space.xs / 2)
-                                .background(Ink.rule.opacity(0.6), in: .capsule)
-                        }
-                    }
-                    .padding(.horizontal, Ink.Space.l)
-                    .padding(.vertical, Ink.Space.m)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        memoryText = item.text
-                        editingMemory = item
-                    }
-                    .contextMenu {
-                        Button(L.t("actions.edit"), systemImage: "pencil") {
-                            memoryText = item.text
-                            editingMemory = item
-                        }
-                        if item.deep == true {
-                            Button(L.t("actions.pinMemory"), systemImage: "pin") { withAnimation(.smooth) { team.setDeep(item.id, false) } }
-                        } else {
-                            Button(L.t("actions.archiveMemory"), systemImage: "archivebox") { withAnimation(.smooth) { team.setDeep(item.id, true) } }
-                        }
-                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { withAnimation(.smooth) { team.deleteMemory(item.id) } }
-                    }
-                }
-            }
-            .paperCard()
-            Text(team.memories.isEmpty ? L.t("settings.memoryEmptyNote") : L.format("settingsHome.memoryEditNote", TeamModel.surfaceLimit))
-                .font(Ink.footnote).foregroundStyle(Ink.inkFaint).padding(.leading, Ink.Space.xs)
-            MemoryReviewHistory(records: team.memoryReviews)
-        }
-    }
-
     private func companionRow(_ bot: BotInfo) -> some View {
         Button {
             Haptics.light()
@@ -334,14 +265,6 @@ struct SettingsView: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel(L.format("settingsHome.editCompanion", bot.name))
-    }
-
-    private func addMemory() {
-        let words = memoryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty else { return }
-        withAnimation(.smooth) { team.remember(words, by: nil) }
-        memoryDraft = ""
-        Haptics.tick(0.6)
     }
 }
 
