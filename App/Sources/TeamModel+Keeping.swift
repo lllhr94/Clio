@@ -12,6 +12,8 @@ extension TeamModel {
         let bots: [BotInfo]
         let rooms: [RoomInfo]
         let memory: MemoryBook
+        let suppressedMemoryHashes: Set<String>
+        let pinnedMemoryIDs: Set<String>
         let laters: [Later]
         let routines: [Routine]
         let queued: [String: [StoredQueuedMessage]]
@@ -24,7 +26,11 @@ extension TeamModel {
             let roomsIndex = loadIndex([RoomInfo].self, "rooms.json")
             let bots = botsIndex.value ?? []
             let rooms = roomsIndex.value ?? []
-            let memory = Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
+            let memoryBoot = MemoryStoreBridge.shared.bootstrapOnLaunch(
+                bots: bots,
+                mainBotId: settings.mainBotId ?? bots.first?.id
+            )
+            let memory = memoryBoot.book
             let laters = Disk.load([Later].self, "later.json") ?? []
             let routines = Disk.load([Routine].self, "routines.json") ?? []
             let rawSlots = QueuedStore.loadAllSlots()
@@ -44,6 +50,8 @@ extension TeamModel {
                 bots: bots,
                 rooms: rooms,
                 memory: memory,
+                suppressedMemoryHashes: memoryBoot.suppressedHashes,
+                pinnedMemoryIDs: memoryBoot.pinnedIDs,
                 laters: laters,
                 routines: routines,
                 queued: queued
@@ -290,6 +298,13 @@ extension TeamModel {
         pendingInterjects = [:]
         unresolvedLeafOpenChats = []
         sortBots()
+        ensureRetractedFlushHashesLoaded()
+        MemoryStoreBridge.shared.attach(
+            to: self,
+            pinnedIDs: data.pinnedMemoryIDs,
+            bots: bots,
+            mainBotId: mainBotId
+        )
         deliverDue()
     }
 
@@ -298,10 +313,54 @@ extension TeamModel {
     func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
     func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
     func saveMemory() {
-        guard keeping else { return }
+        guard keeping, !Disk.frozen else { return }
+        ensureRetractedFlushHashesLoaded()
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        var sanitized = memories
+        var didSanitize = false
+        for index in sanitized.indices {
+            let safe = MemorySafety.redactSecrets(sanitized[index].text, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if safe != sanitized[index].text {
+                sanitized[index].text = safe
+                didSanitize = true
+            }
+        }
+        let filtered = sanitized.filter { !$0.text.isEmpty }
+        if filtered != memories {
+            memories = filtered
+            didSanitize = true
+        }
         memoryBook.memories = memories
-        if memoryBook.budgetDay == nil && memoryBook.reviewFromDay == nil { Disk.save(memories, "memory.json") }
-        else { Disk.save(memoryBook, "memory.json") }
+        if didSanitize {
+            memoryPromptState.invalidate()
+            syncLivePromptsFromMemories()
+        }
+        let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let editedTexts = MemoryStoreBridge.shared.persistAppSave(
+            book: memoryBook,
+            suppressedHashes: suppressed,
+            bots: bots,
+            mainBotId: mainBotId,
+            secrets: orderedSecrets
+        )
+        for edited in editedTexts {
+            clearMemoryRetraction(text: edited)
+        }
+    }
+
+    func prepareMemoryStoreForRestore() {
+        MemoryStoreBridge.shared.handleBackupRestoreSucceeded()
+    }
+
+    func resetMemoryStore() {
+        guard keeping, !Disk.frozen else { return }
+        memoryBook = MemoryBook()
+        memories = []
+        memoryReviews = []
+        memoryPromptState.invalidate()
+        syncLivePromptsFromMemories()
+        MemoryStoreBridge.shared.resetAll(team: self)
     }
     func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
     func saveRoutines() { if keeping { Disk.save(routines, "routines.json") } }
