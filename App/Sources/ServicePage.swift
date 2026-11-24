@@ -300,6 +300,14 @@ struct ServicePage: View {
                             .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(Ink.inkSoft)
                     }
+                    if endpoint.kind == .anthropic {
+                        Kit.rule(inset: 0)
+                        promptCacheRow(endpoint)
+                        Text(L.t("servicePage.promptCacheNote"))
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if endpoint.kind == .openai {
                         Kit.rule(inset: 0)
                         thinkingStyleRow(endpoint)
@@ -314,6 +322,21 @@ struct ServicePage: View {
             }
         }
         .paperCard()
+    }
+
+    private func promptCacheRow(_ endpoint: Endpoint) -> some View {
+        Toggle(isOn: Binding(
+            get: { endpoint.usesPromptCache },
+            set: { enabled in
+                Haptics.tick(0.5)
+                team.setPromptCache(endpoint.id, enabled: enabled)
+            }
+        )) {
+            Text(L.t("servicePage.promptCache"))
+                .font(.system(size: Ink.Size.sub))
+                .foregroundStyle(Ink.ink)
+        }
+        .tint(Ink.accent)
     }
 
     private func thinkingStyleRow(_ endpoint: Endpoint) -> some View {

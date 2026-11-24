@@ -2,6 +2,7 @@ import AVFoundation
 import AgentKit
 import CoreLocation
 import Craft
+import NaturalLanguage
 import PhotosUI
 import Observation
 import SwiftUI
@@ -351,14 +352,133 @@ extension ChatPage {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? session.setActive(true)
-        var plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
-        for secret in Vault.allStrings() where secret.count >= 6 {
-            if plain.contains(secret) {
-                plain = plain.replacingOccurrences(of: secret, with: "（已跳过密钥）")
+
+        func stripMarkdownBlocks(_ raw: String, dropCodeBlocks: Bool) -> String {
+            var source = raw
+            if dropCodeBlocks {
+                source = source.replacingOccurrences(of: #"```[\s\S]*?```"#, with: " ", options: .regularExpression)
+                source = source.replacingOccurrences(of: #"`[^`\n]+`"#, with: " ", options: .regularExpression)
+                source = source.replacingOccurrences(of: #"https?://\S+"#, with: " ", options: .regularExpression)
+            } else {
+                source = source.replacingOccurrences(of: #"(?m)^[ \t]*```[^\n]*\n?"#, with: "", options: .regularExpression)
+            }
+            source = source.replacingOccurrences(of: #"(?m)^[ \t]*#{1,6}[ \t]+"#, with: "", options: .regularExpression)
+            source = source.replacingOccurrences(of: #"(?m)^[ \t]*>[ \t]?"#, with: "", options: .regularExpression)
+            source = source.replacingOccurrences(of: #"(?m)^[ \t]*[-*_]{3,}[ \t]*$"#, with: "", options: .regularExpression)
+            let parsed = (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? source
+            return parsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func redactSecrets(_ raw: String) -> String {
+            var out = raw
+            for secret in Vault.allStrings() where secret.count >= 6 {
+                if out.contains(secret) {
+                    out = out.replacingOccurrences(of: secret, with: "（已跳过密钥）")
+                }
+            }
+            return out
+        }
+
+        func mapLanguage(_ lang: NLLanguage) -> String? {
+            switch lang {
+            case .simplifiedChinese: return "zh-CN"
+            case .traditionalChinese: return "zh-TW"
+            case .english: return "en-US"
+            case .japanese: return "ja-JP"
+            case .korean: return "ko-KR"
+            case .french: return "fr-FR"
+            case .german: return "de-DE"
+            case .spanish: return "es-ES"
+            case .italian: return "it-IT"
+            case .portuguese: return "pt-BR"
+            case .russian: return "ru-RU"
+            case .arabic: return "ar-SA"
+            case .thai: return "th-TH"
+            case .vietnamese: return "vi-VN"
+            case .indonesian: return "id-ID"
+            case .dutch: return "nl-NL"
+            case .polish: return "pl-PL"
+            case .turkish: return "tr-TR"
+            case .hindi: return "hi-IN"
+            case .undetermined: return nil
+            default: return lang.rawValue
             }
         }
+
+        func scriptCounts(for sample: String) -> (cjk: Int, kana: Int, hangul: Int, latin: Int) {
+            var cjk = 0
+            var kana = 0
+            var hangul = 0
+            var latin = 0
+            for scalar in sample.unicodeScalars {
+                let v = scalar.value
+                if (0x3040...0x30FF).contains(v) || (0x31F0...0x31FF).contains(v) {
+                    kana += 1
+                } else if (0xAC00...0xD7AF).contains(v) || (0x1100...0x11FF).contains(v) || (0x3130...0x318F).contains(v) {
+                    hangul += 1
+                } else if scalar.properties.isIdeographic {
+                    cjk += 1
+                } else if (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v) {
+                    latin += 1
+                }
+            }
+            return (cjk, kana, hangul, latin)
+        }
+
+        func scriptFallbackLanguage(counts: (cjk: Int, kana: Int, hangul: Int, latin: Int)) -> String {
+            if counts.kana > 0 && counts.kana + counts.cjk >= counts.hangul { return "ja-JP" }
+            if counts.hangul > 0 && counts.hangul >= counts.cjk { return "ko-KR" }
+            if counts.cjk > 0 { return "zh-CN" }
+            if counts.latin > 0 { return "en-US" }
+            return "zh-CN"
+        }
+
+        func detectLanguage(for sample: String) -> String {
+            let trimmed = sample.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "zh-CN" }
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(trimmed)
+
+            let hypotheses = recognizer.languageHypotheses(withMaximum: 4)
+            let dominant = recognizer.dominantLanguage
+            let counts = scriptCounts(for: trimmed)
+
+            if counts.kana > 0 && (dominant == .japanese || (hypotheses[.japanese] ?? 0) >= 0.15) {
+                return "ja-JP"
+            }
+            if counts.hangul > 0 && (dominant == .korean || (hypotheses[.korean] ?? 0) >= 0.15) {
+                return "ko-KR"
+            }
+
+            let totalScript = counts.cjk + counts.kana + counts.hangul + counts.latin
+            if counts.cjk >= 2 && counts.kana == 0 && totalScript > 0 {
+                let cjkRatio = Double(counts.cjk) / Double(totalScript)
+                let zhWeight = (hypotheses[.simplifiedChinese] ?? 0) + (hypotheses[.traditionalChinese] ?? 0)
+                if cjkRatio >= 0.15 || (counts.cjk >= 4 && zhWeight >= 0.12) {
+                    if (hypotheses[.traditionalChinese] ?? 0) > (hypotheses[.simplifiedChinese] ?? 0) {
+                        return "zh-TW"
+                    }
+                    return "zh-CN"
+                }
+            }
+
+            if let dominant, let mapped = mapLanguage(dominant) {
+                return mapped
+            }
+            if let top = hypotheses.max(by: { $0.value < $1.value }), top.value >= 0.35, let mapped = mapLanguage(top.key) {
+                return mapped
+            }
+            return scriptFallbackLanguage(counts: counts)
+        }
+
+        let redactedInput = redactSecrets(text)
+        let plain = redactSecrets(stripMarkdownBlocks(redactedInput, dropCodeBlocks: false))
+        let proseSample = redactSecrets(stripMarkdownBlocks(redactedInput, dropCodeBlocks: true))
+        let detectionInput = proseSample.isEmpty ? plain : proseSample
+        let detected = detectLanguage(for: detectionInput)
+
         let utterance = AVSpeechUtterance(string: plain)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+        utterance.voice = AVSpeechSynthesisVoice(language: detected) ?? AVSpeechSynthesisVoice(language: "zh-CN")
         voice.speak(utterance)
     }
 }

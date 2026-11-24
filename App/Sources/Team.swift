@@ -1410,7 +1410,7 @@ final class TeamModel: ObservableObject {
         defer { unregisterLivePromptRefresher(refresherToken) }
         let assembled = refresher.currentPrompt()
         var agent = Agent(
-            provider: recordingProvider(endpoint.provider(key: apiKey), chat: key, refresher: refresher),
+            provider: recordingProvider(endpoint.provider(key: apiKey, stableSystemPrefix: assembled.prefix), chat: key, refresher: refresher),
             model: found.model,
             system: assembled.full,
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees, workplace: workplace) : [],
@@ -2015,7 +2015,7 @@ final class TeamModel: ObservableObject {
         defer { unregisterLivePromptRefresher(helperRefresherToken) }
         let helperPrompt = helperRefresher.currentPrompt()
         var agent = Agent(
-            provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, refresher: helperRefresher),
+            provider: recordingProvider(found.endpoint.provider(key: apiKey, stableSystemPrefix: helperPrompt.prefix), chat: helperKey, refresher: helperRefresher),
             model: found.model,
             system: helperPrompt.full,
             tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true, displayChat: key, workplace: helperPlace) : [],

@@ -29,6 +29,7 @@ struct LivePromptProvider: ModelProvider {
         let livePrompt = refresher.currentPrompt()
         var updated = request
         updated.system = livePrompt.full
+        updated.systemCachePrefix = livePrompt.prefix
         let extra = livePrompt.tail.isEmpty ? "" : "\n\n" + livePrompt.tail
         let sections = ModelInputSections(
             base: livePrompt.prefix,
