@@ -246,7 +246,14 @@ final class SpikeHUDView: UIView {
         countLabel.text = "\(count) 条"
     }
 
-    func updateAnchorDelta(_ delta: CGFloat, source: String) {
+    func updateAnchorDelta(_ delta: CGFloat?, source: String) {
+        guard let delta else {
+            anchorLabel.text = "anchor Δ: \(L.t("careSpike.unverified"))"
+            anchorLabel.textColor = UIColor(Ink.warn)
+            anchorPill.backgroundColor = UIColor(Ink.stopWash).withAlphaComponent(0.7)
+            prependButton.accessibilityHint = source
+            return
+        }
         let clamped = abs(delta) < 0.05 ? 0.0 : Double(delta)
         anchorLabel.text = String(format: "anchor Δ: %.1f pt", clamped)
         let ok = abs(clamped) < 0.5
@@ -345,6 +352,8 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
 
     private var quotedText: String?
     private var quotedSpeaker: String?
+    private var quoteActiveVerticalConstraints: [NSLayoutConstraint] = []
+    private var quoteCollapsedConstraint: NSLayoutConstraint!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -395,6 +404,7 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         cardView.layer.shadowOpacity = 1
 
         quoteContainer.isHidden = true
+        quoteContainer.clipsToBounds = true
         quoteStripe.layer.cornerRadius = 1
         quoteHeaderLabel.font = UIFont.systemFont(ofSize: Ink.Size.micro, weight: .semibold)
         quoteBodyLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
@@ -421,15 +431,20 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         quoteRow.spacing = Ink.Space.s
         quoteRow.translatesAutoresizingMaskIntoConstraints = false
         quoteContainer.addSubview(quoteRow)
-        NSLayoutConstraint.activate([
-            quoteStripe.widthAnchor.constraint(equalToConstant: 2.5),
+        quoteActiveVerticalConstraints = [
             quoteStripe.heightAnchor.constraint(equalTo: quoteTextStack.heightAnchor),
-            clearQuoteButton.widthAnchor.constraint(equalToConstant: 28),
             clearQuoteButton.heightAnchor.constraint(equalToConstant: 28),
-            quoteRow.leadingAnchor.constraint(equalTo: quoteContainer.leadingAnchor, constant: Ink.Space.xs),
-            quoteRow.trailingAnchor.constraint(equalTo: quoteContainer.trailingAnchor),
             quoteRow.topAnchor.constraint(equalTo: quoteContainer.topAnchor, constant: Ink.Space.xs),
             quoteRow.bottomAnchor.constraint(equalTo: quoteContainer.bottomAnchor, constant: -Ink.Space.xs),
+        ]
+        quoteCollapsedConstraint = quoteContainer.heightAnchor.constraint(equalToConstant: 0)
+        quoteCollapsedConstraint.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            quoteStripe.widthAnchor.constraint(equalToConstant: 2.5),
+            clearQuoteButton.widthAnchor.constraint(equalToConstant: 28),
+            quoteRow.leadingAnchor.constraint(equalTo: quoteContainer.leadingAnchor, constant: Ink.Space.xs),
+            quoteRow.trailingAnchor.constraint(equalTo: quoteContainer.trailingAnchor),
+            quoteCollapsedConstraint,
         ])
 
         inputField.font = UIFont.systemFont(ofSize: Ink.Size.sub)
@@ -506,7 +521,9 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         quoteHeaderLabel.text = "已引用 · \(speaker)（\(excerpt.count) 字）"
         quoteBodyLabel.text = excerpt
         if quoteContainer.isHidden {
+            quoteCollapsedConstraint.isActive = false
             quoteContainer.isHidden = false
+            NSLayoutConstraint.activate(quoteActiveVerticalConstraints)
             UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
                 self.superview?.layoutIfNeeded()
             }
@@ -519,7 +536,9 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         quotedText = nil
         quotedSpeaker = nil
         if !quoteContainer.isHidden {
+            NSLayoutConstraint.deactivate(quoteActiveVerticalConstraints)
             quoteContainer.isHidden = true
+            quoteCollapsedConstraint.isActive = true
             UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
                 self.superview?.layoutIfNeeded()
             }

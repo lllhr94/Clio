@@ -7,7 +7,7 @@ struct SpikeChatSheet: View {
 
     var body: some View {
         let theme = Theme.shared
-        let styleSignal = "\(theme.key)|\(theme.face.rawValue)|\(theme.code.rawValue)|\(theme.size)|\(theme.lineHeight)|\(theme.white)|\(theme.oled)|\(theme.bubble)|\(UIScale.shared.value)|\(colorScheme == .dark)"
+        let styleSignal = "\(theme.key)|\(theme.face.rawValue)|\(theme.code.rawValue)|\(theme.size)|\(theme.lineHeight)|\(theme.white)|\(theme.oled)|\(theme.bubble)|\(theme.fontsArrived)|\(UIScale.shared.value)|\(colorScheme == .dark)"
         SpikeChatRepresentable(styleSignal: styleSignal) {
             dismiss()
         }

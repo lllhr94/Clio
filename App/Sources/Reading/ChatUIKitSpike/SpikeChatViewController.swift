@@ -24,6 +24,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
     private var prependedBatches = 0
     private var selectingMessageIDs: Set<UUID> = []
     private var lastScrollOffsetY: CGFloat = 0
+    private var dragStartOffsetY: CGFloat = 0
     private var lastAutoPrependTime: CFTimeInterval = 0
     private var lastKnownContentWidth: CGFloat = 0
     private var lastKnownBottomInset: CGFloat = 0
@@ -446,7 +447,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
             )
         }
 
-        var measuredDelta: CGFloat = 0
+        var measuredDelta: CGFloat?
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
@@ -465,15 +466,26 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
             dataSource.apply(snapshot, animatingDifferences: false)
             collectionView.layoutIfNeeded()
 
-            if let newIdx = messageIndexByID[anchor.id],
-               let afterAttrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: newIdx)) {
-                let targetY = afterAttrs.frame.minY - anchor.visualY
-                collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
-                collectionView.layoutIfNeeded()
+            if let newIdx = messageIndexByID[anchor.id] {
+                let newPath = IndexPath(item: 0, section: newIdx)
+                var afterAttrs = collectionView.layoutAttributesForItem(at: newPath)
+                if afterAttrs == nil {
+                    collectionView.collectionViewLayout.invalidateLayout()
+                    collectionView.layoutIfNeeded()
+                    afterAttrs = collectionView.layoutAttributesForItem(at: newPath)
+                        ?? collectionView.collectionViewLayout.layoutAttributesForItem(at: newPath)
+                }
+                if let afterAttrs {
+                    let targetY = afterAttrs.frame.minY - anchor.visualY
+                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
+                    collectionView.layoutIfNeeded()
 
-                let verifiedY = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: newIdx))?.frame.minY ?? afterAttrs.frame.minY
-                let afterVisualY = verifiedY - collectionView.contentOffset.y
-                measuredDelta = afterVisualY - anchor.visualY
+                    if let verifiedAttrs = collectionView.layoutAttributesForItem(at: newPath)
+                        ?? collectionView.collectionViewLayout.layoutAttributesForItem(at: newPath) {
+                        let afterVisualY = verifiedAttrs.frame.minY - collectionView.contentOffset.y
+                        measuredDelta = afterVisualY - anchor.visualY
+                    }
+                }
             }
 
             CATransaction.commit()
@@ -753,17 +765,37 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     // MARK: - UIScrollViewDelegate & UICollectionViewDelegate
 
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragStartOffsetY = scrollView.contentOffset.y
+    }
+
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        if velocity.y < -0.05 {
+            isPinnedToBottom = false
+        }
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard hasPerformedInitialScroll else { return }
 
+        let currentY = scrollView.contentOffset.y
+        let prevY = lastScrollOffsetY
+        lastScrollOffsetY = currentY
+
         if !isProgrammaticScroll {
             let bottomY = max(-scrollView.contentInset.top, scrollView.contentSize.height - scrollView.bounds.height + scrollView.contentInset.bottom)
-            isPinnedToBottom = (bottomY - scrollView.contentOffset.y) <= 36
+            let distanceFromBottom = bottomY - currentY
+            let userActivelyScrolling = scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+            let movedUpSignificantly = currentY < prevY - 0.5 || (scrollView.isDragging && currentY < dragStartOffsetY - 0.5)
+            if userActivelyScrolling && movedUpSignificantly && currentY < bottomY - 2 {
+                isPinnedToBottom = false
+            } else if userActivelyScrolling && currentY >= prevY && distanceFromBottom <= 24 {
+                isPinnedToBottom = true
+            }
         }
 
-        let distanceFromTop = scrollView.contentOffset.y + scrollView.contentInset.top
-        let movingUp = scrollView.contentOffset.y < lastScrollOffsetY
-        lastScrollOffsetY = scrollView.contentOffset.y
+        let distanceFromTop = currentY + scrollView.contentInset.top
+        let movingUp = currentY < prevY
 
         if !isProgrammaticScroll,
            !isLoadingEarlier,

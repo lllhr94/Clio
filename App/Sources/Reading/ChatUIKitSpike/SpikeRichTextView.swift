@@ -19,6 +19,7 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         quoteBlocks: [],
         ruleRanges: []
     )
+    private var currentMessageID: UUID?
     private var currentStyle: SpikeStyle?
     private var lastRenderToken: UInt64 = 0
     private var lastStyleKey = ""
@@ -45,7 +46,7 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         }
 
         required init?(coder: NSCoder) {
-            nil
+            return nil
         }
     }
 
@@ -73,7 +74,7 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         }
 
         required init?(coder: NSCoder) {
-            nil
+            return nil
         }
     }
 
@@ -112,15 +113,26 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         }
     }
 
-    func apply(rendered: SpikeRenderedProse, style: SpikeStyle, isStreaming: Bool) {
-        let sameToken = rendered.renderToken == lastRenderToken && style.styleKey == lastStyleKey
+    func apply(messageID: UUID, rendered: SpikeRenderedProse, style: SpikeStyle) {
+        let sameMessage = currentMessageID == messageID
+        let sameToken = sameMessage && rendered.renderToken == lastRenderToken && style.styleKey == lastStyleKey
         if sameToken { return }
 
         let oldRange = selectedRange
-        let oldString = attributedText?.string ?? ""
-        let keepSelection = isStreaming
-            && oldRange.length > 0
-            && rendered.attributed.string.hasPrefix(oldString)
+        let oldNS = (attributedText?.string ?? "") as NSString
+        let newNS = rendered.attributed.string as NSString
+        var restoredRange: NSRange?
+        if sameMessage,
+           oldRange.length > 0,
+           oldRange.location >= 0,
+           oldRange.location + oldRange.length <= oldNS.length,
+           oldRange.location + oldRange.length <= newNS.length {
+            let oldSelected = oldNS.substring(with: oldRange)
+            let newSelected = newNS.substring(with: oldRange)
+            if oldSelected == newSelected {
+                restoredRange = oldRange
+            }
+        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -130,10 +142,14 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
             textContainerInset = desiredInset
         }
         attributedText = rendered.attributed
-        if keepSelection {
-            selectedRange = oldRange
+        if let restoredRange {
+            selectedRange = restoredRange
+        } else if oldRange.length > 0 {
+            selectedRange = NSRange(location: 0, length: 0)
+            publishSelection(false)
         }
 
+        self.currentMessageID = messageID
         self.decorations = rendered.decorations
         self.currentStyle = style
         self.lastRenderToken = rendered.renderToken
@@ -142,6 +158,11 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
 
         CATransaction.commit()
         setNeedsLayout()
+    }
+
+    func resetForReuse() {
+        currentMessageID = nil
+        clearSelectionIfNeeded()
     }
 
     func clearSelectionIfNeeded() {

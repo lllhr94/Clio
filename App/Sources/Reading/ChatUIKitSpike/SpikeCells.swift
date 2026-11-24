@@ -46,7 +46,7 @@ final class SpikeAssistantCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         messageID = nil
-        richTextView.clearSelectionIfNeeded()
+        richTextView.resetForReuse()
         richTextView.onQuoteSelection = nil
         richTextView.onSelectionActiveChanged = nil
         richTextView.onLinkTapped = nil
@@ -83,7 +83,7 @@ final class SpikeAssistantCell: UICollectionViewCell {
         }
         richTextView.onSelectionActiveChanged = onSelectionChanged
         richTextView.onLinkTapped = onLinkTapped
-        richTextView.apply(rendered: entry.rendered, style: style, isStreaming: message.isStreaming)
+        richTextView.apply(messageID: message.id, rendered: entry.rendered, style: style)
 
         updateStatus(message: message)
         setNeedsLayout()
@@ -95,7 +95,7 @@ final class SpikeAssistantCell: UICollectionViewCell {
         if showSpeaker {
             speakerDot.backgroundColor = UIColor(message.isStreaming ? Ink.accent : Ink.ok)
         }
-        richTextView.apply(rendered: entry.rendered, style: style, isStreaming: message.isStreaming)
+        richTextView.apply(messageID: message.id, rendered: entry.rendered, style: style)
         updateStatus(message: message)
         setNeedsLayout()
         layoutIfNeeded()
@@ -212,7 +212,7 @@ final class SpikeUserCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        richTextView.clearSelectionIfNeeded()
+        richTextView.resetForReuse()
         richTextView.onQuoteSelection = nil
         richTextView.onSelectionActiveChanged = nil
     }
@@ -243,7 +243,7 @@ final class SpikeUserCell: UICollectionViewCell {
             onQuote(excerpt, speaker)
         }
         richTextView.onSelectionActiveChanged = onSelectionChanged
-        richTextView.apply(rendered: entry.rendered, style: style, isStreaming: false)
+        richTextView.apply(messageID: message.id, rendered: entry.rendered, style: style)
 
         refreshThemeColors()
         setNeedsLayout()

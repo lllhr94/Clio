@@ -955,6 +955,10 @@
   "careSpike": {
     "section": "渲染实验室",
     "title": "UIKit 对话原型",
-    "subtitle": "验证跨段引用、前文锚点稳停与流式零闪跳"
+    "subtitle": "验证跨段引用、前文锚点稳停与流式零闪跳",
+    "hideLab": "关闭渲染实验室",
+    "labEnabled": "已开启渲染实验室，可在下方进入 UIKit 对话原型。",
+    "labDisabled": "已关闭渲染实验室。",
+    "unverified": "未验证"
   }
 }
