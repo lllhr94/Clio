@@ -49,6 +49,11 @@ def fixture() -> str:
     reply_text = extract(model, r"^        case \.text\(let piece\):\n.*?(?=^        case )", "live reply text handler")
     reply_reset = extract(model, r"^        case \.streamReset:\n.*?(?=^        case )", "live reply reset handler")
     fragments = {
+        "PET_SURFACE": extract(
+            ROOT / "App/Sources/Pet/PetPerch.swift",
+            r"^    private final class Surface: UIWindow \{\n.*?^    \}",
+            "pet window touch handler",
+        ),
         "TURN_EVENT": extract(ROOT / "App/Sources/Team.swift", r"^enum TurnEvent \{\n.*?^\}", "turn events"),
         "KEPT_ROWS": member(model, "updateKeptRows"),
         "RESET_REPLY": member(model, "resetLiveReply"),

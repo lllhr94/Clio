@@ -26,6 +26,78 @@ private struct Hitches {
     func doing(_ text: String?, as key: String) {}
 }
 
+private final class UIEvent {}
+
+private class UIView {
+    weak var window: UIWindow?
+    weak var parent: UIView?
+
+    func isDescendant(of ancestor: UIView) -> Bool {
+        self === ancestor || parent?.isDescendant(of: ancestor) == true
+    }
+}
+
+private final class UIViewController {
+    var presentedViewController: UIViewController?
+    let view = UIView()
+    var viewIfLoaded: UIView? { view }
+}
+
+private class UIWindow: UIView {
+    var rootViewController: UIViewController?
+    var subviews: [UIView] = []
+    var hit: UIView?
+    func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { hit }
+}
+
+private final class PetPerch {
+    var suppressed = false
+    var chatOffset: CGFloat = 0
+    var replyActions = CGRect.null
+    var bodyHit = CGRect(x: 30, y: 720, width: 48, height: 48)
+    var bubbleHit = CGRect(x: 100, y: 675, width: 120, height: 25)
+}
+
+private enum PetSurfaceFixture {
+// RULE: PET_SURFACE
+
+    static func checkPassThrough() throws {
+        let window = Surface()
+        let pet = PetPerch()
+        let host = UIViewController()
+        let wrapper = UIView()
+        window.perch = pet
+        window.rootViewController = host
+        window.subviews = [host.view, wrapper]
+        window.hit = wrapper
+
+        let chatContent = CGPoint(x: 175, y: 400)
+        let composer = CGPoint(x: 175, y: 805)
+        try check(window.hasContextMenu, false, "A sibling wrapper is not a presented menu")
+        try check(window.hitTest(chatContent, with: nil) == nil, true, "Scrolling passes through the pet window")
+        try check(window.hitTest(composer, with: nil) == nil, true, "Taps on the composer pass through")
+
+        let petPoint = CGPoint(x: 40, y: 740)
+        let bubblePoint = CGPoint(x: 110, y: 680)
+        window.hit = host.view
+        try check(window.hitTest(petPoint, with: nil) === host.view, true, "The pet can still be tapped or dragged")
+        try check(window.hitTest(bubblePoint, with: nil) === host.view, true, "The pet bubble remains interactive")
+        pet.replyActions = pet.bodyHit
+        try check(window.hitTest(petPoint, with: nil) == nil, true, "Reply actions take priority over the pet")
+
+        let menu = UIViewController()
+        let item = UIView()
+        item.parent = menu.view
+        menu.view.window = window
+        host.presentedViewController = menu
+        window.hit = item
+        try check(window.hasContextMenu, true, "The menu is presented in the pet window")
+        try check(window.hitTest(chatContent, with: nil) === item, true, "A presented menu item can still be tapped")
+        window.hit = wrapper
+        try check(window.hitTest(composer, with: nil) == nil, true, "Even an open menu cannot capture the rest of chat")
+    }
+}
+
 private struct Failure: Error, CustomStringConvertible {
     let description: String
 
@@ -210,6 +282,7 @@ private enum ChatFlowTests {
             try await releasingSelectionResumesFollowing()
             try replyHandoff()
             try replyBoundaries()
+            try PetSurfaceFixture.checkPassThrough()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
