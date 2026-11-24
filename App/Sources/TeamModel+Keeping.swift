@@ -12,6 +12,8 @@ extension TeamModel {
         let bots: [BotInfo]
         let rooms: [RoomInfo]
         let memory: MemoryBook
+        let suppressedMemoryHashes: Set<String>
+        let pinnedMemoryIDs: Set<String>
         let laters: [Later]
         let routines: [Routine]
         let queued: [String: [StoredQueuedMessage]]
@@ -24,7 +26,11 @@ extension TeamModel {
             let roomsIndex = loadIndex([RoomInfo].self, "rooms.json")
             let bots = botsIndex.value ?? []
             let rooms = roomsIndex.value ?? []
-            let memory = Disk.load(MemoryBook.self, "memory.json") ?? MemoryBook(memories: Disk.load([Memory].self, "memory.json") ?? [])
+            let memoryBoot = MemoryStoreBridge.shared.bootstrapOnLaunch(
+                bots: bots,
+                mainBotId: settings.mainBotId ?? bots.first?.id
+            )
+            let memory = memoryBoot.book
             let laters = Disk.load([Later].self, "later.json") ?? []
             let routines = Disk.load([Routine].self, "routines.json") ?? []
             let rawSlots = QueuedStore.loadAllSlots()
@@ -44,6 +50,8 @@ extension TeamModel {
                 bots: bots,
                 rooms: rooms,
                 memory: memory,
+                suppressedMemoryHashes: memoryBoot.suppressedHashes,
+                pinnedMemoryIDs: memoryBoot.pinnedIDs,
                 laters: laters,
                 routines: routines,
                 queued: queued
@@ -290,6 +298,14 @@ extension TeamModel {
         pendingInterjects = [:]
         unresolvedLeafOpenChats = []
         sortBots()
+        ensureRetractedFlushHashesLoaded()
+        memoryPromptState.mergeSuppressedFlushHashes(Array(data.suppressedMemoryHashes))
+        MemoryStoreBridge.shared.attach(
+            to: self,
+            pinnedIDs: data.pinnedMemoryIDs,
+            bots: bots,
+            mainBotId: mainBotId
+        )
         deliverDue()
     }
 
@@ -298,10 +314,56 @@ extension TeamModel {
     func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
     func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
     func saveMemory() {
-        guard keeping else { return }
-        memoryBook.memories = memories
-        if memoryBook.budgetDay == nil && memoryBook.reviewFromDay == nil { Disk.save(memories, "memory.json") }
-        else { Disk.save(memoryBook, "memory.json") }
+        guard keeping, !Disk.frozen, !MemoryStoreBridge.shared.isCanonicalReadOnly else { return }
+        var book = memoryBook
+        book.memories = memories
+        _ = try? commitMemoryBook(book)
+    }
+
+    @discardableResult
+    func commitMemoryBook(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none
+    ) throws -> MemoryBook {
+        guard keeping, !Disk.frozen else {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
+        guard !MemoryStoreBridge.shared.isCanonicalReadOnly else {
+            throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
+        }
+        ensureRetractedFlushHashesLoaded()
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let committed = try MemoryStoreBridge.shared.commitAppBook(
+            book,
+            mutation: mutation,
+            suppressedHashes: suppressed,
+            promptState: memoryPromptState,
+            bots: bots,
+            mainBotId: mainBotId,
+            secrets: orderedSecrets
+        )
+        memoryBook = committed.book
+        if memories != committed.book.memories {
+            memories = committed.book.memories
+        }
+        memoryReviews = committed.book.reviews
+        syncLivePromptsFromMemories()
+        return committed.book
+    }
+
+    func prepareMemoryStoreForRestore() {
+        MemoryStoreBridge.shared.prepareForBackupRestore()
+    }
+
+    func resetMemoryStore() {
+        guard keeping, !Disk.frozen else { return }
+        memoryBook = MemoryBook()
+        memories = []
+        memoryReviews = []
+        memoryPromptState.invalidate()
+        syncLivePromptsFromMemories()
+        MemoryStoreBridge.shared.resetAll(team: self)
     }
     func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
     func saveRoutines() { if keeping { Disk.save(routines, "routines.json") } }
