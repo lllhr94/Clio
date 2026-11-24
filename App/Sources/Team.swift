@@ -1925,7 +1925,7 @@ final class TeamModel: ObservableObject {
                                      apiKey: apiKey(for: selected.endpoint.id)))
         }
         all += Phone.tools()
-        all += Hills.shared.tools()
+        all += Hills.shared.tools(canSee: canSee)
         all += GoogleTools.all()
         all.append(Self.planTool(key: key, team: self))
         all += SecretTools.all(botName: bot.name, chat: key)
