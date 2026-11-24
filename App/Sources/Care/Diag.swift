@@ -42,8 +42,18 @@ enum Diag {
         }
     }
 
-    static var log: [String] {
-        queue.sync { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+    /// Reads the log in FIFO order after any queued `note(...)` writes without blocking the main thread.
+    static func snapshot(suffix limit: Int? = nil) async -> [String] {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let all = UserDefaults.standard.stringArray(forKey: key) ?? []
+                if let limit {
+                    continuation.resume(returning: Array(all.suffix(limit)))
+                } else {
+                    continuation.resume(returning: all)
+                }
+            }
+        }
     }
 
     static func clear() {
