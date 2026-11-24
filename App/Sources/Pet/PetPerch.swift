@@ -344,18 +344,42 @@ struct PetPerchAnchor: UIViewRepresentable {
     private final class Surface: UIWindow {
         weak var perch: PetPerch?
 
+        private static func isContextMenuView(_ view: UIView, inside window: UIWindow) -> Bool {
+            var cursor: UIView? = view
+            while let current = cursor, current !== window {
+                if String(describing: type(of: current)).contains("ContextMenu") { return true }
+                cursor = current.superview
+            }
+            return false
+        }
+
         var hasContextMenu: Bool {
             if rootViewController?.presentedViewController != nil { return true }
             let rootView = rootViewController?.view
-            return subviews.contains { $0 !== rootView }
+            return subviews.contains { subview in
+                guard subview !== rootView, rootView?.isDescendant(of: subview) != true else { return false }
+                return !subview.isHidden && subview.alpha > 0.01
+                    && String(describing: type(of: subview)).contains("ContextMenu")
+            }
         }
 
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard let perch else { return nil }
-            if hasContextMenu { return super.hitTest(point, with: event) }
-            guard !perch.suppressed, abs(perch.chatOffset) < 1, !perch.replyActions.contains(point),
-                  perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
-            return super.hitTest(point, with: event)
+            if rootViewController?.presentedViewController != nil { return super.hitTest(point, with: event) }
+            let insidePet = !perch.suppressed && abs(perch.chatOffset) < 1 && !perch.replyActions.contains(point)
+                && (perch.bodyHit.contains(point) || perch.bubbleHit.contains(point))
+            if insidePet { return super.hitTest(point, with: event) }
+            // Only forward hits outside the pet when UIKit has mounted a live context menu overlay in this
+            // window. Never treat UIKit's standard window container (e.g. UITransitionView) or rootView as
+            // an open menu, or this transparent overlay swallows all touches meant for the chat underneath.
+            guard let rootView = rootViewController?.view,
+                  let hit = super.hitTest(point, with: event),
+                  hit !== self,
+                  hit !== rootView,
+                  !hit.isDescendant(of: rootView),
+                  !rootView.isDescendant(of: hit),
+                  Self.isContextMenuView(hit, inside: self) else { return nil }
+            return hit
         }
     }
 }
