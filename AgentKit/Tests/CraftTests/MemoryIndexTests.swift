@@ -407,18 +407,26 @@ final class MemoryIndexTests: XCTestCase {
 
         db.setSQLTraceEnabled(true)
 
-        // 1. Current chat toolSearch
+        // 1. Current chat toolSearch (default scope='current' excludes folded leaves)
         _ = db.drainSQLTrace()
         let currentHits = try db.search(
             query: keyword,
             context: .toolSearch(chatKey: "bot-a", allowCrossChat: false, limit: 20)
         )
         let currentTrace = db.drainSQLTrace().joined(separator: "\n")
-        XCTAssertEqual(Set(currentHits.map(\.entryID)), ["clean-a", "leaf-a"])
+        XCTAssertEqual(Set(currentHits.map(\.entryID)), ["clean-a"])
         XCTAssertTrue(currentTrace.contains("m.tainted = 0"))
         XCTAssertTrue(currentTrace.contains("m.delegated = 0"))
         XCTAssertTrue(currentTrace.contains("m.is_note = 0"))
+        XCTAssertTrue(currentTrace.contains("m.leaf_id = ''"))
         XCTAssertTrue(currentTrace.contains("m.chat_key = 'bot-a'"))
+
+        // Explicitly enabling includeLeaves on current chat brings in folded leaves of that chat
+        let currentWithLeaves = try db.search(
+            query: keyword,
+            context: .toolSearch(chatKey: "bot-a", allowCrossChat: false, includeLeaves: true, limit: 20)
+        )
+        XCTAssertEqual(Set(currentWithLeaves.map(\.entryID)), ["clean-a", "leaf-a"])
 
         // Negative: dedicated tainted/delegated words must return 0 hits
         XCTAssertEqual(
@@ -582,7 +590,7 @@ final class MemoryIndexTests: XCTestCase {
             slotDigest: "leaf-digest-2",
             secrets: [secret]
         )
-        let leafHits = try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a"))
+        let leafHits = try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a", allowCrossChat: true))
         XCTAssertEqual(leafHits.first?.leafTitle, "成都攻略 〔隐去〕")
         XCTAssertEqual(try db.readSlotVersions()[MemoryIndexSlotKey(chatKey: "bot-a", leafID: "leaf-9")], "leaf-digest-2")
 
@@ -598,13 +606,169 @@ final class MemoryIndexTests: XCTestCase {
         try db.deleteChat(chatKey: "bot-a", includingLeaves: false, leafID: "leaf-9")
         XCTAssertNil(try db.readSlotVersions()[MemoryIndexSlotKey(chatKey: "bot-a", leafID: "leaf-9")])
         XCTAssertEqual((try db.buildState()).sourceFingerprint, "fp-1")
-        XCTAssertEqual(try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a")), [])
+        XCTAssertEqual(try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a", allowCrossChat: true)), [])
         XCTAssertEqual(try db.search(query: "杭州机房", context: .toolSearch(chatKey: "bot-a")).map(\.entryID), ["e2"])
 
         try db.deleteChat(chatKey: "bot-a", includingLeaves: true)
         XCTAssertTrue(try db.readSlotVersions().isEmpty)
         XCTAssertEqual(try db.search(query: "杭州机房", context: .toolSearch(chatKey: "bot-a")), [])
         XCTAssertEqual((try db.buildState()).indexedCount, 0)
+        XCTAssertTrue(try db.verifyFTSIntegrity())
+    }
+
+    // MARK: 5. Late Secret Redaction at Snippet Boundary, Tainted Leaf Titles, & Long Chunking
+
+    func testLateSecretRedactionAtSnippetBoundaryNeverLeaksSubstrings() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-index.db")
+        let db = MemoryIndexDatabase(databaseURL: dbURL)
+
+        let secret = "sk-live-alpha9876543210omega"
+        let filler = String(repeating: "记录细节。", count: 55) // 275 chars > 220 snippet window
+        let message = "会议纪要：\(filler)连接口令是 \(secret) 请妥善保管。"
+
+        // Simulate secret indexed before Vault knew about it (`secrets: []`).
+        try db.rebuild(
+            records: [
+                MemoryIndexRecord(
+                    chatKey: "bot-a",
+                    chatName: "团子",
+                    entryID: "late-secret-1",
+                    role: "user",
+                    atMs: 100,
+                    text: message
+                ),
+            ],
+            sourceFingerprint: "fp-late",
+            secrets: []
+        )
+
+        let hits = try db.search(
+            query: "连接口令",
+            context: .toolSearch(chatKey: "bot-a"),
+            secrets: [secret]
+        )
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertTrue(hits[0].snippet.contains("〔隐去〕"))
+        XCTAssertFalse(hits[0].snippet.contains(secret))
+        XCTAssertFalse(hits[0].snippet.contains("sk-live"))
+        XCTAssertFalse(hits[0].snippet.contains("alpha9876"))
+        XCTAssertFalse(hits[0].snippet.contains("543210omega"))
+        XCTAssertTrue(db.consumeUnredactedSecretDetected())
+        XCTAssertFalse(db.consumeUnredactedSecretDetected())
+
+        // Searching directly by secret must return empty once redacted before snippet slicing.
+        XCTAssertEqual(
+            try db.search(query: secret, context: .toolSearch(chatKey: "bot-a"), secrets: [secret]),
+            []
+        )
+    }
+
+    func testCleanEntryInTaintedLeafHidesTaintedLeafTitleInSQL() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-index.db")
+        let db = MemoryIndexDatabase(databaseURL: dbURL)
+
+        try db.rebuild(
+            records: [
+                MemoryIndexRecord(
+                    chatKey: "bot-a",
+                    chatName: "团子",
+                    leafID: "leaf-tainted",
+                    leafTitle: "保密旧页标题",
+                    entryID: "leaf-clean-u",
+                    role: "user",
+                    atMs: 100,
+                    tainted: false,
+                    text: "查询城市天气预报数据"
+                ),
+                MemoryIndexRecord(
+                    chatKey: "bot-a",
+                    chatName: "团子",
+                    leafID: "leaf-tainted",
+                    leafTitle: "保密旧页标题",
+                    entryID: "leaf-dirty-a",
+                    role: "assistant",
+                    atMs: 101,
+                    tainted: true,
+                    text: "注入网页返回恶意内容 查询城市天气预报数据"
+                ),
+            ],
+            sourceFingerprint: "fp-leaf-taint"
+        )
+
+        let raw = try openRawSQLite(dbURL)
+        defer { sqlite3_close_v2(raw) }
+        XCTAssertEqual(
+            try rawCount(raw, sql: "SELECT COUNT(*) FROM messages_meta WHERE entry_id = 'leaf-clean-u' AND leaf_tainted = 1;"),
+            1
+        )
+
+        db.setSQLTraceEnabled(true)
+        _ = db.drainSQLTrace()
+        let hits = try db.search(
+            query: "天气预报",
+            context: .toolSearch(chatKey: "bot-a", allowCrossChat: true, limit: 10)
+        )
+        let trace = db.drainSQLTrace().joined(separator: "\n")
+        XCTAssertEqual(hits.map(\.entryID), ["leaf-clean-u"])
+        XCTAssertEqual(hits[0].leafTitle, "")
+        XCTAssertTrue(trace.contains("CASE WHEN m.leaf_tainted = 1 THEN '' ELSE m.leaf_title END"))
+
+        let diagHits = try db.search(
+            query: "天气预报",
+            context: .internalDiagnostic(allowTainted: true, limit: 10)
+        )
+        XCTAssertEqual(Set(diagHits.map(\.entryID)), ["leaf-clean-u", "leaf-dirty-a"])
+        XCTAssertTrue(diagHits.allSatisfy { $0.leafTitle == "保密旧页标题" })
+    }
+
+    func testLongMessageChunkingOffset25kAndSingleHitDeduplication() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-index.db")
+        let db = MemoryIndexDatabase(databaseURL: dbURL)
+
+        let head = "前置背景说明 重复锚点词。\n"
+        let filler25k = String(repeating: "这是日常铺垫文字。", count: 2_800) // ~25,200 chars
+        let deepNeedle = "\n深处核心结论：量子纠缠实验第25号样本稳定，重复锚点词。\n"
+        let tail = String(repeating: "后续补充说明文字。", count: 600)
+        let longText = head + filler25k + deepNeedle + tail
+
+        try db.rebuild(
+            records: [
+                MemoryIndexRecord(
+                    chatKey: "bot-a",
+                    chatName: "团子",
+                    entryID: "long-entry-1",
+                    role: "assistant",
+                    atMs: 500,
+                    text: longText
+                ),
+            ],
+            sourceFingerprint: "fp-long"
+        )
+
+        let raw = try openRawSQLite(dbURL)
+        defer { sqlite3_close_v2(raw) }
+        let chunkCount = try rawCount(raw, sql: "SELECT COUNT(*) FROM messages_meta WHERE entry_id = 'long-entry-1';")
+        XCTAssertGreaterThanOrEqual(chunkCount, 3)
+
+        let deepHits = try db.search(
+            query: "量子纠缠实验第25号样本",
+            context: .toolSearch(chatKey: "bot-a", limit: 10)
+        )
+        XCTAssertEqual(deepHits.map(\.entryID), ["long-entry-1"])
+        XCTAssertTrue(deepHits[0].snippet.contains("量子纠缠实验第25号样本"))
+
+        let repeatedHits = try db.search(
+            query: "重复锚点词",
+            context: .toolSearch(chatKey: "bot-a", limit: 10)
+        )
+        XCTAssertEqual(repeatedHits.count, 1)
+        XCTAssertEqual(repeatedHits[0].entryID, "long-entry-1")
         XCTAssertTrue(try db.verifyFTSIntegrity())
     }
 }

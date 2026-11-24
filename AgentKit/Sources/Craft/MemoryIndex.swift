@@ -58,13 +58,14 @@ public struct MemoryAccessContext: Sendable, Equatable {
     }
 
     /// Standard agent tool query scope: strictly excludes tainted, delegated, and note entries at SQL level.
+    /// Defaults to live chat only (`includeLeaves == false`) when `allowCrossChat == false`.
     public static func toolSearch(
         chatKey: String,
         allowCrossChat: Bool = false,
         allowedChatKeys: Set<String>? = nil,
         excludedChatKeys: Set<String> = [],
         excludedThreadKeys: Set<String> = [],
-        includeLeaves: Bool = true,
+        includeLeaves: Bool? = nil,
         limit: Int = 8
     ) -> MemoryAccessContext {
         MemoryAccessContext(
@@ -77,7 +78,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
             excludedChatKeys: excludedChatKeys,
             excludedThreadKeys: excludedThreadKeys,
             includeOtherChats: allowCrossChat,
-            includeLeaves: includeLeaves,
+            includeLeaves: includeLeaves ?? allowCrossChat,
             limit: max(1, min(20, limit))
         )
     }
@@ -135,6 +136,7 @@ public struct MemoryIndexRecord: Sendable, Equatable {
     public var chatName: String
     public var leafID: String
     public var leafTitle: String
+    public var leafTainted: Bool
     public var entryID: String
     public var role: String
     public var atMs: Double
@@ -148,6 +150,7 @@ public struct MemoryIndexRecord: Sendable, Equatable {
         chatName: String,
         leafID: String = "",
         leafTitle: String = "",
+        leafTainted: Bool = false,
         entryID: String,
         role: String,
         atMs: Double,
@@ -160,6 +163,7 @@ public struct MemoryIndexRecord: Sendable, Equatable {
         self.chatName = chatName
         self.leafID = leafID
         self.leafTitle = leafTitle
+        self.leafTainted = leafTainted
         self.entryID = entryID
         self.role = role
         self.atMs = atMs
@@ -322,8 +326,10 @@ private func memoryIndexSQLiteTraceCallback(
 
 /// Thread-safe, self-healing, read-only rebuildable SQLite3 + FTS5 derived search index for conversation history.
 public final class MemoryIndexDatabase: @unchecked Sendable {
-    public static let schemaVersion: Int32 = 2
-    private static let maxStoredSnippetBytes = 16_384
+    public static let schemaVersion: Int32 = 3
+    private static let chunkSizeChars = 12_000
+    private static let chunkOverlapChars = 512
+    private static let maxIndexedTextChars = 512_000
 
     public static var isFTS5Supported: Bool {
         sqlite3_compileoption_used("ENABLE_FTS5") != 0
@@ -339,6 +345,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
     private var fts5Active: Bool
     private var _lastRecoveryReason: MemoryIndexRecoveryReason = .none
     private var _needsRebuildFromSource: Bool = false
+    private var _unredactedSecretDetected: Bool = false
 
     private struct FileIdentity: Equatable {
         let device: UInt64
@@ -638,8 +645,21 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Searches conversation history enforcing all `MemoryAccessContext` rules inside the SQLite `WHERE` clause.
-    public func search(query: String, context: MemoryAccessContext) throws -> [MemoryIndexHit] {
+    public func consumeUnredactedSecretDetected() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let detected = _unredactedSecretDetected
+        _unredactedSecretDetected = false
+        return detected
+    }
+
+    /// Searches conversation history enforcing all `MemoryAccessContext` rules inside the SQLite `WHERE` clause,
+    /// deduplicating chunked messages in SQL and redacting any live `secrets` on full stored text before snippet slicing.
+    public func search(
+        query: String,
+        context: MemoryAccessContext,
+        secrets: [String] = []
+    ) throws -> [MemoryIndexHit] {
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
@@ -717,54 +737,112 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             }
         }
 
+        let leafTitleSQL = context.allowTainted
+            ? "m.leaf_title"
+            : "CASE WHEN m.leaf_tainted = 1 THEN '' ELSE m.leaf_title END"
         let predicateSQL = whereClauses.joined(separator: " AND ")
         let sql: String
         if fts5Active {
             sql = """
+            WITH matched AS (
+                SELECT
+                    m.chat_key,
+                    m.chat_name,
+                    m.leaf_id,
+                    \(leafTitleSQL) AS effective_leaf_title,
+                    m.entry_id,
+                    m.role,
+                    m.at_ms,
+                    m.tainted,
+                    m.delegated,
+                    m.is_note,
+                    m.snippet_text,
+                    bm25(messages_fts) AS rank_score,
+                    m.chunk_index
+                FROM messages_fts
+                JOIN messages_meta m ON m.id = messages_fts.rowid
+                WHERE \(predicateSQL)
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY chat_key, leaf_id, entry_id
+                        ORDER BY rank_score ASC, chunk_index ASC
+                    ) AS rn
+                FROM matched
+            )
             SELECT
-                m.chat_key,
-                m.chat_name,
-                m.leaf_id,
-                m.leaf_title,
-                m.entry_id,
-                m.role,
-                m.at_ms,
-                m.tainted,
-                m.delegated,
-                m.is_note,
-                m.snippet_text,
-                bm25(messages_fts) AS rank_score
-            FROM messages_fts
-            JOIN messages_meta m ON m.id = messages_fts.rowid
-            WHERE \(predicateSQL)
-            ORDER BY rank_score ASC, m.at_ms DESC
+                chat_key,
+                chat_name,
+                leaf_id,
+                effective_leaf_title,
+                entry_id,
+                role,
+                at_ms,
+                tainted,
+                delegated,
+                is_note,
+                snippet_text,
+                rank_score
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY rank_score ASC, at_ms DESC
             LIMIT ?;
             """
         } else {
             sql = """
+            WITH matched AS (
+                SELECT
+                    m.chat_key,
+                    m.chat_name,
+                    m.leaf_id,
+                    \(leafTitleSQL) AS effective_leaf_title,
+                    m.entry_id,
+                    m.role,
+                    m.at_ms,
+                    m.tainted,
+                    m.delegated,
+                    m.is_note,
+                    m.snippet_text,
+                    0.0 AS rank_score,
+                    m.chunk_index
+                FROM messages_meta m
+                WHERE \(predicateSQL)
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY chat_key, leaf_id, entry_id
+                        ORDER BY chunk_index ASC
+                    ) AS rn
+                FROM matched
+            )
             SELECT
-                m.chat_key,
-                m.chat_name,
-                m.leaf_id,
-                m.leaf_title,
-                m.entry_id,
-                m.role,
-                m.at_ms,
-                m.tainted,
-                m.delegated,
-                m.is_note,
-                m.snippet_text,
-                0.0 AS rank_score
-            FROM messages_meta m
-            WHERE \(predicateSQL)
-            ORDER BY m.at_ms DESC
+                chat_key,
+                chat_name,
+                leaf_id,
+                effective_leaf_title,
+                entry_id,
+                role,
+                at_ms,
+                tainted,
+                delegated,
+                is_note,
+                snippet_text,
+                rank_score
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY at_ms DESC
             LIMIT ?;
             """
         }
         bindings.append(.int(Int32(max(1, min(100, context.limit)))))
 
+        let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         do {
-            return try executeSearchLocked(sql: sql, bindings: bindings, query: query)
+            return try executeSearchLocked(sql: sql, bindings: bindings, query: query, orderedSecrets: orderedSecrets)
         } catch {
             if isCorruptionError(error) {
                 try? recreateFreshDatabaseLocked(reason: .corrupt)
@@ -979,7 +1057,9 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                 chat_name TEXT NOT NULL,
                 leaf_id TEXT NOT NULL DEFAULT '',
                 leaf_title TEXT NOT NULL DEFAULT '',
+                leaf_tainted INTEGER NOT NULL DEFAULT 0 CHECK (leaf_tainted IN (0, 1)),
                 entry_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL DEFAULT 0,
                 role TEXT NOT NULL,
                 at_ms REAL NOT NULL,
                 tainted INTEGER NOT NULL DEFAULT 0 CHECK (tainted IN (0, 1)),
@@ -989,7 +1069,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                 normalized_text TEXT NOT NULL DEFAULT '',
                 body_tokens TEXT NOT NULL DEFAULT '',
                 cjk_unigrams TEXT NOT NULL DEFAULT '',
-                UNIQUE(chat_key, leaf_id, entry_id)
+                UNIQUE(chat_key, leaf_id, entry_id, chunk_index)
             );
             """)
             try execLocked("CREATE INDEX idx_messages_meta_chat_at ON messages_meta(chat_key, leaf_id, at_ms DESC);")
@@ -1089,14 +1169,20 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
 
     private func insertRecordsLocked(_ records: [MemoryIndexRecord], orderedSecrets: [String]) throws {
         guard !records.isEmpty else { return }
+        var taintedSlots: Set<MemoryIndexSlotKey> = []
+        for record in records where record.tainted || record.leafTainted {
+            taintedSlots.insert(MemoryIndexSlotKey(chatKey: record.chatKey, leafID: record.leafID))
+        }
+
         let sql = """
         INSERT INTO messages_meta (
-            chat_key, chat_name, leaf_id, leaf_title, entry_id, role, at_ms,
+            chat_key, chat_name, leaf_id, leaf_title, leaf_tainted, entry_id, chunk_index, role, at_ms,
             tainted, delegated, is_note, snippet_text, normalized_text, body_tokens, cjk_unigrams
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(chat_key, leaf_id, entry_id) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chat_key, leaf_id, entry_id, chunk_index) DO UPDATE SET
             chat_name = excluded.chat_name,
             leaf_title = excluded.leaf_title,
+            leaf_tainted = excluded.leaf_tainted,
             role = excluded.role,
             at_ms = excluded.at_ms,
             tainted = excluded.tainted,
@@ -1121,9 +1207,6 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                 : MemorySafety.redactSecrets(record.text, secrets: orderedSecrets)
             let trimmed = safeText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let clipped = MemorySafety.clipUTF8(trimmed, bytes: Self.maxStoredSnippetBytes)
-            let normalizedText = MemoryIndexTokenizer.normalize(clipped)
-            let tokens = MemoryIndexTokenizer.indexTokens(for: clipped)
 
             let safeChatName = orderedSecrets.isEmpty
                 ? record.chatName
@@ -1131,35 +1214,61 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             let safeLeafTitle = orderedSecrets.isEmpty
                 ? record.leafTitle
                 : MemorySafety.redactSecrets(record.leafTitle, secrets: orderedSecrets)
+            let slotIsTainted = taintedSlots.contains(MemoryIndexSlotKey(chatKey: record.chatKey, leafID: record.leafID))
 
-            sqlite3_reset(stmt)
-            sqlite3_clear_bindings(stmt)
+            let chunks = Self.chunkText(trimmed)
+            for (chunkIndex, chunk) in chunks.enumerated() {
+                let normalizedText = MemoryIndexTokenizer.normalize(chunk)
+                let tokens = MemoryIndexTokenizer.indexTokens(for: chunk)
 
-            try bind(
-                [
-                    .text(record.chatKey),
-                    .text(safeChatName),
-                    .text(record.leafID),
-                    .text(safeLeafTitle),
-                    .text(record.entryID),
-                    .text(record.role),
-                    .double(record.atMs),
-                    .int(record.tainted ? 1 : 0),
-                    .int(record.delegated ? 1 : 0),
-                    .int(record.isNote ? 1 : 0),
-                    .text(clipped),
-                    .text(normalizedText),
-                    .text(tokens.bodyTokens),
-                    .text(tokens.cjkUnigrams),
-                ],
-                to: stmt
-            )
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
 
-            let stepRC = sqlite3_step(stmt)
-            guard stepRC == SQLITE_DONE else {
-                throw sqliteErrorLocked(code: stepRC)
+                try bind(
+                    [
+                        .text(record.chatKey),
+                        .text(safeChatName),
+                        .text(record.leafID),
+                        .text(safeLeafTitle),
+                        .int(slotIsTainted ? 1 : 0),
+                        .text(record.entryID),
+                        .int(Int32(chunkIndex)),
+                        .text(record.role),
+                        .double(record.atMs),
+                        .int(record.tainted ? 1 : 0),
+                        .int(record.delegated ? 1 : 0),
+                        .int(record.isNote ? 1 : 0),
+                        .text(chunk),
+                        .text(normalizedText),
+                        .text(tokens.bodyTokens),
+                        .text(tokens.cjkUnigrams),
+                    ],
+                    to: stmt
+                )
+
+                let stepRC = sqlite3_step(stmt)
+                guard stepRC == SQLITE_DONE else {
+                    throw sqliteErrorLocked(code: stepRC)
+                }
             }
         }
+    }
+
+    private static func chunkText(_ text: String) -> [String] {
+        let capped = text.count > maxIndexedTextChars ? String(text.prefix(maxIndexedTextChars)) : text
+        guard capped.count > chunkSizeChars else { return [capped] }
+
+        let step = max(1, chunkSizeChars - chunkOverlapChars)
+        var chunks: [String] = []
+        var cursor = capped.startIndex
+        while cursor < capped.endIndex {
+            let chunkEnd = capped.index(cursor, offsetBy: chunkSizeChars, limitedBy: capped.endIndex) ?? capped.endIndex
+            chunks.append(String(capped[cursor..<chunkEnd]))
+            if chunkEnd == capped.endIndex { break }
+            guard let nextCursor = capped.index(cursor, offsetBy: step, limitedBy: capped.endIndex) else { break }
+            cursor = nextCursor
+        }
+        return chunks
     }
 
     private func setSlotVersionLocked(chatKey: String, leafID: String, digest: String) throws {
@@ -1210,7 +1319,8 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
     private func executeSearchLocked(
         sql: String,
         bindings: [SQLBinding],
-        query: String
+        query: String,
+        orderedSecrets: [String]
     ) throws -> [MemoryIndexHit] {
         guard let db else { throw MemoryIndexError.sqlite(code: SQLITE_MISUSE, message: "database closed") }
         var stmt: OpaquePointer?
@@ -1222,18 +1332,45 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
 
         try bind(bindings, to: stmt)
 
+        let postRedactionTerms = orderedSecrets.isEmpty ? [] : MemoryIndexTokenizer.fallbackLikeTerms(for: query)
         var hits: [MemoryIndexHit] = []
         while true {
             let stepRC = sqlite3_step(stmt)
             if stepRC == SQLITE_ROW {
-                let rawSnippet = Self.columnText(stmt, 10)
-                let snippet = MemoryIndexTokenizer.extractSnippet(from: rawSnippet, query: query)
+                let rawChatName = Self.columnText(stmt, 1)
+                let rawLeafTitle = Self.columnText(stmt, 3)
+                let rawBodyText = Self.columnText(stmt, 10)
+
+                let safeChatName: String
+                let safeLeafTitle: String
+                let safeBodyText: String
+                if orderedSecrets.isEmpty {
+                    safeChatName = rawChatName
+                    safeLeafTitle = rawLeafTitle
+                    safeBodyText = rawBodyText
+                } else {
+                    safeChatName = MemorySafety.redactSecrets(rawChatName, secrets: orderedSecrets)
+                    safeLeafTitle = MemorySafety.redactSecrets(rawLeafTitle, secrets: orderedSecrets)
+                    safeBodyText = MemorySafety.redactSecrets(rawBodyText, secrets: orderedSecrets)
+                }
+
+                if safeBodyText != rawBodyText || safeChatName != rawChatName || safeLeafTitle != rawLeafTitle {
+                    _unredactedSecretDetected = true
+                }
+                if safeBodyText != rawBodyText, !postRedactionTerms.isEmpty {
+                    let normalizedSafe = MemoryIndexTokenizer.normalize(safeBodyText)
+                    guard postRedactionTerms.allSatisfy({ normalizedSafe.contains($0) }) else {
+                        continue
+                    }
+                }
+
+                let snippet = MemoryIndexTokenizer.extractSnippet(from: safeBodyText, query: query)
                 hits.append(
                     MemoryIndexHit(
                         chatKey: Self.columnText(stmt, 0),
-                        chatName: Self.columnText(stmt, 1),
+                        chatName: safeChatName,
                         leafID: Self.columnText(stmt, 2),
-                        leafTitle: Self.columnText(stmt, 3),
+                        leafTitle: safeLeafTitle,
                         entryID: Self.columnText(stmt, 4),
                         role: Self.columnText(stmt, 5),
                         atMs: sqlite3_column_double(stmt, 6),

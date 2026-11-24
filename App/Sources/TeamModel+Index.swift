@@ -124,12 +124,24 @@ extension TeamModel {
                 allowCrossChat: allowCrossChat,
                 allowedChatKeys: allowedChatKeys,
                 excludedChatKeys: excludedChatKeys,
-                includeLeaves: true,
+                includeLeaves: allowCrossChat,
                 limit: clampedLimit
             )
         }
 
-        let startEpoch = epochs[chatKey, default: 0]
+        let startEpochs = Dictionary(
+            validKeys.map { ($0, epochs[$0, default: 0]) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        var startEntryTexts: [String: [String: String]] = [:]
+        for key in allowedChatKeys {
+            if let list = entries[key] {
+                startEntryTexts[key] = Dictionary(
+                    list.map { ($0.id, $0.message.text) },
+                    uniquingKeysWith: { _, latest in latest }
+                )
+            }
+        }
         let expectedKeeping = keeping
         let rawHits: [MemoryIndexHit]
         if expectedKeeping {
@@ -138,13 +150,14 @@ extension TeamModel {
             rawHits = searchInMemoryDemo(query: trimmed, context: context)
         }
 
-        // Post-await TOCTOU guard: re-verify permissions, backup/restore state, epoch, and surviving chats/leaves.
+        // Post-await TOCTOU guard: re-verify permissions, backup/restore state, epochs across all candidate chats,
+        // live entry text invariants, and surviving chats/leaves.
         guard !Task.isCancelled else { return "这一轮已经停下，检索没有继续。" }
         guard !Disk.frozen, !queueDispatchSuspended else { return "刚恢复了备份，重新打开 Clio 后再试。" }
         guard keeping == expectedKeeping, (expectedKeeping ? phase == .ready : phase == .demo) else {
             return "当前状态已变化，请重新发起检索。"
         }
-        guard epochs[chatKey, default: 0] == startEpoch else {
+        guard epochs[chatKey, default: 0] == startEpochs[chatKey, default: 0] else {
             return "这段对话已重置或切换，检索结果已失效。"
         }
         guard Grant.memory.policy != .off, !options(chatKey).off.contains(Grant.memory.rawValue) else {
@@ -156,21 +169,57 @@ extension TeamModel {
             return "这段对话已不存在。"
         }
 
-        let hits = rawHits.filter { hit in
-            guard liveValidKeys.contains(hit.chatKey) else { return false }
-            guard !options(hit.chatKey).off.contains(Grant.memory.rawValue) else { return false }
+        var liveRecordCache: [String: [String: MemoryIndexRecord]] = [:]
+        var hits: [MemoryIndexHit] = []
+        for hit in rawHits {
+            guard liveValidKeys.contains(hit.chatKey) else { continue }
+            guard !options(hit.chatKey).off.contains(Grant.memory.rawValue) else { continue }
+            guard let startEpoch = startEpochs[hit.chatKey],
+                  epochs[hit.chatKey, default: 0] == startEpoch else {
+                continue
+            }
             if helping {
-                guard hit.chatKey == chatKey, hit.leafID.isEmpty else { return false }
+                guard hit.chatKey == chatKey, hit.leafID.isEmpty else { continue }
             } else if !allowCrossChat {
-                guard hit.chatKey == chatKey else { return false }
+                guard hit.chatKey == chatKey, hit.leafID.isEmpty else { continue }
             }
             if hit.leafID.isEmpty {
                 if let inMemory = entries[hit.chatKey] {
-                    return inMemory.contains { $0.id == hit.entryID }
+                    if let expectedText = startEntryTexts[hit.chatKey]?[hit.entryID] {
+                        guard let rawLive = inMemory.first(where: { $0.id == hit.entryID }),
+                              rawLive.message.text == expectedText else {
+                            continue
+                        }
+                    }
+                    let mapped: [String: MemoryIndexRecord]
+                    if let cached = liveRecordCache[hit.chatKey] {
+                        mapped = cached
+                    } else {
+                        let built = MemoryIndexService.makeRecords(
+                            from: inMemory,
+                            chatKey: hit.chatKey,
+                            chatName: chatName(hit.chatKey)
+                        )
+                        let dict = Dictionary(
+                            built.map { ($0.entryID, $0) },
+                            uniquingKeysWith: { _, latest in latest }
+                        )
+                        liveRecordCache[hit.chatKey] = dict
+                        mapped = dict
+                    }
+                    guard let liveRecord = mapped[hit.entryID],
+                          !liveRecord.tainted,
+                          !liveRecord.delegated,
+                          !liveRecord.isNote else {
+                        continue
+                    }
                 }
-                return true
+                hits.append(hit)
+                continue
             }
-            return leaves(hit.chatKey).contains { $0.id == hit.leafID }
+            if leaves(hit.chatKey).contains(where: { $0.id == hit.leafID }) {
+                hits.append(hit)
+            }
         }
 
         guard !hits.isEmpty else {
@@ -203,6 +252,7 @@ extension TeamModel {
         let normalizedQuery = MemoryIndexTokenizer.normalize(query)
         let terms = MemoryIndexTokenizer.fallbackLikeTerms(for: normalizedQuery)
         guard !terms.isEmpty else { return [] }
+        let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
 
         let keys: [String] = context.includeOtherChats
             ? Array(entries.keys).filter { key in
@@ -220,25 +270,34 @@ extension TeamModel {
                 chatName: chatName(key)
             )
             for record in records {
+                if !context.includeLeaves && !record.leafID.isEmpty { continue }
                 if !context.allowTainted && record.tainted { continue }
                 if !context.allowDelegated && record.delegated { continue }
                 if !context.allowNotes && record.isNote { continue }
                 if !context.allowedRoles.contains(record.role) { continue }
-                let normalizedText = MemoryIndexTokenizer.normalize(record.text)
+                let safeText = MemorySafety.redactSecrets(record.text, secrets: secrets)
+                let normalizedText = MemoryIndexTokenizer.normalize(safeText)
                 guard terms.allSatisfy({ normalizedText.contains($0) }) else { continue }
+                let safeChatName = MemorySafety.redactSecrets(record.chatName, secrets: secrets)
+                let visibleLeafTitle: String
+                if record.leafTainted && !context.allowTainted {
+                    visibleLeafTitle = ""
+                } else {
+                    visibleLeafTitle = MemorySafety.redactSecrets(record.leafTitle, secrets: secrets)
+                }
                 hits.append(
                     MemoryIndexHit(
                         chatKey: record.chatKey,
-                        chatName: record.chatName,
+                        chatName: safeChatName,
                         leafID: record.leafID,
-                        leafTitle: record.leafTitle,
+                        leafTitle: visibleLeafTitle,
                         entryID: record.entryID,
                         role: record.role,
                         atMs: record.atMs,
                         tainted: record.tainted,
                         delegated: record.delegated,
                         isNote: record.isNote,
-                        snippet: MemoryIndexTokenizer.extractSnippet(from: record.text, query: query),
+                        snippet: MemoryIndexTokenizer.extractSnippet(from: safeText, query: query),
                         score: 0
                     )
                 )

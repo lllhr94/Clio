@@ -280,7 +280,7 @@ struct SearchHistoryTool: AgentTool {
             scopeDescription = Words.t("固定为 current（当前对话）。协助其他旅伴时仅检索当前对话记录。")
             scopeValues = ["current"]
         } else {
-            scopeDescription = "检索范围：current 只搜当前这段对话（默认），all 搜所有允许访问的对话与旧页。"
+            scopeDescription = "检索范围：current 只搜当前正在进行的对话（不含收起的旧页，默认），all 搜所有允许访问的对话与收起的旧页。"
             scopeValues = ["current", "all"]
         }
         return ToolSpec(

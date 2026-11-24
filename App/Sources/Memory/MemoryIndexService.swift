@@ -15,7 +15,6 @@ final class MemoryIndexService: @unchecked Sendable {
         let key: MemoryIndexSlotKey
         let chatName: String
         let leafTitle: String
-        let entries: [Entry]
     }
 
     private struct ExpectedSlot {
@@ -63,10 +62,10 @@ final class MemoryIndexService: @unchecked Sendable {
         chatName: String,
         leafID: String = "",
         leafTitle: String = "",
-        entries: [Entry]
+        entries _: [Entry]
     ) {
         let slotKey = MemoryIndexSlotKey(chatKey: chatKey, leafID: leafID)
-        let pending = PendingSlot(key: slotKey, chatName: chatName, leafTitle: leafTitle, entries: entries)
+        let pending = PendingSlot(key: slotKey, chatName: chatName, leafTitle: leafTitle)
         pendingLock.lock()
         pendingSlots[slotKey] = pending
         if scheduledFlushItem == nil {
@@ -91,15 +90,32 @@ final class MemoryIndexService: @unchecked Sendable {
                     try self.rebuildFromDiskLocked(catalog: catalog)
                 } else {
                     ChatDisk.finishWrites()
-                    let digest = self.computeSlotDigest(chatKey: chatKey, leafID: leafID, title: title)
-                    let secrets = Vault.allStrings()
-                    try self.database.updateLeafTitle(
-                        chatKey: chatKey,
-                        leafID: leafID,
-                        leafTitle: title,
-                        slotDigest: digest,
-                        secrets: secrets
-                    )
+                    let decoder = JSONDecoder()
+                    let leafTitleResult = self.readCommittedLeafTitle(chatKey: chatKey, leafID: leafID, decoder: decoder)
+                    switch leafTitleResult {
+                    case .missing:
+                        try self.database.deleteChat(chatKey: chatKey, includingLeaves: false, leafID: leafID)
+                    case .unreadable:
+                        // Do not stamp a digest when the canonical leaves file is transient/unreadable.
+                        return
+                    case let .found(committedTitle):
+                        let leafURL = self.teamRoot.appendingPathComponent(TeamModel.leafFile(chatKey, leafID))
+                        guard let stamp = self.readFileStamp(at: leafURL) else {
+                            if !FileManager.default.fileExists(atPath: leafURL.path) {
+                                try self.database.deleteChat(chatKey: chatKey, includingLeaves: false, leafID: leafID)
+                            }
+                            return
+                        }
+                        let digest = Self.formatSlotDigest(stamp: stamp, title: committedTitle)
+                        let secrets = Vault.allStrings()
+                        try self.database.updateLeafTitle(
+                            chatKey: chatKey,
+                            leafID: leafID,
+                            leafTitle: committedTitle,
+                            slotDigest: digest,
+                            secrets: secrets
+                        )
+                    }
                 }
             } catch {
                 // Derived index is strictly fail-safe and rebuilds automatically on next access.
@@ -216,23 +232,41 @@ final class MemoryIndexService: @unchecked Sendable {
             }
             ChatDisk.finishWrites()
             let secrets = Vault.allStrings()
+            let decoder = JSONDecoder()
             for item in batch {
-                let titleForDigest = item.key.leafID.isEmpty ? item.chatName : item.leafTitle
-                let digest = computeSlotDigest(chatKey: item.key.chatKey, leafID: item.key.leafID, title: titleForDigest)
-                let records = Self.makeRecords(
-                    from: item.entries,
-                    chatKey: item.key.chatKey,
-                    chatName: item.chatName,
-                    leafID: item.key.leafID,
-                    leafTitle: item.leafTitle
-                )
-                try database.replaceSlot(
+                let resolvedChatName = catalog?.first(where: { $0.key == item.key.chatKey })?.name ?? item.chatName
+                switch readCommittedSlotSnapshot(
                     chatKey: item.key.chatKey,
                     leafID: item.key.leafID,
-                    records: records,
-                    slotDigest: digest,
-                    secrets: secrets
-                )
+                    liveTitle: resolvedChatName,
+                    expectedLeafTitle: nil,
+                    decoder: decoder
+                ) {
+                case .missing:
+                    try database.deleteChat(
+                        chatKey: item.key.chatKey,
+                        includingLeaves: false,
+                        leafID: item.key.leafID.isEmpty ? nil : item.key.leafID
+                    )
+                case .transientOrUnreadable:
+                    // Never stamp a disk digest onto an unreadable or stale memory snapshot.
+                    continue
+                case let .ready(committedEntries, committedLeafTitle, digest):
+                    let records = Self.makeRecords(
+                        from: committedEntries,
+                        chatKey: item.key.chatKey,
+                        chatName: resolvedChatName,
+                        leafID: item.key.leafID,
+                        leafTitle: committedLeafTitle
+                    )
+                    try database.replaceSlot(
+                        chatKey: item.key.chatKey,
+                        leafID: item.key.leafID,
+                        records: records,
+                        slotDigest: digest,
+                        secrets: secrets
+                    )
+                }
             }
         } catch {
             // Leave recovery for next search/warmup.
@@ -254,7 +288,14 @@ final class MemoryIndexService: @unchecked Sendable {
     ) -> [MemoryIndexHit] {
         do {
             try reconcileIfNeededThrowingLocked(catalog: catalog)
-            return try database.search(query: query, context: context)
+            let secrets = Vault.allStrings()
+            let hits = try database.search(query: query, context: context, secrets: secrets)
+            if database.consumeUnredactedSecretDetected() {
+                queue.async { [weak self] in
+                    try? self?.rebuildFromDiskLocked(catalog: catalog)
+                }
+            }
+            return hits
         } catch {
             return []
         }
@@ -293,25 +334,40 @@ final class MemoryIndexService: @unchecked Sendable {
             let decoder = JSONDecoder()
             for slotKey in dirtyKeys {
                 guard let info = expectedSlots[slotKey] else { continue }
-                let relPath = slotKey.leafID.isEmpty
-                    ? Disk.chatFile(slotKey.chatKey)
-                    : TeamModel.leafFile(slotKey.chatKey, slotKey.leafID)
-                let url = teamRoot.appendingPathComponent(relPath)
-                let entries = decodeEntriesLeniently(at: url, decoder: decoder) ?? []
-                let records = Self.makeRecords(
-                    from: entries,
-                    chatKey: slotKey.chatKey,
-                    chatName: info.chatName,
-                    leafID: slotKey.leafID,
-                    leafTitle: info.leafTitle
-                )
-                try database.replaceSlot(
+                switch readCommittedSlotSnapshot(
                     chatKey: slotKey.chatKey,
                     leafID: slotKey.leafID,
-                    records: records,
-                    slotDigest: info.digest,
-                    secrets: secrets
-                )
+                    liveTitle: info.chatName,
+                    expectedLeafTitle: slotKey.leafID.isEmpty ? nil : info.leafTitle,
+                    decoder: decoder
+                ) {
+                case .missing:
+                    let titleForDigest = slotKey.leafID.isEmpty ? info.chatName : info.leafTitle
+                    try database.replaceSlot(
+                        chatKey: slotKey.chatKey,
+                        leafID: slotKey.leafID,
+                        records: [],
+                        slotDigest: Self.formatMissingDigest(title: titleForDigest),
+                        secrets: secrets
+                    )
+                case .transientOrUnreadable:
+                    continue
+                case let .ready(entries, leafTitle, digest):
+                    let records = Self.makeRecords(
+                        from: entries,
+                        chatKey: slotKey.chatKey,
+                        chatName: info.chatName,
+                        leafID: slotKey.leafID,
+                        leafTitle: leafTitle
+                    )
+                    try database.replaceSlot(
+                        chatKey: slotKey.chatKey,
+                        leafID: slotKey.leafID,
+                        records: records,
+                        slotDigest: digest,
+                        secrets: secrets
+                    )
+                }
             }
         }
 
@@ -323,15 +379,12 @@ final class MemoryIndexService: @unchecked Sendable {
 
     private func rebuildFromDiskLocked(catalog: [ChatDescriptor]) throws {
         ChatDisk.finishWrites()
-        let expectedSlots = buildExpectedSlots(catalog: catalog)
         let secrets = Vault.allStrings()
-        let allRecords = loadAllCanonicalRecords(catalog: catalog)
-        let slotDigests = expectedSlots.mapValues(\.digest)
-        let fingerprint = computeCatalogFingerprint(expectedSlots: expectedSlots)
+        let snapshot = loadCanonicalSnapshot(catalog: catalog)
         try database.rebuild(
-            records: allRecords,
-            sourceFingerprint: fingerprint,
-            slotDigests: slotDigests,
+            records: snapshot.records,
+            sourceFingerprint: snapshot.fingerprint,
+            slotDigests: snapshot.slotDigests,
             secrets: secrets
         )
     }
@@ -348,6 +401,35 @@ final class MemoryIndexService: @unchecked Sendable {
 
     // MARK: - Read-Only Canonical JSON Scanning & Digests
 
+    private struct FileStamp: Equatable {
+        let size: Int
+        let mtimeMs: Int64
+    }
+
+    private enum DiskReadResult {
+        case missing
+        case unreadable
+        case stable(Data, FileStamp)
+    }
+
+    private enum CommittedLeafTitleResult {
+        case missing
+        case unreadable
+        case found(String)
+    }
+
+    private enum CommittedSlotSnapshot {
+        case missing
+        case transientOrUnreadable
+        case ready(entries: [Entry], leafTitle: String, digest: String)
+    }
+
+    private struct CanonicalSnapshot {
+        let records: [MemoryIndexRecord]
+        let slotDigests: [MemoryIndexSlotKey: String]
+        let fingerprint: String
+    }
+
     private func buildExpectedSlots(catalog: [ChatDescriptor]) -> [MemoryIndexSlotKey: ExpectedSlot] {
         var slots: [MemoryIndexSlotKey: ExpectedSlot] = [:]
         let decoder = JSONDecoder()
@@ -358,7 +440,7 @@ final class MemoryIndexService: @unchecked Sendable {
             slots[liveKey] = ExpectedSlot(chatName: chat.name, leafTitle: "", digest: liveDigest)
 
             let leavesURL = teamRoot.appendingPathComponent(TeamModel.leafList(chat.key))
-            if let data = try? Data(contentsOf: leavesURL),
+            if case let .stable(data, _) = readStableFile(at: leavesURL),
                let leaves = try? decoder.decode([StoredLeaf].self, from: data) {
                 for leaf in leaves {
                     let leafKey = MemoryIndexSlotKey(chatKey: chat.key, leafID: leaf.id)
@@ -370,26 +452,125 @@ final class MemoryIndexService: @unchecked Sendable {
         return slots
     }
 
+    private func readFileStamp(at url: URL) -> FileStamp? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              (attrs[.type] as? FileAttributeType) == .typeRegular else {
+            return nil
+        }
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        let modified = (attrs[.modificationDate] as? Date) ?? .distantPast
+        let mtimeMs = Int64(modified.timeIntervalSince1970 * 1000)
+        return FileStamp(size: size, mtimeMs: mtimeMs)
+    }
+
+    private func readStableFile(at url: URL) -> DiskReadResult {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .missing
+        }
+        guard let stamp1 = readFileStamp(at: url),
+              let data = try? Data(contentsOf: url),
+              let stamp2 = readFileStamp(at: url),
+              stamp1 == stamp2,
+              data.count == stamp2.size else {
+            return FileManager.default.fileExists(atPath: url.path) ? .unreadable : .missing
+        }
+        return .stable(data, stamp2)
+    }
+
+    private func readCommittedLeafTitle(chatKey: String, leafID: String, decoder: JSONDecoder) -> CommittedLeafTitleResult {
+        let leavesURL = teamRoot.appendingPathComponent(TeamModel.leafList(chatKey))
+        switch readStableFile(at: leavesURL) {
+        case .missing:
+            return .missing
+        case .unreadable:
+            return .unreadable
+        case let .stable(data, _):
+            guard let leaves = try? decoder.decode([StoredLeaf].self, from: data) else {
+                return .unreadable
+            }
+            if let leaf = leaves.first(where: { $0.id == leafID }) {
+                return .found(leaf.title)
+            }
+            return .missing
+        }
+    }
+
+    private func readCommittedSlotSnapshot(
+        chatKey: String,
+        leafID: String,
+        liveTitle: String,
+        expectedLeafTitle: String?,
+        decoder: JSONDecoder
+    ) -> CommittedSlotSnapshot {
+        let committedLeafTitle: String
+        let digestTitle: String
+        if leafID.isEmpty {
+            committedLeafTitle = ""
+            digestTitle = liveTitle
+        } else if let expectedLeafTitle {
+            committedLeafTitle = expectedLeafTitle
+            digestTitle = expectedLeafTitle
+        } else {
+            switch readCommittedLeafTitle(chatKey: chatKey, leafID: leafID, decoder: decoder) {
+            case .missing:
+                return .missing
+            case .unreadable:
+                return .transientOrUnreadable
+            case let .found(title):
+                committedLeafTitle = title
+                digestTitle = title
+            }
+        }
+
+        let relPath = leafID.isEmpty ? Disk.chatFile(chatKey) : TeamModel.leafFile(chatKey, leafID)
+        let url = teamRoot.appendingPathComponent(relPath)
+        switch readStableFile(at: url) {
+        case .missing:
+            return .missing
+        case .unreadable:
+            return .transientOrUnreadable
+        case let .stable(data, stamp):
+            guard let entries = decodeEntriesLeniently(from: data, decoder: decoder) else {
+                return .transientOrUnreadable
+            }
+            return .ready(
+                entries: entries,
+                leafTitle: committedLeafTitle,
+                digest: Self.formatSlotDigest(stamp: stamp, title: digestTitle)
+            )
+        }
+    }
+
     private func computeSlotDigest(chatKey: String, leafID: String, title: String) -> String {
         let relPath = leafID.isEmpty ? Disk.chatFile(chatKey) : TeamModel.leafFile(chatKey, leafID)
         let url = teamRoot.appendingPathComponent(relPath)
-        let titleHash = Self.sha256Hex(Data(title.utf8))
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
-              values.isRegularFile == true else {
-            return "missing|\(titleHash)"
+        guard let stamp = readFileStamp(at: url) else {
+            return Self.formatMissingDigest(title: title)
         }
-        let size = values.fileSize ?? 0
-        let mtimeMs = Int64(((values.contentModificationDate ?? .distantPast).timeIntervalSince1970) * 1000)
-        return "\(size):\(mtimeMs)|\(titleHash)"
+        return Self.formatSlotDigest(stamp: stamp, title: title)
+    }
+
+    private static func formatSlotDigest(stamp: FileStamp, title: String) -> String {
+        let titleHash = sha256Hex(Data(title.utf8))
+        return "\(stamp.size):\(stamp.mtimeMs)|\(titleHash)"
+    }
+
+    private static func formatMissingDigest(title: String) -> String {
+        let titleHash = sha256Hex(Data(title.utf8))
+        return "missing|\(titleHash)"
     }
 
     private func computeCatalogFingerprint(expectedSlots: [MemoryIndexSlotKey: ExpectedSlot]) -> String {
-        let lines = expectedSlots.keys.sorted { lhs, rhs in
+        computeCatalogFingerprint(digests: expectedSlots.mapValues(\.digest))
+    }
+
+    private func computeCatalogFingerprint(digests: [MemoryIndexSlotKey: String]) -> String {
+        let lines = digests.keys.sorted { lhs, rhs in
             if lhs.chatKey != rhs.chatKey { return lhs.chatKey < rhs.chatKey }
             return lhs.leafID < rhs.leafID
         }.compactMap { key -> String? in
-            guard let expected = expectedSlots[key] else { return nil }
-            return "\(key.chatKey)~\(key.leafID)=\(expected.digest)"
+            guard let digest = digests[key] else { return nil }
+            return "\(key.chatKey)~\(key.leafID)=\(digest)"
         }
         return Self.sha256Hex(Data(lines.joined(separator: "\n").utf8))
     }
@@ -399,13 +580,26 @@ final class MemoryIndexService: @unchecked Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private func loadAllCanonicalRecords(catalog: [ChatDescriptor]) -> [MemoryIndexRecord] {
+    private func loadCanonicalSnapshot(catalog: [ChatDescriptor]) -> CanonicalSnapshot {
         var all: [MemoryIndexRecord] = []
+        var digests: [MemoryIndexSlotKey: String] = [:]
         let decoder = JSONDecoder()
 
         for chat in catalog {
-            let liveURL = teamRoot.appendingPathComponent(Disk.chatFile(chat.key))
-            if let liveEntries = decodeEntriesLeniently(at: liveURL, decoder: decoder) {
+            let liveKey = MemoryIndexSlotKey(chatKey: chat.key, leafID: "")
+            switch readCommittedSlotSnapshot(
+                chatKey: chat.key,
+                leafID: "",
+                liveTitle: chat.name,
+                expectedLeafTitle: nil,
+                decoder: decoder
+            ) {
+            case .missing:
+                digests[liveKey] = Self.formatMissingDigest(title: chat.name)
+            case .transientOrUnreadable:
+                break
+            case let .ready(liveEntries, _, digest):
+                digests[liveKey] = digest
                 all.append(contentsOf: Self.makeRecords(
                     from: liveEntries,
                     chatKey: chat.key,
@@ -416,23 +610,36 @@ final class MemoryIndexService: @unchecked Sendable {
             }
 
             let leavesURL = teamRoot.appendingPathComponent(TeamModel.leafList(chat.key))
-            if let data = try? Data(contentsOf: leavesURL),
+            if case let .stable(data, _) = readStableFile(at: leavesURL),
                let leaves = try? decoder.decode([StoredLeaf].self, from: data) {
                 for leaf in leaves {
-                    let leafURL = teamRoot.appendingPathComponent(TeamModel.leafFile(chat.key, leaf.id))
-                    if let leafEntries = decodeEntriesLeniently(at: leafURL, decoder: decoder) {
+                    let leafKey = MemoryIndexSlotKey(chatKey: chat.key, leafID: leaf.id)
+                    switch readCommittedSlotSnapshot(
+                        chatKey: chat.key,
+                        leafID: leaf.id,
+                        liveTitle: chat.name,
+                        expectedLeafTitle: leaf.title,
+                        decoder: decoder
+                    ) {
+                    case .missing:
+                        digests[leafKey] = Self.formatMissingDigest(title: leaf.title)
+                    case .transientOrUnreadable:
+                        break
+                    case let .ready(leafEntries, leafTitle, digest):
+                        digests[leafKey] = digest
                         all.append(contentsOf: Self.makeRecords(
                             from: leafEntries,
                             chatKey: chat.key,
                             chatName: chat.name,
                             leafID: leaf.id,
-                            leafTitle: leaf.title
+                            leafTitle: leafTitle
                         ))
                     }
                 }
             }
         }
-        return all
+        let fingerprint = computeCatalogFingerprint(digests: digests)
+        return CanonicalSnapshot(records: all, slotDigests: digests, fingerprint: fingerprint)
     }
 
     private struct LenientEntry: Decodable {
@@ -442,8 +649,7 @@ final class MemoryIndexService: @unchecked Sendable {
         }
     }
 
-    private func decodeEntriesLeniently(at url: URL, decoder: JSONDecoder) -> [Entry]? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    private func decodeEntriesLeniently(from data: Data, decoder: JSONDecoder) -> [Entry]? {
         if let entries = try? decoder.decode([Entry].self, from: data) {
             return entries
         }
@@ -464,8 +670,12 @@ final class MemoryIndexService: @unchecked Sendable {
         var turnHasExplicitTaint = false
         var legacySawUntrusted = false
         var inDelegatedTurn = false
+        var slotHasTainted = false
 
         for entry in entries {
+            if entry.isTainted || (entry.message.role == .tool && Taint.reads(entry.message.toolName ?? "")) {
+                slotHasTainted = true
+            }
             if entry.fold == true { continue }
             switch entry.message.role {
             case .user:
@@ -491,6 +701,7 @@ final class MemoryIndexService: @unchecked Sendable {
                         chatName: chatName,
                         leafID: leafID,
                         leafTitle: leafTitle,
+                        leafTainted: false,
                         entryID: entry.id,
                         role: "user",
                         atMs: entry.at,
@@ -522,6 +733,7 @@ final class MemoryIndexService: @unchecked Sendable {
                         chatName: chatName,
                         leafID: leafID,
                         leafTitle: leafTitle,
+                        leafTainted: false,
                         entryID: entry.id,
                         role: "assistant",
                         atMs: entry.at,
@@ -531,6 +743,11 @@ final class MemoryIndexService: @unchecked Sendable {
                         text: text
                     )
                 )
+            }
+        }
+        if slotHasTainted || result.contains(where: { $0.tainted }) {
+            for index in result.indices {
+                result[index].leafTainted = true
             }
         }
         return result
