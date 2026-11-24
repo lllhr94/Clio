@@ -57,6 +57,8 @@ final class Hitches {
 
     /// The newest last.
     private(set) var recent: [Hitch] = []
+    /// Incremented whenever `recent` changes so the diagnostics section can refresh on a throttle without `@Published` churn.
+    private(set) var version: UInt64 = 0
     /// Pages on screen, the one in front last.
     private var pages: [String] = ["案头"]
     /// What is going on, by slot: scrolling, typing, a companion at work.
@@ -113,6 +115,7 @@ final class Hitches {
 
     func clear() {
         recent = []
+        version &+= 1
         newSinceSave = 0
         writes.async { UserDefaults.standard.removeObject(forKey: Self.storeKey) }
     }
@@ -161,11 +164,13 @@ final class Hitches {
         if let previous = recent.last, now.timeIntervalSince(previous.at) < 0.3, previous.page == page {
             if gap > previous.ms {
                 recent[recent.count - 1] = Hitch(at: previous.at, ms: gap, page: page, action: action, refreshHz: hz)
+                version &+= 1
             }
             return
         }
         recent.append(Hitch(at: now, ms: gap, page: page, action: action, refreshHz: hz))
         if recent.count > 200 { recent.removeFirst(recent.count - 200) }
+        version &+= 1
         newSinceSave += 1
         if newSinceSave >= 20 { save() }
     }

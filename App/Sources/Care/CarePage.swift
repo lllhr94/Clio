@@ -11,8 +11,6 @@ struct CarePage: View {
     @State private var diagnosticsReady = false
     @State private var hitchesReady = false
     @State private var recentErrors: [String] = []
-    @State private var hitchSnapshot: [HitchRow] = []
-    @State private var hitchTotal = 0
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
     @State private var made: URL?
@@ -135,10 +133,7 @@ struct CarePage: View {
                 } header: { Text(L.t("settings.recentErrors")) }
 
                 if hitchesReady {
-                    HitchSettings(rows: hitchSnapshot, totalCount: hitchTotal) {
-                        hitchSnapshot = []
-                        hitchTotal = 0
-                    }
+                    HitchSettings()
                 }
 
                 Section {
@@ -162,26 +157,14 @@ struct CarePage: View {
             .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
             .task {
                 do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-                let rawHitches = Array(Hitches.shared.recent.suffix(15).reversed())
-                let totalHitches = Hitches.shared.recent.count
-                let prepared = await Task.detached(priority: .utility) { () -> ([String], [HitchRow]) in
-                    let errors = Array(Diag.log.reversed().prefix(20))
-                    let rows = rawHitches.enumerated().map { index, hitch in
-                        HitchRow(
-                            id: "\(hitch.at.timeIntervalSinceReferenceDate)-\(hitch.ms)-\(index)",
-                            line: hitch.line,
-                            severe: hitch.ms >= 100
-                        )
-                    }
-                    return (errors, rows)
+                let errors = await Task.detached(priority: .utility) {
+                    Array(Diag.log.reversed().prefix(20))
                 }.value
                 guard !Task.isCancelled else { return }
-                recentErrors = prepared.0
+                recentErrors = errors
                 diagnosticsReady = true
                 await Task.yield()
                 guard !Task.isCancelled else { return }
-                hitchSnapshot = prepared.1
-                hitchTotal = totalHitches
                 hitchesReady = true
                 await measureStorage()
             }
@@ -594,16 +577,16 @@ private enum StorageMaintenance {
 }
 
 
-private struct HitchRow: Identifiable, Sendable {
+private struct HitchRow: Identifiable, Equatable, Sendable {
     let id: String
     let line: String
     let severe: Bool
 }
 
 private struct HitchSettings: View {
-    let rows: [HitchRow]
-    let totalCount: Int
-    let onClear: () -> Void
+    @State private var rows: [HitchRow] = []
+    @State private var totalCount = 0
+    @State private var lastVersion: UInt64 = .max
     @State private var hitchesCopied = false
     @AppStorage("look.fps") private var fps = false
     @AppStorage("care.hitches") private var recordingHitches = false
@@ -625,12 +608,57 @@ private struct HitchSettings: View {
                 }
                 Button("清空掉帧记录", role: .destructive) {
                     Hitches.shared.clear()
-                    onClear()
+                    rows = []
+                    totalCount = 0
+                    lastVersion = Hitches.shared.version
                     hitchesCopied = false
                 }
             }
         } header: { Text(L.t("settings.frameDrops")) } footer: {
             Text(L.t("settings.recordHitchesNote"))
         }
+        .task(id: recordingHitches) {
+            await refreshHitches(force: true)
+            guard recordingHitches else { return }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(1200))
+                } catch {
+                    return
+                }
+                await refreshHitches(force: false)
+            }
+        }
+    }
+
+    private func refreshHitches(force: Bool) async {
+        let version = Hitches.shared.version
+        guard force || version != lastVersion else { return }
+        let rawHitches = Array(Hitches.shared.recent.suffix(15).reversed())
+        let total = Hitches.shared.recent.count
+        let formatted = await Task.detached(priority: .utility) {
+            rawHitches.enumerated().map { index, hitch in
+                HitchRow(
+                    id: "\(hitch.at.timeIntervalSinceReferenceDate)-\(hitch.ms)-\(index)",
+                    line: hitch.line,
+                    severe: hitch.ms >= 100
+                )
+            }
+        }.value
+        guard !Task.isCancelled else { return }
+        // Do not resurrect rows if the user cleared hitches while formatting ran off-main.
+        if Hitches.shared.version != version && Hitches.shared.recent.isEmpty {
+            rows = []
+            totalCount = 0
+            lastVersion = Hitches.shared.version
+            hitchesCopied = false
+            return
+        }
+        if total != totalCount || rows != formatted {
+            hitchesCopied = false
+        }
+        rows = formatted
+        totalCount = total
+        lastVersion = version
     }
 }
