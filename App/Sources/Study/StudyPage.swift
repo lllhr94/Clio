@@ -1,3 +1,4 @@
+import ImageIO
 import QuickLook
 import SwiftUI
 import UIKit
@@ -11,6 +12,12 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
     let mount: MountedFolder?
     let relativePath: String
     let byteSize: Int
+    let modified: Date?
+
+    nonisolated var isMountCurrent: Bool {
+        guard let mount else { return true }
+        return MountedFolders.isCurrent(mount)
+    }
 
     nonisolated static func resolve(_ rawPath: String) -> WorkspaceFileRef? {
         let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,8 +61,9 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
             guard relative != "/", Workspace.isInsideRealRoot(url, root: Workspace.root) else { return nil }
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return nil }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            return WorkspaceFileRef(url: url, rootURL: Workspace.root, mount: nil, relativePath: relative, byteSize: size)
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = values?.fileSize ?? 0
+            return WorkspaceFileRef(url: url, rootURL: Workspace.root, mount: nil, relativePath: relative, byteSize: size, modified: values?.contentModificationDate)
         case .mountsRoot:
             return nil
         case .mounted(let mount, let innerParts, let relative):
@@ -63,22 +71,56 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
             return try? MountedFolders.withAccess(mount, innerParts: innerParts) { rootURL, targetURL in
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: targetURL.path, isDirectory: &isDir), !isDir.boolValue else { return nil }
-                let size = (try? targetURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                return WorkspaceFileRef(url: targetURL, rootURL: rootURL, mount: mount, relativePath: relative, byteSize: size)
+                let values = try? targetURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let size = values?.fileSize ?? 0
+                return WorkspaceFileRef(url: targetURL, rootURL: rootURL, mount: mount, relativePath: relative, byteSize: size, modified: values?.contentModificationDate)
             }
         }
     }
 
-    nonisolated static func loadImage(_ ref: WorkspaceFileRef) -> UIImage? {
+    nonisolated static func loadImage(_ ref: WorkspaceFileRef, maxPixelSize: Int = 1280) -> UIImage? {
         if let mount = ref.mount {
-            guard let opened = MountedFolders.openForUI(mount) else { return nil }
+            guard MountedFolders.isCurrent(mount),
+                  let opened = MountedFolders.openForUI(mount) else { return nil }
             defer { opened.token.stop() }
-            guard Workspace.isInsideRealRoot(ref.url, root: opened.url),
-                  let image = UIImage(contentsOfFile: ref.url.path) else { return nil }
-            return image.preparingForDisplay() ?? image
+            guard Workspace.isInsideRealRoot(ref.url, root: opened.url) else { return nil }
+            return decodePreview(at: ref.url, maxPixelSize: maxPixelSize)
         }
-        guard Workspace.isInsideRealRoot(ref.url, root: Workspace.root),
-              let image = UIImage(contentsOfFile: ref.url.path) else { return nil }
+        guard Workspace.isInsideRealRoot(ref.url, root: Workspace.root) else { return nil }
+        return decodePreview(at: ref.url, maxPixelSize: maxPixelSize)
+    }
+
+    nonisolated private static func decodePreview(at url: URL, maxPixelSize: Int) -> UIImage? {
+        let limit = max(64, maxPixelSize)
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: limit,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                return UIImage(cgImage: cgImage)
+            }
+        }
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        let longest = max(pixelWidth, pixelHeight)
+        if longest > CGFloat(limit), longest > 0 {
+            let ratio = CGFloat(limit) / longest
+            let target = CGSize(
+                width: max(1, (pixelWidth * ratio).rounded()),
+                height: max(1, (pixelHeight * ratio).rounded())
+            )
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            format.opaque = false
+            let rendered = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+                image.draw(in: CGRect(origin: .zero, size: target))
+            }
+            return rendered.preparingForDisplay() ?? rendered
+        }
         return image.preparingForDisplay() ?? image
     }
 }

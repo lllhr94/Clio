@@ -20,14 +20,15 @@ struct InteractiveDocument: Equatable, Sendable {
     fileprivate var fileInfo: (url: URL, revision: String)? {
         guard Self.supports(url) else { return nil }
         if let mount {
-            guard let opened = MountedFolders.openForUI(mount) else { return nil }
+            guard MountedFolders.isCurrent(mount),
+                  let opened = MountedFolders.openForUI(mount) else { return nil }
             defer { opened.token.stop() }
             let resolved = url.resolvingSymlinksInPath()
             guard Workspace.isInsideRealRoot(resolved, root: opened.url),
                   let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
                   values.isRegularFile == true, let size = values.fileSize, size <= PreparedPreview.limit else { return nil }
             let changed = values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
-            return (resolved, "\(resolved.path)|\(size)|\(changed)")
+            return (resolved, "\(mount.id)|\(resolved.path)|\(size)|\(changed)")
         }
         guard let path = shareURL,
               let values = try? path.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
@@ -268,11 +269,17 @@ final class InteractiveThumbnails {
     private init() {
         cache.countLimit = 24
         cache.totalCostLimit = 16 * 1024 * 1024
+        _ = NotificationCenter.default.addObserver(forName: MountedFolders.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cache.removeAllObjects() }
+        }
     }
 
     func image(for document: InteractiveDocument) async -> UIImage? {
+        if let mount = document.mount, !MountedFolders.isCurrent(mount) { return nil }
+        let startRevision = MountedFolders.revision
         let revision = await Task.detached(priority: .utility) { document.fileInfo?.revision }.value
         guard !Task.isCancelled, let revision else { return nil }
+        if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
         let key = revision as NSString
         if let image = cache.object(forKey: key) { return image }
 
@@ -281,8 +288,10 @@ final class InteractiveThumbnails {
         let job = Task { [weak self] () -> UIImage? in
             _ = await previous?.value
             guard let self, !Task.isCancelled else { return nil }
+            if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
             if let image = self.cache.object(forKey: key) { return image }
             guard let image = await self.render(document) else { return nil }
+            if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
             if let pixels = image.cgImage {
                 self.cache.setObject(image, forKey: key, cost: pixels.bytesPerRow * pixels.height)
             }
@@ -355,11 +364,15 @@ struct InteractivePreviewThumbnail: View {
     let document: InteractiveDocument
     @State private var image: UIImage?
 
+    private var mountValid: Bool {
+        document.mount.map(MountedFolders.isCurrent) ?? true
+    }
+
     var body: some View {
         Ink.paperRaised
             .aspectRatio(5.0 / 3.0, contentMode: .fit)
             .overlay {
-                if let image {
+                if mountValid, let image {
                     Image(uiImage: image).resizable().scaledToFit()
                 } else {
                     Image(systemName: "chart.xyaxis.line")
@@ -370,8 +383,12 @@ struct InteractivePreviewThumbnail: View {
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .accessibilityHidden(true)
             .task(id: document) {
+                guard mountValid else { image = nil; return }
                 let preview = await InteractiveThumbnails.shared.image(for: document)
-                if !Task.isCancelled { image = preview }
+                if !Task.isCancelled { image = mountValid ? preview : nil }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+                if !mountValid { image = nil }
             }
     }
 }

@@ -999,30 +999,61 @@ private final class PublicImageRedirectDelegate: NSObject, URLSessionTaskDelegat
 private final class CachedLocalPicture {
     let ref: WorkspaceFileRef
     let image: UIImage
-    let modified: Date?
+    let mountRevision: UInt64
 
-    init(ref: WorkspaceFileRef, image: UIImage, modified: Date?) {
+    init(ref: WorkspaceFileRef, image: UIImage, mountRevision: UInt64) {
         self.ref = ref
         self.image = image
-        self.modified = modified
+        self.mountRevision = mountRevision
     }
 }
 
 @MainActor
 private enum LocalPictureCache {
+    private static let totalByteBudget = 24 * 1024 * 1024
+
     private static let cache: NSCache<NSString, CachedLocalPicture> = {
         let cache = NSCache<NSString, CachedLocalPicture>()
         cache.countLimit = 24
+        cache.totalCostLimit = totalByteBudget
+        _ = NotificationCenter.default.addObserver(forName: MountedFolders.changed, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { LocalPictureCache.clear() }
+        }
         return cache
     }()
 
+    static func clear() {
+        cache.removeAllObjects()
+    }
+
+    private static func decodedBytes(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
+        }
+        let pixels = image.size.width * image.scale * image.size.height * image.scale
+        return max(1, Int(pixels * 4))
+    }
+
     static func get(_ key: String) -> CachedLocalPicture? {
-        cache.object(forKey: key as NSString)
+        guard let entry = cache.object(forKey: key as NSString) else { return nil }
+        if entry.ref.mount != nil {
+            guard entry.mountRevision == MountedFolders.revision, entry.ref.isMountCurrent else {
+                cache.removeObject(forKey: key as NSString)
+                return nil
+            }
+        }
+        return entry
     }
 
     static func set(_ entry: CachedLocalPicture?, for key: String) {
         if let entry {
-            cache.setObject(entry, forKey: key as NSString)
+            if entry.ref.mount != nil {
+                guard entry.mountRevision == MountedFolders.revision, entry.ref.isMountCurrent else {
+                    cache.removeObject(forKey: key as NSString)
+                    return
+                }
+            }
+            cache.setObject(entry, forKey: key as NSString, cost: decodedBytes(of: entry.image))
         } else {
             cache.removeObject(forKey: key as NSString)
         }
@@ -1036,11 +1067,13 @@ struct ProsePicture: View {
 
     let source: String
     var label: String = ""
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var remoteFile: URL?
     @State private var workspaceRef: WorkspaceFileRef?
     @State private var failed = false
     @State private var open = false
+    @State private var mountRevision = MountedFolders.revision
 
     @MainActor
     init(source: String, label: String = "") {
@@ -1061,17 +1094,41 @@ struct ProsePicture: View {
         _workspaceRef = State(initialValue: nil)
     }
 
-    private var canOpen: Bool { workspaceRef != nil || remoteFile != nil }
+    private var previewMaxPixelSize: Int {
+        Int(min(1440, max(720, (420 * displayScale).rounded())))
+    }
+
+    private var activeWorkspaceRef: WorkspaceFileRef? {
+        guard let workspaceRef, workspaceRef.isMountCurrent else { return nil }
+        return workspaceRef
+    }
+
+    private var displayedImage: UIImage? {
+        if let workspaceRef, !workspaceRef.isMountCurrent { return nil }
+        return image
+    }
+
+    private var canOpen: Bool { activeWorkspaceRef != nil || remoteFile != nil }
 
     var body: some View {
         Group {
-            if let image {
-                Image(uiImage: image)
+            if let displayed = displayedImage {
+                Image(uiImage: displayed)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
                     .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                    .onTapGesture { if canOpen { Haptics.light(); open = true } }
+                    .onTapGesture {
+                        if let ref = workspaceRef, !ref.isMountCurrent {
+                            let decodedPath = source.removingPercentEncoding ?? source
+                            LocalPictureCache.set(nil, for: decodedPath)
+                            image = nil
+                            workspaceRef = nil
+                            failed = true
+                            return
+                        }
+                        if canOpen { Haptics.light(); open = true }
+                    }
                     .accessibilityLabel(label.isEmpty ? "图片" : label)
                     .accessibilityAddTraits(.isImage)
             } else if failed {
@@ -1085,10 +1142,23 @@ struct ProsePicture: View {
                     .overlay { ProgressView() }
             }
         }
-        .task(id: source) { await load() }
+        .task(id: "\(source)|\(mountRevision)") { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+            let nextRevision = MountedFolders.revision
+            if let ref = workspaceRef, !ref.isMountCurrent {
+                let decodedPath = source.removingPercentEncoding ?? source
+                LocalPictureCache.set(nil, for: decodedPath)
+                image = nil
+                workspaceRef = nil
+                open = false
+            }
+            if workspaceRef?.mount != nil || (remoteFile == nil && (image == nil || failed)) {
+                mountRevision = nextRevision
+            }
+        }
         .sheet(isPresented: $open) {
-            if let workspaceRef {
-                NavigationStack { StudyFile(url: workspaceRef.url, mount: workspaceRef.mount, showsDone: true) }
+            if let activeWorkspaceRef {
+                NavigationStack { StudyFile(url: activeWorkspaceRef.url, mount: activeWorkspaceRef.mount, showsDone: true) }
             } else if let remoteFile {
                 QuickPreview(url: remoteFile).ignoresSafeArea()
             }
@@ -1098,7 +1168,7 @@ struct ProsePicture: View {
     private enum LocalOutcome: Sendable {
         case unchanged
         case missing
-        case updated(WorkspaceFileRef, UIImage, Date?)
+        case updated(WorkspaceFileRef, UIImage)
     }
 
     private func load() async {
@@ -1139,6 +1209,8 @@ struct ProsePicture: View {
         }
 
         let decodedPath = written.removingPercentEncoding ?? written
+        let startMountRevision = MountedFolders.revision
+        let maxPixels = previewMaxPixelSize
         let cached = LocalPictureCache.get(decodedPath)
         if let cached {
             if workspaceRef != cached.ref { workspaceRef = cached.ref }
@@ -1152,27 +1224,41 @@ struct ProsePicture: View {
             failed = false
         }
         let cachedRef = cached?.ref
-        let cachedModified = cached?.modified
         let outcome = await Task.detached(priority: .userInitiated) { () -> LocalOutcome in
             guard let ref = WorkspaceFileRef.resolve(decodedPath) else { return .missing }
-            let modified = (try? FileManager.default.attributesOfItem(atPath: ref.url.path))?[.modificationDate] as? Date
-            if let cachedRef, cachedRef == ref, cachedModified == modified {
+            if let cachedRef, cachedRef == ref {
                 return .unchanged
             }
-            guard let picture = WorkspaceFileRef.loadImage(ref) else { return .missing }
-            return .updated(ref, picture, modified)
+            guard let picture = WorkspaceFileRef.loadImage(ref, maxPixelSize: maxPixels) else { return .missing }
+            return .updated(ref, picture)
         }.value
         guard !Task.isCancelled else { return }
         switch outcome {
         case .unchanged:
+            if let ref = workspaceRef, !ref.isMountCurrent {
+                LocalPictureCache.set(nil, for: decodedPath)
+                image = nil
+                workspaceRef = nil
+                failed = true
+            }
             return
         case .missing:
             LocalPictureCache.set(nil, for: decodedPath)
             image = nil
             workspaceRef = nil
             failed = true
-        case .updated(let ref, let picture, let modified):
-            LocalPictureCache.set(CachedLocalPicture(ref: ref, image: picture, modified: modified), for: decodedPath)
+        case .updated(let ref, let picture):
+            if ref.mount != nil, startMountRevision != MountedFolders.revision || !ref.isMountCurrent {
+                LocalPictureCache.set(nil, for: decodedPath)
+                image = nil
+                workspaceRef = nil
+                failed = true
+                return
+            }
+            LocalPictureCache.set(
+                CachedLocalPicture(ref: ref, image: picture, mountRevision: startMountRevision),
+                for: decodedPath
+            )
             workspaceRef = ref
             image = picture
             failed = false
@@ -1237,7 +1323,11 @@ struct ProsePicture: View {
 
 private final class CachedFileRef {
     let ref: WorkspaceFileRef
-    init(_ ref: WorkspaceFileRef) { self.ref = ref }
+    let mountRevision: UInt64
+    init(_ ref: WorkspaceFileRef, mountRevision: UInt64) {
+        self.ref = ref
+        self.mountRevision = mountRevision
+    }
 }
 
 @MainActor
@@ -1245,16 +1335,36 @@ private enum FileCardCache {
     private static let cache: NSCache<NSString, CachedFileRef> = {
         let cache = NSCache<NSString, CachedFileRef>()
         cache.countLimit = 128
+        _ = NotificationCenter.default.addObserver(forName: MountedFolders.changed, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { FileCardCache.clear() }
+        }
         return cache
     }()
 
-    static func get(_ key: String) -> WorkspaceFileRef? {
-        cache.object(forKey: key as NSString)?.ref
+    static func clear() {
+        cache.removeAllObjects()
     }
 
-    static func set(_ ref: WorkspaceFileRef?, for key: String) {
+    static func get(_ key: String) -> WorkspaceFileRef? {
+        guard let entry = cache.object(forKey: key as NSString) else { return nil }
+        if entry.ref.mount != nil {
+            guard entry.mountRevision == MountedFolders.revision, entry.ref.isMountCurrent else {
+                cache.removeObject(forKey: key as NSString)
+                return nil
+            }
+        }
+        return entry.ref
+    }
+
+    static func set(_ ref: WorkspaceFileRef?, for key: String, mountRevision: UInt64 = MountedFolders.revision) {
         if let ref {
-            cache.setObject(CachedFileRef(ref), forKey: key as NSString)
+            if ref.mount != nil {
+                guard mountRevision == MountedFolders.revision, ref.isMountCurrent else {
+                    cache.removeObject(forKey: key as NSString)
+                    return
+                }
+            }
+            cache.setObject(CachedFileRef(ref, mountRevision: mountRevision), forKey: key as NSString)
         } else {
             cache.removeObject(forKey: key as NSString)
         }
@@ -1270,6 +1380,7 @@ struct FileCard: View {
     @State private var checked = false
     @State private var open = false
     @State private var interaction = false
+    @State private var mountRevision = MountedFolders.revision
 
     @MainActor
     init(label: String, path: String) {
@@ -1285,21 +1396,39 @@ struct FileCard: View {
         }
     }
 
+    private var activeResolved: WorkspaceFileRef? {
+        guard let resolved, resolved.isMountCurrent else { return nil }
+        return resolved
+    }
+
     private var document: InteractiveDocument? {
-        guard let resolved, InteractiveDocument.supports(resolved.url) else { return nil }
-        return InteractiveDocument(url: resolved.url, root: resolved.rootURL, mount: resolved.mount)
+        guard let activeResolved, InteractiveDocument.supports(activeResolved.url) else { return nil }
+        return InteractiveDocument(url: activeResolved.url, root: activeResolved.rootURL, mount: activeResolved.mount)
     }
 
     var body: some View {
         Button {
-            guard resolved != nil else { return }
+            guard let ref = activeResolved else {
+                if resolved != nil {
+                    let clean = path.removingPercentEncoding ?? path
+                    FileCardCache.set(nil, for: clean)
+                    resolved = nil
+                }
+                return
+            }
+            guard ref.isMountCurrent else {
+                let clean = path.removingPercentEncoding ?? path
+                FileCardCache.set(nil, for: clean)
+                resolved = nil
+                return
+            }
             Haptics.light()
             if document == nil { open = true } else { interaction = true }
         } label: {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 if let document { InteractivePreviewThumbnail(document: document) }
                 HStack(spacing: Ink.Space.m) {
-                    IconBadge(symbol: Self.symbol(for: path), tint: resolved == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
+                    IconBadge(symbol: Self.symbol(for: path), tint: activeResolved == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(label.isEmpty ? (path as NSString).lastPathComponent : label)
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -1311,7 +1440,7 @@ struct FileCard: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: Ink.Space.s)
-                    if resolved != nil { Kit.chevron }
+                    if activeResolved != nil { Kit.chevron }
                 }
             }
             .padding(Ink.Space.m)
@@ -1320,17 +1449,37 @@ struct FileCard: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("打开 \(label)")
-        .task(id: path) {
+        .task(id: "\(path)|\(mountRevision)") {
             let clean = path.removingPercentEncoding ?? path
+            let startMountRevision = MountedFolders.revision
             let found = await Task.detached(priority: .utility) { WorkspaceFileRef.resolve(clean) }.value
             guard !Task.isCancelled else { return }
-            FileCardCache.set(found, for: clean)
+            if let found, found.mount != nil, startMountRevision != MountedFolders.revision || !found.isMountCurrent {
+                FileCardCache.set(nil, for: clean)
+                resolved = nil
+                checked = true
+                return
+            }
+            FileCardCache.set(found, for: clean, mountRevision: startMountRevision)
             if resolved != found { resolved = found }
             if !checked { checked = true }
         }
+        .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+            let nextRevision = MountedFolders.revision
+            if let ref = resolved, !ref.isMountCurrent {
+                let clean = path.removingPercentEncoding ?? path
+                FileCardCache.set(nil, for: clean)
+                resolved = nil
+                open = false
+                interaction = false
+            }
+            if resolved?.mount != nil || resolved == nil {
+                mountRevision = nextRevision
+            }
+        }
         .sheet(isPresented: $open) {
-            if let resolved {
-                NavigationStack { StudyFile(url: resolved.url, mount: resolved.mount, showsDone: true) }
+            if let activeResolved {
+                NavigationStack { StudyFile(url: activeResolved.url, mount: activeResolved.mount, showsDone: true) }
             }
         }
         .fullScreenCover(isPresented: $interaction) {
@@ -1340,7 +1489,7 @@ struct FileCard: View {
 
     private var subtitleText: String {
         if document != nil { return L.t("interactivePreview.open") }
-        if let resolved { return Self.detail(resolved) }
+        if let activeResolved { return Self.detail(activeResolved) }
         return checked ? "找不到这个文件了" : L.t("loading.generic")
     }
 
