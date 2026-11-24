@@ -15,7 +15,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         var onTogglePulse: () -> Void = {}
         var onToggleLookback: () -> Void = {}
         var onToggleCodeFold: (Int) -> Void = { _ in }
-        var onBlockHeightChanged: (String, CGFloat) -> Void = { _, _ in }
+        var onBlockHeightChanged: (String, String, CGFloat) -> Void = { _, _, _ in }
         var onSelectionChanged: (UUID, Bool) -> Void = { _, _ in }
         var onQuoteExcerpt: (String) -> Void = { _ in }
         var onSpeakExcerpt: (String) -> Void = { _ in }
@@ -182,7 +182,17 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     private func setupContinueButton() {
-        var cfg = UIButton.Configuration.filled()
+        applyContinueButtonTypography()
+        continueButton.addAction(UIAction { [weak self] _ in
+            Haptics.light()
+            self?.actions?.bridge.onContinueStepLimit()
+        }, for: .touchUpInside)
+        continueButton.isHidden = true
+        contentView.addSubview(continueButton)
+    }
+
+    private func applyContinueButtonTypography() {
+        var cfg = continueButton.configuration ?? UIButton.Configuration.filled()
         cfg.title = L.t("chat.continueTask")
         cfg.image = UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .semibold))
         cfg.imagePadding = Ink.Space.xs
@@ -194,12 +204,6 @@ final class ChatAssistantCell: UICollectionViewCell {
             return copy
         }
         continueButton.configuration = cfg
-        continueButton.addAction(UIAction { [weak self] _ in
-            Haptics.light()
-            self?.actions?.bridge.onContinueStepLimit()
-        }, for: .touchUpInside)
-        continueButton.isHidden = true
-        contentView.addSubview(continueButton)
     }
 
     override func prepareForReuse() {
@@ -236,10 +240,14 @@ final class ChatAssistantCell: UICollectionViewCell {
         return ids
     }
 
-    func currentProseSelectionSnapshot() -> (range: NSRange, substring: String)? {
-        for tv in richTextViews where !tv.isHidden {
+    func currentProseSelectionSnapshot() -> ChatProseSelectionSnapshot? {
+        for (idx, tv) in richTextViews.enumerated() where !tv.isHidden {
             if let snap = tv.currentSelectionSnapshot() {
-                return snap
+                return ChatProseSelectionSnapshot(
+                    richTextIndex: idx,
+                    range: snap.range,
+                    substring: snap.substring
+                )
             }
         }
         return nil
@@ -273,7 +281,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         hostViewController: UIViewController?,
         actions: ChatListActions,
         callbacks: Callbacks,
-        transferredSelection: (range: NSRange, substring: String)? = nil
+        transferredSelection: ChatProseSelectionSnapshot? = nil
     ) {
         self.ownerID = row.line.id
         self.isLiveStreamingOnly = false
@@ -371,8 +379,9 @@ final class ChatAssistantCell: UICollectionViewCell {
         row: ChatListRowItem,
         entry: ChatLayoutCache.AssistantLayoutEntry,
         style: ChatListStyle,
-        transferredSelection: (range: NSRange, substring: String)?
+        transferredSelection: ChatProseSelectionSnapshot?
     ) {
+        applyContinueButtonTypography()
         litBackdrop.isHidden = !row.lit
 
         if entry.timeGapHeight > 0, let gap = row.timeGap {
@@ -574,7 +583,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         entry: ChatLayoutCache.AssistantLayoutEntry,
         style: ChatListStyle,
         lineID: String,
-        transferredSelection: (range: NSRange, substring: String)?
+        transferredSelection: ChatProseSelectionSnapshot?
     ) {
         var rtIndex = 0
         var cbIndex = 0
@@ -583,14 +592,18 @@ final class ChatAssistantCell: UICollectionViewCell {
         var hbIndex = 0
         let widthKey = Int(((entry.contentWidth + Ink.Space.page * 2) * 2).rounded())
 
+        func transferTuple(for idx: Int) -> (range: NSRange, substring: String)? {
+            guard let snap = transferredSelection, snap.richTextIndex == idx else { return nil }
+            return (snap.range, snap.substring)
+        }
+
         for (slicePos, measured) in entry.slices.enumerated() {
             switch measured.slice {
             case .richText(let rendered):
                 let tv = ensureRichTextView(at: rtIndex)
                 tv.isHidden = false
                 wireTextViewCallbacks(tv, lineID: lineID)
-                let transfer = (rtIndex == 0) ? transferredSelection : nil
-                tv.apply(ownerID: "\(lineID)#rt\(rtIndex)", rendered: rendered, style: style, transferredSelection: transfer)
+                tv.apply(ownerID: "\(lineID)#rt\(rtIndex)", rendered: rendered, style: style, transferredSelection: transferTuple(for: rtIndex))
                 rtIndex += 1
 
             case .code(let codeSlice, let sliceIndex):
@@ -617,6 +630,9 @@ final class ChatAssistantCell: UICollectionViewCell {
             case .table(let tableSlice, _):
                 let tb = ensureTableBlockView(at: tbIndex)
                 tb.isHidden = false
+                tb.onOpenURL = { [weak actions] url in
+                    actions?.bridge.onOpenURL(url)
+                }
                 tb.configure(slice: tableSlice, style: style)
                 tbIndex += 1
 
@@ -631,7 +647,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                 hb.isHidden = false
                 let heightKey = "file|\(lineID)|\(sliceIndex)|\(widthKey)|\(links.map(\.path).joined(separator: "|"))"
                 hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
-                    self?.callbacks.onBlockHeightChanged(heightKey, h)
+                    self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                 }) {
                     VStack(alignment: .leading, spacing: Ink.Space.s) {
                         ForEach(Array(links.enumerated()), id: \.offset) { _, link in
@@ -646,7 +662,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                     let tv = ensureRichTextView(at: rtIndex)
                     tv.isHidden = false
                     wireTextViewCallbacks(tv, lineID: lineID)
-                    tv.apply(ownerID: "\(lineID)#picwords\(slicePos)", rendered: words, style: style)
+                    tv.apply(ownerID: "\(lineID)#picwords\(slicePos)", rendered: words, style: style, transferredSelection: transferTuple(for: rtIndex))
                     rtIndex += 1
                 }
                 for (picIndex, pic) in pics.enumerated() {
@@ -654,7 +670,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                     hb.isHidden = false
                     let heightKey = "pic|\(lineID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(pic.source)"
                     hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
-                        self?.callbacks.onBlockHeightChanged(heightKey, h)
+                        self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                     }) {
                         ProsePicture(source: pic.source, label: pic.label)
                     }

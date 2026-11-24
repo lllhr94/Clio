@@ -526,16 +526,7 @@ final class ChatEarlierButtonCell: UICollectionViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
-        var cfg = UIButton.Configuration.plain()
-        cfg.title = L.t("chat.earlier")
-        cfg.image = UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium))
-        cfg.imagePadding = Ink.Space.xs
-        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var copy = incoming
-            copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .medium)
-            return copy
-        }
-        button.configuration = cfg
+        applyButtonConfiguration()
         button.addAction(UIAction { [weak self] _ in
             Haptics.light()
             self?.onLoadEarlier?()
@@ -550,10 +541,26 @@ final class ChatEarlierButtonCell: UICollectionViewCell {
 
     func configure(onLoadEarlier: @escaping () -> Void) {
         self.onLoadEarlier = onLoadEarlier
-        var cfg = button.configuration
-        cfg?.title = L.t("chat.earlier")
-        button.configuration = cfg
+        refreshTypography()
         refreshColors()
+    }
+
+    func refreshTypography() {
+        applyButtonConfiguration()
+        setNeedsLayout()
+    }
+
+    private func applyButtonConfiguration() {
+        var cfg = button.configuration ?? UIButton.Configuration.plain()
+        cfg.title = L.t("chat.earlier")
+        cfg.image = UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium))
+        cfg.imagePadding = Ink.Space.xs
+        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var copy = incoming
+            copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .medium)
+            return copy
+        }
+        button.configuration = cfg
     }
 
     override func prepareForReuse() {
@@ -728,6 +735,7 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
     }
 
     func configure(text: String) {
+        brainView.image = UIImage(systemName: "brain", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium))
         headerLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
         headerLabel.text = Words.t("正在沉吟") + " · \(text.count) 字"
         tailLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
@@ -804,18 +812,7 @@ final class ChatLiveFailureCell: UICollectionViewCell {
         errorLabel.numberOfLines = 0
         cardView.addSubview(errorLabel)
 
-        var cfg = UIButton.Configuration.filled()
-        cfg.title = L.t("actions.retry")
-        cfg.image = UIImage(systemName: "arrow.clockwise", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .semibold))
-        cfg.imagePadding = Ink.Space.xs
-        cfg.cornerStyle = .capsule
-        cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: Ink.Space.m, bottom: 6, trailing: Ink.Space.m)
-        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var copy = incoming
-            copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .semibold)
-            return copy
-        }
-        retryButton.configuration = cfg
+        applyRetryConfiguration()
         retryButton.addAction(UIAction { [weak self] _ in
             Haptics.light()
             self?.onRetry?()
@@ -836,11 +833,28 @@ final class ChatLiveFailureCell: UICollectionViewCell {
     func configure(error: String, working: Bool, onRetry: @escaping () -> Void) {
         self.onRetry = onRetry
         self.showsRetry = !working
+        iconView.image = UIImage(systemName: "exclamationmark.triangle", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.sub, weight: .semibold))
         errorLabel.font = UIFont.systemFont(ofSize: Ink.Size.sub)
         errorLabel.text = error
         retryButton.isHidden = working
+        applyRetryConfiguration()
         refreshColors()
         setNeedsLayout()
+    }
+
+    private func applyRetryConfiguration() {
+        var cfg = retryButton.configuration ?? UIButton.Configuration.filled()
+        cfg.title = L.t("actions.retry")
+        cfg.image = UIImage(systemName: "arrow.clockwise", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .semibold))
+        cfg.imagePadding = Ink.Space.xs
+        cfg.cornerStyle = .capsule
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: Ink.Space.m, bottom: 6, trailing: Ink.Space.m)
+        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var copy = incoming
+            copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .semibold)
+            return copy
+        }
+        retryButton.configuration = cfg
     }
 
     private func refreshColors() {
@@ -936,7 +950,25 @@ final class ChatQueuedCell: UICollectionViewCell {
         statusLabel.lineBreakMode = .byTruncatingTail
         contentView.addSubview(statusLabel)
 
-        var withdrawCfg = UIButton.Configuration.plain()
+        applyActionButtonConfigurations()
+        withdrawButton.addAction(UIAction { [weak self] _ in
+            self?.onWithdraw?()
+        }, for: .touchUpInside)
+        contentView.addSubview(withdrawButton)
+
+        sendNowButton.addAction(UIAction { [weak self] _ in
+            self?.onSendNow?()
+        }, for: .touchUpInside)
+        contentView.addSubview(sendNowButton)
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatQueuedCell, _) in
+            cell.refreshColors()
+        }
+        refreshColors()
+    }
+
+    private func applyActionButtonConfigurations() {
+        var withdrawCfg = withdrawButton.configuration ?? UIButton.Configuration.plain()
         withdrawCfg.title = "撤回"
         withdrawCfg.image = UIImage(systemName: "arrow.uturn.backward", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small))
         withdrawCfg.imagePadding = 4
@@ -947,12 +979,8 @@ final class ChatQueuedCell: UICollectionViewCell {
             return copy
         }
         withdrawButton.configuration = withdrawCfg
-        withdrawButton.addAction(UIAction { [weak self] _ in
-            self?.onWithdraw?()
-        }, for: .touchUpInside)
-        contentView.addSubview(withdrawButton)
 
-        var sendCfg = UIButton.Configuration.plain()
+        var sendCfg = sendNowButton.configuration ?? UIButton.Configuration.plain()
         sendCfg.title = "立即发送"
         sendCfg.image = UIImage(systemName: "paperplane.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small))
         sendCfg.imagePadding = 4
@@ -963,15 +991,6 @@ final class ChatQueuedCell: UICollectionViewCell {
             return copy
         }
         sendNowButton.configuration = sendCfg
-        sendNowButton.addAction(UIAction { [weak self] _ in
-            self?.onSendNow?()
-        }, for: .touchUpInside)
-        contentView.addSubview(sendNowButton)
-
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatQueuedCell, _) in
-            cell.refreshColors()
-        }
-        refreshColors()
     }
 
     override func prepareForReuse() {
@@ -1021,6 +1040,7 @@ final class ChatQueuedCell: UICollectionViewCell {
         withdrawButton.alpha = alpha
         sendNowButton.alpha = alpha
 
+        applyActionButtonConfigurations()
         refreshColors()
         setNeedsLayout()
     }
@@ -1119,19 +1139,25 @@ final class ChatLiveFoldingCell: UICollectionViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
-        iconView.image = UIImage(systemName: "text.append", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small))
         iconView.contentMode = .scaleAspectFit
         contentView.addSubview(iconView)
 
-        label.font = UIFont.systemFont(ofSize: Ink.Size.small)
         label.text = "正在后台整理较早的聊天，不耽误你接着聊"
         label.lineBreakMode = .byTruncatingTail
         contentView.addSubview(label)
+
+        refreshTypography()
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatLiveFoldingCell, _) in
             cell.refreshColors()
         }
         refreshColors()
+    }
+
+    func refreshTypography() {
+        iconView.image = UIImage(systemName: "text.append", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small))
+        label.font = UIFont.systemFont(ofSize: Ink.Size.small)
+        setNeedsLayout()
     }
 
     private func refreshColors() {

@@ -138,11 +138,19 @@ struct ChatListRowItem: Equatable {
     }
 }
 
+/// Selection snapshot captured across a live-streaming to settled-row handoff.
+struct ChatProseSelectionSnapshot {
+    let richTextIndex: Int
+    let range: NSRange
+    let substring: String
+}
+
 /// Full immutable render snapshot fed into `ChatListViewController`.
 struct ChatListState {
     let chatKey: String
     let loaded: Bool
     let canLoadEarlier: Bool
+    let isLoadingEarlier: Bool
     let historyInView: Bool
     let isRoom: Bool
     let defaultBot: BotInfo
@@ -188,6 +196,7 @@ final class ChatListActions {
     var onTouchScrollingChanged: (Bool, Bool) -> Void = { _, _ in }
     var onScrollingChanged: (Bool) -> Void = { _ in }
     var onFarFromEndChanged: (Bool) -> Void = { _ in }
+    var onNeedsEndCorrectionChanged: (Bool) -> Void = { _ in }
     var onVisibleIDsChanged: ([String]) -> Void = { _ in }
     var onScrollPhaseChanged: (String) -> Void = { _ in }
     var onDragStarted: () -> Void = {}

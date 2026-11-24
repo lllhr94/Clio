@@ -68,7 +68,7 @@ private struct ChatTraceHostView: View {
             if row.opens, row.faces || row.isRoom {
                 HStack(spacing: Ink.Space.s) {
                     PetStill(
-                        size: row.faces ? ChatPage.face : Ink.Size.body,
+                        size: row.faces ? ChatPage.face : ChatCellMetrics.compactSpeakerSize,
                         wash: row.speakerBot.map { Ink.wash(for: $0) },
                         avatar: true,
                         bot: row.speakerBot
@@ -115,7 +115,7 @@ final class ChatTraceHostingCell: UICollectionViewCell {
 
     private var model: TraceRowModel?
     private var configuredLineID: String?
-    private var onHeightChanged: ((CGFloat) -> Void)?
+    private var onHeightChanged: ((ChatListRowItem, CGFloat) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -130,7 +130,7 @@ final class ChatTraceHostingCell: UICollectionViewCell {
     func configure(
         row: ChatListRowItem,
         actions: ChatListActions,
-        onHeightChanged: @escaping (CGFloat) -> Void
+        onHeightChanged: @escaping (ChatListRowItem, CGFloat) -> Void
     ) {
         self.onHeightChanged = onHeightChanged
         if configuredLineID == row.line.id, let model {
@@ -141,8 +141,9 @@ final class ChatTraceHostingCell: UICollectionViewCell {
         let nextModel = TraceRowModel(row: row, actions: actions)
         model = nextModel
         contentConfiguration = UIHostingConfiguration {
-            ChatTraceHostView(model: nextModel) { [weak self] height in
-                self?.onHeightChanged?(height)
+            ChatTraceHostView(model: nextModel) { [weak self, weak nextModel] height in
+                guard let self, let nextModel else { return }
+                self.onHeightChanged?(nextModel.row, height)
             }
         }
         .margins(.all, 0)
@@ -322,6 +323,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let heads: Set<String>
     let historyPage: [ChatLine]?
     let shownCount: Int
+    let isLoadingEarlier: Bool
     let lit: String?
     let editing: String?
     let speakingText: String?
@@ -445,6 +447,21 @@ struct ChatUIKitContainer<Minimap: View>: View {
                     safeFrame = rect
                 }
                 .overlay(alignment: .trailing) { minimap() }
+
+            VStack(spacing: 0) {
+                if safeTopInset > 0 {
+                    Color.clear.frame(height: safeTopInset)
+                }
+                LinearGradient(
+                    colors: [Ink.paper, Ink.paper.opacity(0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: Ink.Space.l)
+                Spacer(minLength: 0)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         }
         .onChange(of: followState.following, initial: true) { _, resting in
             petPerch.avoidsReplies = resting
@@ -499,7 +516,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
                   let kind = Trace.canonicalKind(of: activeDoing) else {
                 return false
             }
-            return kind == "斗室" || kind == "远山"
+            let icon = Trace.icon(for: kind)
+            return icon == "terminal" || icon == "mountain.2"
         }()
 
         let failureCardError: String? = {
@@ -534,6 +552,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
             chatKey: chat.key,
             loaded: chat.loaded,
             canLoadEarlier: canLoadEarlier,
+            isLoadingEarlier: isLoadingEarlier,
             historyInView: historyPage != nil,
             isRoom: isRoom,
             defaultBot: bot,
@@ -611,38 +630,75 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         controller.makeEmptyView = makeEmptyView
         listProxy.controller = controller
         context.coordinator.actions = actions
-        controller.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
-        controller.applyState(state)
+        controller.performHostUpdate {
+            controller.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
+            controller.setFollowingFromHost(following)
+            controller.applyState(state)
+        }
         return controller
     }
 
     func updateUIViewController(_ uiViewController: ChatListViewController, context: Context) {
         let coordinator = context.coordinator
+        guard !coordinator.isDismantled else { return }
         if let actions = coordinator.actions {
             wireActions(actions, coordinator: coordinator)
         }
         uiViewController.makeEmptyView = makeEmptyView
         listProxy.controller = uiViewController
 
-        if coordinator.lastStyleSignal != styleSignal {
-            coordinator.lastStyleSignal = styleSignal
-            uiViewController.refreshTypographyAndTheme()
+        uiViewController.performHostUpdate {
+            if coordinator.lastStyleSignal != styleSignal {
+                coordinator.lastStyleSignal = styleSignal
+                uiViewController.refreshTypographyAndTheme()
+            }
+
+            uiViewController.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
+
+            if coordinator.lastSyncedFollowing != following {
+                coordinator.lastSyncedFollowing = following
+                uiViewController.setFollowingFromHost(following)
+            }
+
+            uiViewController.applyState(state)
+        }
+    }
+
+    static func dismantleUIViewController(_ uiViewController: ChatListViewController, coordinator: Coordinator) {
+        coordinator.isDismantled = true
+        let staleIDs = Array(coordinator.ownedSelectionIDs)
+        coordinator.ownedSelectionIDs.removeAll()
+        let staleReplyOwner = uiViewController.prepareForDismantle()
+        let clearSelection = coordinator.onClearSelection
+        let perch = coordinator.petPerch
+        let proxy = coordinator.listProxy
+        if proxy?.controller === uiViewController {
+            proxy?.controller = nil
         }
 
-        uiViewController.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
-
-        if coordinator.lastSyncedFollowing != following {
-            coordinator.lastSyncedFollowing = following
-            uiViewController.setFollowingFromHost(following)
+        Task { @MainActor in
+            for uuid in staleIDs {
+                clearSelection?(uuid, false)
+            }
+            if let staleReplyOwner, perch?.replyActionsOwner == staleReplyOwner {
+                perch?.replyActionsOwner = nil
+                perch?.replyActions = .null
+            }
         }
-
-        uiViewController.applyState(state)
     }
 
     private func wireActions(_ actions: ChatListActions, coordinator: Coordinator) {
-        actions.onLoadEarlier = onLoadEarlier
+        coordinator.onClearSelection = onSelectionChanged
+        coordinator.petPerch = petPerch
+        coordinator.listProxy = listProxy
 
-        actions.onQuoteExcerpt = { [typing] excerpt in
+        actions.onLoadEarlier = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            onLoadEarlier()
+        }
+
+        actions.onQuoteExcerpt = { [weak coordinator, typing] excerpt in
+            guard let coordinator, !coordinator.isDismantled else { return }
             Haptics.tick(0.5)
             withAnimation(Ink.Motion.settle) {
                 quote = excerpt
@@ -650,25 +706,38 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             typing.wrappedValue = true
         }
 
-        actions.onSpeakExcerpt = { excerpt in
+        actions.onSpeakExcerpt = { [weak coordinator] excerpt in
+            guard let coordinator, !coordinator.isDismantled else { return }
             Haptics.light()
             onSpeak(excerpt)
         }
 
-        actions.onSaveNoteExcerpt = { lineID, excerpt in
+        actions.onSaveNoteExcerpt = { [weak coordinator] lineID, excerpt in
+            guard let coordinator, !coordinator.isDismantled else { return }
             onSaveNote(lineID, excerpt)
         }
 
-        actions.onSelectionChanged = onSelectionChanged
+        actions.onSelectionChanged = { [weak coordinator] uuid, active in
+            guard let coordinator else { return }
+            if active {
+                coordinator.ownedSelectionIDs.insert(uuid)
+            } else {
+                coordinator.ownedSelectionIDs.remove(uuid)
+            }
+            guard !coordinator.isDismantled else { return }
+            onSelectionChanged(uuid, active)
+        }
 
         actions.onFollowingChanged = { [weak coordinator] next in
-            coordinator?.lastSyncedFollowing = next
+            guard let coordinator, !coordinator.isDismantled else { return }
+            coordinator.lastSyncedFollowing = next
             if following != next {
                 following = next
             }
         }
 
-        actions.onTouchScrollingChanged = { isTouching, isTouchScroll in
+        actions.onTouchScrollingChanged = { [weak coordinator] isTouching, isTouchScroll in
+            guard let coordinator, !coordinator.isDismantled else { return }
             if viewport.isTouching != isTouching {
                 viewport.isTouching = isTouching
             }
@@ -677,7 +746,8 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
-        actions.onScrollingChanged = { moving in
+        actions.onScrollingChanged = { [weak coordinator] moving in
+            guard let coordinator, !coordinator.isDismantled else { return }
             if moving != chrome.scrolling {
                 chrome.scrolling = moving
                 onStir()
@@ -685,7 +755,8 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
-        actions.onFarFromEndChanged = { far in
+        actions.onFarFromEndChanged = { [weak coordinator] far in
+            guard let coordinator, !coordinator.isDismantled else { return }
             if chrome.farFromEnd != far {
                 withAnimation(Ink.Motion.settle) {
                     chrome.farFromEnd = far
@@ -693,27 +764,41 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
-        actions.onVisibleIDsChanged = { ids in
+        actions.onNeedsEndCorrectionChanged = { [weak coordinator] needs in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if viewport.needsEndCorrection != needs {
+                viewport.needsEndCorrection = needs
+            }
+        }
+
+        actions.onVisibleIDsChanged = { [weak coordinator] ids in
+            guard let coordinator, !coordinator.isDismantled else { return }
             if viewport.ids != ids {
                 viewport.ids = ids
             }
         }
 
-        actions.onScrollPhaseChanged = { label in
+        actions.onScrollPhaseChanged = { [weak coordinator] label in
+            guard let coordinator, !coordinator.isDismantled else { return }
             if viewport.scrollPhaseLabel != label {
                 viewport.scrollPhaseLabel = label
             }
         }
 
-        actions.onDragStarted = {
+        actions.onDragStarted = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
             onDragStarted()
         }
 
-        actions.onScrollEnded = {
+        actions.onScrollEnded = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
             onScrollEnded()
         }
 
-        actions.onPickStarter = onPickStarter
+        actions.onPickStarter = { [weak coordinator] text in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            onPickStarter(text)
+        }
     }
 
     @MainActor
@@ -721,6 +806,11 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         var lastStyleSignal: String
         var lastSyncedFollowing: Bool
         var actions: ChatListActions?
+        var ownedSelectionIDs: Set<UUID> = []
+        var isDismantled = false
+        var onClearSelection: ((UUID, Bool) -> Void)?
+        weak var petPerch: PetPerch?
+        weak var listProxy: ChatListControllerProxy?
 
         init(lastStyleSignal: String, lastSyncedFollowing: Bool) {
             self.lastStyleSignal = lastStyleSignal

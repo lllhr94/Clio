@@ -358,10 +358,51 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
     }
 }
 
-/// Native UIKit markdown table matching `ProseView.TableBlock` column planning, horizontal scrolling, and copy menu.
+/// Lightweight non-scrolling cell text view supporting inline markdown styles and clickable links in tables.
+@MainActor
+private final class ChatTableCellTextView: UITextView, UITextViewDelegate {
+    var onOpenURL: ((URL) -> Void)?
+
+    init() {
+        super.init(frame: .zero, textContainer: nil)
+        isEditable = false
+        isSelectable = true
+        isScrollEnabled = false
+        showsVerticalScrollIndicator = false
+        showsHorizontalScrollIndicator = false
+        backgroundColor = .clear
+        textContainerInset = .zero
+        textContainer.lineFragmentPadding = 0
+        linkTextAttributes = [:]
+        dataDetectorTypes = []
+        adjustsFontForContentSizeCategory = false
+        delegate = self
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func textView(
+        _ textView: UITextView,
+        primaryActionFor textItem: UITextItem,
+        defaultAction: UIAction
+    ) -> UIAction? {
+        guard case .link(let url) = textItem.content else { return defaultAction }
+        return UIAction { [weak self] _ in
+            Haptics.tick(0.4)
+            self?.onOpenURL?(url)
+        }
+    }
+}
+
+/// Native UIKit markdown table matching `ProseView.TableBlock` column planning, rich cell styling, horizontal scrolling, and copy menu.
 @MainActor
 final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private static let colGap: CGFloat = 20
+    private static let cellMeasurer = ChatTableCellTextView()
+
+    var onOpenURL: ((URL) -> Void)?
 
     private let scrollView = UIScrollView()
     private let contentHolder = UIView()
@@ -371,7 +412,7 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private var currentStyle: ChatListStyle?
     private var rowViews: [UIView] = []
     private var ruleViews: [UIView] = []
-    private var cellLabels: [[UILabel]] = []
+    private var cellViews: [[ChatTableCellTextView]] = []
     private var lastWidth: CGFloat = 0
 
     override init(frame: CGRect) {
@@ -429,31 +470,22 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         let widths = spreadWidths(slice.naturalWidths, availableRoom: maxWidth)
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
-        let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
-        let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
-        let lineSpacing = cellSize * 0.25
+        let minRowTextH = ceil(cellSize * 1.2)
 
-        func rowHeight(_ cells: [AttributedString], font: UIFont) -> CGFloat {
-            var tallest: CGFloat = ceil(font.lineHeight)
+        func rowHeight(_ cells: [NSAttributedString]) -> CGFloat {
+            var tallest: CGFloat = minRowTextH
             for (col, colW) in widths.enumerated() where col < cells.count {
-                let text = String(cells[col].characters)
-                let pStyle = NSMutableParagraphStyle()
-                pStyle.lineSpacing = lineSpacing
-                let rect = (text as NSString).boundingRect(
-                    with: CGSize(width: colW, height: .greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                    attributes: [.font: font, .paragraphStyle: pStyle],
-                    context: nil
-                )
-                tallest = max(tallest, ceil(rect.height))
+                cellMeasurer.attributedText = cells[col]
+                let fit = cellMeasurer.sizeThatFits(CGSize(width: colW, height: .greatestFiniteMagnitude))
+                tallest = max(tallest, ceil(fit.height))
             }
             return tallest + padV * 2
         }
 
-        var total = rowHeight(slice.prepared.header, font: headFont) + 0.75
-        for (idx, row) in slice.prepared.rows.enumerated() {
+        var total = rowHeight(slice.headerCells) + 0.75
+        for (idx, row) in slice.rowCells.enumerated() {
             if idx > 0 { total += 0.5 }
-            total += rowHeight(row, font: bodyFont)
+            total += rowHeight(row)
         }
         return ceil(total)
     }
@@ -469,6 +501,7 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     func resetForReuse() {
         currentSlice = nil
         lastWidth = 0
+        onOpenURL = nil
     }
 
     private func rebuildGrid(slice: ChatTableSlice, style: ChatListStyle) {
@@ -476,12 +509,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         ruleViews.forEach { $0.removeFromSuperview() }
         rowViews.removeAll(keepingCapacity: true)
         ruleViews.removeAll(keepingCapacity: true)
-        cellLabels.removeAll(keepingCapacity: true)
+        cellViews.removeAll(keepingCapacity: true)
 
-        let cellSize = style.tableCellSize
-        let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
-        let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
-        let allRows = [slice.prepared.header] + slice.prepared.rows
+        let allRows = [slice.headerCells] + slice.rowCells
         let colCount = max(1, slice.naturalWidths.count)
 
         for (rIdx, row) in allRows.enumerated() {
@@ -496,29 +526,17 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             contentHolder.addSubview(rowBg)
             rowViews.append(rowBg)
 
-            var labels: [UILabel] = []
+            var views: [ChatTableCellTextView] = []
             for col in 0..<colCount {
-                let label = UILabel()
-                label.numberOfLines = 0
-                let align = col < slice.table.aligns.count ? slice.table.aligns[col] : .leading
-                switch align {
-                case .center: label.textAlignment = .center
-                case .trailing: label.textAlignment = .right
-                default: label.textAlignment = .left
+                let tv = ChatTableCellTextView()
+                tv.attributedText = col < row.count ? row[col] : NSAttributedString()
+                tv.onOpenURL = { [weak self] url in
+                    self?.onOpenURL?(url)
                 }
-                let text = col < row.count ? String(row[col].characters) : ""
-                let pStyle = NSMutableParagraphStyle()
-                pStyle.lineSpacing = cellSize * 0.25
-                pStyle.alignment = label.textAlignment
-                label.attributedText = NSAttributedString(string: text, attributes: [
-                    .font: isHeader ? headFont : bodyFont,
-                    .foregroundColor: UIColor(Ink.ink),
-                    .paragraphStyle: pStyle,
-                ])
-                rowBg.addSubview(label)
-                labels.append(label)
+                rowBg.addSubview(tv)
+                views.append(tv)
             }
-            cellLabels.append(labels)
+            cellViews.append(views)
 
             if rIdx < allRows.count - 1 {
                 let rule = UIView()
@@ -556,13 +574,13 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
 
         var y: CGFloat = 0
         for (rIdx, rowBg) in rowViews.enumerated() {
-            let labels = cellLabels[rIdx]
+            let views = cellViews[rIdx]
             var maxCellH: CGFloat = ceil(cellSize * 1.2)
             var frames: [CGRect] = []
             var x = padH
             for (col, colW) in widths.enumerated() {
-                if col < labels.count {
-                    let fit = labels[col].sizeThatFits(CGSize(width: colW, height: .greatestFiniteMagnitude))
+                if col < views.count {
+                    let fit = views[col].sizeThatFits(CGSize(width: colW, height: .greatestFiniteMagnitude))
                     let h = ceil(fit.height)
                     maxCellH = max(maxCellH, h)
                     frames.append(CGRect(x: x, y: padV, width: colW, height: h))
@@ -573,8 +591,8 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             }
             let rowH = maxCellH + padV * 2
             rowBg.frame = CGRect(x: 0, y: y, width: renderW, height: rowH)
-            for (col, frame) in frames.enumerated() where col < labels.count {
-                labels[col].frame = frame
+            for (col, frame) in frames.enumerated() where col < views.count {
+                views[col].frame = frame
             }
             y += rowH
             if rIdx < ruleViews.count {
@@ -802,35 +820,57 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
     }
 }
 
-/// Hosts compact interactive SwiftUI blocks (`FileCard`, `ProsePicture`) inside UIKit cells while properly attaching
-/// the hosting controller so `.sheet` / `.fullScreenCover` work cleanly and dynamic height changes propagate.
+/// Top-level observable payload for reusable hosted SwiftUI block views (`FileCard`, `ProsePicture`).
+@MainActor @Observable
+final class ChatHostedBlockModel {
+    var key: String = ""
+    var content: AnyView = AnyView(EmptyView())
+}
+
+private struct ChatHostedBlockWrapper: View {
+    let model: ChatHostedBlockModel
+    let onHeightChanged: (String, CGFloat) -> Void
+
+    var body: some View {
+        model.content
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
+                let activeKey = model.key
+                if !activeKey.isEmpty, newHeight.isFinite, newHeight > 0 {
+                    onHeightChanged(activeKey, newHeight)
+                }
+            }
+    }
+}
+
+/// Hosts compact interactive SwiftUI blocks (`FileCard`, `ProsePicture`) inside UIKit cells while reusing a single
+/// `UIHostingController` across cell pooling and reporting dynamic height changes.
 @MainActor
 final class ChatHostedBlockView: UIView {
-    private var controller: UIHostingController<AnyView>?
+    private let model = ChatHostedBlockModel()
+    private var controller: UIHostingController<ChatHostedBlockWrapper>?
     private weak var attachedParent: UIViewController?
     private var currentKey = ""
+    private var onHeightChanged: ((String, CGFloat) -> Void)?
 
     func configure<V: View>(key: String, parent: UIViewController?, onHeightChanged: @escaping (CGFloat) -> Void, @ViewBuilder content: () -> V) {
-        let wrapped = AnyView(
-            content()
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
-                    if newHeight.isFinite, newHeight > 0 {
-                        onHeightChanged(newHeight)
-                    }
-                }
-        )
-        if let controller {
-            if currentKey != key || attachedParent !== parent {
-                attach(controller, to: parent)
+        self.onHeightChanged = { reportedKey, h in
+            if reportedKey == key {
+                onHeightChanged(h)
             }
-            currentKey = key
-            controller.rootView = wrapped
+        }
+        model.key = key
+        model.content = AnyView(content())
+        currentKey = key
+
+        if let controller {
+            attach(controller, to: parent)
         } else {
-            let vc = UIHostingController(rootView: wrapped)
+            let vc = UIHostingController(rootView: ChatHostedBlockWrapper(model: model) { [weak self] reportedKey, newHeight in
+                self?.onHeightChanged?(reportedKey, newHeight)
+            })
             vc.safeAreaRegions = []
             vc.view.backgroundColor = .clear
-            currentKey = key
             controller = vc
             addSubview(vc.view)
             attach(vc, to: parent)
@@ -838,7 +878,7 @@ final class ChatHostedBlockView: UIView {
         setNeedsLayout()
     }
 
-    private func attach(_ vc: UIHostingController<AnyView>, to parent: UIViewController?) {
+    private func attach(_ vc: UIHostingController<ChatHostedBlockWrapper>, to parent: UIViewController?) {
         if vc.parent !== parent {
             if vc.parent != nil {
                 vc.willMove(toParent: nil)
@@ -854,15 +894,9 @@ final class ChatHostedBlockView: UIView {
 
     func resetForReuse() {
         currentKey = ""
-        if let vc = controller {
-            if vc.parent != nil {
-                vc.willMove(toParent: nil)
-                vc.removeFromParent()
-            }
-            vc.view.removeFromSuperview()
-            controller = nil
-        }
-        attachedParent = nil
+        onHeightChanged = nil
+        model.key = ""
+        model.content = AnyView(EmptyView())
     }
 
     override func layoutSubviews() {

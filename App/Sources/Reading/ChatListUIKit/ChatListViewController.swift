@@ -34,12 +34,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var isPinnedToBottom = true
     private var isProgrammaticScroll = false
     private var isLoadingEarlierRequest = false
+    private var loadEarlierGeneration: UInt64 = 0
+    private var loadEarlierSawHostBusy = false
+    private var loadEarlierResetTask: Task<Void, Never>?
+    private var isInHostUpdate = false
+    private var isDismantled = false
+    private var pendingHostMetricFlush = false
     private var animatedScrollID: UInt64 = 0
     private var lastScrollOffsetY: CGFloat = 0
     private var dragStartOffsetY: CGFloat = 0
     private var lastAutoPrependTime: CFTimeInterval = 0
     private var lastKnownContentWidth: CGFloat = 0
     private var lastReportedFarFromEnd: Bool?
+    private var lastReportedNeedsEndCorrection: Bool?
     private var lastReportedVisibleIDs: [String] = []
     private var lastReportedReplyOwner: String?
     private var lastReportedReplyRect: CGRect = .null
@@ -47,6 +54,29 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
     private var userDefaultsObserver: NSObjectProtocol?
+
+    func performHostUpdate(_ work: () -> Void) {
+        let wasInHost = isInHostUpdate
+        isInHostUpdate = true
+        work()
+        isInHostUpdate = wasInHost
+    }
+
+    func prepareForDismantle() -> String? {
+        isDismantled = true
+        pendingHostMetricFlush = false
+        pendingDynamicRefresh = false
+        loadEarlierResetTask?.cancel()
+        loadEarlierResetTask = nil
+        if let observer = userDefaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            userDefaultsObserver = nil
+        }
+        let owner = lastReportedReplyOwner
+        lastReportedReplyOwner = nil
+        lastReportedReplyRect = .null
+        return owner
+    }
 
     init(actions: ChatListActions) {
         self.actions = actions
@@ -58,6 +88,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     deinit {
+        loadEarlierResetTask?.cancel()
         if let observer = userDefaultsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -243,20 +274,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         switch itemID {
         case .emptyStatus:
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatEmptyHostCell", for: indexPath)
-            cell.backgroundColor = .clear
-            cell.contentView.backgroundColor = .clear
-            let makeEmpty = makeEmptyView
-            cell.contentConfiguration = UIHostingConfiguration {
-                if let makeEmpty {
-                    makeEmpty()
-                        .padding(.horizontal, Ink.Space.page)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] h in
-                            self?.handleDynamicHostHeight(key: "empty", height: h)
-                        }
-                }
-            }
-            .margins(.all, 0)
-            .background(.clear)
+            configureEmptyCell(cell)
             return cell
 
         case .earlierButton:
@@ -265,7 +283,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 for: indexPath
             ) as? ChatEarlierButtonCell else { return UICollectionViewCell() }
             cell.configure { [weak self] in
-                self?.actions.onLoadEarlier()
+                self?.requestLoadEarlier()
             }
             return cell
 
@@ -424,12 +442,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 withReuseIdentifier: ChatTraceHostingCell.reuseID,
                 for: indexPath
             ) as? ChatTraceHostingCell else { return UICollectionViewCell() }
-            let heightKey = traceHeightKey(row)
             cell.configure(
                 row: row,
                 actions: actions,
-                onHeightChanged: { [weak self] h in
-                    self?.handleDynamicHostHeight(key: heightKey, height: h)
+                onHeightChanged: { [weak self] updatedRow, h in
+                    guard let self else { return }
+                    self.handleDynamicHostHeight(key: self.traceHeightKey(updatedRow), height: h)
                 }
             )
             return cell
@@ -445,7 +463,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
-    private var pendingSelectionTransfers: [String: (range: NSRange, substring: String)] = [:]
+    private func configureEmptyCell(_ cell: UICollectionViewCell) {
+        cell.backgroundColor = .clear
+        cell.contentView.backgroundColor = .clear
+        let makeEmpty = makeEmptyView
+        cell.contentConfiguration = UIHostingConfiguration {
+            if let makeEmpty {
+                makeEmpty()
+                    .padding(.horizontal, Ink.Space.page)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] h in
+                        self?.handleDynamicHostHeight(key: "empty", height: h)
+                    }
+            }
+        }
+        .margins(.all, 0)
+        .background(.clear)
+    }
+
+    private var pendingSelectionTransfers: [String: ChatProseSelectionSnapshot] = [:]
 
     private func makeAssistantCallbacks(lineID: String) -> ChatAssistantCell.Callbacks {
         ChatAssistantCell.Callbacks(
@@ -461,8 +496,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             onToggleCodeFold: { [weak self] sliceIndex in
                 self?.toggleCodeFold(for: lineID, sliceIndex: sliceIndex)
             },
-            onBlockHeightChanged: { [weak self] blockKey, h in
-                self?.handleDynamicBlockHeight(key: blockKey, height: h)
+            onBlockHeightChanged: { [weak self] ownerID, blockKey, h in
+                self?.handleDynamicBlockHeight(ownerID: ownerID, key: blockKey, height: h)
             },
             onSelectionChanged: { [weak self] uuid, active in
                 self?.handleSelectionChanged(uuid, active)
@@ -556,8 +591,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
-    private func handleDynamicBlockHeight(key: String, height: CGFloat) {
-        guard layoutCache.setBlockHeightOverride(height, key: key) else { return }
+    private func handleDynamicBlockHeight(ownerID: String, key: String, height: CGFloat) {
+        guard layoutCache.setBlockHeightOverride(height, key: key, ownerID: ownerID) else { return }
         scheduleDynamicLayoutRefresh()
     }
 
@@ -572,7 +607,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.pendingDynamicRefresh = false
-            guard self.collectionView != nil, self.collectionView.bounds.width > 0 else { return }
+            guard !self.isDismantled, self.collectionView != nil, self.collectionView.bounds.width > 0 else { return }
             self.preserveReadingAnchorDuring {
                 self.collectionView.collectionViewLayout.invalidateLayout()
                 self.collectionView.layoutIfNeeded()
@@ -581,12 +616,53 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    private func requestLoadEarlier() {
+        guard !isDismantled,
+              !isLoadingEarlierRequest,
+              selectingOwnerIDs.isEmpty,
+              (currentState?.canLoadEarlier ?? false) else { return }
+
+        isLoadingEarlierRequest = true
+        loadEarlierSawHostBusy = false
+        loadEarlierGeneration &+= 1
+        let generation = loadEarlierGeneration
+
+        if isPinnedToBottom {
+            isPinnedToBottom = false
+            actions.onFollowingChanged(false)
+        }
+
+        loadEarlierResetTask?.cancel()
+        loadEarlierResetTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            guard let self, !self.isDismantled, self.loadEarlierGeneration == generation else { return }
+            if self.isLoadingEarlierRequest && !self.loadEarlierSawHostBusy && !(self.currentState?.isLoadingEarlier ?? false) {
+                self.isLoadingEarlierRequest = false
+            }
+        }
+        actions.onLoadEarlier()
+    }
+
     // MARK: - State Synchronization
 
     func applyState(_ next: ChatListState) {
+        guard !isDismantled else { return }
         let prev = currentState
         currentState = next
-        isLoadingEarlierRequest = false
+
+        if isLoadingEarlierRequest {
+            if next.isLoadingEarlier {
+                loadEarlierSawHostBusy = true
+            }
+            let prepended = prev != nil && (next.rows.first?.line.id != prev?.rows.first?.line.id || next.rows.count > (prev?.rows.count ?? 0))
+            let hostFinished = loadEarlierSawHostBusy && !next.isLoadingEarlier
+            if prepended || !next.canLoadEarlier || hostFinished {
+                isLoadingEarlierRequest = false
+                loadEarlierSawHostBusy = false
+                loadEarlierResetTask?.cancel()
+                loadEarlierResetTask = nil
+            }
+        }
 
         guard isViewLoaded else { return }
 
@@ -630,7 +706,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             updateCollectionInsetsIfNeeded()
             collectionView.layoutIfNeeded()
             if !hasPerformedInitialScroll {
-                scrollToBottom(animated: false)
+                if isPinnedToBottom && !state.historyInView && selectingOwnerIDs.isEmpty {
+                    scrollToBottom(animated: false)
+                }
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
             }
@@ -644,14 +722,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         expandedLookbackIDs.removeAll()
         unfoldedCodeSlices.removeAll()
         pendingSelectionTransfers.removeAll()
+        isLoadingEarlierRequest = false
+        loadEarlierSawHostBusy = false
+        loadEarlierResetTask?.cancel()
+        loadEarlierResetTask = nil
         clearAllSelections()
         layoutCache.invalidateAll()
+        animatedScrollID &+= 1
         isPinnedToBottom = true
         hasPerformedInitialScroll = false
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
-        actions.petPerch.replyActionsOwner = nil
-        actions.petPerch.replyActions = .null
+        scheduleHostMetricsFlush()
 
         items = buildItemIDs(for: next)
         rebuildIndexMaps(rows: next.rows)
@@ -695,6 +777,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             guard indexPath.section < items.count else { continue }
             let itemID = items[indexPath.section]
             switch itemID {
+            case .emptyStatus:
+                if Self.emptyContentChanged(prev: prev, next: next),
+                   let cell = collectionView.cellForItem(at: indexPath) {
+                    configureEmptyCell(cell)
+                    layoutMayHaveChanged = true
+                }
+
             case .liveProse(let gen):
                 if prev.streamText != next.streamText,
                    let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
@@ -825,8 +914,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             pendingSelectionTransfers[targetBotID] = snap
         }
 
+        let shouldPinToBottom = isPinnedToBottom && !next.historyInView && selectingOwnerIDs.isEmpty
         let switchedHistoryView = prev.historyInView != next.historyInView
-        let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!isPinnedToBottom && !switchedHistoryView && pendingScrollRequest == nil)
+        let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!shouldPinToBottom && !switchedHistoryView && pendingScrollRequest == nil)
             ? topVisibleAnchor()
             : nil
 
@@ -837,6 +927,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         UIView.performWithoutAnimation {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
 
             var snapshot = NSDiffableDataSourceSnapshot<ChatListItemID, ChatListItemID>()
@@ -859,27 +950,48 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
             collectionView.layoutIfNeeded()
 
+            var snapped = false
             if let req = pendingScrollRequest,
                let targetIdx = itemIndexByID[.line(req.id)] {
                 pendingScrollRequest = nil
                 performScrollToRow(section: targetIdx, anchor: req.anchor, animated: false)
-            } else if isPinnedToBottom && !next.historyInView && selectingOwnerIDs.isEmpty {
+                snapped = true
+            } else if shouldPinToBottom {
                 scrollToBottom(animated: false)
+                snapped = true
             } else if let anchor,
                       let newIdx = itemIndexByID[anchor.id],
                       let afterAttrs = resolvedLayoutAttributes(at: IndexPath(item: 0, section: newIdx)) {
                 let targetY = afterAttrs.frame.minY - anchor.visualY
                 collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
                 collectionView.layoutIfNeeded()
+                snapped = true
             }
 
-            isProgrammaticScroll = false
+            if snapped {
+                animatedScrollID &+= 1
+                isProgrammaticScroll = false
+            } else {
+                isProgrammaticScroll = wasProgrammatic
+            }
             CATransaction.commit()
         }
 
         lastScrollOffsetY = collectionView.contentOffset.y
         updateCollectionInsetsIfNeeded()
         publishVisibleAndFooterMetrics()
+    }
+
+    private static func emptyContentChanged(prev: ChatListState, next: ChatListState) -> Bool {
+        guard prev.loaded == next.loaded,
+              prev.reach == next.reach,
+              prev.emptyPetState == next.emptyPetState,
+              prev.starters.count == next.starters.count else {
+            return true
+        }
+        return zip(prev.starters, next.starters).contains { lhs, rhs in
+            lhs.0 != rhs.0 || lhs.1 != rhs.1 || lhs.2 != rhs.2
+        }
     }
 
     private func buildItemIDs(for state: ChatListState) -> [ChatListItemID] {
@@ -973,9 +1085,40 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         for indexPath in collectionView.indexPathsForVisibleItems where indexPath.section < items.count {
             let itemID = items[indexPath.section]
             switch itemID {
+            case .emptyStatus:
+                if let cell = collectionView.cellForItem(at: indexPath) {
+                    configureEmptyCell(cell)
+                }
+            case .earlierButton:
+                (collectionView.cellForItem(at: indexPath) as? ChatEarlierButtonCell)?.refreshTypography()
             case .line(let id):
                 if let row = rowByID[id] {
                     updateVisibleRowCell(at: indexPath, newRow: row, width: width)
+                }
+            case .liveFolding:
+                (collectionView.cellForItem(at: indexPath) as? ChatLiveFoldingCell)?.refreshTypography()
+            case .liveThinking:
+                if let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveThinkingCell {
+                    cell.configure(text: currentState?.streamReasoning ?? "")
+                }
+            case .liveFailure:
+                if let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveFailureCell {
+                    cell.configure(error: currentState?.failureCardError ?? "", working: currentState?.working ?? false) { [weak self] in
+                        self?.actions.bridge.onRetry()
+                    }
+                }
+            case .queued(let qid):
+                if let qItem = currentState?.queuedItems.first(where: { $0.id == qid }),
+                   let cell = collectionView.cellForItem(at: indexPath) as? ChatQueuedCell {
+                    let entry = layoutCache.measureQueued(qItem, collectionWidth: width)
+                    cell.configure(
+                        item: qItem,
+                        entry: entry,
+                        working: currentState?.working ?? false,
+                        sendingBlocked: currentState?.sendingBlocked ?? false,
+                        onWithdraw: { [weak self] in self?.actions.bridge.onWithdrawQueued(qItem) },
+                        onSendNow: { [weak self] in self?.actions.bridge.onSendQueuedNow() }
+                    )
                 }
             case .liveProse(let gen):
                 if let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
@@ -1009,30 +1152,32 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         super.viewDidLayoutSubviews()
         guard collectionView.bounds.width > 0 else { return }
 
-        updateCollectionInsetsIfNeeded()
+        performHostUpdate {
+            updateCollectionInsetsIfNeeded()
 
-        if !hasPerformedInitialScroll {
-            premeasureItems(items)
-            collectionView.layoutIfNeeded()
-            if let req = pendingScrollRequest, let section = itemIndexByID[.line(req.id)] {
-                pendingScrollRequest = nil
-                performScrollToRow(section: section, anchor: req.anchor, animated: false)
-            } else {
-                scrollToBottom(animated: false)
-            }
-            hasPerformedInitialScroll = true
-            lastKnownContentWidth = collectionView.bounds.width
-            lastScrollOffsetY = collectionView.contentOffset.y
-            publishVisibleAndFooterMetrics()
-        } else if abs(collectionView.bounds.width - lastKnownContentWidth) > 0.5 {
-            lastKnownContentWidth = collectionView.bounds.width
-            layoutCache.invalidateAll()
-            preserveReadingAnchorDuring {
-                reconfigureAllVisibleCells()
-                collectionView.collectionViewLayout.invalidateLayout()
+            if !hasPerformedInitialScroll {
+                premeasureItems(items)
                 collectionView.layoutIfNeeded()
+                if let req = pendingScrollRequest, let section = itemIndexByID[.line(req.id)] {
+                    pendingScrollRequest = nil
+                    performScrollToRow(section: section, anchor: req.anchor, animated: false)
+                } else if isPinnedToBottom && !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty {
+                    scrollToBottom(animated: false)
+                }
+                hasPerformedInitialScroll = true
+                lastKnownContentWidth = collectionView.bounds.width
+                lastScrollOffsetY = collectionView.contentOffset.y
+                scheduleHostMetricsFlush()
+            } else if abs(collectionView.bounds.width - lastKnownContentWidth) > 0.5 {
+                lastKnownContentWidth = collectionView.bounds.width
+                layoutCache.invalidateAll()
+                preserveReadingAnchorDuring {
+                    reconfigureAllVisibleCells()
+                    collectionView.collectionViewLayout.invalidateLayout()
+                    collectionView.layoutIfNeeded()
+                }
+                scheduleHostMetricsFlush()
             }
-            publishVisibleAndFooterMetrics()
         }
     }
 
@@ -1070,11 +1215,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         lastScrollOffsetY = collectionView.contentOffset.y
         isProgrammaticScroll = wasProgrammatic
         if hasPerformedInitialScroll {
-            let far = (bottomOffsetY(for: collectionView) - collectionView.contentOffset.y) >= 80
-            if lastReportedFarFromEnd != far {
-                lastReportedFarFromEnd = far
-                actions.onFarFromEndChanged(far)
-            }
             publishVisibleAndFooterMetrics()
         }
     }
@@ -1084,6 +1224,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private func topVisibleAnchor() -> (id: ChatListItemID, visualY: CGFloat)? {
         let topEdge = collectionView.contentOffset.y + collectionView.contentInset.top
         let visiblePaths = collectionView.indexPathsForVisibleItems.sorted { $0.section < $1.section }
+
+        if !selectingOwnerIDs.isEmpty {
+            for path in visiblePaths where path.section < items.count {
+                let cell = collectionView.cellForItem(at: path)
+                let ownsSelection: Bool
+                if let assistant = cell as? ChatAssistantCell {
+                    ownsSelection = !assistant.activeSelectionOwnerIDs().isEmpty
+                } else if let user = cell as? ChatUserCell {
+                    ownsSelection = !user.activeSelectionOwnerIDs().isEmpty
+                } else {
+                    ownsSelection = false
+                }
+                if ownsSelection, let attrs = collectionView.layoutAttributesForItem(at: path) {
+                    return (items[path.section], attrs.frame.minY - collectionView.contentOffset.y)
+                }
+            }
+        }
+
         let linePaths = visiblePaths.filter { path in
             guard path.section < items.count else { return false }
             if case .line = items[path.section] { return true }
@@ -1241,7 +1399,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
             collectionView.contentOffset = CGPoint(x: 0, y: targetY)
-            lastScrollOffsetY = targetY
+            collectionView.layoutIfNeeded()
+            lastScrollOffsetY = collectionView.contentOffset.y
             isProgrammaticScroll = wasProgrammatic
             publishVisibleAndFooterMetrics()
         }
@@ -1277,7 +1436,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
             collectionView.contentOffset = CGPoint(x: 0, y: targetY)
-            lastScrollOffsetY = targetY
+            collectionView.layoutIfNeeded()
+            lastScrollOffsetY = collectionView.contentOffset.y
             isProgrammaticScroll = wasProgrammatic
             publishVisibleAndFooterMetrics()
         }
@@ -1293,8 +1453,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         let active = Array(selectingOwnerIDs)
         selectingOwnerIDs.removeAll()
-        for uuid in active {
-            actions.onSelectionChanged(uuid, false)
+        guard !active.isEmpty else { return }
+        if isInHostUpdate {
+            Task { @MainActor [weak self] in
+                guard let self, !self.isDismantled else { return }
+                for uuid in active {
+                    self.actions.onSelectionChanged(uuid, false)
+                }
+            }
+        } else {
+            for uuid in active {
+                actions.onSelectionChanged(uuid, false)
+            }
         }
     }
 
@@ -1365,22 +1535,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard hasPerformedInitialScroll else { return }
+        guard hasPerformedInitialScroll, !isDismantled else { return }
 
         let currentY = scrollView.contentOffset.y
         let prevY = lastScrollOffsetY
         lastScrollOffsetY = currentY
 
         let bottomY = bottomOffsetY(for: scrollView)
-        let distanceFromBottom = bottomY - currentY
-        let far = distanceFromBottom >= 80
-        if lastReportedFarFromEnd != far {
-            lastReportedFarFromEnd = far
-            actions.onFarFromEndChanged(far)
-        }
-
-        if !isProgrammaticScroll {
-            let userMoving = scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+        let isUserTouchScrolling = scrollView.isDragging || scrollView.isDecelerating
+        if !isProgrammaticScroll && !isInHostUpdate {
+            let userMoving = scrollView.isTracking || isUserTouchScrolling
             let movedUp = currentY < prevY - 0.5 || (scrollView.isDragging && currentY < dragStartOffsetY - 0.5)
             if userMoving && movedUp && currentY < bottomY - 2 && isPinnedToBottom {
                 isPinnedToBottom = false
@@ -1391,6 +1555,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let distanceFromTop = currentY + scrollView.contentInset.top
         let movingUp = currentY < prevY
         if !isProgrammaticScroll,
+           !isInHostUpdate,
+           isUserTouchScrolling,
+           !isPinnedToBottom,
            !isLoadingEarlierRequest,
            selectingOwnerIDs.isEmpty,
            (currentState?.canLoadEarlier ?? false),
@@ -1398,8 +1565,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
            distanceFromTop < 240,
            CACurrentMediaTime() - lastAutoPrependTime > 0.35 {
             lastAutoPrependTime = CACurrentMediaTime()
-            isLoadingEarlierRequest = true
-            actions.onLoadEarlier()
+            requestLoadEarlier()
         }
 
         publishVisibleAndFooterMetrics()
@@ -1420,8 +1586,28 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    private func scheduleHostMetricsFlush() {
+        guard !pendingHostMetricFlush, !isDismantled else { return }
+        pendingHostMetricFlush = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.pendingHostMetricFlush = false
+            guard !self.isDismantled, self.isViewLoaded, self.collectionView != nil else { return }
+            self.publishVisibleAndFooterMetricsNow()
+        }
+    }
+
     private func publishVisibleAndFooterMetrics() {
-        guard collectionView != nil else { return }
+        guard !isDismantled, collectionView != nil else { return }
+        if isInHostUpdate {
+            scheduleHostMetricsFlush()
+            return
+        }
+        publishVisibleAndFooterMetricsNow()
+    }
+
+    private func publishVisibleAndFooterMetricsNow() {
+        guard !isDismantled, collectionView != nil else { return }
         let visiblePaths = collectionView.indexPathsForVisibleItems.sorted { $0.section < $1.section }
         var ids: [String] = []
         ids.reserveCapacity(visiblePaths.count)
@@ -1438,6 +1624,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 latestOwner = owner
                 latestRect = cell.footerActionsRectInWindow()
             }
+        }
+
+        let distanceFromBottom = bottomOffsetY(for: collectionView) - collectionView.contentOffset.y
+        let far = distanceFromBottom >= 80
+        if lastReportedFarFromEnd != far {
+            lastReportedFarFromEnd = far
+            actions.onFarFromEndChanged(far)
+        }
+
+        let needsEndCorrection = abs(distanceFromBottom) > 2
+        if lastReportedNeedsEndCorrection != needsEndCorrection {
+            lastReportedNeedsEndCorrection = needsEndCorrection
+            actions.onNeedsEndCorrectionChanged(needsEndCorrection)
         }
 
         if ids != lastReportedVisibleIDs {

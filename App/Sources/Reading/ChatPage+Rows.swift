@@ -377,6 +377,7 @@ extension ChatPage {
             heads: openers,
             historyPage: historyPage,
             shownCount: shownCount,
+            isLoadingEarlier: earlierTask != nil,
             lit: finding ? currentHit : nil,
             editing: editing,
             speakingText: speakingText,

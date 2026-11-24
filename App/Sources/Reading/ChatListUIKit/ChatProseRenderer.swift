@@ -37,6 +37,8 @@ struct ChatCodeSlice {
 struct ChatTableSlice {
     let table: Prose.Table
     let prepared: PreparsedTableModel
+    let headerCells: [NSAttributedString]
+    let rowCells: [[NSAttributedString]]
     let naturalWidths: [CGFloat]
 }
 
@@ -196,7 +198,14 @@ final class ChatProseBuilder {
         var sealedBlocks: [Prose.Block]
     }
 
+    private struct RichTextSliceKey: Hashable {
+        let styleKey: String
+        let blockHash: Int
+        let keys: [String]
+    }
+
     private var blockCache: [BlockCacheKey: BlockCacheEntry] = [:]
+    private var richTextSliceCache: [RichTextSliceKey: ChatRenderedProse] = [:]
     private var streamScanners: [String: StreamScannerEntry] = [:]
     private var nextToken: UInt64 = 1
 
@@ -212,6 +221,7 @@ final class ChatProseBuilder {
 
     func clearCaches() {
         blockCache.removeAll(keepingCapacity: true)
+        richTextSliceCache.removeAll(keepingCapacity: true)
         streamScanners.removeAll(keepingCapacity: true)
     }
 
@@ -494,25 +504,88 @@ final class ChatProseBuilder {
     private func buildTableSlice(_ table: Prose.Table, style: ChatListStyle) -> ChatTableSlice {
         let prepared = TablePreparer.prepare(table)
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let cellSize = style.tableCellSize
-        let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
-        let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
-        let widths: [CGFloat] = (0..<columns).map { column in
-            var natural = measureCellWidth(column < table.header.count ? table.header[column] : "", font: headFont)
-            for row in table.rows where column < row.count {
-                natural = max(natural, measureCellWidth(row[column], font: bodyFont))
-            }
-            return max(28, ceil(natural) + 4)
+        let headerCells: [NSAttributedString] = (0..<columns).map { column in
+            let align = column < table.aligns.count ? table.aligns[column] : .leading
+            let source = column < prepared.header.count ? prepared.header[column] : AttributedString("")
+            return buildTableCellAttributed(source, isHeader: true, align: align, style: style)
         }
-        return ChatTableSlice(table: table, prepared: prepared, naturalWidths: widths)
+        let rowCells: [[NSAttributedString]] = prepared.rows.map { row in
+            (0..<columns).map { column in
+                let align = column < table.aligns.count ? table.aligns[column] : .leading
+                let source = column < row.count ? row[column] : AttributedString("")
+                return buildTableCellAttributed(source, isHeader: false, align: align, style: style)
+            }
+        }
+        let widths: [CGFloat] = (0..<columns).map { column in
+            var natural: CGFloat = column < headerCells.count ? ceil(headerCells[column].size().width) : 0
+            for row in rowCells where column < row.count {
+                natural = max(natural, ceil(row[column].size().width))
+            }
+            return max(28, natural + 4)
+        }
+        return ChatTableSlice(
+            table: table,
+            prepared: prepared,
+            headerCells: headerCells,
+            rowCells: rowCells,
+            naturalWidths: widths
+        )
     }
 
-    private func measureCellWidth(_ cell: String, font: UIFont) -> CGFloat {
-        let plain = cell
-            .replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "~~", with: "")
-        return (plain as NSString).size(withAttributes: [.font: font]).width
+    private func buildTableCellAttributed(
+        _ source: AttributedString,
+        isHeader: Bool,
+        align: HorizontalAlignment,
+        style: ChatListStyle
+    ) -> NSAttributedString {
+        let cellSize = style.tableCellSize
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.lineSpacing = cellSize * 0.25
+        switch align {
+        case .center: pStyle.alignment = .center
+        case .trailing: pStyle.alignment = .right
+        default: pStyle.alignment = .left
+        }
+
+        let ink = UIColor(Ink.ink)
+        let out = NSMutableAttributedString()
+        for run in source.runs {
+            let chunk = String(source[run.range].characters)
+            let intent = run.inlinePresentationIntent ?? []
+            let isBold = isHeader || intent.contains(.stronglyEmphasized)
+            let isItalic = intent.contains(.emphasized)
+            let isCode = intent.contains(.code)
+            let isStrike = intent.contains(.strikethrough)
+
+            var font = Ink.uiFace(cellSize, bold: isBold, face: style.face)
+            if isItalic,
+               let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                font = UIFont(descriptor: slanted, size: cellSize)
+            }
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: ink,
+                .paragraphStyle: pStyle,
+            ]
+            if style.face == .wenkai, isBold {
+                attrs[.strokeWidth] = -3.0
+                attrs[.strokeColor] = ink
+            }
+            if isCode {
+                attrs[.font] = Ink.uiMono(max(CGFloat(12), cellSize - 2), preference: style.code)
+                attrs[.foregroundColor] = UIColor(Ink.accent)
+            }
+            if isStrike {
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            if let link = run.link {
+                attrs[.link] = link
+                attrs[.foregroundColor] = UIColor(Ink.accent)
+                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            out.append(NSAttributedString(string: chunk, attributes: attrs))
+        }
+        return out
     }
 
     private func buildRichTextSlice(
@@ -521,6 +594,20 @@ final class ChatProseBuilder {
         isStreaming: Bool,
         fadeTail: Bool
     ) -> ChatRenderedProse {
+        let sliceCacheKey: RichTextSliceKey?
+        if !isStreaming && !fadeTail {
+            let keys = blocks.map { cacheKeyString(for: $0) }
+            var hasher = Hasher()
+            for key in keys { hasher.combine(key) }
+            let candidate = RichTextSliceKey(styleKey: style.styleKey, blockHash: hasher.finalize(), keys: keys)
+            if let hit = richTextSliceCache[candidate] {
+                return hit
+            }
+            sliceCacheKey = candidate
+        } else {
+            sliceCacheKey = nil
+        }
+
         let out = NSMutableAttributedString()
         var inlineCodeRanges: [NSRange] = []
         var quoteBlocks: [NSRange] = []
@@ -580,7 +667,7 @@ final class ChatProseBuilder {
 
         let token = nextToken
         nextToken &+= 1
-        return ChatRenderedProse(
+        let rendered = ChatRenderedProse(
             attributed: out,
             decorations: ChatBlockDecorations(
                 inlineCodeRanges: inlineCodeRanges,
@@ -591,6 +678,13 @@ final class ChatProseBuilder {
             bottomInset: bottomInset,
             renderToken: token
         )
+        if let sliceCacheKey {
+            if richTextSliceCache.count > 1200 {
+                richTextSliceCache.removeAll(keepingCapacity: true)
+            }
+            richTextSliceCache[sliceCacheKey] = rendered
+        }
+        return rendered
     }
 
     private func applyStreamingTailFade(to attributed: NSMutableAttributedString) {
@@ -1031,7 +1125,7 @@ final class ChatLayoutCache {
     private var userCache: [UserKey: UserLayoutEntry] = [:]
     private var blockHeightOverrides: [String: CGFloat] = [:]
     private var hostingHeights: [String: CGFloat] = [:]
-    private var overrideVersion: UInt64 = 1
+    private var overrideVersionsByOwner: [String: UInt64] = [:]
 
     private let textMeasurer: UITextView = {
         let tv = UITextView(usingTextLayoutManager: true)
@@ -1068,13 +1162,14 @@ final class ChatLayoutCache {
         userCache = userCache.filter { $0.key.id != id }
     }
 
-    func setBlockHeightOverride(_ height: CGFloat, key: String) -> Bool {
+    func setBlockHeightOverride(_ height: CGFloat, key: String, ownerID: String) -> Bool {
         let rounded = ceil(height)
         if let old = blockHeightOverrides[key], abs(old - rounded) <= 0.5 {
             return false
         }
         blockHeightOverrides[key] = rounded
-        overrideVersion &+= 1
+        overrideVersionsByOwner[ownerID, default: 1] &+= 1
+        assistantStreamingCache.removeValue(forKey: ownerID)
         return true
     }
 
@@ -1213,7 +1308,7 @@ final class ChatLayoutCache {
             expandedPulse: expandedPulse,
             expandedLookback: expandedLookback,
             unfoldedSlices: sortedUnfolded,
-            overrideVersion: overrideVersion
+            overrideVersion: overrideVersionsByOwner[row.line.id] ?? 1
         )
 
         if isFresh {
