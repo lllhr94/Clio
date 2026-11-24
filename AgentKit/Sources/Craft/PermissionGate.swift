@@ -318,6 +318,7 @@ public struct LiveGatedTool: AgentTool {
     }
 
     public var spec: ToolSpec { inner.spec }
+    public var isReadOnlySafe: Bool { inner.isReadOnlySafe }
     public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {
@@ -371,6 +372,9 @@ public struct LiveGatedTool: AgentTool {
             }
             guard let ask = evaluate(for: arguments, using: current) else {
                 return try await inner.run(arguments)
+            }
+            if ToolInvocation.isConcurrentBatch {
+                return ToolOutput("权限已收紧为需要确认，请在非并行步骤单独确认后再试。", isError: true)
             }
             guard let reconfirm else {
                 return ToolOutput("权限已收紧为需要确认，本次没有继续执行。", isError: true)

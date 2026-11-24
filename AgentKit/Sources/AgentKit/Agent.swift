@@ -26,6 +26,8 @@ public struct ApprovalAsk: Equatable, Sendable {
 /// so single-use approval receipts bind strictly to one call and never leak across calls or chats.
 public enum ToolInvocation {
     @TaskLocal public static var currentID: String?
+    /// True only while executing inside a parallel read-only batch (`Agent.performConcurrentBatch`).
+    @TaskLocal public static var isConcurrentBatch = false
 }
 
 public struct ToolOutput: Equatable, Sendable {
@@ -174,6 +176,18 @@ public struct Agent: Sendable {
         let arguments: String
     }
 
+    struct CanonicalOutcome: Equatable, Sendable {
+        let isError: Bool
+        let text: String
+        let detail: String?
+        let imageCount: Int
+    }
+
+    struct CanonicalStepKey: Equatable, Sendable {
+        let calls: [CanonicalCall]
+        let outcomes: [CanonicalOutcome]
+    }
+
     private struct PreparedCall: Sendable {
         let index: Int
         let call: ToolCall
@@ -188,8 +202,8 @@ public struct Agent: Sendable {
         let specs = tools.map { Self.titled($0.spec) }
         var thinking = self.thinking
         var uncertain: Set<String> = []
-        var lastBatchSignature: [CanonicalCall]?
-        var consecutiveBatchRepeats = 0
+        var lastStepKey: CanonicalStepKey?
+        var consecutiveStepRepeats = 0
         for step in 0..<maxSteps {
             try Task.checkCancellation()
             if step > 0, let inbox {
@@ -201,8 +215,8 @@ public struct Agent: Sendable {
                     heardAny = true
                 }
                 if heardAny {
-                    lastBatchSignature = nil
-                    consecutiveBatchRepeats = 0
+                    lastStepKey = nil
+                    consecutiveStepRepeats = 0
                 }
             }
             var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
@@ -330,15 +344,18 @@ public struct Agent: Sendable {
                 if Task.isCancelled { throw CancellationError() }
                 return
             }
-            try await executeToolCalls(made, messages: &messages, uncertain: &uncertain, emit: emit)
-            let stepSignature = made.map { Self.canonicalCallSignature($0) }
-            if stepSignature == lastBatchSignature {
-                consecutiveBatchRepeats += 1
+            let outcomes = try await executeToolCalls(made, messages: &messages, uncertain: &uncertain, emit: emit)
+            let stepKey = CanonicalStepKey(
+                calls: made.map { Self.canonicalCallSignature($0) },
+                outcomes: outcomes
+            )
+            if stepKey == lastStepKey {
+                consecutiveStepRepeats += 1
             } else {
-                lastBatchSignature = stepSignature
-                consecutiveBatchRepeats = 1
+                lastStepKey = stepKey
+                consecutiveStepRepeats = 1
             }
-            if consecutiveBatchRepeats >= 3 {
+            if consecutiveStepRepeats >= 3 {
                 await emit(.message(.assistant(Self.repeatedLoopStopMessage)))
                 return
             }
@@ -353,6 +370,15 @@ public struct Agent: Sendable {
             return CanonicalCall(name: call.name, arguments: "json:" + untitledArguments.compact)
         }
         return CanonicalCall(name: call.name, arguments: "raw:" + source)
+    }
+
+    static func canonicalOutcome(_ message: Message) -> CanonicalOutcome {
+        CanonicalOutcome(
+            isError: message.isError,
+            text: message.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            detail: message.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+            imageCount: message.images.count
+        )
     }
 
     private func prepareConcurrentCandidate(_ call: ToolCall, at index: Int, uncertain: Set<String>) -> PreparedCall? {
@@ -379,7 +405,9 @@ public struct Agent: Sendable {
         messages: inout [Message],
         uncertain: inout Set<String>,
         emit: @escaping @Sendable (AgentEvent) async -> Void
-    ) async throws {
+    ) async throws -> [CanonicalOutcome] {
+        var outcomes: [CanonicalOutcome] = []
+        outcomes.reserveCapacity(made.count)
         var cursor = 0
         while cursor < made.count {
             try Task.checkCancellation()
@@ -398,6 +426,7 @@ public struct Agent: Sendable {
                     }
                     messages.append(result)
                     await emit(.message(result))
+                    outcomes.append(Self.canonicalOutcome(result))
                 }
                 try Task.checkCancellation()
                 cursor = lookahead
@@ -415,10 +444,12 @@ public struct Agent: Sendable {
                 }
                 messages.append(result)
                 await emit(.message(result))
+                outcomes.append(Self.canonicalOutcome(result))
                 try Task.checkCancellation()
                 cursor += 1
             }
         }
+        return outcomes
     }
 
     private func performConcurrentBatch(
@@ -514,21 +545,25 @@ public struct Agent: Sendable {
         let (arguments, title) = Self.untitled(given)
         let invocationID = "\(call.id)-\(UUID().uuidString)"
         return await ToolInvocation.$currentID.withValue(invocationID) {
-            await executeTool(call: call, tool: tool, arguments: arguments, title: title, allowApproval: true, emit: emit)
+            await ToolInvocation.$isConcurrentBatch.withValue(false) {
+                await executeTool(call: call, tool: tool, arguments: arguments, title: title, allowApproval: true, emit: emit)
+            }
         }
     }
 
     private func performPrepared(_ prepared: PreparedCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
         let invocationID = "\(prepared.call.id)-\(UUID().uuidString)"
         return await ToolInvocation.$currentID.withValue(invocationID) {
-            await executeTool(
-                call: prepared.call,
-                tool: prepared.tool,
-                arguments: prepared.arguments,
-                title: prepared.title,
-                allowApproval: false,
-                emit: emit
-            )
+            await ToolInvocation.$isConcurrentBatch.withValue(true) {
+                await executeTool(
+                    call: prepared.call,
+                    tool: prepared.tool,
+                    arguments: prepared.arguments,
+                    title: prepared.title,
+                    allowApproval: false,
+                    emit: emit
+                )
+            }
         }
     }
 

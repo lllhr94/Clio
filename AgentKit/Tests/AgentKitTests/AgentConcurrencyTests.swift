@@ -748,4 +748,275 @@ final class AgentConcurrencyTests: XCTestCase {
         let inboxMessages = await inboxRecorder.messages
         XCTAssertEqual(inboxMessages.last, .assistant("按新要求完成"))
     }
+
+    func testToolInvocationIsConcurrentBatchFlagInConcurrentVsSerialExecution() async throws {
+        XCTAssertFalse(ToolInvocation.isConcurrentBatch)
+
+        actor BatchFlagRecorder {
+            var observed: [String: Bool] = [:]
+            func record(_ id: String, isConcurrent: Bool) {
+                observed[id] = isConcurrent
+            }
+        }
+
+        struct FlagReadTool: AgentTool {
+            let recorder: BatchFlagRecorder
+            let tracker: TimelineTracker
+            var spec: ToolSpec { ToolSpec(name: "flag_read", description: "", parameters: ["type": "object"]) }
+            var isReadOnlySafe: Bool { true }
+            func label(for arguments: JSONValue) -> String { "标志读" }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput {
+                let id = arguments["id"]?.string ?? ""
+                await recorder.record(id, isConcurrent: ToolInvocation.isConcurrentBatch)
+                await tracker.begin(id)
+                try? await Task.sleep(for: .milliseconds(10))
+                await tracker.end(id)
+                return ToolOutput("ok:\(id)")
+            }
+        }
+
+        struct FlagWriteTool: AgentTool {
+            let recorder: BatchFlagRecorder
+            var spec: ToolSpec { ToolSpec(name: "flag_write", description: "", parameters: ["type": "object"]) }
+            func label(for arguments: JSONValue) -> String { "标志写" }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput {
+                let id = arguments["id"]?.string ?? ""
+                await recorder.record(id, isConcurrent: ToolInvocation.isConcurrentBatch)
+                return ToolOutput("wrote:\(id)")
+            }
+        }
+
+        let flagRecorder = BatchFlagRecorder()
+        let tracker = TimelineTracker()
+        let readTool = FlagReadTool(recorder: flagRecorder, tracker: tracker)
+        let writeTool = FlagWriteTool(recorder: flagRecorder)
+
+        let turn1 = makeCalls([
+            ("c0", "flag_read", #"{"id":"r1"}"#),
+            ("c1", "flag_read", #"{"id":"r2"}"#),
+            ("c2", "flag_write", #"{"id":"w1"}"#),
+            ("c3", "flag_read", #"{"id":"r3"}"#),
+            ("c4", "flag_read", #"{"id":"r4"}"#),
+        ])
+        let turn2 = makeCalls([
+            ("c5", "flag_read", #"{"id":"solo"}"#),
+        ])
+        let provider = ScriptedConcurrencyProvider([turn1, turn2, [.text("ok")]])
+        let agent = Agent(provider: provider, model: "m", system: "", tools: [readTool, writeTool])
+        try await agent.run(history: [.user("检查并发标记")]) { _ in }
+
+        let observed = await flagRecorder.observed
+        XCTAssertEqual(observed["r1"], true)
+        XCTAssertEqual(observed["r2"], true)
+        XCTAssertEqual(observed["w1"], false)
+        XCTAssertEqual(observed["r3"], true)
+        XCTAssertEqual(observed["r4"], true)
+        XCTAssertEqual(observed["solo"], false)
+    }
+
+    func testConcurrentBatchTaintGateAndMidBatchTightenRefusalSemantics() async throws {
+        // Mirrors TaintGuard (`inner.isReadOnlySafe && !isExternalRead`) + LiveGatedTool (`ToolInvocation.isConcurrentBatch` guard).
+        final class LivePolicyBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var askRequired = false
+            private var reconfirmCalls = 0
+            private var innerRuns = 0
+
+            func setAskRequired(_ value: Bool) {
+                lock.lock()
+                askRequired = value
+                lock.unlock()
+            }
+
+            func isAskRequired() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return askRequired
+            }
+
+            func noteReconfirm() {
+                lock.lock()
+                reconfirmCalls += 1
+                lock.unlock()
+            }
+
+            func noteRun() {
+                lock.lock()
+                innerRuns += 1
+                lock.unlock()
+            }
+
+            func counts() -> (reconfirms: Int, runs: Int) {
+                lock.lock()
+                defer { lock.unlock() }
+                return (reconfirms: reconfirmCalls, runs: innerRuns)
+            }
+        }
+
+        struct MockTaintAndGatedTool: AgentTool {
+            let name: String
+            let isExternalRead: Bool
+            let tracker: TimelineTracker
+            let policy: LivePolicyBox
+            let innerReadOnly: Bool
+
+            var spec: ToolSpec { ToolSpec(name: name, description: "", parameters: ["type": "object"]) }
+            var isReadOnlySafe: Bool { innerReadOnly && !isExternalRead }
+            func label(for arguments: JSONValue) -> String { name }
+            func approval(for arguments: JSONValue) -> ApprovalAsk? {
+                policy.isAskRequired() ? ApprovalAsk(title: "确认", reason: name) : nil
+            }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput {
+                let id = arguments["id"]?.string ?? ""
+                await tracker.begin(id)
+                // Simulate permission tightening right before execution while inside a parallel batch.
+                if arguments["tighten"]?.bool == true {
+                    policy.setAskRequired(true)
+                    _ = await tracker.waitForInFlight(2)
+                }
+                if policy.isAskRequired() {
+                    if ToolInvocation.isConcurrentBatch {
+                        await tracker.end(id)
+                        return ToolOutput("权限已收紧为需要确认，请在非并行步骤单独确认后再试。", isError: true)
+                    }
+                    policy.noteReconfirm()
+                }
+                try? await Task.sleep(for: .milliseconds(15))
+                policy.noteRun()
+                await tracker.end(id)
+                return ToolOutput("ok:\(id)")
+            }
+        }
+
+        // 1. External read tool (`!Taint.reads` gate) must remain serial (`maxInFlight == 1`).
+        let extTracker = TimelineTracker()
+        let extPolicy = LivePolicyBox()
+        let extTool = MockTaintAndGatedTool(
+            name: "web_read_mock",
+            isExternalRead: true,
+            tracker: extTracker,
+            policy: extPolicy,
+            innerReadOnly: true
+        )
+        XCTAssertFalse(extTool.isReadOnlySafe)
+        let extProvider = ScriptedConcurrencyProvider([
+            makeCalls([
+                ("e0", "web_read_mock", #"{"id":"0"}"#),
+                ("e1", "web_read_mock", #"{"id":"1"}"#),
+            ]),
+            [.text("done")],
+        ])
+        try await Agent(provider: extProvider, model: "m", system: "", tools: [extTool]).run(history: [.user("外读")]) { _ in }
+        let extMax = await extTracker.snapshot().maxInFlight
+        XCTAssertEqual(extMax, 1)
+
+        // 2. Non-tainting read tool runs concurrently, and tightening mid-batch refuses reconfirm without prompting.
+        let gateTracker = TimelineTracker()
+        let gatePolicy = LivePolicyBox()
+        let gatedRead = MockTaintAndGatedTool(
+            name: "safe_read_mock",
+            isExternalRead: false,
+            tracker: gateTracker,
+            policy: gatePolicy,
+            innerReadOnly: true
+        )
+        XCTAssertTrue(gatedRead.isReadOnlySafe)
+
+        let tightenTurn = makeCalls([
+            ("g0", "safe_read_mock", #"{"id":"0","tighten":true}"#),
+            ("g1", "safe_read_mock", #"{"id":"1","tighten":true}"#),
+        ])
+        let serialRetryTurn = makeCalls([
+            ("g2", "safe_read_mock", #"{"id":"2"}"#),
+        ])
+        let gateProvider = ScriptedConcurrencyProvider([tightenTurn, serialRetryTurn, [.text("好了")]])
+        let gateRecorder = EventRecorder()
+        let gateAgent = Agent(provider: gateProvider, model: "m", system: "", tools: [gatedRead]) { _, _ in true }
+        try await gateAgent.run(history: [.user("收紧")]) { await gateRecorder.add($0) }
+
+        let results = await gateRecorder.toolResults
+        XCTAssertEqual(results.count, 3)
+        XCTAssertTrue(results[0].isError)
+        XCTAssertTrue(results[1].isError)
+        XCTAssertTrue(results[0].text.contains("请在非并行步骤单独确认后再试"))
+        XCTAssertTrue(results[1].text.contains("请在非并行步骤单独确认后再试"))
+        XCTAssertFalse(results[2].isError)
+        XCTAssertEqual(results[2].text, "ok:2")
+        // Serial turn g2 goes through Agent's own `approval(for:)` barrier (non-nil) so `LiveGatedTool` sees `isConcurrentBatch == false`
+        // and never runs concurrent reconfirm inside the parallel batch.
+        let counts = gatePolicy.counts()
+        XCTAssertEqual(counts.reconfirms, 1)
+        XCTAssertEqual(counts.runs, 1)
+    }
+
+    func testCircuitBreakerAllowsPollingWithAdvancingOutputsAndTripsWhenStalled() async throws {
+        final class PollingState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var outputs: [ToolOutput]
+
+            init(_ outputs: [ToolOutput]) {
+                self.outputs = outputs
+            }
+
+            func next() -> ToolOutput {
+                lock.lock()
+                defer { lock.unlock() }
+                if outputs.isEmpty { return ToolOutput("done") }
+                return outputs.removeFirst()
+            }
+        }
+
+        struct PollTool: AgentTool {
+            let state: PollingState
+            var spec: ToolSpec { ToolSpec(name: "poll_job", description: "", parameters: ["type": "object"]) }
+            func label(for arguments: JSONValue) -> String { "查进度" }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput {
+                state.next()
+            }
+        }
+
+        // 1. Identical arguments across 4 turns with advancing text / detail / error / image count must NOT trip.
+        let img = ImagePart(mediaType: "image/png", data: Data([1, 2, 3]))
+        let advancing = PollingState([
+            ToolOutput("还在跑：10%"),
+            ToolOutput("还在跑：50%"),
+            ToolOutput("还在跑：50%", detail: "新增细节"),
+            ToolOutput("还在跑：50%", isError: true, detail: "新增细节"),
+            ToolOutput("还在跑：50%", isError: true, images: [img], detail: "新增细节"),
+            ToolOutput("跑完了：100%"),
+        ])
+        let pollCall = makeCalls([("p", "poll_job", #"{"job":"abc","step_title":"查任务"}"#)])
+        let advancingProvider = ScriptedConcurrencyProvider([
+            pollCall, pollCall, pollCall, pollCall, pollCall, pollCall, [.text("任务已完成")]
+        ])
+        let advancingRecorder = EventRecorder()
+        var advancingAgent = Agent(provider: advancingProvider, model: "m", system: "", tools: [PollTool(state: advancing)])
+        advancingAgent.maxSteps = 10
+        try await advancingAgent.run(history: [.user("轮询")]) { await advancingRecorder.add($0) }
+
+        XCTAssertEqual(advancingProvider.requests.count, 7)
+        let advancingMessages = await advancingRecorder.messages
+        XCTAssertEqual(advancingMessages.last, .assistant("任务已完成"))
+
+        // 2. Advancing once then stalling with identical (args + outcome) for 3 consecutive turns MUST trip at the 3rd stalled turn.
+        let stalled = PollingState([
+            ToolOutput("还在跑：10%"),
+            ToolOutput("还在跑：20%"),
+            ToolOutput("还在跑：20%"),
+            ToolOutput("还在跑：20%"),
+            ToolOutput("还在跑：20%"),
+        ])
+        let stalledProvider = ScriptedConcurrencyProvider([
+            pollCall, pollCall, pollCall, pollCall, pollCall, pollCall
+        ])
+        let stalledRecorder = EventRecorder()
+        var stalledAgent = Agent(provider: stalledProvider, model: "m", system: "", tools: [PollTool(state: stalled)])
+        stalledAgent.maxSteps = 10
+        try await stalledAgent.run(history: [.user("停滞轮询")]) { await stalledRecorder.add($0) }
+
+        // Turn 0 -> "10%" (streak 1), Turn 1 -> "20%" (streak 1), Turn 2 -> "20%" (streak 2), Turn 3 -> "20%" (streak 3 -> trip!).
+        XCTAssertEqual(stalledProvider.requests.count, 4)
+        let stalledMessages = await stalledRecorder.messages
+        XCTAssertEqual(stalledMessages.last, .assistant(Agent.repeatedLoopStopMessage))
+    }
 }
