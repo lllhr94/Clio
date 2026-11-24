@@ -115,10 +115,12 @@ extension ChatPage {
         var cursor = index - 1
         while cursor >= 0, displayedRows[cursor].kind == .steps {
             let step = displayedRows[cursor]
-            for (position, label) in step.tools.enumerated() where label.hasPrefix("读网页") || label.hasPrefix("搜索") || label.hasPrefix("远游") {
-                guard position < step.details.count else { continue }
+            for (position, label) in step.tools.enumerated() {
+                let isSearch = label.hasPrefix("搜索") || label.hasPrefix("寻访")
+                let isRead = label.hasPrefix("读网页") || Trace.canonicalKind(of: label) == "远游"
+                guard isSearch || isRead, position < step.details.count else { continue }
                 // Pages it read count first; then what a search brought back.
-                let text = label.hasPrefix("搜索") ? step.details[position].output : step.details[position].input
+                let text = isSearch ? step.details[position].output : step.details[position].input
                 for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
                     if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
                 }
@@ -241,8 +243,8 @@ extension ChatPage {
                 typing = false
                 Task { await team.browser.open(url) }
                 roaming = true
-            }, openFile: { url in
-                reading = ReadingFile(url: url)
+            }, openFile: { url, mount in
+                reading = ReadingFile(url: url, mount: mount)
             }, unremember: { id, fact in
                 team.unremember(id, fact: fact)
             })

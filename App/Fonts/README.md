@@ -1,6 +1,6 @@
 # 字体
 
-两款都是 SIL Open Font License 1.1（OFL）开源字体的**裁小版**，授权全文在同目录的 `OFL-*.txt`。
+四款都是 SIL Open Font License 1.1（OFL）开源字体的**裁小版**，授权全文在同目录的 `OFL-*.txt`。
 
 | 文件 | 来源 | 裁成了什么 |
 |---|---|---|

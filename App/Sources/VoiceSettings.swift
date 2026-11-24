@@ -187,7 +187,8 @@ enum VoiceTranscription {
         let session = URLSession(configuration: config, delegate: SameOriginRedirectGuard(origin: endpoint), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
-        let (data, response) = try await session.data(for: request)
+        let maxResponseBytes = 1_048_576
+        let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw Problem.message("语音转写失败：服务器没有正常回应。")
         }
@@ -203,13 +204,33 @@ enum VoiceTranscription {
             }
             throw Problem.message("语音转写失败（HTTP \(http.statusCode)），请检查接口地址和模型名。")
         }
+        if http.expectedContentLength > Int64(maxResponseBytes) {
+            throw Problem.message("语音转写响应过大，请检查接口地址是否正确。")
+        }
+        var data = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            data.append(byte)
+            if data.count > maxResponseBytes {
+                throw Problem.message("语音转写响应过大，请检查接口地址是否正确。")
+            }
+        }
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = json["text"] as? String {
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        if contentType.contains("text/html") {
+            throw Problem.message("语音转写接口返回了网页内容，请检查接口地址是否正确。")
+        }
         if let plain = String(data: data, encoding: .utf8) {
-            return plain.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedPlain = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = trimmedPlain.prefix(256).lowercased()
+            if lower.hasPrefix("<!doctype html") || lower.hasPrefix("<html") || lower.contains("<head") || lower.contains("<body") {
+                throw Problem.message("语音转写接口返回了网页内容，请检查接口地址是否正确。")
+            }
+            return trimmedPlain
         }
         throw Problem.message("语音转写返回的内容无法解析。")
     }

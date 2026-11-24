@@ -25,7 +25,9 @@ struct ChatPage: View {
 
     @State var draftState = ChatDraft()
     var draft: String { get { draftState.text } nonmutating set { draftState.text = newValue } }
-    @State var spokenBase = ""
+    @State var dictationMerger = DictationDraftMerger()
+    @State var speakingText: String?
+    @State var headerHeight: CGFloat = 0
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
     @State var picks: [PhotosPickerItem] = []
@@ -305,7 +307,10 @@ struct ChatPage: View {
                 }
                 ChatSection { liveReply }.transition(.identity)
                 // What it is doing now sits in the bar above the composer; here only a running command's output.
-                if let doing = team.workDetail(for: chat.key).words, doing.hasPrefix("斗室：") || doing.hasPrefix("远山 · ") {
+                if let doing = team.workDetail(for: chat.key).words,
+                   doing.contains("："),
+                   let kind = Trace.canonicalKind(of: doing),
+                   kind == "斗室" || kind == "远山" {
                     ToolTailView(tail: team.toolTail(for: chat.key))
                         .id("live")
                         .transition(.opacity.combined(with: .offset(y: 8)))
@@ -594,10 +599,16 @@ struct ChatPage: View {
     /// Starts dictation; what is heard is added after what was already written.
     func listen() {
         guard !dictation.busy else { return }
+        if voice.isSpeaking {
+            _ = voice.stopSpeaking(at: .immediate)
+            speakingText = nil
+        }
         Haptics.grab()
         typing = false
-        spokenBase = draft
-        dictation.onText = { heard in draft = spokenBase + heard }
+        dictationMerger.start(initialDraft: draft)
+        dictation.onText = { heard in
+            draft = dictationMerger.merge(currentDraft: draft, heard: heard)
+        }
         Task { await dictation.start() }
     }
 
@@ -615,8 +626,18 @@ struct ChatPage: View {
             listen()
         case .fresh:
             typing = true
-        case .files(let urls):
-            withAnimation(Ink.Motion.settle) { receive(urls) }
+        case .importedFiles(let paths, let failed):
+            if !paths.isEmpty {
+                withAnimation(Ink.Motion.settle) {
+                    for rel in paths where !files.contains(rel) {
+                        files.append(rel)
+                    }
+                }
+                Haptics.tick(0.6)
+            }
+            if let firstError = failed.first {
+                say(firstError)
+            }
             typing = true
         }
     }
@@ -738,7 +759,7 @@ struct ChatPage: View {
                         roaming = true
                     }
                 }
-                .padding(.top, Ink.Bar.height + Ink.Space.s * 2)
+                .padding(.top, (headerHeight > 0 ? headerHeight : Ink.Bar.height * 2) + Ink.Space.s)
                 .padding(.trailing, Ink.Bar.edge)
                 .zIndex(3)
             }
@@ -761,6 +782,7 @@ struct ChatPage: View {
             if scenePhase == .background {
                 dictation.cancel()
                 _ = voice.stopSpeaking(at: .immediate)
+                speakingText = nil
             }
             if scenePhase != .active {
                 draftState.flush()
@@ -781,6 +803,7 @@ struct ChatPage: View {
             selecting.removeAll()
             dictation.cancel()
             _ = voice.stopSpeaking(at: .immediate)
+            speakingText = nil
         }
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
@@ -901,7 +924,7 @@ struct ChatPage: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(item: $reading) { file in
-            NavigationStack { StudyFile(url: file.url) }
+            NavigationStack { StudyFile(url: file.url, mount: file.mount, showsDone: true) }
         }
         .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
             OutlineSheet(pairs: outlinePairs) { id in
@@ -993,13 +1016,18 @@ struct ChatPage: View {
     /// A retry or an edit waiting to hear whether the files it changed should go back too.
     @State var undoAsk: UndoAsk?
     @State var leafing = false
-    struct ReadingFile: Identifiable { let url: URL; var id: URL { url } }
+    struct ReadingFile: Identifiable {
+        let url: URL
+        var mount: MountedFolder? = nil
+        var id: String { (mount?.id ?? "desk") + "|" + url.path }
+    }
     @State var reading: ReadingFile?
 
     func leave() {
         typing = false
         dictation.cancel()
         _ = voice.stopSpeaking(at: .immediate)
+        speakingText = nil
         Haptics.light()
         back()
     }
@@ -1126,10 +1154,18 @@ enum DraftTextStore {
         for chat: String,
         onSaved: (@Sendable (Bool) -> Void)? = nil
     ) {
+        guard !Disk.frozen else {
+            onSaved?(false)
+            return
+        }
         let base = root
         lock.withLock { pendingCount += 1 }
         queue.async {
             defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
+            guard !Disk.frozen else {
+                onSaved?(false)
+                return
+            }
             do {
                 try QueuedMessageStore.saveTextDraft(draft, for: chat, under: base)
                 UserDefaults.standard.removeObject(forKey: "draft." + chat)
@@ -1258,11 +1294,19 @@ enum DraftAttachments {
         queuedIds: [UUID] = [],
         onSaved: (@Sendable (Bool) -> Void)? = nil
     ) {
+        guard !Disk.frozen else {
+            onSaved?(false)
+            return
+        }
         let dir = folder(chat)
         let legacyDir = folder(chat, under: legacyRoot)
         lock.withLock { pendingCount += 1 }
         queue.async {
             defer { lock.withLock { pendingCount = max(0, pendingCount - 1) } }
+            guard !Disk.frozen else {
+                onSaved?(false)
+                return
+            }
             let manager = FileManager.default
             UserDefaults.standard.removeObject(forKey: "draftFiles." + chat)
             guard !photos.isEmpty || !files.isEmpty else {

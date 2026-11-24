@@ -1258,7 +1258,7 @@ final class TeamModel: ObservableObject {
         }
         let endpoint = found.endpoint
         let epoch = epochs[key, default: 0]
-        let secret = await Vault.readString("key-\(endpoint.id)")
+        let secret = await readAPIKey(for: endpoint)
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard let apiKey = secret, !apiKey.isEmpty else {
             fail(key, "\(endpoint.name) 的密钥找不到了\n到调弦里给它换一次密钥。", next: .tuning)

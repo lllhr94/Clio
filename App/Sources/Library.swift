@@ -100,6 +100,9 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     var style: ThinkingStyle?
     /// The listed service it came from (`Service.id`).
     var service: String?
+    /// Local Vault slot selected together with the service settings during restore.
+    var credentialSlot: UUID?
+    var credentialID: String { EndpointKeyCoordinator.credentialID(for: id, slot: credentialSlot) }
 
     init(id: String, name: String, kind: Kind, baseURL: String, models: [String], service: String? = nil) {
         self.id = id

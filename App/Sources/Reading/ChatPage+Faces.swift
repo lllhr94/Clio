@@ -343,10 +343,20 @@ extension ChatPage {
     }
 
     func speak(_ text: String) {
-        if voice.isSpeaking {
-            voice.stopSpeaking(at: .immediate)
-            return
+        if dictation.busy {
+            dictation.cancel()
         }
+        if voice.isSpeaking {
+            _ = voice.stopSpeaking(at: .immediate)
+            if speakingText == text {
+                speakingText = nil
+                return
+            }
+        }
+        speakingText = text
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? session.setActive(true)
         var plain = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? text
         for secret in Vault.allStrings() where secret.count >= 6 {
             if plain.contains(secret) {

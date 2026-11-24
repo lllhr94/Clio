@@ -89,7 +89,7 @@ struct SettingsView: View {
 
     private var found: [SettingsPage] {
         let words = query.split(whereSeparator: \.isWhitespace)
-        let pages = Self.groups.flatMap(\.pages) + [.memory, .vault]
+        let pages = Self.groups.flatMap(\.pages) + [.memory, .vault, .voice]
         return pages.filter { page in
             let terms = [L.daily[page.titleKey], L.literary[page.titleKey],
                          L.daily[page.lineKey], L.literary[page.lineKey], page.keywords].compactMap { $0 }
@@ -168,6 +168,8 @@ struct SettingsView: View {
             ToneSettingsPage()
         case .display:
             ChatDisplayPage()
+        case .voice:
+            VoiceSettingsPage()
         case .context:
             ChatContextPage()
         case .searchEngine:
@@ -346,7 +348,7 @@ struct SettingsView: View {
 private enum SettingsPage: String, Identifiable {
     case services, models, image, companions, rooms, pet, theme, font, size, tone
     case display, context, grants, searchEngine, connectors, skills, timing, hosts, notifications, morning, lock, care
-    case memory, vault, add
+    case memory, vault, voice, add
 
     var id: Self { self }
 
@@ -359,6 +361,7 @@ private enum SettingsPage: String, Identifiable {
         case "look#size", "look#ui": self = .size
         case "look#tone": self = .tone
         case "look#motion": self = .display
+        case "look#voice", "voice": self = .voice
         case "look#context", "look#compress": self = .context
         case "look#notify": self = .notifications
         case "look#morning": self = .morning
@@ -389,12 +392,18 @@ private enum SettingsPage: String, Identifiable {
         case .lock: "settings.faceLock"
         case .memory: "nav.memory"
         case .vault: "settings.vault"
+        case .voice: "voiceSettings.title"
         case .add: "settings.addService"
         default: "settingsHome." + rawValue
         }
     }
 
-    var lineKey: String { "settingsHome." + rawValue + "Line" }
+    var lineKey: String {
+        switch self {
+        case .voice: "voiceSettings.rowFooter"
+        default: "settingsHome." + rawValue + "Line"
+        }
+    }
 
     var symbol: String {
         switch self {
@@ -422,6 +431,7 @@ private enum SettingsPage: String, Identifiable {
         case .care: "stethoscope"
         case .memory: "brain"
         case .vault: "lock.rectangle.stack"
+        case .voice: "waveform.and.mic"
         case .add: "plus"
         }
     }
@@ -438,7 +448,7 @@ private enum SettingsPage: String, Identifiable {
         case .font: "字体 文楷 霞鹜 楷体 宋体 苹方 圆体 书卷 标题 题词"
         case .size: "字号 行距 大小 紧凑 放大 缩小 ui"
         case .tone: "叫法 名字 诗意 普通 书卷 日常 称呼 旁注"
-        case .display: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 帧率"
+        case .display: "思考 心绪 pulse 人味 淡入 触感 震动 耗时 用量 行迹 帧率 语音 听写 朗读"
         case .context: "压缩 上下文 温度 输出 长度"
         case .grants: "权限 批准 允许 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室"
         case .searchEngine: "联网 搜索 引擎 anysearch tavily exa brave bing duckduckgo 查资料 密钥 key"
@@ -452,6 +462,7 @@ private enum SettingsPage: String, Identifiable {
         case .care: "养护 恢复 日志 诊断 掉帧 清理"
         case .memory: "记忆 拾遗 记住 忘掉"
         case .vault: "密码匣 密码 信匣 账号"
+        case .voice: "语音 听写 转写 朗读 麦克风 whisper sensevoice groq siliconflow stt"
         case .add: ""
         }
     }
