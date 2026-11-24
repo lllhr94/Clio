@@ -381,6 +381,11 @@ private enum ChatFlowTests {
         try check(flow.following, false, "Wait for the user's fling to stop")
         flow.changePhase(from: .decelerating, to: .idle, at: 79)
         try check(flow.following, true, "Resume within 80 points including the composer inset")
+        await flow.clock.waitForSleepers(1)
+        let resumed = flow.measure(offset: 321)
+        try flow.clock.advance(16_000_000)
+        await resumed?.value
+        try check(flow.scrolls, [false], "Resuming near the end corrects the resting position")
         flow.changePhase(from: .animating, to: .idle, at: 150)
         try check(flow.following, true, "A programmatic scroll cannot turn following off")
         try check(flow.chat.browsing, false, "Resume row refresh when scrolling stops")
@@ -393,7 +398,7 @@ private enum ChatFlowTests {
         flow.changePhase(from: .idle, to: .interacting, at: 300)
         try flow.clock.advance(32_000_000)
         await scheduled?.value
-        try check(flow.scrolls, [], "A drag stops the scheduled follow")
+        try check(flow.scrolls, [false], "A drag stops the scheduled follow")
     }
 
     @MainActor
