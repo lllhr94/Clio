@@ -589,14 +589,20 @@ public enum MCPImage {
             let isAnimatedGIF = format == .gif && CGImageSourceGetCount(source) > 1
             let longest = max(width, height)
             if format.isDirectlySupported, !isAnimatedGIF, data.count <= maxAllowedBytes, longest <= limits.maxUnconvertedDimension {
-                let probeOptions: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: max(1, min(64, longest)),
-                    kCGImageSourceShouldCache: false,
-                ]
-                guard CGImageSourceCreateThumbnailAtIndex(source, 0, probeOptions as CFDictionary) != nil else {
-                    return .rejected("图片内容损坏，无法解码")
+                if longest <= 64 {
+                    guard CGImageSourceCreateImageAtIndex(source, 0, noCache) != nil else {
+                        return .rejected("图片内容损坏，无法解码")
+                    }
+                } else {
+                    let probeOptions: [CFString: Any] = [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 64,
+                        kCGImageSourceShouldCache: false,
+                    ]
+                    guard CGImageSourceCreateThumbnailAtIndex(source, 0, probeOptions as CFDictionary) != nil else {
+                        return .rejected("图片内容损坏，无法解码")
+                    }
                 }
                 return .accepted(ImagePart(mediaType: format.rawValue, data: data))
             }
@@ -644,9 +650,10 @@ public enum MCPImage {
             return utType.conforms(to: .gif)
         case .webp:
             if utType.conforms(to: .webP) { return true }
+            if rawUTI.lowercased().contains("webp") { return true }
             if let webp = UTType("org.webmproject.webp"), utType.conforms(to: webp) { return true }
             if let webp = UTType("org.webm.webp"), utType.conforms(to: webp) { return true }
-            return rawUTI == "org.webmproject.webp" || rawUTI == "org.webm.webp" || rawUTI == "public.webp"
+            return false
         case .bmp:
             return utType.conforms(to: .bmp)
         case .tiff:

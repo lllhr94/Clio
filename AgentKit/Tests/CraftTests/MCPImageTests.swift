@@ -9,8 +9,8 @@ import UniformTypeIdentifiers
 #endif
 
 final class MCPImageTests: XCTestCase {
-    // Minimal spec-valid 1x1 VP8 WebP image.
-    private static let minimalWebPBase64 = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"
+    // Bit-exact RFC 9649 2x2 lossless VP8L WebP image (opaque black).
+    private static let minimalWebPBase64 = "UklGRhYAAABXRUJQVlA4TAkAAAAvAUAAAIiI/gcA"
 
     func testNormalizeMimeTypeHandlesAliasesParametersAndCasing() {
         XCTAssertEqual(MCPImage.normalizeMimeType("image/jpg"), "image/jpeg")
