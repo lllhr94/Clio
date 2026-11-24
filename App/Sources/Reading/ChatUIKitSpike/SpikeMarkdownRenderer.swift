@@ -1,3 +1,4 @@
+import CoreText
 import Foundation
 import Prose
 import SwiftUI
@@ -130,6 +131,100 @@ enum SpikeCodeHighlighter {
         return !codeSignals.contains { text.contains($0) }
     }
 
+    private struct AlignedFontPair {
+        let narrow: UIFont
+        let wide: UIFont
+    }
+
+    private static func isWide(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x00B7, 0x2014, 0x2018...0x2019, 0x201C...0x201D, 0x2026, 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
+             0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func alignedCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> AlignedFontPair {
+        let baseMono = Ink.uiMono(size, preference: preference)
+        let targetMono: UIFont
+        if italic, let slanted = baseMono.fontDescriptor.withSymbolicTraits(baseMono.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+            targetMono = UIFont(descriptor: slanted, size: size)
+        } else {
+            targetMono = baseMono
+        }
+
+        let wideBase = UIFont.systemFont(ofSize: size)
+        let targetWide: UIFont
+        if italic, let slantedWide = wideBase.fontDescriptor.withSymbolicTraits(wideBase.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+            targetWide = UIFont(descriptor: slantedWide, size: size)
+        } else {
+            targetWide = wideBase
+        }
+
+        let native = targetMono as CTFont
+        var zero: UniChar = 48
+        var glyph: CGGlyph = 0
+        guard CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) else {
+            return AlignedFontPair(narrow: targetMono, wide: targetWide)
+        }
+        let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
+        guard advance > 0 else {
+            return AlignedFontPair(narrow: targetMono, wide: targetWide)
+        }
+        let matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
+        let scaledDescriptor = targetMono.fontDescriptor.withMatrix(matrix)
+        let halfFont = UIFont(descriptor: scaledDescriptor, size: size)
+        return AlignedFontPair(narrow: halfFont, wide: targetWide)
+    }
+
+    private static func appendAligned(
+        _ segment: Substring,
+        alignWide: Bool,
+        regularPair: AlignedFontPair,
+        italicPair: AlignedFontPair,
+        italic: Bool,
+        color: UIColor,
+        paragraphStyle: NSParagraphStyle,
+        to out: NSMutableAttributedString
+    ) {
+        guard let first = segment.first else { return }
+        let pair = italic ? italicPair : regularPair
+        if !alignWide {
+            out.append(NSAttributedString(string: String(segment), attributes: [
+                .font: pair.narrow,
+                .foregroundColor: color,
+                .paragraphStyle: paragraphStyle,
+            ]))
+            return
+        }
+
+        var currentWide = isWide(first)
+        var runStart = segment.startIndex
+
+        func flushRun(upTo end: String.Index) {
+            guard runStart < end else { return }
+            let font = currentWide ? pair.wide : pair.narrow
+            out.append(NSAttributedString(string: String(segment[runStart..<end]), attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraphStyle,
+            ]))
+        }
+
+        for idx in segment.indices.dropFirst() {
+            let nextWide = isWide(segment[idx])
+            if nextWide != currentWide {
+                flushRun(upTo: idx)
+                runStart = idx
+                currentWide = nextWide
+            }
+        }
+        flushRun(upTo: segment.endIndex)
+    }
+
     static func highlight(
         _ text: String,
         language: String,
@@ -137,24 +232,42 @@ enum SpikeCodeHighlighter {
         style: SpikeStyle,
         paragraphStyle: NSParagraphStyle
     ) -> NSAttributedString {
-        let baseFont = Ink.uiMono(style.codeSize, preference: style.code)
+        let hasWide = text.contains(where: isWide)
+        let regularPair: AlignedFontPair
+        let italicPair: AlignedFontPair
+        if hasWide {
+            regularPair = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: false)
+            italicPair = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: true)
+        } else {
+            let baseMono = Ink.uiMono(style.codeSize, preference: style.code)
+            let slantedMono: UIFont
+            if let slanted = baseMono.fontDescriptor.withSymbolicTraits(baseMono.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                slantedMono = UIFont(descriptor: slanted, size: style.codeSize)
+            } else {
+                slantedMono = baseMono
+            }
+            regularPair = AlignedFontPair(narrow: baseMono, wide: baseMono)
+            italicPair = AlignedFontPair(narrow: slantedMono, wide: slantedMono)
+        }
+
         if isOutput {
-            return NSAttributedString(string: text, attributes: [
-                .font: baseFont,
-                .foregroundColor: UIColor(Ink.Code.output),
-                .paragraphStyle: paragraphStyle,
-            ])
+            let out = NSMutableAttributedString()
+            appendAligned(
+                text[...],
+                alignWide: hasWide,
+                regularPair: regularPair,
+                italicPair: italicPair,
+                italic: false,
+                color: UIColor(Ink.Code.output),
+                paragraphStyle: paragraphStyle,
+                to: out
+            )
+            return out
         }
 
         let lowerLang = language.lowercased()
         let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(lowerLang)
         let sqlComments = ["sql", "sqlite", "postgres", "mysql"].contains(lowerLang)
-        let italicFont: UIFont
-        if let slanted = baseFont.fontDescriptor.withSymbolicTraits(baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            italicFont = UIFont(descriptor: slanted, size: style.codeSize)
-        } else {
-            italicFont = baseFont
-        }
 
         let out = NSMutableAttributedString()
         var index = text.startIndex
@@ -163,13 +276,16 @@ enum SpikeCodeHighlighter {
 
         func flush(upTo end: String.Index) {
             guard start < end else { return }
-            let segment = String(text[start..<end])
-            let font = kind == .comment ? italicFont : baseFont
-            out.append(NSAttributedString(string: segment, attributes: [
-                .font: font,
-                .foregroundColor: kind.color,
-                .paragraphStyle: paragraphStyle,
-            ]))
+            appendAligned(
+                text[start..<end],
+                alignWide: hasWide,
+                regularPair: regularPair,
+                italicPair: italicPair,
+                italic: kind == .comment,
+                color: kind.color,
+                paragraphStyle: paragraphStyle,
+                to: out
+            )
         }
 
         while index < text.endIndex {
@@ -945,7 +1061,8 @@ final class SpikeLayoutCache {
     }
 
     let builder = SpikeProseBuilder()
-    private var cache: [CacheKey: Entry] = [:]
+    private var finalizedCache: [CacheKey: Entry] = [:]
+    private var streamingCache: [UUID: (key: CacheKey, entry: Entry)] = [:]
     private let measurer: UITextView = {
         let tv = UITextView(usingTextLayoutManager: true)
         tv.isEditable = false
@@ -963,11 +1080,13 @@ final class SpikeLayoutCache {
     }()
 
     func invalidateAll() {
-        cache.removeAll(keepingCapacity: true)
+        finalizedCache.removeAll(keepingCapacity: true)
+        streamingCache.removeAll(keepingCapacity: true)
     }
 
     func invalidate(messageId: UUID) {
-        cache = cache.filter { $0.key.id != messageId }
+        streamingCache.removeValue(forKey: messageId)
+        finalizedCache = finalizedCache.filter { $0.key.id != messageId }
     }
 
     func measure(
@@ -986,8 +1105,15 @@ final class SpikeLayoutCache {
             isStreaming: message.isStreaming,
             showSpeaker: showSpeaker
         )
-        if let hit = cache[key] {
-            return hit
+        if message.isStreaming {
+            if let hit = streamingCache[message.id], hit.key == key {
+                return hit.entry
+            }
+        } else {
+            streamingCache.removeValue(forKey: message.id)
+            if let hit = finalizedCache[key] {
+                return hit
+            }
         }
 
         let entry: Entry
@@ -1047,10 +1173,14 @@ final class SpikeLayoutCache {
             )
         }
 
-        if cache.count > 1200 {
-            cache.removeAll(keepingCapacity: true)
+        if message.isStreaming {
+            streamingCache[message.id] = (key: key, entry: entry)
+        } else {
+            if finalizedCache.count > 1200 {
+                finalizedCache.removeAll(keepingCapacity: true)
+            }
+            finalizedCache[key] = entry
         }
-        cache[key] = entry
         return entry
     }
 

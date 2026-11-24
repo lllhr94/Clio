@@ -55,11 +55,11 @@ final class SpikeHUDView: UIView {
 
         fpsDot.layer.cornerRadius = 3
         fpsLabel.font = Ink.uiMono(Ink.Size.micro, bold: true)
-        fpsLabel.text = "-- fps"
+        fpsLabel.text = L.t("careSpike.fpsPlaceholder")
 
         countLabel.font = Ink.uiMono(Ink.Size.micro)
         countLabel.textColor = UIColor(Ink.inkSoft)
-        countLabel.text = "24 条"
+        countLabel.text = L.format("careSpike.messageCount", 24)
 
         fpsPill.layer.cornerCurve = .continuous
         fpsPill.layer.borderWidth = 0.5
@@ -79,7 +79,7 @@ final class SpikeHUDView: UIView {
         ])
 
         anchorLabel.font = Ink.uiMono(Ink.Size.micro, bold: true)
-        anchorLabel.text = "anchor Δ: --"
+        anchorLabel.text = L.t("careSpike.anchorIdle")
         anchorPill.layer.cornerCurve = .continuous
         anchorPill.layer.borderWidth = 0.5
         anchorLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -121,23 +121,23 @@ final class SpikeHUDView: UIView {
         topRow.spacing = Ink.Space.s
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        prependButton = makeChip(title: "+20 前文", symbol: "arrow.up.to.line") { [weak self] in
+        prependButton = makeChip(title: L.t("careSpike.loadEarlier"), symbol: "arrow.up.to.line") { [weak self] in
             Haptics.light()
             self?.onLoadEarlier?()
         }
-        streamButton = makeChip(title: "模拟流式", symbol: "sparkles") { [weak self] in
+        streamButton = makeChip(title: L.t("careSpike.simulateStream"), symbol: "sparkles") { [weak self] in
             Haptics.light()
             self?.onToggleStream?()
         }
-        topButton = makeChip(title: "顶", symbol: "arrow.up") { [weak self] in
+        topButton = makeChip(title: L.t("careSpike.scrollTop"), symbol: "arrow.up") { [weak self] in
             Haptics.tick(0.5)
             self?.onScrollTop?()
         }
-        bottomButton = makeChip(title: "底", symbol: "arrow.down.to.line") { [weak self] in
+        bottomButton = makeChip(title: L.t("careSpike.scrollBottom"), symbol: "arrow.down.to.line") { [weak self] in
             Haptics.tick(0.5)
             self?.onScrollBottom?()
         }
-        resetButton = makeChip(title: "重置", symbol: "arrow.counterclockwise") { [weak self] in
+        resetButton = makeChip(title: L.t("careSpike.reset"), symbol: "arrow.counterclockwise") { [weak self] in
             Haptics.light()
             self?.onReset?()
         }
@@ -236,26 +236,26 @@ final class SpikeHUDView: UIView {
         fpsDot.backgroundColor = uiColor
         fpsLabel.textColor = uiColor
         if hitches > 0 {
-            fpsLabel.text = "\(fps)fps · \(Int(worstMs.rounded()))ms"
+            fpsLabel.text = L.format("careSpike.fpsHitchFormat", fps, Int(worstMs.rounded()))
         } else {
-            fpsLabel.text = "\(fps) fps"
+            fpsLabel.text = L.format("careSpike.fpsFormat", fps)
         }
     }
 
     func updateMessageCount(_ count: Int) {
-        countLabel.text = "\(count) 条"
+        countLabel.text = L.format("careSpike.messageCount", count)
     }
 
     func updateAnchorDelta(_ delta: CGFloat?, source: String) {
         guard let delta else {
-            anchorLabel.text = "anchor Δ: \(L.t("careSpike.unverified"))"
+            anchorLabel.text = L.t("careSpike.anchorUnverified")
             anchorLabel.textColor = UIColor(Ink.warn)
             anchorPill.backgroundColor = UIColor(Ink.stopWash).withAlphaComponent(0.7)
             prependButton.accessibilityHint = source
             return
         }
         let clamped = abs(delta) < 0.05 ? 0.0 : Double(delta)
-        anchorLabel.text = String(format: "anchor Δ: %.1f pt", clamped)
+        anchorLabel.text = L.format("careSpike.anchorDeltaFormat", clamped)
         let ok = abs(clamped) < 0.5
         anchorLabel.textColor = UIColor(ok ? Ink.ok : Ink.warn)
         anchorPill.backgroundColor = UIColor(ok ? Ink.accentWash : Ink.stopWash).withAlphaComponent(0.7)
@@ -265,20 +265,20 @@ final class SpikeHUDView: UIView {
     func updateStreamState(isStreaming: Bool, finalizeDelta: CGFloat?) {
         var config = streamButton.configuration
         if isStreaming {
-            config?.title = "定稿停笔"
+            config?.title = L.t("careSpike.stopStream")
             config?.image = UIImage(systemName: "stop.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .semibold))
             streamButton.tintColor = UIColor(Ink.stop)
             streamButton.backgroundColor = UIColor(Ink.stopWash)
-            streamDeltaLabel.text = "流式输出中…"
+            streamDeltaLabel.text = L.t("careSpike.streamingNow")
             streamDeltaLabel.textColor = UIColor(Ink.accent)
         } else {
-            config?.title = "模拟流式"
+            config?.title = L.t("careSpike.simulateStream")
             config?.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .semibold))
             streamButton.tintColor = UIColor(Ink.accent)
             streamButton.backgroundColor = UIColor(Ink.paperRaised)
             if let finalizeDelta {
                 let shown = abs(finalizeDelta) < 0.05 ? 0.0 : Double(finalizeDelta)
-                streamDeltaLabel.text = String(format: "定稿 Δ: %.1f pt", shown)
+                streamDeltaLabel.text = L.format("careSpike.finalizeDeltaFormat", shown)
                 streamDeltaLabel.textColor = UIColor(abs(shown) < 0.5 ? Ink.ok : Ink.warn)
             }
         }
@@ -286,7 +286,7 @@ final class SpikeHUDView: UIView {
     }
 
     func resetMetrics() {
-        anchorLabel.text = "anchor Δ: --"
+        anchorLabel.text = L.t("careSpike.anchorIdle")
         anchorLabel.textColor = UIColor(Ink.inkSoft)
         anchorPill.backgroundColor = UIColor(Ink.paperRaised)
         streamDeltaLabel.text = ""
@@ -302,7 +302,7 @@ final class SpikeHUDView: UIView {
 
         anchorPill.backgroundColor = raised
         anchorPill.layer.borderColor = rule
-        if anchorLabel.text == "anchor Δ: --" {
+        if anchorLabel.text == L.t("careSpike.anchorIdle") {
             anchorLabel.textColor = UIColor(Ink.inkSoft)
         }
 
@@ -518,7 +518,7 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
     func setQuote(_ excerpt: String, speaker: String) {
         quotedText = excerpt
         quotedSpeaker = speaker
-        quoteHeaderLabel.text = "已引用 · \(speaker)（\(excerpt.count) 字）"
+        quoteHeaderLabel.text = L.format("careSpike.quotedHeaderFormat", speaker, excerpt.count)
         quoteBodyLabel.text = excerpt
         if quoteContainer.isHidden {
             quoteCollapsedConstraint.isActive = false
@@ -548,7 +548,7 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
 
     private func showConfirmationPill(charCount: Int) {
         confirmationHideWork?.cancel()
-        confirmationLabel.text = "已引用选段 · \(charCount) 字"
+        confirmationLabel.text = L.format("careSpike.quotedToastFormat", charCount)
         confirmationPill.isHidden = false
         confirmationPill.transform = CGAffineTransform(translationX: 0, y: 6).scaledBy(x: 0.96, y: 0.96)
         UIView.animate(withDuration: 0.24, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0) {
@@ -583,7 +583,7 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         let draft = (inputField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.isEmpty || quotedText != nil else { return }
         Haptics.light()
-        let sendText = draft.isEmpty ? "展开说说上面引用的这段" : draft
+        let sendText = draft.isEmpty ? L.t("careSpike.defaultFollowup") : draft
         let sendQuote = quotedText
         inputField.text = ""
         clearQuote()
@@ -622,7 +622,7 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         inputField.textColor = UIColor(Ink.ink)
         inputField.tintColor = UIColor(Ink.accent)
         inputField.attributedPlaceholder = NSAttributedString(
-            string: "输入追问，或长按拖选「引用」…",
+            string: L.t("careSpike.inputPlaceholder"),
             attributes: [.foregroundColor: UIColor(Ink.inkFaint)]
         )
 

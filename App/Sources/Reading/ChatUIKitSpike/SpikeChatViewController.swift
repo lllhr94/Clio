@@ -21,6 +21,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
     private var isPinnedToBottom = true
     private var isLoadingEarlier = false
     private var isProgrammaticScroll = false
+    private var animatedScrollID: UInt64 = 0
     private var prependedBatches = 0
     private var selectingMessageIDs: Set<UUID> = []
     private var lastScrollOffsetY: CGFloat = 0
@@ -251,7 +252,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
             self?.onDismiss?()
         }
         hudView.onLoadEarlier = { [weak self] in
-            self?.loadEarlier20(source: "按钮触发")
+            self?.loadEarlier20(source: L.t("careSpike.triggerButton"))
         }
         hudView.onToggleStream = { [weak self] in
             self?.toggleStreamSimulation()
@@ -374,7 +375,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
     }
 
     private func showLinkNotice(_ url: URL) {
-        let alert = UIAlertController(title: "链接预览", message: url.absoluteString, preferredStyle: .alert)
+        let alert = UIAlertController(title: L.t("careSpike.linkPreviewTitle"), message: url.absoluteString, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: L.t("actions.done"), style: .default))
         present(alert, animated: true)
     }
@@ -425,7 +426,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     func loadEarlier20(source: String) {
         guard !isLoadingEarlier else { return }
-        if source == "按钮触发" {
+        if source == L.t("careSpike.triggerButton") {
             clearVisibleSelections()
         } else if !selectingMessageIDs.isEmpty {
             return
@@ -514,7 +515,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     private func toggleStreamSimulation() {
         if streamState != nil {
-            finalizeStream(immediate: true)
+            finalizeStream()
         } else {
             startStream(script: SpikeFixtureData.streamingScript)
         }
@@ -522,14 +523,14 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     private func handleUserSend(text: String, quote: String?) {
         if streamState != nil {
-            finalizeStream(immediate: true)
+            finalizeStream()
         }
         let userMsg = SpikeMessage(
             role: .user,
-            speaker: "你",
+            speaker: L.t("careSpike.userSpeaker"),
             text: text,
             quote: quote,
-            timestampText: "刚刚"
+            timestampText: L.t("careSpike.stampJustNow")
         )
         appendMessage(userMsg, scrollToEnd: true)
         let replyScript = SpikeFixtureData.makeReplyScript(for: text, quote: quote)
@@ -541,7 +542,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
             role: .assistant,
             speaker: SpikeFixtureData.assistantName,
             text: "",
-            timestampText: "实时"
+            timestampText: L.t("careSpike.stampLive")
         )
         var streamingMessage = message
         streamingMessage.isStreaming = true
@@ -605,7 +606,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
         let totalChars = state.fullText.count
         if state.shownCount >= totalChars {
-            finalizeStream(immediate: false)
+            finalizeStream()
             return
         }
 
@@ -646,7 +647,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
         streamState = state
     }
 
-    private func finalizeStream(immediate: Bool) {
+    private func finalizeStream() {
         guard let state = streamState,
               let index = messageIndexByID[state.messageID] else {
             streamState = nil
@@ -658,9 +659,6 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
         let indexPath = IndexPath(item: 0, section: index)
         let beforeCellHeight = collectionView.layoutAttributesForItem(at: indexPath)?.frame.height ?? state.previousHeight
 
-        if immediate {
-            messages[index].text = state.fullText
-        }
         messages[index].isStreaming = false
 
         let width = max(240, collectionView.bounds.width)
@@ -687,6 +685,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
     private func applyStreamingResizePreservingScroll() {
         let savedOffsetY = collectionView.contentOffset.y
         let pinned = isPinnedToBottom
+        let wasProgrammatic = isProgrammaticScroll
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
@@ -698,11 +697,11 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
             if pinned {
                 scrollToBottom(animated: false)
-            } else {
+            } else if !wasProgrammatic {
                 collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: savedOffsetY)
             }
 
-            isProgrammaticScroll = false
+            isProgrammaticScroll = wasProgrammatic
             CATransaction.commit()
         }
     }
@@ -711,11 +710,18 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     private func scrollToTop() {
         isPinnedToBottom = false
-        isProgrammaticScroll = true
         let topY = -collectionView.contentInset.top
+        if abs(collectionView.contentOffset.y - topY) < 0.5 {
+            isProgrammaticScroll = false
+            lastScrollOffsetY = collectionView.contentOffset.y
+            return
+        }
+        isProgrammaticScroll = true
+        animatedScrollID &+= 1
+        let currentID = animatedScrollID
         collectionView.setContentOffset(CGPoint(x: 0, y: topY), animated: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            guard let self, self.animatedScrollID == currentID, self.isProgrammaticScroll else { return }
             self.isProgrammaticScroll = false
             self.lastScrollOffsetY = self.collectionView.contentOffset.y
         }
@@ -727,10 +733,17 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
         let targetY = max(minY, maxY)
         isPinnedToBottom = true
         if animated {
+            if abs(collectionView.contentOffset.y - targetY) < 0.5 {
+                isProgrammaticScroll = false
+                lastScrollOffsetY = collectionView.contentOffset.y
+                return
+            }
             isProgrammaticScroll = true
+            animatedScrollID &+= 1
+            let currentID = animatedScrollID
             collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+                guard let self, self.animatedScrollID == currentID, self.isProgrammaticScroll else { return }
                 self.isProgrammaticScroll = false
                 self.lastScrollOffsetY = self.collectionView.contentOffset.y
             }
@@ -742,6 +755,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     private func resetPrototype() {
         streamState = nil
+        animatedScrollID &+= 1
         prependedBatches = 0
         selectingMessageIDs.removeAll()
         composerView.clearQuote()
@@ -767,6 +781,16 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         dragStartOffsetY = scrollView.contentOffset.y
+        if isProgrammaticScroll {
+            animatedScrollID &+= 1
+            isProgrammaticScroll = false
+        }
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        animatedScrollID &+= 1
+        isProgrammaticScroll = false
+        lastScrollOffsetY = scrollView.contentOffset.y
     }
 
     func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
@@ -804,7 +828,7 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
            distanceFromTop < 180,
            CACurrentMediaTime() - lastAutoPrependTime > 0.35 {
             lastAutoPrependTime = CACurrentMediaTime()
-            loadEarlier20(source: "触顶自动加载")
+            loadEarlier20(source: L.t("careSpike.triggerAuto"))
         }
     }
 

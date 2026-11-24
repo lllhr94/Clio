@@ -104,10 +104,10 @@ final class SpikeAssistantCell: UICollectionViewCell {
     private func updateStatus(message: SpikeMessage) {
         let charCount = message.text.count
         if message.isStreaming {
-            statusLabel.text = "正在流式输出 · \(charCount) 字"
+            statusLabel.text = L.format("careSpike.statusStreamingFormat", charCount)
             statusLabel.textColor = UIColor(Ink.accent)
         } else {
-            statusLabel.text = "\(charCount) 字 · 长按拖选可跨段「引用」"
+            statusLabel.text = L.format("careSpike.statusFinalizedFormat", charCount)
             statusLabel.textColor = UIColor(Ink.inkFaint)
         }
     }

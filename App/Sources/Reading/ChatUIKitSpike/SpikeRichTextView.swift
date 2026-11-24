@@ -347,9 +347,10 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
                 layer.outputStripe.isHidden = true
             }
 
-            let label = block.isOutput
-                ? "输出 · \(block.lineCount) 行"
-                : "\(block.language.isEmpty ? "代码" : block.language.lowercased()) · \(block.lineCount) 行"
+            let langLabel = block.isOutput
+                ? L.t("careSpike.codeOutput")
+                : (block.language.isEmpty ? L.t("careSpike.codeDefaultLang") : block.language.lowercased())
+            let label = L.format("careSpike.codeHeaderFormat", langLabel, block.lineCount)
             layer.titleLayer.contentsScale = scale
             layer.titleLayer.font = monoFont as CTFont
             layer.titleLayer.fontSize = monoFont.pointSize
@@ -423,7 +424,7 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         }
 
         let quoteAction = UIAction(
-            title: "引用",
+            title: L.t("careSpike.quoteAction"),
             image: UIImage(systemName: "text.quote")
         ) { [weak self, weak textView] _ in
             textView?.selectedRange = NSRange(location: 0, length: 0)
