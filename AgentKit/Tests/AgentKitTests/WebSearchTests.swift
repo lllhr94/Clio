@@ -304,10 +304,9 @@ final class WebSearchTests: XCTestCase {
         }
         let out = try await tool.run(.object(["query": .string("Swift concurrency actor isolation")]))
         XCTAssertFalse(out.isError)
-        let fullIdx = try XCTUnwrap(out.text.range(of: "Swift Concurrency Actor Isolation")?.lowerBound)
-        let partialIdx = try XCTUnwrap(out.text.range(of: "1. Swift Concurrency Actor Isolation")?.lowerBound)
-        XCTAssertEqual(fullIdx, partialIdx)
-        XCTAssertTrue(out.text.contains("2. Swift Concurrency"))
+        let firstIdx = try XCTUnwrap(out.text.range(of: "1. Swift Concurrency Actor Isolation")?.lowerBound)
+        let secondIdx = try XCTUnwrap(out.text.range(of: "2. Swift Concurrency")?.lowerBound)
+        XCTAssertLessThan(firstIdx, secondIdx)
     }
 
     // MARK: - SearXNG URL Normalization & Security Rules
