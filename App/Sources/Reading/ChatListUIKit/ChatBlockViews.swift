@@ -9,6 +9,7 @@ import UIKit
 @MainActor
 final class ChatCodeBlockView: UIView, UITextViewDelegate {
     let selectionOwnerID = UUID()
+    var hasActiveSelection: Bool { codeTextView.selectedRange.length > 0 }
 
     var onToggleFold: (() -> Void)?
     var onQuoteSelection: ((String) -> Void)?

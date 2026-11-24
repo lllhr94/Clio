@@ -448,24 +448,33 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 }
                 .overlay(alignment: .trailing) { minimap() }
 
-            VStack(spacing: 0) {
-                if safeTopInset > 0 {
-                    Color.clear.frame(height: safeTopInset)
-                }
-                LinearGradient(
-                    colors: [Ink.paper, Ink.paper.opacity(0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: Ink.Space.l)
-                Spacer(minLength: 0)
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+            topPaperFade
         }
         .onChange(of: followState.following, initial: true) { _, resting in
             petPerch.avoidsReplies = resting
         }
+    }
+
+    private var topPaperFade: some View {
+        let topBarExtent = max(safeTopInset, headerHeight)
+        let fadeTail = Ink.Space.l
+        let totalHeight = topBarExtent + fadeTail
+        let holdStop = totalHeight > 0 ? min(0.95, topBarExtent / totalHeight) : 0
+        return VStack(spacing: 0) {
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper, location: 0),
+                    .init(color: Ink.paper, location: holdStop),
+                    .init(color: Ink.paper.opacity(0), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: totalHeight)
+            Spacer(minLength: 0)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
     private func makeEmptyStatusAnyView() -> AnyView {

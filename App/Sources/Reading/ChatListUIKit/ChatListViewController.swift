@@ -1469,12 +1469,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func handleSelectionChanged(_ uuid: UUID, _ active: Bool) {
+        guard !isDismantled else { return }
         if active {
             selectingOwnerIDs.insert(uuid)
         } else {
             selectingOwnerIDs.remove(uuid)
         }
-        actions.onSelectionChanged(uuid, active)
+        if isInHostUpdate {
+            Task { @MainActor [weak self] in
+                guard let self, !self.isDismantled else { return }
+                self.actions.onSelectionChanged(uuid, active)
+            }
+        } else {
+            actions.onSelectionChanged(uuid, active)
+        }
     }
 
     // MARK: - UIScrollViewDelegate & UICollectionViewDelegate

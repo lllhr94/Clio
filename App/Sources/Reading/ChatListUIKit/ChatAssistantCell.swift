@@ -234,7 +234,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         for tv in richTextViews where !tv.isHidden && tv.selectedRange.length > 0 {
             ids.append(tv.selectionOwnerID)
         }
-        for cb in codeBlockViews where !cb.isHidden {
+        for cb in codeBlockViews where !cb.isHidden && cb.hasActiveSelection {
             ids.append(cb.selectionOwnerID)
         }
         return ids
