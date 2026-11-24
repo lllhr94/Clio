@@ -81,12 +81,13 @@ extension ChatPage {
         switch card {
         case .waiting:
             if let waiting {
-                // A plain ask is answered right here; a forced one (after reading the web) gets the full slip.
-                if waiting.forced == true || waiting.answerable == false {
+                if !InlineApprovalPolicy.canAnswer(answerable: waiting.answerable != false,
+                                                   forced: waiting.forced == true,
+                                                   tool: waiting.toolName,
+                                                   hasCode: waiting.detail?.code?.isEmpty == false) {
                     Button {
                         Haptics.grab()
-                        typing = false
-                        approving = waiting
+                        presentApproval(waiting)
                     } label: {
                         HStack(spacing: Ink.Space.m) {
                             Image(systemName: "seal").foregroundStyle(Ink.warn)
@@ -106,8 +107,7 @@ extension ChatPage {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else {
                     InlineApproval(approval: waiting, team: team, name: team.bots.first { $0.id == waiting.botId }?.name ?? bot.name) {
-                        typing = false
-                        approving = waiting
+                        presentApproval(waiting)
                     }
                     .id(waiting.id)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -446,6 +446,7 @@ extension ChatPage {
         following = false
         jumpedTo = id
         lingerJumpButtons()
+        viewport.recordJump("小地图")
         // From the 小地图 the page goes straight there: a long animated scroll through a lazy list lags behind.
         if animated {
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
@@ -469,6 +470,7 @@ extension ChatPage {
             following = false
             jumpedTo = target
             lingerJumpButtons()
+            viewport.recordJump(earlier ? "点了上一句" : "点了下一句")
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
         } label: {
             Image(systemName: symbol)
@@ -526,6 +528,10 @@ extension ChatPage {
 
     static let end = "foot-of-page"
 
+    static func resizeAnchor(following: Bool, inHistory: Bool, hasSelection: Bool) -> UnitPoint? {
+        following && !inHistory && !hasSelection ? .bottom : nil
+    }
+
     /// Distance to the resting bottom offset. A short page rests at its top inset.
     static func below(_ geometry: ScrollGeometry) -> CGFloat {
         let bottom = max(-geometry.contentInsets.top,
@@ -544,6 +550,25 @@ extension ChatPage {
         if viewport.needsEndCorrection, followPending?.isCancelled != false { followToEnd(settle: false) }
     }
 
+    private func presentApproval(_ approval: Approval) {
+        followPending?.cancel()
+        settleEnd?.cancel()
+        typing = false
+        approving = approval
+    }
+
+    func approvalInsetChanged() {
+        followPending?.cancel()
+        settleEnd?.cancel()
+        approvalInsetTask?.cancel()
+        approvalInsetTask = Task { @MainActor in
+            // The system anchor follows the animated dock. Recheck only after it settles.
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            approvalInsetTask = nil
+            followToEnd(settle: false)
+        }
+    }
+
     func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
             selecting.insert(id)
@@ -555,13 +580,14 @@ extension ChatPage {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     func followToEnd(settle: Bool = true) {
-        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty else { return }
+        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty,
+              approving == nil, approvalInsetTask == nil else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             defer { if !Task.isCancelled { followPending = nil } }
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  viewport.needsEndCorrection else { return }
+                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection else { return }
             toEnd()
         }
     }
@@ -580,7 +606,7 @@ extension ChatPage {
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  viewport.needsEndCorrection else { return }
+                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }

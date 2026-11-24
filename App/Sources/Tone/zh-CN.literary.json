@@ -99,6 +99,11 @@
     "questionMap": "问题导航"
   },
   "approval": {
+    "inlineDetails": "看完整的单子",
+    "inlineConfirmationTitle": "%@ 这一步需要你确认",
+    "inlineOnce": "准这一次",
+    "inlineTrust": "本对话放行",
+    "inlineTrustHint": "只对这段对话的普通审批生效，退出 App 后失效",
     "pending": "待签",
     "approve": "落款",
     "reject": "退回",
@@ -733,6 +738,10 @@
     "writeToday": "现在写今天的"
   },
   "permissions": {
+    "smartShort": "智能",
+    "smartTitle": "智能审批",
+    "smartNote": "常见的查询直接做",
+    "freeNote": "能力直接放行，强制审批还要点头",
     "onPhone": "手机里的事",
     "personal": "身边与身体",
     "alwaysAllowed": "落款时选了「以后都允许」的",
