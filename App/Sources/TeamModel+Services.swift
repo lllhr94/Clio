@@ -276,6 +276,13 @@ extension TeamModel {
         saveSettings()
     }
 
+    /// Enables or disables Anthropic prompt caching (`cache_control`) for one endpoint.
+    func setPromptCache(_ id: String, enabled: Bool) {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
+        settings.endpoints[index].promptCache = enabled
+        saveSettings()
+    }
+
     static func normalizedEndpointAddress(_ raw: String) -> String? {
         EndpointAddressPolicy.normalize(raw)
     }

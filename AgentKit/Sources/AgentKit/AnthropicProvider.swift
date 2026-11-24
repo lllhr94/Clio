@@ -4,10 +4,19 @@ import Foundation
 public struct AnthropicProvider: ModelProvider {
     public var baseURL: String
     public var apiKey: String
+    public let promptCache: Bool
+    public let stableSystemPrefix: String?
 
-    public init(baseURL: String = "https://api.anthropic.com", apiKey: String) {
+    public init(
+        baseURL: String = "https://api.anthropic.com",
+        apiKey: String,
+        promptCache: Bool = true,
+        stableSystemPrefix: String? = nil
+    ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.promptCache = promptCache
+        self.stableSystemPrefix = stableSystemPrefix
     }
 
     private func signed(_ url: URL) -> URLRequest {
@@ -18,12 +27,16 @@ public struct AnthropicProvider: ModelProvider {
         return http
     }
 
+    func urlRequest(_ request: ModelRequest) throws -> URLRequest {
+        var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"))
+        http.httpMethod = "POST"
+        http.httpBody = try HTTP.json(Self.body(request, cache: promptCache, stableSystemPrefix: stableSystemPrefix))
+        return http
+    }
+
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"))
-            http.httpMethod = "POST"
-            http.httpBody = try HTTP.json(Self.body(request, cache: Self.caches(baseURL)))
-            return HTTP.stream(http, decode: Self.decode)
+            return HTTP.stream(try urlRequest(request), decode: Self.decode)
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -35,7 +48,7 @@ public struct AnthropicProvider: ModelProvider {
     }
 
     /// Anthropic's own service keeps a prompt it has seen for a few minutes and charges a tenth for reading it back.
-    /// Other services that speak this format may not take the marks, so they are left plain.
+    /// Kept for checking official Anthropic domains; live requests follow the endpoint's `promptCache` setting.
     static func caches(_ baseURL: String) -> Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
         return host == "anthropic.com" || host.hasSuffix(".anthropic.com")
@@ -44,7 +57,13 @@ public struct AnthropicProvider: ModelProvider {
     /// `cache`: marks the instructions, the tools and the conversation so far as reusable. A turn calls the model
     /// several times (each tool step is another call); with the marks, everything before the newest step is read
     /// from Anthropic's cache instead of paid for again in full.
-    static func body(_ request: ModelRequest, cache: Bool = false) -> [String: Any] {
+    /// `stableSystemPrefix`: when caching is enabled and `request.system` begins with this prefix, splits `system`
+    /// into a cached stable prefix block followed by an uncached volatile tail block.
+    static func body(
+        _ request: ModelRequest,
+        cache: Bool = false,
+        stableSystemPrefix: String? = nil
+    ) -> [String: Any] {
         // Claude wants turns to alternate, and tool results inside a user turn.
         var turns: [(role: String, blocks: [[String: Any]])] = []
         func add(_ role: String, _ blocks: [[String: Any]]) {
@@ -107,7 +126,11 @@ public struct AnthropicProvider: ModelProvider {
         ]
         if !request.system.isEmpty {
             let canCacheSystem = cache && !request.system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            body["system"] = canCacheSystem ? [["type": "text", "text": request.system, "cache_control": ["type": "ephemeral"]]] as [[String: Any]] : request.system
+            if canCacheSystem {
+                body["system"] = Self.cachedSystemBlocks(request.system, stablePrefix: stableSystemPrefix)
+            } else {
+                body["system"] = request.system
+            }
         }
         if let temperature = request.temperature, !thinking { body["temperature"] = min(1, temperature) }
         switch request.thinking {
@@ -147,6 +170,25 @@ public struct AnthropicProvider: ModelProvider {
             body["messages"] = turns.map { ["role": $0.role, "content": $0.blocks] }
         }
         return body
+    }
+
+    private static func cachedSystemBlocks(_ system: String, stablePrefix: String?) -> [[String: Any]] {
+        if let prefix = stablePrefix,
+           !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           system.hasPrefix(prefix) {
+            let volatileTail = String(system.dropFirst(prefix.count))
+            if volatileTail.isEmpty {
+                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": ["type": "ephemeral"]]
+                return [prefixBlock]
+            }
+            if !volatileTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": ["type": "ephemeral"]]
+                let tailBlock: [String: Any] = ["type": "text", "text": volatileTail]
+                return [prefixBlock, tailBlock]
+            }
+        }
+        let wholeBlock: [String: Any] = ["type": "text", "text": system, "cache_control": ["type": "ephemeral"]]
+        return [wholeBlock]
     }
 
     /// Claude 4.6 and later choose how long to think themselves and take an effort level; earlier ones take a token budget.

@@ -106,15 +106,26 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     var service: String?
     /// Local Vault slot selected together with the service settings during restore.
     var credentialSlot: UUID?
+    /// Whether Anthropic endpoints send `cache_control` breakpoints; nil defaults to on.
+    var promptCache: Bool?
     var credentialID: String { EndpointKeyCoordinator.credentialID(for: id, slot: credentialSlot) }
 
-    init(id: String, name: String, kind: Kind, baseURL: String, models: [String], service: String? = nil) {
+    init(
+        id: String,
+        name: String,
+        kind: Kind,
+        baseURL: String,
+        models: [String],
+        service: String? = nil,
+        promptCache: Bool? = nil
+    ) {
         self.id = id
         self.name = name
         self.kind = kind
         self.baseURL = baseURL
         self.models = models
         self.service = service
+        self.promptCache = promptCache
     }
 
     /// What a model can do: as the user set it, or else as its name suggests.
@@ -145,10 +156,18 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
         return ["image", "dall-e", "flux", "seedream", "imagen"].contains { name.contains($0) }
     }
 
-    func provider(key: String) -> ModelProvider {
+    var usesPromptCache: Bool { promptCache ?? true }
+
+    func provider(key: String, stableSystemPrefix: String? = nil) -> ModelProvider {
         switch kind {
         case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle)
-        case .anthropic: return AnthropicProvider(baseURL: baseURL, apiKey: key)
+        case .anthropic:
+            return AnthropicProvider(
+                baseURL: baseURL,
+                apiKey: key,
+                promptCache: usesPromptCache,
+                stableSystemPrefix: stableSystemPrefix
+            )
         }
     }
 }
