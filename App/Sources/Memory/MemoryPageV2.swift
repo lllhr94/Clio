@@ -96,6 +96,7 @@ struct MemoryBadgePill: View {
 
 struct MemoryPageV2: View {
     @ObservedObject var team: TeamModel
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private enum LayerFilter: String, CaseIterable, Identifiable {
         case all, pinned, surface, deep, archived
@@ -138,6 +139,10 @@ struct MemoryPageV2: View {
     @State private var cachedPinnedIDs: Set<String> = []
     @State private var snapshotToken = 0
 
+    private var availableFilters: [LayerFilter] {
+        team.keeping ? LayerFilter.allCases : [.all, .surface, .deep]
+    }
+
     private var allRecords: [MemoryRecord] {
         var combined: [MemoryRecord] = []
         var seenIDs = Set<String>()
@@ -167,8 +172,10 @@ struct MemoryPageV2: View {
                 )
             }
         }
-        for archived in cachedArchived where seenIDs.insert(archived.id).inserted {
-            combined.append(archived)
+        if team.keeping {
+            for archived in cachedArchived where seenIDs.insert(archived.id).inserted {
+                combined.append(archived)
+            }
         }
         return combined.sorted { lhs, rhs in
             let lTime = max(lhs.usedAtMs ?? 0, lhs.createdAtMs)
@@ -206,8 +213,9 @@ struct MemoryPageV2: View {
         let recordsSnapshot = allRecords
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let queryMatched = recordsSnapshot.filter { matchesQuery($0, trimmedQuery: trimmedQuery) }
+        let effectiveFilter = availableFilters.contains(filter) ? filter : .all
         let visibleRecords = queryMatched.filter { record in
-            if let targetLayer = filter.layer {
+            if let targetLayer = effectiveFilter.layer {
                 return record.layer == targetLayer
             }
             return true
@@ -216,7 +224,8 @@ struct MemoryPageV2: View {
         return contentScrollView(
             allRecords: recordsSnapshot,
             visible: visibleRecords,
-            otherLayerMatchCount: filter == .all ? 0 : queryMatched.count,
+            effectiveFilter: effectiveFilter,
+            otherLayerMatchCount: effectiveFilter == .all ? 0 : queryMatched.count,
             trimmedQuery: trimmedQuery
         )
         .scrollIndicators(.hidden)
@@ -281,6 +290,7 @@ struct MemoryPageV2: View {
     private func contentScrollView(
         allRecords recordsSnapshot: [MemoryRecord],
         visible: [MemoryRecord],
+        effectiveFilter: LayerFilter,
         otherLayerMatchCount: Int,
         trimmedQuery: String
     ) -> some View {
@@ -296,11 +306,12 @@ struct MemoryPageV2: View {
                     feedbackBanner(importFeedback)
                 }
 
-                layerFilterSection(recordsSnapshot)
+                layerFilterSection(recordsSnapshot, effectiveFilter: effectiveFilter)
                 quickAddAndToolsSection
                 memoryListSection(
                     allCount: recordsSnapshot.count,
                     visible: visible,
+                    effectiveFilter: effectiveFilter,
                     otherLayerMatchCount: otherLayerMatchCount,
                     trimmedQuery: trimmedQuery
                 )
@@ -393,6 +404,7 @@ struct MemoryPageV2: View {
                     .foregroundStyle(Ink.inkFaint)
             }
             .buttonStyle(TapStyle(grow: Ink.Space.xs))
+            .accessibilityLabel(L.t("actions.close"))
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.m)
@@ -401,24 +413,51 @@ struct MemoryPageV2: View {
 
     // MARK: - Filter & Quick-Add
 
-    private func layerFilterSection(_ records: [MemoryRecord]) -> some View {
+    private func layerFilterSection(_ records: [MemoryRecord], effectiveFilter: LayerFilter) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            Picker(L.t("memoryV2.layerLabel"), selection: $filter) {
-                ForEach(LayerFilter.allCases) { option in
-                    Text(option.title).tag(option)
+            if typeSize.isAccessibilitySize {
+                WrapLayout(spacing: Ink.Space.s) {
+                    ForEach(availableFilters) { option in
+                        let selected = effectiveFilter == option
+                        Button {
+                            Haptics.tick(0.45)
+                            filter = option
+                        } label: {
+                            Text(option.title)
+                                .font(.system(size: Ink.Size.sub, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .padding(.vertical, Ink.Space.xs)
+                                .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                        }
+                        .buttonStyle(TapStyle())
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
+            } else {
+                Picker(L.t("memoryV2.layerLabel"), selection: $filter) {
+                    ForEach(availableFilters) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
 
-            let pinnedCount = count(for: .pinned, in: records)
             let surfaceCount = count(for: .surface, in: records)
             let deepCount = count(for: .deep, in: records)
-            let archivedCount = count(for: .archived, in: records)
-
-            Text(L.format("memoryV2.countsSummary", pinnedCount, surfaceCount, deepCount, archivedCount))
-                .font(.system(size: Ink.Size.small, weight: .medium))
-                .foregroundStyle(Ink.inkSoft)
-                .padding(.horizontal, Ink.Space.l)
+            if team.keeping {
+                let pinnedCount = count(for: .pinned, in: records)
+                let archivedCount = count(for: .archived, in: records)
+                Text(L.format("memoryV2.countsSummary", pinnedCount, surfaceCount, deepCount, archivedCount))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.horizontal, Ink.Space.l)
+            } else {
+                Text(L.format("settings.memoryCounts", surfaceCount, deepCount))
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.horizontal, Ink.Space.l)
+            }
 
             Text(L.format("memoryV2.surfaceLimitNote", TeamModel.surfaceLimit))
                 .font(.system(size: Ink.Size.small))
@@ -482,25 +521,28 @@ struct MemoryPageV2: View {
     private func memoryListSection(
         allCount: Int,
         visible: [MemoryRecord],
+        effectiveFilter: LayerFilter,
         otherLayerMatchCount: Int,
         trimmedQuery: String
     ) -> some View {
         if visible.isEmpty {
             emptyStateCard(
                 allCount: allCount,
+                effectiveFilter: effectiveFilter,
                 otherLayerMatchCount: otherLayerMatchCount,
                 trimmedQuery: trimmedQuery
             )
-        } else if filter == .all {
+        } else if effectiveFilter == .all {
+            let layers: [MemoryLayer] = team.keeping ? MemoryLayer.allCases : [.surface, .deep]
             VStack(alignment: .leading, spacing: Ink.Space.l) {
-                ForEach(MemoryLayer.allCases, id: \.self) { layer in
+                ForEach(layers, id: \.self) { layer in
                     let bucket = visible.filter { $0.layer == layer }
                     if !bucket.isEmpty {
                         layerBucketCard(title: MemoryV2Copy.layerTitle(layer), records: bucket)
                     }
                 }
             }
-        } else if let targetLayer = filter.layer {
+        } else if let targetLayer = effectiveFilter.layer {
             layerBucketCard(title: MemoryV2Copy.layerTitle(targetLayer), records: visible)
         }
     }
@@ -575,7 +617,7 @@ struct MemoryPageV2: View {
             editingRecord = record
         }
 
-        if record.layer != .pinned {
+        if team.keeping && record.layer != .pinned {
             Button(L.t("memoryV2.moveToPinned"), systemImage: "pin") {
                 moveRecord(record.id, to: .pinned)
             }
@@ -602,7 +644,7 @@ struct MemoryPageV2: View {
             }
         }
 
-        if record.layer != .archived {
+        if team.keeping && record.layer != .archived {
             Button(L.t("memoryV2.moveToArchived"), systemImage: "archivebox") {
                 withAnimation(Ink.Motion.settle) {
                     team.archiveMemory(record.id)
@@ -620,6 +662,7 @@ struct MemoryPageV2: View {
 
     private func emptyStateCard(
         allCount: Int,
+        effectiveFilter: LayerFilter,
         otherLayerMatchCount: Int,
         trimmedQuery: String
     ) -> some View {
@@ -635,7 +678,7 @@ struct MemoryPageV2: View {
         } else if allCount == 0 {
             message = L.t("empty.memory")
             detail = L.t("settings.memoryEmptyNote")
-        } else if filter == .archived {
+        } else if effectiveFilter == .archived {
             message = L.t("memoryV2.emptyArchived")
             detail = nil
         } else {
@@ -704,6 +747,7 @@ private struct MemoryDetailSheet: View {
     var onChanged: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     @State private var text: String
     @State private var layer: MemoryLayer
@@ -716,9 +760,19 @@ private struct MemoryDetailSheet: View {
         self.record = record
         self.onChanged = onChanged
         _text = State(initialValue: record.text)
-        _layer = State(initialValue: record.layer)
+        let initialLayer: MemoryLayer
+        if team.keeping {
+            initialLayer = record.layer
+        } else {
+            initialLayer = record.layer == .deep ? .deep : .surface
+        }
+        _layer = State(initialValue: initialLayer)
         _kind = State(initialValue: record.kind.isEmpty ? "fact" : record.kind)
         _topic = State(initialValue: record.topic)
+    }
+
+    private var availableLayers: [MemoryLayer] {
+        team.keeping ? MemoryLayer.allCases : [.surface, .deep]
     }
 
     private var trimmedText: String {
@@ -739,7 +793,9 @@ private struct MemoryDetailSheet: View {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
                     contentSection
                     layerSection
-                    metadataSection
+                    if team.keeping {
+                        metadataSection
+                    }
                     provenanceSection
                     deleteSection
                 }
@@ -804,12 +860,33 @@ private struct MemoryDetailSheet: View {
     private var layerSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("memoryV2.layerLabel"))
-            Picker(L.t("memoryV2.layerLabel"), selection: $layer) {
-                ForEach(MemoryLayer.allCases, id: \.self) { option in
-                    Text(MemoryV2Copy.layerTitle(option)).tag(option)
+            if typeSize.isAccessibilitySize {
+                WrapLayout(spacing: Ink.Space.s) {
+                    ForEach(availableLayers, id: \.self) { option in
+                        let selected = layer == option
+                        Button {
+                            Haptics.tick(0.45)
+                            layer = option
+                        } label: {
+                            Text(MemoryV2Copy.layerTitle(option))
+                                .font(.system(size: Ink.Size.sub, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .padding(.vertical, Ink.Space.xs)
+                                .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                        }
+                        .buttonStyle(TapStyle())
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
+            } else {
+                Picker(L.t("memoryV2.layerLabel"), selection: $layer) {
+                    ForEach(availableLayers, id: \.self) { option in
+                        Text(MemoryV2Copy.layerTitle(option)).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
 
             Text(MemoryV2Copy.layerHint(layer))
                 .font(.system(size: Ink.Size.small))
@@ -952,6 +1029,7 @@ private struct MemoryDetailSheet: View {
 private struct MemoryMirrorViewerSheet: View {
     @ObservedObject var team: TeamModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private enum MirrorTab: String, CaseIterable, Identifiable {
         case dangan, zhenzhi
@@ -971,6 +1049,16 @@ private struct MemoryMirrorViewerSheet: View {
         }
     }
 
+    private var fontPicker: some View {
+        Picker(L.t("memoryV2.mirrorFontLabel"), selection: $useMonospace) {
+            Text(L.t("memoryV2.mirrorFontCode")).tag(true)
+            Text(L.t("memoryV2.mirrorFontSerif")).tag(false)
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .accessibilityLabel(L.t("memoryV2.mirrorFontLabel"))
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -981,18 +1069,22 @@ private struct MemoryMirrorViewerSheet: View {
                     }
                     .pickerStyle(.segmented)
 
-                    HStack(spacing: Ink.Space.m) {
-                        Text(L.t("memoryV2.mirrorLocationNote"))
-                            .font(.system(size: Ink.Size.small))
-                            .foregroundStyle(Ink.inkSoft)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Picker("", selection: $useMonospace) {
-                            Text(L.t("memoryV2.mirrorFontCode")).tag(true)
-                            Text(L.t("memoryV2.mirrorFontSerif")).tag(false)
+                    if typeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: Ink.Space.s) {
+                            Text(L.t("memoryV2.mirrorLocationNote"))
+                                .font(.system(size: Ink.Size.small))
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            fontPicker
                         }
-                        .pickerStyle(.segmented)
-                        .frame(width: 112 * UIScale.factor)
+                    } else {
+                        HStack(spacing: Ink.Space.m) {
+                            Text(L.t("memoryV2.mirrorLocationNote"))
+                                .font(.system(size: Ink.Size.small))
+                                .foregroundStyle(Ink.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            fontPicker
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 0) {
@@ -1031,6 +1123,7 @@ private struct MemoryMirrorViewerSheet: View {
                         ) {
                             Image(systemName: "square.and.arrow.up")
                         }
+                        .accessibilityLabel(L.t("actions.share"))
                     } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ShareLink(
                             item: content,
@@ -1038,6 +1131,7 @@ private struct MemoryMirrorViewerSheet: View {
                         ) {
                             Image(systemName: "square.and.arrow.up")
                         }
+                        .accessibilityLabel(L.t("actions.share"))
                     }
 
                     Button(L.t("actions.done")) {

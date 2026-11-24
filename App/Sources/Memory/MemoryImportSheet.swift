@@ -7,6 +7,7 @@ struct MemoryImportSheet: View {
     var onImported: ((Int) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     @State private var rawText = ""
     @State private var defaultLayer: MemoryLayer = .surface
@@ -18,6 +19,7 @@ struct MemoryImportSheet: View {
     @State private var skipped: [MemoryImportSkippedItem] = []
     @State private var commitNotice: String?
 
+    @State private var layerOverrides: [String: MemoryLayer] = [:]
     @State private var cachedSecrets: [String] = []
     @State private var cachedExistingTexts: [String] = []
     @State private var cachedSuppressedHashes: Set<String> = []
@@ -31,6 +33,10 @@ struct MemoryImportSheet: View {
             UTType(filenameExtension: "md"),
             UTType(filenameExtension: "markdown"),
         ].compactMap { $0 }
+    }
+
+    private var availableLayers: [MemoryLayer] {
+        team.keeping ? MemoryLayer.allCases : [.surface, .deep]
     }
 
     private var selectedCount: Int {
@@ -100,10 +106,10 @@ struct MemoryImportSheet: View {
                 }
             }
             .onChange(of: rawText) { _, _ in
-                reparse(preservingDeselections: true)
+                reparse(preservingSelectionsAndLayers: true)
             }
             .onChange(of: defaultLayer) { _, _ in
-                reparse(preservingDeselections: true)
+                reparse(preservingSelectionsAndLayers: true)
             }
             .task {
                 await loadImportContext()
@@ -162,6 +168,7 @@ struct MemoryImportSheet: View {
                             rawText = ""
                             loadedFileName = nil
                             fileError = nil
+                            layerOverrides = [:]
                         } label: {
                             Text(L.t("memoryImport.clearInput"))
                                 .font(.system(size: Ink.Size.sub))
@@ -193,16 +200,39 @@ struct MemoryImportSheet: View {
     private var layerSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("memoryImport.defaultLayerLabel"))
-            Picker(L.t("memoryImport.defaultLayerLabel"), selection: $defaultLayer) {
-                Text(MemoryV2Copy.layerTitle(.surface)).tag(MemoryLayer.surface)
-                Text(MemoryV2Copy.layerTitle(.deep)).tag(MemoryLayer.deep)
+            if typeSize.isAccessibilitySize {
+                WrapLayout(spacing: Ink.Space.s) {
+                    ForEach([MemoryLayer.surface, MemoryLayer.deep], id: \.self) { option in
+                        let selected = defaultLayer == option
+                        Button {
+                            Haptics.tick(0.45)
+                            defaultLayer = option
+                        } label: {
+                            Text(MemoryV2Copy.layerTitle(option))
+                                .font(.system(size: Ink.Size.sub, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? Ink.paper : Ink.ink)
+                                .padding(.horizontal, Ink.Space.m)
+                                .padding(.vertical, Ink.Space.xs)
+                                .background(selected ? Ink.accent : Ink.rule.opacity(0.45), in: Capsule())
+                        }
+                        .buttonStyle(TapStyle())
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+            } else {
+                Picker(L.t("memoryImport.defaultLayerLabel"), selection: $defaultLayer) {
+                    Text(MemoryV2Copy.layerTitle(.surface)).tag(MemoryLayer.surface)
+                    Text(MemoryV2Copy.layerTitle(.deep)).tag(MemoryLayer.deep)
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
 
-            Text(L.t("memoryImport.defaultLayerNote"))
-                .font(.system(size: Ink.Size.small))
-                .foregroundStyle(Ink.inkSoft)
-                .padding(.horizontal, Ink.Space.l)
+            if team.keeping {
+                Text(L.t("memoryImport.defaultLayerNote"))
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(.horizontal, Ink.Space.l)
+            }
         }
     }
 
@@ -268,6 +298,8 @@ struct MemoryImportSheet: View {
                     .padding(.top, Ink.Space.xs / 2)
             }
             .buttonStyle(TapStyle(grow: Ink.Space.xs))
+            .accessibilityLabel(item.text)
+            .accessibilityValue(item.selected ? L.t("memoryImport.selectedState") : L.t("memoryImport.unselectedState"))
 
             VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(item.text)
@@ -282,7 +314,7 @@ struct MemoryImportSheet: View {
 
                 WrapLayout(spacing: Ink.Space.xs) {
                     Menu {
-                        ForEach(MemoryLayer.allCases, id: \.self) { layer in
+                        ForEach(availableLayers, id: \.self) { layer in
                             Button {
                                 setTargetLayer(id: item.id, layer: layer)
                             } label: {
@@ -359,7 +391,17 @@ struct MemoryImportSheet: View {
 
     private func setTargetLayer(id: String, layer: MemoryLayer) {
         guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
-        candidates[index].targetLayer = layer
+        let resolved: MemoryLayer
+        if team.keeping {
+            resolved = layer
+        } else {
+            resolved = (layer == .deep) ? .deep : .surface
+        }
+        candidates[index].targetLayer = resolved
+        let key = MemorySafety.normalizedFactKey(candidates[index].text)
+        if !key.isEmpty {
+            layerOverrides[key] = resolved
+        }
     }
 
     private func loadImportContext() async {
@@ -378,12 +420,12 @@ struct MemoryImportSheet: View {
         cachedSecrets = snapshot.secrets
         cachedExistingTexts = liveTexts + snapshot.archivedTexts
         cachedSuppressedHashes = promptSuppressed
-        reparse(preservingDeselections: true)
+        reparse(preservingSelectionsAndLayers: true)
     }
 
-    private func reparse(preservingDeselections: Bool) {
+    private func reparse(preservingSelectionsAndLayers: Bool) {
         let deselectedKeys: Set<String>
-        if preservingDeselections {
+        if preservingSelectionsAndLayers {
             deselectedKeys = Set(
                 candidates.filter { !$0.selected }.map { MemorySafety.normalizedFactKey($0.text) }
             )
@@ -409,12 +451,16 @@ struct MemoryImportSheet: View {
         )
 
         var nextCandidates = preview.candidates
-        if !deselectedKeys.isEmpty {
-            for index in nextCandidates.indices {
-                let key = MemorySafety.normalizedFactKey(nextCandidates[index].text)
-                if deselectedKeys.contains(key) {
-                    nextCandidates[index].selected = false
-                }
+        for index in nextCandidates.indices {
+            let key = MemorySafety.normalizedFactKey(nextCandidates[index].text)
+            if preservingSelectionsAndLayers && deselectedKeys.contains(key) {
+                nextCandidates[index].selected = false
+            }
+            if preservingSelectionsAndLayers, let override = layerOverrides[key] {
+                nextCandidates[index].targetLayer = override
+            }
+            if !keeping && (nextCandidates[index].targetLayer == .pinned || nextCandidates[index].targetLayer == .archived) {
+                nextCandidates[index].targetLayer = defaultLayer
             }
         }
 
@@ -423,22 +469,38 @@ struct MemoryImportSheet: View {
     }
 
     private func handlePickedFile(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else {
-            return
-        }
-        loadingFile = true
-        fileError = nil
+        switch result {
+        case .failure(let error):
+            if error is CancellationError {
+                return
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError {
+                return
+            }
+            fileError = L.format("memoryImport.filePickFailed", error.localizedDescription)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let hasSecurityScope = url.startAccessingSecurityScopedResource()
+            loadingFile = true
+            fileError = nil
 
-        Task {
-            defer { loadingFile = false }
-            let loadResult = await Self.readTextFile(at: url, maxBytes: Self.maxImportBytes)
-            switch loadResult {
-            case .success(let decoded):
-                fileError = nil
-                loadedFileName = url.lastPathComponent
-                rawText = decoded
-            case .failure(let errorKey):
-                fileError = L.t(errorKey)
+            Task {
+                defer { loadingFile = false }
+                let loadResult = await Self.readTextFile(
+                    at: url,
+                    hasSecurityScope: hasSecurityScope,
+                    maxBytes: Self.maxImportBytes
+                )
+                switch loadResult {
+                case .success(let decoded):
+                    fileError = nil
+                    layerOverrides = [:]
+                    loadedFileName = url.lastPathComponent
+                    rawText = decoded
+                case .failure(let errorKey):
+                    fileError = L.t(errorKey)
+                }
             }
         }
     }
@@ -448,11 +510,14 @@ struct MemoryImportSheet: View {
         case failure(String)
     }
 
-    private nonisolated static func readTextFile(at url: URL, maxBytes: Int) async -> FileReadResult {
+    private nonisolated static func readTextFile(
+        at url: URL,
+        hasSecurityScope: Bool,
+        maxBytes: Int
+    ) async -> FileReadResult {
         await Task.detached(priority: .userInitiated) {
-            let scoped = url.startAccessingSecurityScopedResource()
             defer {
-                if scoped { url.stopAccessingSecurityScopedResource() }
+                if hasSecurityScope { url.stopAccessingSecurityScopedResource() }
             }
             do {
                 let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])

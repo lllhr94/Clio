@@ -83,6 +83,9 @@ public enum MemoryImporter {
     private static let maxFactBytes = 450
     private static let maxTopicLength = 40
 
+    private static let pemBeginPattern = #"-----BEGIN [A-Z0-9 ]*-----"#
+    private static let pemEndPattern = #"-----END [A-Z0-9 ]*-----"#
+
     private static let tokenSecretPatterns: [String] = [
         #"\bsk-(?:proj-|ant-api\d*-|live-|test-)?[A-Za-z0-9_-]{16,}\b"#,
         #"\bsk-ant-[A-Za-z0-9_-]{12,}\b"#,
@@ -91,12 +94,12 @@ public enum MemoryImporter {
         #"\bAIza[0-9A-Za-z_-]{20,}\b"#,
         #"\bAKIA[0-9A-Z]{16}\b"#,
         #"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"#,
-        #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"#,
+        #"-----BEGIN [A-Z0-9 ]*-----"#,
         #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"#,
     ]
 
     private static let assignmentSecretPattern =
-        #"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|passwd|密码|密钥|口令|令牌)\s*[:=：]\s*(\S+)"#
+        #"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|passwd|密码|密钥|口令|令牌)\s*[:=：]\s*([^\r\n]+)"#
 
     private static let harmlessSecretPlaceholders: Set<String> = [
         "无", "暂无", "未知", "保密", "已设置", "未设置", "不保存", "不记住", "none", "n/a", "na", "unset", "redacted",
@@ -178,10 +181,26 @@ public enum MemoryImporter {
         var explicitLayer: MemoryLayer?
         var explicitLayerHeadingLevel: Int?
         var inMirrorBotsSection = false
+        var inPEMBlock = false
 
         for rawLine in lines {
             let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+
+            if inPEMBlock {
+                skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
+                if trimmed.range(of: pemEndPattern, options: .regularExpression) != nil {
+                    inPEMBlock = false
+                }
+                continue
+            }
+
+            if trimmed.range(of: pemBeginPattern, options: .regularExpression) != nil {
+                skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
+                inPEMBlock = trimmed.range(of: pemEndPattern, options: .regularExpression) == nil
+                continue
+            }
+
             if trimmed == MemoryMarkdownRenderer.endMarker {
                 inMirrorBotsSection = false
                 explicitLayer = nil
@@ -193,6 +212,13 @@ public enum MemoryImporter {
             if isStructuralNoise(trimmed) { continue }
 
             if let heading = parseMarkdownHeading(trimmed) {
+                if containsSecret(heading.title, orderedSecrets: orderedSecrets) {
+                    inMirrorBotsSection = false
+                    currentTopic = ""
+                    currentHeadingKind = nil
+                    skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
+                    continue
+                }
                 if let section = parseClioLayerHeading(heading.title) {
                     inMirrorBotsSection = section.isBotsSection
                     if section.isBotsSection {
@@ -223,6 +249,12 @@ public enum MemoryImporter {
             if isMirrorBoilerplate(trimmed) { continue }
 
             if let standaloneHeader = parseStandaloneSubheader(trimmed) {
+                if containsSecret(standaloneHeader, orderedSecrets: orderedSecrets) {
+                    currentTopic = ""
+                    currentHeadingKind = nil
+                    skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
+                    continue
+                }
                 currentTopic = clipTopic(standaloneHeader)
                 currentHeadingKind = inferKind(fromHeading: currentTopic)
                 continue
@@ -231,12 +263,19 @@ public enum MemoryImporter {
             let stripped = stripListAndQuotePrefix(trimmed)
             guard !stripped.isEmpty, !isMirrorBoilerplate(stripped) else { continue }
 
+            if containsSecret(stripped, orderedSecrets: orderedSecrets) {
+                skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
+                continue
+            }
+
             let parsedMeta = extractInlineMetadata(from: stripped)
             let bodyText = unwrapSimpleMarkdown(parsedMeta.text)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !bodyText.isEmpty else { continue }
 
-            if containsSecret(bodyText, orderedSecrets: orderedSecrets) {
+            if containsSecret(bodyText, orderedSecrets: orderedSecrets)
+                || (parsedMeta.topic.map { containsSecret($0, orderedSecrets: orderedSecrets) } ?? false)
+                || (parsedMeta.kind.map { containsSecret($0, orderedSecrets: orderedSecrets) } ?? false) {
                 skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
                 continue
             }
@@ -458,20 +497,16 @@ public enum MemoryImporter {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        if parts.count >= 2 {
-            let rawKind = parts[0]
-            let resolvedKind = canonicalKind(rawKind) ?? rawKind.lowercased()
+        if parts.count >= 2, let mappedKind = canonicalKind(parts[0]) {
             let resolvedTopic = clipTopic(parts.dropFirst().joined(separator: " / "))
-            return (resolvedKind, resolvedTopic.isEmpty ? nil : resolvedTopic, remainder)
+            return (mappedKind, resolvedTopic.isEmpty ? nil : resolvedTopic, remainder)
         }
 
-        if let single = parts.first {
-            if let mappedKind = canonicalKind(single) {
-                return (mappedKind, nil, remainder)
-            }
-            return (nil, clipTopic(single), remainder)
+        if parts.count == 1, let single = parts.first, let mappedKind = canonicalKind(single) {
+            return (mappedKind, nil, remainder)
         }
-        return (nil, nil, text)
+
+        return (nil, clipTopic(tagContent), remainder)
     }
 
     private static func unwrapSimpleMarkdown(_ text: String) -> String {
@@ -589,7 +624,7 @@ public enum MemoryImporter {
                 continue
             }
             let rhs = String(text[rhsRange])
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'`,;。；"))
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'`,;。；")))
                 .lowercased()
             if rhs.count >= 4 && !harmlessSecretPlaceholders.contains(rhs) {
                 return true

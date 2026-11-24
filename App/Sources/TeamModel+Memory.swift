@@ -275,14 +275,14 @@ extension TeamModel {
             if layer == .pinned || layer == .surface {
                 nextMemories[index].used = now
             }
-        } else if keeping, var restored = MemoryStoreBridge.shared.restorableMemorySnapshot(id: id) {
-            restored.deep = (layer == .deep) ? true : nil
+        } else if keeping, var archived = MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) {
+            archived.deep = (layer == .deep) ? true : nil
             if layer == .pinned || layer == .surface {
-                restored.used = now
+                archived.used = now
             }
             nextMemories.removeAll { $0.id == id }
-            nextMemories.append(restored)
-            fallbackMemory = restored
+            nextMemories.append(archived)
+            fallbackMemory = archived
         } else {
             return
         }
@@ -336,10 +336,15 @@ extension TeamModel {
         let cleanTopic = MemorySafety.redactSecrets(topic, secrets: orderedSecrets)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let textChanged = current?.text != safeText
-        let metaChanged = current == nil
-            || current?.layer != layer
-            || current?.kind != resolvedKind
-            || current?.topic != cleanTopic
+        let metaChanged: Bool
+        if keeping {
+            metaChanged = current == nil
+                || current?.layer != layer
+                || current?.kind != resolvedKind
+                || current?.topic != cleanTopic
+        } else {
+            metaChanged = current == nil || current?.layer != layer
+        }
 
         if layer == .archived {
             if !keeping {
@@ -395,9 +400,22 @@ extension TeamModel {
         var accepted: [(memory: Memory, layer: MemoryLayer, kind: String, topic: String)] = []
         for item in items {
             guard !MemoryImporter.looksLikeSecret(item.text, secrets: orderedSecrets),
+                  !MemoryImporter.looksLikeSecret(item.kind, secrets: orderedSecrets),
+                  !MemoryImporter.looksLikeSecret(item.topic, secrets: orderedSecrets),
                   let cleanText = MemorySafety.sanitizeProposedFact(item.text, secrets: orderedSecrets) else {
                 continue
             }
+            let rawKind = item.kind.trimmingCharacters(in: .whitespacesAndNewlines)
+            let redactedKind = MemorySafety.redactSecrets(rawKind, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard redactedKind == rawKind, !redactedKind.contains("〔隐去〕") else { continue }
+            let cleanKind = redactedKind.isEmpty ? "fact" : redactedKind
+
+            let rawTopic = item.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+            let redactedTopic = MemorySafety.redactSecrets(rawTopic, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard redactedTopic == rawTopic, !redactedTopic.contains("〔隐去〕") else { continue }
+
             let key = MemorySafety.normalizedFactKey(cleanText)
             let hash = MemorySafety.retractionHash(cleanText)
             guard !key.isEmpty, !hash.isEmpty else { continue }
@@ -407,11 +425,14 @@ extension TeamModel {
             }
             guard seenKeys.insert(key).inserted else { continue }
 
-            let rawKind = item.kind.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanKind = rawKind.isEmpty ? "fact" : rawKind
-            let cleanTopic = MemorySafety.redactSecrets(item.topic, secrets: orderedSecrets)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let deepFlag: Bool? = (item.layer == .deep) ? true : nil
+            let targetLayer: MemoryLayer
+            if !keeping && item.layer == .pinned {
+                targetLayer = .surface
+            } else {
+                targetLayer = item.layer
+            }
+
+            let deepFlag: Bool? = (targetLayer == .deep) ? true : nil
             let memory = Memory(
                 id: UUID().uuidString,
                 text: cleanText,
@@ -422,7 +443,7 @@ extension TeamModel {
                 automatic: nil,
                 editedByUser: true
             )
-            accepted.append((memory: memory, layer: item.layer, kind: cleanKind, topic: cleanTopic))
+            accepted.append((memory: memory, layer: targetLayer, kind: cleanKind, topic: redactedTopic))
         }
 
         guard !accepted.isEmpty else { return 0 }
@@ -440,88 +461,40 @@ extension TeamModel {
         }
 
         let activeEntries = accepted.filter { $0.layer != .archived }
-        let archivedEntries = accepted.filter { $0.layer == .archived }
-        var committedCount = 0
+        let existingPins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+        let newPinIDs = Set(activeEntries.filter { $0.layer == .pinned }.map(\.memory.id))
+        var nextMemories = memories + activeEntries.map(\.memory)
+        Self.settleMemory(&nextMemories, pinnedIDs: existingPins.union(newPinIDs))
 
-        if !activeEntries.isEmpty {
-            let existingPins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
-            let newPinIDs = Set(activeEntries.filter { $0.layer == .pinned }.map(\.memory.id))
-            var nextMemories = memories + activeEntries.map(\.memory)
-            Self.settleMemory(&nextMemories, pinnedIDs: existingPins.union(newPinIDs))
-
-            var nextBook = memoryBook
-            nextBook.memories = nextMemories
-
-            if activeEntries.count == 1 {
-                let single = activeEntries[0]
-                let finalLayer: MemoryLayer
-                if single.layer == .pinned {
-                    finalLayer = .pinned
-                } else if let settled = nextMemories.first(where: { $0.id == single.memory.id }) {
-                    finalLayer = settled.deep == true ? .deep : .surface
-                } else {
-                    finalLayer = single.layer
-                }
-                let mutation: MemoryCommitMutation
-                if finalLayer == .pinned || single.kind != "fact" || !single.topic.isEmpty {
-                    mutation = .layerAndMetadata(
-                        id: single.memory.id,
-                        layer: finalLayer,
-                        kind: single.kind,
-                        topic: single.topic,
-                        confidence: nil,
-                        fallbackMemory: single.memory,
-                        nowMs: now
-                    )
-                } else {
-                    mutation = .remember(memory: single.memory, explicitUserAction: true, nowMs: now)
-                }
-                guard (try? commitMemoryBook(nextBook, mutation: mutation)) != nil else {
-                    return 0
-                }
-                return 1
+        let batchEntries: [MemoryImportBatchEntry] = accepted.map { entry in
+            let finalLayer: MemoryLayer
+            if entry.layer == .surface,
+               let settled = nextMemories.first(where: { $0.id == entry.memory.id }),
+               settled.deep == true {
+                finalLayer = .deep
+            } else {
+                finalLayer = entry.layer
             }
-
-            guard (try? commitMemoryBook(nextBook, mutation: .none)) != nil else {
-                return 0
-            }
-            committedCount += activeEntries.count
-
-            for entry in activeEntries {
-                let currentLayer: MemoryLayer
-                if entry.layer == .pinned {
-                    currentLayer = .pinned
-                } else if let committed = memories.first(where: { $0.id == entry.memory.id }) {
-                    currentLayer = committed.deep == true ? .deep : .surface
-                } else {
-                    currentLayer = entry.layer
-                }
-                if currentLayer == .pinned || entry.kind != "fact" || !entry.topic.isEmpty {
-                    setMemoryLayer(entry.memory.id, currentLayer, kind: entry.kind, topic: entry.topic)
-                }
-            }
+            return MemoryImportBatchEntry(
+                memory: entry.memory,
+                layer: finalLayer,
+                kind: entry.kind,
+                topic: entry.topic
+            )
         }
 
-        for entry in archivedEntries {
-            var nextBook = memoryBook
-            nextBook.memories = memories
-            if (try? commitMemoryBook(
-                nextBook,
-                mutation: .layerAndMetadata(
-                    id: entry.memory.id,
-                    layer: .archived,
-                    kind: entry.kind,
-                    topic: entry.topic,
-                    confidence: nil,
-                    fallbackMemory: entry.memory,
-                    nowMs: now
-                )
-            )) != nil {
-                committedCount += 1
-            }
+        var nextBook = memoryBook
+        nextBook.memories = nextMemories
+        guard let committed = try? commitMemoryBook(
+            nextBook,
+            mutation: .importBatch(items: batchEntries, nowMs: now)
+        ) else {
+            return 0
         }
 
-        return committedCount
+        var committedIDs = Set(committed.memories.map(\.id))
+        committedIDs.formUnion(MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.id))
+        return accepted.reduce(0) { $0 + (committedIDs.contains($1.memory.id) ? 1 : 0) }
     }
 
     func archiveMemory(_ id: String) {

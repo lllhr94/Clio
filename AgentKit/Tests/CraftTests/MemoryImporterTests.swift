@@ -257,4 +257,64 @@ final class MemoryImporterTests: XCTestCase {
         ])
         XCTAssertTrue(preview.candidates.allSatisfy { $0.targetLayer == .deep && $0.topic == "生活" })
     }
+
+    func testBlocksMultilinePEMBlocksAndMultiWordSecretsAndSecretHeadings() {
+        let vaultSecret = "VaultSecretMixedCase99"
+        let pemBegin = "-----BEGIN " + "PRIVATE KEY-----"
+        let pemEnd = "-----END " + "PRIVATE KEY-----"
+        let input = """
+        \(pemBegin)
+        MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7FakeBodyLine1
+        FakeBase64KeyMaterialLine2WithSlash+AndEquals==
+        \(pemEnd)
+
+        ## \(vaultSecret)
+        - 平时喜欢喝茶
+
+        \(vaultSecret):
+        - [\(vaultSecret) · 饮食] 喜欢绿茶
+        - [\(vaultSecret)] 喜欢红茶
+        - password: my real passphrase
+        """
+
+        let preview = MemoryImporter.parse(input, defaultLayer: .surface, secrets: [vaultSecret])
+
+        XCTAssertEqual(preview.candidates.map(\.text), ["平时喜欢喝茶"])
+        XCTAssertEqual(preview.candidates.first?.topic, "")
+        XCTAssertGreaterThanOrEqual(preview.skipped.count, 8)
+        XCTAssertTrue(preview.skipped.allSatisfy { $0.reason == .secretDetected && $0.text == MemoryImporter.redactedSecretPreview })
+    }
+
+    func testPreservesCompoundTopicsLikeIOSSwiftVerbatim() {
+        let records = [
+            MemoryRecord(
+                id: "t1",
+                text: "喜欢用 SwiftUI 和 Combine",
+                layer: .surface,
+                kind: "fact",
+                topic: "iOS / Swift",
+                createdAtMs: 1_000
+            ),
+            MemoryRecord(
+                id: "t2",
+                text: "代码保持简洁",
+                layer: .pinned,
+                pinned: true,
+                kind: "rule",
+                topic: "iOS / Swift",
+                createdAtMs: 2_000
+            ),
+        ]
+
+        let dangan = MemoryMarkdownRenderer.renderDangan(records: records)
+        let preview = MemoryImporter.parse(dangan, defaultLayer: .surface)
+
+        XCTAssertTrue(preview.skipped.isEmpty)
+        XCTAssertEqual(preview.candidates.count, 2)
+        // `renderDangan` outputs `.pinned` section first, then `.surface` section.
+        XCTAssertEqual(preview.candidates[0].kind, "rule")
+        XCTAssertEqual(preview.candidates[0].topic, "iOS / Swift")
+        XCTAssertEqual(preview.candidates[1].kind, "preference")
+        XCTAssertEqual(preview.candidates[1].topic, "iOS / Swift")
+    }
 }
