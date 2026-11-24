@@ -788,6 +788,22 @@
     "sender": "%@ 请你填表",
     "usePickedSecret": "使用密匣中的「%@」"
   },
+  "ask": {
+    "questionHeader": "%@问：%@",
+    "multiHint": "可多选",
+    "selectedCount": "已选 %lld 项",
+    "rangeHint": "选 %lld–%lld 项",
+    "minHint": "至少 %lld 项",
+    "maxHint": "最多 %lld 项",
+    "maxReached": "最多只能选 %lld 项",
+    "recommended": "推荐",
+    "otherCustom": "其他 / 自己写",
+    "customTag": "自定义",
+    "customPlaceholder": "写下你的回答…",
+    "optional": "选填",
+    "selectedState": "已选",
+    "unselectedState": "未选"
+  },
   "roam": {
     "tabs": "标签",
     "newTab": "新标签",
