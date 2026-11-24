@@ -21,99 +21,17 @@ extension ChatPage {
     }
 
     var composerSuggestions: some View {
-        let query = DraftInput.suggestion(in: draft)
-        let suggestions = query.map { hints($0) } ?? []
-        let source = query?.source
-        return Group {
-            if !suggestions.isEmpty { hintStrip(suggestions) }
-        }
-        .task(id: source) { await loadSuggestions(source) }
+        ChatComposerSuggestionsView(
+            draftState: draftState,
+            chat: chat,
+            team: team,
+            files: $files,
+            detailOpen: $detailOpen
+        )
     }
 
     func loadSuggestions(_ source: DraftInput.Source?) async {
-        switch source {
-        case .skills:
-            let skills = await Task.detached(priority: .userInitiated) { SkillShelf.enabled }.value
-            if !Task.isCancelled { draftState.skills = skills }
-        case .files:
-            let job = Task.detached(priority: .userInitiated) {
-                DeskPicker.readFiles(capPerMount: 400, totalCap: 1200).map(\.path)
-            }
-            let paths = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
-            if !Task.isCancelled { draftState.files = paths }
-        case nil:
-            draftState.files = []
-            draftState.skills = []
-        }
-    }
-
-    func hints(_ query: DraftInput.Suggestion) -> [Hint] {
-        let typed = query.text.lowercased()
-        if query.source == .skills {
-            var list: [Hint] = [
-                Hint(id: "leaf", icon: "square.and.pencil", title: "/新对话", note: Words.t("另起一叶，眼下的收起来")) {
-                    if team.turnLeaf(chat.key) { draft = "" }
-                },
-                Hint(id: "redo", icon: "arrow.clockwise", title: "/重来", note: "最后一句重新回答") {
-                    guard !sendingBlocked else { return }
-                    draft = ""
-                    chat.retry()
-                },
-                Hint(id: "squeeze", icon: "rectangle.compress.vertical", title: "/压缩", note: "把较早的话写成提要，省上下文") {
-                    guard !sendingBlocked else { return }
-                    draft = ""
-                    Task { _ = try? await team.compress(chat.key) }
-                },
-                Hint(id: "detail", icon: "square.and.arrow.up", title: "/导出", note: "看这段对话的详情，可导出成 Markdown") {
-                    draft = ""
-                    detailOpen = true
-                },
-            ]
-            for item in draftState.skills where item.on {
-                list.append(Hint(id: "skill-" + item.id, icon: "wand.and.stars", title: "/" + item.skill.name, note: item.skill.description) {
-                    draft = "用技能「\(item.skill.name)」："
-                })
-            }
-            return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
-        } else {
-            let mountPrefix = MountedFolders.virtualFolder + "/"
-            let all = draftState.files.lazy.filter { typed.isEmpty || $0.lowercased().contains(typed) }.prefix(8)
-            return all.map { file in
-                let isMounted = file.hasPrefix(mountPrefix)
-                return Hint(id: "file-" + file, icon: isMounted ? "link" : "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
-                    if let at = draft.lastIndex(of: "@") { draft = String(draft[..<at]) }
-                    if !files.contains(file) { withAnimation(Ink.Motion.settle) { files.append(file) } }
-                }
-            }
-        }
-    }
-
-    func hintStrip(_ hints: [Hint]) -> some View {
-        VStack(spacing: 0) {
-            ForEach(hints.prefix(6)) { hint in
-                Button {
-                    Haptics.tick(0.4)
-                    hint.run()
-                } label: {
-                    HStack(spacing: Ink.Space.m) {
-                        Image(systemName: hint.icon).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(hint.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
-                            Text(hint.note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, Ink.Space.m)
-                    .padding(.vertical, Ink.Space.s)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.vertical, Ink.Space.xs)
-        .paperCard()
-        .padding(.bottom, Ink.Space.s)
-        .transition(.opacity.combined(with: .offset(y: 6)))
+        await ChatComposerSuggestionsView.loadSuggestions(source, into: draftState)
     }
 
     /// What the send button sends: the draft and the files picked for it.
@@ -151,5 +69,116 @@ extension ChatPage {
               photos.count < 4, let small else { return nil }
         withAnimation(Ink.Motion.settle) { photos.append(small) }
         return small
+    }
+}
+
+/// Isolated slash / `@` completion strip so keystrokes in `draftState.text` never redraw the outer composer or message list.
+struct ChatComposerSuggestionsView: View {
+    let draftState: ChatDraft
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    @Binding var files: [String]
+    @Binding var detailOpen: Bool
+
+    private var sendingBlocked: Bool {
+        team.phase != .demo && !team.canAcceptInput(for: chat.key)
+    }
+
+    var body: some View {
+        let query = DraftInput.suggestion(in: draftState.text)
+        let suggestions = query.map { hints($0) } ?? []
+        let source = query?.source
+        Group {
+            if !suggestions.isEmpty { hintStrip(suggestions) }
+        }
+        .task(id: source) {
+            await Self.loadSuggestions(source, into: draftState)
+        }
+    }
+
+    static func loadSuggestions(_ source: DraftInput.Source?, into draftState: ChatDraft) async {
+        switch source {
+        case .skills:
+            let skills = await Task.detached(priority: .userInitiated) { SkillShelf.enabled }.value
+            if !Task.isCancelled { draftState.skills = skills }
+        case .files:
+            let job = Task.detached(priority: .userInitiated) {
+                DeskPicker.readFiles(capPerMount: 400, totalCap: 1200).map(\.path)
+            }
+            let paths = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            if !Task.isCancelled { draftState.files = paths }
+        case nil:
+            draftState.files = []
+            draftState.skills = []
+        }
+    }
+
+    private func hints(_ query: DraftInput.Suggestion) -> [ChatPage.Hint] {
+        let typed = query.text.lowercased()
+        if query.source == .skills {
+            var list: [ChatPage.Hint] = [
+                ChatPage.Hint(id: "leaf", icon: "square.and.pencil", title: "/新对话", note: Words.t("另起一叶，眼下的收起来")) {
+                    if team.turnLeaf(chat.key) { draftState.text = "" }
+                },
+                ChatPage.Hint(id: "redo", icon: "arrow.clockwise", title: "/重来", note: "最后一句重新回答") {
+                    guard !sendingBlocked else { return }
+                    draftState.text = ""
+                    chat.retry()
+                },
+                ChatPage.Hint(id: "squeeze", icon: "rectangle.compress.vertical", title: "/压缩", note: "把较早的话写成提要，省上下文") {
+                    guard !sendingBlocked else { return }
+                    draftState.text = ""
+                    Task { _ = try? await team.compress(chat.key) }
+                },
+                ChatPage.Hint(id: "detail", icon: "square.and.arrow.up", title: "/导出", note: "看这段对话的详情，可导出成 Markdown") {
+                    draftState.text = ""
+                    detailOpen = true
+                },
+            ]
+            for item in draftState.skills where item.on {
+                list.append(ChatPage.Hint(id: "skill-" + item.id, icon: "wand.and.stars", title: "/" + item.skill.name, note: item.skill.description) {
+                    draftState.text = "用技能「\(item.skill.name)」："
+                })
+            }
+            return typed.isEmpty ? list : list.filter { $0.title.lowercased().contains(typed) || $0.note.lowercased().contains(typed) }
+        } else {
+            let mountPrefix = MountedFolders.virtualFolder + "/"
+            let all = draftState.files.lazy.filter { typed.isEmpty || $0.lowercased().contains(typed) }.prefix(8)
+            return all.map { file in
+                let isMounted = file.hasPrefix(mountPrefix)
+                return ChatPage.Hint(id: "file-" + file, icon: isMounted ? "link" : "doc", title: (file as NSString).lastPathComponent, note: Words.t("书案/") + file) {
+                    if let at = draftState.text.lastIndex(of: "@") { draftState.text = String(draftState.text[..<at]) }
+                    if !files.contains(file) { withAnimation(Ink.Motion.settle) { files.append(file) } }
+                }
+            }
+        }
+    }
+
+    private func hintStrip(_ hints: [ChatPage.Hint]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(hints.prefix(6)) { hint in
+                Button {
+                    Haptics.tick(0.4)
+                    hint.run()
+                } label: {
+                    HStack(spacing: Ink.Space.m) {
+                        Image(systemName: hint.icon).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(hint.title).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink).lineLimit(1)
+                            Text(hint.note).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+        .paperCard()
+        .padding(.bottom, Ink.Space.s)
+        .transition(.opacity.combined(with: .offset(y: 6)))
     }
 }

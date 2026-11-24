@@ -210,18 +210,8 @@ extension ChatPage {
     }
 
     /// A first line 「回望：…」 taken off the reply, and the rest.
-    static func lookback(_ text: String) -> (note: String?, rest: String) {
-        let trimmed = text.drop { $0 == "\n" || $0 == " " }
-        let probe = trimmed.drop { $0 == "*" || $0 == " " }
-        guard probe.hasPrefix("回望") else { return (nil, text) }
-        guard let first = trimmed.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else { return (nil, text) }
-        let line = first.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
-        for head in ["回望：", "回望:"] where line.hasPrefix(head) {
-            let note = String(line.dropFirst(head.count)).trimmingCharacters(in: .whitespaces)
-            let rest = trimmed.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
-            return (note.isEmpty ? nil : note, rest)
-        }
-        return (nil, text)
+    nonisolated static func lookback(_ text: String) -> (note: String?, rest: String) {
+        ProseTextTransforms.lookback(text)
     }
 
     /// Your bubble's tint: the paper's tone, the colour picked in 外观, or the accent wash while editing.

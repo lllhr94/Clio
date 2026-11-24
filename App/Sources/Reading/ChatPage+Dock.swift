@@ -15,141 +15,54 @@ extension ChatPage {
     enum DockCard: Hashable { case waiting, roam, working, away }
 
     var dockCards: [DockCard] {
+        Self.dockCards(team: team, chatKey: chat.key, waiting: waiting, working: working, liveWords: liveWords, awayItems: awayState.items)
+    }
+
+    static func dockCards(
+        team: TeamModel,
+        chatKey: String,
+        waiting: Approval?,
+        working: Bool,
+        liveWords: String?,
+        awayItems: [Happening]
+    ) -> [DockCard] {
         var cards: [DockCard] = []
         if waiting != nil { cards.append(.waiting) }
         // Only the conversation that asked for the takeover shows it.
-        if team.browser.handoff != nil, team.browser.handoffChat == nil || team.browser.handoffChat == chat.key { cards.append(.roam) }
+        if team.browser.handoff != nil, team.browser.handoffChat == nil || team.browser.handoffChat == chatKey { cards.append(.roam) }
         if working, waiting == nil, liveWords != nil { cards.append(.working) }
-        if !away.isEmpty, waiting == nil { cards.append(.away) }
+        if !awayItems.isEmpty, waiting == nil { cards.append(.away) }
         return cards
     }
 
-    /// Two cards or more stack into one, like notifications: the first in front, the edges of the next ones
-    /// showing behind it. A tap on the edges spreads them out.
-    @ViewBuilder
     var dock: some View {
-        let cards = dockCards
-        if cards.count <= 1 || dockOpen {
-            VStack(spacing: Ink.Space.s) {
-                if cards.count > 1 {
-                    HStack {
-                        Spacer()
-                        Button {
-                            Haptics.light()
-                            withAnimation(Ink.Motion.settle) { dockOpen = false }
-                        } label: {
-                            Label("收起", systemImage: "chevron.down").font(.system(size: Ink.Size.small, weight: .medium)).foregroundStyle(Ink.inkSoft)
-                        }
-                        .buttonStyle(TapStyle(grow: 8))
-                    }
-                }
-                ForEach(cards, id: \.self) { card in dockCard(card) }
-            }
-            .transition(.opacity)
-        } else {
-            ZStack(alignment: .top) {
-                ForEach(Array(cards.dropFirst().prefix(2).enumerated()), id: \.offset) { index, _ in
-                    RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
-                        .fill(Ink.paperRaised)
-                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule))
-                        .frame(height: 40)
-                        .scaleEffect(x: 1 - 0.05 * CGFloat(index + 1), y: 1, anchor: .top)
-                        .opacity(1 - 0.25 * Double(index + 1))
-                        .offset(y: -6 * CGFloat(index + 1))
-                }
-                dockCard(cards[0])
-            }
-            .padding(.top, 12)
-            .overlay(alignment: .top) {
-                // The showing edges open the stack.
-                Color.clear
-                    .frame(height: 16)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        Haptics.light()
-                        withAnimation(Ink.Motion.settle) { dockOpen = true }
-                    }
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel("展开另外 \(cards.count - 1) 条")
-            }
-            .transition(.opacity)
-        }
-    }
-
-    @ViewBuilder
-    func dockCard(_ card: DockCard) -> some View {
-        switch card {
-        case .waiting:
-            if let waiting {
-                if !InlineApprovalPolicy.canAnswer(answerable: waiting.answerable != false,
-                                                   forced: waiting.forced == true,
-                                                   tool: waiting.toolName,
-                                                   hasCode: waiting.detail?.code?.isEmpty == false) {
-                    Button {
-                        Haptics.grab()
-                        presentApproval(waiting)
-                    } label: {
-                        HStack(spacing: Ink.Space.m) {
-                            Image(systemName: "seal").foregroundStyle(Ink.warn)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(Words.t("候印 · \(waiting.tool ?? "要你同意")")).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
-                                if let reason = waiting.reason {
-                                    Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
-                                }
-                            }
-                            Spacer(minLength: 0)
-                            Text(Words.t("去落印")).font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.accent)
-                        }
-                        .padding(Ink.Space.m)
-                        .paperCard()
-                    }
-                    .buttonStyle(PressStyle())
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else {
-                    InlineApproval(approval: waiting, team: team, name: team.bots.first { $0.id == waiting.botId }?.name ?? bot.name) {
-                        presentApproval(waiting)
-                    }
-                    .id(waiting.id)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-        case .roam:
-            RoamSlip(browser: team.browser) {
-                typing = false
-                roaming = true
-            }
-        case .working:
-            if let words = liveWords {
-                WorkingBar(words: words, icon: liveIcon, tools: team.toolCount[chat.key] ?? 0, since: workingSince ?? Date(), free: Grant.Preset.current == .free) {
-                    following = true
-                    toEnd()
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        case .away:
-            awayCard
-        }
+        ChatDockAreaView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            awayState: awayState,
+            workTimer: workTimer,
+            calmPetMotion: calmPetMotion,
+            dockOpen: $dockOpen,
+            typing: $typing,
+            roaming: $roaming,
+            following: $following,
+            onPresentApproval: { approval in presentApproval(approval) },
+            onToEnd: { toEnd() }
+        )
     }
 
     var draftField: some View {
-        let placeholder: String
-        if dictation.listening {
-            placeholder = "正在听，说完点右边"
-        } else if dictation.transcribing {
-            placeholder = "正在转写语音…"
-        } else if working {
-            placeholder = "在做 · 可以直接插话"
-        } else {
-            placeholder = "同\(bot.name)说点什么…"
-        }
-        return TextField(placeholder, text: Binding(get: { draft }, set: { draft = $0 }), axis: .vertical)
-            .font(largeText ? .body : Ink.label)
-            .foregroundStyle(Ink.ink)
-            .lineLimit(1...(largeText ? 3 : 6))
-            .focused($typing)
-            .onChange(of: draft) { old, new in keepLongPaste(old, new) }
-            .padding(.vertical, 6)
-            .frame(minHeight: 34)
+        ChatDraftFieldView(
+            draftState: draftState,
+            chat: chat,
+            team: team,
+            dictation: dictation,
+            botName: bot.name,
+            largeText: largeText,
+            typing: $typing,
+            onPasteChange: { old, new in keepLongPaste(old, new) }
+        )
     }
 
     var composer: some View {
@@ -157,173 +70,52 @@ extension ChatPage {
     }
 
     var composerContents: some View {
-        VStack(spacing: Ink.Space.s) {
-            // The plan sits right on the composer, as one block with it, not as a second bar floating above.
-            VStack(spacing: Ink.Space.xs) {
-                if let plan = team.plans[chat.key] {
-                    PlanCard(steps: plan, maxHeight: chatViewport.height > 0 ? max(160, chatViewport.height * 0.38) : nil) { team.clearPlan(chat.key) }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                dock
-            }
-            if let problem = dictation.problem {
-                Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop)
-                    .onTapGesture { dictation.problem = nil }
-            }
-            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                if let quote {
-                    HStack(alignment: .top, spacing: Ink.Space.s) {
-                        Rectangle().fill(Ink.accent).frame(width: 2)
-                        Text(quote).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(3)
-                        Spacer(minLength: 0)
-                        Button {
-                            withAnimation(Ink.Motion.settle) { self.quote = nil }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill").font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.inkFaint)
-                        }
-                        .buttonStyle(TapStyle(grow: 8))
-                        .accessibilityLabel("不引用了")
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, Ink.Space.xs)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                if editing != nil {
-                    HStack(spacing: Ink.Space.s) {
-                        Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold))
-                        Text("改了重发：之后的对话会重新来过").font(Ink.footnote)
-                        Spacer()
-                        Button(L.t("actions.cancel")) {
-                            withAnimation(Ink.Motion.settle) {
-                                editing = nil
-                                draft = ""
-                            }
-                        }
-                        .font(Ink.footnote.weight(.semibold))
-                    }
-                    .foregroundStyle(Ink.accent)
-                    .padding(.top, Ink.Space.xs)
-                }
-                if !photos.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: Ink.Space.s) {
-                            ForEach(Array(photos.enumerated()), id: \.offset) { index, data in
-                                ZStack(alignment: .topTrailing) {
-                                    if let image = UIImage(data: data) {
-                                        Image(uiImage: image).resizable().scaledToFill()
-                                            .frame(width: 56, height: 56)
-                                            .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                                    }
-                                    Button {
-                                        withAnimation(Ink.Motion.settle) { _ = photos.remove(at: index) }
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: Ink.Size.body))
-                                            .foregroundStyle(Ink.paper, Ink.ink.opacity(0.6))
-                                    }
-                                    .accessibilityLabel("移除第 \(index + 1) 张照片")
-                                    .offset(x: 5, y: -5)
-                                }
-                            }
-                        }
-                        .padding(.top, 6)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                if !files.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: Ink.Space.s) {
-                            ForEach(files, id: \.self) { path in
-                                HStack(spacing: 4) {
-                                    Image(systemName: "doc").font(.system(size: Ink.Size.small))
-                                    Text((path as NSString).lastPathComponent).font(.system(size: Ink.Size.small, weight: .medium)).lineLimit(1)
-                                    Button {
-                                        withAnimation(Ink.Motion.settle) { files.removeAll { $0 == path } }
-                                    } label: {
-                                        Image(systemName: "xmark").font(.system(size: Ink.Size.micro, weight: .bold))
-                                    }
-                                    .buttonStyle(TapStyle(grow: 8))
-                                    .accessibilityLabel("移除文件：\((path as NSString).lastPathComponent)")
-                                }
-                                .foregroundStyle(Ink.ink)
-                                .padding(.horizontal, Ink.Space.m)
-                                .frame(height: 30)
-                                .background(Ink.mine, in: .capsule)
-                            }
-                        }
-                        .padding(.top, 6)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                ChatSection { composerSuggestions }
-                if largeText { ChatSection { draftField } }
-                // One row at rest, like any messaging app: add, write, speak or send.
-                HStack(alignment: .bottom, spacing: Ink.Space.s) {
-                    Button {
-                        Haptics.light()
-                        typing = false
-                        attaching = true
-                    } label: {
-                        let lit = !photos.isEmpty || !files.isEmpty
-                        Image(systemName: "plus")
-                            .font(.system(size: Ink.Size.sub, weight: .medium))
-                            .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
-                            .frame(width: 34, height: 34)
-                            .background(lit ? Ink.accentWash : Color.clear, in: .circle)
-                            .contentShape(.circle)
-                    }
-                    .buttonStyle(PressStyle(haptic: false))
-                    .accessibilityLabel(Words.t("加照片、文件，或改这段絮语的设置"))
-                    .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
-                    .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                        if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { receive(urls) } }
-                    }
-                    if !largeText { ChatSection { draftField } }
-                    if composing, team.place(of: chat.key) != .desk {
-                        placeChip
-                            .transition(.opacity.combined(with: .scale(scale: 0.8)))
-                    }
-                    Button {
-                        Haptics.light()
-                        typing = false
-                        usageOpen = true
-                    } label: {
-                        let share = context?.share ?? 0
-                        ContextRing(share: share, showsNumber: !composing && share >= 0.5)
-                    }
-                    .buttonStyle(TapStyle())
-                    .accessibilityLabel("用量：下次请求约占上下文的 \(UsageSheet.percent(context?.share ?? 0))")
-                    action
-                }
-            }
-            .animation(Ink.Motion.settle, value: composing)
-            .padding(.horizontal, Ink.Space.s)
-            .padding(.vertical, 6 * UIScale.factor)
-            .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
-            if let hint {
-                Text(hint)
-                    .font(Ink.footnote)
-                    .foregroundStyle(Ink.inkSoft)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                    .onTapGesture { withAnimation(Ink.Motion.settle) { self.hint = nil } }
-            }
-        }
-        .padding(.horizontal, Ink.Bar.edge)
-        .padding(.bottom, Ink.Space.s)
-        .animation(petDockMotion, value: waiting?.id)
-        .overlay(alignment: .top) {
-            ChatFloatingJumpOverlay(
-                chrome: chrome,
-                petPerch: petPerch,
-                inHistory: historyPage != nil,
-                following: following,
-                onPrevious: { stepQuestion(earlier: true) },
-                onNext: { stepQuestion(earlier: false) },
-                onLatest: returnToLatest
-            )
-        }
+        ChatComposerBarView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            chrome: chrome,
+            petPerch: petPerch,
+            dictation: dictation,
+            draftState: draftState,
+            followState: followState,
+            notice: notice,
+            awayState: awayState,
+            contextMetrics: contextMetrics,
+            workTimer: workTimer,
+            historyInView: historyPage != nil,
+            largeText: largeText,
+            confirmStop: confirmStop,
+            calmPetMotion: calmPetMotion,
+            chatViewportHeight: chatViewport.height,
+            typing: $typing,
+            usageOpen: $usageOpen,
+            pickerShown: $pickerShown,
+            importingFile: $importingFile,
+            picks: $picks,
+            attaching: $attaching,
+            dockOpen: $dockOpen,
+            askingStop: $askingStop,
+            detailOpen: $detailOpen,
+            roaming: $roaming,
+            editing: $editing,
+            quote: $quote,
+            photos: $photos,
+            files: $files,
+            following: $following,
+            onPresentApproval: { approval in presentApproval(approval) },
+            onToEnd: { toEnd() },
+            onPreviousQuestion: { stepQuestion(earlier: true) },
+            onNextQuestion: { stepQuestion(earlier: false) },
+            onReturnToLatest: returnToLatest,
+            onClearComposer: clearComposer,
+            onListen: listen,
+            onRedoFrom: { entry, text in redo(from: entry, text: text) },
+            onPasteChange: { old, new in keepLongPaste(old, new) },
+            onReceiveURLs: { urls in receive(urls) },
+            fileNote: { fileNote },
+            outgoingText: { outgoing }
+        )
     }
 
     var minimap: some View {
@@ -529,6 +321,963 @@ extension ChatPage {
     }
 
     var action: some View {
+        ChatActionButtonView(
+            chat: chat,
+            team: team,
+            dictation: dictation,
+            draftState: draftState,
+            confirmStop: confirmStop,
+            askingStop: $askingStop,
+            editing: $editing,
+            quote: $quote,
+            photos: photos,
+            files: files,
+            fileNote: { fileNote },
+            outgoingText: { outgoing },
+            onListen: listen,
+            onClearComposer: clearComposer,
+            onRedoFrom: { entry, text in redo(from: entry, text: text) }
+        )
+    }
+}
+
+/// Bottom safe-area container hosting the floating pet perch, optional inline form, and either the find bar or composer.
+struct ChatBottomStackView<FindBar: View>: View {
+    let chat: ChatModel
+    let team: TeamModel
+    let bot: BotInfo
+    let chrome: ChatChrome
+    let petPerch: PetPerch
+    let asker: Asker
+    let dictation: Dictation
+    let draftState: ChatDraft
+    let followState: ChatFollowState
+    let idleMood: ChatIdleMood
+    let notice: ChatComposerNotice
+    let awayState: ChatAwayState
+    let contextMetrics: ChatContextMetrics
+    let workTimer: ChatWorkTimer
+
+    let finding: Bool
+    let historyInView: Bool
+    let largeText: Bool
+    let confirmStop: Bool
+    let calmPetMotion: Bool
+    let chatViewport: CGSize
+    let coveredByPage: Bool
+    let baseSheetOpen: Bool
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var dockOpen: Bool
+    @Binding var askingStop: Bool
+    @Binding var detailOpen: Bool
+    @Binding var roaming: Bool
+    @Binding var petSettingsOpen: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    @Binding var photos: [Data]
+    @Binding var files: [String]
+    @Binding var following: Bool
+
+    let onPresentApproval: (Approval) -> Void
+    let onToEnd: () -> Void
+    let onPreviousQuestion: () -> Void
+    let onNextQuestion: () -> Void
+    let onReturnToLatest: () -> Void
+    let onClearComposer: () -> Void
+    let onListen: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let fileNote: () -> String
+    let outgoingText: () -> String
+    @ViewBuilder let findBar: () -> FindBar
+
+    private var isRoom: Bool { chat.roomId != nil }
+    private var petDockMotion: Animation {
+        calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: chatViewport)
+            VStack(spacing: 0) {
+                ChatDockedFormSlot(
+                    chatKey: chat.key,
+                    viewportHeight: chatViewport.height,
+                    calmPetMotion: calmPetMotion,
+                    team: team,
+                    asker: asker
+                )
+                if finding {
+                    findBar()
+                } else {
+                    ChatComposerBarView(
+                        chat: chat,
+                        team: team,
+                        bot: bot,
+                        chrome: chrome,
+                        petPerch: petPerch,
+                        dictation: dictation,
+                        draftState: draftState,
+                        followState: followState,
+                        notice: notice,
+                        awayState: awayState,
+                        contextMetrics: contextMetrics,
+                        workTimer: workTimer,
+                        historyInView: historyInView,
+                        largeText: largeText,
+                        confirmStop: confirmStop,
+                        calmPetMotion: calmPetMotion,
+                        chatViewportHeight: chatViewport.height,
+                        typing: typing,
+                        usageOpen: $usageOpen,
+                        pickerShown: $pickerShown,
+                        importingFile: $importingFile,
+                        picks: $picks,
+                        attaching: $attaching,
+                        dockOpen: $dockOpen,
+                        askingStop: $askingStop,
+                        detailOpen: $detailOpen,
+                        roaming: $roaming,
+                        editing: $editing,
+                        quote: $quote,
+                        photos: $photos,
+                        files: $files,
+                        following: $following,
+                        onPresentApproval: onPresentApproval,
+                        onToEnd: onToEnd,
+                        onPreviousQuestion: onPreviousQuestion,
+                        onNextQuestion: onNextQuestion,
+                        onReturnToLatest: onReturnToLatest,
+                        onClearComposer: onClearComposer,
+                        onListen: onListen,
+                        onRedoFrom: onRedoFrom,
+                        onPasteChange: onPasteChange,
+                        onReceiveURLs: onReceiveURLs,
+                        fileNote: fileNote,
+                        outgoingText: outgoingText
+                    )
+                }
+            }
+            .background(alignment: .top) {
+                ChatPetPerchAnchorView(
+                    chat: chat,
+                    team: team,
+                    asker: asker,
+                    dictation: dictation,
+                    petPerch: petPerch,
+                    face: isRoom ? nil : bot.avatar,
+                    baseSheetOpen: baseSheetOpen,
+                    coveredByPage: coveredByPage,
+                    onOpenSettings: { petSettingsOpen = true }
+                )
+            }
+            .background(alignment: .bottom) {
+                LinearGradient(stops: [
+                    .init(color: Ink.paper.opacity(0), location: 0),
+                    .init(color: Ink.paper.opacity(0.92), location: 0.35),
+                    .init(color: Ink.paper, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                .padding(.top, -Ink.Space.xl)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(petDockMotion, value: finding)
+    }
+}
+
+private struct ChatDockedFormSlot: View {
+    let chatKey: String
+    let viewportHeight: CGFloat
+    let calmPetMotion: Bool
+    @ObservedObject var team: TeamModel
+    @ObservedObject var asker: Asker
+
+    private var form: Asker.Form? {
+        guard let current = asker.current, current.inline,
+              current.chat == nil || current.chat == chatKey,
+              team.isWorking(chatKey) else { return nil }
+        return current
+    }
+
+    private var petDockMotion: Animation {
+        calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
+    }
+
+    var body: some View {
+        Group {
+            if let form {
+                PetDockSlip(availableHeight: viewportHeight) { InlineAsk(form: form).id(form.id) }
+                    .padding(.horizontal, Ink.Bar.edge)
+                    .padding(.bottom, Ink.Space.s)
+                    .transition(.opacity)
+            }
+        }
+        .animation(petDockMotion, value: form?.id)
+    }
+}
+
+private struct ChatPetPerchAnchorView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    @ObservedObject var asker: Asker
+    @ObservedObject var dictation: Dictation
+    let petPerch: PetPerch
+    let face: String?
+    let baseSheetOpen: Bool
+    let coveredByPage: Bool
+    let onOpenSettings: () -> Void
+
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+
+    private var petMood: PetMood {
+        if waiting != nil || (asker.current != nil && working) { return .waiting }
+        if let doing, doing.contains("压缩") || doing.contains("提要") { return .sweeping }
+        if chat.hasStreaming { return .writing }
+        if working {
+            if let doing, doing.contains("沉吟") || doing.contains("思考") { return .thinking }
+            return .working(max(1, team.doing.count))
+        }
+        return .idle
+    }
+
+    var body: some View {
+        let showingSheet = baseSheetOpen || (asker.current.map { !$0.inline } ?? false)
+        PetPerchAnchor(
+            perch: petPerch,
+            mood: petMood,
+            face: face,
+            showingSheet: showingSheet,
+            covered: coveredByPage,
+            quiet: dictation.listening,
+            enabled: PetLibrary.shared.visible,
+            openSettings: onOpenSettings
+        )
+        .frame(height: 1)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+struct ChatComposerBarView: View {
+    let chat: ChatModel
+    let team: TeamModel
+    let bot: BotInfo
+    let chrome: ChatChrome
+    let petPerch: PetPerch
+    let dictation: Dictation
+    let draftState: ChatDraft
+    let followState: ChatFollowState
+    let notice: ChatComposerNotice
+    let awayState: ChatAwayState
+    let contextMetrics: ChatContextMetrics
+    let workTimer: ChatWorkTimer
+
+    let historyInView: Bool
+    let largeText: Bool
+    let confirmStop: Bool
+    let calmPetMotion: Bool
+    let chatViewportHeight: CGFloat
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var dockOpen: Bool
+    @Binding var askingStop: Bool
+    @Binding var detailOpen: Bool
+    @Binding var roaming: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    @Binding var photos: [Data]
+    @Binding var files: [String]
+    @Binding var following: Bool
+
+    let onPresentApproval: (Approval) -> Void
+    let onToEnd: () -> Void
+    let onPreviousQuestion: () -> Void
+    let onNextQuestion: () -> Void
+    let onReturnToLatest: () -> Void
+    let onClearComposer: () -> Void
+    let onListen: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let fileNote: () -> String
+    let outgoingText: () -> String
+
+    var body: some View {
+        VStack(spacing: Ink.Space.s) {
+            ChatDockAreaView(
+                chat: chat,
+                team: team,
+                bot: bot,
+                awayState: awayState,
+                workTimer: workTimer,
+                calmPetMotion: calmPetMotion,
+                chatViewportHeight: chatViewportHeight,
+                dockOpen: $dockOpen,
+                typing: typing,
+                roaming: $roaming,
+                following: $following,
+                onPresentApproval: onPresentApproval,
+                onToEnd: onToEnd
+            )
+            ChatDictationProblemView(dictation: dictation)
+            ChatComposerMainCard(
+                chat: chat,
+                team: team,
+                bot: bot,
+                dictation: dictation,
+                draftState: draftState,
+                notice: notice,
+                contextMetrics: contextMetrics,
+                largeText: largeText,
+                confirmStop: confirmStop,
+                typing: typing,
+                usageOpen: $usageOpen,
+                pickerShown: $pickerShown,
+                importingFile: $importingFile,
+                picks: $picks,
+                attaching: $attaching,
+                askingStop: $askingStop,
+                detailOpen: $detailOpen,
+                editing: $editing,
+                quote: $quote,
+                photos: $photos,
+                files: $files,
+                onPasteChange: onPasteChange,
+                onReceiveURLs: onReceiveURLs,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom,
+                fileNote: fileNote,
+                outgoingText: outgoingText
+            )
+            ChatComposerHintToast(notice: notice)
+        }
+        .padding(.horizontal, Ink.Bar.edge)
+        .padding(.bottom, Ink.Space.s)
+        .overlay(alignment: .top) {
+            ChatFloatingJumpOverlaySlot(
+                chrome: chrome,
+                petPerch: petPerch,
+                inHistory: historyInView,
+                followState: followState,
+                onPrevious: onPreviousQuestion,
+                onNext: onNextQuestion,
+                onLatest: onReturnToLatest
+            )
+        }
+    }
+}
+
+private struct ChatDockAreaView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    let awayState: ChatAwayState
+    let workTimer: ChatWorkTimer
+    let calmPetMotion: Bool
+    var chatViewportHeight: CGFloat = 0
+
+    @Binding var dockOpen: Bool
+    let typing: FocusState<Bool>.Binding
+    @Binding var roaming: Bool
+    @Binding var following: Bool
+
+    let onPresentApproval: (Approval) -> Void
+    let onToEnd: () -> Void
+
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+    private var liveWords: String? { Live.words(doing, name: bot.name, waiting: waiting != nil) }
+    private var liveIcon: String {
+        if waiting != nil { return "seal" }
+        guard let doing else { return "ellipsis" }
+        let name = doing.split(separator: "：", maxSplits: 1).first.map(String.init) ?? doing
+        if doing.contains("：") { return Trace.icon(for: name) }
+        return doing == "正在回复" ? "pencil.line" : "sparkles"
+    }
+    private var petDockMotion: Animation {
+        calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
+    }
+    private var cards: [ChatPage.DockCard] {
+        ChatPage.dockCards(
+            team: team,
+            chatKey: chat.key,
+            waiting: waiting,
+            working: working,
+            liveWords: liveWords,
+            awayItems: awayState.items
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: Ink.Space.xs) {
+            if let plan = team.plans[chat.key] {
+                PlanCard(steps: plan, maxHeight: chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil) {
+                    team.clearPlan(chat.key)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            dockContent
+        }
+        .animation(petDockMotion, value: waiting?.id)
+    }
+
+    @ViewBuilder
+    private var dockContent: some View {
+        let items = cards
+        if items.count <= 1 || dockOpen {
+            VStack(spacing: Ink.Space.s) {
+                if items.count > 1 {
+                    HStack {
+                        Spacer()
+                        Button {
+                            Haptics.light()
+                            withAnimation(Ink.Motion.settle) { dockOpen = false }
+                        } label: {
+                            Label("收起", systemImage: "chevron.down")
+                                .font(.system(size: Ink.Size.small, weight: .medium))
+                                .foregroundStyle(Ink.inkSoft)
+                        }
+                        .buttonStyle(TapStyle(grow: 8))
+                    }
+                }
+                ForEach(items, id: \.self) { card in
+                    dockCardView(card)
+                }
+            }
+            .transition(.opacity)
+        } else {
+            ZStack(alignment: .top) {
+                ForEach(Array(items.dropFirst().prefix(2).enumerated()), id: \.offset) { index, _ in
+                    RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
+                        .fill(Ink.paperRaised)
+                        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule))
+                        .frame(height: 40)
+                        .scaleEffect(x: 1 - 0.05 * CGFloat(index + 1), y: 1, anchor: .top)
+                        .opacity(1 - 0.25 * Double(index + 1))
+                        .offset(y: -6 * CGFloat(index + 1))
+                }
+                dockCardView(items[0])
+            }
+            .padding(.top, 12)
+            .overlay(alignment: .top) {
+                Color.clear
+                    .frame(height: 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        Haptics.light()
+                        withAnimation(Ink.Motion.settle) { dockOpen = true }
+                    }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("展开另外 \(items.count - 1) 条")
+            }
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func dockCardView(_ card: ChatPage.DockCard) -> some View {
+        switch card {
+        case .waiting:
+            if let waiting {
+                if !InlineApprovalPolicy.canAnswer(
+                    answerable: waiting.answerable != false,
+                    forced: waiting.forced == true,
+                    tool: waiting.toolName,
+                    hasCode: waiting.detail?.code?.isEmpty == false
+                ) {
+                    Button {
+                        Haptics.grab()
+                        onPresentApproval(waiting)
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: "seal").foregroundStyle(Ink.warn)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(Words.t("候印 · \(waiting.tool ?? "要你同意")"))
+                                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                                    .foregroundStyle(Ink.ink)
+                                if let reason = waiting.reason {
+                                    Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Text(Words.t("去落印"))
+                                .font(.system(size: Ink.Size.small, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                        }
+                        .padding(Ink.Space.m)
+                        .paperCard()
+                    }
+                    .buttonStyle(PressStyle())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else {
+                    InlineApproval(
+                        approval: waiting,
+                        team: team,
+                        name: team.bots.first { $0.id == waiting.botId }?.name ?? bot.name
+                    ) {
+                        onPresentApproval(waiting)
+                    }
+                    .id(waiting.id)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        case .roam:
+            RoamSlip(browser: team.browser) {
+                typing.wrappedValue = false
+                roaming = true
+            }
+        case .working:
+            if let words = liveWords {
+                WorkingBar(
+                    words: words,
+                    icon: liveIcon,
+                    tools: team.toolCount[chat.key] ?? 0,
+                    since: workTimer.since ?? Date(),
+                    free: Grant.Preset.current == .free
+                ) {
+                    following = true
+                    onToEnd()
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        case .away:
+            ChatAwayCardView(team: team, awayState: awayState)
+        }
+    }
+}
+
+private struct ChatDictationProblemView: View {
+    @ObservedObject var dictation: Dictation
+
+    var body: some View {
+        if let problem = dictation.problem {
+            Text(problem)
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.stop)
+                .onTapGesture { dictation.problem = nil }
+        }
+    }
+}
+
+private struct ChatComposerMainCard: View {
+    let chat: ChatModel
+    let team: TeamModel
+    let bot: BotInfo
+    let dictation: Dictation
+    let draftState: ChatDraft
+    let notice: ChatComposerNotice
+    let contextMetrics: ChatContextMetrics
+    let largeText: Bool
+    let confirmStop: Bool
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var askingStop: Bool
+    @Binding var detailOpen: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    @Binding var photos: [Data]
+    @Binding var files: [String]
+
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let fileNote: () -> String
+    let outgoingText: () -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            ChatComposerQuoteBanner(quote: $quote)
+            ChatComposerEditingBanner(editing: $editing, draftState: draftState)
+            ChatComposerPhotosRow(photos: $photos)
+            ChatComposerFilesRow(files: $files)
+            ChatComposerSuggestionsView(
+                draftState: draftState,
+                chat: chat,
+                team: team,
+                files: $files,
+                detailOpen: $detailOpen
+            )
+            if largeText {
+                ChatDraftFieldView(
+                    draftState: draftState,
+                    chat: chat,
+                    team: team,
+                    dictation: dictation,
+                    botName: bot.name,
+                    largeText: largeText,
+                    typing: typing,
+                    onPasteChange: onPasteChange
+                )
+            }
+            ChatComposerAccessoryRow(
+                chat: chat,
+                team: team,
+                bot: bot,
+                dictation: dictation,
+                draftState: draftState,
+                notice: notice,
+                contextMetrics: contextMetrics,
+                largeText: largeText,
+                confirmStop: confirmStop,
+                typing: typing,
+                usageOpen: $usageOpen,
+                pickerShown: $pickerShown,
+                importingFile: $importingFile,
+                picks: $picks,
+                attaching: $attaching,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                onPasteChange: onPasteChange,
+                onReceiveURLs: onReceiveURLs,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom,
+                fileNote: fileNote,
+                outgoingText: outgoingText
+            )
+        }
+        .padding(.horizontal, Ink.Space.s)
+        .padding(.vertical, 6 * UIScale.factor)
+        .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
+    }
+}
+
+private struct ChatComposerQuoteBanner: View {
+    @Binding var quote: String?
+
+    var body: some View {
+        if let quote {
+            HStack(alignment: .top, spacing: Ink.Space.s) {
+                Rectangle().fill(Ink.accent).frame(width: 2)
+                Text(quote).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(3)
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation(Ink.Motion.settle) { self.quote = nil }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: Ink.Size.sub))
+                        .foregroundStyle(Ink.inkFaint)
+                }
+                .buttonStyle(TapStyle(grow: 8))
+                .accessibilityLabel("不引用了")
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, Ink.Space.xs)
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+    }
+}
+
+private struct ChatComposerEditingBanner: View {
+    @Binding var editing: String?
+    let draftState: ChatDraft
+
+    var body: some View {
+        if editing != nil {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: "pencil").font(.system(size: Ink.Size.small, weight: .semibold))
+                Text("改了重发：之后的对话会重新来过").font(Ink.footnote)
+                Spacer()
+                Button(L.t("actions.cancel")) {
+                    withAnimation(Ink.Motion.settle) {
+                        editing = nil
+                        draftState.text = ""
+                    }
+                }
+                .font(Ink.footnote.weight(.semibold))
+            }
+            .foregroundStyle(Ink.accent)
+            .padding(.top, Ink.Space.xs)
+        }
+    }
+}
+
+private struct ChatComposerPhotosRow: View {
+    @Binding var photos: [Data]
+
+    var body: some View {
+        if !photos.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.s) {
+                    ForEach(Array(photos.enumerated()), id: \.offset) { index, data in
+                        ZStack(alignment: .topTrailing) {
+                            if let image = UIImage(data: data) {
+                                Image(uiImage: image).resizable().scaledToFill()
+                                    .frame(width: 56, height: 56)
+                                    .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                            }
+                            Button {
+                                withAnimation(Ink.Motion.settle) { _ = photos.remove(at: index) }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: Ink.Size.body))
+                                    .foregroundStyle(Ink.paper, Ink.ink.opacity(0.6))
+                            }
+                            .accessibilityLabel("移除第 \(index + 1) 张照片")
+                            .offset(x: 5, y: -5)
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+}
+
+private struct ChatComposerFilesRow: View {
+    @Binding var files: [String]
+
+    var body: some View {
+        if !files.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: Ink.Space.s) {
+                    ForEach(files, id: \.self) { path in
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc").font(.system(size: Ink.Size.small))
+                            Text((path as NSString).lastPathComponent)
+                                .font(.system(size: Ink.Size.small, weight: .medium))
+                                .lineLimit(1)
+                            Button {
+                                withAnimation(Ink.Motion.settle) { files.removeAll { $0 == path } }
+                            } label: {
+                                Image(systemName: "xmark").font(.system(size: Ink.Size.micro, weight: .bold))
+                            }
+                            .buttonStyle(TapStyle(grow: 8))
+                            .accessibilityLabel("移除文件：\((path as NSString).lastPathComponent)")
+                        }
+                        .foregroundStyle(Ink.ink)
+                        .padding(.horizontal, Ink.Space.m)
+                        .frame(height: 30)
+                        .background(Ink.mine, in: .capsule)
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+}
+
+private struct ChatComposerAccessoryRow: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    @ObservedObject var dictation: Dictation
+    let draftState: ChatDraft
+    let notice: ChatComposerNotice
+    let contextMetrics: ChatContextMetrics
+    let largeText: Bool
+    let confirmStop: Bool
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let fileNote: () -> String
+    let outgoingText: () -> String
+
+    private var composing: Bool {
+        typing.wrappedValue
+            || draftState.hasText
+            || !photos.isEmpty
+            || !files.isEmpty
+            || editing != nil
+            || quote != nil
+            || dictation.listening
+            || dictation.transcribing
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: Ink.Space.s) {
+            Button {
+                Haptics.light()
+                typing.wrappedValue = false
+                attaching = true
+            } label: {
+                let lit = !photos.isEmpty || !files.isEmpty
+                Image(systemName: "plus")
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
+                    .frame(width: 34, height: 34)
+                    .background(lit ? Ink.accentWash : Color.clear, in: .circle)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .accessibilityLabel(Words.t("加照片、文件，或改这段絮语的设置"))
+            .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
+            .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { withAnimation(Ink.Motion.settle) { onReceiveURLs(urls) } }
+            }
+            if !largeText {
+                ChatDraftFieldView(
+                    draftState: draftState,
+                    chat: chat,
+                    team: team,
+                    dictation: dictation,
+                    botName: bot.name,
+                    largeText: largeText,
+                    typing: typing,
+                    onPasteChange: onPasteChange
+                )
+            }
+            if composing, team.place(of: chat.key) != .desk {
+                ChatPlaceChipView(chatKey: chat.key, team: team, notice: notice)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+            ChatContextRingButton(
+                contextMetrics: contextMetrics,
+                composing: composing
+            ) {
+                Haptics.light()
+                typing.wrappedValue = false
+                usageOpen = true
+            }
+            ChatActionButtonView(
+                chat: chat,
+                team: team,
+                dictation: dictation,
+                draftState: draftState,
+                confirmStop: confirmStop,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                fileNote: fileNote,
+                outgoingText: outgoingText,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom
+            )
+        }
+        .animation(Ink.Motion.settle, value: composing)
+    }
+}
+
+private struct ChatDraftFieldView: View {
+    let draftState: ChatDraft
+    let chat: ChatModel
+    let team: TeamModel
+    @ObservedObject var dictation: Dictation
+    let botName: String
+    let largeText: Bool
+    let typing: FocusState<Bool>.Binding
+    let onPasteChange: (String, String) -> Void
+
+    private var working: Bool {
+        team.workDetail(for: chat.key).words != nil || chat.hasStreaming
+    }
+
+    private var placeholder: String {
+        if dictation.listening { return "正在听，说完点右边" }
+        if dictation.transcribing { return "正在转写语音…" }
+        if working { return "在做 · 可以直接插话" }
+        return "同\(botName)说点什么…"
+    }
+
+    var body: some View {
+        TextField(
+            placeholder,
+            text: Binding(get: { draftState.text }, set: { draftState.text = $0 }),
+            axis: .vertical
+        )
+        .font(largeText ? .body : Ink.label)
+        .foregroundStyle(Ink.ink)
+        .lineLimit(1...(largeText ? 3 : 6))
+        .focused(typing)
+        .onChange(of: draftState.text) { old, new in onPasteChange(old, new) }
+        .padding(.vertical, 6)
+        .frame(minHeight: 34)
+    }
+}
+
+private struct ChatContextRingButton: View {
+    let contextMetrics: ChatContextMetrics
+    let composing: Bool
+    let onOpen: () -> Void
+
+    var body: some View {
+        let share = contextMetrics.estimate?.share ?? 0
+        Button(action: onOpen) {
+            ContextRing(share: share, showsNumber: !composing && share >= 0.5)
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel("用量：下次请求约占上下文的 \(UsageSheet.percent(share))")
+    }
+}
+
+private struct ChatActionButtonView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    @ObservedObject var dictation: Dictation
+    let draftState: ChatDraft
+    let confirmStop: Bool
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+    let fileNote: () -> String
+    let outgoingText: () -> String
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+
+    private var working: Bool {
+        team.workDetail(for: chat.key).words != nil || chat.hasStreaming
+    }
+
+    private var sendingBlocked: Bool {
+        team.phase != .demo && !team.canAcceptInput(for: chat.key)
+    }
+
+    private var canSend: Bool {
+        draftState.hasSendableText || !photos.isEmpty || !files.isEmpty
+    }
+
+    var body: some View {
         let mode: Int
         let symbol: String
         let fill: Color
@@ -565,21 +1314,20 @@ extension ChatPage {
                 Haptics.grab()
                 let accepted: Bool
                 if let editing {
-                    accepted = redo(from: editing, text: draft)
+                    accepted = onRedoFrom(editing, draftState.text)
                     if accepted { self.editing = nil }
                 } else if let quote {
                     let quoted = quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
-                    accepted = chat.send(quoted + "\n\n" + draft + fileNote, photos: photos)
+                    accepted = chat.send(quoted + "\n\n" + draftState.text + fileNote(), photos: photos)
                     if accepted { self.quote = nil }
                 } else if working {
-                    // While it works, a plain tap is 插话: heard after the step in progress.
-                    accepted = chat.interject(outgoing, photos: photos)
+                    accepted = chat.interject(outgoingText(), photos: photos)
                 } else {
-                    accepted = chat.send(outgoing, photos: photos)
+                    accepted = chat.send(outgoingText(), photos: photos)
                 }
-                if accepted { clearComposer() }
+                if accepted { onClearComposer() }
             default:
-                listen()
+                onListen()
             }
         } label: {
             ZStack {
@@ -621,16 +1369,56 @@ extension ChatPage {
         .contextMenu {
             if working && canSend && !sendingBlocked && editing == nil && quote == nil {
                 Button("插话：这一步做完就递给它", systemImage: "text.bubble") {
-                    if chat.interject(outgoing, photos: photos) { clearComposer() }
+                    if chat.interject(outgoingText(), photos: photos) { onClearComposer() }
                 }
                 Button("中断并发送", systemImage: "bolt") {
                     Haptics.thud()
-                    if chat.sendNow(outgoing, photos: photos) { clearComposer() }
+                    if chat.sendNow(outgoingText(), photos: photos) { onClearComposer() }
                 }
                 Button("排队：这轮做完再发", systemImage: "tray") {
-                    if chat.send(outgoing, photos: photos) { clearComposer() }
+                    if chat.send(outgoingText(), photos: photos) { onClearComposer() }
                 }
             }
         }
+    }
+}
+
+private struct ChatComposerHintToast: View {
+    let notice: ChatComposerNotice
+
+    var body: some View {
+        if let text = notice.text {
+            Text(text)
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkSoft)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .onTapGesture {
+                    withAnimation(Ink.Motion.settle) { notice.text = nil }
+                }
+        }
+    }
+}
+
+private struct ChatFloatingJumpOverlaySlot: View {
+    let chrome: ChatChrome
+    let petPerch: PetPerch
+    let inHistory: Bool
+    let followState: ChatFollowState
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onLatest: () -> Void
+
+    var body: some View {
+        ChatFloatingJumpOverlay(
+            chrome: chrome,
+            petPerch: petPerch,
+            inHistory: inHistory,
+            following: followState.following,
+            onPrevious: onPrevious,
+            onNext: onNext,
+            onLatest: onLatest
+        )
     }
 }

@@ -10,10 +10,10 @@ import VisionKit
 
 /// 絮语: a conversation with one companion, set as a page.
 struct ChatPage: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     @State var chat: ChatModel
-    @StateObject var dictation = Dictation()
-    @ObservedObject var asker = Asker.shared
+    @State var dictation = Dictation()
+    let asker = Asker.shared
     @State var petPerch = PetPerch()
     @State var chatViewport = CGSize.zero
     @Environment(\.accessibilityReduceMotion) var calmPetMotion
@@ -80,16 +80,17 @@ struct ChatPage: View {
         nonmutating set { viewport.touchScrolling = newValue }
     }
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
-    @State var context: TeamModel.ContextEstimate?
+    @State var contextMetrics = ChatContextMetrics()
     @State var usageOpen = false
-    /// A turn has just finished well: the pet is glad.
-    @State var cheering = false
-    /// Nothing has happened for a few minutes: the pet dozes.
-    @State var dozing = false
+    @State var idleMood = ChatIdleMood()
+    @State var notice = ChatComposerNotice()
+    @State var followState = ChatFollowState()
+    @State var workTimer = ChatWorkTimer()
+    @State var bridge = ChatRowBridge()
     /// How many of the newest lines are drawn; 「更早的」 adds more.
     @State var shownCount = 60
     /// What happened in the other conversations while the user was away from this one.
-    @State var away: [Happening] = []
+    @State var awayState = ChatAwayState()
     @Environment(\.dynamicTypeSize) var typeSize
     @ScaledMetric(relativeTo: .body) var textScale: CGFloat = 1
     var largeText: Bool { typeSize.isAccessibilitySize }
@@ -130,12 +131,16 @@ struct ChatPage: View {
 
     /// Which of the pet's states the portrait in the header and the empty page show.
     var petState: String {
-        if waiting != nil { return "notification" }
-        if chat.hasStreaming || doing == "正在回复" { return "working" }
-        if working || typing || dictation.listening { return "thinking" }
-        if cheering { return "attention" }
-        if dozing { return "sleeping" }
-        return "idle"
+        Self.companionPetState(
+            waiting: waiting,
+            hasStreaming: chat.hasStreaming,
+            doing: doing,
+            working: working,
+            typing: typing,
+            listening: dictation.listening,
+            cheering: idleMood.cheering,
+            dozing: idleMood.dozing
+        )
     }
 
     /// 「更早的」: draws forty more of the older lines, keeping the line you were looking at in place.
@@ -226,7 +231,7 @@ struct ChatPage: View {
 
     /// Something happened: the pet wakes, and the doze clock starts over without triggering a full-page redraw.
     func stir() {
-        if dozing { dozing = false }
+        if idleMood.dozing { idleMood.dozing = false }
         viewport.lastStirAt = ProcessInfo.processInfo.systemUptime
     }
 
@@ -258,13 +263,7 @@ struct ChatPage: View {
 
     /// The companion's state in the glossary's words.
     var status: String {
-        if waiting != nil { return Words.t("候印") }
-        guard let doing else { return Words.t("闲坐") }
-        switch doing {
-        case "正在回复": return Words.t("落笔")
-        case "正在想", "等你批准": return Words.t("沉吟")
-        default: return Words.t(doing)
-        }
+        Self.companionStatus(waiting: waiting, doing: doing)
     }
 
     /// The lines of the conversation, what is arriving, and what waits to be sent.
@@ -273,58 +272,72 @@ struct ChatPage: View {
         // foot (tapping 「最新」, or a reply starting) then landed on a spot with nothing drawn yet — the blank page.
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
-                if !chat.loaded { ProgressView().frame(maxWidth: .infinity) }
-                else if chat.lines.isEmpty && !chat.hasStreaming { empty }
-                if canLoadEarlier { earlier }
+                ChatEmptyStatusView(chat: chat) {
+                    ChatEmptyContentView(
+                        chat: chat,
+                        team: team,
+                        bot: bot,
+                        dictation: dictation,
+                        idleMood: idleMood,
+                        starters: starters,
+                        reach: reach,
+                        typing: $typing,
+                        onPickStarter: { text in
+                            draft = text
+                            typing = true
+                        }
+                    )
+                }
+                ChatEarlierButtonView(
+                    chat: chat,
+                    historyInView: historyPage != nil,
+                    shownCount: shownCount,
+                    onLoadEarlier: loadEarlier
+                )
+                let rows = historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows
                 let heads = openers
                 let lit = finding ? currentHit : nil
                 let animateRow = historyPage == nil
                 let firstRowId = displayedRows.first?.id
                 let recentSecondLastId = chat.lines.count >= 2 ? chat.lines[chat.lines.count - 2].id : nil
                 let recentLastId = chat.lines.last?.id
+                let latestBot = latestBotId
+                let latestNote = chat.lines.last(where: { $0.kind == .note })?.id
+                let showThinking = Pref.showThinking
+                let showStats = Pref.stats
+                let editingId = editing
+                let defaultBot = bot
+                let defaultBotName = defaultBot.name
                 // Keep distant replies unmounted when the keyboard, stream or window size changes.
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                    ForEach(historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows) { line in
-                        let isRecent = animateRow && (line.id == recentLastId || line.id == recentSecondLastId) && chat.fresh?.id != line.id
-                        turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
-                            // A turn starts with what you said: more room above it than between the parts of a reply.
-                            .padding(.top, line.kind == .user && line.id != firstRowId ? Ink.Space.l : 0)
-                            .id(line.id)
-                            // Only what just arrived rises into place; history loaded above stays still.
-                            .transition(isRecent
-                                        ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
-                                        : .identity)
+                    ForEach(rows) { line in
+                        settledRow(
+                            line: line,
+                            heads: heads,
+                            lit: lit,
+                            animateRow: animateRow,
+                            firstRowId: firstRowId,
+                            recentSecondLastId: recentSecondLastId,
+                            recentLastId: recentLastId,
+                            latestBot: latestBot,
+                            latestNote: latestNote,
+                            showThinking: showThinking,
+                            showStats: showStats,
+                            editingId: editingId,
+                            defaultBot: defaultBot,
+                            defaultBotName: defaultBotName
+                        )
                     }
                 }
                 .scrollTargetLayout()
                 if historyPage == nil {
-                if team.compressing.contains(chat.key) {
-                    // Said once, quietly: it is happening behind, and you can go on talking.
-                    Label("正在后台整理较早的聊天，不耽误你接着聊", systemImage: "text.append")
-                        .font(Ink.footnote)
-                        .foregroundStyle(Ink.inkFaint)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .id("folding")
-                        .transition(.opacity)
-                }
-                ChatSection { liveReply }.transition(.identity)
-                // What it is doing now sits in the bar above the composer; here only a running command's output.
-                if let doing = team.workDetail(for: chat.key).words,
-                   doing.contains("："),
-                   let kind = Trace.canonicalKind(of: doing),
-                   kind == "斗室" || kind == "远山" {
-                    ToolTailView(tail: team.toolTail(for: chat.key))
-                        .id("live")
-                        .transition(.opacity.combined(with: .offset(y: 8)))
-                }
-                if let error = chat.error, !saidInNote(error) {
-                    failureCard(error)
-                        .transition(.opacity.combined(with: .offset(y: 6)))
-                }
-                ForEach(team.queued[chat.key] ?? []) { item in
-                    queuedRow(item)
-                        .transition(.opacity.combined(with: .offset(y: 8)))
-                }
+                    ChatLiveTailView(
+                        chat: chat,
+                        team: team,
+                        isRoom: isRoom,
+                        bot: defaultBot,
+                        bridge: bridge
+                    )
                 }
             }
             // The foot of the page, under the breathing room at the bottom: scrolling to it shows everything,
@@ -336,24 +349,66 @@ struct ChatPage: View {
         .padding(.top, Ink.Space.s)
     }
 
-    @ViewBuilder
-    var liveReply: some View {
-        if !chat.pulse.isEmpty {
-            let speaker = chat.pulseSpeaker.flatMap { id in team.bots.first { $0.id == id } }
-            PulseBox(text: chat.pulse, live: !chat.hasStreaming, temper: Temper.of(speaker ?? (isRoom ? nil : bot)))
-                .id("pulse")
-                .transition(.opacity)
-        }
-        if !chat.thinking.isEmpty && !chat.hasStreaming {
-            ThinkingBox(text: chat.thinking, live: true)
-                .id("thinking")
-                .transition(.opacity)
-        }
-        if chat.hasStreaming {
-            StreamingProse(text: chat.streaming)
-                .id(chat.streamGeneration)
-                .id("streaming")
-        }
+    private func settledRow(
+        line: ChatLine,
+        heads: Set<String>,
+        lit: String?,
+        animateRow: Bool,
+        firstRowId: String?,
+        recentSecondLastId: String?,
+        recentLastId: String?,
+        latestBot: String?,
+        latestNote: String?,
+        showThinking: Bool,
+        showStats: Bool,
+        editingId: String?,
+        defaultBot: BotInfo,
+        defaultBotName: String
+    ) -> some View {
+        let isFirst = line.id == firstRowId
+        let opens = heads.contains(line.id)
+        let isFreshWriting = chat.freshWritingID == line.id
+        let isBot = line.kind == .bot
+        let meta: SourcesMemo.LineMeta? = (isBot && !isFreshWriting) ? lineMeta(for: line) : nil
+        let lookback: (note: String?, rest: String) = (isBot && !isFreshWriting)
+            ? Self.lookback(meta?.trimmedText ?? line.text)
+            : (nil, "")
+        let speakerBot = line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : defaultBot)
+        let isRecent = animateRow && (line.id == recentLastId || line.id == recentSecondLastId) && chat.freshID != line.id
+        return ChatSettledRowView(
+            line: line,
+            opens: opens,
+            lit: lit == line.id,
+            isFirst: isFirst,
+            isFreshWriting: isFreshWriting,
+            isLatestBot: line.id == latestBot,
+            isLatestNote: line.id == latestNote && line.id == recentLastId,
+            isLastLine: line.id == recentLastId,
+            endsTurn: isBot ? endsTurn(line) : false,
+            timeGap: (faces && opens) ? timeGap(before: line) : nil,
+            isEditing: editingId == line.id,
+            faces: faces,
+            isRoom: isRoom,
+            historyInView: historyPage != nil,
+            speakerBot: speakerBot,
+            botName: defaultBotName,
+            bubbleTint: bubbleTint(editing: editingId == line.id),
+            lineMeta: meta,
+            lookbackNote: lookback.note,
+            lookbackRest: lookback.rest,
+            showThinking: showThinking,
+            showStats: showStats,
+            chat: chat,
+            team: team,
+            petPerch: petPerch,
+            followState: followState,
+            bridge: bridge
+        )
+        .equatable()
+        .id(line.id)
+        .transition(isRecent
+                    ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
+                    : .identity)
     }
 
     /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
@@ -475,23 +530,6 @@ struct ChatPage: View {
             // reads through between the buttons, and the glass no longer picks up colours from the page.
             .scrollEdgeEffectStyle(.soft, for: .top)
             .safeAreaBar(edge: .top) { header }
-            .onChange(of: working, initial: true) { _, now in
-                workingSince = now ? (workingSince ?? Date()) : nil
-            }
-            .onChange(of: chat.hasStreaming) { _, now in
-                DiagTrail.record(now ? "开始流式" : "结束流式")
-            }
-            .onChange(of: chat.lines.last?.id) {
-                if chat.lines.isEmpty { historyPage = nil; lookupRows = [] }
-                followToEnd()
-            }
-            .onChange(of: chat.lines.count) { followToEnd() }
-            .onChange(of: showsLive) { followToEnd() }
-            .onChange(of: chat.error) { followToEnd() }
-            .onChange(of: waiting?.id) { _, next in
-                DiagTrail.record(next == nil ? "收起审批" : "弹出审批")
-                approvalInsetChanged()
-            }
             .onAppear { scroller = proxy }
             .task { await playShot() }
         }
@@ -542,121 +580,88 @@ struct ChatPage: View {
         }
     }
 
-    /// A message written while the companion works: it waits for the turn to finish, or goes now, or comes back to the composer.
-    func queuedRow(_ item: TeamModel.Queued) -> some View {
-        VStack(alignment: .trailing, spacing: Ink.Space.xs) {
-            VStack(alignment: .trailing, spacing: 4) {
-                if !item.photos.isEmpty {
-                    Label("\(item.photos.count) 张照片", systemImage: "photo").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                }
-                if !item.text.isEmpty {
-                    Text(item.text).font(Ink.label).foregroundStyle(Ink.ink).lineLimit(4).lineSpacing(4)
-                }
-            }
-            .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, Ink.Space.m)
-            .background(Ink.mine.opacity(0.55), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous).strokeBorder(Ink.rule, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-            HStack(spacing: Ink.Space.m) {
-                Text(item.interject ? (working ? "插话 · 这一步做完就递给它" : "还没发出") : (working ? "排队中，这轮做完就发" : "还没发出")).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                Button("撤回", systemImage: "arrow.uturn.backward") {
-                    guard let back = team.unqueue(chat.key, item.id, deferRemoval: true) else { return }
-                    let chatKey = chat.key
-                    draftState.load(chatKey)
-                    let textSnapshot: StoredTextDraft?
-                    if !back.text.isEmpty {
-                        draft = draft.isEmpty ? back.text : draft + "\n" + back.text
-                        draftState.recordQueuedId(back.id)
-                        textSnapshot = draftState.prepareAtomicSave()
-                    } else {
-                        textSnapshot = nil
-                    }
-                    if !back.photos.isEmpty {
-                        let previousCount = photos.count
-                        photos.append(contentsOf: back.photos)
-                        if !draftAttachmentQueuedIds.contains(back.id) {
-                            draftAttachmentQueuedIds.append(back.id)
-                        }
-                        let snapshotPhotos = photos
-                        let snapshotFiles = files
-                        let snapshotIds = draftAttachmentQueuedIds
-                        Task {
-                            let textOk: Bool
-                            if let textSnapshot {
-                                textOk = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
-                            } else {
-                                textOk = true
-                            }
-                            let photosOk: Bool
-                            if textOk {
-                                photosOk = await DraftAttachments.saveResult(
-                                    photos: snapshotPhotos,
-                                    files: snapshotFiles,
-                                    chat: chatKey,
-                                    queuedIds: snapshotIds
-                                )
-                            } else {
-                                photosOk = false
-                            }
-                            if textOk && photosOk {
-                                team.confirmQueuedRemoved([back.id], for: chatKey)
-                            } else {
-                                draftAttachmentQueuedIds.removeAll { $0 == back.id }
-                                draftState.removeQueuedId(back.id)
-                                if !back.text.isEmpty {
-                                    if draft == back.text {
-                                        draft = ""
-                                    } else if draft.hasSuffix("\n" + back.text) {
-                                        draft = String(draft.dropLast(back.text.count + 1))
-                                    }
-                                }
-                                draftState.flush()
-                                if photos.count >= previousCount + back.photos.count,
-                                   Array(photos[previousCount..<(previousCount + back.photos.count)]) == back.photos {
-                                    photos.removeSubrange(previousCount..<(previousCount + back.photos.count))
-                                }
-                                team.restoreInFlightQueued([back.id], to: chatKey)
-                                Diag.note("撤回的草稿没存进手机，原消息已留在排队里。")
-                            }
-                        }
-                    } else if let textSnapshot {
-                        Task {
-                            let ok = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
-                            if ok {
-                                team.confirmQueuedRemoved([back.id], for: chatKey)
-                            } else {
-                                draftState.removeQueuedId(back.id)
-                                if draft == back.text {
-                                    draft = ""
-                                } else if draft.hasSuffix("\n" + back.text) {
-                                    draft = String(draft.dropLast(back.text.count + 1))
-                                }
-                                draftState.flush()
-                                team.restoreInFlightQueued([back.id], to: chatKey)
-                                Diag.note("撤回的草稿文字没存进手机，原消息已留在排队里。")
-                            }
-                        }
-                    } else {
-                        team.confirmQueuedRemoved([back.id], for: chatKey)
-                    }
-                    typing = true
-                }
-                Button("立即发送", systemImage: "paperplane.fill") {
-                    Haptics.thud()
-                    following = true
-                    team.sendQueueNow(chat.key)
-                }
-                .fontWeight(.semibold)
-                .disabled(sendingBlocked)
-            }
-            .font(.system(size: Ink.Size.small))
-            .foregroundStyle(Ink.accent)
-            .buttonStyle(TapStyle())
-            .opacity(sendingBlocked ? 0.45 : 1)
-            .disabled(sendingBlocked)
+    /// Puts a queued or interjected turn back into the composer atomically once persisted on disk.
+    func withdrawQueued(_ item: TeamModel.Queued) {
+        guard let back = team.unqueue(chat.key, item.id, deferRemoval: true) else { return }
+        let chatKey = chat.key
+        draftState.load(chatKey)
+        let textSnapshot: StoredTextDraft?
+        if !back.text.isEmpty {
+            draft = draft.isEmpty ? back.text : draft + "\n" + back.text
+            draftState.recordQueuedId(back.id)
+            textSnapshot = draftState.prepareAtomicSave()
+        } else {
+            textSnapshot = nil
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.leading, Ink.Space.huge)
+        if !back.photos.isEmpty {
+            let previousCount = photos.count
+            photos.append(contentsOf: back.photos)
+            if !draftAttachmentQueuedIds.contains(back.id) {
+                draftAttachmentQueuedIds.append(back.id)
+            }
+            let snapshotPhotos = photos
+            let snapshotFiles = files
+            let snapshotIds = draftAttachmentQueuedIds
+            Task {
+                let textOk: Bool
+                if let textSnapshot {
+                    textOk = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
+                } else {
+                    textOk = true
+                }
+                let photosOk: Bool
+                if textOk {
+                    photosOk = await DraftAttachments.saveResult(
+                        photos: snapshotPhotos,
+                        files: snapshotFiles,
+                        chat: chatKey,
+                        queuedIds: snapshotIds
+                    )
+                } else {
+                    photosOk = false
+                }
+                if textOk && photosOk {
+                    team.confirmQueuedRemoved([back.id], for: chatKey)
+                } else {
+                    draftAttachmentQueuedIds.removeAll { $0 == back.id }
+                    draftState.removeQueuedId(back.id)
+                    if !back.text.isEmpty {
+                        if draft == back.text {
+                            draft = ""
+                        } else if draft.hasSuffix("\n" + back.text) {
+                            draft = String(draft.dropLast(back.text.count + 1))
+                        }
+                    }
+                    draftState.flush()
+                    if photos.count >= previousCount + back.photos.count,
+                       Array(photos[previousCount..<(previousCount + back.photos.count)]) == back.photos {
+                        photos.removeSubrange(previousCount..<(previousCount + back.photos.count))
+                    }
+                    team.restoreInFlightQueued([back.id], to: chatKey)
+                    Diag.note("撤回的草稿没存进手机，原消息已留在排队里。")
+                }
+            }
+        } else if let textSnapshot {
+            Task {
+                let ok = await DraftTextStore.saveResult(textSnapshot, for: chatKey)
+                if ok {
+                    team.confirmQueuedRemoved([back.id], for: chatKey)
+                } else {
+                    draftState.removeQueuedId(back.id)
+                    if draft == back.text {
+                        draft = ""
+                    } else if draft.hasSuffix("\n" + back.text) {
+                        draft = String(draft.dropLast(back.text.count + 1))
+                    }
+                    draftState.flush()
+                    team.restoreInFlightQueued([back.id], to: chatKey)
+                    Diag.note("撤回的草稿文字没存进手机，原消息已留在排队里。")
+                }
+            }
+        } else {
+            team.confirmQueuedRemoved([back.id], for: chatKey)
+        }
+        typing = true
     }
 
     /// Starts dictation; what is heard is added after what was already written.
@@ -705,115 +710,132 @@ struct ChatPage: View {
         }
     }
 
-    /// The composer, with what keeps the 用量 ring up to date and opens its sheet. In two layers, so the compiler
-    /// checks each one on its own instead of giving up on one long chain.
     var composerBar: some View {
-        composerWatched
-        .sheet(isPresented: $usageOpen) {
-            UsageSheet(team: team, key: chat.key)
-                .presentationDetents([.medium, .large])
-        }
-        .onChange(of: typing) { _, now in
-            DiagTrail.record(now ? "开键盘" : "收键盘")
-            Hitches.shared.doing(now ? "打字" : nil, as: "typing")
-            stir()
-        }
-        .onChange(of: finding) { _, now in
-            DiagTrail.record(now ? "开查找" : "关查找")
-        }
-        .onChange(of: working) { _, now in
-            stir()
-            guard !now, chat.error == nil, chat.lines.last?.kind == .bot else { return }
-            cheering = true
-            Task {
-                try? await Task.sleep(nanoseconds: 2_400_000_000)
-                cheering = false
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                let idle = ProcessInfo.processInfo.systemUptime - viewport.lastStirAt
-                if idle >= 180, !dozing { dozing = true }
-            }
-        }
-        .task { away = team.whileAway(from: chat.key) }
+        bottomStack
     }
 
-    var composerWatched: some View {
-        composer
-        .task {
-            // Let the page settle in before the keyboard or the microphone comes up.
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            takeShortcut()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in takeShortcut() }
-        .onChange(of: team.queued[chat.key]?.count ?? 0) { followToEnd() }
-        .task(id: estimateTrigger) {
-            guard chat.loaded, !working else { return }
-            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
-            let estimate = await team.contextEstimate(chat.key)
-            if !Task.isCancelled { context = estimate }
-        }
-    }
-
-    var estimateTrigger: String {
-        let folding = team.compressing.contains(chat.key)
-        let lastFold = chat.lines.last(where: { $0.fold })?.id ?? ""
-        let summaryLen = team.cachedSummaryLength(chat.key)
-        return "\(chat.loaded)|\(working)|\(folding)|\(lastFold)|\(summaryLen)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(Pref.contextShare)|\(usageOpen)"
-    }
-
-    var dockedForm: Asker.Form? {
-        // Only this conversation's own slip; another companion's question waits on its own page (the review, #21).
-        guard let form = asker.current, form.inline, form.chat == nil || form.chat == chat.key, team.isWorking(chat.key) else { return nil }
-        return form
-    }
-
-    /// The floating pet follows the top of this stack, including the keyboard safe area.
     var bottomStack: some View {
-        VStack(spacing: 0) {
-            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: chatViewport)
-            VStack(spacing: 0) {
-                if let form = dockedForm {
-                    PetDockSlip(availableHeight: chatViewport.height) { InlineAsk(form: form).id(form.id) }
-                        .padding(.horizontal, Ink.Bar.edge)
-                        .padding(.bottom, Ink.Space.s)
-                        .transition(.opacity)
-                }
-                if finding { findBar } else { composerBar }
-            }
-            .background(alignment: .top) {
-                PetPerchAnchor(
-                    perch: petPerch, mood: petMood, face: isRoom ? nil : bot.avatar,
-                    showingSheet: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil
-                        || (asker.current.map { !$0.inline } ?? false),
-                    covered: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
-                    quiet: dictation.listening, enabled: PetLibrary.shared.visible
-                ) { petSettingsOpen = true }
-                .frame(height: 1)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
-            // Paper behind the composer and the plan card, fading up into the page.
-            .background(alignment: .bottom) {
-                LinearGradient(stops: [
-                    .init(color: Ink.paper.opacity(0), location: 0),
-                    .init(color: Ink.paper.opacity(0.92), location: 0.35),
-                    .init(color: Ink.paper, location: 1),
-                ], startPoint: .top, endPoint: .bottom)
-                .padding(.top, -Ink.Space.xl)
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-            }
-        }
-        .animation(petDockMotion, value: dockedForm?.id)
-        .animation(petDockMotion, value: finding)
+        ChatBottomStackView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            chrome: chrome,
+            petPerch: petPerch,
+            asker: asker,
+            dictation: dictation,
+            draftState: draftState,
+            followState: followState,
+            idleMood: idleMood,
+            notice: notice,
+            awayState: awayState,
+            contextMetrics: contextMetrics,
+            workTimer: workTimer,
+            finding: finding,
+            historyInView: historyPage != nil,
+            largeText: largeText,
+            confirmStop: confirmStop,
+            calmPetMotion: calmPetMotion,
+            chatViewport: chatViewport,
+            coveredByPage: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
+            baseSheetOpen: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil,
+            typing: $typing,
+            usageOpen: $usageOpen,
+            pickerShown: $pickerShown,
+            importingFile: $importingFile,
+            picks: $picks,
+            attaching: $attaching,
+            dockOpen: $dockOpen,
+            askingStop: $askingStop,
+            detailOpen: $detailOpen,
+            roaming: $roaming,
+            petSettingsOpen: $petSettingsOpen,
+            editing: $editing,
+            quote: $quote,
+            photos: $photos,
+            files: $files,
+            following: $following,
+            onPresentApproval: { approval in presentApproval(approval) },
+            onToEnd: { toEnd() },
+            onPreviousQuestion: { stepQuestion(earlier: true) },
+            onNextQuestion: { stepQuestion(earlier: false) },
+            onReturnToLatest: returnToLatest,
+            onClearComposer: clearComposer,
+            onListen: listen,
+            onRedoFrom: { entry, text in redo(from: entry, text: text) },
+            onPasteChange: { old, new in keepLongPaste(old, new) },
+            onReceiveURLs: { urls in receive(urls) },
+            fileNote: { fileNote },
+            outgoingText: { outgoing },
+            findBar: { findBar }
+        )
     }
 
     var petDockMotion: Animation {
         calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
+    }
+
+    private var observers: some View {
+        ChatConversationObservers(
+            chat: chat,
+            team: team,
+            viewport: viewport,
+            idleMood: idleMood,
+            awayState: awayState,
+            contextMetrics: contextMetrics,
+            followState: followState,
+            workTimer: workTimer,
+            following: following,
+            usageOpen: usageOpen,
+            typing: $typing,
+            onStir: stir,
+            onClearedLines: {
+                historyPage = nil
+                lookupRows = []
+            },
+            onFollowToEnd: { followToEnd() },
+            onApprovalInsetChanged: { approvalInsetChanged() },
+            onTakeShortcut: takeShortcut
+        )
+    }
+
+    func syncBridge() {
+        bridge.onViewPhoto = { ref in viewing = ref }
+        bridge.onQuote = { id, text in quoting = Noting(id: id, text: text) }
+        bridge.onEdit = { id, text in
+            withAnimation(Ink.Motion.settle) {
+                editing = id
+                draft = text
+            }
+            typing = true
+        }
+        bridge.onOpenURL = { url in
+            typing = false
+            Task { await team.browser.open(url) }
+            roaming = true
+        }
+        bridge.onOpenFile = { url, mount in reading = ReadingFile(url: url, mount: mount) }
+        bridge.onOpenLeaves = { leafing = true }
+        bridge.onAct = { next in act(next) }
+        bridge.onSpeak = { text in speak(text) }
+        bridge.onSaveNote = { id, text in savingNote = Noting(id: id, text: text) }
+        bridge.onLongNote = { id, text in noting = Noting(id: id, text: text) }
+        bridge.onFork = { line in fork(at: line) }
+        bridge.onRedo = { redo() }
+        bridge.onContinueStepLimit = {
+            following = true
+            _ = chat.send(L.t("chat.continuePrompt"), photos: [])
+        }
+        bridge.onSay = { text in say(text) }
+        bridge.onRetry = {
+            following = true
+            chat.retry()
+        }
+        bridge.onWithdrawQueued = { item in withdrawQueued(item) }
+        bridge.onSendQueuedNow = {
+            Haptics.thud()
+            following = true
+            team.sendQueueNow(chat.key)
+        }
     }
 
     var body: some View {
@@ -833,10 +855,16 @@ struct ChatPage: View {
                 .zIndex(3)
             }
         }
+        .background { observers }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { chatViewport = $0 }
         .safeAreaInset(edge: .bottom) { bottomStack }
         .sheet(isPresented: $petSettingsOpen) { PetPage() }
+        .sheet(isPresented: $usageOpen) {
+            UsageSheet(team: team, key: chat.key)
+                .presentationDetents([.medium, .large])
+        }
         .onAppear {
+            syncBridge()
             DiagTrail.record("开对话(\(chat.lines.count)条)")
             chat.open()
             PetNews.shared.focused = chat.key
@@ -1066,6 +1094,9 @@ struct ChatPage: View {
         .sheet(item: Binding(get: { viewing.map(Viewing.init) }, set: { viewing = $0?.id })) { item in
             PhotoViewer(chat: chat, attachmentId: item.id)
         }
+        .onChange(of: finding) { _, now in
+            DiagTrail.record(now ? "开查找" : "关查找")
+        }
         .task(id: picks) {
             let items = picks
             let revision = attachmentRevision
@@ -1077,9 +1108,6 @@ struct ChatPage: View {
                 }
             }
             if !Task.isCancelled, revision == attachmentRevision, picks == items { picks = [] }
-        }
-        .onChange(of: chat.lines.last?.id) { _, _ in
-            if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
         }
     }
 
@@ -1127,7 +1155,6 @@ struct ChatPage: View {
     @State var pickerShown = false
     @State var importingFile = false
     @State var files: [String] = []
-    @State var hint: String?
     @State var abilities = false
     @State var attaching = false
     @State var filesOpen = false
@@ -1139,8 +1166,6 @@ struct ChatPage: View {
     @State var scanning = false
     @State var linkAsking = false
     @State var linkDraft = ""
-    /// When the companion started on the current turn, for the seconds under the conversation.
-    @State var workingSince: Date?
     @State var cardOpen = false
     @State var glancing = false
     @State var outlining = false
@@ -1149,6 +1174,298 @@ struct ChatPage: View {
     @State var tuningOpen = false
     @State var careOpen = false
     @State var petSettingsOpen = false
+}
+
+@MainActor @Observable
+final class ChatIdleMood {
+    var cheering = false
+    var dozing = false
+}
+
+@MainActor @Observable
+final class ChatComposerNotice {
+    var text: String?
+}
+
+@MainActor @Observable
+final class ChatAwayState {
+    var items: [Happening] = []
+}
+
+@MainActor @Observable
+final class ChatContextMetrics {
+    var estimate: TeamModel.ContextEstimate?
+}
+
+@MainActor @Observable
+final class ChatFollowState {
+    var following = true
+}
+
+@MainActor @Observable
+final class ChatWorkTimer {
+    var since: Date?
+}
+
+@MainActor
+final class ChatRowBridge {
+    var onViewPhoto: (String) -> Void = { _ in }
+    var onQuote: (String, String) -> Void = { _, _ in }
+    var onEdit: (String, String) -> Void = { _, _ in }
+    var onOpenURL: (URL) -> Void = { _ in }
+    var onOpenFile: (URL, MountedFolder?) -> Void = { _, _ in }
+    var onOpenLeaves: () -> Void = {}
+    var onAct: (Explain.Next) -> Void = { _ in }
+    var onSpeak: (String) -> Void = { _ in }
+    var onSaveNote: (String, String) -> Void = { _, _ in }
+    var onLongNote: (String, String) -> Void = { _, _ in }
+    var onFork: (ChatLine) -> Void = { _ in }
+    var onRedo: () -> Void = {}
+    var onContinueStepLimit: () -> Void = {}
+    var onSay: (String) -> Void = { _ in }
+    var onRetry: () -> Void = {}
+    var onWithdrawQueued: (TeamModel.Queued) -> Void = { _ in }
+    var onSendQueuedNow: () -> Void = {}
+}
+
+struct ChatEarlierButtonView: View {
+    let chat: ChatModel
+    let historyInView: Bool
+    let shownCount: Int
+    let onLoadEarlier: () -> Void
+
+    private var canLoadEarlier: Bool {
+        !historyInView && (chat.lines.count > shownCount || chat.hasEarlier)
+    }
+
+    var body: some View {
+        if canLoadEarlier {
+            Button {
+                Haptics.light()
+                onLoadEarlier()
+            } label: {
+                Label(L.t("chat.earlier"), systemImage: "arrow.up")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(maxWidth: .infinity, minHeight: 36)
+            }
+            .buttonStyle(TapStyle())
+        }
+    }
+}
+
+struct ChatEmptyContentView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    @ObservedObject var dictation: Dictation
+    let idleMood: ChatIdleMood
+    let starters: [(String, String, String)]
+    let reach: String
+    let typing: FocusState<Bool>.Binding
+    let onPickStarter: (String) -> Void
+
+    private var isRoom: Bool { chat.roomId != nil }
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+
+    private var petState: String {
+        ChatPage.companionPetState(
+            waiting: waiting,
+            hasStreaming: chat.hasStreaming,
+            doing: doing,
+            working: working,
+            typing: typing.wrappedValue,
+            listening: dictation.listening,
+            cheering: idleMood.cheering,
+            dozing: idleMood.dozing
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: Ink.Space.l) {
+            PetStill(size: 96, state: petState, bot: isRoom ? nil : bot)
+            if isRoom {
+                Text(L.t("empty.groupChat"))
+                    .font(Ink.reading)
+                    .foregroundStyle(Ink.inkSoft)
+            } else {
+                Inscription(text: L.t("empty.inscription"))
+            }
+            VStack(spacing: Ink.Space.s) {
+                ForEach(starters, id: \.0) { item in
+                    Button {
+                        Haptics.light()
+                        onPickStarter(item.1)
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: item.2).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 22)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.0).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink)
+                                Text(item.1).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, Ink.Space.l)
+                        .padding(.vertical, Ink.Space.m)
+                        .paperCard()
+                    }
+                    .buttonStyle(PressStyle())
+                }
+            }
+            .padding(.top, Ink.Space.m)
+            Text(Words.t(reach))
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkFaint)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 72)
+    }
+}
+
+/// Hosts stream, status, mood, and context observers outside `ChatPage.body` so high-frequency updates
+/// never force settled message rows or the composer container to re-evaluate.
+struct ChatConversationObservers: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let viewport: ChatViewport
+    let idleMood: ChatIdleMood
+    let awayState: ChatAwayState
+    let contextMetrics: ChatContextMetrics
+    let followState: ChatFollowState
+    let workTimer: ChatWorkTimer
+
+    let following: Bool
+    let usageOpen: Bool
+    let typing: FocusState<Bool>.Binding
+
+    let onStir: () -> Void
+    let onClearedLines: () -> Void
+    let onFollowToEnd: () -> Void
+    let onApprovalInsetChanged: () -> Void
+    let onTakeShortcut: () -> Void
+
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+
+    private var showsLive: Bool {
+        guard doing != nil || waiting != nil else { return false }
+        if let last = chat.lines.last, last.kind == .steps, last.live { return false }
+        return !chat.hasStreaming || waiting != nil
+    }
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: following, initial: true) { _, now in
+                if followState.following != now { followState.following = now }
+            }
+            .onChange(of: working, initial: true) { _, now in
+                workTimer.since = now ? (workTimer.since ?? Date()) : nil
+            }
+            .onChange(of: working) { _, now in
+                onStir()
+                guard !now, chat.error == nil, chat.lines.last?.kind == .bot else { return }
+                idleMood.cheering = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_400_000_000)
+                    idleMood.cheering = false
+                }
+            }
+            .onChange(of: chat.hasStreaming) { _, now in
+                DiagTrail.record(now ? "开始流式" : "结束流式")
+            }
+            .onChange(of: showsLive) { onFollowToEnd() }
+            .onChange(of: waiting?.id) { _, next in
+                DiagTrail.record(next == nil ? "收起审批" : "弹出审批")
+                onApprovalInsetChanged()
+            }
+            .background {
+                ChatSecondaryObservers(
+                    chat: chat,
+                    team: team,
+                    viewport: viewport,
+                    idleMood: idleMood,
+                    awayState: awayState,
+                    contextMetrics: contextMetrics,
+                    working: working,
+                    usageOpen: usageOpen,
+                    typing: typing,
+                    onStir: onStir,
+                    onClearedLines: onClearedLines,
+                    onFollowToEnd: onFollowToEnd,
+                    onTakeShortcut: onTakeShortcut
+                )
+            }
+    }
+}
+
+private struct ChatSecondaryObservers: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let viewport: ChatViewport
+    let idleMood: ChatIdleMood
+    let awayState: ChatAwayState
+    let contextMetrics: ChatContextMetrics
+    let working: Bool
+    let usageOpen: Bool
+    let typing: FocusState<Bool>.Binding
+
+    let onStir: () -> Void
+    let onClearedLines: () -> Void
+    let onFollowToEnd: () -> Void
+    let onTakeShortcut: () -> Void
+
+    private var estimateTrigger: String {
+        let folding = team.compressing.contains(chat.key)
+        let lastFold = chat.lines.last(where: { $0.fold })?.id ?? ""
+        let summaryLen = team.cachedSummaryLength(chat.key)
+        return "\(chat.loaded)|\(working)|\(folding)|\(lastFold)|\(summaryLen)|\(chat.lines.count)|\(chat.lines.last?.id ?? "")|\(team.options(chat.key).model ?? "")|\(Pref.contextShare)|\(usageOpen)"
+    }
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: typing.wrappedValue) { _, now in
+                DiagTrail.record(now ? "开键盘" : "收键盘")
+                Hitches.shared.doing(now ? "打字" : nil, as: "typing")
+                onStir()
+            }
+            .onChange(of: chat.lines.last?.id) { _, _ in
+                if chat.lines.isEmpty { onClearedLines() }
+                if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
+                onFollowToEnd()
+            }
+            .onChange(of: chat.lines.count) { onFollowToEnd() }
+            .onChange(of: chat.error) { onFollowToEnd() }
+            .onChange(of: team.queued[chat.key]?.count ?? 0) { onFollowToEnd() }
+            .task {
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    let idle = ProcessInfo.processInfo.systemUptime - viewport.lastStirAt
+                    if idle >= 180, !idleMood.dozing { idleMood.dozing = true }
+                }
+            }
+            .task { awayState.items = team.whileAway(from: chat.key) }
+            .task {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                onTakeShortcut()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .clioShortcutReady)) { _ in onTakeShortcut() }
+            .task(id: estimateTrigger) {
+                guard chat.loaded, !working else { return }
+                do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+                let estimate = await team.contextEstimate(chat.key)
+                if !Task.isCancelled { contextMetrics.estimate = estimate }
+            }
+    }
 }
 
 struct ChatSection<Content: View>: View {

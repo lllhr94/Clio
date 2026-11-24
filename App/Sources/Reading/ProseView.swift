@@ -1,22 +1,850 @@
 import AgentKit
+import CoreText
 import UIKit
 import Prose
 import SwiftUI
 
-/// Parsed pages kept so a long conversation is not parsed again on every redraw.
-enum ParsedCache {
-    private final class Box { let blocks: [Prose.Block]; init(_ blocks: [Prose.Block]) { self.blocks = blocks } }
-    private static let cache: NSCache<NSString, Box> = {
-        let cache = NSCache<NSString, Box>()
-        cache.countLimit = 400
-        return cache
+/// Pure-Swift string transforms shared between MainActor chat rendering and off-MainActor prose pre-parsing.
+enum ProseTextTransforms {
+    private static let sourceHeads: Set<String> = [
+        "来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References",
+    ]
+    private static let linkRegex = try? NSRegularExpression(pattern: #"\[[^\]]*\]\([^)]*\)|https?://\S+"#)
+
+    nonisolated static func trimSourceList(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        if let last = lines.last?.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "*", with: ""),
+           let colon = last.firstIndex(where: { $0 == "：" || $0 == ":" }),
+           sourceHeads.contains(String(last[..<colon]).trimmingCharacters(in: .whitespaces)) {
+            let rest = String(last[last.index(after: colon)...])
+            if rest.contains("http") {
+                let bare: String
+                if let regex = linkRegex {
+                    let nsRange = NSRange(rest.startIndex..., in: rest)
+                    bare = regex.stringByReplacingMatches(in: rest, range: nsRange, withTemplate: "")
+                } else {
+                    bare = rest
+                }
+                if bare.trimmingCharacters(in: CharacterSet(charactersIn: " 、，,;；。.")).isEmpty {
+                    return lines.dropLast().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        guard let start = lines.lastIndex(where: { raw in
+            let bare = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "*#：: "))
+            return sourceHeads.contains(bare)
+        }) else { return text }
+        let rest = lines[(start + 1)...]
+        let onlyLinks = rest.allSatisfy { row in
+            let bare = row.trimmingCharacters(in: .whitespaces)
+            return bare.isEmpty || bare.contains("http") || bare.contains("](")
+        }
+        guard onlyLinks, rest.contains(where: { $0.contains("http") || $0.contains("](") }) else { return text }
+        return lines[..<start].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func lookback(_ text: String) -> (note: String?, rest: String) {
+        let trimmed = text.drop { $0 == "\n" || $0 == " " }
+        let probe = trimmed.drop { $0 == "*" || $0 == " " }
+        guard probe.hasPrefix("回望") else { return (nil, text) }
+        guard let first = trimmed.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else { return (nil, text) }
+        let line = first.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+        for head in ["回望：", "回望:"] where line.hasPrefix(head) {
+            let note = String(line.dropFirst(head.count)).trimmingCharacters(in: .whitespaces)
+            let rest = trimmed.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (note.isEmpty ? nil : note, rest)
+        }
+        return (nil, text)
+    }
+}
+
+/// Deterministic FNV-1a 64-bit hash for pure-Swift cache keys.
+nonisolated private func fnv1a64(_ text: String) -> UInt64 {
+    var hash: UInt64 = 14695981039346656037
+    for byte in text.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1099511628211
+    }
+    return hash
+}
+
+/// Immutable typography snapshot key safe to pass into background pre-parsing workers.
+struct ProseStyleKey: Hashable, Sendable {
+    let faceRaw: String
+    let codeRaw: String
+    let size: Double
+    let lineHeight: Double
+    let fontGeneration: Int
+    let customFontAvailable: Bool
+
+    nonisolated var tableCellSize: Double { max(12, size - 2) }
+    nonisolated var codeSize: Double { max(12, size - 3) }
+
+    @MainActor
+    static func from(_ style: ProseStyle) -> ProseStyleKey {
+        let customAvailable = style.face.postScript(bold: false).map { Ink.has($0) } ?? true
+        return ProseStyleKey(
+            faceRaw: style.face.rawValue,
+            codeRaw: style.code.rawValue,
+            size: style.size,
+            lineHeight: style.lineHeight,
+            fontGeneration: style.fontGeneration,
+            customFontAvailable: customAvailable
+        )
+    }
+
+    @MainActor
+    static func current() -> ProseStyleKey {
+        let theme = Theme.shared
+        let customAvailable = theme.face.postScript(bold: false).map { Ink.has($0) } ?? true
+        return ProseStyleKey(
+            faceRaw: theme.face.rawValue,
+            codeRaw: theme.code.rawValue,
+            size: theme.size,
+            lineHeight: theme.lineHeight,
+            fontGeneration: FontShelf.shared.generation,
+            customFontAvailable: customAvailable
+        )
+    }
+}
+
+struct PreparsedInlineRun: Equatable, Sendable {
+    let text: String
+    let bold: Bool
+    let italic: Bool
+    let code: Bool
+    let strikethrough: Bool
+    let link: URL?
+}
+
+struct PreparsedInline: Equatable, Sendable {
+    let runs: [PreparsedInlineRun]
+    let hasCode: Bool
+
+    nonisolated static func parse(_ text: String) -> PreparsedInline {
+        let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        var runs: [PreparsedInlineRun] = []
+        var hasCode = false
+        for run in parsed.runs {
+            let piece = String(parsed[run.range].characters)
+            guard !piece.isEmpty else { continue }
+            let intent = run.inlinePresentationIntent ?? []
+            let isCode = intent.contains(.code)
+            if isCode { hasCode = true }
+            runs.append(PreparsedInlineRun(
+                text: piece,
+                bold: intent.contains(.stronglyEmphasized),
+                italic: intent.contains(.emphasized),
+                code: isCode,
+                strikethrough: intent.contains(.strikethrough),
+                link: run.link
+            ))
+        }
+        return PreparsedInline(runs: runs, hasCode: hasCode)
+    }
+}
+
+enum CodeTokenKind: UInt8, Equatable, Sendable {
+    case plain, keyword, function, number, string, comment
+}
+
+struct PreparsedCodeSegment: Equatable, Sendable {
+    let text: String
+    let kind: CodeTokenKind
+    let isWide: Bool
+}
+
+struct PreparsedCodeModel: Equatable, Sendable {
+    let isOutput: Bool
+    let language: String
+    let trimmedText: String
+    let lineCount: Int
+    let segments: [PreparsedCodeSegment]
+    let hasWide: Bool
+}
+
+struct PreparsedTableModel: Equatable, Sendable {
+    let widths: [CGFloat]
+    let header: [AttributedString]
+    let rows: [[AttributedString]]
+}
+
+struct PreparsedFileLink: Equatable, Sendable {
+    let label: String
+    let path: String
+}
+
+struct PreparsedPictureLink: Equatable, Sendable {
+    let label: String
+    let source: String
+}
+
+struct PreparsedListItem: Equatable, Sendable {
+    let depth: Int
+    let number: Int?
+    let checked: Bool?
+    let inline: PreparsedInline
+}
+
+indirect enum PreparsedWordItem: Equatable, Sendable {
+    case heading(level: Int, inline: PreparsedInline)
+    case paragraph(PreparsedInline)
+    case list([PreparsedListItem])
+    case quote([PreparsedWordItem])
+}
+
+indirect enum PreparsedBlockItem: Equatable, Sendable {
+    case heading(level: Int, inline: PreparsedInline)
+    case fileCards([PreparsedFileLink])
+    case picture(words: PreparsedInline?, pictures: [PreparsedPictureLink])
+    case paragraph(PreparsedInline)
+    case list([PreparsedListItem])
+    case quote([PreparsedPart])
+    case code(language: String, text: String, closed: Bool, foldedModel: PreparsedCodeModel?, fullModel: PreparsedCodeModel?)
+    case table(Prose.Table, model: PreparsedTableModel)
+    case math(String)
+    case rule
+}
+
+enum PreparsedPart: Equatable, Sendable {
+    case words([Prose.Block], [PreparsedWordItem])
+    case block(Prose.Block, PreparsedBlockItem)
+}
+
+struct PreparsedReply: Sendable {
+    let rawBlocks: [Prose.Block]
+    let parts: [PreparsedPart]
+    let styleKey: ProseStyleKey
+}
+
+/// Thread-safe O(1) bounded LRU cache guarded by `NSLock`.
+private final class BoundedLRUCache<Key: Hashable, Value>: @unchecked Sendable {
+    private final class Node {
+        let key: Key
+        var value: Value
+        var cost: Int
+        weak var prev: Node?
+        var next: Node?
+
+        init(key: Key, value: Value, cost: Int) {
+            self.key = key
+            self.value = value
+            self.cost = cost
+        }
+    }
+
+    private let lock = NSLock()
+    private let countLimit: Int
+    private let totalCostLimit: Int
+    private var map: [Key: Node] = [:]
+    private var head: Node?
+    private var tail: Node?
+    private var totalCost = 0
+
+    init(countLimit: Int, totalCostLimit: Int = Int.max) {
+        self.countLimit = max(1, countLimit)
+        self.totalCostLimit = max(1, totalCostLimit)
+    }
+
+    func get(_ key: Key) -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let node = map[key] else { return nil }
+        moveToFront(node)
+        return node.value
+    }
+
+    func set(_ value: Value, for key: Key, cost: Int = 1) {
+        let safeCost = max(1, cost)
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = map[key] {
+            totalCost = max(0, totalCost - existing.cost) + safeCost
+            existing.value = value
+            existing.cost = safeCost
+            moveToFront(existing)
+        } else {
+            let node = Node(key: key, value: value, cost: safeCost)
+            map[key] = node
+            insertAtFront(node)
+            totalCost += safeCost
+        }
+        while map.count > countLimit || totalCost > totalCostLimit {
+            guard let victim = tail else { break }
+            removeNode(victim)
+            map.removeValue(forKey: victim.key)
+            totalCost = max(0, totalCost - victim.cost)
+        }
+    }
+
+    private func insertAtFront(_ node: Node) {
+        node.prev = nil
+        node.next = head
+        head?.prev = node
+        head = node
+        if tail == nil { tail = node }
+    }
+
+    private func removeNode(_ node: Node) {
+        let prev = node.prev
+        let next = node.next
+        if let prev { prev.next = next } else { head = next }
+        if let next { next.prev = prev } else { tail = prev }
+        node.prev = nil
+        node.next = nil
+    }
+
+    private func moveToFront(_ node: Node) {
+        guard head !== node else { return }
+        removeNode(node)
+        insertAtFront(node)
+    }
+}
+
+private struct ProseTextCacheKey: Hashable, Sendable {
+    let byteCount: Int
+    let contentHash: UInt64
+    let text: String
+
+    nonisolated init(_ text: String) {
+        self.byteCount = text.utf8.count
+        self.contentHash = fnv1a64(text)
+        self.text = text
+    }
+
+    nonisolated static func == (lhs: ProseTextCacheKey, rhs: ProseTextCacheKey) -> Bool {
+        lhs.contentHash == rhs.contentHash && lhs.byteCount == rhs.byteCount && lhs.text == rhs.text
+    }
+
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(byteCount)
+        hasher.combine(contentHash)
+    }
+}
+
+private struct ProseReplyCacheKey: Hashable, Sendable {
+    let entryID: String
+    let byteCount: Int
+    let contentHash: UInt64
+    let text: String
+    let styleKey: ProseStyleKey
+
+    nonisolated init(entryID: String, text: String, styleKey: ProseStyleKey) {
+        self.entryID = entryID
+        self.byteCount = text.utf8.count
+        self.contentHash = fnv1a64(text)
+        self.text = text
+        self.styleKey = styleKey
+    }
+
+    nonisolated static func == (lhs: ProseReplyCacheKey, rhs: ProseReplyCacheKey) -> Bool {
+        lhs.contentHash == rhs.contentHash
+            && lhs.byteCount == rhs.byteCount
+            && lhs.entryID == rhs.entryID
+            && lhs.styleKey == rhs.styleKey
+            && lhs.text == rhs.text
+    }
+
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(entryID)
+        hasher.combine(byteCount)
+        hasher.combine(contentHash)
+        hasher.combine(styleKey)
+    }
+}
+
+private struct ProseCodeCacheKey: Hashable, Sendable {
+    let isOutput: Bool
+    let language: String
+    let byteCount: Int
+    let contentHash: UInt64
+    let text: String
+
+    nonisolated init(isOutput: Bool, language: String, text: String) {
+        self.isOutput = isOutput
+        self.language = language.lowercased()
+        self.byteCount = text.utf8.count
+        self.contentHash = fnv1a64(text)
+        self.text = text
+    }
+
+    nonisolated static func == (lhs: ProseCodeCacheKey, rhs: ProseCodeCacheKey) -> Bool {
+        lhs.contentHash == rhs.contentHash
+            && lhs.byteCount == rhs.byteCount
+            && lhs.isOutput == rhs.isOutput
+            && lhs.language == rhs.language
+            && lhs.text == rhs.text
+    }
+
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(isOutput)
+        hasher.combine(language)
+        hasher.combine(byteCount)
+        hasher.combine(contentHash)
+    }
+}
+
+private struct ProseTableModelKey: Hashable, Sendable {
+    let table: Prose.Table
+    let faceRaw: String
+    let cellSize: Double
+    let fontGeneration: Int
+    let customFontAvailable: Bool
+    private let cachedHash: Int
+
+    nonisolated init(table: Prose.Table, styleKey: ProseStyleKey) {
+        self.table = table
+        self.faceRaw = styleKey.faceRaw
+        self.cellSize = styleKey.tableCellSize
+        self.fontGeneration = styleKey.fontGeneration
+        self.customFontAvailable = styleKey.customFontAvailable
+        var hasher = Hasher()
+        hasher.combine(faceRaw)
+        hasher.combine(cellSize)
+        hasher.combine(fontGeneration)
+        hasher.combine(customFontAvailable)
+        hasher.combine(table.header)
+        hasher.combine(table.rows.count)
+        if let first = table.rows.first { hasher.combine(first) }
+        if let last = table.rows.last, table.rows.count > 1 { hasher.combine(last) }
+        self.cachedHash = hasher.finalize()
+    }
+
+    nonisolated static func == (lhs: ProseTableModelKey, rhs: ProseTableModelKey) -> Bool {
+        lhs.cachedHash == rhs.cachedHash
+            && lhs.faceRaw == rhs.faceRaw
+            && lhs.cellSize == rhs.cellSize
+            && lhs.fontGeneration == rhs.fontGeneration
+            && lhs.customFontAvailable == rhs.customFontAvailable
+            && lhs.table == rhs.table
+    }
+
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(cachedHash)
+    }
+}
+
+/// Shared thread-safe LRU caches holding immutable pre-parsed blocks, syntax tokens, and table prep.
+enum ProsePrebuiltCache {
+    private static let blocksCache = BoundedLRUCache<ProseTextCacheKey, [Prose.Block]>(countLimit: 400)
+    private static let replyByEntry = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(countLimit: 240, totalCostLimit: 8 * 1024 * 1024)
+    private static let replyByText = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(countLimit: 240, totalCostLimit: 8 * 1024 * 1024)
+    private static let codeCache = BoundedLRUCache<ProseCodeCacheKey, PreparsedCodeModel>(countLimit: 256, totalCostLimit: 4 * 1024 * 1024)
+    private static let tableCache = BoundedLRUCache<ProseTableModelKey, PreparsedTableModel>(countLimit: 128)
+
+    nonisolated static func blocks(for text: String) -> [Prose.Block]? {
+        blocksCache.get(ProseTextCacheKey(text))
+    }
+
+    nonisolated static func storeBlocks(_ blocks: [Prose.Block], for text: String) {
+        blocksCache.set(blocks, for: ProseTextCacheKey(text), cost: max(1, text.utf8.count))
+    }
+
+    nonisolated static func reply(entryID: String, text: String, styleKey: ProseStyleKey) -> PreparsedReply? {
+        if !entryID.isEmpty, let hit = replyByEntry.get(ProseReplyCacheKey(entryID: entryID, text: text, styleKey: styleKey)) {
+            return hit
+        }
+        return replyByText.get(ProseReplyCacheKey(entryID: "", text: text, styleKey: styleKey))
+    }
+
+    nonisolated static func storeReply(_ reply: PreparsedReply, entryID: String, text: String) {
+        let cost = max(1, text.utf8.count)
+        if !entryID.isEmpty {
+            replyByEntry.set(reply, for: ProseReplyCacheKey(entryID: entryID, text: text, styleKey: reply.styleKey), cost: cost)
+        }
+        replyByText.set(reply, for: ProseReplyCacheKey(entryID: "", text: text, styleKey: reply.styleKey), cost: cost)
+    }
+
+    nonisolated static func codeModel(text: String, language: String, isOutput: Bool) -> PreparsedCodeModel? {
+        codeCache.get(ProseCodeCacheKey(isOutput: isOutput, language: language, text: text))
+    }
+
+    nonisolated static func storeCodeModel(_ model: PreparsedCodeModel, text: String) {
+        codeCache.set(model, for: ProseCodeCacheKey(isOutput: model.isOutput, language: model.language, text: text), cost: max(1, text.utf8.count))
+    }
+
+    nonisolated static func tableModel(for table: Prose.Table, styleKey: ProseStyleKey) -> PreparsedTableModel? {
+        tableCache.get(ProseTableModelKey(table: table, styleKey: styleKey))
+    }
+
+    nonisolated static func storeTableModel(_ model: PreparsedTableModel, for table: Prose.Table, styleKey: ProseStyleKey) {
+        tableCache.set(model, for: ProseTableModelKey(table: table, styleKey: styleKey), cost: max(1, table.rows.count * 32))
+    }
+}
+
+/// Pure-Swift off-MainActor syntax tokenizer (shared by background prewarming and MainActor `Highlight`).
+enum CodeTokenizer {
+    private static let keywords: Set<String> = [
+        "func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch",
+        "def", "from", "as", "in", "not", "and", "or", "is", "None", "True", "False", "lambda", "with", "try", "except",
+        "const", "function", "async", "await", "new", "this", "self", "true", "false", "null", "nil", "export", "default",
+        "public", "private", "static", "void", "int", "string", "bool", "fn", "pub", "mut", "impl", "use", "match",
+    ]
+    private static let outputLanguages: Set<String> = [
+        "text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session",
+    ]
+    private static let codeMarks = [
+        "{", "}", ";", " = ", "=>", "->", "def ", "func ", "function ", "import ", "return ", "const ", "let ", "class ",
+    ]
+
+    nonisolated static func trimmedLines(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
+    }
+
+    nonisolated static func lineCount(_ text: String) -> Int {
+        text.utf8.reduce(1) { $0 + ($1 == 10 ? 1 : 0) }
+    }
+
+    nonisolated static func isOutputBlock(language: String, text: String) -> Bool {
+        if outputLanguages.contains(language.lowercased()) { return true }
+        guard language.isEmpty else { return false }
+        return !codeMarks.contains { text.contains($0) }
+    }
+
+    nonisolated static func wide(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x00B7, 0x2014, 0x2018...0x2019, 0x201C...0x201D, 0x2026, 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
+             0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    nonisolated static func prepare(_ shown: String, language: String, isOutput: Bool) -> PreparsedCodeModel {
+        let lowerLang = language.lowercased()
+        if let hit = ProsePrebuiltCache.codeModel(text: shown, language: lowerLang, isOutput: isOutput) {
+            return hit
+        }
+        let tokenized = tokenize(shown, language: lowerLang, isOutput: isOutput)
+        let model = PreparsedCodeModel(
+            isOutput: isOutput,
+            language: lowerLang,
+            trimmedText: shown,
+            lineCount: lineCount(shown),
+            segments: tokenized.segments,
+            hasWide: tokenized.hasWide
+        )
+        ProsePrebuiltCache.storeCodeModel(model, text: shown)
+        return model
+    }
+
+    nonisolated static func tokenize(_ text: String, language: String, isOutput: Bool) -> (segments: [PreparsedCodeSegment], hasWide: Bool) {
+        var segments: [PreparsedCodeSegment] = []
+        var anyWide = false
+
+        func appendSpan(_ slice: Substring, kind: CodeTokenKind) {
+            guard let first = slice.first else { return }
+            var currentWide = wide(first)
+            if currentWide { anyWide = true }
+            var start = slice.startIndex
+            func flush(upTo end: String.Index) {
+                guard start < end else { return }
+                let piece = String(slice[start..<end])
+                if let last = segments.last, last.kind == kind, last.isWide == currentWide {
+                    segments[segments.count - 1] = PreparsedCodeSegment(text: last.text + piece, kind: kind, isWide: currentWide)
+                } else {
+                    segments.append(PreparsedCodeSegment(text: piece, kind: kind, isWide: currentWide))
+                }
+            }
+            for idx in slice.indices.dropFirst() {
+                let nextWide = wide(slice[idx])
+                if nextWide { anyWide = true }
+                if nextWide != currentWide {
+                    flush(upTo: idx)
+                    start = idx
+                    currentWide = nextWide
+                }
+            }
+            flush(upTo: slice.endIndex)
+        }
+
+        if isOutput {
+            appendSpan(text[...], kind: .plain)
+            return (segments, anyWide)
+        }
+
+        let lowerLang = language.lowercased()
+        let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(lowerLang)
+        var index = text.startIndex
+        var start = index
+        var kind: CodeTokenKind = .plain
+
+        while index < text.endIndex {
+            let rest = text[index...]
+            let character = text[index]
+            let next: CodeTokenKind
+            var end: String.Index
+            if rest.hasPrefix("//") || (hashComments && character == "#") {
+                end = rest.firstIndex(of: "\n") ?? text.endIndex
+                next = .comment
+            } else if character == "\"" || character == "'" || character == "`" {
+                end = text.index(after: index)
+                while end < text.endIndex, text[end] != character, text[end] != "\n" {
+                    if text[end] == "\\" { end = text.index(after: end) }
+                    if end < text.endIndex { end = text.index(after: end) }
+                }
+                if end < text.endIndex, text[end] == character { end = text.index(after: end) }
+                next = .string
+            } else if character.isLetter || character == "_" {
+                end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
+                let word = text[index..<end]
+                let calls = end < text.endIndex && text[end] == "("
+                next = keywords.contains(String(word)) ? .keyword : (calls ? .function : .plain)
+            } else if character.isNumber {
+                end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
+                next = .number
+            } else {
+                end = text.index(after: index)
+                next = .plain
+            }
+            if next != kind {
+                if start < index { appendSpan(text[start..<index], kind: kind) }
+                start = index
+                kind = next
+            }
+            index = end
+        }
+        if start < text.endIndex { appendSpan(text[start..<text.endIndex], kind: kind) }
+        return (segments, anyWide)
+    }
+}
+
+/// Thread-safe table cell markdown parsing & CoreText width measurement off-MainActor.
+enum TablePreparer {
+    nonisolated static func prepare(_ table: Prose.Table, styleKey: ProseStyleKey) -> PreparsedTableModel {
+        if let hit = ProsePrebuiltCache.tableModel(for: table, styleKey: styleKey) {
+            return hit
+        }
+        let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
+        let cellSize = CGFloat(styleKey.tableCellSize)
+        let headFont = ctFont(size: cellSize, bold: true, faceRaw: styleKey.faceRaw, customFontAvailable: styleKey.customFontAvailable)
+        let bodyFont = ctFont(size: cellSize, bold: false, faceRaw: styleKey.faceRaw, customFontAvailable: styleKey.customFontAvailable)
+        let widths: [CGFloat] = (0..<columns).map { column in
+            var natural = measure(column < table.header.count ? table.header[column] : "", font: headFont)
+            for row in table.rows where column < row.count {
+                natural = max(natural, measure(row[column], font: bodyFont))
+            }
+            return max(28, ceil(natural) + 4)
+        }
+        let header = table.header.map(parseCell)
+        let rows = table.rows.map { $0.map(parseCell) }
+        let prepared = PreparsedTableModel(widths: widths, header: header, rows: rows)
+        ProsePrebuiltCache.storeTableModel(prepared, for: table, styleKey: styleKey)
+        return prepared
+    }
+
+    nonisolated private static func ctFont(size: CGFloat, bold: Bool, faceRaw: String, customFontAvailable: Bool) -> CTFont {
+        let name: String
+        if customFontAvailable, let face = Pref.Face(rawValue: faceRaw), let ps = face.postScript(bold: bold) {
+            name = ps
+        } else {
+            name = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
+        }
+        return CTFontCreateWithName(name as CFString, size, nil)
+    }
+
+    nonisolated private static func measure(_ cell: String, font: CTFont) -> CGFloat {
+        let plain = cell.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "~~", with: "")
+        guard !plain.isEmpty else { return 0 }
+        let attrs = [kCTFontAttributeName: font] as CFDictionary
+        guard let cfAttr = CFAttributedStringCreate(kCFAllocatorDefault, plain as CFString, attrs) else { return 0 }
+        let line = CTLineCreateWithAttributedString(cfAttr)
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+    }
+
+    nonisolated private static func parseCell(_ cell: String) -> AttributedString {
+        (try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(cell)
+    }
+}
+
+/// Bounded background pre-parser that prepares `PreparsedReply` models before MainActor commits settled rows.
+enum ProsePrewarm {
+    private static let queue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "clio.prose-prewarm"
+        queue.maxConcurrentOperationCount = 2
+        queue.qualityOfService = .userInitiated
+        return queue
     }()
 
-    static func blocks(_ text: String) -> [Prose.Block] {
-        let key = text as NSString
-        if let kept = cache.object(forKey: key) { return kept.blocks }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var inFlight: Set<ProseReplyCacheKey> = []
+
+    nonisolated static func prewarm(lines: ArraySlice<ChatLine>, styleKey: ProseStyleKey) {
+        for line in lines.reversed() where line.kind == .bot && !line.text.isEmpty {
+            if Task.isCancelled { return }
+            prewarmLine(id: line.id, text: line.text, styleKey: styleKey)
+        }
+    }
+
+    nonisolated static func schedule(lines: [ChatLine], styleKey: ProseStyleKey) {
+        let targets = lines.filter { $0.kind == .bot && !$0.text.isEmpty }
+        guard !targets.isEmpty else { return }
+        queue.addOperation {
+            for line in targets.reversed() {
+                prewarmLine(id: line.id, text: line.text, styleKey: styleKey)
+            }
+        }
+    }
+
+    nonisolated private static func prewarmLine(id: String, text: String, styleKey: ProseStyleKey) {
+        let rawRest = ProseTextTransforms.lookback(text).rest
+        prepareIfNeeded(entryID: id, text: rawRest, styleKey: styleKey)
+        let trimmed = ProseTextTransforms.trimSourceList(text)
+        if trimmed != text {
+            let trimmedRest = ProseTextTransforms.lookback(trimmed).rest
+            if trimmedRest != rawRest {
+                prepareIfNeeded(entryID: id, text: trimmedRest, styleKey: styleKey)
+            }
+        }
+    }
+
+    nonisolated private static func prepareIfNeeded(entryID: String, text: String, styleKey: ProseStyleKey) {
+        guard !text.isEmpty else { return }
+        if ProsePrebuiltCache.reply(entryID: entryID, text: text, styleKey: styleKey) != nil {
+            return
+        }
+        let flightKey = ProseReplyCacheKey(entryID: entryID, text: text, styleKey: styleKey)
+        lock.lock()
+        let inserted = inFlight.insert(flightKey).inserted
+        lock.unlock()
+        guard inserted else { return }
+        defer {
+            lock.lock()
+            inFlight.remove(flightKey)
+            lock.unlock()
+        }
+        let built = buildReply(text: text, styleKey: styleKey)
+        ProsePrebuiltCache.storeReply(built, entryID: entryID, text: text)
+    }
+
+    nonisolated static func buildReply(text: String, styleKey: ProseStyleKey) -> PreparsedReply {
+        let rawBlocks: [Prose.Block]
+        if let cachedBlocks = ProsePrebuiltCache.blocks(for: text) {
+            rawBlocks = cachedBlocks
+        } else {
+            let parsed = Prose.parse(text)
+            ProsePrebuiltCache.storeBlocks(parsed, for: text)
+            rawBlocks = parsed
+        }
+        let parts = buildParts(rawBlocks, styleKey: styleKey)
+        return PreparsedReply(rawBlocks: rawBlocks, parts: parts, styleKey: styleKey)
+    }
+
+    nonisolated private static func buildParts(_ blocks: [Prose.Block], styleKey: ProseStyleKey) -> [PreparsedPart] {
+        var out: [PreparsedPart] = []
+        var run: [Prose.Block] = []
+        func flush() {
+            guard !run.isEmpty else { return }
+            let items = run.map(preparseWordItem)
+            out.append(.words(run, items))
+            run = []
+        }
+        for block in blocks {
+            if isWordBlock(block) {
+                run.append(block)
+            } else {
+                flush()
+                out.append(.block(block, preparseBlock(block, styleKey: styleKey)))
+            }
+        }
+        flush()
+        return out
+    }
+
+    nonisolated private static func isWordBlock(_ block: Prose.Block) -> Bool {
+        switch block {
+        case .heading, .list: return true
+        case .paragraph(let text): return FileCard.links(in: text) == nil && !text.contains("![")
+        default: return false
+        }
+    }
+
+    nonisolated private static func preparseWordItem(_ block: Prose.Block) -> PreparsedWordItem {
+        switch block {
+        case .heading(let level, let text):
+            return .heading(level: level, inline: PreparsedInline.parse(text))
+        case .paragraph(let text):
+            return .paragraph(PreparsedInline.parse(text))
+        case .list(let items):
+            return .list(items.map { item in
+                PreparsedListItem(depth: item.depth, number: item.number, checked: item.checked, inline: PreparsedInline.parse(item.text))
+            })
+        case .quote(let inner):
+            return .quote(inner.map(preparseWordItem))
+        default:
+            return .paragraph(PreparsedInline(runs: [], hasCode: false))
+        }
+    }
+
+    nonisolated private static func preparseBlock(_ block: Prose.Block, styleKey: ProseStyleKey) -> PreparsedBlockItem {
+        switch block {
+        case .heading(let level, let text):
+            return .heading(level: level, inline: PreparsedInline.parse(text))
+        case .paragraph(let text):
+            if let files = FileCard.links(in: text) {
+                return .fileCards(files.map { PreparsedFileLink(label: $0.label, path: $0.path) })
+            }
+            if text.contains("![") {
+                let parts = PictureParagraph.split(text)
+                let words = parts.words.isEmpty ? nil : PreparsedInline.parse(parts.words)
+                let pics = parts.pictures.map { PreparsedPictureLink(label: $0.label, source: $0.source) }
+                return .picture(words: words, pictures: pics)
+            }
+            return .paragraph(PreparsedInline.parse(text))
+        case .list(let items):
+            return .list(items.map { item in
+                PreparsedListItem(depth: item.depth, number: item.number, checked: item.checked, inline: PreparsedInline.parse(item.text))
+            })
+        case .quote(let inner):
+            return .quote(buildParts(inner, styleKey: styleKey))
+        case .code(let language, let text, let closed):
+            let trimmed = CodeTokenizer.trimmedLines(text)
+            let count = CodeTokenizer.lineCount(trimmed)
+            let isOut = CodeTokenizer.isOutputBlock(language: language, text: trimmed)
+            let foldedText: String
+            if count > 20 {
+                foldedText = trimmed.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+            } else {
+                foldedText = trimmed
+            }
+            let foldedModel = foldedText.utf8.count <= 80_000
+                ? CodeTokenizer.prepare(foldedText, language: language, isOutput: isOut)
+                : nil
+            let fullModel: PreparsedCodeModel?
+            if count <= 20 {
+                fullModel = foldedModel
+            } else if trimmed.utf8.count <= 40_000 {
+                fullModel = CodeTokenizer.prepare(trimmed, language: language, isOutput: isOut)
+            } else {
+                fullModel = nil
+            }
+            return .code(language: language, text: text, closed: closed, foldedModel: foldedModel, fullModel: fullModel)
+        case .table(let table):
+            return .table(table, model: TablePreparer.prepare(table, styleKey: styleKey))
+        case .math(let text):
+            return .math(text)
+        case .rule:
+            return .rule
+        }
+    }
+}
+
+/// Parsed pages kept so a long conversation is not parsed again on every redraw.
+enum ParsedCache {
+    nonisolated static func blocks(_ text: String) -> [Prose.Block] {
+        if let kept = ProsePrebuiltCache.blocks(for: text) { return kept }
         let parsed = Prose.parse(text)
-        cache.setObject(Box(parsed), forKey: key)
+        ProsePrebuiltCache.storeBlocks(parsed, for: text)
         return parsed
     }
 }
@@ -280,14 +1108,14 @@ struct ProseStyle: Equatable {
     }
 }
 
-private struct ProseStyleKey: EnvironmentKey {
+private struct ProseStyleEnvironmentKey: EnvironmentKey {
     static let defaultValue: ProseStyle? = nil
 }
 
 extension EnvironmentValues {
     var proseStyle: ProseStyle? {
-        get { self[ProseStyleKey.self] }
-        set { self[ProseStyleKey.self] = newValue }
+        get { self[ProseStyleEnvironmentKey.self] }
+        set { self[ProseStyleEnvironmentKey.self] = newValue }
     }
 }
 
@@ -348,17 +1176,27 @@ private struct BlockView: View {
     /// The last block of a reply still being written, whether or not text fades in: a formula is not typeset and
     /// long code is not folded until it is complete.
     var live = false
+    var preparsed: PreparsedBlockItem? = nil
     @Environment(\.noteInk) private var noteInk
 
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            Inline(text: text, style: style, font: style.bodyFont(Double(style.headingSize(level: level)), bold: true), fading: fading, tight: true)
+            let inline = headingInline
+            Inline(text: text, style: style, font: style.bodyFont(Double(style.headingSize(level: level)), bold: true), fading: fading, tight: true, preparsed: inline)
                 // Much more air above a heading than below it, so it plainly belongs to what follows.
                 .padding(.top, style.headingTop(level: level))
                 .padding(.bottom, min(0, style.headingBottom - style.paragraphGap))
         case .paragraph(let text):
-            if let files = FileCard.links(in: text) {
+            if case .fileCards(let files) = preparsed {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, file in FileCard(label: file.label, path: file.path) }
+                }
+            } else if case .picture(let words, let pics) = preparsed {
+                PictureParagraph(text: text, style: style, fading: fading, preparsedWords: words, preparsedPictures: pics)
+            } else if case .paragraph(let inline) = preparsed {
+                Inline(text: text, style: style, font: style.readingFont, fading: fading, preparsed: inline)
+            } else if let files = FileCard.links(in: text) {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     ForEach(Array(files.enumerated()), id: \.offset) { _, file in FileCard(label: file.label, path: file.path) }
                 }
@@ -368,6 +1206,7 @@ private struct BlockView: View {
                 Inline(text: text, style: style, font: style.readingFont, fading: fading)
             }
         case .list(let items):
+            let preparsedItems = listItems
             // Items closer together than paragraphs, with enough rhythm for numbered points to breathe.
             VStack(alignment: .leading, spacing: style.listSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
@@ -375,7 +1214,7 @@ private struct BlockView: View {
                     HStack(alignment: .firstTextBaseline, spacing: style.size * 0.45) {
                         marker(item)
                             .frame(width: item.number != nil ? style.size * 1.3 : style.size * 0.85, alignment: item.number != nil ? .trailing : .center)
-                        Inline(text: item.text, style: style, font: style.readingFont, fading: fading && index == items.count - 1)
+                        Inline(text: item.text, style: style, font: style.readingFont, fading: fading && index == items.count - 1, preparsed: preparsedItems?[index].inline)
                     }
                     .padding(.leading, CGFloat(item.depth) * style.size * 1.25)
                 }
@@ -390,9 +1229,24 @@ private struct BlockView: View {
                 .environment(\.noteInk, noteInk ?? Ink.inkSoft)
             }
         case .code(let language, let text, _):
-            CodeBlock(language: language, text: text, style: style, live: live)
+            let foldedPre: PreparsedCodeModel?
+            let fullPre: PreparsedCodeModel?
+            if case .code(_, _, _, let fModel, let aModel) = preparsed {
+                foldedPre = fModel
+                fullPre = aModel
+            } else {
+                foldedPre = nil
+                fullPre = nil
+            }
+            CodeBlock(language: language, text: text, style: style, live: live, preparsedFolded: foldedPre, preparsedFull: fullPre)
         case .table(let table):
-            TableBlock(table: table, style: style)
+            let tableModel: PreparsedTableModel?
+            if case .table(_, let model) = preparsed {
+                tableModel = model
+            } else {
+                tableModel = nil
+            }
+            TableBlock(table: table, style: style, preparsed: tableModel)
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading || live)
         case .rule:
@@ -405,6 +1259,16 @@ private struct BlockView: View {
             .padding(.horizontal, Ink.Space.l)
             .padding(.vertical, CGFloat(style.size) * 0.65)
         }
+    }
+
+    private var headingInline: PreparsedInline? {
+        if case .heading(_, let inline) = preparsed { return inline }
+        return nil
+    }
+
+    private var listItems: [PreparsedListItem]? {
+        if case .list(let items) = preparsed, case .list(let raw) = block, items.count == raw.count { return items }
+        return nil
     }
 
     @ViewBuilder
@@ -435,32 +1299,33 @@ private struct Inline: View {
     let fading: Bool
     /// Headings: closer lines.
     var tight = false
+    var preparsed: PreparsedInline? = nil
     @Environment(\.noteInk) private var noteInk
 
     private var styled: Text {
-        var out = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-        for run in out.runs {
-            guard let intent = run.inlinePresentationIntent else { continue }
-            if intent.contains(.code) {
-                out[run.range].font = style.inlineCodeFont
-                // In the accent, on its pill, as the Claude app sets inline code (the owner's reference).
-                out[run.range].foregroundColor = Ink.accent
+        let parsed = preparsed ?? PreparsedInline.parse(text)
+        guard !parsed.runs.isEmpty else { return Text(text) }
+        return parsed.runs.reduce(Text("")) { acc, run in
+            var attr = AttributedString(run.text)
+            var intent: InlinePresentationIntent = []
+            if run.bold { intent.insert(.stronglyEmphasized) }
+            if run.italic { intent.insert(.emphasized) }
+            if run.strikethrough { intent.insert(.strikethrough) }
+            if run.code { intent.insert(.code) }
+            if !intent.isEmpty { attr.inlinePresentationIntent = intent }
+            if run.code {
+                attr.font = style.inlineCodeFont
+                attr.foregroundColor = Ink.accent
+            } else if run.bold, noteInk == nil {
+                attr.foregroundColor = Ink.ink
             }
-            if intent.contains(.stronglyEmphasized), noteInk == nil {
-                out[run.range].foregroundColor = Ink.ink
+            if let link = run.link {
+                attr.link = link
+                attr.foregroundColor = Ink.accent
+                attr.underlineStyle = .single
             }
-        }
-        for run in out.runs where run.link != nil {
-            out[run.range].foregroundColor = Ink.accent
-            out[run.range].underlineStyle = .single
-        }
-        guard out.runs.contains(where: { $0.inlinePresentationIntent?.contains(.code) == true }) else {
-            return Text(out)
-        }
-        return out.runs.reduce(Text("")) { text, run in
-            let part = Text(AttributedString(out[run.range]))
-            return text + (run.inlinePresentationIntent?.contains(.code) == true
-                ? part.customAttribute(InlineCodeBadge()) : part)
+            let part = Text(attr)
+            return acc + (run.code ? part.customAttribute(InlineCodeBadge()) : part)
         }
     }
 
@@ -521,6 +1386,8 @@ private struct CodeBlock: View {
     let style: ProseStyle
     /// Still being written: it grows in full, and folds only once complete (folding at line 21 jumped the page).
     var live = false
+    var preparsedFolded: PreparsedCodeModel? = nil
+    var preparsedFull: PreparsedCodeModel? = nil
     @State private var copied = false
     @State private var unfolded = false
     @State private var contentWidth: CGFloat = 0
@@ -528,14 +1395,10 @@ private struct CodeBlock: View {
     /// A line is wider than the block: only then may it slide.
     private var overflows: Bool { boxWidth > 0 && contentWidth > boxWidth + 1 }
 
-    private var lineCount: Int { text.utf8.reduce(1) { $0 + ($1 == 10 ? 1 : 0) } }
+    private var lineCount: Int { CodeTokenizer.lineCount(text) }
     /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
     private var isOutput: Bool {
-        if ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased()) { return true }
-        // No language given, and nothing that reads as code: a log or what a command printed.
-        guard language.isEmpty else { return false }
-        let marks = ["{", "}", ";", " = ", "=>", "->", "def ", "func ", "function ", "import ", "return ", "const ", "let ", "class "]
-        return !marks.contains { text.contains($0) }
+        CodeTokenizer.isOutputBlock(language: language, text: text)
     }
     /// Long code shows its first lines; the rest opens on a tap.
     private var folds: Bool { !live && lineCount > 20 }
@@ -547,10 +1410,7 @@ private struct CodeBlock: View {
     }
 
     static func trimmedLines(_ text: String) -> String {
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
-        return lines.joined(separator: "\n")
+        CodeTokenizer.trimmedLines(text)
     }
 
     private var headerBar: some View {
@@ -609,7 +1469,8 @@ private struct CodeBlock: View {
         // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
         // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
         ScrollView(.horizontal) {
-            Text(isOutput ? Highlight.output(shown, style: style, cache: !live) : Highlight.code(shown, language: language, style: style, cache: !live))
+            let activePreparsed = (folds && !unfolded) ? preparsedFolded : preparsedFull
+            Text(isOutput ? Highlight.output(shown, style: style, cache: !live, preparsed: activePreparsed) : Highlight.code(shown, language: language, style: style, cache: !live, preparsed: activePreparsed))
                 .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                 .font(style.codeFont)
                 // Tight column-aligned monospace rhythm (~0.13x font size) with clean vertical padding.
@@ -723,10 +1584,15 @@ private enum TableLayoutCache {
         return cache
     }()
 
-    static func prepare(_ table: Prose.Table, style: ProseStyle) -> PreparedTable {
+    static func prepare(_ table: Prose.Table, style: ProseStyle, preparsed: PreparsedTableModel? = nil) -> PreparedTable {
         let cellSize = style.tableCellSize
         let key = TableCacheKey(table: table, face: style.face, size: cellSize, fontGen: style.fontGeneration)
         if let hit = cache.object(forKey: key) { return hit }
+        if let model = preparsed ?? ProsePrebuiltCache.tableModel(for: table, styleKey: ProseStyleKey.from(style)) {
+            let prepared = PreparedTable(widths: model.widths, header: model.header, rows: model.rows)
+            cache.setObject(prepared, forKey: key)
+            return prepared
+        }
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
         let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
         let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
@@ -763,6 +1629,7 @@ private enum TableLayoutCache {
 private struct TableBlock: View {
     let table: Prose.Table
     let style: ProseStyle
+    var preparsed: PreparsedTableModel? = nil
 
     private static let gap: CGFloat = 20
     /// How wide the block is on the page, so a narrow table can spread across it.
@@ -800,7 +1667,7 @@ private struct TableBlock: View {
     }
 
     var body: some View {
-        let prepared = TableLayoutCache.prepare(table, style: style)
+        let prepared = TableLayoutCache.prepare(table, style: style, preparsed: preparsed)
         let widths = spread(prepared.widths)
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
@@ -951,162 +1818,115 @@ private final class HighlightBox {
         return cache
     }()
 
-    private static let keywords: Set<String> = [
-        "func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch",
-        "def", "from", "as", "in", "not", "and", "or", "is", "None", "True", "False", "lambda", "with", "try", "except",
-        "const", "function", "async", "await", "new", "this", "self", "true", "false", "null", "nil", "export", "default",
-        "public", "private", "static", "void", "int", "string", "bool", "fn", "pub", "mut", "impl", "use", "match",
-    ]
-
-    private enum Style {
-        case plain, keyword, function, number, string, comment
-
-        var color: Color {
-            switch self {
-            case .plain: Ink.ink
-            case .keyword: Ink.Code.keyword
-            case .function: Ink.Code.function
-            case .number: Ink.Code.number
-            case .string: Ink.Code.string
-            case .comment: Ink.inkFaint
-            }
+    private static func color(for kind: CodeTokenKind) -> Color {
+        switch kind {
+        case .plain: Ink.ink
+        case .keyword: Ink.Code.keyword
+        case .function: Ink.Code.function
+        case .number: Ink.Code.number
+        case .string: Ink.Code.string
+        case .comment: Ink.inkFaint
         }
     }
 
-    static func output(_ text: String, style: ProseStyle, cache useCache: Bool = true) -> AttributedString {
+    static func output(_ text: String, style: ProseStyle, cache useCache: Bool = true, preparsed: PreparsedCodeModel? = nil) -> AttributedString {
         if useCache {
             let key = HighlightCacheKey(isOutput: true, language: "", codePref: style.code, size: style.size, text: text)
             if let hit = cache.object(forKey: key) { return hit.attributed }
-            let fonts = fonts(for: text, style: style)
-            var result = AttributedString()
-            append(text[...], fonts: fonts, to: &result)
+            let matched = (preparsed != nil && preparsed?.trimmedText == text) ? preparsed : nil
+            let model = matched ?? ProsePrebuiltCache.codeModel(text: text, language: "", isOutput: true)
+            let result = renderOutput(text, model: model, style: style)
             cache.setObject(HighlightBox(result), forKey: key)
             return result
         }
-        let fonts = fonts(for: text, style: style)
-        var result = AttributedString()
-        append(text[...], fonts: fonts, to: &result)
-        return result
+        return renderOutput(text, model: nil, style: style)
     }
 
-    private static func fonts(for text: String, style: ProseStyle) -> (narrow: Font, wide: Font) {
-        guard text.contains(where: wide) else { return (style.codeFont, style.codeFont) }
-        return Ink.codeBlockFonts(size: CGFloat(style.codeSize), preference: style.code)
-    }
-
-    private static func wide(_ character: Character) -> Bool {
-        guard let scalar = character.unicodeScalars.first else { return false }
-        switch scalar.value {
-        case 0x00B7, 0x2014, 0x2018...0x2019, 0x201C...0x201D, 0x2026, 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
-             0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func append(_ text: Substring, fonts: (narrow: Font, wide: Font),
-                               color: Color? = nil, italic: Bool = false, to result: inout AttributedString) {
-        guard let first = text.first else { return }
-        var isWide = wide(first)
-        var start = text.startIndex
-        func flush(upTo end: String.Index, into result: inout AttributedString) {
-            var part = AttributedString(String(text[start..<end]))
-            let face = isWide ? fonts.wide : fonts.narrow
-            part.font = italic ? face.italic() : face
-            part.foregroundColor = color
-            result += part
-        }
-        for index in text.indices.dropFirst() {
-            let next = wide(text[index])
-            if next != isWide {
-                flush(upTo: index, into: &result)
-                start = index
-                isWide = next
-            }
-        }
-        flush(upTo: text.endIndex, into: &result)
-    }
-
-    static func code(_ text: String, language: String, style proseStyle: ProseStyle, cache useCache: Bool = true) -> AttributedString {
+    static func code(_ text: String, language: String, style proseStyle: ProseStyle, cache useCache: Bool = true, preparsed: PreparsedCodeModel? = nil) -> AttributedString {
         let lowerLang = language.lowercased()
         let key: HighlightCacheKey? = useCache
             ? HighlightCacheKey(isOutput: false, language: lowerLang, codePref: proseStyle.code, size: proseStyle.size, text: text)
             : nil
         if let key, let hit = cache.object(forKey: key) { return hit.attributed }
-        let fonts = fonts(for: text, style: proseStyle)
+        let model: PreparsedCodeModel?
+        if useCache {
+            let matched = (preparsed != nil && preparsed?.trimmedText == text) ? preparsed : nil
+            model = matched ?? ProsePrebuiltCache.codeModel(text: text, language: lowerLang, isOutput: false)
+        } else {
+            model = nil
+        }
+        let tokenized: (segments: [PreparsedCodeSegment], hasWide: Bool) = model.map {
+            (segments: $0.segments, hasWide: $0.hasWide)
+        } ?? CodeTokenizer.tokenize(text, language: lowerLang, isOutput: false)
+        let resolvedFonts = fonts(hasWide: tokenized.hasWide, style: proseStyle)
         var out = AttributedString()
-        var index = text.startIndex
-        var start = index
-        var style: Style = .plain
-        let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(lowerLang)
-        func flush(upTo end: String.Index) {
-            guard start < end else { return }
-            append(text[start..<end], fonts: fonts, color: style.color, italic: style == .comment, to: &out)
+        for segment in tokenized.segments {
+            var part = AttributedString(segment.text)
+            let face = segment.isWide ? resolvedFonts.wide : resolvedFonts.narrow
+            part.font = segment.kind == .comment ? face.italic() : face
+            part.foregroundColor = color(for: segment.kind)
+            out += part
         }
-        while index < text.endIndex {
-            let rest = text[index...]
-            let character = text[index]
-            let next: Style
-            var end: String.Index
-            if rest.hasPrefix("//") || (hashComments && character == "#") {
-                end = rest.firstIndex(of: "\n") ?? text.endIndex
-                next = .comment
-            } else if character == "\"" || character == "'" || character == "`" {
-                end = text.index(after: index)
-                while end < text.endIndex, text[end] != character, text[end] != "\n" {
-                    if text[end] == "\\" { end = text.index(after: end) }
-                    if end < text.endIndex { end = text.index(after: end) }
-                }
-                if end < text.endIndex, text[end] == character { end = text.index(after: end) }
-                next = .string
-            } else if character.isLetter || character == "_" {
-                end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
-                let word = text[index..<end]
-                let calls = end < text.endIndex && text[end] == "("
-                next = keywords.contains(String(word)) ? .keyword : (calls ? .function : .plain)
-            } else if character.isNumber {
-                end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
-                next = .number
-            } else {
-                end = text.index(after: index)
-                next = .plain
-            }
-            if next != style {
-                flush(upTo: index)
-                start = index
-                style = next
-            }
-            index = end
-        }
-        flush(upTo: index)
         if let key { cache.setObject(HighlightBox(out), forKey: key) }
         return out
+    }
+
+    private static func renderOutput(_ text: String, model: PreparsedCodeModel?, style: ProseStyle) -> AttributedString {
+        let tokenized: (segments: [PreparsedCodeSegment], hasWide: Bool) = model.map {
+            (segments: $0.segments, hasWide: $0.hasWide)
+        } ?? CodeTokenizer.tokenize(text, language: "", isOutput: true)
+        let resolvedFonts = fonts(hasWide: tokenized.hasWide, style: style)
+        var result = AttributedString()
+        for segment in tokenized.segments {
+            var part = AttributedString(segment.text)
+            part.font = segment.isWide ? resolvedFonts.wide : resolvedFonts.narrow
+            result += part
+        }
+        return result
+    }
+
+    private static func fonts(hasWide: Bool, style: ProseStyle) -> (narrow: Font, wide: Font) {
+        guard hasWide else { return (style.codeFont, style.codeFont) }
+        return Ink.codeBlockFonts(size: CGFloat(style.codeSize), preference: style.code)
     }
 }
 
 
 /// A paragraph with pictures in it (`![描述](地址)`): the words, then each picture under them.
 private struct PictureParagraph: View {
-    private static let picturePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
+    nonisolated private static let picturePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
 
     let text: String
     let style: ProseStyle
     let fading: Bool
+    var preparsedWords: PreparsedInline? = nil
+    var preparsedPictures: [PreparsedPictureLink]? = nil
 
     var body: some View {
-        let parts = Self.split(text)
+        let pictures: [PreparsedPictureLink]
+        let wordsText: String
+        let hasWords: Bool
+        if let preparsedPictures {
+            pictures = preparsedPictures
+            wordsText = ""
+            hasWords = preparsedWords != nil
+        } else {
+            let parts = Self.split(text)
+            pictures = parts.pictures.map { PreparsedPictureLink(label: $0.label, source: $0.source) }
+            wordsText = parts.words
+            hasWords = !parts.words.isEmpty
+        }
         VStack(alignment: .leading, spacing: style.size * 0.6) {
-            if !parts.words.isEmpty {
-                Inline(text: parts.words, style: style, font: style.readingFont, fading: fading)
+            if hasWords {
+                Inline(text: wordsText, style: style, font: style.readingFont, fading: fading, preparsed: preparsedWords)
             }
-            ForEach(Array(parts.pictures.enumerated()), id: \.offset) { _, picture in
+            ForEach(Array(pictures.enumerated()), id: \.offset) { _, picture in
                 ProsePicture(source: picture.source, label: picture.label)
             }
         }
     }
 
-    static func split(_ text: String) -> (words: String, pictures: [(label: String, source: String)]) {
+    nonisolated static func split(_ text: String) -> (words: String, pictures: [(label: String, source: String)]) {
         guard let pattern = picturePattern else {
             return (text, [])
         }
@@ -1637,10 +2457,10 @@ struct FileCard: View {
         return checked ? "找不到这个文件了" : L.t("loading.generic")
     }
 
-    private static let linkPattern = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(\s*<?([^)>]+?)>?\s*\)$"#)
+    nonisolated private static let linkPattern = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(\s*<?([^)>]+?)>?\s*\)$"#)
 
     /// The links in a paragraph made only of links to files (one per line), or nil when it is ordinary text.
-    static func links(in text: String) -> [(label: String, path: String)]? {
+    nonisolated static func links(in text: String) -> [(label: String, path: String)]? {
         guard text.contains("]("), let pattern = linkPattern else { return nil }
         var found: [(label: String, path: String)] = []
         for rawLine in text.split(separator: "\n") {
@@ -1692,17 +2512,21 @@ extension ProseView: Equatable {
 /// stand between them as their own blocks (code keeps its copy button).
 struct SelectableProse: View, Equatable {
     let text: String
+    var entryID: String? = nil
     @Environment(\.proseStyle) private var envStyle
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: SelectableProse, rhs: SelectableProse) -> Bool {
-        lhs.text == rhs.text
+        lhs.text == rhs.text && lhs.entryID == rhs.entryID
     }
 
     var body: some View {
         let style = envStyle ?? ProseStyle.current(dark: scheme == .dark, reduceMotion: reduceMotion)
-        ReplyProseLayout(text: text, blocks: ParsedCache.blocks(text), style: style)
+        let styleKey = ProseStyleKey.from(style)
+        let preparsed = ProsePrebuiltCache.reply(entryID: entryID ?? "", text: text, styleKey: styleKey)
+        let blocks = preparsed?.rawBlocks ?? ParsedCache.blocks(text)
+        ReplyProseLayout(text: text, blocks: blocks, style: style, preparsedParts: preparsed?.parts)
     }
 }
 
@@ -1715,6 +2539,7 @@ private struct ReplyProseLayout: View {
     var allowFade = true
     var quoted = false
     var cacheScope = ""
+    var preparsedParts: [PreparsedPart]? = nil
 
     enum Part {
         case words([Prose.Block])
@@ -1742,17 +2567,38 @@ private struct ReplyProseLayout: View {
     }
 
     var body: some View {
-        let parts = Self.parts(blocks)
+        let resolvedParts = preparsedParts ?? Self.parts(blocks).map { part -> PreparsedPart in
+            switch part {
+            case .words(let run): return .words(run, [])
+            case .block(let block): return .block(block, .rule)
+            }
+        }
+        let hasPreparsed = preparsedParts != nil
         let format = "\(cacheScope)\(quoted ? "q-" : "")\(style.formatKey)"
         VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : style.paragraphGap) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                let live = streaming && allowFade && index == parts.count - 1
+            ForEach(Array(resolvedParts.enumerated()), id: \.offset) { index, part in
+                let live = streaming && allowFade && index == resolvedParts.count - 1
                 switch part {
-                case .words(let blocks):
-                    ProseText(blocks: blocks, text: text, part: index, format: format, style: style,
-                              streaming: streaming, fadeTail: live && style.fade && !style.reduceMotion, quoted: quoted)
-                case .block(let block):
+                case .words(let wordBlocks, let wordItems):
+                    ProseText(
+                        blocks: wordBlocks,
+                        preparsedWords: wordItems.count == wordBlocks.count ? wordItems : nil,
+                        text: text,
+                        part: index,
+                        format: format,
+                        style: style,
+                        streaming: streaming,
+                        fadeTail: live && style.fade && !style.reduceMotion,
+                        quoted: quoted
+                    )
+                case .block(let block, let preparsedBlock):
                     if case .quote(let inner) = block {
+                        let innerParts: [PreparsedPart]?
+                        if hasPreparsed, case .quote(let pInner) = preparsedBlock {
+                            innerParts = pInner
+                        } else {
+                            innerParts = nil
+                        }
                         QuoteCard {
                             AnyView(
                                 ReplyProseLayout(
@@ -1762,12 +2608,19 @@ private struct ReplyProseLayout: View {
                                     streaming: streaming,
                                     allowFade: live,
                                     quoted: true,
-                                    cacheScope: "\(cacheScope)q\(index)."
+                                    cacheScope: "\(cacheScope)q\(index).",
+                                    preparsedParts: innerParts
                                 )
                             )
                         }
                     } else {
-                        BlockView(block: block, style: style, fading: false, live: unfinished(block, live: live))
+                        BlockView(
+                            block: block,
+                            style: style,
+                            fading: false,
+                            live: unfinished(block, live: live),
+                            preparsed: hasPreparsed ? preparsedBlock : nil
+                        )
                     }
                 }
             }
@@ -1793,8 +2646,8 @@ enum ProseWords {
         }
     }
 
-    static func make(_ block: Prose.Block, style proseStyle: ProseStyle, first: Bool, quoted: Bool = false) -> NSAttributedString {
-        set(block, style: proseStyle, quoteDepth: 0, first: first, quoted: quoted)
+    static func make(_ block: Prose.Block, preparsed: PreparsedWordItem? = nil, style proseStyle: ProseStyle, first: Bool, quoted: Bool = false) -> NSAttributedString {
+        set(block, preparsed: preparsed, style: proseStyle, quoteDepth: 0, first: first, quoted: quoted)
     }
 
     private static func style(using proseStyle: ProseStyle, spacing: CGFloat? = nil, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
@@ -1808,20 +2661,26 @@ enum ProseWords {
         return style
     }
 
-    private static func set(_ block: Prose.Block, style proseStyle: ProseStyle, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
+    private static func set(_ block: Prose.Block, preparsed: PreparsedWordItem?, style proseStyle: ProseStyle, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
         let quote = CGFloat(quoteDepth) * proseStyle.size * 1.1
         let ink = (quoted || quoteDepth > 0) ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
         switch block {
         case .heading(let level, let text):
             let before: CGFloat = first ? 0 : proseStyle.headingTop(level: level)
-            return inline(text, size: proseStyle.headingSize(level: level), bold: true, proseStyle: proseStyle, ink: ink,
+            let preInline: PreparsedInline?
+            if case .heading(_, let item) = preparsed { preInline = item } else { preInline = nil }
+            return inline(text, preparsed: preInline, size: proseStyle.headingSize(level: level), bold: true, proseStyle: proseStyle, ink: ink,
                           paragraph: style(using: proseStyle, spacing: proseStyle.headingBottom, before: before, indent: quote, tight: true))
         case .paragraph(let text):
-            return inline(text, size: proseStyle.size, bold: false, proseStyle: proseStyle, ink: ink,
+            let preInline: PreparsedInline?
+            if case .paragraph(let item) = preparsed { preInline = item } else { preInline = nil }
+            return inline(text, preparsed: preInline, size: proseStyle.size, bold: false, proseStyle: proseStyle, ink: ink,
                           paragraph: style(using: proseStyle, indent: quote))
         case .list(let items):
             let out = NSMutableAttributedString()
             let base = CGFloat(proseStyle.size)
+            let preList: [PreparsedListItem]?
+            if case .list(let pItems) = preparsed, pItems.count == items.count { preList = pItems } else { preList = nil }
             for (index, item) in items.enumerated() {
                 if index > 0 { out.append(NSAttributedString(string: "\n")) }
                 let marker: String
@@ -1847,14 +2706,16 @@ enum ProseWords {
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
                     .font: Ink.uiFace(markerSize, face: proseStyle.face), .foregroundColor: markerColor, .paragraphStyle: paragraph,
                 ]))
-                out.append(inline(item.text, size: base, bold: false, proseStyle: proseStyle, ink: ink, paragraph: paragraph))
+                out.append(inline(item.text, preparsed: preList?[index].inline, size: base, bold: false, proseStyle: proseStyle, ink: ink, paragraph: paragraph))
             }
             return out
         case .quote(let inner):
             let out = NSMutableAttributedString()
+            let preQuote: [PreparsedWordItem]?
+            if case .quote(let pInner) = preparsed, pInner.count == inner.count { preQuote = pInner } else { preQuote = nil }
             for (index, block) in inner.enumerated() {
                 if index > 0 { out.append(NSAttributedString(string: "\n")) }
-                out.append(set(block, style: proseStyle, quoteDepth: quoteDepth + 1, first: first && index == 0))
+                out.append(set(block, preparsed: preQuote?[index], style: proseStyle, quoteDepth: quoteDepth + 1, first: first && index == 0))
             }
             return out
         default:
@@ -1863,34 +2724,32 @@ enum ProseWords {
     }
 
     /// One block's words with their marks: bold, italics, code, links, strikethrough.
-    private static func inline(_ text: String, size: CGFloat, bold: Bool, proseStyle: ProseStyle, ink: UIColor, paragraph: NSParagraphStyle) -> NSAttributedString {
-        let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    private static func inline(_ text: String, preparsed: PreparsedInline? = nil, size: CGFloat, bold: Bool, proseStyle: ProseStyle, ink: UIColor, paragraph: NSParagraphStyle) -> NSAttributedString {
+        let resolved = preparsed ?? PreparsedInline.parse(text)
         let out = NSMutableAttributedString()
-        for run in parsed.runs {
-            let piece = String(parsed[run.range].characters)
-            let intent = run.inlinePresentationIntent ?? []
-            var font = Ink.uiFace(size, bold: bold || intent.contains(.stronglyEmphasized), face: proseStyle.face)
-            if intent.contains(.emphasized), let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+        for run in resolved.runs {
+            var font = Ink.uiFace(size, bold: bold || run.bold, face: proseStyle.face)
+            if run.italic, let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
                 font = UIFont(descriptor: slanted, size: size)
             }
             var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]
             // 文楷 has one weight for reading and bold: bold words are drawn with a thin outline so they still stand out.
-            if proseStyle.face == .wenkai, bold || intent.contains(.stronglyEmphasized) {
+            if proseStyle.face == .wenkai, bold || run.bold {
                 attributes[.strokeWidth] = -3.0
                 attributes[.strokeColor] = ink
             }
-            if intent.contains(.code) {
+            if run.code {
                 attributes[.font] = Ink.uiMono(max(12, size - 2), preference: proseStyle.code)
                 attributes[.foregroundColor] = UIColor(Ink.accent)
                 attributes[.clioInlineCode] = true
             }
-            if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if run.strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let link = run.link {
                 attributes[.link] = link
                 attributes[.foregroundColor] = UIColor(Ink.accent)
                 attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
             }
-            out.append(NSAttributedString(string: piece, attributes: attributes))
+            out.append(NSAttributedString(string: run.text, attributes: attributes))
         }
         return out
     }
@@ -2113,6 +2972,7 @@ private final class InlineCodeTextView: UITextView {
 /// Native text that can be selected across lines and paragraphs: long-press a word, drag the handles, 拷贝.
 private struct ProseText: UIViewRepresentable {
     let blocks: [Prose.Block]
+    var preparsedWords: [PreparsedWordItem]? = nil
     let text: String
     let part: Int
     let format: String
@@ -2150,6 +3010,7 @@ private struct ProseText: UIViewRepresentable {
         context.coordinator.speakSelection = speakSelection
         if let update = context.coordinator.words(
             for: blocks,
+            preparsed: preparsedWords,
             text: text,
             part: part,
             format: format,
@@ -2179,6 +3040,7 @@ private struct ProseText: UIViewRepresentable {
         if !blocks.isEmpty, (uiView.attributedText?.length ?? 0) == 0,
            let update = context.coordinator.words(
                for: blocks,
+               preparsed: preparsedWords,
                text: text,
                part: part,
                format: format,
@@ -2219,6 +3081,7 @@ private struct ProseText: UIViewRepresentable {
         @MainActor
         func words(
             for next: [Prose.Block],
+            preparsed: [PreparsedWordItem]? = nil,
             text: String,
             part: Int,
             format: String,
@@ -2246,7 +3109,8 @@ private struct ProseText: UIViewRepresentable {
                 let built = NSMutableAttributedString()
                 for (index, block) in next.enumerated() {
                     if index > 0 { built.append(NSAttributedString(string: "\n")) }
-                    built.append(ProseWords.make(block, style: style, first: index == 0, quoted: quoted))
+                    let preItem = (preparsed?.count == next.count) ? preparsed?[index] : nil
+                    built.append(ProseWords.make(block, preparsed: preItem, style: style, first: index == 0, quoted: quoted))
                 }
                 let ranges = ProseLayoutCache.extractCodeRanges(in: built)
                 let rendered = ProseRenderedWords(attributed: built, codeRanges: ranges)

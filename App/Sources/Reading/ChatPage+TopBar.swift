@@ -11,29 +11,145 @@ import VisionKit
 extension ChatPage {
     // MARK: Top bar
 
+    static func companionStatus(waiting: Approval?, doing: String?) -> String {
+        if waiting != nil { return Words.t("候印") }
+        guard let doing else { return Words.t("闲坐") }
+        switch doing {
+        case "正在回复": return Words.t("落笔")
+        case "正在想", "等你批准": return Words.t("沉吟")
+        default: return Words.t(doing)
+        }
+    }
+
+    static func companionPetState(
+        waiting: Approval?,
+        hasStreaming: Bool,
+        doing: String?,
+        working: Bool,
+        typing: Bool,
+        listening: Bool,
+        cheering: Bool,
+        dozing: Bool
+    ) -> String {
+        if waiting != nil { return "notification" }
+        if hasStreaming || doing == "正在回复" { return "working" }
+        if working || typing || listening { return "thinking" }
+        if cheering { return "attention" }
+        if dozing { return "sleeping" }
+        return "idle"
+    }
+
     var header: some View {
+        ChatTopBarView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            side: side,
+            dictation: dictation,
+            idleMood: idleMood,
+            followState: followState,
+            notice: notice,
+            viewportWidth: chatViewport.width,
+            largeText: largeText,
+            textScale: textScale,
+            typing: $typing,
+            headerHeight: $headerHeight,
+            glancing: $glancing,
+            detailOpen: $detailOpen,
+            cardOpen: $cardOpen,
+            roaming: $roaming,
+            sharing: $sharing,
+            exportFailed: $exportFailed,
+            clearingChat: $clearingChat,
+            terminalOpen: $terminalOpen,
+            filesOpen: $filesOpen,
+            chatSkillsOpen: $chatSkillsOpen,
+            chatConnectorsOpen: $chatConnectorsOpen,
+            outlinePairs: $outlinePairs,
+            outlining: $outlining,
+            leafing: $leafing,
+            renameText: $renameText,
+            renaming: $renaming,
+            onLeave: leave,
+            onStartFinding: startFinding,
+            onReturnToLatest: returnToLatest,
+            onLoadOutlinePairs: {
+                await loadEverything()
+                return outline
+            }
+        )
+    }
+
+    var headerBack: some View {
+        ChatHeaderBackButton(onLeave: leave)
+    }
+}
+
+/// Top floating navigation chrome isolated from message streaming and composer typing.
+struct ChatTopBarView: View {
+    let chat: ChatModel
+    let team: TeamModel
+    let bot: BotInfo
+    let side: SideControl
+    let dictation: Dictation
+    let idleMood: ChatIdleMood
+    let followState: ChatFollowState
+    let notice: ChatComposerNotice
+    let viewportWidth: CGFloat
+    let largeText: Bool
+    let textScale: CGFloat
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var headerHeight: CGFloat
+    @Binding var glancing: Bool
+    @Binding var detailOpen: Bool
+    @Binding var cardOpen: Bool
+    @Binding var roaming: Bool
+    @Binding var sharing: ChatPage.ShareFile?
+    @Binding var exportFailed: Bool
+    @Binding var clearingChat: Bool
+    @Binding var terminalOpen: Bool
+    @Binding var filesOpen: Bool
+    @Binding var chatSkillsOpen: Bool
+    @Binding var chatConnectorsOpen: Bool
+    @Binding var outlinePairs: [OutlineSheet.Pair]
+    @Binding var outlining: Bool
+    @Binding var leafing: Bool
+    @Binding var renameText: String
+    @Binding var renaming: Bool
+
+    let onLeave: () -> Void
+    let onStartFinding: () -> Void
+    let onReturnToLatest: () -> Void
+    let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
+
+    var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
             if largeText {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
-                    headerBack
-                    headerIdentity
+                    ChatHeaderBackButton(onLeave: onLeave)
+                    identityView
                     Spacer(minLength: 0)
-                    headerControls
+                    controlsView
                 }
-                modelMenu(compact: false)
-                    .glassBacking(in: Capsule())
+                ChatModelMenuView(
+                    chat: chat,
+                    team: team,
+                    bot: bot,
+                    notice: notice,
+                    viewportWidth: viewportWidth,
+                    compact: false
+                )
+                .glassBacking(in: Capsule())
             } else {
                 HStack(alignment: .center, spacing: Ink.Space.s) {
-                    headerBack
-                    headerIdentity
+                    ChatHeaderBackButton(onLeave: onLeave)
+                    identityView
                     Spacer(minLength: Ink.Space.xs)
-                    headerControls
+                    controlsView
                         .layoutPriority(1)
                 }
             }
-        }
-        .onChange(of: offeredThinking, initial: true) { _, offered in
-            resetUnavailableThinking(in: offered)
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.xs)
@@ -51,8 +167,61 @@ extension ChatPage {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
-    var headerBack: some View {
-        Button(action: leave) {
+    private var identityView: some View {
+        ChatTopBarIdentityView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            dictation: dictation,
+            idleMood: idleMood,
+            viewportWidth: viewportWidth,
+            largeText: largeText,
+            textScale: textScale,
+            typing: typing,
+            glancing: $glancing,
+            detailOpen: $detailOpen,
+            cardOpen: $cardOpen
+        )
+    }
+
+    private var controlsView: some View {
+        ChatTopBarControlsView(
+            chat: chat,
+            team: team,
+            bot: bot,
+            side: side,
+            notice: notice,
+            followState: followState,
+            viewportWidth: viewportWidth,
+            largeText: largeText,
+            typing: typing,
+            roaming: $roaming,
+            sharing: $sharing,
+            exportFailed: $exportFailed,
+            clearingChat: $clearingChat,
+            terminalOpen: $terminalOpen,
+            filesOpen: $filesOpen,
+            chatSkillsOpen: $chatSkillsOpen,
+            chatConnectorsOpen: $chatConnectorsOpen,
+            outlinePairs: $outlinePairs,
+            outlining: $outlining,
+            leafing: $leafing,
+            renameText: $renameText,
+            renaming: $renaming,
+            cardOpen: $cardOpen,
+            detailOpen: $detailOpen,
+            onStartFinding: onStartFinding,
+            onReturnToLatest: onReturnToLatest,
+            onLoadOutlinePairs: onLoadOutlinePairs
+        )
+    }
+}
+
+private struct ChatHeaderBackButton: View {
+    let onLeave: () -> Void
+
+    var body: some View {
+        Button(action: onLeave) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: Ink.Size.body, weight: .medium))
                 .foregroundStyle(Ink.ink)
@@ -62,8 +231,48 @@ extension ChatPage {
         .buttonStyle(PressStyle())
         .accessibilityLabel("打开侧边栏")
     }
+}
 
-    var headerIdentity: some View {
+private struct ChatTopBarIdentityView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    @ObservedObject var dictation: Dictation
+    let idleMood: ChatIdleMood
+    let viewportWidth: CGFloat
+    let largeText: Bool
+    let textScale: CGFloat
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var glancing: Bool
+    @Binding var detailOpen: Bool
+    @Binding var cardOpen: Bool
+
+    private var isRoom: Bool { chat.roomId != nil }
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+
+    private var petState: String {
+        ChatPage.companionPetState(
+            waiting: waiting,
+            hasStreaming: chat.hasStreaming,
+            doing: doing,
+            working: working,
+            typing: typing.wrappedValue,
+            listening: dictation.listening,
+            cheering: idleMood.cheering,
+            dozing: idleMood.dozing
+        )
+    }
+
+    private var headerLine: String {
+        let status = ChatPage.companionStatus(waiting: waiting, doing: doing)
+        if working || waiting != nil { return status }
+        return team.title(of: chat.key) ?? status
+    }
+
+    var body: some View {
         HStack(spacing: Ink.Space.s) {
             PetStill(size: 28 * UIScale.factor, state: petState, avatar: true, bot: isRoom ? nil : bot)
                 .breathing(working, tint: Ink.accent)
@@ -74,12 +283,43 @@ extension ChatPage {
                     glancing = true
                 }
                 .popover(isPresented: $glancing) {
-                    GlanceCard(team: team, bot: bot, key: chat.key, availableWidth: chatViewport.width,
-                               openCard: { glancing = false; cardOpen = true },
-                               openDetail: { glancing = false; detailOpen = true })
-                        .presentationCompactAdaptation(.popover)
+                    GlanceCard(
+                        team: team,
+                        bot: bot,
+                        key: chat.key,
+                        availableWidth: viewportWidth,
+                        openCard: { glancing = false; cardOpen = true },
+                        openDetail: { glancing = false; detailOpen = true }
+                    )
+                    .presentationCompactAdaptation(.popover)
                 }
-            headerTitle
+            Button {
+                Haptics.light()
+                typing.wrappedValue = false
+                detailOpen = true
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(bot.name)
+                        .font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                    HStack(spacing: Ink.Space.xs) {
+                        Circle()
+                            .fill(working ? Ink.accent : Ink.ok)
+                            .frame(width: 5.5, height: 5.5)
+                        Text(headerLine)
+                            .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
+                            .foregroundStyle(Ink.inkSoft)
+                            .lineLimit(largeText ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: largeText)
+                            .contentTransition(.opacity)
+                    }
+                    .animation(.easeInOut(duration: 0.5), value: headerLine)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(L.t("chat.details"))
         }
         .padding(.leading, Ink.Space.s)
         .padding(.trailing, Ink.Space.m)
@@ -87,41 +327,47 @@ extension ChatPage {
         .frame(minHeight: Ink.Bar.height)
         .glassBacking(in: Capsule())
     }
+}
 
-    var headerTitle: some View {
-        Button {
-            Haptics.light()
-            typing = false
-            detailOpen = true
-        } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(bot.name)
-                    .font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold))
-                    .foregroundStyle(Ink.ink)
-                    .lineLimit(1)
-                HStack(spacing: Ink.Space.xs) {
-                    Circle()
-                        .fill(working ? Ink.accent : Ink.ok)
-                        .frame(width: 5.5, height: 5.5)
-                    Text(headerLine)
-                        .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
-                        .foregroundStyle(Ink.inkSoft)
-                        .lineLimit(largeText ? nil : 1)
-                        .fixedSize(horizontal: false, vertical: largeText)
-                        .contentTransition(.opacity)
-                }
-                .animation(.easeInOut(duration: 0.5), value: headerLine)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint(L.t("chat.details"))
-    }
+private struct ChatTopBarControlsView: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    let side: SideControl
+    let notice: ChatComposerNotice
+    let followState: ChatFollowState
+    let viewportWidth: CGFloat
+    let largeText: Bool
+    let typing: FocusState<Bool>.Binding
 
-    var headerControls: some View {
+    @Binding var roaming: Bool
+    @Binding var sharing: ChatPage.ShareFile?
+    @Binding var exportFailed: Bool
+    @Binding var clearingChat: Bool
+    @Binding var terminalOpen: Bool
+    @Binding var filesOpen: Bool
+    @Binding var chatSkillsOpen: Bool
+    @Binding var chatConnectorsOpen: Bool
+    @Binding var outlinePairs: [OutlineSheet.Pair]
+    @Binding var outlining: Bool
+    @Binding var leafing: Bool
+    @Binding var renameText: String
+    @Binding var renaming: Bool
+    @Binding var cardOpen: Bool
+    @Binding var detailOpen: Bool
+
+    let onStartFinding: () -> Void
+    let onReturnToLatest: () -> Void
+    let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
+
+    private var isRoom: Bool { chat.roomId != nil }
+    private var working: Bool { team.workDetail(for: chat.key).words != nil || chat.hasStreaming }
+    private var offeredThinking: [Thinking] { ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot) }
+
+    var body: some View {
         HStack(spacing: Ink.Space.xs) {
             ChatBrowserIndicator(browser: team.browser) {
-                typing = false
+                typing.wrappedValue = false
                 roaming = true
             }
             if largeText {
@@ -130,7 +376,14 @@ extension ChatPage {
                     .glassBacking(in: Circle())
             } else {
                 HStack(spacing: 0) {
-                    modelMenu(compact: true)
+                    ChatModelMenuView(
+                        chat: chat,
+                        team: team,
+                        bot: bot,
+                        notice: notice,
+                        viewportWidth: viewportWidth,
+                        compact: true
+                    )
                     Rectangle()
                         .fill(Ink.rule.opacity(0.75))
                         .frame(width: 0.5, height: 18 * UIScale.factor)
@@ -141,61 +394,66 @@ extension ChatPage {
                 .glassBacking(in: Capsule())
             }
         }
+        .onChange(of: offeredThinking, initial: true) { _, offered in
+            if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
+                team.setThinking(.auto, in: chat.key)
+            }
+        }
     }
 
-    var headerMoreMenu: some View {
+    private var headerMoreMenu: some View {
         Menu {
             Section {
-                chatMenuButton("chat.newConversation", icon: "square.and.pencil") {
-                    typing = false
+                menuButton("chat.newConversation", icon: "square.and.pencil") {
                     side.fresh(isRoom ? nil : bot.id)
                 }
-                chatMenuButton("actions.share", icon: "square.and.arrow.up") {
+                menuButton("actions.share", icon: "square.and.arrow.up") {
                     let title = team.title(of: chat.key) ?? bot.name
                     Task {
                         if let url = await team.exportChat(chat.key, title: title) {
-                            sharing = ShareFile(url: url)
+                            sharing = ChatPage.ShareFile(url: url)
                         } else {
                             exportFailed = true
                         }
                     }
                 }
-                chatMenuButton("chat.find", icon: "magnifyingglass") { startFinding() }
-                if !following { chatMenuButton("chat.latest", icon: "arrow.down.to.line") { returnToLatest() } }
+                menuButton("chat.find", icon: "magnifyingglass") { onStartFinding() }
+                if !followState.following {
+                    menuButton("chat.latest", icon: "arrow.down.to.line") { onReturnToLatest() }
+                }
             }
             Section {
-                chatMenuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
+                menuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
                     Task { _ = try? await team.compress(chat.key) }
                 }
                 Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {
-                    typing = false
+                    typing.wrappedValue = false
                     clearingChat = true
                 }
             }
             Section {
-                chatMenuButton("nav.terminal", icon: "terminal") { terminalOpen = true }
-                chatMenuButton("nav.browser", icon: "safari") { roaming = true }
-                chatMenuButton("chat.files", icon: "folder") { filesOpen = true }
+                menuButton("nav.terminal", icon: "terminal") { terminalOpen = true }
+                menuButton("nav.browser", icon: "safari") { roaming = true }
+                menuButton("chat.files", icon: "folder") { filesOpen = true }
             }
             Section {
-                chatMenuButton("agent.skills", icon: "books.vertical") { chatSkillsOpen = true }
-                chatMenuButton("chat.mcp", icon: "point.3.connected.trianglepath.dotted") { chatConnectorsOpen = true }
+                menuButton("agent.skills", icon: "books.vertical") { chatSkillsOpen = true }
+                menuButton("chat.mcp", icon: "point.3.connected.trianglepath.dotted") { chatConnectorsOpen = true }
             }
             Section {
-                chatMenuButton("chat.outline", icon: "list.bullet.indent") {
+                menuButton("chat.outline", icon: "list.bullet.indent") {
                     Task {
-                        await loadEverything()
-                        outlinePairs = outline
+                        outlinePairs = await onLoadOutlinePairs()
                         outlining = true
                     }
                 }
-                chatMenuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
-                chatMenuButton("chat.rename", icon: "pencil") {
+                menuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
+                menuButton("chat.rename", icon: "pencil") {
                     renameText = team.title(of: chat.key) ?? ""
                     renaming = true
                 }
-                if !isRoom { chatMenuButton("chat.openCard", icon: "person.text.rectangle") { cardOpen = true } }
-                if working { chatMenuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) } }
+                if !isRoom { menuButton("chat.openCard", icon: "person.text.rectangle") { cardOpen = true } }
+                if working { menuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) } }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -207,9 +465,9 @@ extension ChatPage {
         .accessibilityLabel(L.t("chat.menu"))
     }
 
-    func chatMenuButton(_ key: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func menuButton(_ key: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(L.t(key), systemImage: icon) {
-            typing = false
+            typing.wrappedValue = false
             action()
         }
     }

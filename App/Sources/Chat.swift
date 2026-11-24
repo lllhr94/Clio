@@ -55,30 +55,71 @@ struct ChatLine: Identifiable, Equatable, Sendable {
     var at: Double?
 }
 
+/// High-frequency per-token and per-step streaming state isolated from `ChatModel`'s settled history.
+/// Only the active tail / handoff prose view observes these fields so token bursts never invalidate
+/// settled historical rows, the top bar, or the composer.
+@MainActor @Observable
+final class ChatLiveStreamState {
+    var text = ""
+    var reasoning = ""
+    var pulse = ""
+    var pulseSpeaker: String?
+    var activeTool: String?
+    var generation = 0
+    var fresh: ChatModel.Fresh?
+}
+
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
 @MainActor @Observable
 final class ChatModel {
     private(set) var lines: [ChatLine] = []
     private(set) var pending: [ChatLine] = []
+    /// Isolated domain for high-frequency token, thinking, pulse, and handoff updates.
+    @ObservationIgnored let stream = ChatLiveStreamState()
+
+    var streamGeneration: Int { stream.generation }
     /// The part of the reply being written that is on screen so far.
-    private(set) var streamGeneration = 0
-    private(set) var streaming = "" {
-        didSet {
-            if streaming.isEmpty && !oldValue.isEmpty { streamGeneration += 1 }
-            let writing = !streaming.isEmpty
+    var streaming: String {
+        get { stream.text }
+        set {
+            let wasEmpty = stream.text.isEmpty
+            stream.text = newValue
+            if newValue.isEmpty && !wasEmpty { stream.generation += 1 }
+            let writing = !newValue.isEmpty
             if writing != hasStreaming { hasStreaming = writing }
         }
     }
     private(set) var hasStreaming = false
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
-    private(set) var thinking = ""
+    var thinking: String {
+        get { stream.reasoning }
+        set { stream.reasoning = newValue }
+    }
     @ObservationIgnored private var pendingThought = ""
     @ObservationIgnored private var thoughtUpdate: Task<Void, Never>?
     /// The 心绪 being written before the reply in progress.
-    private(set) var pulse = ""
-    private(set) var pulseSpeaker: String?
+    var pulse: String {
+        get { stream.pulse }
+        set { stream.pulse = newValue }
+    }
+    var pulseSpeaker: String? {
+        get { stream.pulseSpeaker }
+        set { stream.pulseSpeaker = newValue }
+    }
+    /// Low-frequency handoff boundary identifiers kept on `ChatModel` so settled rows only flip once at start/end.
+    private(set) var freshID: String?
+    private(set) var freshWritingID: String?
     /// The reply that just finished: the row that took over from the streaming one.
-    private(set) var fresh: Fresh?
+    var fresh: Fresh? {
+        get { stream.fresh }
+        set {
+            stream.fresh = newValue
+            let nextID = newValue?.id
+            if freshID != nextID { freshID = nextID }
+            let nextWritingID = (newValue?.shown != nil) ? nextID : nil
+            if freshWritingID != nextWritingID { freshWritingID = nextWritingID }
+        }
+    }
 
     struct Fresh: Equatable {
         var id: String
@@ -108,7 +149,11 @@ final class ChatModel {
     /// How many kept messages are on screen.
     private var limit = 160
     /// The tool running now, before its result is kept.
-    private var running: String?
+    private var running: String? {
+        didSet {
+            if stream.activeTool != running { stream.activeTool = running }
+        }
+    }
     @ObservationIgnored private var toolRows: Task<Void, Never>?
     private var browsingHistory = false
     private var heldRows: [ChatLine]?
@@ -149,9 +194,11 @@ final class ChatModel {
 
     func open() {
         guard feed == nil, opening == nil else { return }
+        let styleKey = ProseStyleKey.current()
         if demo {
             if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
+            ProsePrewarm.schedule(lines: Array(lines.suffix(60)), styleKey: styleKey)
             return
         }
         opening = Task { [weak self] in
@@ -159,20 +206,27 @@ final class ChatModel {
             let history = await team.loadHistory(key)
             guard !Task.isCancelled else { return }
             let pageLimit = limit
+            let initialWorking = team.isWorking(key)
             var firstPage: [ChatLine]?
-            if !team.isWorking(key), !history.isEmpty {
+            if !history.isEmpty {
                 firstPage = await Task.detached(priority: .userInitiated) {
-                    Self.buildRows(history.suffix(pageLimit), working: false, running: nil)
+                    let rows = Self.buildRows(history.suffix(pageLimit), working: initialWorking, running: nil)
+                    if !Task.isCancelled {
+                        ProsePrewarm.prewarm(lines: rows.suffix(60), styleKey: styleKey)
+                    }
+                    return rows
                 }.value
                 guard !Task.isCancelled else { return }
             }
             feed = team.listen(key) { [weak self] event in self?.hear(event) }
             let newest = team.history(key)
-            if let firstPage, pageLimit == limit, !team.isWorking(key), history == newest {
+            if let firstPage, pageLimit == limit, team.isWorking(key) == initialWorking, running == nil, history == newest {
                 hasEarlier = history.count > pageLimit
                 lines = firstPage
             } else {
-                lines = build(newest)
+                let rebuilt = build(newest)
+                lines = rebuilt
+                ProsePrewarm.schedule(lines: Array(rebuilt.suffix(60)), styleKey: styleKey)
             }
             // A reply can arrive while the initial history is loading and there is no listener yet.
             target = team.streamed[key]?.text ?? ""
@@ -257,11 +311,19 @@ final class ChatModel {
         defer { loadingEarlier = false }
         let epoch = team.epochs[key, default: 0]
         let nextLimit = limit + 160
+        let priorCount = lines.count
+        let styleKey = ProseStyleKey.current()
         let history = await team.loadHistory(key)
         let working = team.isWorking(key)
         let tool = running
         let page = await Task.detached(priority: .userInitiated) {
-            Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
+            let rows = Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
+            if !Task.isCancelled {
+                let addedCount = max(0, rows.count - priorCount)
+                let prewarmSlice = addedCount > 0 ? rows.prefix(addedCount).suffix(60) : rows.suffix(60)
+                ProsePrewarm.prewarm(lines: prewarmSlice, styleKey: styleKey)
+            }
+            return rows
         }.value
         guard !Task.isCancelled, team.epochs[key, default: 0] == epoch else { return }
         // A tool event may have started another build while the larger page was being prepared.
@@ -273,7 +335,9 @@ final class ChatModel {
             hasEarlier = newest.count > limit
             lines = page
         } else {
-            lines = build(newest)
+            let rebuilt = build(newest)
+            lines = rebuilt
+            ProsePrewarm.schedule(lines: Array(rebuilt.suffix(60)), styleKey: styleKey)
         }
     }
 
@@ -427,9 +491,14 @@ final class ChatModel {
         let epoch = team.epochs[key, default: 0]
         let working = team.isWorking(key)
         let label = running
+        let styleKey = ProseStyleKey.current()
         toolRows = Task { [weak self] in
             let worker = Task.detached(priority: .userInitiated) {
-                Self.buildRows(history.suffix(pageLimit), working: working, running: label)
+                let rows = Self.buildRows(history.suffix(pageLimit), working: working, running: label)
+                if !Task.isCancelled {
+                    ProsePrewarm.prewarm(lines: rows.suffix(16), styleKey: styleKey)
+                }
+                return rows
             }
             let next = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard let self, !Task.isCancelled else { return }
@@ -468,13 +537,19 @@ final class ChatModel {
         case .changed, .replyCommitted:
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
-            if target.isEmpty, let last = all.last?.message,
-               last.role == .tool || (last.role == .assistant && last.text.isEmpty && !last.toolCalls.isEmpty) {
+            if target.isEmpty, let last = all.last,
+               last.note != true,
+               last.message.role == .tool || last.message.role == .assistant {
                 rebuildToolRows(all)
                 return
             }
             cancelToolRows()
-            updateKeptRows(build(all), event: event)
+            let next = build(all)
+            updateKeptRows(next, event: event)
+            if case .replyCommitted(let id) = event,
+               let committed = next.first(where: { $0.id == id && $0.kind == .bot }) {
+                ProsePrewarm.schedule(lines: [committed], styleKey: ProseStyleKey.current())
+            }
         case .finished:
             running = nil
             clearThinking()

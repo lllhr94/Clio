@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -199,44 +200,284 @@ struct PetPack: Identifiable, Sendable {
     }
 }
 
-/// Decoded sheets and cut frames, kept while they are in use. Only a couple of sheets are held at once:
-/// a whole pack decoded can take a lot of memory.
+/// Decoded sheets and cut frames, kept while they are in use.
+/// Only active pet packs retain animation frames (downscaled to display pixels when oversized);
+/// inactive packs keep only compact single-frame still thumbnails so switching or picking never spikes memory.
 @MainActor
 enum PetSheets {
-    private static var sheets: [String: CGImage] = [:]
-    private static var order: [String] = []
-    private static var cells: [String: CGImage] = [:]
+    private final class ImageBox {
+        let image: CGImage
+        let bytes: Int
+
+        init(_ image: CGImage) {
+            self.image = image
+            self.bytes = max(1, image.bytesPerRow * image.height)
+        }
+    }
+
+    private struct SheetEntry {
+        let image: CGImage
+        let bytes: Int
+        var lastUsed: UInt64
+    }
+
+    private static let noCacheOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+    private static let maxActiveSheetBytes = 8 * 1024 * 1024
+    private static let maxRetainedSingleSheetBytes = 4 * 1024 * 1024
+    private static let maxActiveSheets = 2
+    private static let maxInactiveStillPixels = 192
+    private static let maxActiveFramePixels = 512
+
+    private static var primaryPackID: String?
+    private static var playbackPackID: String?
+    private static var accessTick: UInt64 = 0
+    private static var sheets: [String: SheetEntry] = [:]
+    private static var totalSheetBytes = 0
+
+    private static let activeCells: NSCache<NSString, ImageBox> = {
+        let cache = NSCache<NSString, ImageBox>()
+        cache.countLimit = 48
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+
+    private static let inactiveStills: NSCache<NSString, ImageBox> = {
+        let cache = NSCache<NSString, ImageBox>()
+        cache.countLimit = 24
+        cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
+
+    private static let observersInstalled: Bool = {
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { PetSheets.purgeAll() }
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { PetSheets.purgeTransient() }
+        }
+        return true
+    }()
+
+    /// Sets the user's selected pack as primary and evicts decoded animation caches for inactive packs.
+    static func activate(_ id: String) {
+        _ = observersInstalled
+        guard primaryPackID != id else { return }
+        primaryPackID = id
+        if let playing = playbackPackID, playing != id {
+            playbackPackID = nil
+        }
+        evictSheets(except: activeIDs)
+        activeCells.removeAllObjects()
+    }
+
+    /// Clears transient full-sheet and still caches (e.g. on background entry) while keeping tiny active frames if bounded.
+    static func purgeTransient() {
+        clearSheets()
+        inactiveStills.removeAllObjects()
+    }
+
+    /// Drops every decoded sheet and frame on memory pressure.
+    static func purgeAll() {
+        clearSheets()
+        activeCells.removeAllObjects()
+        inactiveStills.removeAllObjects()
+    }
+
+    private static var activeIDs: Set<String> {
+        var ids: Set<String> = []
+        if let primaryPackID { ids.insert(primaryPackID) }
+        if let playbackPackID { ids.insert(playbackPackID) }
+        return ids
+    }
+
+    private static func isActivePack(_ id: String) -> Bool {
+        id == primaryPackID || id == playbackPackID
+    }
+
+    private static func nextTick() -> UInt64 {
+        accessTick &+= 1
+        return accessTick
+    }
+
+    private static func clearSheets() {
+        sheets.removeAll()
+        totalSheetBytes = 0
+    }
+
+    private static func evictSheets(except keptIDs: Set<String>) {
+        for key in Array(sheets.keys) {
+            let packID = String(key.split(separator: "/", maxSplits: 1).first ?? "")
+            if !keptIDs.contains(packID), let removed = sheets.removeValue(forKey: key) {
+                totalSheetBytes = max(0, totalSheetBytes - removed.bytes)
+            }
+        }
+    }
+
+    private static func decodeSheetImage(_ pack: PetPack, _ name: String) -> CGImage? {
+        let url = pack.dir.appendingPathComponent(name)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, noCacheOptions) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, noCacheOptions)
+    }
+
+    private static func storeActiveSheet(_ image: CGImage, for key: String) {
+        let bytes = max(1, image.bytesPerRow * image.height)
+        guard bytes <= maxRetainedSingleSheetBytes else { return }
+        if let existing = sheets.removeValue(forKey: key) {
+            totalSheetBytes = max(0, totalSheetBytes - existing.bytes)
+        }
+        sheets[key] = SheetEntry(image: image, bytes: bytes, lastUsed: nextTick())
+        totalSheetBytes += bytes
+        while sheets.count > maxActiveSheets || totalSheetBytes > maxActiveSheetBytes {
+            guard let oldest = sheets.min(by: { $0.value.lastUsed < $1.value.lastUsed })?.key,
+                  let removed = sheets.removeValue(forKey: oldest) else { break }
+            totalSheetBytes = max(0, totalSheetBytes - removed.bytes)
+        }
+    }
 
     static func sheet(_ pack: PetPack, _ name: String) -> CGImage? {
+        _ = observersInstalled
         let key = pack.id + "/" + name
-        if let hit = sheets[key] { return hit }
-        let url = pack.dir.appendingPathComponent(name)
-        guard let image = UIImage(contentsOfFile: url.path)?.cgImage else { return nil }
-        sheets[key] = image
-        order.append(key)
-        while order.count > 3 {
-            let old = order.removeFirst()
-            sheets[old] = nil
-            cells = cells.filter { !$0.key.hasPrefix(old + "#") }
+        if var hit = sheets[key] {
+            hit.lastUsed = nextTick()
+            sheets[key] = hit
+            return hit.image
+        }
+        guard let image = decodeSheetImage(pack, name) else { return nil }
+        if isActivePack(pack.id) {
+            storeActiveSheet(image, for: key)
         }
         return image
     }
 
     static func cell(_ pack: PetPack, _ anim: PetPack.Anim, _ index: Int) -> CGImage? {
-        let key = pack.id + "/" + anim.sheet + "#\(index)"
-        if let hit = cells[key] { return hit }
-        guard let sheet = sheet(pack, anim.sheet) else { return nil }
+        cell(pack, anim, index, maxPixelSize: nil, forPlayback: false)
+    }
+
+    static func cell(
+        _ pack: PetPack,
+        _ anim: PetPack.Anim,
+        _ index: Int,
+        maxPixelSize: Int?,
+        forPlayback: Bool
+    ) -> CGImage? {
+        _ = observersInstalled
+        if forPlayback, playbackPackID != pack.id {
+            playbackPackID = pack.id
+            evictSheets(except: activeIDs)
+        }
+
+        let active = forPlayback || isActivePack(pack.id)
+        let targetLimit: Int?
+        if active {
+            targetLimit = min(maxActiveFramePixels, max(24, maxPixelSize ?? maxActiveFramePixels))
+        } else {
+            targetLimit = min(maxInactiveStillPixels, max(24, maxPixelSize ?? maxInactiveStillPixels))
+        }
+        let targetDims = scaledDimensions(
+            width: anim.frameW,
+            height: anim.frameH,
+            pixelArt: pack.pixelArt,
+            maxPixelSize: targetLimit
+        )
+        let key = "\(pack.id)/\(anim.sheet)#\(index)@\(targetDims.width)x\(targetDims.height)" as NSString
+
+        if active {
+            if let hit = activeCells.object(forKey: key) { return hit.image }
+        } else if let hit = inactiveStills.object(forKey: key) {
+            return hit.image
+        }
+
+        let built: CGImage? = autoreleasepool {
+            let sourceSheet: CGImage?
+            if active {
+                sourceSheet = sheet(pack, anim.sheet)
+            } else {
+                // Inactive packs decode once on demand without retaining the full sprite sheet in memory.
+                sourceSheet = decodeSheetImage(pack, anim.sheet)
+            }
+            guard let sourceSheet else { return nil }
+            return cropCell(
+                from: sourceSheet,
+                anim: anim,
+                index: index,
+                pixelArt: pack.pixelArt,
+                targetWidth: targetDims.width,
+                targetHeight: targetDims.height
+            )
+        }
+
+        guard let built else { return nil }
+        let box = ImageBox(built)
+        if active {
+            activeCells.setObject(box, forKey: key, cost: box.bytes)
+        } else {
+            inactiveStills.setObject(box, forKey: key, cost: box.bytes)
+        }
+        return built
+    }
+
+    private static func scaledDimensions(
+        width: Int,
+        height: Int,
+        pixelArt: Bool,
+        maxPixelSize: Int?
+    ) -> (width: Int, height: Int) {
+        let safeW = max(1, width)
+        let safeH = max(1, height)
+        guard let maxPixelSize, maxPixelSize > 0 else { return (safeW, safeH) }
+        let peak = max(safeW, safeH)
+        guard peak > maxPixelSize else { return (safeW, safeH) }
+        let ratio = Double(maxPixelSize) / Double(peak)
+        let outW = max(1, Int((Double(safeW) * ratio).rounded()))
+        let outH = max(1, Int((Double(safeH) * ratio).rounded()))
+        if pixelArt && outW == safeW && outH == safeH { return (safeW, safeH) }
+        return (outW, outH)
+    }
+
+    private static func cropCell(
+        from sheet: CGImage,
+        anim: PetPack.Anim,
+        index: Int,
+        pixelArt: Bool,
+        targetWidth: Int,
+        targetHeight: Int
+    ) -> CGImage? {
         let col = index % anim.cols, row = index / anim.cols
         let rect = CGRect(x: col * anim.frameW, y: row * anim.frameH, width: anim.frameW, height: anim.frameH)
-        guard rect.maxX <= CGFloat(sheet.width), rect.maxY <= CGFloat(sheet.height), let cut = sheet.cropping(to: rect) else { return nil }
-        cells[key] = cut
-        return cut
+        guard rect.maxX <= CGFloat(sheet.width), rect.maxY <= CGFloat(sheet.height),
+              let cropped = sheet.cropping(to: rect) else { return nil }
+        let srcW = cropped.width
+        let srcH = cropped.height
+        guard srcW > 0, srcH > 0 else { return nil }
+        let dstW = max(1, targetWidth)
+        let dstH = max(1, targetHeight)
+        // Materialize an independent tightly-sized bitmap so giant parent sprite sheets can be released immediately.
+        guard let context = CGContext(
+            data: nil,
+            width: dstW,
+            height: dstH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return cropped }
+        context.interpolationQuality = (pixelArt && dstW >= srcW && dstH >= srcH) ? .none : .high
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        return context.makeImage() ?? cropped
     }
 
     static func forget(_ id: String) {
-        sheets = sheets.filter { !$0.key.hasPrefix(id + "/") }
-        order.removeAll { $0.hasPrefix(id + "/") }
-        cells = cells.filter { !$0.key.hasPrefix(id + "/") }
+        let prefix = id + "/"
+        for key in Array(sheets.keys) where key.hasPrefix(prefix) {
+            if let removed = sheets.removeValue(forKey: key) {
+                totalSheetBytes = max(0, totalSheetBytes - removed.bytes)
+            }
+        }
+        if isActivePack(id) {
+            activeCells.removeAllObjects()
+        }
+        inactiveStills.removeAllObjects()
+        if playbackPackID == id { playbackPackID = nil }
     }
 }
 
@@ -244,6 +485,7 @@ enum PetSheets {
 /// Its feet (the pack's baseline) sit on the bottom edge of the view, its middle (anchor x) on the view's middle.
 struct SpritePet: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     let pack: PetPack
     let anim: String
     let since: Date
@@ -291,9 +533,10 @@ struct SpritePet: View {
         if let animation = pack.animations[anim] {
             let ms = Int(date.timeIntervalSince(since) * 1000)
             let index = animation.cell(at: max(0, ms))
+            let targetPixels = max(24, Int(ceil(max(animation.box.w, animation.box.h) * Double(u * displayScale))))
             ZStack(alignment: .topLeading) {
                 Color.clear.frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.canvasH) * u)
-                if let cell = PetSheets.cell(pack, animation, index) {
+                if let cell = PetSheets.cell(pack, animation, index, maxPixelSize: targetPixels, forPlayback: true) {
                     Image(decorative: cell, scale: 1)
                         .resizable()
                         .interpolation(pack.pixelArt ? .none : .high)
