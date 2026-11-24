@@ -11,7 +11,7 @@ import CoreGraphics
 // RULE: INLINE_APPROVAL
 // RULE: TRACE_STEP_STATUS
 
-private enum ScrollPhase { case idle, interacting, decelerating, animating }
+private enum ScrollPhase { case idle, tracking, interacting, decelerating, animating }
 
 private struct ScrollGeometry {
     let contentSize: CGSize
@@ -37,6 +37,10 @@ private enum UnitPoint: Equatable { case bottom }
 private struct Hitches {
     static let shared = Self()
     func doing(_ text: String?, as key: String) {}
+}
+
+private enum DiagTrail {
+    static func record(_ event: String) {}
 }
 
 private final class UIEvent {}
@@ -163,7 +167,6 @@ private final class FlowFixture {
     var files = ["file"]
     var draftAttachmentQueuedIds: [UUID] = [UUID()]
     var following = true
-    var scrolling = false
     var touchScrolling = false
     let chat = HistoryPause()
 
@@ -174,7 +177,7 @@ private final class FlowFixture {
     }
     var jumpedTo: String?
     var hideJumps: Task<Void, Never>?
-    var jumpVisible = false
+    let chrome = Chrome()
     var selecting: Set<UUID> = []
     var historyPage: [String]?
     var approving: Approval?
@@ -182,15 +185,23 @@ private final class FlowFixture {
     var approvalInsetTask: Task<Void, Never>?
     let viewport = Viewport()
 
-    final class Viewport {
-        var needsEndCorrection = true
+    final class Chrome {
+        var scrolling = false
+        var jumpVisible = false
     }
 
+    final class Viewport {
+        var needsEndCorrection = true
+        var scrollPhaseLabel = "静止"
+    }
+
+    func stir() {}
     func lingerJumpButtons() {}
     func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
     private(set) var followPending: Task<Void, Never>?
     private var settleEnd: Task<Void, Never>?
+    private var settleJump: Task<Void, Never>?
     let clock = Clock()
     private var alignment: CGFloat = 0
 
@@ -240,6 +251,8 @@ private final class FlowFixture {
 // RULE: SELECTION_CHANGED
 // RULE: PRESENT_APPROVAL
 // RULE: APPROVAL_INSET
+// RULE: PHASE_LABEL
+// RULE: IS_INTENTIONAL_JUMP
 // RULE: FOLLOW
 // RULE: CLEAR_COMPOSER
 }
