@@ -50,9 +50,15 @@ extension TeamModel {
         let echoes = found?.endpoint.thinkingStyle.echoesReasoning ?? false
         estimate.model = found?.model ?? ""
         estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
-        let prompt = system(for: bot, room: room, memory: !options(key).off.contains(Grant.memory.rawValue))
-            + summaryBlock(key) + offBlock(key) + place(of: key).promptLine
-        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision).map(\.spec)
+        let workplace = place(of: key)
+        let prompt = assembledSystemPrompt(
+            for: bot,
+            in: key,
+            room: room,
+            workplace: workplace,
+            memory: !options(key).off.contains(Grant.memory.rawValue)
+        ).full
+        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision, workplace: workplace).map(\.spec)
         let context = context(for: key, bot: bot, room: room, vision: vision)
         let base = estimate
         return await Task.detached(priority: .utility) {
