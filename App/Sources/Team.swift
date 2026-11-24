@@ -152,7 +152,8 @@ final class TeamModel: ObservableObject {
     /// paused from new writes until relaunch reconciles them so newer turns cannot collide with rollback.
     @Published var unresolvedLeafOpenChats: Set<String> = []
     var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
-    var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
+    let approvalQueue = PendingApprovalQueue()
+    let approvalReceipts = ApprovalReceiptBook()
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
@@ -460,6 +461,7 @@ final class TeamModel: ObservableObject {
             modelInputLog.clear(key)
             clearPlan(key)
             trusted.remove(key)
+            taint.reset(key)
             Snapshots.shared.forget(key)
             removeFoldSummaries(key, in: current)
             setSummary(key, nil)
@@ -501,6 +503,7 @@ final class TeamModel: ObservableObject {
         setSummary(key, nil)
         clearPlan(key)
         trusted.remove(key)
+        taint.reset(key)
         Snapshots.shared.forget(key)
         removeFoldSummaries(key, in: current)
         objectWillChange.send()
@@ -556,6 +559,7 @@ final class TeamModel: ObservableObject {
         browser.release(key)
         clearPlan(key)
         trusted.remove(key)
+        taint.reset(key)
         modelInputLog.clear(key)
         Snapshots.shared.forget(key)
         removeFoldSummaries(key, in: current)
@@ -1079,8 +1083,9 @@ final class TeamModel: ObservableObject {
         if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
         for approval in approvals where approval.chat == key {
-            if let waiter = waiters.removeValue(forKey: approval.id) { waiter.resume(returning: false) }
+            approvalQueue.resolveByUser(id: approval.id, allow: false)
         }
+        approvalReceipts.clear(chat: key)
         withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
         if runs[key] != nil { browser.cancelHandoff(for: key) }
         runs[key]?.task.cancel()
@@ -1092,6 +1097,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
+        approvalReceipts.clear(chat: key)
         SiteBook.shared.clear(key)
         streamed[key] = nil
         pulseSplitters[key] = nil
@@ -1330,6 +1336,8 @@ final class TeamModel: ObservableObject {
         }.value
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
+        // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
+        if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
@@ -1909,9 +1917,27 @@ final class TeamModel: ObservableObject {
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         let off = Set(options(key).off)
         let host = workplace.host
+        let taintBook = taint
+        let receipts = approvalReceipts
+        let queue = approvalQueue
         // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
-        let guarded = all.map { TaintGuard($0, key: key, book: taint, isInside: { host.isInside($0) }) }
-        return Grant.gate(guarded, workspace: grants).filter { tool in
+        let guarded = all.map {
+            TaintGuard(
+                $0,
+                key: key,
+                book: taintBook,
+                isInside: { host.isInside($0) },
+                allowAfterWeb: { Grant.followPolicyAfterWeb }
+            )
+        }
+        return Grant.gate(
+            guarded,
+            workspace: grants,
+            chat: key,
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
+        ).filter { tool in
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
         }
@@ -2010,15 +2036,23 @@ final class TeamModel: ObservableObject {
     func allowAlways(_ tool: String) {
         alwaysAllowed.insert(tool)
         UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+        approvalQueue.bumpRevision()
     }
 
     func revokeAlways(_ tool: String) {
         alwaysAllowed.remove(tool)
         UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+        approvalQueue.bumpRevision()
     }
 
     func trust(_ chat: String, _ on: Bool) {
-        if on { trusted.insert(chat) } else { trusted.remove(chat) }
+        if on {
+            trusted.insert(chat)
+        } else {
+            trusted.remove(chat)
+            taint.revokeThrough(chat)
+        }
+        approvalQueue.bumpRevision()
     }
 
     /// Chats whose current turn has read the web (see `Taint`).
@@ -2031,12 +2065,43 @@ final class TeamModel: ObservableObject {
         return Grant.of(tool: tool)
     }
 
-    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
-        if !ask.forced, alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
-        if !ask.forced, Grant.isFreeRunning,
-           let grant = effectiveGrant(for: tool, in: chat), grant.policy == .allow {
-            return true
+    func pendingDecision(for approval: Approval) -> PendingApprovalDecision {
+        guard let tool = approval.toolName else { return .wait }
+        let grant = effectiveGrant(for: tool, in: approval.chat)
+        if grant?.policy == .off { return .reject }
+        if approval.forced == true {
+            let isWebOnly = approval.detail?.text?.hasPrefix(Taint.reason) == true && !Taint.hardExits.contains(tool)
+            guard isWebOnly else { return .wait }
+            let allowedThrough: Bool
+            if let chat = approval.chat {
+                allowedThrough = taint.isAllowedThrough(chat)
+            } else {
+                allowedThrough = false
+            }
+            guard Grant.followPolicyAfterWeb || allowedThrough else { return .wait }
         }
+        let chatTrusted: Bool
+        if let chat = approval.chat {
+            chatTrusted = trusted.contains(chat)
+        } else {
+            chatTrusted = false
+        }
+        if alwaysAllowed.contains(tool) || chatTrusted { return .allow }
+        if Grant.isFreeRunning, grant?.policy == .allow { return .allow }
+        if let grant {
+            switch grant.policy {
+            case .allow:
+                if !Grant.hasBuiltInConfirmation(tool) { return .allow }
+            case .smart:
+                if Grant.allowsSmartQuery(tool, grant: grant), !Grant.hasBuiltInConfirmation(tool) { return .allow }
+            case .ask, .off:
+                break
+            }
+        }
+        return .wait
+    }
+
+    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
         let id = UUID().uuidString
         let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
         let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
@@ -2046,67 +2111,85 @@ final class TeamModel: ObservableObject {
             at: Now.ms, answerable: true, forced: ask.forced
         )
         let before = doing[chat]
-        doing[chat] = "等你批准"
-        BackgroundTurn.step(chat: chat, doing: "等你批准")
-        record(.waiting, in: chat)
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { approvals.append(approval) }
-        WidgetFeed.publish(self)
-        if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
-        Haptics.tick(0.8)
-        if UIApplication.shared.applicationState != .active {
-            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
-        }
-        let allowed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in waiters[id] = continuation }
+        var announced = false
+        let allowed = await approvalQueue.awaitDecision(
+            id: id,
+            evaluate: { self.pendingDecision(for: approval) },
+            onEnqueue: {
+                self.doing[chat] = "等你批准"
+                BackgroundTurn.step(chat: chat, doing: "等你批准")
+                if !announced {
+                    self.record(.waiting, in: chat)
+                    announced = true
+                }
+                if !self.approvals.contains(where: { $0.id == id }) {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { self.approvals.append(approval) }
+                }
+                WidgetFeed.publish(self)
+                PetNews.shared.post(.approval, chat: chat, title: self.chatName(chat))
+                Haptics.tick(0.8)
+                if UIApplication.shared.applicationState != .active {
+                    Notify.approval(approval, from: self.bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
+                }
+            },
+            onLeave: {
+                Notify.clear(id)
+                self.approvals.removeAll { $0.id == id }
+                WidgetFeed.publish(self)
+            },
+            onUserApproved: {
+                self.approvalReceipts.record(chat: chat, tool: tool)
+            }
+        )
         if doing[chat] == "等你批准" { doing[chat] = before }
         WidgetFeed.publish(self)
         return allowed
     }
 
-    /// When the user changes permissions or presets mid-turn, immediately settle any waiting approvals it affects.
+    /// Synchronously reconciles waiting approvals against live permission state with a bumped policy revision.
     func reconcilePendingApprovals() {
-        let pending = approvals
-        for approval in pending where approval.answerable != false {
-            guard phase == .demo || waiters[approval.id] != nil else { continue }
-            guard let tool = approval.toolName else { continue }
-            let grant = effectiveGrant(for: tool, in: approval.chat)
-            if grant?.policy == .off {
-                Task { try? await self.answer(approval, allow: false) }
-                continue
-            }
-            guard approval.forced != true else { continue }
-            let chatTrusted: Bool
-            if let chat = approval.chat {
-                chatTrusted = trusted.contains(chat)
-            } else {
-                chatTrusted = false
-            }
-            let standing = alwaysAllowed.contains(tool) || chatTrusted
-            let freeAllowed = Grant.isFreeRunning && grant?.policy == .allow
-            let policyAllowed: Bool
-            if let grant {
-                switch grant.policy {
-                case .allow:
-                    policyAllowed = !Grant.hasBuiltInConfirmation(tool)
-                case .smart:
-                    policyAllowed = Grant.allowsSmartQuery(tool, grant: grant) && !Grant.hasBuiltInConfirmation(tool)
-                case .ask, .off:
-                    policyAllowed = false
+        if phase == .demo {
+            let rev = approvalQueue.bumpRevision()
+            let pending = approvals
+            for approval in pending where approval.answerable != false {
+                let decision = pendingDecision(for: approval)
+                guard decision != .wait else { continue }
+                Task {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    guard self.approvalQueue.currentRevision == rev else { return }
+                    guard self.pendingDecision(for: approval) == decision else { return }
+                    self.approvals.removeAll { $0.id == approval.id }
+                    WidgetFeed.publish(self)
                 }
-            } else {
-                policyAllowed = false
             }
-            if standing || freeAllowed || policyAllowed {
-                Task { try? await self.answer(approval, allow: true) }
-            }
+            return
         }
+        var decisions: [String: PendingApprovalDecision] = [:]
+        for approval in approvals where approval.answerable != false {
+            decisions[approval.id] = pendingDecision(for: approval)
+        }
+        let settled = approvalQueue.reconcile(decisions: decisions)
+        guard !settled.isEmpty else { return }
+        let settledSet = Set(settled)
+        for id in settled { Notify.clear(id) }
+        approvals.removeAll { settledSet.contains($0.id) }
+        WidgetFeed.publish(self)
     }
 
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
-    func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false) async throws {
+    func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false, throughWeb: Bool = false) async throws {
         // A step that must be asked every time can be allowed once, never for good.
         let lasting = approval.forced != true
         if allow, always, lasting, let name = approval.toolName { allowAlways(name) }
         if allow, trustChat, lasting, let chat = approval.chat { trust(chat, true) }
+        var grantedThroughWeb = false
+        if allow, throughWeb, let chat = approval.chat, let tool = approval.toolName,
+           approval.detail?.text?.hasPrefix(Taint.reason) == true,
+           !Taint.hardExits.contains(tool) {
+            taint.allowThrough(chat)
+            trust(chat, true)
+            grantedThroughWeb = true
+        }
         if phase == .demo {
             try? await Task.sleep(nanoseconds: 250_000_000)
             approvals.removeAll { $0.id == approval.id }
@@ -2114,15 +2197,13 @@ final class TeamModel: ObservableObject {
             return
         }
         Notify.clear(approval.id)
-        guard let waiter = waiters.removeValue(forKey: approval.id) else {
-            approvals.removeAll { $0.id == approval.id }
-            WidgetFeed.publish(self)
-            throw TeamError(message: "这张单子已经不在了。")
-        }
+        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: allow)
         approvals.removeAll { $0.id == approval.id }
         WidgetFeed.publish(self)
-        waiter.resume(returning: allow)
-        if allow, lasting, always || trustChat {
+        guard resolved else {
+            throw TeamError(message: "这张单子已经不在了。")
+        }
+        if allow, (lasting && (always || trustChat)) || grantedThroughWeb {
             reconcilePendingApprovals()
         }
     }

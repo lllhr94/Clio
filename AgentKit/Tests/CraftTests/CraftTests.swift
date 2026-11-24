@@ -513,47 +513,109 @@ final class TaintTests: XCTestCase {
         XCTAssertTrue(Taint.needsSeal(tool: "browser_fill_secret", arguments: [:], isInside: inside))
         XCTAssertTrue(Taint.needsSeal(tool: "gmail_send", arguments: [:], isInside: inside))
         XCTAssertTrue(Taint.needsSeal(tool: "schedule_task", arguments: [:], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "shell", arguments: ["command": "ls"], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "ssh_run", arguments: [:], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "mcp_notion__create_page", arguments: ["title": "hi"], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "write_file", arguments: ["path": "/etc/hosts"], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "edit_file", arguments: ["path": "../../x"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "shell", arguments: ["command": "ls"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "ssh_run", arguments: [:], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "mcp_notion__create_page", arguments: ["title": "hi"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "write_file", arguments: ["path": "/etc/hosts"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "edit_file", arguments: ["path": "../../x"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "remember", arguments: ["fact": "x"], isInside: inside))
         XCTAssertFalse(Taint.needsSeal(tool: "write_file", arguments: ["path": "notes/a.md"], isInside: inside))
         XCTAssertFalse(Taint.needsSeal(tool: "read_file", arguments: ["path": "/etc/hosts"], isInside: inside))
-        XCTAssertFalse(Taint.needsSeal(tool: "remember", arguments: ["fact": "x"], isInside: inside))
         XCTAssertTrue(Taint.reads("gmail_read"))
         XCTAssertTrue(Taint.reads("browser_text"))
     }
 
-    func testGuardForcesHardExitsAndRespectsUserPermissionsForShellAndSSH() async throws {
-        let book = TaintBook()
-        let shell = TaintGuard(Quiet("shell"), key: "bot-a", book: book, isInside: inside)
-        let ssh = TaintGuard(Quiet("ssh_run"), key: "bot-a", book: book, isInside: inside)
-        let sendMail = TaintGuard(Quiet("gmail_send"), key: "bot-a", book: book, isInside: inside)
-        let fillSecret = TaintGuard(Quiet("browser_fill_secret"), key: "bot-a", book: book, isInside: inside)
-        let reader = TaintGuard(Quiet("browser_read"), key: "bot-a", book: book, isInside: inside)
-        let otherChat = TaintGuard(Quiet("gmail_send"), key: "bot-b", book: book, isInside: inside)
+    func testGuardForcesByDefaultAndHonorsExplicitOptInsExceptHardExits() async throws {
+        final class FlagBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+            func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
+        }
 
-        // Hard exits are always forced even before any web reading, without the web banner.
+        let book = TaintBook()
+        let globalOptIn = FlagBox()
+        let shell = TaintGuard(Quiet("shell"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let ssh = TaintGuard(Quiet("ssh_run"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let mcp = TaintGuard(Quiet("mcp_github__create_issue"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let sendMail = TaintGuard(Quiet("gmail_send"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let fillSecret = TaintGuard(Quiet("browser_fill_secret"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let routine = TaintGuard(Quiet("schedule_task"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let reader = TaintGuard(Quiet("browser_read"), key: "bot-a", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let otherShell = TaintGuard(Quiet("shell"), key: "bot-b", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+        let otherMail = TaintGuard(Quiet("gmail_send"), key: "bot-b", book: book, isInside: inside, allowAfterWeb: { globalOptIn.get() })
+
+        // Before reading external content: everyday tools follow user permissions; hard exits always force without web banner.
+        XCTAssertNil(shell.approval(for: ["command": "ls"]))
+        XCTAssertNil(ssh.approval(for: ["command": "uname -a"]))
+        XCTAssertNil(mcp.approval(for: ["repo": "a/b"]))
         let cleanMail = sendMail.approval(for: [:])
         XCTAssertEqual(cleanMail?.forced, true)
         XCTAssertNil(cleanMail?.detail)
         XCTAssertEqual(fillSecret.approval(for: [:])?.forced, true)
+        XCTAssertEqual(routine.approval(for: [:])?.forced, true)
 
-        // Shell and SSH follow user permission settings even after reading the web.
+        // After reading the web: default strict boundary forces shell, SSH, MCP, and carries web banner + code payload.
+        _ = try await reader.run([:])
+        let forcedShell = try XCTUnwrap(shell.approval(for: ["command": "ls -la"]))
+        XCTAssertTrue(forcedShell.forced)
+        XCTAssertTrue(forcedShell.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(forcedShell.code, "ls -la")
+
+        let forcedSSH = try XCTUnwrap(ssh.approval(for: ["command": "uname -a"]))
+        XCTAssertTrue(forcedSSH.forced)
+        XCTAssertTrue(forcedSSH.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(forcedSSH.code, "uname -a")
+
+        let forcedMCP = try XCTUnwrap(mcp.approval(for: ["repo": "a/b"]))
+        XCTAssertTrue(forcedMCP.forced)
+        XCTAssertTrue(forcedMCP.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(forcedMCP.code?.contains("a/b"), true)
+
+        // Another chat is unaffected.
+        XCTAssertNil(otherShell.approval(for: ["command": "ls"]))
+        XCTAssertNil(otherMail.approval(for: [:])?.detail)
+
+        // Per-conversation explicit opt-in ("已知风险，本对话放行"): relaxes shell/SSH/MCP for bot-a only,
+        // while hard exits STILL stay forced with the web banner.
+        book.allowThrough("bot-a")
         XCTAssertNil(shell.approval(for: ["command": "ls"]))
         XCTAssertNil(ssh.approval(for: ["command": "uname -a"]))
-        _ = try await reader.run([:])
-        XCTAssertNil(shell.approval(for: ["command": "ls"]), "user-allowed shell stays allowed after web reads")
-        XCTAssertNil(ssh.approval(for: ["command": "uname -a"]), "user-allowed SSH stays allowed after web reads")
+        XCTAssertNil(mcp.approval(for: ["repo": "a/b"]))
+        XCTAssertEqual(sendMail.approval(for: [:])?.forced, true)
+        XCTAssertTrue(sendMail.approval(for: [:])?.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(fillSecret.approval(for: [:])?.forced, true)
+        XCTAssertEqual(routine.approval(for: [:])?.forced, true)
 
-        // After reading the web in the current turn, hard exits also carry the web-reading warning banner.
-        let taintedMail = sendMail.approval(for: [:])
-        XCTAssertEqual(taintedMail?.forced, true)
-        XCTAssertTrue(taintedMail?.detail?.hasPrefix(Taint.reason) == true)
-        XCTAssertNil(otherChat.approval(for: [:])?.detail, "only the chat that read the web gets the banner")
-        book.clear("bot-a")
-        XCTAssertNil(sendMail.approval(for: [:])?.detail, "a new turn starts without the web banner")
+        // Per-chat opt-in on bot-a must not leak to bot-b.
+        book.mark("bot-b")
+        XCTAssertEqual(otherShell.approval(for: ["command": "ls"])?.forced, true)
+
+        // Resetting bot-a clears both taint and per-conversation opt-in.
+        book.reset("bot-a")
+        XCTAssertFalse(book.isTainted("bot-a"))
+        XCTAssertFalse(book.isAllowedThrough("bot-a"))
+        XCTAssertNil(sendMail.approval(for: [:])?.detail)
+
+        // Reading external content again after reset re-engages strict default forcing.
+        _ = try await reader.run([:])
+        XCTAssertEqual(shell.approval(for: ["command": "ls"])?.forced, true)
+
+        // Global explicit opt-in (default OFF in Settings -> Permissions): relaxes shell/SSH/MCP across chats,
+        // while hard exits remain forced with the web banner.
+        globalOptIn.set(true)
+        XCTAssertNil(shell.approval(for: ["command": "ls"]))
+        XCTAssertNil(ssh.approval(for: ["command": "uname -a"]))
+        XCTAssertNil(mcp.approval(for: ["repo": "a/b"]))
+        XCTAssertNil(otherShell.approval(for: ["command": "ls"]))
+        XCTAssertEqual(sendMail.approval(for: [:])?.forced, true)
+        XCTAssertTrue(sendMail.approval(for: [:])?.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(fillSecret.approval(for: [:])?.forced, true)
+        XCTAssertEqual(routine.approval(for: [:])?.forced, true)
+
+        // Turning the global opt-in back OFF immediately restores strict forcing.
+        globalOptIn.set(false)
+        XCTAssertEqual(shell.approval(for: ["command": "ls"])?.forced, true)
     }
 }
 
@@ -1033,7 +1095,7 @@ final class WorkspaceHostDefaultsTests: XCTestCase {
 final class A13CraftRegressionTests: XCTestCase {
     func testTaintCodePayloadAndHardExits() async throws {
         let inside: @Sendable (String) -> Bool = { WorkspacePath.isInside($0, root: "/root/desk") }
-        XCTAssertFalse(Taint.needsSeal(tool: "mcp_notion__create_page", arguments: ["title": "hi"], isInside: inside))
+        XCTAssertTrue(Taint.needsSeal(tool: "mcp_notion__create_page", arguments: ["title": "hi"], isInside: inside))
         XCTAssertTrue(Taint.needsSeal(tool: "schedule_task", arguments: [:], isInside: inside))
 
         // Code payloads stay available for command and MCP approval slips.
@@ -1044,9 +1106,12 @@ final class A13CraftRegressionTests: XCTestCase {
         let book = TaintBook()
         book.mark("chat-1")
         let mcp = TaintGuard(Quiet("mcp_github__create_issue"), key: "chat-1", book: book, isInside: inside)
-        XCTAssertNil(mcp.approval(for: ["repo": "a/b", "title": "bug"]))
+        let mcpAsk = try XCTUnwrap(mcp.approval(for: ["repo": "a/b", "title": "bug"]))
+        XCTAssertTrue(mcpAsk.forced)
+        XCTAssertTrue(mcpAsk.detail?.hasPrefix(Taint.reason) == true)
+        XCTAssertEqual(mcpAsk.code?.contains("a/b"), true)
 
-        let routine = TaintGuard(Quiet("schedule_task"), key: "chat-1", book: book, isInside: inside)
+        let routine = TaintGuard(Quiet("schedule_task"), key: "chat-1", book: book, isInside: inside, allowAfterWeb: { true })
         let routineAsk = try XCTUnwrap(routine.approval(for: ["title": "早报"]))
         XCTAssertTrue(routineAsk.forced)
         XCTAssertTrue(routineAsk.detail?.hasPrefix(Taint.reason) == true)
@@ -1442,6 +1507,386 @@ final class SessionTokenGateTests: XCTestCase {
         })
         XCTAssertEqual(tokenAfterSignOut.token, "explicit-new-login")
         XCTAssertEqual(refreshInvoked.load(), 1)
+    }
+}
+
+final class PermissionGateTests: XCTestCase {
+    private final class LockedBox<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: T
+
+        init(_ initial: T) { value = initial }
+
+        func get() -> T {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+
+        func set(_ next: T) {
+            lock.lock()
+            value = next
+            lock.unlock()
+        }
+
+        @discardableResult
+        func mutate<R>(_ body: (inout T) -> R) -> R {
+            lock.lock(); defer { lock.unlock() }
+            return body(&value)
+        }
+    }
+
+    private struct CountingTool: AgentTool {
+        let spec: ToolSpec
+        let runs: LockedBox<Int>
+        let ownApproval: ApprovalAsk?
+
+        init(_ name: String, runs: LockedBox<Int>, ownApproval: ApprovalAsk? = nil) {
+            self.spec = ToolSpec(name: name, description: "", parameters: ["type": "object"])
+            self.runs = runs
+            self.ownApproval = ownApproval
+        }
+
+        func label(for arguments: JSONValue) -> String { spec.name }
+        func approval(for arguments: JSONValue) -> ApprovalAsk? { ownApproval }
+
+        func run(_ arguments: JSONValue) async throws -> ToolOutput {
+            runs.mutate { $0 += 1 }
+            return ToolOutput("executed")
+        }
+    }
+
+    @MainActor
+    private final class QueueHarness {
+        var decision: PendingApprovalDecision = .wait
+        var enqueues = 0
+        var leaves = 0
+        var userApprovals = 0
+        var settled: Bool?
+    }
+
+    func testLiveGatedToolTightenAllowToAskReconfirmsBeforeExecution() async throws {
+        let runs = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let allowReconfirm = LockedBox(false)
+        let access = LockedBox<LiveToolAccess>(.allow(bypassNonForced: false))
+        let receipts = ApprovalReceiptBook()
+
+        let gated = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: runs),
+            chat: "chat-1",
+            receipts: receipts,
+            access: { access.get() },
+            reconfirm: { _, name in
+                reconfirms.mutate { $0 += 1 }
+                if allowReconfirm.get() {
+                    receipts.record(chat: "chat-1", tool: name)
+                    return true
+                }
+                return false
+            }
+        )
+
+        // Initially allowed: approval(for:) sees nil.
+        XCTAssertNil(gated.approval(for: ["command": "uname -a"]))
+
+        // Before run(_:) starts, user tightens permission back to "每次问" (.ask).
+        access.set(.ask(title: "用SSH"))
+
+        // Rejecting the reconfirm prompt must block execution.
+        let denied = try await gated.run(["command": "uname -a"])
+        XCTAssertTrue(denied.isError)
+        XCTAssertEqual(reconfirms.get(), 1)
+        XCTAssertEqual(runs.get(), 0)
+
+        // Approving the reconfirm prompt executes once and consumes the receipt.
+        allowReconfirm.set(true)
+        let allowed = try await gated.run(["command": "uname -a"])
+        XCTAssertFalse(allowed.isError)
+        XCTAssertEqual(allowed.text, "executed")
+        XCTAssertEqual(reconfirms.get(), 2)
+        XCTAssertEqual(runs.get(), 1)
+
+        // A subsequent call still asks again (no leaked receipt).
+        allowReconfirm.set(false)
+        let nextDenied = try await gated.run(["command": "uptime"])
+        XCTAssertTrue(nextDenied.isError)
+        XCTAssertEqual(reconfirms.get(), 3)
+        XCTAssertEqual(runs.get(), 1)
+    }
+
+    func testLiveGatedToolRecoverFromOffToAskAndAllow() async throws {
+        let runs = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let allowReconfirm = LockedBox(false)
+        let access = LockedBox<LiveToolAccess>(.off("已关闭"))
+        let receipts = ApprovalReceiptBook()
+
+        let gated = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: runs),
+            chat: "chat-1",
+            receipts: receipts,
+            access: { access.get() },
+            reconfirm: { _, name in
+                reconfirms.mutate { $0 += 1 }
+                if allowReconfirm.get() {
+                    receipts.record(chat: "chat-1", tool: name)
+                    return true
+                }
+                return false
+            }
+        )
+
+        // While `.off`, approval(for:) returns nil and run(_:) refuses without prompting.
+        XCTAssertNil(gated.approval(for: ["command": "uname -a"]))
+        let refused = try await gated.run(["command": "uname -a"])
+        XCTAssertTrue(refused.isError)
+        XCTAssertEqual(refused.text, "已关闭")
+        XCTAssertEqual(reconfirms.get(), 0)
+        XCTAssertEqual(runs.get(), 0)
+
+        // Recovering `.off -> .ask` before execution must prompt rather than run silently or stay refused.
+        access.set(.ask(title: "用SSH"))
+        let deniedAfterRecover = try await gated.run(["command": "uname -a"])
+        XCTAssertTrue(deniedAfterRecover.isError)
+        XCTAssertEqual(reconfirms.get(), 1)
+        XCTAssertEqual(runs.get(), 0)
+
+        allowReconfirm.set(true)
+        let approvedAfterRecover = try await gated.run(["command": "uname -a"])
+        XCTAssertFalse(approvedAfterRecover.isError)
+        XCTAssertEqual(reconfirms.get(), 2)
+        XCTAssertEqual(runs.get(), 1)
+
+        // Recovering `.off -> .allow` runs directly without prompting.
+        access.set(.off("已关闭"))
+        XCTAssertNil(gated.approval(for: ["command": "uname -a"]))
+        access.set(.allow(bypassNonForced: false))
+        let allowedAfterRecover = try await gated.run(["command": "uname -a"])
+        XCTAssertFalse(allowedAfterRecover.isError)
+        XCTAssertEqual(reconfirms.get(), 2)
+        XCTAssertEqual(runs.get(), 2)
+    }
+
+    func testLiveGatedToolExplicitUserApprovalDoesNotDoublePromptUnlessTurnedOff() async throws {
+        let runs = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let access = LockedBox<LiveToolAccess>(.ask(title: "用SSH"))
+        let receipts = ApprovalReceiptBook()
+
+        let gated = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: runs),
+            chat: "chat-1",
+            receipts: receipts,
+            access: { access.get() },
+            reconfirm: { _, _ in
+                reconfirms.mutate { $0 += 1 }
+                return false
+            }
+        )
+
+        XCTAssertNotNil(gated.approval(for: ["command": "uname -a"]))
+
+        // Explicit user approval recorded by `TeamModel.ask` lets this single call run without reconfirm.
+        receipts.record(chat: "chat-1", tool: "ssh_run")
+        let ok = try await gated.run(["command": "uname -a"])
+        XCTAssertFalse(ok.isError)
+        XCTAssertEqual(reconfirms.get(), 0)
+        XCTAssertEqual(runs.get(), 1)
+
+        // Turning `.off` after approval still blocks execution before inner.run.
+        receipts.record(chat: "chat-1", tool: "ssh_run")
+        access.set(.off("权限已关"))
+        let blocked = try await gated.run(["command": "uname -a"])
+        XCTAssertTrue(blocked.isError)
+        XCTAssertEqual(blocked.text, "权限已关")
+        XCTAssertEqual(runs.get(), 1)
+    }
+
+    func testLiveGatedToolRevisionChangeAfterPolicyReconfirmReverifies() async throws {
+        let runs = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let queue = PendingApprovalQueue()
+        let receipts = ApprovalReceiptBook()
+        let access = LockedBox<LiveToolAccess>(.ask(title: "用SSH"))
+
+        let gated = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: runs),
+            chat: "chat-1",
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            access: { access.get() },
+            reconfirm: { _, name in
+                let call = reconfirms.mutate { value -> Int in
+                    value += 1
+                    return value
+                }
+                if call == 1 {
+                    // Simulate policy temporarily allowing then tightening back before run resumes:
+                    // revision advances, no explicit user receipt was recorded, access stays `.ask`.
+                    queue.bumpRevision()
+                    return true
+                }
+                // Second pass: explicit user tap approves it.
+                receipts.record(chat: "chat-1", tool: name)
+                return true
+            }
+        )
+
+        let out = try await gated.run(["command": "uname -a"])
+        XCTAssertFalse(out.isError)
+        XCTAssertEqual(reconfirms.get(), 2, "revision bump during policy reconfirm must re-verify before executing")
+        XCTAssertEqual(runs.get(), 1)
+    }
+
+    @MainActor
+    func testPendingApprovalQueueAllowThenImmediateAskDoesNotCommitStaleAllow() async {
+        let queue = PendingApprovalQueue()
+        let state = QueueHarness()
+        let id = "approval-allow-ask"
+
+        let task = Task { @MainActor in
+            let result = await queue.awaitDecision(
+                id: id,
+                evaluate: { state.decision },
+                onEnqueue: { state.enqueues += 1 },
+                onLeave: { state.leaves += 1 },
+                onUserApproved: { state.userApprovals += 1 }
+            )
+            state.settled = result
+            return result
+        }
+
+        for _ in 0..<20 where !queue.isWaiting(id) {
+            await Task.yield()
+        }
+        XCTAssertTrue(queue.isWaiting(id))
+        XCTAssertEqual(state.enqueues, 1)
+
+        // Rapid flip: switch to "放行" (.allow), then immediately tighten back to "每次问" (.wait)
+        // before the woken continuation gets to run.
+        state.decision = .allow
+        let woken = queue.reconcile(decisions: [id: .allow])
+        XCTAssertEqual(woken, [id])
+        state.decision = .wait
+        _ = queue.reconcile(decisions: [id: .wait])
+
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        XCTAssertNil(state.settled, "stale allow must not commit once policy tightened back to .wait")
+        XCTAssertTrue(queue.isWaiting(id), "waiter must re-enqueue for explicit confirmation")
+        XCTAssertEqual(state.enqueues, 2)
+        XCTAssertEqual(state.userApprovals, 0)
+
+        // Explicit user approval now settles cleanly.
+        XCTAssertTrue(queue.resolveByUser(id: id, allow: true))
+        let result = await task.value
+        XCTAssertTrue(result)
+        XCTAssertEqual(state.userApprovals, 1)
+        XCTAssertEqual(state.leaves, 2)
+    }
+
+    @MainActor
+    func testPendingApprovalQueueOffThenImmediateRecoverDoesNotSpuriouslyReject() async {
+        // Case 1: off -> ask (.wait) must re-prompt instead of rejecting.
+        do {
+            let queue = PendingApprovalQueue()
+            let state = QueueHarness()
+            let id = "approval-off-ask"
+
+            let task = Task { @MainActor in
+                let result = await queue.awaitDecision(
+                    id: id,
+                    evaluate: { state.decision },
+                    onEnqueue: { state.enqueues += 1 },
+                    onLeave: { state.leaves += 1 },
+                    onUserApproved: { state.userApprovals += 1 }
+                )
+                state.settled = result
+                return result
+            }
+
+            for _ in 0..<20 where !queue.isWaiting(id) {
+                await Task.yield()
+            }
+            XCTAssertTrue(queue.isWaiting(id))
+
+            state.decision = .reject
+            XCTAssertEqual(queue.reconcile(decisions: [id: .reject]), [id])
+            state.decision = .wait
+            _ = queue.reconcile(decisions: [id: .wait])
+
+            for _ in 0..<10 {
+                await Task.yield()
+            }
+            XCTAssertNil(state.settled, "stale reject must not cancel once permission recovered to .wait")
+            XCTAssertTrue(queue.isWaiting(id))
+            XCTAssertEqual(state.enqueues, 2)
+
+            XCTAssertTrue(queue.resolveByUser(id: id, allow: true))
+            let result = await task.value
+            XCTAssertTrue(result)
+            XCTAssertEqual(state.userApprovals, 1)
+        }
+
+        // Case 2: off -> allow must proceed instead of rejecting.
+        do {
+            let queue = PendingApprovalQueue()
+            let state = QueueHarness()
+            let id = "approval-off-allow"
+
+            let task = Task { @MainActor in
+                await queue.awaitDecision(
+                    id: id,
+                    evaluate: { state.decision },
+                    onEnqueue: { state.enqueues += 1 },
+                    onLeave: { state.leaves += 1 },
+                    onUserApproved: { state.userApprovals += 1 }
+                )
+            }
+
+            for _ in 0..<20 where !queue.isWaiting(id) {
+                await Task.yield()
+            }
+            XCTAssertTrue(queue.isWaiting(id))
+
+            state.decision = .reject
+            XCTAssertEqual(queue.reconcile(decisions: [id: .reject]), [id])
+            state.decision = .allow
+            _ = queue.reconcile(decisions: [id: .allow])
+
+            let result = await task.value
+            XCTAssertTrue(result, "recovering .off -> .allow must commit .allow, not stale .reject")
+            XCTAssertEqual(state.userApprovals, 0)
+        }
+    }
+
+    @MainActor
+    func testPendingApprovalQueueUserApproveRefusedIfPolicyIsNowOff() async {
+        let queue = PendingApprovalQueue()
+        let state = QueueHarness()
+        let id = "approval-user-vs-off"
+
+        let task = Task { @MainActor in
+            await queue.awaitDecision(
+                id: id,
+                evaluate: { state.decision },
+                onEnqueue: { state.enqueues += 1 },
+                onLeave: { state.leaves += 1 },
+                onUserApproved: { state.userApprovals += 1 }
+            )
+        }
+
+        for _ in 0..<20 where !queue.isWaiting(id) {
+            await Task.yield()
+        }
+        XCTAssertTrue(queue.isWaiting(id))
+
+        state.decision = .reject
+        XCTAssertTrue(queue.resolveByUser(id: id, allow: true))
+        let result = await task.value
+        XCTAssertFalse(result, "disabled ability must not proceed even if user tap raced with turning it off")
+        XCTAssertEqual(state.userApprovals, 0)
     }
 }
 

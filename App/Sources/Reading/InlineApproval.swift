@@ -38,6 +38,11 @@ struct InlineApproval: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var canTrustThroughWeb: Bool {
+        guard readOutside, approval.chat != nil, let tool = approval.toolName else { return false }
+        return !Taint.hardExits.contains(tool)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(spacing: Ink.Space.s) {
@@ -101,6 +106,19 @@ struct InlineApproval: View {
                 .foregroundStyle(Ink.inkSoft)
                 .buttonStyle(.plain)
                 .disabled(busy)
+            } else if canTrustThroughWeb {
+                Button {
+                    decide(true, trustChat: true, throughWeb: true)
+                } label: {
+                    Text(L.t("approval.inlineTrustThroughWeb"))
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.warn)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                .accessibilityHint(L.t("approval.inlineTrustThroughWebHint"))
             }
         }
         .padding(Ink.Space.m)
@@ -151,13 +169,13 @@ struct InlineApproval: View {
         }
     }
 
-    private func decide(_ allow: Bool, always: Bool = false, trustChat: Bool = false) {
+    private func decide(_ allow: Bool, always: Bool = false, trustChat: Bool = false, throughWeb: Bool = false) {
         guard !busy else { return }
         busy = true
         allow ? Haptics.grab() : Haptics.light()
         Task {
             do {
-                try await team.answer(approval, allow: allow, always: always, trustChat: trustChat)
+                try await team.answer(approval, allow: allow, always: always, trustChat: trustChat, throughWeb: throughWeb)
             } catch {
                 note = error.localizedDescription
                 busy = false

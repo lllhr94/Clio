@@ -226,6 +226,16 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Pure in-conversation orchestration tools that do not touch external services or user data directly.
     private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion"]
 
+    static let followAfterWebKey = "grant.followAfterWeb"
+
+    /// Default OFF: external content keeps forcing confirmation for commands, SSH, MCP, and external writes.
+    /// When explicitly enabled by the user in Permissions, everyday tools follow their normal Grant policies
+    /// while the three hard exits (`browser_fill_secret`, `gmail_send`, `schedule_task`) still always ask.
+    static var followPolicyAfterWeb: Bool {
+        get { UserDefaults.standard.bool(forKey: followAfterWebKey) }
+        set { UserDefaults.standard.set(newValue, forKey: followAfterWebKey) }
+    }
+
     /// Whether the user chose 「放手」 and has kept every enabled non-vault ability on `.allow`.
     static var isFreeRunning: Bool {
         if Preset.current == .free { return true }
@@ -257,10 +267,31 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         grant == .desk && ["read_file", "list_dir", "glob", "grep", "read_pdf", "search_docs"].contains(name)
     }
 
-    /// The tools a companion gets: switched-off abilities left out, the rest wrapped in `GatedTool`
-    /// so permission changes made mid-turn take effect immediately.
+    /// Computes live access for a granted tool at evaluation/execution time.
+    func liveAccess(for toolName: String) -> LiveToolAccess {
+        switch policy {
+        case .off:
+            return .off("用户已经关掉了「\(title)」权限，没有继续执行。")
+        case .allow:
+            return .allow(bypassNonForced: Grant.isFreeRunning)
+        case .smart where Grant.allowsSmartQuery(toolName, grant: self):
+            return .allow(bypassNonForced: Grant.isFreeRunning)
+        case .smart, .ask:
+            return .ask(title: "用\(title)")
+        }
+    }
+
+    /// The tools a companion gets: switched-off abilities left out, the rest wrapped in `LiveGatedTool`
+    /// so permission changes made mid-turn take effect atomically.
     /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
-    static func gate(_ tools: [AgentTool], workspace: [String: Grant] = [:]) -> [AgentTool] {
+    static func gate(
+        _ tools: [AgentTool],
+        workspace: [String: Grant] = [:],
+        chat: String = "",
+        receipts: ApprovalReceiptBook? = nil,
+        policyRevision: (@Sendable () -> UInt64)? = nil,
+        reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
+    ) -> [AgentTool] {
         tools.compactMap { tool in
             let name = tool.spec.name
             guard let grant = workspace[name] ?? of(tool: name) else {
@@ -268,7 +299,14 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
                 return Asking(inner: tool, grant: nil)
             }
             if grant.policy == .off { return nil }
-            return GatedTool(inner: tool, grant: grant)
+            return LiveGatedTool(
+                inner: tool,
+                chat: chat,
+                receipts: receipts,
+                policyRevision: policyRevision,
+                access: { grant.liveAccess(for: name) },
+                reconfirm: reconfirm
+            )
         }
     }
 
@@ -344,55 +382,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Wraps a granted tool so permission changes made in Settings take effect immediately on the running turn.
-struct GatedTool: AgentTool {
-    let inner: AgentTool
-    let grant: Grant
-
-    var spec: ToolSpec { inner.spec }
-    func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
-
-    func approval(for arguments: JSONValue) -> ApprovalAsk? {
-        switch grant.policy {
-        case .off:
-            return nil
-        case .allow:
-            return Self.allowedApproval(inner: inner, arguments: arguments)
-        case .smart where Grant.allowsSmartQuery(spec.name, grant: grant):
-            return Self.allowedApproval(inner: inner, arguments: arguments)
-        case .smart, .ask:
-            if let existing = inner.approval(for: arguments) {
-                if existing.code != nil { return existing }
-                var copy = existing
-                copy.code = Taint.codePayload(tool: spec.name, arguments: arguments)
-                return copy
-            }
-            return ApprovalAsk(
-                title: "用\(grant.title)",
-                reason: inner.label(for: arguments),
-                code: Taint.codePayload(tool: spec.name, arguments: arguments)
-            )
-        }
-    }
-
-    func run(_ arguments: JSONValue) async throws -> ToolOutput {
-        if grant.policy == .off {
-            return ToolOutput("用户已经关掉了「\(grant.title)」权限，没有继续执行。", isError: true)
-        }
-        return try await inner.run(arguments)
-    }
-
-    private static func allowedApproval(inner: AgentTool, arguments: JSONValue) -> ApprovalAsk? {
-        guard var existing = inner.approval(for: arguments) else { return nil }
-        if !existing.forced, Grant.isFreeRunning { return nil }
-        if existing.code == nil {
-            existing.code = Taint.codePayload(tool: inner.spec.name, arguments: arguments)
-        }
-        return existing
-    }
-}
-
-/// A tool whose ability is unregistered or set to ask: every call waits for the user's seal.
+/// A tool whose ability is unregistered: every call waits for the user's seal.
 struct Asking: AgentTool {
     let inner: AgentTool
     let grant: Grant?

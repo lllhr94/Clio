@@ -1,9 +1,10 @@
 import AgentKit
 import Foundation
 
-/// Text from the web can carry instructions aimed at the model, hidden in a page.
-/// Clio respects the user's explicit permission settings and standing approvals for everyday tools
-/// (shell, SSH, MCP, workspace files); only the three irreversible or secret-bearing exits are always forced.
+/// Text from the web can carry instructions aimed at the model, hidden in a page. Once a turn has read the web,
+/// sensitive steps are forced to ask by default. Only when the user explicitly opts in (globally in Permissions or
+/// per-conversation via "known risk") do everyday tools follow the user's normal permissions again; the three
+/// irreversible / secret-bearing exits (`browser_fill_secret`, `gmail_send`, `schedule_task`) always require a fresh seal.
 public enum Taint {
     /// Tools whose results bring text from outside into the turn.
     public static func reads(_ tool: String) -> Bool {
@@ -13,15 +14,22 @@ public enum Taint {
             || tool.hasPrefix("mcp_")
     }
 
-    /// The three core exits that always require a fresh user seal:
-    /// filling a kept secret into a webpage, sending email, and creating a recurring routine.
+    /// The three core exits that always require a fresh user seal, even when the user opts in to follow
+    /// normal permissions after reading external content.
     public static let hardExits: Set<String> = ["browser_fill_secret", "gmail_send", "schedule_task"]
 
-    /// Whether this step always requires a forced seal regardless of standing permissions.
+    /// Whether this step must be asked about after the turn read external content: commands, filling in a kept secret,
+    /// anything on a far computer, any MCP tool, lasting/outbound actions, and writing outside the workspace.
     public static func needsSeal(tool: String, arguments: JSONValue, isInside: (String) -> Bool) -> Bool {
-        _ = arguments
-        _ = isInside
-        return hardExits.contains(tool)
+        if tool == "shell" || tool == "browser_fill_secret" || tool.hasPrefix("ssh_") || tool.hasPrefix("mcp_") { return true }
+        // Things that last or go out: a memory, a routine, a message later, mail, the calendar, contacts, a link opened.
+        if ["remember", "forget", "schedule_task", "message_later", "gmail_send", "gmail_draft", "calendar_add", "reminder_add",
+            "contacts_add", "clipboard_write", "photos_save", "open_link", "browser_type"].contains(tool) { return true }
+        if WorkspaceTools.writers.contains(tool) {
+            guard let path = arguments["path"]?.string else { return true }
+            return !isInside(path)
+        }
+        return false
     }
 
     public static func codePayload(tool name: String, arguments: JSONValue) -> String? {
@@ -41,10 +49,12 @@ public enum Taint {
     public static let reason = "这一轮读过外部网页。网页里可能藏着冲着模型写的指令，所以这一步不管之前怎么放行，都要你亲自点头。"
 }
 
-/// Which chats have read the web in the turn running now.
+/// Tracks which chats have read outside content, and which chats the user explicitly opted into
+/// following normal permissions through web taint (in-memory only, cleared on chat reset or app exit).
 public final class TaintBook: @unchecked Sendable {
     private let lock = NSLock()
     private var tainted: Set<String> = []
+    private var allowedThrough: Set<String> = []
 
     public init() {}
 
@@ -60,21 +70,51 @@ public final class TaintBook: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return tainted.contains(key)
     }
+
+    public func allowThrough(_ key: String) {
+        lock.lock(); allowedThrough.insert(key); lock.unlock()
+    }
+
+    public func revokeThrough(_ key: String) {
+        lock.lock(); allowedThrough.remove(key); lock.unlock()
+    }
+
+    public func isAllowedThrough(_ key: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return allowedThrough.contains(key)
+    }
+
+    /// Clears both turn taint and any per-conversation risk opt-in (when starting fresh / deleting a thread).
+    public func reset(_ key: String) {
+        lock.lock()
+        tainted.remove(key)
+        allowedThrough.remove(key)
+        lock.unlock()
+    }
 }
 
-/// Wraps a tool: tracks whether the turn read outside content and ensures hard exits always ask with `forced` set
-/// (with an extra web-reading banner when the current turn read outside text).
+/// Wraps a tool: reading external content marks the turn; by default, sensitive steps ask with `forced` set.
+/// Hard exits (`browser_fill_secret`, `gmail_send`, `schedule_task`) always require a fresh seal even if the user
+/// opted in globally or per-conversation to follow normal permissions after reading external content.
 public struct TaintGuard: AgentTool {
     public let inner: AgentTool
     let key: String
     let book: TaintBook
     let isInside: @Sendable (String) -> Bool
+    let allowAfterWeb: @Sendable () -> Bool
 
-    public init(_ inner: AgentTool, key: String, book: TaintBook, isInside: @escaping @Sendable (String) -> Bool) {
+    public init(
+        _ inner: AgentTool,
+        key: String,
+        book: TaintBook,
+        isInside: @escaping @Sendable (String) -> Bool,
+        allowAfterWeb: @escaping @Sendable () -> Bool = { false }
+    ) {
         self.inner = inner
         self.key = key
         self.book = book
         self.isInside = isInside
+        self.allowAfterWeb = allowAfterWeb
     }
 
     public var spec: ToolSpec { inner.spec }
@@ -82,14 +122,30 @@ public struct TaintGuard: AgentTool {
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {
         let own = inner.approval(for: arguments)
-        let mustSeal = own?.forced == true || Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside)
-        guard mustSeal else { return own }
+        if own?.forced == true || Taint.hardExits.contains(spec.name) {
+            var ask = own ?? ApprovalAsk(title: "这一步要你点头", reason: inner.label(for: arguments))
+            if ask.code == nil {
+                ask.code = Taint.codePayload(tool: spec.name, arguments: arguments)
+            }
+            ask.forced = true
+            if book.isTainted(key), !(ask.detail?.hasPrefix(Taint.reason) == true) {
+                ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")
+            }
+            return ask
+        }
+        guard book.isTainted(key),
+              own != nil || Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside) else {
+            return own
+        }
+        if allowAfterWeb() || book.isAllowedThrough(key) {
+            return own
+        }
         var ask = own ?? ApprovalAsk(title: "这一步要你点头", reason: inner.label(for: arguments))
         if ask.code == nil {
             ask.code = Taint.codePayload(tool: spec.name, arguments: arguments)
         }
         ask.forced = true
-        if book.isTainted(key), !(ask.detail?.hasPrefix(Taint.reason) == true) {
+        if !(ask.detail?.hasPrefix(Taint.reason) == true) {
             ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")
         }
         return ask

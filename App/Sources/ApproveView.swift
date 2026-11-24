@@ -19,6 +19,7 @@ struct ApproveView: View {
     @State private var busy = false
     @State private var always = false
     @State private var trustChat = false
+    @State private var throughWeb = false
     @State private var handled: Set<String> = []
     @State private var note: String?
     /// 0...1: how far the stamp is pressing the slip down.
@@ -47,6 +48,11 @@ struct ApproveView: View {
     private var name: String { bot?.name ?? Words.t("旅伴") }
     private var answerable: Bool { current.answerable != false }
     private var waiting: Int { team.approvals.filter { $0.id != current.id && !handled.contains($0.id) }.count }
+    private var readOutside: Bool { current.detail?.text?.hasPrefix(Taint.reason) == true }
+    private var canTrustThroughWeb: Bool {
+        guard readOutside, current.chat != nil, let tool = current.toolName else { return false }
+        return !Taint.hardExits.contains(tool)
+    }
 
     var body: some View {
         ZStack {
@@ -166,10 +172,14 @@ struct ApproveView: View {
                 if current.forced == true {
                     // Standing permission would not cover this step anyway: say why instead of offering it.
                     // Forced because the turn read outside text, or because the step is one that always asks (a routine).
-                    Label(L.t(current.detail?.text?.contains("外部网页") == true ? "approval.webRequiresApproval" : "approval.alwaysAsks"),
+                    Label(L.t(readOutside ? "approval.webRequiresApproval" : "approval.alwaysAsks"),
                           systemImage: "exclamationmark.shield")
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.warn)
+                    if canTrustThroughWeb {
+                        choice(L.t("approval.inlineTrustThroughWeb"), on: $throughWeb, tint: Ink.warn)
+                            .accessibilityHint(L.t("approval.inlineTrustThroughWebHint"))
+                    }
                 } else {
                     HStack(spacing: Ink.Space.s) {
                         choice(L.t("actions.allowAlways"), on: $always)
@@ -358,8 +368,10 @@ struct ApproveView: View {
     }
 
     /// The stamp only falls once the computer has taken the answer.
-    private func choice(_ title: String, on: Binding<Bool>) -> some View {
-        Button {
+    private func choice(_ title: String, on: Binding<Bool>, tint: Color? = nil) -> some View {
+        let activeColor = tint ?? Ink.accent
+        let activeWash = tint.map { $0.opacity(0.12) } ?? Ink.accentWash
+        return Button {
             Haptics.tick(0.5)
             on.wrappedValue.toggle()
         } label: {
@@ -368,11 +380,11 @@ struct ApproveView: View {
                 Text(title).font(.system(size: Ink.Size.small * accessibilityScale, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundStyle(on.wrappedValue ? Ink.accent : Ink.inkSoft)
+            .foregroundStyle(on.wrappedValue ? activeColor : (tint ?? Ink.inkSoft))
             .padding(.horizontal, Ink.Space.m)
             .frame(minHeight: 30)
-            .background(on.wrappedValue ? Ink.accentWash : Color.clear, in: .capsule)
-            .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : Ink.rule))
+            .background(on.wrappedValue ? activeWash : Color.clear, in: .capsule)
+            .overlay(Capsule().strokeBorder(on.wrappedValue ? Color.clear : (tint?.opacity(0.45) ?? Ink.rule)))
         }
         .buttonStyle(TapStyle())
         .disabled(busy)
@@ -383,9 +395,10 @@ struct ApproveView: View {
         busy = true
         note = nil
         let asked = current
+        let passThroughWeb = throughWeb
         Task {
             do {
-                try await team.answer(asked, allow: allow, always: always, trustChat: trustChat)
+                try await team.answer(asked, allow: allow, always: always, trustChat: trustChat || passThroughWeb, throughWeb: passThroughWeb)
                 handled.insert(asked.id)
                 stamp(allow ? .allowed : .rejected)
             } catch {
@@ -430,6 +443,7 @@ struct ApproveView: View {
             busy = false
             always = false
             trustChat = false
+            throughWeb = false
         }
     }
 }
