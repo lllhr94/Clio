@@ -32,6 +32,33 @@ extension TeamModel {
         )
     }
 
+    nonisolated static func exportBackupKeys(endpoints: [Endpoint], allowedIDs: [String]) -> [String: String] {
+        let snapshots = endpoints.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
+        return EndpointKeyCoordinator.exportBackupKeys(
+            endpoints: snapshots,
+            allowedIDs: Set(allowedIDs),
+            readBoundRecord: { Vault.load(Data.self, key: $0) },
+            hasBoundMarker: { Vault.load(Bool.self, key: $0) == true },
+            readLegacyKey: { Vault.load(String.self, key: $0) }
+        )
+    }
+
+    nonisolated static func restoreBackupKeys(previous: [Endpoint], restored: [Endpoint], keys: [String: String]?) {
+        let previousSnapshots = previous.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
+        let restoredSnapshots = restored.map { EndpointKeyCoordinator.EndpointSnapshot(id: $0.id, baseURL: $0.baseURL) }
+        EndpointKeyCoordinator.applyBackupRestore(
+            previousEndpoints: previousSnapshots,
+            restoredEndpoints: restoredSnapshots,
+            restoredKeys: keys,
+            writeBoundRecord: Self.writeAndVerifyData,
+            hasBoundMarker: { Vault.load(Bool.self, key: $0) == true },
+            writeBoundMarker: { Self.writeAndVerifyBool($0, true) },
+            readLegacyKey: { Vault.load(String.self, key: $0) },
+            writeLegacyKey: Self.writeAndVerifyString,
+            removeKey: { Vault.remove($0) }
+        )
+    }
+
     func apiKey(for endpoint: Endpoint) -> String? {
         Self.resolveEndpointKey(id: endpoint.id, baseURL: endpoint.baseURL)
     }

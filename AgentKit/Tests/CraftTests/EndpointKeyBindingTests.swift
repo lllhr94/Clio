@@ -112,6 +112,74 @@ final class EndpointKeyBindingTests: XCTestCase {
             guard let url = endpoints[id] else { return nil }
             return resolveKey(endpointID: id, requestURL: url)
         }
+
+        // All three runtime request entry points read through the unified origin-bound resolver.
+        func chatTurnKey(for id: String) -> String? { activeKey(for: id) }
+        func probeKey(for id: String) -> String? { activeKey(for: id) }
+        func shortcutKey(for id: String) -> String? { activeKey(for: id) }
+
+        func snapshots() -> [EndpointKeyCoordinator.EndpointSnapshot] {
+            endpoints.keys.sorted().compactMap { id in
+                guard let url = endpoints[id] else { return nil }
+                return EndpointKeyCoordinator.EndpointSnapshot(id: id, baseURL: url)
+            }
+        }
+
+        /// Simulates `Backup.make`: captures endpoint snapshots and `#keys` JSON (`[String: String]`).
+        func exportBackup(withKeys: Bool) throws -> (endpoints: [String: String], keysPayload: Data?) {
+            let savedEndpoints = endpoints
+            guard withKeys else { return (savedEndpoints, nil) }
+            let keys = EndpointKeyCoordinator.exportBackupKeys(
+                endpoints: snapshots(),
+                allowedIDs: Set(savedEndpoints.keys),
+                readBoundRecord: { self.boundRecords[$0] },
+                hasBoundMarker: { self.boundMarkers.contains($0) },
+                readLegacyKey: { self.legacyKeys[$0] }
+            )
+            let payload = try JSONEncoder().encode(keys)
+            return (savedEndpoints, payload)
+        }
+
+        /// Simulates `Backup.restore`: swaps `settings.json` endpoints and reconciles Vault bindings.
+        func restoreBackup(endpoints restoredMap: [String: String], keysPayload: Data?) throws {
+            let previous = snapshots()
+            endpoints = restoredMap
+            let restored = snapshots()
+            let decodedKeys: [String: String]?
+            if let keysPayload {
+                decodedKeys = try JSONDecoder().decode([String: String].self, from: keysPayload)
+            } else {
+                decodedKeys = nil
+            }
+            EndpointKeyCoordinator.applyBackupRestore(
+                previousEndpoints: previous,
+                restoredEndpoints: restored,
+                restoredKeys: decodedKeys,
+                writeBoundRecord: { [weak self] slot, data in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.boundRecords[slot] = data
+                    return true
+                },
+                hasBoundMarker: { [weak self] slot in self?.boundMarkers.contains(slot) == true },
+                writeBoundMarker: { [weak self] slot in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.boundMarkers.insert(slot)
+                    return true
+                },
+                readLegacyKey: { [weak self] slot in self?.legacyKeys[slot] },
+                writeLegacyKey: { [weak self] slot, value in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.legacyKeys[slot] = value
+                    return true
+                },
+                removeKey: { [weak self] slot in
+                    guard let self, !self.failRemove else { return }
+                    self.boundRecords.removeValue(forKey: slot)
+                    self.boundMarkers.remove(slot)
+                    self.legacyKeys.removeValue(forKey: slot)
+                }
+            )
+        }
     }
 
     func testBoundCredentialUsesAccessTokenKeyForVaultRedaction() throws {
@@ -287,6 +355,126 @@ final class EndpointKeyBindingTests: XCTestCase {
         )
         env.boundMarkers.insert(EndpointKeyCoordinator.boundMarkerSlot(for: "svc-a"))
         XCTAssertNil(env.activeKey(for: "svc-a"))
+    }
+
+    func testBackupRoundTripWithKeysKeepsChatProbeAndShortcutsConsistentAfterKeyRotation() throws {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-v1")
+
+        // 1. Export a backup containing `#keys` (compatible `[String: String]` payload).
+        let backup = try env.exportBackup(withKeys: true)
+        let exportedMap = try JSONDecoder().decode([String: String].self, from: try XCTUnwrap(backup.keysPayload))
+        XCTAssertEqual(exportedMap, ["svc-a": "sk-alpha-v1"])
+
+        // 2. Rotate key on the same service after the backup.
+        let rotate = EndpointKeyCoordinator.applyEdit(
+            endpointID: "svc-a",
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.alpha.example/v1",
+            replacementKey: "sk-alpha-v2",
+            store: env.makeStore(for: "svc-a")
+        )
+        XCTAssertEqual(rotate, .saved(endpointID: "svc-a", normalizedURL: "https://api.alpha.example/v1", keyUpdated: true))
+        XCTAssertEqual(env.chatTurnKey(for: "svc-a"), "sk-alpha-v2")
+        XCTAssertEqual(env.probeKey(for: "svc-a"), "sk-alpha-v2")
+        XCTAssertEqual(env.shortcutKey(for: "svc-a"), "sk-alpha-v2")
+
+        // 3. Restore the earlier keyed backup and simulate app restart.
+        try env.restoreBackup(endpoints: backup.endpoints, keysPayload: backup.keysPayload)
+        let afterRestart = env.restarted()
+
+        // Chat (`Team.turn`), probe (`CarePage.probe` / `ServicePage`), and Shortcuts must all read the exact same restored key.
+        XCTAssertEqual(afterRestart.chatTurnKey(for: "svc-a"), "sk-alpha-v1")
+        XCTAssertEqual(afterRestart.probeKey(for: "svc-a"), "sk-alpha-v1")
+        XCTAssertEqual(afterRestart.shortcutKey(for: "svc-a"), "sk-alpha-v1")
+        XCTAssertEqual(afterRestart.legacyKeys[EndpointKeyCoordinator.legacyKeySlot(for: "svc-a")], "sk-alpha-v1")
+    }
+
+    func testBackupRestoreDifferentOriginWithoutKeysRejectsOldKeyAcrossChatProbeAndShortcuts() throws {
+        // Case A: Device has an origin-bound key for host A; restore an older keyless backup where the same ID points to host B.
+        let boundEnv = FakeServiceEnvironment()
+        boundEnv.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+
+        try boundEnv.restoreBackup(endpoints: ["svc-a": "https://api.beta.example/v1"], keysPayload: nil)
+        let restartedBound = boundEnv.restarted()
+        XCTAssertNil(restartedBound.chatTurnKey(for: "svc-a"))
+        XCTAssertNil(restartedBound.probeKey(for: "svc-a"))
+        XCTAssertNil(restartedBound.shortcutKey(for: "svc-a"))
+
+        // Case B: Device only had a pre-upgrade unbound legacy key for host A AND Vault.remove fails during restore.
+        let legacyEnv = FakeServiceEnvironment(
+            endpoints: ["svc-a": "https://api.alpha.example/v1"],
+            legacyKeys: [EndpointKeyCoordinator.legacyKeySlot(for: "svc-a"): "sk-alpha-legacy"]
+        )
+        legacyEnv.failRemove = true
+
+        try legacyEnv.restoreBackup(endpoints: ["svc-a": "https://api.beta.example/v1"], keysPayload: nil)
+        let restartedLegacy = legacyEnv.restarted()
+        XCTAssertNil(restartedLegacy.chatTurnKey(for: "svc-a"))
+        XCTAssertNil(restartedLegacy.probeKey(for: "svc-a"))
+        XCTAssertNil(restartedLegacy.shortcutKey(for: "svc-a"))
+
+        // Case C: Device had no endpoint in settings.json (e.g. reinstall/deleted) with a leftover legacy key in Vault.
+        let orphanEnv = FakeServiceEnvironment(
+            endpoints: [:],
+            legacyKeys: [EndpointKeyCoordinator.legacyKeySlot(for: "svc-a"): "sk-stale-host-a"]
+        )
+        try orphanEnv.restoreBackup(endpoints: ["svc-a": "https://api.beta.example/v1"], keysPayload: nil)
+        let restartedOrphan = orphanEnv.restarted()
+        XCTAssertNil(restartedOrphan.chatTurnKey(for: "svc-a"))
+        XCTAssertNil(restartedOrphan.probeKey(for: "svc-a"))
+        XCTAssertNil(restartedOrphan.shortcutKey(for: "svc-a"))
+    }
+
+    func testBackupRestoreDifferentOriginWithKeysReplacesOriginBindingCleanly() throws {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        let keysPayload = try JSONEncoder().encode(["svc-a": "sk-beta-secret"])
+
+        try env.restoreBackup(endpoints: ["svc-a": "https://api.beta.example/v1"], keysPayload: keysPayload)
+
+        // Even before restart, a stale in-memory request targeting host A must NOT receive host B's restored key.
+        XCTAssertNil(env.resolveKey(endpointID: "svc-a", requestURL: "https://api.alpha.example/v1"))
+
+        let afterRestart = env.restarted()
+        XCTAssertEqual(afterRestart.chatTurnKey(for: "svc-a"), "sk-beta-secret")
+        XCTAssertEqual(afterRestart.probeKey(for: "svc-a"), "sk-beta-secret")
+        XCTAssertEqual(afterRestart.shortcutKey(for: "svc-a"), "sk-beta-secret")
+    }
+
+    func testBackupRestoreSameOriginWithoutKeysPreservesAndUpgradesLegacyKey() throws {
+        let env = FakeServiceEnvironment(
+            endpoints: ["svc-a": "https://api.alpha.example/v1"],
+            legacyKeys: [EndpointKeyCoordinator.legacyKeySlot(for: "svc-a"): "sk-alpha-legacy"]
+        )
+
+        // Keyless backup (e.g. WebDAV) with the same origin (path difference only).
+        try env.restoreBackup(endpoints: ["svc-a": "https://api.alpha.example/v2/"], keysPayload: nil)
+        let afterRestart = env.restarted()
+
+        XCTAssertEqual(afterRestart.chatTurnKey(for: "svc-a"), "sk-alpha-legacy")
+        XCTAssertEqual(afterRestart.probeKey(for: "svc-a"), "sk-alpha-legacy")
+        XCTAssertEqual(afterRestart.shortcutKey(for: "svc-a"), "sk-alpha-legacy")
+        XCTAssertTrue(afterRestart.boundMarkers.contains(EndpointKeyCoordinator.boundMarkerSlot(for: "svc-a")))
+        // Upgraded record is bound to host A and cannot be read against host B.
+        XCTAssertNil(afterRestart.resolveKey(endpointID: "svc-a", requestURL: "https://api.beta.example/v1"))
+    }
+
+    func testBackupExportSkipsMismatchedLegacyKeys() throws {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-ok", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        // Simulate an endpoint whose host changed while only a bound record for host A + stale legacy key remained.
+        env.endpoints["svc-mismatch"] = "https://api.beta.example/v1"
+        let slotA = EndpointKeyCoordinator.boundRecordSlot(for: "svc-mismatch", origin: "https://api.alpha.example:443")
+        env.boundRecords[slotA] = try XCTUnwrap(
+            BoundEndpointCredential(origin: "https://api.alpha.example:443", accessToken: "sk-wrong-host").encodedData()
+        )
+        env.boundMarkers.insert(EndpointKeyCoordinator.boundMarkerSlot(for: "svc-mismatch"))
+        env.legacyKeys[EndpointKeyCoordinator.legacyKeySlot(for: "svc-mismatch")] = "sk-wrong-host"
+
+        let backup = try env.exportBackup(withKeys: true)
+        let exported = try JSONDecoder().decode([String: String].self, from: try XCTUnwrap(backup.keysPayload))
+        XCTAssertEqual(exported, ["svc-ok": "sk-alpha-secret"])
     }
 }
 

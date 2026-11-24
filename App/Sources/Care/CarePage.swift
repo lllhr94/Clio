@@ -502,7 +502,7 @@ struct CarePage: View {
         Task {
             for endpoint in team.settings.endpoints {
                 probes[endpoint.id] = "在试…"
-                guard let model = endpoint.models.first, let key = await Vault.readString("key-\(endpoint.id)"), !key.isEmpty else {
+                guard let model = endpoint.models.first, let key = await team.readAPIKey(for: endpoint), !key.isEmpty else {
                     probes[endpoint.id] = "没有模型或密钥"
                     continue
                 }

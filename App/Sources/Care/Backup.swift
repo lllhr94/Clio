@@ -60,6 +60,7 @@ enum Backup {
             count += 1
         }
         let manager = FileManager.default
+        var archivedEndpoints: [Endpoint]?
         for folder in folders {
             let base = support.appendingPathComponent(folder, isDirectory: true)
             guard let walker = manager.enumerator(at: base, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
@@ -70,6 +71,9 @@ enum Backup {
                 if skipped.contains(where: { relative.hasPrefix($0) }) { continue }
                 // One at a time, and a file that cannot be read is named, not silently left out.
                 guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { unreadable.append(relative); continue }
+                if relative == "Team/settings.json" {
+                    archivedEndpoints = (try? JSONDecoder().decode(TeamSettings.self, from: data))?.endpoints
+                }
                 try autoreleasepool { try add(relative, data) }
             }
         }
@@ -85,10 +89,8 @@ enum Backup {
             try add("#settings", data)
         }
         if withKeys {
-            var keys: [String: String] = [:]
-            for id in endpoints {
-                if let key = Vault.load(String.self, key: "key-\(id)") { keys[id] = key }
-            }
+            let currentEndpoints = archivedEndpoints ?? Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
+            let keys = TeamModel.exportBackupKeys(endpoints: currentEndpoints, allowedIDs: endpoints)
             if let data = try? JSONEncoder().encode(keys) { try add("#keys", data) }
         }
         try out.synchronize()
@@ -165,6 +167,7 @@ enum Backup {
         Disk.frozen = true
         ChatDisk.finishWrites()
         Disk.forgetPhotos()
+        let previousEndpoints = Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
         try manager.createDirectory(at: old, withIntermediateDirectories: true)
         var swapped: [String] = []
         do {
@@ -193,6 +196,7 @@ enum Backup {
         try? manager.removeItem(at: old)
 
         // 4. Settings and keys, now that the files are in.
+        var restoredKeys: [String: String]?
         for item in items {
             let body = data.subdata(in: item.range)
             switch item.path {
@@ -205,12 +209,14 @@ enum Backup {
                 }
             case "#keys":
                 if let keys = try? JSONDecoder().decode([String: String].self, from: body) {
-                    for (id, key) in keys { Vault.save(key, as: "key-\(id)") }
+                    restoredKeys = keys
                     count += 1
                 }
             default: break
             }
         }
+        let restoredEndpoints = Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
+        TeamModel.restoreBackupKeys(previous: previousEndpoints, restored: restoredEndpoints, keys: restoredKeys)
         return Summary(files: count, bytes: data.count)
     }
 }
