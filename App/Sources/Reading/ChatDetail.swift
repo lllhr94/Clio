@@ -14,6 +14,7 @@ struct ChatDetail: View {
     @Environment(\.dismiss) private var dismiss
     @State private var tab = Tab.steps
     @State private var files: [Snapshots.Kept] = []
+    @State private var resolvedFiles: [String: WorkspaceFileRef] = [:]
     @State private var usage = false
     @State private var renaming = false
     @State private var renameText = ""
@@ -92,7 +93,22 @@ struct ChatDetail: View {
         .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
             Button(L.t("actions.done"), role: .cancel) {}
         }
-        .task { files = team.allChangedFiles(chat.key) }
+        .task {
+            let kept = team.allChangedFiles(chat.key)
+            files = kept
+            let deskPaths = kept.filter { WorkPlace(code: $0.place) == .desk }.map(\.path)
+            guard !deskPaths.isEmpty else { return }
+            let resolved = await Task.detached(priority: .utility) {
+                var map: [String: WorkspaceFileRef] = [:]
+                for path in deskPaths {
+                    if let ref = WorkspaceFileRef.resolve(path) {
+                        map[path] = ref
+                    }
+                }
+                return map
+            }.value
+            if !Task.isCancelled { resolvedFiles = resolved }
+        }
     }
 
     private var hero: some View {
@@ -182,7 +198,7 @@ struct ChatDetail: View {
                 ForEach(Array(all.enumerated()), id: \.offset) { index, step in
                     HStack(spacing: Ink.Space.m) {
                         Text("\(index + 1)").font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint).frame(width: 24, alignment: .trailing)
-                        Text(step.label).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(2)
+                        Text(Words.t(step.label)).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(2)
                         Spacer(minLength: 0)
                         if let seconds = step.seconds { Text(Clock.said(seconds)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkFaint) }
                     }
@@ -203,10 +219,10 @@ struct ChatDetail: View {
             VStack(spacing: 0) {
                 ForEach(Array(files.enumerated()), id: \.offset) { _, file in
                     let place = WorkPlace(code: file.place)
-                    let local = place == .desk ? Workspace.resolve(file.path) : nil
+                    let resolved = place == .desk ? resolvedFiles[file.path] : nil
                     Group {
-                        if let local, FileManager.default.fileExists(atPath: local.path) {
-                            NavigationLink { StudyFile(url: local) } label: { fileRow(file, place: place, isNew: file.backup == nil) }
+                        if let resolved {
+                            NavigationLink { StudyFile(url: resolved.url, mount: resolved.mount) } label: { fileRow(file, place: place, isNew: file.backup == nil) }
                         } else {
                             fileRow(file, place: place, isNew: file.backup == nil)
                         }

@@ -78,7 +78,7 @@ struct FontPage: View {
             PaperRows {
                 Section {
                     ForEach(Pref.Face.allCases) { face in
-                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio 0.33") {
+                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio 0.35") {
                             Theme.shared.setFace(face)
                         }
                     }
@@ -108,7 +108,7 @@ struct FontPage: View {
                 }
 
                 Section {
-                    Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，代码字体是 Maple Mono 7.9，都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal。宋体、楷体由苹果提供。")
+                    Text("文楷取自霞鹜文楷 GB 1.530（按国家标准字形修订的版本），朱印取自马善政毛笔楷书，代码字体是 Maple Mono 7.9 与 Maple Mono CN 中文底（汉字来自 Resource Han Rounded），都是开源字体（SIL OFL 1.1），为了装进 App 只留了简体常用字，改名 Clio Kai、Clio Seal、Clio Mono CN。宋体、楷体由苹果提供。")
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
                 } header: { Text(L.t("settings.fontCredits")) }
@@ -169,7 +169,7 @@ struct FontPage: View {
                         Text(code.title).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                         Text(code.note).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
-                    Text("git log --oneline -3  # 0.33")
+                    Text("git log --oneline -3  # 0.35")
                         .font(Ink.mono(Ink.Size.sub, preference: code))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)

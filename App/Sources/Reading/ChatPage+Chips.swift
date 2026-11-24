@@ -38,45 +38,60 @@ extension ChatPage {
 
     var modelSpeaker: BotInfo { isRoom ? team.alwaysOnTurn(chat.key).bot ?? bot : bot }
 
+    @ViewBuilder
     var modelMenu: some View {
-        let own = options.model
+        let own = team.resolveActive(options.model) != nil ? options.model : nil
         let name = team.current(chat.key, bot: modelSpeaker)?.model ?? L.t("settings.models")
-        let level = options.thinking ?? .auto
-        return Menu {
-            thinkingChoices
-            if !isRoom {
-                Section(L.t("settings.models")) {
-                    Button {
-                        selectModel(nil)
-                    } label: {
-                        let label = "跟着\(bot.name)走"
-                        if own == nil { Label(label, systemImage: "checkmark") } else { Text(label) }
-                    }
-                }
-                ModelChoices(team: team, current: own) { ref in selectModel(ref) }
-            }
-        } label: {
+        let offered = offeredThinking
+        let level = offered.contains(options.thinking ?? .auto) ? (options.thinking ?? .auto) : .auto
+        if isRoom && offered.count <= 1 {
             HStack(spacing: Ink.Space.xs) {
                 Text(name)
                     .font(Ink.mono(Ink.Size.micro))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                if level != .auto {
-                    Image(systemName: level.symbol)
-                        .font(.system(size: Ink.Size.micro, weight: .medium))
-                        .foregroundStyle(Ink.accent)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: Ink.Size.micro, weight: .medium))
             }
             .foregroundStyle(Ink.inkSoft)
             .padding(.horizontal, Ink.Space.s)
             .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+        } else {
+            Menu {
+                thinkingChoices
+                if !isRoom {
+                    Section(L.t("settings.models")) {
+                        Button {
+                            selectModel(nil)
+                        } label: {
+                            let label = "跟着\(bot.name)走"
+                            if own == nil { Label(label, systemImage: "checkmark") } else { Text(label) }
+                        }
+                    }
+                    ModelChoices(team: team, current: own) { ref in selectModel(ref) }
+                }
+            } label: {
+                HStack(spacing: Ink.Space.xs) {
+                    Text(name)
+                        .font(Ink.mono(Ink.Size.micro))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if level != .auto {
+                        Image(systemName: level.symbol)
+                            .font(.system(size: Ink.Size.micro, weight: .medium))
+                            .foregroundStyle(Ink.accent)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                }
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.s)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .menuOrder(.fixed)
+            .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+            .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
         }
-        .menuOrder(.fixed)
-        .accessibilityLabel("\(L.t("settings.models"))：\(name)")
-        .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
     }
 
     func selectModel(_ reference: String?) {
@@ -107,12 +122,15 @@ extension ChatPage {
         return speakers.reduce(Thinking.allCases) { offered, speaker in
             guard let current = team.current(chat.key, bot: speaker) else { return [.auto] }
             let levels: [Thinking]
-            if let tested = current.traits.levels {
-                levels = [.auto] + tested.compactMap(Thinking.init(rawValue:))
+            if !current.traits.thinks {
+                levels = [.auto]
+            } else if let tested = current.traits.levels {
+                let parsed = tested.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
+                levels = [.auto] + parsed
             } else if current.endpoint.kind == .openai {
-                levels = current.endpoint.thinkingStyle.levels(thinks: current.traits.thinks)
+                levels = current.endpoint.thinkingStyle.levels(thinks: true)
             } else {
-                levels = current.traits.thinks ? Thinking.allCases : [.auto]
+                levels = Thinking.allCases
             }
             return offered.filter { levels.contains($0) }
         }

@@ -150,20 +150,21 @@ struct BotEditor: View {
                         }
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
-                            FieldTitle(text: "默认模型", note: Words.t("某一段絮语还能在输入框下另选"))
+                            let activeOwnModel = (!model.isEmpty && team.resolveActive(model) != nil) ? model : nil
+                            FieldTitle(text: "默认模型", note: Words.t("某一段絮语还能在顶栏另选"))
                             Menu {
                                 Button {
                                     model = ""
                                 } label: {
-                                    if model.isEmpty { Label("跟全局默认走", systemImage: "checkmark") } else { Text("跟全局默认走") }
+                                    if activeOwnModel == nil { Label("跟全局默认走", systemImage: "checkmark") } else { Text("跟全局默认走") }
                                 }
-                                ModelChoices(team: team, current: model.isEmpty ? nil : model) { ref in
+                                ModelChoices(team: team, current: activeOwnModel) { ref in
                                     model = ref
                                 }
                             } label: {
                                 HStack {
                                     Image(systemName: "sparkle").foregroundStyle(Ink.accent)
-                                    Text(model.isEmpty ? "跟全局默认走（\(team.modelTitle(team.settings.defaultModel))）" : team.modelTitle(model))
+                                    Text(activeOwnModel == nil ? "跟全局默认走（\(team.modelTitle(team.settings.defaultModel))）" : team.modelTitle(activeOwnModel))
                                         .font(.system(size: Ink.Size.body))
                                         .foregroundStyle(Ink.ink)
                                         .lineLimit(1)

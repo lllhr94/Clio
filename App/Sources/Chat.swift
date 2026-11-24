@@ -12,6 +12,8 @@ struct StepDetail: Equatable, Sendable {
     var photo: String?
     /// For the person only: a changed file's whole comparison.
     var full: String?
+    /// Raw tool identifier (e.g. `write_file`, `shell`), kept so trace cards do not depend on display wording.
+    var tool: String? = nil
 }
 
 /// One row of a chat.
@@ -343,7 +345,7 @@ final class ChatModel {
                     stepAt = entry.at
                 }
                 let input = message.toolCallId.flatMap { calls[$0] } ?? ""
-                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail))
+                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail, tool: message.toolName))
                 stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? (message.text.hasPrefix(Agent.unknownMark) ? "\(label)（结果未知）" : "\(label)（没成功）") : label)

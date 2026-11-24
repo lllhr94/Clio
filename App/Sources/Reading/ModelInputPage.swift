@@ -98,7 +98,6 @@ private struct ModelInputBlock: View {
     let text: String
     var monospaced = false
     @State private var copied = false
-    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
@@ -112,15 +111,16 @@ private struct ModelInputBlock: View {
                     }
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.accent)
+                    .padding(.trailing, Ink.Space.l)
                     .buttonStyle(TapStyle())
                 }
             }
             Text(verbatim: text.isEmpty ? L.t("modelInput.none") : text)
-                .font(monospaced ? Ink.mono(Ink.Size.small * scale) : Ink.body(Double(Ink.Size.sub * scale), bold: false))
+                .font(monospaced ? Ink.mono(Ink.Size.small) : Ink.body(Double(Ink.Size.sub), bold: false))
                 .foregroundStyle(text.isEmpty ? Ink.inkSoft : Ink.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Ink.Space.l)
+                .paperCard()
         }
-        .padding(Ink.Space.l)
-        .paperCard()
     }
 }

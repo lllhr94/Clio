@@ -161,7 +161,7 @@ extension ChatPage {
             // The plan sits right on the composer, as one block with it, not as a second bar floating above.
             VStack(spacing: Ink.Space.xs) {
                 if let plan = team.plans[chat.key] {
-                    PlanCard(steps: plan) { team.clearPlan(chat.key) }
+                    PlanCard(steps: plan, maxHeight: chatViewport.height > 0 ? max(160, chatViewport.height * 0.38) : nil) { team.clearPlan(chat.key) }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 dock
@@ -635,7 +635,7 @@ extension ChatPage {
                         .background(fill, in: .circle)
                 } else {
                     Image(systemName: symbol)
-                        .font(.system(size: mode == 3 ? 16 : 15, weight: mode == 3 ? .medium : .bold))
+                        .font(.system(size: Ink.Size.sub, weight: mode == 3 ? .medium : .bold))
                         .foregroundStyle(mode == 3 ? Ink.inkSoft : Ink.paper)
                         .contentTransition(.symbolEffect(.replace))
                         .symbolEffect(.variableColor.iterative, isActive: mode == 0)

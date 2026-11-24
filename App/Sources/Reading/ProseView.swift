@@ -1,3 +1,4 @@
+import AgentKit
 import UIKit
 import Prose
 import SwiftUI
@@ -524,6 +525,45 @@ private struct TableBlock: View {
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { room = $0 }
         .inkBlock()
+        .contextMenu {
+            Button(L.t("actions.copy"), systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = Self.plainTSV(table)
+            }
+            Button("复制 Markdown", systemImage: "tablecells") {
+                UIPasteboard.general.string = Self.markdownSource(table)
+            }
+        }
+    }
+
+    private static func stripInlineMarks(_ cell: String) -> String {
+        cell.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "~~", with: "")
+    }
+
+    private static func plainTSV(_ table: Prose.Table) -> String {
+        let allRows = [table.header] + table.rows
+        return allRows
+            .map { $0.map(stripInlineMarks).joined(separator: "\t") }
+            .joined(separator: "\n")
+    }
+
+    private static func markdownSource(_ table: Prose.Table) -> String {
+        let cols = max(table.header.count, table.rows.map(\.count).max() ?? 0)
+        guard cols > 0 else { return "" }
+        func formatRow(_ cells: [String]) -> String {
+            let padded = (0..<cols).map { idx in
+                let raw = idx < cells.count ? cells[idx] : ""
+                return raw.replacingOccurrences(of: "|", with: "\\|")
+            }
+            return "| " + padded.joined(separator: " | ") + " |"
+        }
+        var lines = [formatRow(table.header)]
+        lines.append("| " + Array(repeating: "---", count: cols).joined(separator: " | ") + " |")
+        for row in table.rows {
+            lines.append(formatRow(row))
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func row(_ cells: [String], head: Bool, widths: [CGFloat]) -> some View {
@@ -709,15 +749,38 @@ private struct PictureParagraph: View {
     }
 }
 
+/// Blocks HTTP redirects to private/local addresses when downloading remote images in replies.
+private final class PublicImageRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        guard let target = request.url,
+              ["http", "https"].contains(target.scheme?.lowercased() ?? ""),
+              !LocalAddress.isLocal(target),
+              !(await LocalAddress.resolvesToLocal(target)) else {
+            return nil
+        }
+        return request
+    }
+}
+
 /// One picture in a reply: from the web, or from 书案 (a path the companion wrote there). Tap to see it whole,
 /// with the system viewer's share and save.
 struct ProsePicture: View {
+    private static let maxRemoteBytes = 25 * 1024 * 1024
+
     let source: String
     var label: String = ""
     @State private var image: UIImage?
-    @State private var file: URL?
+    @State private var remoteFile: URL?
+    @State private var workspaceRef: WorkspaceFileRef?
     @State private var failed = false
     @State private var open = false
+
+    private var canOpen: Bool { workspaceRef != nil || remoteFile != nil }
 
     var body: some View {
         Group {
@@ -727,7 +790,7 @@ struct ProsePicture: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
                     .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                    .onTapGesture { if file != nil { Haptics.light(); open = true } }
+                    .onTapGesture { if canOpen { Haptics.light(); open = true } }
                     .accessibilityLabel(label.isEmpty ? "图片" : label)
                     .accessibilityAddTraits(.isImage)
             } else if failed {
@@ -743,55 +806,117 @@ struct ProsePicture: View {
         }
         .task(id: source) { await load() }
         .sheet(isPresented: $open) {
-            if let file { QuickPreview(url: file).ignoresSafeArea() }
+            if let workspaceRef {
+                NavigationStack { StudyFile(url: workspaceRef.url, mount: workspaceRef.mount, showsDone: true) }
+            } else if let remoteFile {
+                QuickPreview(url: remoteFile).ignoresSafeArea()
+            }
         }
     }
 
     private func load() async {
         image = nil
-        file = nil
+        remoteFile = nil
+        workspaceRef = nil
         failed = false
         let written = source
         let remote = URL(string: written).flatMap { url in
             ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? url : nil
         }
-        do {
-            let downloaded: URL?
-            if let remote {
-                let (temporary, response) = try await URLSession.shared.download(from: remote)
-                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
-                    throw URLError(.badServerResponse)
-                }
-                downloaded = temporary
-            } else {
-                downloaded = nil
-            }
-            let preview = await Task.detached(priority: .userInitiated) { () -> (Data, URL)? in
-                if let downloaded, let remote {
-                    defer { try? FileManager.default.removeItem(at: downloaded) }
-                    guard let thumbnail = Workspace.picture(downloaded) else { return nil }
-                    let name = remote.lastPathComponent.isEmpty ? "picture" : remote.lastPathComponent
-                    let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + name)
-                    guard (try? FileManager.default.moveItem(at: downloaded, to: local)) != nil else { return nil }
-                    return (thumbnail.data, local)
-                }
-                var path = written
-                if path.hasPrefix("file://"), let url = URL(string: path) { path = url.path }
-                let root = Workspace.root.path
-                if path.hasPrefix(root + "/") { path = String(path.dropFirst(root.count)) }
-                guard let url = Workspace.resolve(path.removingPercentEncoding ?? path),
-                      let thumbnail = Workspace.picture(url) else { return nil }
-                return (thumbnail.data, url)
-            }.value
-            guard !Task.isCancelled else {
-                if remote != nil, let preview { try? FileManager.default.removeItem(at: preview.1) }
+        if let remote {
+            guard !LocalAddress.isLocal(remote), !(await LocalAddress.resolvesToLocal(remote)) else {
+                if !Task.isCancelled { failed = true }
                 return
             }
-            guard let (data, local) = preview, let picture = UIImage(data: data) else { failed = true; return }
-            file = local
-            image = picture
+            do {
+                let downloaded = try await Self.downloadRemoteImage(remote)
+                let preview = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                    guard let thumb = Workspace.picture(downloaded) else { return nil }
+                    return UIImage(data: thumb.data)
+                }.value
+                guard !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: downloaded)
+                    return
+                }
+                guard let preview else {
+                    try? FileManager.default.removeItem(at: downloaded)
+                    failed = true
+                    return
+                }
+                remoteFile = downloaded
+                image = preview
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
+            return
+        }
+
+        let decodedPath = written.removingPercentEncoding ?? written
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (WorkspaceFileRef, UIImage)? in
+            guard let ref = WorkspaceFileRef.resolve(decodedPath),
+                  let picture = WorkspaceFileRef.loadImage(ref) else { return nil }
+            return (ref, picture)
+        }.value
+        guard !Task.isCancelled else { return }
+        guard let (ref, picture) = loaded else {
+            failed = true
+            return
+        }
+        workspaceRef = ref
+        image = picture
+    }
+
+    private static func downloadRemoteImage(_ remote: URL) async throws -> URL {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 45
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        let delegate = PublicImageRedirectDelegate()
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        var request = URLRequest(url: remote)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        if http.expectedContentLength > Int64(maxRemoteBytes) {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+
+        let rawExt = remote.pathExtension.lowercased()
+        let safeExt = rawExt.allSatisfy({ $0.isLetter || $0.isNumber }) && rawExt.count <= 8 ? rawExt : "img"
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clio-pic-\(UUID().uuidString).\(safeExt)")
+        FileManager.default.createFile(atPath: dest.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: dest)
+        var buffer = Data()
+        buffer.reserveCapacity(64 * 1024)
+        var total = 0
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                total += 1
+                if total > maxRemoteBytes {
+                    throw URLError(.dataLengthExceedsMaximum)
+                }
+                buffer.append(byte)
+                if buffer.count >= 64 * 1024 {
+                    try handle.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+            if !buffer.isEmpty {
+                try handle.write(contentsOf: buffer)
+            }
+            try handle.close()
+            return dest
         } catch {
-            if !Task.isCancelled { failed = true }
+            try? handle.close()
+            try? FileManager.default.removeItem(at: dest)
+            throw error
         }
     }
 }
@@ -802,42 +927,38 @@ struct ProsePicture: View {
 struct FileCard: View {
     let label: String
     let path: String
+    @State private var resolved: WorkspaceFileRef?
+    @State private var checked = false
     @State private var open = false
     @State private var interaction = false
 
-    private var url: URL? {
-        var cleaned = path.removingPercentEncoding ?? path
-        if cleaned.hasPrefix("file://"), let url = URL(string: path) { cleaned = url.path }
-        if cleaned.hasPrefix(Workspace.root.path) { cleaned = String(cleaned.dropFirst(Workspace.root.path.count)) }
-        return Workspace.resolve(cleaned)
+    private var document: InteractiveDocument? {
+        guard let resolved, InteractiveDocument.supports(resolved.url) else { return nil }
+        return InteractiveDocument(url: resolved.url, root: resolved.rootURL, mount: resolved.mount)
     }
 
     var body: some View {
-        let file = url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
-        let document = file.flatMap { file in
-            InteractiveDocument.supports(file) ? InteractiveDocument(url: file) : nil
-        }
         Button {
-            guard file != nil else { return }
+            guard resolved != nil else { return }
             Haptics.light()
             if document == nil { open = true } else { interaction = true }
         } label: {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 if let document { InteractivePreviewThumbnail(document: document) }
                 HStack(spacing: Ink.Space.m) {
-                    IconBadge(symbol: Self.symbol(for: path), tint: file == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
+                    IconBadge(symbol: Self.symbol(for: path), tint: resolved == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(label.isEmpty ? (path as NSString).lastPathComponent : label)
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.ink)
                             .lineLimit(1)
-                        Text(document != nil ? L.t("interactivePreview.open") : file.map(Self.detail) ?? "找不到这个文件了")
+                        Text(subtitleText)
                             .font(.system(size: Ink.Size.small))
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(1)
                     }
                     Spacer(minLength: Ink.Space.s)
-                    if file != nil { Kit.chevron }
+                    if resolved != nil { Kit.chevron }
                 }
             }
             .padding(Ink.Space.m)
@@ -846,12 +967,27 @@ struct FileCard: View {
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("打开 \(label)")
+        .task(id: path) {
+            let clean = path.removingPercentEncoding ?? path
+            let found = await Task.detached(priority: .utility) { WorkspaceFileRef.resolve(clean) }.value
+            guard !Task.isCancelled else { return }
+            resolved = found
+            checked = true
+        }
         .sheet(isPresented: $open) {
-            if let file { QuickPreview(url: file).ignoresSafeArea() }
+            if let resolved {
+                NavigationStack { StudyFile(url: resolved.url, mount: resolved.mount, showsDone: true) }
+            }
         }
         .fullScreenCover(isPresented: $interaction) {
             if let document { InteractivePreviewPage(document: document) }
         }
+    }
+
+    private var subtitleText: String {
+        if document != nil { return L.t("interactivePreview.open") }
+        if let resolved { return Self.detail(resolved) }
+        return checked ? "找不到这个文件了" : L.t("loading.generic")
     }
 
     /// The links in a paragraph made only of links to files (one per line), or nil when it is ordinary text.
@@ -887,10 +1023,9 @@ struct FileCard: View {
         }
     }
 
-    static func detail(_ url: URL) -> String {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        let where_ = "书案/" + Workspace.relative(url)
-        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) + " · " + where_
+    static func detail(_ ref: WorkspaceFileRef) -> String {
+        let where_ = Words.t("书案/") + ref.relativePath
+        return ByteCountFormatter.string(fromByteCount: Int64(ref.byteSize), countStyle: .file) + " · " + where_
     }
 }
 
@@ -1293,13 +1428,16 @@ private struct ProseText: UIViewRepresentable {
 
             var custom: [UIMenuElement] = []
             if let onQuote = quoteSelection {
-                custom.append(UIAction(title: "引用追问", image: UIImage(systemName: "text.quote")) { [weak textView] _ in
+                custom.append(UIAction(title: "引用追问", image: UIImage(systemName: "text.quote")) { [weak self, weak textView] _ in
                     textView?.selectedRange = NSRange(location: 0, length: 0)
+                    self?.publishSelection(false)
                     DispatchQueue.main.async { onQuote(picked) }
                 })
             }
             if let onSpeak = speakSelection {
-                custom.append(UIAction(title: "朗读", image: UIImage(systemName: "speaker.wave.2")) { _ in
+                custom.append(UIAction(title: "朗读", image: UIImage(systemName: "speaker.wave.2")) { [weak self, weak textView] _ in
+                    textView?.selectedRange = NSRange(location: 0, length: 0)
+                    self?.publishSelection(false)
                     DispatchQueue.main.async { onSpeak(picked) }
                 })
             }

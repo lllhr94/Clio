@@ -41,6 +41,7 @@ extension ChatPage {
             .offset(y: Ink.Space.l)
             .allowsHitTesting(false)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
     var headerBack: some View {

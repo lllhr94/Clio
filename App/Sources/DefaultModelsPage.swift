@@ -139,17 +139,17 @@ struct DefaultModelsPage: View {
     }
 
     private var defaultLabel: String {
-        guard let ref = team.settings.defaultModel, team.resolve(ref) != nil else { return L.t("settings.unset") }
+        guard let ref = team.settings.defaultModel, team.resolveActive(ref) != nil else { return L.t("settings.unset") }
         return team.modelShort(ref)
     }
 
     private var backupLabel: String {
-        guard let ref = team.settings.backupModel, team.resolve(ref) != nil else { return L.t("settings.unset") }
+        guard let ref = team.settings.backupModel, team.resolveActive(ref) != nil else { return L.t("settings.unset") }
         return team.modelShort(ref)
     }
 
     private var memoryLabel: String {
-        guard let ref = team.settings.memoryModel, team.resolve(ref) != nil else { return L.t("settings.followDefault") }
+        guard let ref = team.settings.memoryModel, team.resolveActive(ref) != nil else { return L.t("settings.followDefault") }
         return team.modelShort(ref)
     }
 
@@ -159,11 +159,13 @@ struct DefaultModelsPage: View {
     }
 
     private func current(for role: Role) -> String? {
-        switch role {
+        let raw: String? = switch role {
         case .chat: team.settings.defaultModel
         case .backup: team.settings.backupModel
         case .memory: team.settings.memoryModel
         }
+        guard let raw, team.resolveActive(raw) != nil else { return nil }
+        return raw
     }
 
     private func apply(_ ref: String?, for role: Role) {
@@ -208,7 +210,7 @@ private struct ModelPickerSheet: View {
                     }
                     if filteredEndpoints.isEmpty {
                         RowCard {
-                            Text(team.models.isEmpty ? L.t("settingsHome.noChatModels") : "没有名字里带「\(query)」的模型。")
+                            Text(team.models.isEmpty ? L.t("settingsHome.noChatModels") : L.format("settings.modelSearchEmpty", query))
                                 .font(Ink.secondary)
                                 .foregroundStyle(Ink.inkSoft)
                                 .frame(maxWidth: .infinity, alignment: .leading)

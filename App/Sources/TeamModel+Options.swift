@@ -91,7 +91,11 @@ extension TeamModel {
 
     /// The service and model a chat would use now, with what the model can do.
     func current(_ key: String, bot: BotInfo) -> (endpoint: Endpoint, model: String, traits: ModelTraits)? {
-        guard let found = resolve(model(for: key, bot: bot)) ?? resolve(settings.defaultModel) else { return nil }
+        guard let found = resolveActive(options(key).model)
+            ?? resolveActive(bot.model)
+            ?? resolveActive(settings.defaultModel)
+            ?? resolve(model(for: key, bot: bot))
+            ?? resolve(settings.defaultModel) else { return nil }
         return (found.endpoint, found.model, found.endpoint.traits(found.model))
     }
 

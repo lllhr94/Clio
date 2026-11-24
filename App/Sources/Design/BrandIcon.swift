@@ -1,3 +1,4 @@
+import AgentKit
 import ImageIO
 import SwiftUI
 import UIKit
@@ -127,19 +128,22 @@ actor BrandIcons {
 
     /// The icons a site's home page points to (`apple-touch-icon`, `icon`), largest first.
     private func linked(on domain: String) async -> [String] {
-        guard let home = URL(string: "https://\(domain)/") else { return [] }
+        guard let home = URL(string: "https://\(domain)/"), !LocalAddress.isLocal(home) else { return [] }
         var request = URLRequest(url: home, timeoutInterval: 6)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let html = String(data: data.prefix(200_000), encoding: .utf8) ?? String(data: data.prefix(200_000), encoding: .ascii) else { return [] }
         let base = response.url ?? home
+        guard base.scheme?.lowercased() == "https", !LocalAddress.isLocal(base) else { return [] }
         var found: [(String, Int)] = []
         let tags = html.components(separatedBy: "<link").dropFirst().map { piece in piece.prefix { char in char != ">" } }
         for tag in tags {
             let lower = tag.lowercased()
             guard let rel = Self.attribute("rel", in: tag)?.lowercased(), rel.contains("icon"), !rel.contains("mask"),
                   let href = Self.attribute("href", in: tag), !href.hasPrefix("data:"),
-                  let url = URL(string: href, relativeTo: base)?.absoluteURL else { continue }
+                  let url = URL(string: href, relativeTo: base)?.absoluteURL,
+                  url.scheme?.lowercased() == "https",
+                  !LocalAddress.isLocal(url) else { continue }
             if lower.contains(".svg") { continue }
             let size = Self.attribute("sizes", in: tag).flatMap { Int($0.split(separator: "x").first ?? "") } ?? (rel.contains("apple") ? 180 : 32)
             found.append((url.absoluteString, size))

@@ -145,7 +145,7 @@ extension TeamModel {
     func status(of bot: BotInfo) -> (text: String, light: Color) {
         if approvals.contains(where: { $0.botId == bot.id }) { return ("等你批准", Ink.warn) }
         if doing[Self.key(bot: bot.id)] != nil || busyBots.contains(bot.id) { return ("正在干活", Ink.accent) }
-        if phase == .ready, resolve(bot.model ?? settings.defaultModel) == nil { return ("还没有模型", Ink.stop) }
+        if phase == .ready, (resolveActive(bot.model) ?? resolveActive(settings.defaultModel)) == nil { return ("还没有模型", Ink.stop) }
         return ("空闲", Ink.ok)
     }
 }

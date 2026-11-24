@@ -195,11 +195,26 @@ final class UIScale {
     static let key = "look.ui"
     static let levels: [(title: String, factor: Double)] = [("紧凑", 0.88), ("偏小", 0.94), ("标准", 1.0), ("偏大", 1.08)]
 
+    @ObservationIgnored private var watching: NSObjectProtocol?
+
     var value: Double = {
         let stored = UserDefaults.standard.double(forKey: UIScale.key)
         return stored > 0 ? stored : 1.0
     }() {
-        didSet { UserDefaults.standard.set(value, forKey: Self.key) }
+        didSet {
+            if UserDefaults.standard.double(forKey: Self.key) != value {
+                UserDefaults.standard.set(value, forKey: Self.key)
+            }
+        }
+    }
+
+    init() {
+        watching = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let stored = UserDefaults.standard.double(forKey: Self.key)
+            let next = stored > 0 ? stored : 1.0
+            if next != self.value { self.value = next }
+        }
     }
 
     static var factor: CGFloat { CGFloat(shared.value) }
