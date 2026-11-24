@@ -1,4 +1,5 @@
 import Craft
+import Darwin
 import Foundation
 
 /// 网盘备份: puts backups in a folder on the user's own WebDAV drive (坚果云, a NAS, Nextcloud, alist …) and fetches
@@ -7,6 +8,7 @@ import Foundation
 enum WebDAV {
     static let urlKey = "dav.url"
     static let userKey = "dav.user"
+    static let encryptKey = "dav.encrypt"
     private static let passwordKey = "dav.password"
     /// Backups go in a folder of their own on the drive.
     private static let folder = "Clio"
@@ -15,17 +17,44 @@ enum WebDAV {
     static var user: String { UserDefaults.standard.string(forKey: userKey) ?? "" }
     static var password: String { Vault.load(String.self, key: passwordKey) ?? "" }
     static func setPassword(_ value: String) { Vault.save(value, as: passwordKey) }
+
+    /// Dedicated subdirectory under temporaryDirectory for incoming restore files so `Backup.make` cleanup
+    /// cannot disturb a downloaded or imported archive while waiting for passphrase confirmation.
+    static var restoreInboxDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("clio-restore-inbox", isDirectory: true)
+    }
+
     /// Why an address cannot be used, or nil. Only HTTPS goes over the internet: a backup holds every conversation
     /// and the password goes with each request (the review, #4). Plain HTTP is allowed only to an explicit private or
     /// loopback IP (a home NAS at 192.168.x.x, say — never `.local` or hostnames that could be spoofed).
     static func addressProblem(_ address: String) -> String? {
         let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        guard let url = URL(string: text), let host = url.host, !host.isEmpty else { return "网址不对，要像 https://dav.jianguoyun.com/dav/ 这样。" }
+        if VoiceEndpoint.containsEmbeddedCredentials(text) {
+            return L.t("backupCrypto.davEmbeddedCredentials")
+        }
+        guard let components = URLComponents(string: text),
+              let url = components.url,
+              let host = components.host, !host.isEmpty else {
+            return "网址不对，要像 https://dav.jianguoyun.com/dav/ 这样。"
+        }
+        if components.user != nil || components.password != nil
+            || components.percentEncodedUser != nil || components.percentEncodedPassword != nil {
+            return L.t("backupCrypto.davEmbeddedCredentials")
+        }
+        if components.query != nil || components.percentEncodedQuery != nil
+            || components.fragment != nil || components.percentEncodedFragment != nil {
+            return L.t("backupCrypto.davQueryOrFragment")
+        }
         switch url.scheme?.lowercased() {
-        case "https": return nil
-        case "http": return VoiceEndpoint.isExplicitPrivateOrLoopbackIP(host) ? nil : "只能用 https:// 开头的地址：备份里有全部对话，不能明文传。家里局域网的 NAS 请填局域网 IP（如 http://192.168.x.x）。"
-        default: return "要以 https:// 开头。"
+        case "https":
+            return nil
+        case "http":
+            return VoiceEndpoint.isExplicitPrivateOrLoopbackIP(host)
+                ? nil
+                : "只能用 https:// 开头的地址：备份里有全部对话，不能明文传。家里局域网的 NAS 请填局域网 IP（如 http://192.168.x.x）。"
+        default:
+            return "要以 https:// 开头。"
         }
     }
 
@@ -63,11 +92,15 @@ enum WebDAV {
     /// Uploads a backup file into the drive's Clio folder.
     static func upload(_ file: URL) async throws {
         guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
+        let fileName = file.lastPathComponent
+        guard fileName.hasSuffix(".clio-backup"), !fileName.contains("/"), !fileName.contains(".."), !fileName.hasPrefix(".") else {
+            throw TeamError(message: "要上传的备份文件名无效。")
+        }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
         // The folder may already be there (405) — that is fine.
         let (_, made) = try await URLSession.shared.data(for: request(base, method: "MKCOL"), delegate: delegate)
         try check(made, allowing: [405, 301])
-        var put = request(base.appendingPathComponent(file.lastPathComponent), method: "PUT")
+        var put = request(base.appendingPathComponent(fileName), method: "PUT")
         put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (_, sent) = try await URLSession.shared.upload(for: put, fromFile: file, delegate: delegate)
         try check(sent)
@@ -75,7 +108,7 @@ enum WebDAV {
 
     /// The backups in the drive's Clio folder, newest first (their names carry the date and time).
     static func list() async throws -> [String] {
-        guard let base else { throw TeamError(message: "还没填网盘地址。") }
+        guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
         var find = request(base, method: "PROPFIND")
         find.setValue("1", forHTTPHeaderField: "Depth")
@@ -89,24 +122,54 @@ enum WebDAV {
             let last = href.split(separator: "/").last.map(String.init) ?? ""
             let name = last.removingPercentEncoding ?? last
             // A name the drive sends back is only a file name: nothing that could reach another folder on the phone.
-            guard name.hasSuffix(".clio-backup"), !name.contains("/"), !name.contains(".."), !name.hasPrefix(".") else { return nil }
+            guard name.hasSuffix(".clio-backup"),
+                  !name.contains("/"),
+                  !name.contains("\\"),
+                  !name.contains(".."),
+                  !name.hasPrefix(".") else { return nil }
             return name
         }
         return Array(Set(names)).sorted(by: >)
     }
 
-    /// Downloads one backup to a temporary file.
+    /// Downloads one backup to a protected temporary file inside `restoreInboxDirectory`.
     static func download(_ name: String) async throws -> URL {
-        guard let base else { throw TeamError(message: "还没填网盘地址。") }
-        guard !name.contains("/"), !name.contains(".."), !name.hasPrefix(".") else { throw TeamError(message: "网盘上的文件名不对。") }
+        guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
+        guard name.hasSuffix(".clio-backup"),
+              !name.contains("/"),
+              !name.contains("\\"),
+              !name.contains(".."),
+              !name.hasPrefix(".") else {
+            throw TeamError(message: "网盘上的文件名不对。")
+        }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
-        let (temp, response) = try await URLSession.shared.download(for: request(base.appendingPathComponent(name), method: "GET"), delegate: delegate)
+        let (temp, response) = try await URLSession.shared.download(
+            for: request(base.appendingPathComponent(name), method: "GET"),
+            delegate: delegate
+        )
         do {
             try check(response)
-            let target = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-            try? FileManager.default.removeItem(at: target)
-            try FileManager.default.moveItem(at: temp, to: target)
-            try? FileManager.default.setAttributes(
+            if response.expectedContentLength > Int64(Backup.maxBackupFileBytes) {
+                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+            }
+            var st = stat()
+            guard lstat(temp.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+                throw TeamError(message: "网盘下载的文件无效。")
+            }
+            guard st.st_size > 0 else {
+                throw TeamError(message: "网盘上的备份文件是空的。")
+            }
+            guard st.st_size <= Int64(Backup.maxBackupFileBytes) else {
+                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+            }
+
+            let manager = FileManager.default
+            let inbox = restoreInboxDirectory
+            try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
+            let target = inbox.appendingPathComponent("dav-\(UUID().uuidString).clio-backup")
+            try? manager.removeItem(at: target)
+            try manager.moveItem(at: temp, to: target)
+            try? manager.setAttributes(
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: target.path
             )
@@ -116,21 +179,27 @@ enum WebDAV {
             throw error
         }
     }
+
+    /// Removes any leftover downloaded/staged restore temp files in `restoreInboxDirectory`.
+    static func cleanupRestoreInbox() {
+        try? FileManager.default.removeItem(at: restoreInboxDirectory)
+    }
 }
 
 private final class WebDAVSameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    let originKey: String?
+    let origin: URL
 
     init(origin: URL) {
-        self.originKey = VoiceEndpoint.originKey(for: origin)
+        self.origin = origin
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest) async -> URLRequest? {
-        guard let originKey,
-              let next = request.url,
-              next.user == nil, next.password == nil,
-              VoiceEndpoint.originKey(for: next) == originKey else {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        guard let next = request.url, VoiceEndpoint.allowsRedirect(from: origin, to: next) else {
             return nil
         }
         return request
