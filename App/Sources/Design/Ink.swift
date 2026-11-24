@@ -83,6 +83,7 @@ final class Theme {
     // text followed a new size, and other sheets kept the old light or dark until reopened.
     private(set) var size: Double = Theme.number("look.size", 17)
     private(set) var lineHeight: Double = Theme.number("look.lineHeight", Pref.defaultLineHeight)
+    private(set) var fade: Bool = UserDefaults.standard.object(forKey: "look.fade") as? Bool ?? true
     private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
     @ObservationIgnored private var watching: NSObjectProtocol?
     /// Bumped when 宋体 or 楷体 finishes downloading, so text already drawn in the stand-in face is drawn again in it.
@@ -123,6 +124,8 @@ final class Theme {
         if nextMark != mark { mark = nextMark }
         let nextCode = Pref.Code(rawValue: defaults.string(forKey: "look.code") ?? "") ?? .maple
         if nextCode != code { code = nextCode }
+        let nextFade = defaults.object(forKey: "look.fade") as? Bool ?? true
+        if nextFade != fade { fade = nextFade }
         let scheme = defaults.string(forKey: "look.scheme") ?? "system"
         if scheme != self.scheme {
             self.scheme = scheme
@@ -369,8 +372,8 @@ enum Ink {
     private static let uiFaces = NSCache<NSString, UIFont>()
 
     /// The reading face as a UIKit font, for native selectable text and line-height metrics.
-    static func uiFace(_ size: CGFloat, bold: Bool = false) -> UIFont {
-        let current = Pref.face
+    static func uiFace(_ size: CGFloat, bold: Bool = false, face: Pref.Face? = nil) -> UIFont {
+        let current = face ?? Pref.face
         if current.downloads { _ = Theme.shared.fontsArrived }
         let key = "\(current.rawValue)|\(bold ? 1 : 0)|\(size)" as NSString
         if let cached = uiFaces.object(forKey: key) { return cached }
@@ -428,30 +431,30 @@ enum Ink {
     }
 
     /// The same, for UIKit views (the terminal).
-    static func uiMono(_ size: CGFloat, bold: Bool = false) -> UIFont {
-        if Pref.code == .maple, let font = mapleWithChinese(size, bold: bold) { return font }
+    static func uiMono(_ size: CGFloat, bold: Bool = false, preference: Pref.Code? = nil) -> UIFont {
+        if (preference ?? Pref.code) == .maple, let font = mapleWithChinese(size, bold: bold) { return font }
         return .monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
     }
 
     /// Code blocks use a half-em ASCII cell and the system's natural full-em CJK glyphs.
-    @MainActor static func codeBlockFonts() -> (narrow: Font, wide: Font) {
-        let size = CGFloat(max(12, Pref.size - 3))
-        let preference = Pref.code
-        if let cached = codeBlockFontCache, cached.size == size, cached.preference == preference { return cached.fonts }
-        let mono = (preference == .maple ? UIFont(name: "MapleMono-Regular", size: size) : nil)
-            ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    @MainActor static func codeBlockFonts(size: CGFloat? = nil, preference: Pref.Code? = nil) -> (narrow: Font, wide: Font) {
+        let resolvedSize = size ?? CGFloat(max(12, Pref.size - 3))
+        let resolvedPreference = preference ?? Pref.code
+        if let cached = codeBlockFontCache, cached.size == resolvedSize, cached.preference == resolvedPreference { return cached.fonts }
+        let mono = (resolvedPreference == .maple ? UIFont(name: "MapleMono-Regular", size: resolvedSize) : nil)
+            ?? UIFont.monospacedSystemFont(ofSize: resolvedSize, weight: .regular)
         let native = mono as CTFont
         var zero: UniChar = 48
         var glyph: CGGlyph = 0
         guard CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) else {
-            return (Font(mono), .system(size: size))
+            return (Font(mono), .system(size: resolvedSize))
         }
         let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
-        guard advance > 0 else { return (Font(mono), .system(size: size)) }
-        var matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
-        let half = CTFontCreateCopyWithAttributes(native, size, &matrix, nil)
-        let fonts = (narrow: Font(half), wide: Font.system(size: size))
-        codeBlockFontCache = (size, preference, fonts)
+        guard advance > 0 else { return (Font(mono), .system(size: resolvedSize)) }
+        var matrix = CGAffineTransform(scaleX: resolvedSize * 0.5 / advance, y: 1)
+        let half = CTFontCreateCopyWithAttributes(native, resolvedSize, &matrix, nil)
+        let fonts = (narrow: Font(half), wide: Font.system(size: resolvedSize))
+        codeBlockFontCache = (resolvedSize, resolvedPreference, fonts)
         return fonts
     }
 
@@ -508,8 +511,30 @@ enum Ink {
 
     /// The space between the lines of reading text.
     static var leading: CGFloat { Pref.leading }
+    static func leading(size: Double, lineHeight: Double, face: Pref.Face) -> CGFloat {
+        let natural = Double(uiFace(CGFloat(size), face: face).lineHeight)
+        return CGFloat(max(0, size * lineHeight - natural))
+    }
     /// Between paragraphs: about 12 points at the usual size, as Open Minis sets it.
     static var paragraphGap: CGFloat { CGFloat(Pref.size) * 0.72 }
+
+    private static func adaptiveWhite(_ light: CGFloat, dark: CGFloat) -> Color {
+        Color(UIColor { traits in
+            UIColor(white: 1, alpha: traits.userInterfaceStyle == .dark ? dark : light)
+        })
+    }
+
+    private static func adaptiveBlack(_ light: CGFloat, dark: CGFloat) -> Color {
+        Color(UIColor { traits in
+            UIColor(white: 0, alpha: traits.userInterfaceStyle == .dark ? dark : light)
+        })
+    }
+
+    static let bubbleSheenTop = adaptiveWhite(0.22, dark: 0.06)
+    static let bubbleSheenBottom = Color.white.opacity(0)
+    static let bubbleBorderTop = adaptiveWhite(0.55, dark: 0.16)
+    static let bubbleBorderMid = adaptiveWhite(0.10, dark: 0.04)
+    static let bubbleShadow = adaptiveBlack(0.06, dark: 0.22)
 
     // MARK: Space and corners
 
@@ -598,16 +623,14 @@ extension View {
     /// The paper tint, a light catching the top edge, a hairline and a soft shadow under it.
     func glassBubble<S: InsettableShape>(in shape: S, tint: Color) -> some View {
         background {
-            shape.fill(tint)
-                .overlay {
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0)],
-                                              startPoint: .top, endPoint: .center))
-                }
-                .overlay {
-                    shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.08), Ink.rule],
-                                                      startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
-                }
-                .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
+            ZStack {
+                shape.fill(tint)
+                    .shadow(color: Ink.bubbleShadow, radius: 10, y: 3)
+                shape.fill(LinearGradient(colors: [Ink.bubbleSheenTop, Ink.bubbleSheenBottom],
+                                          startPoint: .top, endPoint: .center))
+                shape.strokeBorder(LinearGradient(colors: [Ink.bubbleBorderTop, Ink.bubbleBorderMid, Ink.rule],
+                                                  startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
+            }
         }
     }
 
