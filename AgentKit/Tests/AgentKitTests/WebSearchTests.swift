@@ -153,6 +153,55 @@ final class WebSearchTests: XCTestCase {
         ))
     }
 
+    func testCyrillicAndNonCJKUnicodeRelevance() {
+        let russian = SearchRelevance(query: "погода Москва")
+        XCTAssertTrue(russian.matches(
+            WebText.Result(title: "Москва: погода на завтра", url: "https://meteo.example.org/msk", snippet: "Облачно, +12")
+        ))
+        XCTAssertTrue(russian.matches(
+            WebText.Result(title: "Прогноз погоды в Москве", url: "https://weather.example.org", snippet: "Ветер умеренный")
+        ))
+        XCTAssertFalse(russian.matches(
+            WebText.Result(title: "Новости Санкт-Петербурга", url: "https://news.example.org/spb", snippet: "Главные события дня")
+        ))
+        XCTAssertFalse(russian.matches(
+            WebText.Result(title: "Погода в Сочи", url: "https://meteo.example.org/sochi", snippet: "Солнечно")
+        ))
+
+        let greek = SearchRelevance(query: "Αθήνα καιρός")
+        XCTAssertTrue(greek.matches(
+            WebText.Result(title: "Αθήνα - Καιρός", url: "https://meteo.example.gr", snippet: "Πρόγνωση εβδομάδας")
+        ))
+        XCTAssertFalse(greek.matches(
+            WebText.Result(title: "Θεσσαλονίκη νέα", url: "https://news.example.gr", snippet: "Τοπικά νέα")
+        ))
+    }
+
+    func testBalancedAdContainerStrippingIsLinearOnDeepUnclosedTags() {
+        let deepNested = String(repeating: "<div><span>ad</span>", count: 3_000)
+        let duckHTML = """
+        <div class="result web-result">
+          <div class="links_main result__body">
+            <a class="result__a" href="https://docs.example.org/ok">Valid Result</a>
+            <a class="result__snippet">Legitimate summary</a>
+          </div>
+        </div>
+        <div class="result results_links result--ad">
+        """ + deepNested
+
+        let duckParsed = WebText.duckResults(duckHTML)
+        XCTAssertEqual(duckParsed, [
+            WebText.Result(title: "Valid Result", url: "https://docs.example.org/ok", snippet: "Legitimate summary"),
+        ])
+
+        let unclosedBing = "<li class=\"b_algo\"><h2><a href=\"https://swift.org\">Swift</a></h2><p>Docs</p></li>"
+            + "<li class=\"b_ad\">" + String(repeating: "<li><span>ad</span>", count: 3_000)
+        let bingParsed = WebText.bingResults(unclosedBing)
+        XCTAssertEqual(bingParsed, [
+            WebText.Result(title: "Swift", url: "https://swift.org", snippet: "Docs"),
+        ])
+    }
+
     func testBuiltinSearchSkipsAdsAndOffTopicSpamToPickRelevantResult() async throws {
         let tool = WebSearchTool { _ in
             """
@@ -191,7 +240,8 @@ final class WebSearchTests: XCTestCase {
             ("http://172.16.0.5:8080", "http://172.16.0.5:8080", true),
             ("http://172.31.255.10:8080/", "http://172.31.255.10:8080", true),
             ("http://home-searx.local:8080/", "http://home-searx.local:8080", true),
-            ("http://[fd12:3456::1]:8080/", "http://[fd12:3456::1]:8080", true),
+            ("http://[fd00::1]/", "http://[fd00::1]", true),
+            ("http://[FD12:3456::1]:8080/", "http://[fd12:3456::1]:8080", true),
         ]
 
         for item in validCases {
@@ -203,6 +253,24 @@ final class WebSearchTests: XCTestCase {
                 XCTFail("Expected success for \(item.raw), got \(err)")
             }
         }
+    }
+
+    func testSearXNGIPv6BracketPreservationAndSearchURLs() throws {
+        let loopbackParsed = try SearXNGEndpoint.parse("http://[::1]:8888/").get()
+        XCTAssertEqual(loopbackParsed.baseURL, "http://[::1]:8888")
+        XCTAssertEqual(loopbackParsed.searchBaseURL, "http://[::1]:8888/search")
+        XCTAssertEqual(loopbackParsed.originKey, "http://[::1]:8888")
+        XCTAssertTrue(loopbackParsed.isLAN)
+        let loopbackSearch = try SearXNGEndpoint.buildSearchURL(baseURL: "http://[::1]:8888/", query: "Swift")
+        XCTAssertEqual(loopbackSearch.absoluteString, "http://[::1]:8888/search?q=Swift&format=json")
+
+        let ulaParsed = try SearXNGEndpoint.parse("http://[FD00::1]/").get()
+        XCTAssertEqual(ulaParsed.baseURL, "http://[fd00::1]")
+        XCTAssertEqual(ulaParsed.searchBaseURL, "http://[fd00::1]/search")
+        XCTAssertEqual(ulaParsed.originKey, "http://[fd00::1]:80")
+        XCTAssertTrue(ulaParsed.isLAN)
+        let ulaSearch = try SearXNGEndpoint.buildSearchURL(baseURL: "http://[FD00::1]/", query: "Swift")
+        XCTAssertEqual(ulaSearch.absoluteString, "http://[fd00::1]/search?q=Swift&format=json")
     }
 
     func testSearXNGEndpointRejectsPublicHTTPBadSchemesCredentialsAndQueries() {
@@ -469,6 +537,50 @@ final class WebSearchTests: XCTestCase {
         XCTAssertFalse(probe.ok)
         XCTAssertEqual(probe.source, "SearXNG")
         XCTAssertTrue(probe.detail.contains("https://"))
+    }
+
+    func testSearXNGTokenOriginBindingPreventsCrossOriginLeak() async throws {
+        let boundOrigin = try SearXNGEndpoint.parse("https://searx-a.example:8443/").get().originKey
+        XCTAssertEqual(boundOrigin, "https://searx-a.example:8443")
+
+        let sameOriginConfig = WebSearchConfig(
+            primary: .searxng,
+            apiKey: "tok-a",
+            fallbackToBuiltin: false,
+            searxngURL: "https://searx-a.example:8443/search",
+            searxngKeyOrigin: boundOrigin
+        )
+        XCTAssertEqual(sameOriginConfig.key(for: .searxng), "tok-a")
+
+        let differentPortConfig = WebSearchConfig(
+            primary: .searxng,
+            apiKey: "tok-a",
+            fallbackToBuiltin: false,
+            searxngURL: "https://searx-a.example:9443",
+            searxngKeyOrigin: boundOrigin
+        )
+        XCTAssertNil(differentPortConfig.key(for: .searxng))
+
+        let differentHostConfig = WebSearchConfig(
+            primary: .searxng,
+            apiKey: "tok-a",
+            fallbackToBuiltin: false,
+            apiKeys: [.searxng: "tok-a"],
+            searxngURL: "http://192.168.1.50:8080",
+            searxngKeyOrigin: boundOrigin
+        )
+        XCTAssertNil(differentHostConfig.key(for: .searxng))
+
+        let tool = WebSearchTool(
+            config: differentHostConfig,
+            sendJSON: { request in
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (200, Data(#"{"results":[{"title":"No Leaked Token","url":"https://docs.example.org","content":"Safe"}]}"#.utf8))
+            }
+        )
+        let out = try await tool.run(.object(["query": .string("Swift")]))
+        XCTAssertFalse(out.isError)
+        XCTAssertTrue(out.text.contains("No Leaked Token"))
     }
 }
 

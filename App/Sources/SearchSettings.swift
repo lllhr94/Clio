@@ -70,22 +70,32 @@ enum SearchEngine {
         }
     }
 
-    nonisolated static func vaultKey(for provider: WebSearchProvider) -> String {
-        "search-key-\(provider.rawValue)"
+    nonisolated static func vaultKey(for provider: WebSearchProvider, searxngOrigin: String? = nil) -> String? {
+        if provider == .searxng {
+            guard let origin = searxngOrigin?.trimmingCharacters(in: .whitespacesAndNewlines), !origin.isEmpty else {
+                return nil
+            }
+            return "search-key-searxng-\(origin)"
+        }
+        guard provider.supportsKey else { return nil }
+        return "search-key-\(provider.rawValue)"
     }
 
     /// Reads the saved Keychain key for a provider off the calling thread.
-    static func readKey(for provider: WebSearchProvider) async -> String {
-        guard provider.supportsKey else { return "" }
-        let raw = await Vault.readString(vaultKey(for: provider)) ?? ""
+    /// For `.searxng`, requires a valid `searxngURL` and binds strictly to its `scheme://host:port` origin.
+    static func readKey(for provider: WebSearchProvider, searxngURL: String? = nil) async -> String {
+        let origin = provider == .searxng ? searxngURL.flatMap { SearXNGEndpoint.originKey(forBaseURL: $0) } : nil
+        guard let keyName = vaultKey(for: provider, searxngOrigin: origin) else { return "" }
+        let raw = await Vault.readString(keyName) ?? ""
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Saves or clears a provider's API key in the Keychain (never in UserDefaults or backups).
-    static func saveKey(_ value: String, for provider: WebSearchProvider) async {
-        guard provider.supportsKey else { return }
+    /// For `.searxng`, requires a valid `searxngURL` and binds strictly to its `scheme://host:port` origin.
+    static func saveKey(_ value: String, for provider: WebSearchProvider, searxngURL: String? = nil) async {
+        let origin = provider == .searxng ? searxngURL.flatMap { SearXNGEndpoint.originKey(forBaseURL: $0) } : nil
+        guard let keyName = vaultKey(for: provider, searxngOrigin: origin) else { return }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let keyName = vaultKey(for: provider)
         await Task.detached(priority: .userInitiated) {
             if trimmed.isEmpty {
                 Vault.remove(keyName)
@@ -95,11 +105,12 @@ enum SearchEngine {
         }.value
     }
 
-    /// Snapshot of all configured key statuses (masked preview or empty) for the settings UI.
-    static func keyPresence() async -> Set<WebSearchProvider> {
+    /// Snapshot of all configured key statuses (checking `.searxng` against `searxngURL`'s exact origin).
+    static func keyPresence(searxngURL: String? = nil) async -> Set<WebSearchProvider> {
+        let resolvedSearxng = searxngURL ?? self.searxngURL
         var present: Set<WebSearchProvider> = []
         for provider in WebSearchProvider.allCases where provider.supportsKey {
-            let key = await readKey(for: provider)
+            let key = await readKey(for: provider, searxngURL: provider == .searxng ? resolvedSearxng : nil)
             if !key.isEmpty { present.insert(provider) }
         }
         return present
@@ -110,11 +121,12 @@ enum SearchEngine {
         let selected = primary
         let fallback = fallbackToBuiltin
         let searxng = searxngURL
+        let searxngOrigin = searxng.isEmpty ? nil : SearXNGEndpoint.originKey(forBaseURL: searxng)
         let order = fallbackOrder.filter { $0 != selected }
 
         var keys: [WebSearchProvider: String] = [:]
         for provider in [selected] + order where provider.supportsKey && keys[provider] == nil {
-            let saved = await readKey(for: provider)
+            let saved = await readKey(for: provider, searxngURL: provider == .searxng ? searxng : nil)
             if !saved.isEmpty {
                 keys[provider] = saved
             }
@@ -125,7 +137,8 @@ enum SearchEngine {
             fallbackToBuiltin: fallback,
             apiKeys: keys,
             searxngURL: searxng.isEmpty ? nil : searxng,
-            fallbackOrder: order
+            fallbackOrder: order,
+            searxngKeyOrigin: searxngOrigin
         )
     }
 
@@ -152,6 +165,8 @@ struct SearchSettingsPage: View {
 
     @State private var searxngDraft = SearchEngine.searxngURL
     @State private var searxngNotice: String?
+    @State private var activeSearxngOrigin: String? = SearXNGEndpoint.originKey(forBaseURL: SearchEngine.searxngURL)
+    @State private var originVersion = UUID()
     @State private var fallbackOrder: [WebSearchProvider] = SearchEngine.fallbackOrder
     @State private var keyedProviders: Set<WebSearchProvider> = []
     @State private var savedMasked = ""
@@ -161,6 +176,7 @@ struct SearchSettingsPage: View {
     @State private var testQuery = "Swift 6"
     @State private var testResult: WebSearchTool.ProbeResult?
     @State private var selectionVersion = UUID()
+    @State private var probeVersion = UUID()
     @State private var probeTask: Task<Void, Never>?
 
     private var selected: WebSearchProvider {
@@ -189,8 +205,19 @@ struct SearchSettingsPage: View {
         SearXNGEndpoint.parse(searxngDraft)
     }
 
+    private var savedSearxngOrigin: String? {
+        savedSearxngURL.isEmpty ? nil : SearXNGEndpoint.originKey(forBaseURL: savedSearxngURL)
+    }
+
     private var hasUnsavedSearxngURL: Bool {
         trimmedSearxngDraft != savedSearxngURL
+    }
+
+    private var canEditKey: Bool {
+        if selected == .searxng {
+            return !hasUnsavedSearxngURL && savedSearxngOrigin != nil
+        }
+        return selected.supportsKey
     }
 
     private var canSaveSearxngDraft: Bool {
@@ -233,8 +260,9 @@ struct SearchSettingsPage: View {
         .navigationTitle(L.t("settingsHome.searchEngine"))
         .navigationBarTitleDisplayMode(.inline)
         .task { await reloadKeys() }
-        .task(id: providerRaw) { await loadSelectedKey() }
+        .task(id: "\(providerRaw)|\(savedSearxngURL)") { await loadSelectedKey() }
         .onChange(of: searxngDraft) { _, next in
+            invalidateProbe()
             if next.trimmingCharacters(in: .whitespacesAndNewlines) != savedSearxngURL {
                 searxngNotice = nil
             }
@@ -269,15 +297,12 @@ struct SearchSettingsPage: View {
         return Button {
             guard provider != selected else { return }
             Haptics.tick(0.5)
-            probeTask?.cancel()
-            probeTask = nil
+            invalidateProbe()
             selectionVersion = UUID()
             providerRaw = provider.rawValue
             keyInput = ""
             savedMasked = ""
             keyNotice = nil
-            testResult = nil
-            testing = false
         } label: {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: providerIcon(provider), tint: isSelected ? Ink.Tile.xiang : Ink.Tile.mo)
@@ -408,11 +433,21 @@ struct SearchSettingsPage: View {
                     .foregroundStyle(Ink.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
             case .failure(let err):
-                Text(err.localizedDescription)
+                Text(searxngErrorText(err))
                     .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.stop)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private func searxngErrorText(_ error: SearXNGError) -> String {
+        switch error {
+        case .empty: L.t("searchSettings.searxngErrorEmpty")
+        case .invalidFormat: L.t("searchSettings.searxngErrorInvalidFormat")
+        case .embeddedCredentials: L.t("searchSettings.searxngErrorEmbeddedCredentials")
+        case .queryOrFragmentNotAllowed: L.t("searchSettings.searxngErrorQueryOrFragment")
+        case .requiresHTTPS: L.t("searchSettings.searxngErrorRequiresHTTPS")
         }
     }
 
@@ -427,6 +462,7 @@ struct SearchSettingsPage: View {
                 Button(L.t("searchSettings.searxngRevertURL")) {
                     searxngDraft = savedSearxngURL
                     searxngNotice = nil
+                    invalidateProbe()
                 }
                 .font(.system(size: Ink.Size.small))
                 .foregroundStyle(Ink.inkSoft)
@@ -463,6 +499,24 @@ struct SearchSettingsPage: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.format("searchSettings.keySection", selected.shortName))
             VStack(alignment: .leading, spacing: Ink.Space.m) {
+                if selected == .searxng {
+                    if hasUnsavedSearxngURL {
+                        Text(L.t("searchSettings.searxngKeySaveURLFirst"))
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let origin = activeSearxngOrigin {
+                        Text(L.format("searchSettings.searxngKeyBoundOrigin", origin))
+                            .font(Ink.mono(Ink.Size.small))
+                            .foregroundStyle(Ink.inkFaint)
+                            .lineLimit(1)
+                    } else {
+                        Text(L.t("searchSettings.searxngKeyNeedURL"))
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 HStack(spacing: Ink.Space.s) {
                     SecureField(
                         savedMasked.isEmpty ? L.format("searchSettings.keyPlaceholder", selected.shortName) : savedMasked,
@@ -471,6 +525,7 @@ struct SearchSettingsPage: View {
                         .font(Ink.mono(Ink.Size.sub))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(!canEditKey)
                     if keyInput.isEmpty {
                         Button(L.t("actions.paste")) {
                             if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
@@ -480,13 +535,15 @@ struct SearchSettingsPage: View {
                         }
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.accent)
+                        .disabled(!canEditKey)
                     } else {
                         Button(L.t("actions.save")) { saveCurrentKey() }
                             .font(.system(size: Ink.Size.sub, weight: .semibold))
                             .foregroundStyle(Ink.accent)
+                            .disabled(!canEditKey)
                     }
                 }
-                if !savedMasked.isEmpty {
+                if !savedMasked.isEmpty && canEditKey {
                     Kit.rule(inset: 0)
                     HStack {
                         Text(L.format("searchSettings.keySavedPreview", savedMasked))
@@ -505,7 +562,7 @@ struct SearchSettingsPage: View {
                         .foregroundStyle(Ink.inkFaint)
                         .textSelection(.enabled)
                 }
-                if let keyNotice {
+                if let keyNotice, canEditKey {
                     Text(keyNotice)
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.ok)
@@ -725,16 +782,49 @@ struct SearchSettingsPage: View {
 
     // MARK: Actions
 
+    private func invalidateProbe() {
+        probeTask?.cancel()
+        probeTask = nil
+        probeVersion = UUID()
+        testing = false
+        testResult = nil
+    }
+
+    @discardableResult
+    private func syncSearxngOrigin(_ nextOrigin: String?) -> Bool {
+        guard nextOrigin != activeSearxngOrigin else { return false }
+        activeSearxngOrigin = nextOrigin
+        originVersion = UUID()
+        keyInput = ""
+        savedMasked = ""
+        keyNotice = nil
+        return true
+    }
+
     private func reloadKeys() async {
-        keyedProviders = await SearchEngine.keyPresence()
+        keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
         await loadSelectedKey()
     }
 
     private func loadSelectedKey() async {
         let target = selected
         let version = selectionVersion
-        let current = await SearchEngine.readKey(for: target)
-        guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
+        let expectedOrigin = target == .searxng ? savedSearxngOrigin : nil
+        let expectedOriginVersion = originVersion
+        if target == .searxng && expectedOrigin == nil {
+            savedMasked = ""
+            return
+        }
+        let current = await SearchEngine.readKey(
+            for: target,
+            searxngURL: target == .searxng ? savedSearxngURL : nil
+        )
+        guard !Task.isCancelled,
+              selected == target,
+              selectionVersion == version else { return }
+        if target == .searxng {
+            guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+        }
         savedMasked = SearchEngine.mask(current)
     }
 
@@ -749,8 +839,15 @@ struct SearchSettingsPage: View {
         savedSearxngURL = parsed.baseURL
         searxngDraft = parsed.baseURL
         searxngNotice = L.t("searchSettings.searxngURLSavedNotice")
-        testResult = nil
+        invalidateProbe()
+        let originChanged = syncSearxngOrigin(parsed.originKey)
         Haptics.thud()
+        Task {
+            keyedProviders = await SearchEngine.keyPresence(searxngURL: parsed.baseURL)
+            if originChanged || selected == .searxng {
+                await loadSelectedKey()
+            }
+        }
     }
 
     private func clearSearxngURL() {
@@ -758,13 +855,15 @@ struct SearchSettingsPage: View {
         savedSearxngURL = ""
         searxngDraft = ""
         searxngNotice = L.t("searchSettings.searxngURLClearedNotice")
-        testResult = nil
+        invalidateProbe()
+        syncSearxngOrigin(nil)
+        keyedProviders.remove(.searxng)
         Haptics.lock()
     }
 
     private func addFallbackProvider(_ provider: WebSearchProvider) {
-        var next = activeFallbackOrder
-        guard provider != selected, provider != .builtin, !next.contains(provider) else { return }
+        guard provider != selected, provider != .builtin, !fallbackOrder.contains(provider) else { return }
+        var next = fallbackOrder
         next.append(provider)
         fallbackOrder = next
         SearchEngine.fallbackOrder = next
@@ -772,32 +871,44 @@ struct SearchSettingsPage: View {
     }
 
     private func moveFallbackProvider(at index: Int, offset: Int) {
-        var next = activeFallbackOrder
+        let visible = activeFallbackOrder
         let dest = index + offset
-        guard next.indices.contains(index), next.indices.contains(dest) else { return }
-        next.swapAt(index, dest)
+        guard visible.indices.contains(index), visible.indices.contains(dest) else { return }
+        let first = visible[index]
+        let second = visible[dest]
+        var next = fallbackOrder
+        guard let iFirst = next.firstIndex(of: first), let iSecond = next.firstIndex(of: second) else { return }
+        next.swapAt(iFirst, iSecond)
         fallbackOrder = next
         SearchEngine.fallbackOrder = next
         Haptics.tick(0.4)
     }
 
     private func removeFallbackProvider(_ provider: WebSearchProvider) {
-        let next = activeFallbackOrder.filter { $0 != provider }
+        let next = fallbackOrder.filter { $0 != provider }
         fallbackOrder = next
         SearchEngine.fallbackOrder = next
         Haptics.tick(0.4)
     }
 
     private func saveCurrentKey() {
+        guard canEditKey else { return }
         let value = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         let target = selected
         let version = selectionVersion
+        let targetSearxngURL = savedSearxngURL
+        let expectedOrigin = target == .searxng ? savedSearxngOrigin : nil
+        let expectedOriginVersion = originVersion
+        if target == .searxng && expectedOrigin == nil { return }
         keyInput = ""
         Task {
-            await SearchEngine.saveKey(value, for: target)
-            keyedProviders.insert(target)
+            await SearchEngine.saveKey(value, for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
             guard selected == target, selectionVersion == version else { return }
+            if target == .searxng {
+                guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+            }
+            keyedProviders.insert(target)
             savedMasked = SearchEngine.mask(value)
             keyNotice = L.t("searchSettings.keySavedNotice")
             testResult = nil
@@ -806,13 +917,21 @@ struct SearchSettingsPage: View {
     }
 
     private func clearCurrentKey() {
+        guard canEditKey else { return }
         let target = selected
         let version = selectionVersion
+        let targetSearxngURL = savedSearxngURL
+        let expectedOrigin = target == .searxng ? savedSearxngOrigin : nil
+        let expectedOriginVersion = originVersion
+        if target == .searxng && expectedOrigin == nil { return }
         keyInput = ""
         Task {
-            await SearchEngine.saveKey("", for: target)
-            keyedProviders.remove(target)
+            await SearchEngine.saveKey("", for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
             guard selected == target, selectionVersion == version else { return }
+            if target == .searxng {
+                guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+            }
+            keyedProviders.remove(target)
             savedMasked = ""
             keyNotice = L.format("searchSettings.keyClearedNotice", target.shortName)
             testResult = nil
@@ -824,31 +943,54 @@ struct SearchSettingsPage: View {
         let q = testQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !testing else { return }
         probeTask?.cancel()
+        let probeID = UUID()
+        probeVersion = probeID
         testing = true
         testResult = nil
         let target = selected
         let version = selectionVersion
         let pendingInput = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingSearxng = trimmedSearxngDraft.isEmpty ? savedSearxngURL : trimmedSearxngDraft
+        let unsavedURL = hasUnsavedSearxngURL
+        let pendingParsed = (target == .searxng) ? (try? SearXNGEndpoint.parse(pendingSearxng).get()) : nil
+        let pendingOrigin = pendingParsed?.originKey
         probeTask = Task {
             let keyToUse: String?
             if !target.supportsKey {
                 keyToUse = nil
+            } else if target == .searxng {
+                if let originBase = pendingParsed?.baseURL {
+                    if !unsavedURL && !pendingInput.isEmpty && pendingOrigin == activeSearxngOrigin {
+                        keyToUse = pendingInput
+                    } else {
+                        let saved = await SearchEngine.readKey(for: .searxng, searxngURL: originBase)
+                        keyToUse = saved.isEmpty ? nil : saved
+                    }
+                } else {
+                    keyToUse = nil
+                }
             } else if !pendingInput.isEmpty {
                 keyToUse = pendingInput
             } else {
                 let saved = await SearchEngine.readKey(for: target)
                 keyToUse = saved.isEmpty ? nil : saved
             }
-            guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
+            guard !Task.isCancelled,
+                  selected == target,
+                  selectionVersion == version,
+                  probeVersion == probeID else { return }
             let config = WebSearchConfig(
                 primary: target,
                 apiKey: keyToUse,
                 fallbackToBuiltin: false,
-                searxngURL: target == .searxng ? pendingSearxng : nil
+                searxngURL: target == .searxng ? pendingSearxng : nil,
+                searxngKeyOrigin: target == .searxng ? pendingOrigin : nil
             )
             let result = await WebSearchTool.probe(query: q, config: config)
-            guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
+            guard !Task.isCancelled,
+                  selected == target,
+                  selectionVersion == version,
+                  probeVersion == probeID else { return }
             testResult = result
             testing = false
             if result.ok { Haptics.tick(0.6) } else { Haptics.lock() }

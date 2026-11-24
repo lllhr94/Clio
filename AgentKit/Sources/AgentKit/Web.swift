@@ -199,7 +199,7 @@ public enum WebText {
         return Page(title: title, text: lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Removes balanced `<tag ...>...</tag>` elements whose opening tag satisfies `shouldStrip` in O(N) time.
+    /// Removes balanced `<tag ...>...</tag>` elements whose opening tag satisfies `shouldStrip` in a single O(N) pass.
     private static func stripBalancedContainers(_ html: String, tag: String, shouldStrip: (String) -> Bool) -> String {
         let openToken = "<" + tag
         let closeToken = "</" + tag
@@ -208,7 +208,7 @@ public enum WebText {
         var cursor = html.startIndex
 
         while cursor < html.endIndex {
-            guard let openStart = findTagStart(in: html, token: openToken, from: cursor),
+            guard let openStart = findTagStart(in: html, token: openToken, range: cursor..<html.endIndex),
                   let openClose = html.range(of: ">", range: openStart.upperBound..<html.endIndex) else {
                 out.append(contentsOf: html[cursor...])
                 break
@@ -221,56 +221,77 @@ public enum WebText {
             }
 
             out.append(contentsOf: html[cursor..<openStart.lowerBound])
-            var depth = 1
-            var scan = openClose.upperBound
-            while depth > 0, scan < html.endIndex {
-                let nextOpen = findTagStart(in: html, token: openToken, from: scan)
-                let nextClose = findTagStart(in: html, token: closeToken, from: scan)
-                switch (nextOpen, nextClose) {
-                case let (o?, c?) where o.lowerBound < c.lowerBound:
-                    if let oEnd = html.range(of: ">", range: o.upperBound..<html.endIndex) {
-                        depth += 1
-                        scan = oEnd.upperBound
-                    } else {
-                        scan = html.endIndex
-                    }
-                case let (_, c?):
-                    if let cEnd = html.range(of: ">", range: c.upperBound..<html.endIndex) {
-                        depth -= 1
-                        scan = cEnd.upperBound
-                    } else {
-                        scan = html.endIndex
-                    }
-                case let (o?, nil):
-                    if let oEnd = html.range(of: ">", range: o.upperBound..<html.endIndex) {
-                        depth += 1
-                        scan = oEnd.upperBound
-                    } else {
-                        scan = html.endIndex
-                    }
-                case (nil, nil):
-                    scan = html.endIndex
-                }
-            }
+            let scanEnd = scanBalancedTagEnd(
+                in: html,
+                openToken: openToken,
+                closeToken: closeToken,
+                from: openClose.upperBound,
+                limit: html.endIndex
+            )
             out.append(" ")
-            cursor = scan
+            cursor = scanEnd
         }
         return out
     }
 
-    private static func findTagStart(in html: String, token: String, from start: String.Index) -> Range<String.Index>? {
-        var cursor = start
-        while cursor < html.endIndex {
-            guard let found = html.range(of: token, options: .caseInsensitive, range: cursor..<html.endIndex) else {
+    private static func findTagStart(in html: String, token: String, range: Range<String.Index>) -> Range<String.Index>? {
+        var cursor = range.lowerBound
+        while cursor < range.upperBound {
+            guard let found = html.range(of: token, options: .caseInsensitive, range: cursor..<range.upperBound) else {
                 return nil
             }
             let after = found.upperBound
-            if after == html.endIndex || html[after].isWhitespace || html[after] == ">" || html[after] == "/" {
+            if after == range.upperBound || after == html.endIndex || html[after].isWhitespace || html[after] == ">" || html[after] == "/" {
                 return found
             }
             cursor = after
         }
         return nil
+    }
+
+    /// Scans forward once from `start` within `..<limit` tracking `<tag` / `</tag` depth in strictly linear O(N) time.
+    private static func scanBalancedTagEnd(
+        in html: String,
+        openToken: String,
+        closeToken: String,
+        from start: String.Index,
+        limit: String.Index
+    ) -> String.Index {
+        var depth = 1
+        var scan = start
+        while depth > 0, scan < limit {
+            guard let lt = html.range(of: "<", range: scan..<limit) else {
+                return limit
+            }
+            if matchesTagAt(html, index: lt.lowerBound, token: closeToken, limit: limit) {
+                let afterToken = html.index(lt.lowerBound, offsetBy: closeToken.count)
+                if let closeEnd = html.range(of: ">", range: afterToken..<limit) {
+                    depth -= 1
+                    scan = closeEnd.upperBound
+                } else {
+                    return limit
+                }
+            } else if matchesTagAt(html, index: lt.lowerBound, token: openToken, limit: limit) {
+                let afterToken = html.index(lt.lowerBound, offsetBy: openToken.count)
+                if let openEnd = html.range(of: ">", range: afterToken..<limit) {
+                    depth += 1
+                    scan = openEnd.upperBound
+                } else {
+                    return limit
+                }
+            } else {
+                scan = lt.upperBound
+            }
+        }
+        return scan
+    }
+
+    private static func matchesTagAt(_ html: String, index: String.Index, token: String, limit: String.Index) -> Bool {
+        guard let tokenEnd = html.index(index, offsetBy: token.count, limitedBy: limit) else { return false }
+        guard html[index..<tokenEnd].compare(token, options: .caseInsensitive) == .orderedSame else {
+            return false
+        }
+        return tokenEnd == limit || html[tokenEnd].isWhitespace || html[tokenEnd] == ">" || html[tokenEnd] == "/"
     }
 
     private static func isAdContainerTag(_ openTag: String) -> Bool {
@@ -420,40 +441,14 @@ public enum WebText {
         guard let openEnd = html.range(of: ">", range: start..<limit) else {
             return String(html[start..<limit])
         }
-        let openToken = "<" + tag
-        let closeToken = "</" + tag
-        var depth = 1
-        var scan = openEnd.upperBound
-        while depth > 0, scan < limit {
-            let nextOpen = findTagStart(in: html, token: openToken, from: scan)
-            let nextClose = findTagStart(in: html, token: closeToken, from: scan)
-            switch (nextOpen, nextClose) {
-            case let (o?, c?) where o.lowerBound < limit && o.lowerBound < c.lowerBound:
-                if let oEnd = html.range(of: ">", range: o.upperBound..<limit) {
-                    depth += 1
-                    scan = oEnd.upperBound
-                } else {
-                    return String(html[start..<limit])
-                }
-            case let (_, c?) where c.lowerBound < limit:
-                if let cEnd = html.range(of: ">", range: c.upperBound..<limit) {
-                    depth -= 1
-                    scan = cEnd.upperBound
-                } else {
-                    return String(html[start..<limit])
-                }
-            case let (o?, _) where o.lowerBound < limit:
-                if let oEnd = html.range(of: ">", range: o.upperBound..<limit) {
-                    depth += 1
-                    scan = oEnd.upperBound
-                } else {
-                    return String(html[start..<limit])
-                }
-            default:
-                return String(html[start..<limit])
-            }
-        }
-        return String(html[start..<scan])
+        let end = scanBalancedTagEnd(
+            in: html,
+            openToken: "<" + tag,
+            closeToken: "</" + tag,
+            from: openEnd.upperBound,
+            limit: limit
+        )
+        return String(html[start..<end])
     }
 
     /// Page bytes as text, in the page's own encoding (many Chinese sites still use GBK).
@@ -549,7 +544,10 @@ enum WebFetch {
             throw ProviderError(check.errorMessage ?? SearXNGError.requiresHTTPS.localizedDescription)
         }
         if !check.isLAN {
-            if LocalAddress.isLocal(url) || await LocalAddress.resolvesToLocal(url) {
+            if LocalAddress.isLocal(url) {
+                throw ProviderError(LocalAddress.refusal)
+            }
+            if await LocalAddress.resolvesToLocal(url) {
                 throw ProviderError(LocalAddress.refusal)
             }
         }
@@ -756,6 +754,7 @@ public enum SearXNGEndpoint {
     public struct Parsed: Equatable, Sendable {
         public let baseURL: String
         public let searchBaseURL: String
+        public let originKey: String
         public let isLAN: Bool
     }
 
@@ -818,14 +817,24 @@ public enum SearXNGEndpoint {
             return .failure(.requiresHTTPS)
         }
         components.scheme = scheme
-        components.host = normalizedHost(rawHost)
+        if rawHost.contains(":") {
+            if let encodedHost = components.percentEncodedHost?.lowercased() {
+                if encodedHost.hasPrefix("[") && encodedHost.hasSuffix("]") {
+                    components.percentEncodedHost = encodedHost
+                } else {
+                    components.percentEncodedHost = "[\(cleanHostToken(encodedHost))]"
+                }
+            }
+        } else {
+            components.host = rawHost.lowercased()
+        }
 
         var cleanPath = components.path
         while cleanPath.hasSuffix("/") {
             cleanPath.removeLast()
         }
         components.path = cleanPath
-        guard let canonicalBase = components.url else {
+        guard let canonicalBase = components.url, let key = originKey(for: canonicalBase) else {
             return .failure(.invalidFormat)
         }
 
@@ -839,8 +848,30 @@ public enum SearXNGEndpoint {
         return .success(Parsed(
             baseURL: canonicalBase.absoluteString,
             searchBaseURL: searchBase.absoluteString,
+            originKey: key,
             isLAN: lan
         ))
+    }
+
+    /// Canonical `scheme://host:effectivePort` key for binding SearXNG Bearer tokens to an exact origin.
+    public static func originKey(for url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let rawHost = url.host?.lowercased(), !rawHost.isEmpty else {
+            return nil
+        }
+        let bareHost = (rawHost.hasPrefix("[") && rawHost.hasSuffix("]"))
+            ? String(rawHost.dropFirst().dropLast())
+            : rawHost
+        let formattedHost = bareHost.contains(":") ? "[\(bareHost)]" : bareHost
+        let defaultPort = scheme == "https" ? 443 : 80
+        let port = url.port ?? defaultPort
+        return "\(scheme)://\(formattedHost):\(port)"
+    }
+
+    /// Canonical `scheme://host:effectivePort` key computed from a validated SearXNG base URL string.
+    public static func originKey(forBaseURL raw: String) -> String? {
+        try? parse(raw).get().originKey
     }
 
     /// Convenience wrapper returning the canonical normalized base URL when valid.
@@ -953,14 +984,6 @@ public enum SearXNGEndpoint {
         return host
     }
 
-    private static func normalizedHost(_ rawHost: String) -> String {
-        var host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if host.hasPrefix("["), host.hasSuffix("]") {
-            host = String(host.dropFirst().dropLast())
-        }
-        return host
-    }
-
     private static func isPrivateOrLoopbackV4(_ b: [UInt8]) -> Bool {
         b[0] == 127
             || b[0] == 10
@@ -1056,6 +1079,8 @@ public struct WebSearchConfig: Sendable, Equatable {
     public var apiKeys: [WebSearchProvider: String]
     public var searxngURL: String?
     public var fallbackOrder: [WebSearchProvider]
+    /// Canonical `scheme://host:port` origin that the SearXNG Bearer token is bound to (if set).
+    public var searxngKeyOrigin: String?
 
     public init(
         primary: WebSearchProvider = .builtin,
@@ -1063,7 +1088,8 @@ public struct WebSearchConfig: Sendable, Equatable {
         fallbackToBuiltin: Bool = true,
         apiKeys: [WebSearchProvider: String] = [:],
         searxngURL: String? = nil,
-        fallbackOrder: [WebSearchProvider] = []
+        fallbackOrder: [WebSearchProvider] = [],
+        searxngKeyOrigin: String? = nil
     ) {
         self.primary = primary
         self.apiKey = apiKey
@@ -1071,6 +1097,7 @@ public struct WebSearchConfig: Sendable, Equatable {
         self.apiKeys = apiKeys
         self.searxngURL = searxngURL
         self.fallbackOrder = fallbackOrder
+        self.searxngKeyOrigin = searxngKeyOrigin
     }
 
     /// Effective deduplicated provider chain: `primary`, followed by `fallbackOrder`,
@@ -1088,14 +1115,25 @@ public struct WebSearchConfig: Sendable, Equatable {
     }
 
     /// Resolves the API key for a given provider (checking `apiKeys` first, then `apiKey` for `primary`).
+    /// For `.searxng`, refuses to return a token if `searxngKeyOrigin` does not match `searxngURL`'s exact origin.
     public func key(for provider: WebSearchProvider) -> String? {
+        let candidate: String?
         if let mapped = apiKeys[provider]?.trimmingCharacters(in: .whitespacesAndNewlines), !mapped.isEmpty {
-            return mapped
+            candidate = mapped
+        } else if provider == primary, let legacy = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !legacy.isEmpty {
+            candidate = legacy
+        } else {
+            candidate = nil
         }
-        if provider == primary, let legacy = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !legacy.isEmpty {
-            return legacy
+        guard let candidate else { return nil }
+        if provider == .searxng, let expectedOrigin = searxngKeyOrigin {
+            guard let rawURL = searxngURL,
+                  let actualOrigin = SearXNGEndpoint.originKey(forBaseURL: rawURL),
+                  actualOrigin == expectedOrigin else {
+                return nil
+            }
         }
-        return nil
+        return candidate
     }
 }
 
@@ -1273,10 +1311,10 @@ enum WebSearchAPI {
     }
 }
 
-/// Evaluates CJK + ASCII relevance overlap across title, snippet, and domain while filtering off-topic SEO spam.
+/// Evaluates CJK, ASCII, and Unicode word relevance overlap across title, snippet, and domain while filtering off-topic SEO spam.
 struct SearchRelevance {
     private enum Term: Hashable {
-        case ascii(whole: String, parts: [String])
+        case word(whole: String, parts: [String])
         case cjk(text: String, bigrams: [String])
     }
 
@@ -1293,6 +1331,7 @@ struct SearchRelevance {
         "a", "an", "the", "and", "or", "for", "how", "what", "when", "where", "who", "which", "why",
         "to", "in", "of", "on", "at", "by", "from", "with", "is", "are", "was", "were", "be", "can",
         "do", "does", "did", "official", "website", "price", "time", "hours", "today", "latest", "guide", "tutorial",
+        "в", "и", "на", "с", "по", "о", "об", "за", "из", "к", "от", "для", "как", "что", "где", "когда",
     ]
 
     private static let suffixStopwords: [String] = [
@@ -1345,7 +1384,7 @@ struct SearchRelevance {
         var filtered: [Term] = []
         for term in rawTerms {
             switch term {
-            case .ascii(let whole, _):
+            case .word(let whole, _):
                 if !Self.genericWords.contains(whole) {
                     filtered.append(term)
                 }
@@ -1363,12 +1402,12 @@ struct SearchRelevance {
         guard !terms.isEmpty else { return true }
         let domain = Self.domainText(from: result.url)
         let candidateAll = Self.normalized(result.title + " " + result.snippet + " " + domain)
-        let candidateASCIIWords = Self.extractASCIIWordSet(from: candidateAll)
+        let candidateWords = Self.extractWordSet(from: candidateAll)
 
         var scores: [Double] = []
         scores.reserveCapacity(terms.count)
         for term in terms {
-            scores.append(score(term: term, candidateAll: candidateAll, candidateASCIIWords: candidateASCIIWords))
+            scores.append(score(term: term, candidateAll: candidateAll, candidateWords: candidateWords))
         }
 
         let avg = scores.reduce(0, +) / Double(scores.count)
@@ -1403,20 +1442,26 @@ struct SearchRelevance {
         return false
     }
 
-    private func score(term: Term, candidateAll: String, candidateASCIIWords: Set<String>) -> Double {
+    private func score(term: Term, candidateAll: String, candidateWords: Set<String>) -> Double {
         switch term {
-        case .ascii(let whole, let parts):
-            if candidateASCIIWords.contains(whole) { return 1.0 }
+        case .word(let whole, let parts):
+            if candidateWords.contains(whole) { return 1.0 }
             if !parts.isEmpty {
-                let matchedParts = parts.filter { candidateASCIIWords.contains($0) }.count
+                let matchedParts = parts.filter { candidateWords.contains($0) }.count
                 if matchedParts == parts.count { return 1.0 }
                 if matchedParts > 0 { return Double(matchedParts) / Double(parts.count) }
             }
-            if whole.count >= 4, candidateASCIIWords.contains(where: { $0.contains(whole) }) {
+            if whole.count >= 4, candidateWords.contains(where: { $0.contains(whole) }) {
                 return 0.85
             }
+            if !whole.unicodeScalars.allSatisfy(\.isASCII), whole.count >= 5 {
+                let stem = String(whole.prefix(whole.count - 1))
+                if candidateWords.contains(where: { $0.hasPrefix(stem) }) {
+                    return 0.85
+                }
+            }
             if let syns = Self.synonyms[whole] {
-                for syn in syns where matchesSynonym(syn, in: candidateAll, asciiWords: candidateASCIIWords) {
+                for syn in syns where matchesSynonym(syn, in: candidateAll, words: candidateWords) {
                     return 0.8
                 }
             }
@@ -1431,7 +1476,7 @@ struct SearchRelevance {
                 }
             }
             if let syns = Self.synonyms[text] {
-                for syn in syns where matchesSynonym(syn, in: candidateAll, asciiWords: candidateASCIIWords) {
+                for syn in syns where matchesSynonym(syn, in: candidateAll, words: candidateWords) {
                     return 0.85
                 }
             }
@@ -1439,9 +1484,9 @@ struct SearchRelevance {
         }
     }
 
-    private func matchesSynonym(_ syn: String, in candidateAll: String, asciiWords: Set<String>) -> Bool {
+    private func matchesSynonym(_ syn: String, in candidateAll: String, words: Set<String>) -> Bool {
         if syn.unicodeScalars.allSatisfy({ $0.isASCII }) {
-            return asciiWords.contains(syn)
+            return words.contains(syn)
         }
         return candidateAll.contains(syn)
     }
@@ -1479,6 +1524,14 @@ struct SearchRelevance {
         return (0x30...0x39).contains(v) || (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v)
     }
 
+    private static func isUnicodeWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+        let props = scalar.properties
+        return props.isAlphabetic
+            || props.numericType != nil
+            || props.generalCategory == .nonspacingMark
+            || props.generalCategory == .spacingMark
+    }
+
     private static func extractTerms(from norm: String) -> [Term] {
         var result: [Term] = []
         var seen: Set<Term> = []
@@ -1489,9 +1542,9 @@ struct SearchRelevance {
             }
         }
 
-        enum ScriptKind { case ascii, cjk, other }
+        enum ScriptKind { case ascii, cjk, unicode, separator }
         var current = ""
-        var currentKind: ScriptKind = .other
+        var currentKind: ScriptKind = .separator
 
         func flush() {
             guard !current.isEmpty else { return }
@@ -1500,20 +1553,24 @@ struct SearchRelevance {
             switch currentKind {
             case .ascii:
                 let parts = splitAlphaDigitParts(token)
-                appendTerm(.ascii(whole: token, parts: parts))
+                appendTerm(.word(whole: token, parts: parts))
             case .cjk:
-                for word in tokenizeCJK(token) {
+                for word in tokenizeWords(token) {
                     let trimmedWord = trimSuffixStopwords(word)
                     guard !trimmedWord.isEmpty else { continue }
                     if trimmedWord != word && trimmedWord.count >= 4 {
-                        for sub in tokenizeCJK(trimmedWord) {
+                        for sub in tokenizeWords(trimmedWord) {
                             appendTerm(.cjk(text: sub, bigrams: makeBigrams(sub)))
                         }
                     } else {
                         appendTerm(.cjk(text: trimmedWord, bigrams: makeBigrams(trimmedWord)))
                     }
                 }
-            case .other:
+            case .unicode:
+                for word in tokenizeWords(token) where !word.isEmpty {
+                    appendTerm(.word(whole: word, parts: []))
+                }
+            case .separator:
                 break
             }
         }
@@ -1524,14 +1581,16 @@ struct SearchRelevance {
                 kind = .ascii
             } else if isCJKOrKanaOrHangul(scalar) {
                 kind = .cjk
+            } else if isUnicodeWordScalar(scalar) {
+                kind = .unicode
             } else {
-                kind = .other
+                kind = .separator
             }
             if kind != currentKind {
                 flush()
                 currentKind = kind
             }
-            if kind != .other {
+            if kind != .separator {
                 current.unicodeScalars.append(scalar)
             }
         }
@@ -1539,26 +1598,49 @@ struct SearchRelevance {
         return result
     }
 
-    private static func extractASCIIWordSet(from norm: String) -> Set<String> {
+    private static func extractWordSet(from norm: String) -> Set<String> {
         var words: Set<String> = []
+        enum ScriptKind { case ascii, unicode, separator }
         var current = ""
-        for scalar in norm.unicodeScalars {
-            if isASCIITokenScalar(scalar) {
-                current.unicodeScalars.append(scalar)
-            } else if !current.isEmpty {
-                words.insert(current)
-                for part in splitAlphaDigitParts(current) {
+        var currentKind: ScriptKind = .separator
+
+        func flush() {
+            guard !current.isEmpty else { return }
+            let token = current
+            current = ""
+            switch currentKind {
+            case .ascii:
+                words.insert(token)
+                for part in splitAlphaDigitParts(token) {
                     words.insert(part)
                 }
-                current = ""
+            case .unicode:
+                for word in tokenizeWords(token) where !word.isEmpty {
+                    words.insert(word)
+                }
+            case .separator:
+                break
             }
         }
-        if !current.isEmpty {
-            words.insert(current)
-            for part in splitAlphaDigitParts(current) {
-                words.insert(part)
+
+        for scalar in norm.unicodeScalars {
+            let kind: ScriptKind
+            if isASCIITokenScalar(scalar) {
+                kind = .ascii
+            } else if !isCJKOrKanaOrHangul(scalar) && isUnicodeWordScalar(scalar) {
+                kind = .unicode
+            } else {
+                kind = .separator
+            }
+            if kind != currentKind {
+                flush()
+                currentKind = kind
+            }
+            if kind != .separator {
+                current.unicodeScalars.append(scalar)
             }
         }
+        flush()
         return words
     }
 
@@ -1582,7 +1664,7 @@ struct SearchRelevance {
         return hasLongAlpha ? parts : []
     }
 
-    private static func tokenizeCJK(_ text: String) -> [String] {
+    private static func tokenizeWords(_ text: String) -> [String] {
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = text
         let tokens = tokenizer.tokens(for: text.startIndex..<text.endIndex).map { String(text[$0]) }.filter { !$0.isEmpty }
