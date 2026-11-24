@@ -50,6 +50,7 @@ def fixture() -> str:
     reply_text = extract(model, r"^        case \.text\(let piece\):\n.*?(?=^        case )", "live reply text handler")
     reply_reset = extract(model, r"^        case \.streamReset:\n.*?(?=^        case )", "live reply reset handler")
     fragments = {
+        "INLINE_APPROVAL": extract(READING / "InlineApproval.swift", r"^enum InlineApprovalPolicy \{\n.*?^\}", "inline approval routing"),
         "SMART_QUERY": member(grants, "allowsSmartQuery"),
         "PET_SURFACE": extract(
             ROOT / "App/Sources/Pet/PetPerch.swift",

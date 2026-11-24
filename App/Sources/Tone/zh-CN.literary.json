@@ -99,6 +99,11 @@
     "questionMap": "问题导航"
   },
   "approval": {
+    "inlineDetails": "看完整的单子",
+    "inlineConfirmationTitle": "%@ 这一步需要你确认",
+    "inlineOnce": "准这一次",
+    "inlineTrust": "本对话放行",
+    "inlineTrustHint": "只对这段对话的普通审批生效，退出 App 后失效",
     "pending": "待签",
     "approve": "落款",
     "reject": "退回",
