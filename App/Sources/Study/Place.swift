@@ -3,7 +3,7 @@ import Craft
 import Foundation
 
 /// Where a conversation does its work: 书案 on the phone, 斗室's Linux, or one of 远山's computers.
-enum WorkPlace: Hashable {
+enum WorkPlace: Hashable, Sendable {
     case desk
     case den
     case hill(String)
@@ -24,6 +24,9 @@ enum WorkPlace: Hashable {
         case .hill(let id): "hill:\(id)"
         }
     }
+
+    /// Non-empty stable host identity bound to workspace tools and approvals for this turn.
+    var hostID: String { code ?? "desk" }
 
     var symbol: String {
         switch self {

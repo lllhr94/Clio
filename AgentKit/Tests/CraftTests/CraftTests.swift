@@ -1586,27 +1586,171 @@ final class PermissionGateTests: XCTestCase {
         var settled: Bool?
     }
 
-    func testApprovalReceiptRequiresExactInvocationExecutionChatAndTool() {
+    func testApprovalReceiptRequiresExactInvocationContextAndTool() {
         let receipts = ApprovalReceiptBook()
-        receipts.record(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run")
+        let helperRemote = ToolExecutionContext(executionChat: "bot-helper", hostID: "hill:vps-1", grantID: "hills")
+        let requesterRemote = ToolExecutionContext(executionChat: "bot-requester", hostID: "hill:vps-1", grantID: "hills")
+        let helperDesk = ToolExecutionContext(executionChat: "bot-helper", hostID: "desk", grantID: "desk")
+        let helperOtherHost = ToolExecutionContext(executionChat: "bot-helper", hostID: "hill:vps-2", grantID: "hills")
+        let otherChat = ToolExecutionContext(executionChat: "bot-other", hostID: "hill:vps-1", grantID: "hills")
 
-        // Different invocation, different executionChat, or different tool must NOT consume the receipt.
-        XCTAssertFalse(receipts.consume(invocation: "inv-2", executionChat: "bot-helper", tool: "ssh_run"))
-        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-requester", tool: "ssh_run"))
-        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "shell"))
-        XCTAssertFalse(receipts.consume(invocation: "", executionChat: "bot-helper", tool: "ssh_run"))
+        receipts.record(invocation: "inv-1", context: helperRemote, tool: "write_file")
+
+        // Different invocation, executionChat, hostID, grantID, or tool must NOT consume the receipt.
+        XCTAssertFalse(receipts.consume(invocation: "inv-2", context: helperRemote, tool: "write_file"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", context: requesterRemote, tool: "write_file"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", context: helperDesk, tool: "write_file"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", context: helperOtherHost, tool: "write_file"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", context: helperRemote, tool: "shell"))
+        XCTAssertFalse(receipts.consume(invocation: "", context: helperRemote, tool: "write_file"))
 
         // Exact match succeeds exactly once.
-        XCTAssertTrue(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run"))
-        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run"))
+        XCTAssertTrue(receipts.consume(invocation: "inv-1", context: helperRemote, tool: "write_file"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", context: helperRemote, tool: "write_file"))
 
-        // Revoking an invocation or clearing an executionChat invalidates immediately without touching other chats.
-        receipts.record(invocation: "inv-a", executionChat: "bot-helper", tool: "ssh_run")
-        receipts.record(invocation: "inv-b", executionChat: "bot-other", tool: "ssh_run")
-        receipts.revoke(invocation: "inv-a")
-        XCTAssertFalse(receipts.consume(invocation: "inv-a", executionChat: "bot-helper", tool: "ssh_run"))
+        // Revoking an invocation or clearing by (executionChat, hostID) invalidates only that host's receipts.
+        receipts.record(invocation: "inv-a", context: helperRemote, tool: "write_file")
+        receipts.record(invocation: "inv-b", context: helperOtherHost, tool: "write_file")
+        receipts.record(invocation: "inv-c", context: otherChat, tool: "write_file")
+        receipts.clear(executionChat: "bot-helper", hostID: "hill:vps-1")
+        XCTAssertFalse(receipts.consume(invocation: "inv-a", context: helperRemote, tool: "write_file"))
+        XCTAssertTrue(receipts.consume(invocation: "inv-b", context: helperOtherHost, tool: "write_file"))
         receipts.clear(executionChat: "bot-helper")
-        XCTAssertTrue(receipts.consume(invocation: "inv-b", executionChat: "bot-other", tool: "ssh_run"))
+        XCTAssertTrue(receipts.consume(invocation: "inv-c", context: otherChat, tool: "write_file"))
+    }
+
+    @MainActor
+    func testWorkplaceSwitchRemoteAskToLocalAllowCancelsPendingAndBlocksOldHostExecution() async throws {
+        let remoteRuns = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let queue = PendingApprovalQueue()
+        let receipts = ApprovalReceiptBook()
+        let bindings = HostBindingBook()
+        let state = QueueHarness()
+        let chat = "bot-main"
+
+        // Turn starts bound to remote VPS (`.ask`), while local Desk has looser `.allow` permission.
+        bindings.set("hill:vps-1", for: chat)
+        let remoteContext = ToolExecutionContext(executionChat: chat, hostID: "hill:vps-1", grantID: "hills")
+        let remoteWrite = LiveGatedTool(
+            inner: CountingTool("write_file", runs: remoteRuns),
+            context: remoteContext,
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            isContextStillValid: { bindings.current(for: chat) == "hill:vps-1" },
+            access: { .ask(title: "用SSH") },
+            reconfirm: { _, _ in
+                reconfirms.mutate { $0 += 1 }
+                return true
+            }
+        )
+
+        XCTAssertNotNil(remoteWrite.approval(for: ["path": "/tmp/a.txt"]))
+
+        // Pending approval waits on the remote host context.
+        let approvalID = "pending-remote-write"
+        let decisionTask = Task { @MainActor in
+            await queue.awaitDecision(
+                id: approvalID,
+                evaluate: {
+                    // Bound to remote host: once workplace switches away from hill:vps-1, live evaluation rejects,
+                    // never re-evaluating under local desk's `.allow` grant.
+                    guard bindings.current(for: chat) == remoteContext.hostID else { return .reject }
+                    return state.decision
+                },
+                onEnqueue: { state.enqueues += 1 },
+                onLeave: { state.leaves += 1 },
+                onUserApproved: { state.userApprovals += 1 }
+            )
+        }
+
+        for _ in 0..<20 where !queue.isWaiting(approvalID) {
+            await Task.yield()
+        }
+        XCTAssertTrue(queue.isWaiting(approvalID))
+
+        // Mid-turn, user switches workplace from remote `hill:vps-1` (`.ask`) to local `desk` (`.allow`).
+        bindings.set("desk", for: chat)
+        queue.bumpRevision()
+        receipts.clear(executionChat: chat, hostID: "hill:vps-1")
+        XCTAssertTrue(queue.cancel(id: approvalID))
+
+        let approved = await decisionTask.value
+        XCTAssertFalse(approved, "switching to a looser workplace must cancel old remote approval, never auto-allow it")
+        XCTAssertEqual(state.userApprovals, 0)
+
+        // Any late UI tap on the cancelled remote approval must fail without committing standing grants.
+        XCTAssertFalse(queue.resolveByUser(id: approvalID, allow: true) { state.grantCommits += 1 })
+        XCTAssertEqual(state.grantCommits, 0)
+
+        // Even if the bound remote tool reaches `run(_:)` (with or without a pre-recorded receipt),
+        // it refuses with the workplace-changed error and never touches the old remote host.
+        let blocked = try await ToolInvocation.$currentID.withValue("inv-remote-stale") {
+            receipts.record(invocation: "inv-remote-stale", context: remoteContext, tool: "write_file")
+            return try await remoteWrite.run(["path": "/tmp/a.txt"])
+        }
+        XCTAssertTrue(blocked.isError)
+        XCTAssertEqual(blocked.text, LiveGatedTool.workplaceChangedRefusal)
+        XCTAssertEqual(remoteRuns.get(), 0)
+        XCTAssertEqual(reconfirms.get(), 0)
+    }
+
+    func testWorkplaceSwitchLocalAllowToRemoteAskAndRemoteAToRemoteBBlocksStaleHost() async throws {
+        // Case 1: Reverse switch local desk (`.allow`) -> remote VPS (`.ask`) blocks stale local-desk tool.
+        do {
+            let localRuns = LockedBox(0)
+            let reconfirms = LockedBox(0)
+            let bindings = HostBindingBook()
+            let receipts = ApprovalReceiptBook()
+            let chat = "bot-main"
+
+            bindings.set("desk", for: chat)
+            let localContext = ToolExecutionContext(executionChat: chat, hostID: "desk", grantID: "desk")
+            let localTool = LiveGatedTool(
+                inner: CountingTool("write_file", runs: localRuns),
+                context: localContext,
+                receipts: receipts,
+                isContextStillValid: { bindings.current(for: chat) == "desk" },
+                access: { .allow(bypassNonForced: false) },
+                reconfirm: { _, _ in
+                    reconfirms.mutate { $0 += 1 }
+                    return true
+                }
+            )
+
+            // Before switching: local desk tool is valid and allowed.
+            XCTAssertNil(localTool.approval(for: ["path": "notes/a.md"]))
+
+            // User switches workplace mid-turn from local `desk` to remote `hill:vps-1`.
+            bindings.set("hill:vps-1", for: chat)
+            let blocked = try await localTool.run(["path": "notes/a.md"])
+            XCTAssertTrue(blocked.isError)
+            XCTAssertEqual(blocked.text, LiveGatedTool.workplaceChangedRefusal)
+            XCTAssertEqual(localRuns.get(), 0, "stale local tool must not run once chat switched to remote host")
+            XCTAssertEqual(reconfirms.get(), 0)
+        }
+
+        // Case 2: Switching between two remote hosts sharing the SAME Grant.hills (`.allow`) still blocks old host.
+        do {
+            let vps1Runs = LockedBox(0)
+            let bindings = HostBindingBook()
+            let chat = "bot-main"
+
+            bindings.set("hill:vps-1", for: chat)
+            let vps1Context = ToolExecutionContext(executionChat: chat, hostID: "hill:vps-1", grantID: "hills")
+            let vps1Shell = LiveGatedTool(
+                inner: CountingTool("shell", runs: vps1Runs),
+                context: vps1Context,
+                isContextStillValid: { bindings.current(for: chat) == "hill:vps-1" },
+                access: { .allow(bypassNonForced: false) }
+            )
+
+            bindings.set("hill:vps-2", for: chat)
+            let blocked = try await vps1Shell.run(["command": "rm -rf /tmp/test"])
+            XCTAssertTrue(blocked.isError)
+            XCTAssertEqual(blocked.text, LiveGatedTool.workplaceChangedRefusal)
+            XCTAssertEqual(vps1Runs.get(), 0, "tool bound to vps-1 must not run after switching to vps-2")
+        }
     }
 
     func testDelegatedHelperApprovalBindsToInvocationWithoutDoublePromptOrRequesterLeak() async throws {
@@ -1617,10 +1761,12 @@ final class PermissionGateTests: XCTestCase {
         let approvalLog = LockedBox<[(displayChat: String, executionChat: String, tool: String, invocation: String)]>([])
         let receipts = ApprovalReceiptBook()
         let queue = PendingApprovalQueue()
+        let helperContext = ToolExecutionContext(executionChat: "bot-helper", grantID: "hills")
+        let requesterContext = ToolExecutionContext(executionChat: "bot-requester", grantID: "hills")
 
         let helperTool = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: helperRuns),
-            executionChat: "bot-helper",
+            context: helperContext,
             receipts: receipts,
             policyRevision: { queue.currentRevision },
             access: { .ask(title: "用SSH") },
@@ -1632,7 +1778,7 @@ final class PermissionGateTests: XCTestCase {
 
         let requesterTool = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: requesterRuns),
-            executionChat: "bot-requester",
+            context: requesterContext,
             receipts: receipts,
             policyRevision: { queue.currentRevision },
             access: { .ask(title: "用SSH") },
@@ -1674,7 +1820,7 @@ final class PermissionGateTests: XCTestCase {
                     return list.count
                 }
                 if count == 1 {
-                    receipts.record(invocation: invocation, executionChat: "bot-helper", tool: tool)
+                    receipts.record(invocation: invocation, context: helperContext, tool: tool)
                     return true
                 }
                 return false
@@ -1703,10 +1849,11 @@ final class PermissionGateTests: XCTestCase {
         let runs = LockedBox(0)
         let reconfirms = LockedBox(0)
         let receipts = ApprovalReceiptBook()
+        let helperContext = ToolExecutionContext(executionChat: "bot-helper", grantID: "hills")
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            executionChat: "bot-helper",
+            context: helperContext,
             receipts: receipts,
             access: { .ask(title: "用SSH") },
             reconfirm: { _, _ in
@@ -1716,7 +1863,7 @@ final class PermissionGateTests: XCTestCase {
         )
 
         // Simulate Call 1 receiving explicit user approval and then being cancelled before `tool.run` runs.
-        receipts.record(invocation: "inv-cancelled-1", executionChat: "bot-helper", tool: "ssh_run")
+        receipts.record(invocation: "inv-cancelled-1", context: helperContext, tool: "ssh_run")
         receipts.revoke(invocation: "inv-cancelled-1")
 
         // Even if the same invocation ID somehow reached run, the revoked receipt is gone.
@@ -1728,7 +1875,7 @@ final class PermissionGateTests: XCTestCase {
         XCTAssertEqual(runs.get(), 0)
 
         // Even without explicit revoke, a later invocation with a different ID (or in requester chat) cannot consume it.
-        receipts.record(invocation: "inv-unconsumed-helper", executionChat: "bot-helper", tool: "ssh_run")
+        receipts.record(invocation: "inv-unconsumed-helper", context: helperContext, tool: "ssh_run")
         let blockedNextCall = try await ToolInvocation.$currentID.withValue("inv-next-2") {
             try await gated.run(["command": "uname -a"])
         }
@@ -1773,16 +1920,17 @@ final class PermissionGateTests: XCTestCase {
         let allowReconfirm = LockedBox(false)
         let access = LockedBox<LiveToolAccess>(.allow(bypassNonForced: false))
         let receipts = ApprovalReceiptBook()
+        let context = ToolExecutionContext(executionChat: "chat-1", grantID: "hills")
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            executionChat: "chat-1",
+            context: context,
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, name in
                 reconfirms.mutate { $0 += 1 }
                 if allowReconfirm.get() {
-                    receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
+                    receipts.record(invocation: ToolInvocation.currentID ?? "", context: context, tool: name)
                     return true
                 }
                 return false
@@ -1823,16 +1971,17 @@ final class PermissionGateTests: XCTestCase {
         let allowReconfirm = LockedBox(false)
         let access = LockedBox<LiveToolAccess>(.off("已关闭"))
         let receipts = ApprovalReceiptBook()
+        let context = ToolExecutionContext(executionChat: "chat-1", grantID: "hills")
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            executionChat: "chat-1",
+            context: context,
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, name in
                 reconfirms.mutate { $0 += 1 }
                 if allowReconfirm.get() {
-                    receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
+                    receipts.record(invocation: ToolInvocation.currentID ?? "", context: context, tool: name)
                     return true
                 }
                 return false
@@ -1875,10 +2024,11 @@ final class PermissionGateTests: XCTestCase {
         let reconfirms = LockedBox(0)
         let access = LockedBox<LiveToolAccess>(.ask(title: "用SSH"))
         let receipts = ApprovalReceiptBook()
+        let context = ToolExecutionContext(executionChat: "chat-1", grantID: "hills")
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            executionChat: "chat-1",
+            context: context,
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, _ in
@@ -1891,7 +2041,7 @@ final class PermissionGateTests: XCTestCase {
 
         // Explicit user approval bound to this exact invocation lets this single call run without reconfirm.
         let ok = try await ToolInvocation.$currentID.withValue("inv-explicit-1") {
-            receipts.record(invocation: "inv-explicit-1", executionChat: "chat-1", tool: "ssh_run")
+            receipts.record(invocation: "inv-explicit-1", context: context, tool: "ssh_run")
             return try await gated.run(["command": "uname -a"])
         }
         XCTAssertFalse(ok.isError)
@@ -1900,7 +2050,7 @@ final class PermissionGateTests: XCTestCase {
 
         // Turning `.off` after approval still blocks execution before inner.run.
         let blocked = try await ToolInvocation.$currentID.withValue("inv-explicit-2") {
-            receipts.record(invocation: "inv-explicit-2", executionChat: "chat-1", tool: "ssh_run")
+            receipts.record(invocation: "inv-explicit-2", context: context, tool: "ssh_run")
             access.set(.off("权限已关"))
             return try await gated.run(["command": "uname -a"])
         }
@@ -1915,10 +2065,11 @@ final class PermissionGateTests: XCTestCase {
         let queue = PendingApprovalQueue()
         let receipts = ApprovalReceiptBook()
         let access = LockedBox<LiveToolAccess>(.ask(title: "用SSH"))
+        let context = ToolExecutionContext(executionChat: "chat-1", grantID: "hills")
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            executionChat: "chat-1",
+            context: context,
             receipts: receipts,
             policyRevision: { queue.currentRevision },
             access: { access.get() },
@@ -1934,7 +2085,7 @@ final class PermissionGateTests: XCTestCase {
                     return true
                 }
                 // Second pass: explicit user tap approves it for this invocation.
-                receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
+                receipts.record(invocation: ToolInvocation.currentID ?? "", context: context, tool: name)
                 return true
             }
         )

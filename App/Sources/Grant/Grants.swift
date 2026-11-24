@@ -288,6 +288,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         _ tools: [AgentTool],
         workspace: [String: Grant] = [:],
         executionChat: String = "",
+        hostID: String = "",
+        hostBindings: HostBindingBook? = nil,
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
@@ -299,11 +301,25 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
                 return Asking(inner: tool, grant: nil)
             }
             if grant.policy == .off { return nil }
+            let isWorkspaceTool = workspace[name] != nil
+            let boundHost = isWorkspaceTool ? hostID : ""
+            let context = ToolExecutionContext(
+                executionChat: executionChat,
+                hostID: boundHost,
+                grantID: grant.rawValue
+            )
+            let contextValid: (@Sendable () -> Bool)?
+            if isWorkspaceTool, !boundHost.isEmpty, let hostBindings {
+                contextValid = { hostBindings.current(for: executionChat) == boundHost }
+            } else {
+                contextValid = nil
+            }
             return LiveGatedTool(
                 inner: tool,
-                executionChat: executionChat,
+                context: context,
                 receipts: receipts,
                 policyRevision: policyRevision,
+                isContextStillValid: contextValid,
                 access: { grant.liveAccess(for: name) },
                 reconfirm: reconfirm
             )

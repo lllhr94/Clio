@@ -29,11 +29,49 @@ public enum PendingApprovalResolution: Equatable, Sendable {
     case rejectedByPolicy(revision: UInt64)
 }
 
+/// Identifies the exact execution target bound when a turn's tools were created
+/// (execution chat, bound host/workplace identity, and resolved permission grant key).
+/// Switching a conversation's workplace mid-turn never silently re-evaluates an already-bound tool
+/// under a different host's permissions or executes on an obsolete host.
+public struct ToolExecutionContext: Equatable, Sendable {
+    public let executionChat: String
+    /// Stable host/workplace identity bound to this tool instance (e.g. "desk", "den", "hill:<id>", or "" for non-workspace tools).
+    public let hostID: String
+    /// Stable permission ability key bound to this tool instance (e.g. `Grant.rawValue`).
+    public let grantID: String
+
+    public init(executionChat: String, hostID: String = "", grantID: String = "") {
+        self.executionChat = executionChat
+        self.hostID = hostID
+        self.grantID = grantID
+    }
+}
+
+/// Thread-safe mirror of each conversation's current workplace/host identity so off-MainActor
+/// `LiveGatedTool` checks can synchronously detect mid-turn workplace switches.
+public final class HostBindingBook: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hosts: [String: String] = [:]
+
+    public init() {}
+
+    public func set(_ hostID: String, for chat: String) {
+        lock.lock()
+        hosts[chat] = hostID
+        lock.unlock()
+    }
+
+    public func current(for chat: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return hosts[chat]
+    }
+}
+
 /// Records explicit one-shot user approvals bound to one exact tool invocation and execution context
-/// so `LiveGatedTool.run` never double-prompts a delegated helper and never leaks an approval to another call or chat.
+/// so `LiveGatedTool.run` never double-prompts a delegated helper and never leaks an approval to another call, chat, or host.
 public final class ApprovalReceiptBook: @unchecked Sendable {
     private struct Entry {
-        let executionChat: String
+        let context: ToolExecutionContext
         let tool: String
     }
 
@@ -42,19 +80,19 @@ public final class ApprovalReceiptBook: @unchecked Sendable {
 
     public init() {}
 
-    public func record(invocation: String, executionChat: String, tool: String) {
+    public func record(invocation: String, context: ToolExecutionContext, tool: String) {
         guard !invocation.isEmpty else { return }
         lock.lock()
-        entries[invocation] = Entry(executionChat: executionChat, tool: tool)
+        entries[invocation] = Entry(context: context, tool: tool)
         lock.unlock()
     }
 
-    public func consume(invocation: String, executionChat: String, tool: String) -> Bool {
+    public func consume(invocation: String, context: ToolExecutionContext, tool: String) -> Bool {
         guard !invocation.isEmpty else { return false }
         lock.lock()
         defer { lock.unlock() }
         guard let entry = entries[invocation],
-              entry.executionChat == executionChat,
+              entry.context == context,
               entry.tool == tool else {
             return false
         }
@@ -71,7 +109,15 @@ public final class ApprovalReceiptBook: @unchecked Sendable {
 
     public func clear(executionChat: String) {
         lock.lock()
-        entries = entries.filter { $0.value.executionChat != executionChat }
+        entries = entries.filter { $0.value.context.executionChat != executionChat }
+        lock.unlock()
+    }
+
+    public func clear(executionChat: String, hostID: String) {
+        lock.lock()
+        entries = entries.filter {
+            !($0.value.context.executionChat == executionChat && $0.value.context.hostID == hostID)
+        }
         lock.unlock()
     }
 }
@@ -231,28 +277,34 @@ public final class PendingApprovalQueue: @unchecked Sendable {
     }
 }
 
-/// Wraps a tool with live permission evaluation so mid-turn permission changes take effect immediately
-/// and tightening `.allow -> .ask` or recovering `.off -> .ask/.allow` before execution is checked atomically.
+/// Wraps a tool with live permission evaluation so mid-turn permission changes take effect immediately,
+/// tightening `.allow -> .ask` or recovering `.off -> .ask/.allow` before execution is checked atomically,
+/// and switching a conversation's workplace/host blocks stale executions on the previous host.
 public struct LiveGatedTool: AgentTool {
     public let inner: AgentTool
-    let executionChat: String
+    public let context: ToolExecutionContext
     let receipts: ApprovalReceiptBook?
     let policyRevision: (@Sendable () -> UInt64)?
+    let isContextStillValid: (@Sendable () -> Bool)?
     let access: @Sendable () -> LiveToolAccess
     let reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)?
 
+    public static let workplaceChangedRefusal = "这段对话的工作地点已经切换，为避免在原来的主机上误操作，本次没有继续执行。请按新的工作地点重新发起。"
+
     public init(
         inner: AgentTool,
-        executionChat: String = "",
+        context: ToolExecutionContext = ToolExecutionContext(executionChat: ""),
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
+        isContextStillValid: (@Sendable () -> Bool)? = nil,
         access: @escaping @Sendable () -> LiveToolAccess,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
     ) {
         self.inner = inner
-        self.executionChat = executionChat
+        self.context = context
         self.receipts = receipts
         self.policyRevision = policyRevision
+        self.isContextStillValid = isContextStillValid
         self.access = access
         self.reconfirm = reconfirm
     }
@@ -261,7 +313,10 @@ public struct LiveGatedTool: AgentTool {
     public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {
-        evaluate(for: arguments, using: access())
+        if let isContextStillValid, !isContextStillValid() {
+            return nil
+        }
+        return evaluate(for: arguments, using: access())
     }
 
     public func run(_ arguments: JSONValue) async throws -> ToolOutput {
@@ -276,10 +331,16 @@ public struct LiveGatedTool: AgentTool {
 
     private func runBound(_ arguments: JSONValue, invocationID: String) async throws -> ToolOutput {
         defer { receipts?.revoke(invocation: invocationID) }
-        let userApproved = receipts?.consume(invocation: invocationID, executionChat: executionChat, tool: spec.name) ?? false
+        if let isContextStillValid, !isContextStillValid() {
+            return ToolOutput(Self.workplaceChangedRefusal, isError: true)
+        }
+        let userApproved = receipts?.consume(invocation: invocationID, context: context, tool: spec.name) ?? false
         if userApproved {
             if Task.isCancelled {
                 return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
+            }
+            if let isContextStillValid, !isContextStillValid() {
+                return ToolOutput(Self.workplaceChangedRefusal, isError: true)
             }
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
@@ -292,6 +353,9 @@ public struct LiveGatedTool: AgentTool {
         while true {
             if Task.isCancelled {
                 return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
+            }
+            if let isContextStillValid, !isContextStillValid() {
+                return ToolOutput(Self.workplaceChangedRefusal, isError: true)
             }
             let current = access()
             if case .off(let refusal) = current {
@@ -310,7 +374,10 @@ public struct LiveGatedTool: AgentTool {
             if Task.isCancelled {
                 return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
             }
-            let reconfirmedByUser = receipts?.consume(invocation: invocationID, executionChat: executionChat, tool: spec.name) ?? false
+            if let isContextStillValid, !isContextStillValid() {
+                return ToolOutput(Self.workplaceChangedRefusal, isError: true)
+            }
+            let reconfirmedByUser = receipts?.consume(invocation: invocationID, context: context, tool: spec.name) ?? false
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
             }
