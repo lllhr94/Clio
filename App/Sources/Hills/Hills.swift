@@ -141,7 +141,9 @@ final class Hills: ObservableObject {
     }
 
     /// The channel could not be opened on a kept connection: it has probably gone stale.
-    private struct Stale: Error {}
+    private struct Stale: Error {
+        let client: SSHClient
+    }
 
     /// A command ran past its time.
     struct TimedOut: LocalizedError {
@@ -169,25 +171,35 @@ final class Hills: ObservableObject {
     /// a command that already started is never sent a second time. `onOutput` hears the output as it arrives.
     nonisolated static func run(_ command: String, on host: Host, timeout: Double = 60, keep: Int = keptOutput, onOutput: (@Sendable (String) -> Void)? = nil) async throws -> Outcome {
         var attempt = 0
+        var lastStaleClient: SSHClient?
         while true {
             do {
-                return try await runOnce(command, on: host, timeout: timeout, keep: keep, fresh: attempt > 0, onOutput: onOutput)
-            } catch is Stale {
+                return try await runOnce(
+                    command,
+                    on: host,
+                    timeout: timeout,
+                    keep: keep,
+                    fresh: attempt > 0,
+                    staleClient: lastStaleClient,
+                    onOutput: onOutput
+                )
+            } catch let stale as Stale {
                 attempt += 1
-                await HillPool.shared.drop(host)
+                lastStaleClient = stale.client
+                await HillPool.shared.drop(host, staleClient: stale.client)
                 if attempt > 2 { throw ProviderError("连上了 \(host.name)，但重连两次都开不了会话。") }
                 Diag.note("远山 \(host.name) 掉线，第 \(attempt) 次重连")
             }
         }
     }
 
-    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, keep: Int, fresh: Bool, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
+    private nonisolated static func runOnce(_ command: String, on host: Host, timeout: Double, keep: Int, fresh: Bool, staleClient: SSHClient? = nil, onOutput: (@Sendable (String) -> Void)?) async throws -> Outcome {
         let gathered = Gathered(limit: keep)
         return try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
                 // A failure to log in is a real answer (wrong password, host down), never retried; only a kept connection
                 // that will not open a channel any more counts as stale.
-                let client = try await HillPool.shared.client(for: host, fresh: fresh)
+                let client = try await HillPool.shared.client(for: host, fresh: fresh, staleClient: staleClient)
                 var output = ""
                 var size = 0
                 var dropped = 0
@@ -198,7 +210,7 @@ final class Hills: ObservableObject {
                 } catch let failed as SSHClient.CommandFailed {
                     return Outcome(code: failed.exitCode, output: "")
                 } catch {
-                    throw Stale()
+                    throw Stale(client: client)
                 }
                 do {
                     for try await chunk in stream {
@@ -804,14 +816,30 @@ actor HillPool {
     /// A connection left alone this long is closed and made again.
     private let idle: TimeInterval = 600
 
-    func client(for host: Hills.Host, fresh: Bool) async throws -> SSHClient {
+    func client(for host: Hills.Host, fresh: Bool, staleClient: SSHClient? = nil) async throws -> SSHClient {
         let to = Self.identity(host)
         let currentGen = generation[host.id, default: 0]
-        if !fresh, let kept = open[host.id], kept.to == to, kept.client.isConnected, Date().timeIntervalSince(kept.used) < idle {
+        let openIsStale: Bool
+        if let staleClient, let kept = open[host.id], kept.client === staleClient {
+            openIsStale = true
+        } else {
+            openIsStale = false
+        }
+        let shouldReuseOpen = !fresh || (staleClient != nil && !openIsStale)
+        if shouldReuseOpen,
+           !openIsStale,
+           let kept = open[host.id],
+           kept.to == to,
+           kept.client.isConnected,
+           Date().timeIntervalSince(kept.used) < idle {
             open[host.id] = (kept.client, Date(), to)
             return kept.client
         }
-        if !fresh, let inFlight = connecting[host.id], inFlight.to == to, inFlight.gen == currentGen {
+        let mustReplaceOpen = fresh && (staleClient == nil || openIsStale)
+        if !mustReplaceOpen,
+           let inFlight = connecting[host.id],
+           inFlight.to == to,
+           inFlight.gen == currentGen {
             return try await inFlight.task.value
         }
         let nextGen = currentGen &+ 1
@@ -863,7 +891,14 @@ actor HillPool {
         if let kept = open[host.id] { open[host.id] = (kept.client, Date(), kept.to) }
     }
 
-    func drop(_ host: Hills.Host) async {
+    func drop(_ host: Hills.Host, staleClient: SSHClient? = nil) async {
+        if let staleClient {
+            guard let kept = open[host.id], kept.client === staleClient else { return }
+            generation[host.id] = generation[host.id, default: 0] &+ 1
+            open.removeValue(forKey: host.id)
+            try? await kept.client.close()
+            return
+        }
         generation[host.id] = generation[host.id, default: 0] &+ 1
         if let inFlight = connecting.removeValue(forKey: host.id) {
             inFlight.task.cancel()
