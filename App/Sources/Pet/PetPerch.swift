@@ -344,18 +344,25 @@ struct PetPerchAnchor: UIViewRepresentable {
     private final class Surface: UIWindow {
         weak var perch: PetPerch?
 
-        var hasContextMenu: Bool {
-            if rootViewController?.presentedViewController != nil { return true }
-            let rootView = rootViewController?.view
-            return subviews.contains { $0 !== rootView }
+        var hasContextMenu: Bool { menuView != nil }
+
+        private var menuView: UIView? {
+            guard let view = rootViewController?.presentedViewController?.viewIfLoaded,
+                  view.window === self else { return nil }
+            return view
         }
 
         override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
             guard let perch else { return nil }
-            if hasContextMenu { return super.hitTest(point, with: event) }
-            guard !perch.suppressed, abs(perch.chatOffset) < 1, !perch.replyActions.contains(point),
-                  perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) else { return nil }
-            return super.hitTest(point, with: event)
+            if !perch.suppressed, abs(perch.chatOffset) < 1, !perch.replyActions.contains(point),
+               perch.bodyHit.contains(point) || perch.bubbleHit.contains(point) {
+                return super.hitTest(point, with: event)
+            }
+            // UIKit can install ordinary wrapper views in this full-screen window. Only the
+            // contents of a presented menu may take touches outside the pet and its bubble.
+            guard let menuView, let hit = super.hitTest(point, with: event),
+                  hit === menuView || hit.isDescendant(of: menuView) else { return nil }
+            return hit
         }
     }
 }
