@@ -65,10 +65,8 @@ struct ChatPage: View {
     @State var picking: ChatLine?
     /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
     @State var jumpedTo: String?
-    @State var jumpVisible = false
     @State var hideJumps: Task<Void, Never>?
-    /// The question the finger is on while sliding along the 小地图 (an index into the rows), nil when not sliding.
-    @State var minimapScrub: Int?
+    @State var chrome = ChatChrome()
     @State var viewport = ChatViewport()
     @State var selecting: Set<UUID> = []
     @State var sharing: ShareFile?
@@ -76,10 +74,11 @@ struct ChatPage: View {
     @State var chatSkillsOpen = false
     @State var chatConnectorsOpen = false
     @State var clearingChat = false
-    /// The conversation is moving under the reader's finger or settling after it.
-    @State var scrolling = false
     /// The reader's own finger is moving the page (dragging, or the glide after it) — not a scroll the app made.
-    @State var touchScrolling = false
+    var touchScrolling: Bool {
+        get { viewport.touchScrolling }
+        nonmutating set { viewport.touchScrolling = newValue }
+    }
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
     @State var context: TeamModel.ContextEstimate?
     @State var usageOpen = false
@@ -87,12 +86,10 @@ struct ChatPage: View {
     @State var cheering = false
     /// Nothing has happened for a few minutes: the pet dozes.
     @State var dozing = false
-    @State var stirs = 0
     /// How many of the newest lines are drawn; 「更早的」 adds more.
     @State var shownCount = 60
     /// What happened in the other conversations while the user was away from this one.
     @State var away: [Happening] = []
-    @State var farFromEnd = false
     @Environment(\.dynamicTypeSize) var typeSize
     @ScaledMetric(relativeTo: .body) var textScale: CGFloat = 1
     var largeText: Bool { typeSize.isAccessibilitySize }
@@ -225,10 +222,10 @@ struct ChatPage: View {
         return error.split(separator: "\n").first.map { last.text.contains($0) } ?? false
     }
 
-    /// Something happened: the pet wakes, and the doze clock starts over.
+    /// Something happened: the pet wakes, and the doze clock starts over without triggering a full-page redraw.
     func stir() {
         if dozing { dozing = false }
-        stirs += 1
+        viewport.lastStirAt = ProcessInfo.processInfo.systemUptime
     }
 
     /// Whether the line under the conversation says what is going on: whenever the companion works and nothing else shows it.
@@ -384,7 +381,9 @@ struct ChatPage: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) >= 80
             } action: { _, far in
-                withAnimation(Ink.Motion.settle) { farFromEnd = far }
+                if chrome.farFromEnd != far {
+                    withAnimation(Ink.Motion.settle) { chrome.farFromEnd = far }
+                }
             }
             // Near the top while the reader scrolls up: the older lines come in by themselves.
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -394,24 +393,46 @@ struct ChatPage: View {
                 // reply arrives) must never pull in older lines above and shift the page.
                 if nearTop, touchScrolling, !following, selecting.isEmpty { loadEarlier() }
             }
-            // Record large upward jumps and the layout behind them without publishing per-frame state.
+            // Record large unexpected upward jumps, height collapses, and the preceding UI actions without redrawing.
             .onScrollGeometryChange(for: ChatScrollSample.self) { geometry in
                 ChatScrollSample(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height,
                                  viewportHeight: geometry.containerSize.height)
             } action: { old, now in
-                let distance = old.offset - now.offset
-                if !touchScrolling, historyPage == nil, distance > 900, distance.isFinite,
-                   now.contentHeight.isFinite, now.viewportHeight.isFinite {
-                    let origin = viewport.recentJump.map { "最近跳转：\($0)" } ?? "无近期跳转请求"
-                    Diag.note("絮语页往上跳 \(Int(distance)) 点（\(origin)，following=\(following)，可见 \(viewport.ids.count) 条，已加载 \(min(shownCount, chat.lines.count)) 条，正文高 \(Int(now.contentHeight))，视口高 \(Int(now.viewportHeight))，在写=\(chat.hasStreaming)）")
+                guard old.offset.isFinite, now.offset.isFinite,
+                      old.contentHeight.isFinite, now.contentHeight.isFinite,
+                      old.viewportHeight.isFinite, now.viewportHeight.isFinite else { return }
+                let heightDelta = now.contentHeight - old.contentHeight
+                let viewportDelta = now.viewportHeight - old.viewportHeight
+                if abs(viewportDelta) >= 8 {
+                    DiagTrail.record("视口高(\(Int(old.viewportHeight))→\(Int(now.viewportHeight)))")
                 }
+                if abs(heightDelta) >= 600, !chat.hasStreaming {
+                    DiagTrail.record("正文高(\(Int(old.contentHeight))→\(Int(now.contentHeight)))")
+                }
+                let distance = old.offset - now.offset
+                guard !touchScrolling, historyPage == nil, distance > 900 else { return }
+                let recentJump = viewport.recentJump
+                let collapsed = heightDelta < -400
+                let blankLanding = viewport.ids.isEmpty
+                // Intentional user navigation (minimap, prev/next question, search hit, back to latest)
+                // that lands on visible rows without a height collapse is normal, not an error.
+                if let recentJump, !collapsed, !blankLanding,
+                   Self.isIntentionalJump(recentJump) {
+                    return
+                }
+                let origin = recentJump.map { "最近跳转：\($0)" } ?? "无近期跳转请求"
+                let trail = DiagTrail.recentContext(within: 4, limit: 6).joined(separator: " | ")
+                let trailPart = trail.isEmpty ? "" : "，前4秒：[\(trail)]"
+                Diag.note("对话页往上跳 \(Int(distance)) 点（\(origin)，阶段=\(viewport.scrollPhaseLabel)，following=\(following)，可见 \(viewport.ids.count) 条，已加载 \(min(shownCount, chat.lines.count)) 条，偏移 \(Int(old.offset))→\(Int(now.offset))，正文高 \(Int(old.contentHeight))→\(Int(now.contentHeight))，视口高 \(Int(old.viewportHeight))→\(Int(now.viewportHeight))，在写=\(chat.hasStreaming)\(trailPart)）")
             }
             .onScrollPhaseChange { old, phase, context in
+                viewport.scrollPhaseLabel = Self.phaseLabel(phase)
                 let moving = phase != .idle
                 touchScrolling = phase == .interacting || phase == .decelerating
                 chat.setBrowsingHistory(phase == .interacting || phase == .decelerating)
-                if moving != scrolling {
-                    scrolling = moving
+                if moving != chrome.scrolling {
+                    chrome.scrolling = moving
+                    stir()
                     Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
                 }
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
@@ -419,13 +440,19 @@ struct ChatPage: View {
                     following = false
                     followPending?.cancel()
                     settleEnd?.cancel()
+                    settleJump?.cancel()
                     jumpedTo = nil
                     hideJumps?.cancel()
-                    jumpVisible = true
+                    if !chrome.jumpVisible {
+                        DiagTrail.record("开始滑")
+                        chrome.jumpVisible = true
+                    }
                 }
                 if phase == .idle, old == .interacting || old == .decelerating {
-                    following = historyPage == nil && selecting.isEmpty && Self.below(context.geometry) < 80
+                    let below = Self.below(context.geometry)
+                    following = historyPage == nil && selecting.isEmpty && below < 80
                     viewport.needsEndCorrection = Self.endAlignment(context.geometry) != 0
+                    DiagTrail.record("停滑(距底\(Int(max(0, below).rounded())),跟随=\(following ? 1 : 0))")
                     if following, viewport.needsEndCorrection { followToEnd(settle: false) }
                     lingerJumpButtons()
                 }
@@ -440,6 +467,9 @@ struct ChatPage: View {
             .onChange(of: working, initial: true) { _, now in
                 workingSince = now ? (workingSince ?? Date()) : nil
             }
+            .onChange(of: chat.hasStreaming) { _, now in
+                DiagTrail.record(now ? "开始流式" : "结束流式")
+            }
             .onChange(of: chat.lines.last?.id) {
                 if chat.lines.isEmpty { historyPage = nil; lookupRows = [] }
                 followToEnd()
@@ -447,12 +477,31 @@ struct ChatPage: View {
             .onChange(of: chat.lines.count) { followToEnd() }
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
-            .onChange(of: waiting?.id) {
+            .onChange(of: waiting?.id) { _, next in
+                DiagTrail.record(next == nil ? "收起审批" : "弹出审批")
                 approvalInsetChanged()
             }
             .onAppear { scroller = proxy }
             .task { await playShot() }
         }
+    }
+
+    static func phaseLabel(_ phase: ScrollPhase) -> String {
+        switch phase {
+        case .idle: return "静止"
+        case .tracking: return "按住"
+        case .interacting: return "拖动"
+        case .decelerating: return "惯性"
+        case .animating: return "动画"
+        }
+    }
+
+    static func isIntentionalJump(_ source: String) -> Bool {
+        source.hasPrefix("小地图")
+            || source.hasPrefix("点了上一句")
+            || source.hasPrefix("点了下一句")
+            || source == "点了搜索结果"
+            || source == "回到最新"
     }
 
     /// Screenshot scenes that act: send a message and catch the reply arriving; or go up, then back to the latest.
@@ -653,8 +702,12 @@ struct ChatPage: View {
                 .presentationDetents([.medium, .large])
         }
         .onChange(of: typing) { _, now in
+            DiagTrail.record(now ? "开键盘" : "收键盘")
             Hitches.shared.doing(now ? "打字" : nil, as: "typing")
             stir()
+        }
+        .onChange(of: finding) { _, now in
+            DiagTrail.record(now ? "开查找" : "关查找")
         }
         .onChange(of: working) { _, now in
             stir()
@@ -665,10 +718,12 @@ struct ChatPage: View {
                 cheering = false
             }
         }
-        .onChange(of: scrolling) { stir() }
-        .task(id: stirs) {
-            try? await Task.sleep(nanoseconds: 180_000_000_000)
-            if !Task.isCancelled { dozing = true }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                let idle = ProcessInfo.processInfo.systemUptime - viewport.lastStirAt
+                if idle >= 180, !dozing { dozing = true }
+            }
         }
         .task { away = team.whileAway(from: chat.key) }
     }
@@ -756,7 +811,7 @@ struct ChatPage: View {
             if !roaming {
                 HStack {
                     Spacer()
-                    RoamThumb(browser: team.browser, frozen: scrolling) {
+                    ChatRoamThumbOverlay(browser: team.browser, chrome: chrome) {
                         typing = false
                         roaming = true
                     }
@@ -770,6 +825,7 @@ struct ChatPage: View {
         .safeAreaInset(edge: .bottom) { bottomStack }
         .sheet(isPresented: $petSettingsOpen) { PetPage() }
         .onAppear {
+            DiagTrail.record("开对话(\(chat.lines.count)条)")
             chat.open()
             PetNews.shared.focused = chat.key
             draftState.load(chat.key)
@@ -780,22 +836,27 @@ struct ChatPage: View {
                 draftAttachmentQueuedIds = kept.queuedIds
             }
         }
-        .onChange(of: scenePhase) {
-            if scenePhase == .background {
+        .onChange(of: scenePhase) { _, next in
+            if next == .background {
+                DiagTrail.record("退后台")
                 dictation.cancel()
                 _ = voice.stopSpeaking(at: .immediate)
                 speakingText = nil
+            } else if next == .active {
+                DiagTrail.record("回前台")
             }
-            if scenePhase != .active {
+            if next != .active {
                 draftState.flush()
                 DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             }
         }
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
+            DiagTrail.record("关对话")
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
             followPending?.cancel()
             settleEnd?.cancel()
+            settleJump?.cancel()
             approvalInsetTask?.cancel()
             approvalInsetTask = nil
             draftState.flush()
@@ -1044,6 +1105,7 @@ struct ChatPage: View {
     @State var followPending: Task<Void, Never>?
     @State var approvalInsetTask: Task<Void, Never>?
     @State var settleEnd: Task<Void, Never>?
+    @State var settleJump: Task<Void, Never>?
     @State var pickerShown = false
     @State var importingFile = false
     @State var files: [String] = []
