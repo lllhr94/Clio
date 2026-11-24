@@ -4,7 +4,7 @@ import Foundation
 public struct AnthropicProvider: ModelProvider {
     public var baseURL: String
     public var apiKey: String
-    public let promptCache: Bool
+    public var promptCache: Bool?
     public let stableSystemPrefix: String?
 
     public init(
@@ -15,7 +15,7 @@ public struct AnthropicProvider: ModelProvider {
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
-        self.promptCache = promptCache ?? Self.caches(baseURL)
+        self.promptCache = promptCache
         self.stableSystemPrefix = stableSystemPrefix
     }
 
@@ -30,7 +30,8 @@ public struct AnthropicProvider: ModelProvider {
     func urlRequest(_ request: ModelRequest) throws -> URLRequest {
         var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"))
         http.httpMethod = "POST"
-        http.httpBody = try HTTP.json(Self.body(request, cache: promptCache, stableSystemPrefix: stableSystemPrefix))
+        let cache = promptCache ?? Self.caches(baseURL)
+        http.httpBody = try HTTP.json(Self.body(request, cache: cache, stableSystemPrefix: stableSystemPrefix))
         return http
     }
 

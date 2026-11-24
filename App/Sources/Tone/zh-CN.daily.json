@@ -902,7 +902,7 @@
     "apiAnthropic": "Claude 接口",
     "apiOpenAI": "OpenAI 兼容接口",
     "promptCache": "提示词缓存",
-    "promptCacheNote": "默认开启，会发送 cache_control 标记以复用前文、减少重复计费。部分第三方中转站或代理不支持此参数，报错时可关闭。",
+    "promptCacheNote": "默认官方接口开启、第三方中转关闭；确认中转支持 Anthropic Prompt Caching 后可开启，如遇 400/不兼容报错请关闭。",
     "followServiceStyle": "跟着服务（%@）",
     "thinkingNoneSummary": "不发送思考参数，仅保留「默认」。",
     "thinkingOfferedSummary": "支持思考的模型默认提供：%@",

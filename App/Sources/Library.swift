@@ -156,7 +156,7 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
         return ["image", "dall-e", "flux", "seedream", "imagen"].contains { name.contains($0) }
     }
 
-    var usesPromptCache: Bool { promptCache ?? true }
+    var usesPromptCache: Bool { promptCache ?? AnthropicProvider.caches(baseURL) }
 
     func provider(key: String, stableSystemPrefix: String? = nil) -> ModelProvider {
         switch kind {

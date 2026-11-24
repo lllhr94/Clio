@@ -11,21 +11,50 @@ final class AnthropicProviderTests: XCTestCase {
         return (body, raw)
     }
 
-    func testDirectInitDefaultsFollowCachesHostAndAllowExplicitOverrides() {
-        let officialDefault = AnthropicProvider(apiKey: "fixture-key")
+    func testDirectInitDefaultsAndDynamicBaseURLAndPromptCacheEvaluation() throws {
+        let prefix = "你是「小克」。\n\n做事：\n固定规则。"
+        let system = prefix + "\n\n现在是 10:00。"
+        let tool = ToolSpec(name: "echo", description: "d", parameters: .object(["type": .string("object")]))
+        let request = ModelRequest(model: "claude-sonnet-4-6", system: system, messages: [.user("hi")], tools: [tool])
+
+        let officialDefault = AnthropicProvider(apiKey: "fixture-key", stableSystemPrefix: prefix)
         XCTAssertEqual(officialDefault.baseURL, "https://api.anthropic.com")
-        XCTAssertTrue(officialDefault.promptCache)
-        XCTAssertNil(officialDefault.stableSystemPrefix)
+        XCTAssertNil(officialDefault.promptCache)
+        XCTAssertEqual(officialDefault.stableSystemPrefix, prefix)
+        let officialBody = try decodedJSON(try officialDefault.urlRequest(request))
+        let officialBlocks = try XCTUnwrap(officialBody.body["system"] as? [[String: Any]])
+        XCTAssertEqual(officialBlocks.count, 2)
+        XCTAssertEqual(officialBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
 
-        let relayDefault = AnthropicProvider(baseURL: "https://relay.example.com", apiKey: "fixture-key")
-        XCTAssertFalse(relayDefault.promptCache)
-        XCTAssertNil(relayDefault.stableSystemPrefix)
+        // Mutating baseURL with promptCache == nil re-evaluates Self.caches(baseURL) at request time.
+        var dynamicProvider = AnthropicProvider(
+            baseURL: "https://relay.example.com/claude",
+            apiKey: "fixture-key",
+            stableSystemPrefix: prefix
+        )
+        XCTAssertNil(dynamicProvider.promptCache)
+        let relayDefaultDecoded = try decodedJSON(try dynamicProvider.urlRequest(request))
+        XCTAssertEqual(relayDefaultDecoded.body["system"] as? String, system)
+        XCTAssertFalse(relayDefaultDecoded.raw.contains("cache_control"))
 
-        let relayEnabled = AnthropicProvider(baseURL: "https://relay.example.com", apiKey: "fixture-key", promptCache: true)
-        XCTAssertTrue(relayEnabled.promptCache)
+        dynamicProvider.baseURL = "https://api.anthropic.com"
+        let switchedOfficial = try decodedJSON(try dynamicProvider.urlRequest(request))
+        let switchedBlocks = try XCTUnwrap(switchedOfficial.body["system"] as? [[String: Any]])
+        XCTAssertEqual(switchedBlocks.count, 2)
+        XCTAssertEqual(switchedBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
 
-        let officialDisabled = AnthropicProvider(baseURL: "https://api.anthropic.com", apiKey: "fixture-key", promptCache: false)
-        XCTAssertFalse(officialDisabled.promptCache)
+        // Explicit promptCache overrides dynamically regardless of baseURL.
+        dynamicProvider.promptCache = false
+        let officialDisabled = try decodedJSON(try dynamicProvider.urlRequest(request))
+        XCTAssertEqual(officialDisabled.body["system"] as? String, system)
+        XCTAssertFalse(officialDisabled.raw.contains("cache_control"))
+
+        dynamicProvider.baseURL = "https://relay.example.com/claude"
+        dynamicProvider.promptCache = true
+        let relayEnabled = try decodedJSON(try dynamicProvider.urlRequest(request))
+        let relayBlocks = try XCTUnwrap(relayEnabled.body["system"] as? [[String: Any]])
+        XCTAssertEqual(relayBlocks.count, 2)
+        XCTAssertEqual(relayBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
     }
 
     func testStablePrefixSplitsSystemIntoCachedPrefixAndUncachedVolatileTail() throws {

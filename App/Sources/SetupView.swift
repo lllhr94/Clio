@@ -596,29 +596,8 @@ struct SetupView: View {
                         endpoint.models = fallback
                         finish(endpoint, secret)
                         return
-                    } catch let probeError {
-                        let probeStatus = (probeError as? ProviderError)?.status
-                        let shouldRetryWithoutCache = endpoint.kind == .anthropic
-                            && endpoint.promptCache == nil
-                            && !AnthropicProvider.caches(endpoint.baseURL)
-                            && !(probeError is CancellationError)
-                            && (probeStatus == nil || probeStatus == 400 || probeStatus == 422)
-                        if shouldRetryWithoutCache {
-                            var plainEndpoint = endpoint
-                            plainEndpoint.promptCache = false
-                            do {
-                                var plainAsk = Agent(provider: plainEndpoint.provider(key: secret), model: fallback[0], system: "")
-                                plainAsk.thinking = .off
-                                _ = try await plainAsk.ask("回一个字：好")
-                                plainEndpoint.models = fallback
-                                finish(plainEndpoint, secret)
-                                return
-                            } catch {
-                                fail(error, service: plainEndpoint.name)
-                                return
-                            }
-                        }
-                        fail(probeError, service: endpoint.name)
+                    } catch {
+                        fail(error, service: endpoint.name)
                         return
                     }
                 }
