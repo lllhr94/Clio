@@ -226,26 +226,103 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Pure in-conversation orchestration tools that do not touch external services or user data directly.
     private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion"]
 
+    static let followAfterWebKey = "grant.followAfterWeb"
+
+    /// Default OFF: external content keeps forcing confirmation for commands, SSH, MCP, and external writes.
+    /// When explicitly enabled by the user in Permissions, everyday tools follow their normal Grant policies
+    /// while the three hard exits (`browser_fill_secret`, `gmail_send`, `schedule_task`) still always ask.
+    static var followPolicyAfterWeb: Bool {
+        get { UserDefaults.standard.bool(forKey: followAfterWebKey) }
+        set { UserDefaults.standard.set(newValue, forKey: followAfterWebKey) }
+    }
+
+    /// Whether the user chose 「放手」 and has kept every enabled non-vault ability on `.allow`.
+    static var isFreeRunning: Bool {
+        if Preset.current == .free { return true }
+        guard UserDefaults.standard.string(forKey: "grantPreset.selected") == Preset.free.rawValue else { return false }
+        var hasAllowed = false
+        for grant in Grant.allCases where grant != .vault {
+            switch grant.policy {
+            case .allow: hasAllowed = true
+            case .off: continue
+            case .ask, .smart: return false
+            }
+        }
+        return hasAllowed
+    }
+
+    /// Tools that ask for their own non-forced confirmation even when their grant is `.allow` (outside 「放手」).
+    private static let builtInConfirmationTools: Set<String> = [
+        "browser_open", "browser_type", "calendar_add", "reminder_add",
+        "contacts_add", "photos_save", "open_link", "desk_delete",
+        "cancel_task", "gmail_draft",
+    ]
+
+    static func hasBuiltInConfirmation(_ tool: String) -> Bool {
+        builtInConfirmationTools.contains(tool) || tool.hasPrefix("mcp_")
+    }
+
     /// Only built-in queries in their actual capability. Remote workspaces use a different grant.
     static func allowsSmartQuery(_ name: String, grant: Grant) -> Bool {
         grant == .desk && ["read_file", "list_dir", "glob", "grep", "read_pdf", "search_docs"].contains(name)
     }
 
-    /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.
+    /// Computes live access for a granted tool at evaluation/execution time.
+    func liveAccess(for toolName: String) -> LiveToolAccess {
+        switch policy {
+        case .off:
+            return .off("用户已经关掉了「\(title)」权限，没有继续执行。")
+        case .allow:
+            return .allow(bypassNonForced: Grant.isFreeRunning)
+        case .smart where Grant.allowsSmartQuery(toolName, grant: self):
+            return .allow(bypassNonForced: Grant.isFreeRunning)
+        case .smart, .ask:
+            return .ask(title: "用\(title)")
+        }
+    }
+
+    /// The tools a companion gets: switched-off abilities left out, the rest wrapped in `LiveGatedTool`
+    /// so permission changes made mid-turn take effect atomically.
     /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
-    static func gate(_ tools: [AgentTool], workspace: [String: Grant] = [:]) -> [AgentTool] {
+    static func gate(
+        _ tools: [AgentTool],
+        workspace: [String: Grant] = [:],
+        executionChat: String = "",
+        hostID: String = "",
+        hostBindings: HostBindingBook? = nil,
+        receipts: ApprovalReceiptBook? = nil,
+        policyRevision: (@Sendable () -> UInt64)? = nil,
+        reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
+    ) -> [AgentTool] {
         tools.compactMap { tool in
             let name = tool.spec.name
             guard let grant = workspace[name] ?? of(tool: name) else {
                 if internalTools.contains(name) { return tool }
                 return Asking(inner: tool, grant: nil)
             }
-            switch grant.policy {
-            case .off: return nil
-            case .allow: return tool
-            case .smart where allowsSmartQuery(name, grant: grant): return tool
-            case .smart, .ask: return Asking(inner: tool, grant: grant)
+            if grant.policy == .off { return nil }
+            let isWorkspaceTool = workspace[name] != nil
+            let boundHost = isWorkspaceTool ? hostID : ""
+            let context = ToolExecutionContext(
+                executionChat: executionChat,
+                hostID: boundHost,
+                grantID: grant.rawValue
+            )
+            let contextValid: (@Sendable () -> Bool)?
+            if isWorkspaceTool, !boundHost.isEmpty, let hostBindings {
+                contextValid = { hostBindings.current(for: executionChat) == boundHost }
+            } else {
+                contextValid = nil
             }
+            return LiveGatedTool(
+                inner: tool,
+                context: context,
+                receipts: receipts,
+                policyRevision: policyRevision,
+                isContextStillValid: contextValid,
+                access: { grant.liveAccess(for: name) },
+                reconfirm: reconfirm
+            )
         }
     }
 
@@ -321,7 +398,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A tool whose ability is set to ask: every call waits for the user's seal.
+/// A tool whose ability is unregistered: every call waits for the user's seal.
 struct Asking: AgentTool {
     let inner: AgentTool
     let grant: Grant?

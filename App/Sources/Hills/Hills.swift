@@ -1,5 +1,6 @@
 import AgentKit
 import Citadel
+import Combine
 import Craft
 import CryptoKit
 import Foundation
@@ -44,19 +45,34 @@ final class Hills: ObservableObject {
     }
 
     @Published private(set) var hosts: [Host] = []
+    private var hostRevisions: [String: UUID] = [:]
+    private let hostChanges = PassthroughSubject<(old: String, new: String), Never>()
+    var hostBindingChanges: AnyPublisher<(old: String, new: String), Never> { hostChanges.eraseToAnyPublisher() }
     @Published private(set) var servers: [Server] = []
     @Published private(set) var borrowed: [Borrowed] = []
     @Published var lastError: [String: String] = [:]
 
     init() {
         hosts = Disk.load([Host].self, "hills.json") ?? []
+        for host in hosts { hostRevisions[host.id] = UUID() }
         servers = Disk.load([Server].self, "mcp.json") ?? []
         borrowed = Disk.load([Borrowed].self, "mcp-tools.json") ?? []
     }
 
     // MARK: Hosts
 
+    func hostBindingID(_ id: String) -> String {
+        "hill:\(id):\(hostRevisions[id]?.uuidString ?? "unavailable")"
+    }
+
+    private func changeHostBinding(_ id: String, to revision: UUID?) {
+        let old = hostBindingID(id)
+        hostRevisions[id] = revision
+        hostChanges.send((old: old, new: hostBindingID(id)))
+    }
+
     func save(_ host: Host, password: String?) {
+        changeHostBinding(host.id, to: UUID())
         if let index = hosts.firstIndex(where: { $0.id == host.id }) { hosts[index] = host } else { hosts.append(host) }
         if let password, !password.isEmpty { Vault.save(password, as: "hill.\(host.id)") }
         Disk.save(hosts, "hills.json")
@@ -66,6 +82,7 @@ final class Hills: ObservableObject {
     }
 
     func remove(_ host: Host) {
+        changeHostBinding(host.id, to: nil)
         Vault.remove("hill.\(host.id)")
         hosts.removeAll { $0.id == host.id }
         Disk.save(hosts, "hills.json")
@@ -402,9 +419,7 @@ final class Hills: ObservableObject {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
             })
-            tools.append(DeskTool(name: "ssh_job_stop", description: Words.t("停掉远山上的一个后台任务。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }, approval: { arguments in
-                ApprovalAsk(title: Words.t("停掉远山的后台任务"), reason: "\(arguments["host"]?.string ?? "") · \(arguments["job"]?.string ?? "")")
-            }) { arguments in
+            tools.append(DeskTool(name: "ssh_job_stop", description: Words.t("停掉远山上的一个后台任务。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
                     try await Hills.stopJob(arguments["job"]?.string ?? "", on: host)

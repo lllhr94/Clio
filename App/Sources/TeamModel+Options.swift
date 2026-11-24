@@ -45,9 +45,15 @@ extension TeamModel {
     }
 
     func setOptions(_ key: String, _ value: ChatOptions) {
+        let oldHostID = WorkPlace(code: (optionBook[key] ?? options(key)).place).hostID
         objectWillChange.send()
         optionBook[key] = value
+        let newHostID = WorkPlace(code: value.place).hostID
+        hostBindings.set(newHostID, for: key)
         if keeping { Disk.save(value, Self.optionsFile(key)) }
+        if oldHostID != newHostID {
+            cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: oldHostID)
+        }
     }
 
     /// Switches one ability on or off for this conversation.

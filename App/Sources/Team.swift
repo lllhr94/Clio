@@ -1,4 +1,5 @@
 import AgentKit
+import Combine
 import Craft
 import Observation
 import SwiftUI
@@ -38,6 +39,12 @@ struct Approval: Identifiable, Equatable {
     var botId: String?
     var roomId: String?
     var chat: String?
+    /// Execution conversation that owns workspace grants & single-shot approval receipts (differs from display `chat` during delegation).
+    var executionChat: String? = nil
+    /// Stable host/workplace identity bound when a workspace tool call was created (nil for non-workspace tools).
+    var hostID: String? = nil
+    /// Permission grant frozen at tool binding time so mid-turn workplace switches cannot re-evaluate under a different host's grant.
+    var boundGrant: Grant? = nil
     var tool: String?
     /// The tool's own name, for 「以后都允许」.
     var toolName: String?
@@ -48,6 +55,8 @@ struct Approval: Identifiable, Equatable {
     var answerable: Bool?
     /// Asked because the turn read the web: no standing permission covers it.
     var forced: Bool?
+
+    var authChat: String? { executionChat ?? chat }
 }
 
 /// What a chat hears while its Bot works.
@@ -152,7 +161,10 @@ final class TeamModel: ObservableObject {
     /// paused from new writes until relaunch reconciles them so newer turns cannot collide with rollback.
     @Published var unresolvedLeafOpenChats: Set<String> = []
     var runs: [String: (token: UUID, task: Task<Void, Never>, started: Date, companion: String?)] = [:]
-    var waiters: [String: CheckedContinuation<Bool, Never>] = [:]
+    let approvalQueue = PendingApprovalQueue()
+    let approvalReceipts = ApprovalReceiptBook()
+    let hostBindings = HostBindingBook()
+    private var hostBindingObserver: AnyCancellable?
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
@@ -239,6 +251,12 @@ final class TeamModel: ObservableObject {
     var written: [String: Int] = [:]
 
     init() {
+        hostBindingObserver = Hills.shared.hostBindingChanges.sink { [weak self] change in
+            guard let self else { return }
+            for key in self.hostBindings.replace(change.old, with: change.new) {
+                self.cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: change.old)
+            }
+        }
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
         if let shot = Shots.name {
             loading = false
@@ -460,6 +478,7 @@ final class TeamModel: ObservableObject {
             modelInputLog.clear(key)
             clearPlan(key)
             trusted.remove(key)
+            taint.reset(key)
             Snapshots.shared.forget(key)
             removeFoldSummaries(key, in: current)
             setSummary(key, nil)
@@ -501,6 +520,7 @@ final class TeamModel: ObservableObject {
         setSummary(key, nil)
         clearPlan(key)
         trusted.remove(key)
+        taint.reset(key)
         Snapshots.shared.forget(key)
         removeFoldSummaries(key, in: current)
         objectWillChange.send()
@@ -556,6 +576,7 @@ final class TeamModel: ObservableObject {
         browser.release(key)
         clearPlan(key)
         trusted.remove(key)
+        taint.reset(key)
         modelInputLog.clear(key)
         Snapshots.shared.forget(key)
         removeFoldSummaries(key, in: current)
@@ -1078,8 +1099,13 @@ final class TeamModel: ObservableObject {
     func stop(_ key: String, keepSendNow: Bool = false) {
         if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
+        var executionChats: Set<String> = [key]
         for approval in approvals where approval.chat == key {
-            if let waiter = waiters.removeValue(forKey: approval.id) { waiter.resume(returning: false) }
+            if let authChat = approval.authChat { executionChats.insert(authChat) }
+            approvalQueue.cancel(id: approval.id)
+        }
+        for execChat in executionChats {
+            approvalReceipts.clear(executionChat: execChat)
         }
         withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
         if runs[key] != nil { browser.cancelHandoff(for: key) }
@@ -1092,6 +1118,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
+        approvalReceipts.clear(executionChat: key)
         SiteBook.shared.clear(key)
         streamed[key] = nil
         pulseSplitters[key] = nil
@@ -1335,15 +1362,21 @@ final class TeamModel: ObservableObject {
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
+        let workplace = place(of: key)
+        guard workplace.host != nil else {
+            fail(key, WorkPlace.missingHostMessage)
+            return false
+        }
+        hostBindings.set(workplace.hostID, for: key)
         let basePrompt = system(for: bot, room: room, memory: usesMemory)
-        let extraPrompt = summaryBlock(key) + offBlock(key) + place(of: key).promptLine
+        let extraPrompt = summaryBlock(key) + offBlock(key) + workplace.promptLine
             + (Pulse.on ? (Temper.of(bot).pulsePrompt ?? "") : "") + connectorHint
         var agent = Agent(
             provider: recordingProvider(endpoint.provider(key: apiKey), chat: key, base: basePrompt, extra: extraPrompt, memory: usesMemory),
             model: found.model,
             system: basePrompt + extraPrompt,
-            tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees) : [],
-            approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
+            tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees, workplace: workplace) : [],
+            approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key, workplace: workplace) ?? false }
         )
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
@@ -1849,7 +1882,7 @@ final class TeamModel: ObservableObject {
         - 做好了用户要看的文件（文稿、表格、图片、代码文件），回答里把它单独写一行链接：文件写成 [文件名](书案/路径)，图片写成 ![说明](书案/路径)。用户在聊天里点一下就能直接打开、分享、存走，不要只让用户「去书案里找」。网上的图片也可以用 ![说明](网址) 直接放进回答。要算数、处理数据，用 run_js 真的算，不要心算。用户从 ＋ 带进来的文件都在书案/收件。
         - 斗室是手机里的 Alpine Linux，书案在里面的 /root/desk。要装软件、跑 Python、做 run_js 做不了的事，就用 shell；它是模拟运行，比较慢，命令尽量简洁。
         - 你还能用手机的一些本事：所在（where_am_i）、通讯录、相册、步数、「健康」里的睡眠心率（health_read）、剪贴板、打开链接、手机状态。用户说「附近」「今天走了多少」「帮我复制」之类时直接用，不用先问。用户在「应许」里关掉的本事你看不到。
-        - 远山是用户在别处的电脑。工作地点就是某台远山时，用八件工作区工具；要临时在别的主机上跑一条命令，用 ssh_run，跑几分钟以上的用 ssh_job_start 放到后台。只看远山上已启动的后台任务进度或日志时，用 ssh_job_check 并传主机名和任务编号。mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
+        - 远山是用户在别处的电脑。工作地点就是某台远山时，用八件工作区工具；要临时在别的主机上跑一条命令，用 ssh_run，跑几分钟以上的用 ssh_job_start 放到后台。只看远山上已启动的后台任务进度或日志时，用 ssh_job_check 并传主机名和任务编号。探测主机状况或排查问题时，把系统、CPU/内存、磁盘、网络端口、进程和服务等只读检查合进一条复合命令一次跑完，不要拆成十几次单步 ssh_run。mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
         - 需要用户提供信息（地址、账号、选项）时，用 ask_user 递一张笺，不要让用户在聊天里打出密码。密码这类机密会存进信匣，你只拿到编号；网页登录用 browser_fill_secret，加 SSH 主机用 ssh_add_host。vault_list 能看信匣里有什么（看不到密码）。
         - 用户想省钱、领券、签到攒积分、比价、薅羊毛时，主动帮着做：查官方活动和比价，在远游里点「领取」「签到」，每天要做的用 schedule_task 到点去做。只做官方 App、官网和正规平台自己的活动。
         - 用户给你一份表格或数据文件（测点、账单、成绩、步数、行情、能耗……）要核对、统计或看趋势时：先只读表头和前几行弄清格式，再写脚本（run_js，或斗室里的 Python）在手机上把整份算完，不要把整份数据读进对话；用户要的是检查，就逐条列出有问题的行（第几行、哪一项、差多少、为什么算问题）。要画图时，写成一个自带脚本和样式、不引用网上资源的单文件 .html 放进书案（问题点标出来，点一下能看原始数据），回答里给出它的链接。
@@ -1860,8 +1893,9 @@ final class TeamModel: ObservableObject {
         return parts.joined(separator: "\n\n")
     }
 
-    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
+    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false, displayChat: String? = nil, workplace: WorkPlace? = nil) -> [AgentTool] {
         let botId = bot.id
+        let approvalChat = displayChat ?? key
         var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
@@ -1882,7 +1916,10 @@ final class TeamModel: ObservableObject {
         if !SkillShelf.enabled.isEmpty { all.append(UseSkillTool()) }
         all += RoamTools.all(browser, canSee: canSee, chat: key)
         // The eight workspace tools work wherever this conversation is bound: 书案, 斗室 or a 远山 computer.
-        let workplace = self.place(of: key)
+        let workplace = workplace ?? self.place(of: key)
+        guard let host = workplace.host else { return [] }
+        let boundHostID = workplace.hostID
+        hostBindings.set(boundHostID, for: key)
         let code = workplace.code
         let output = toolTail(for: key)
         let kit = WorkspaceKit(
@@ -1891,8 +1928,8 @@ final class TeamModel: ObservableObject {
             beforeChange: { host, path in await Snapshots.shared.keep(key, place: code, host: host, path: path) },
             tail: { output.add($0) }
         )
-        all += WorkspaceTools.all(host: workplace.host, kit: kit)
-        let deskHost = WorkPlace.desk.host
+        all += WorkspaceTools.all(host: host, kit: kit)
+        let deskHost = LocalDeskHost()
         all += Workspace.tools(
             beforeChange: { path in await Snapshots.shared.keep(key, place: WorkPlace.desk.code, host: deskHost, path: path) },
             recordPreRead: { path, preRead in await Snapshots.shared.keepPreRead(key, place: WorkPlace.desk.code, path: path, preRead: preRead) }
@@ -1910,13 +1947,34 @@ final class TeamModel: ObservableObject {
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         let off = Set(options(key).off)
-        let host = workplace.host
-        // After the turn reads the web, commands, secrets, far computers and writes outside the workspace always ask.
-        return Grant.gate(all, workspace: grants).filter { tool in
+        let taintBook = taint
+        let receipts = approvalReceipts
+        let queue = approvalQueue
+        let bindings = hostBindings
+        // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
+        let guarded = all.map {
+            TaintGuard(
+                $0,
+                key: key,
+                optInKey: approvalChat,
+                book: taintBook,
+                isInside: { host.isInside($0) },
+                allowAfterWeb: { Grant.followPolicyAfterWeb }
+            )
+        }
+        return Grant.gate(
+            guarded,
+            workspace: grants,
+            executionChat: key,
+            hostID: boundHostID,
+            hostBindings: bindings,
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
+        ).filter { tool in
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
         }
-        .map { TaintGuard($0, key: key, book: taint, isInside: { host.isInside($0) }) }
     }
 
     // MARK: 派活
@@ -1934,6 +1992,8 @@ final class TeamModel: ObservableObject {
         let helperId = helper.id
         let helperName = helper.name
         guard !isWorking(helperKey) else { return ToolOutput("\(helper.name)正在忙自己的事，等它忙完再请，或者你自己来。", isError: true) }
+        let helperPlace = place(of: helperKey)
+        guard helperPlace.host != nil else { return ToolOutput(WorkPlace.missingHostMessage, isError: true) }
         guard let found = resolve(helper.model ?? settings.defaultModel) ?? resolve(settings.defaultModel),
               let apiKey = apiKey(for: found.endpoint.id), !apiKey.isEmpty else {
             return ToolOutput("\(helper.name)用的模型连不上（没设好或没有密钥）。", isError: true)
@@ -1946,6 +2006,7 @@ final class TeamModel: ObservableObject {
         if taint.isTainted(key) { taint.mark(helperKey) }
         helping.insert(helperKey)
         defer {
+            approvalReceipts.clear(executionChat: helperKey)
             helping.remove(helperKey)
             flushQueue(helperKey)
         }
@@ -1953,14 +2014,15 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(asked)), to: helperKey)
         touch(helperKey, preview: nil)
         let traits = found.endpoint.traits(found.model)
+        hostBindings.set(helperPlace.hostID, for: helperKey)
         let basePrompt = system(for: helper, room: nil)
         let extraPrompt = "\n\n这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。"
         var agent = Agent(
             provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, base: basePrompt, extra: extraPrompt, memory: true),
             model: found.model,
             system: basePrompt + extraPrompt,
-            tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true) : [],
-            approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key) ?? false }
+            tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true, displayChat: key, workplace: helperPlace) : [],
+            approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key, executionChat: helperKey, workplace: helperPlace) ?? false }
         )
         agent.screen = Self.screen
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
@@ -2012,68 +2074,250 @@ final class TeamModel: ObservableObject {
     func allowAlways(_ tool: String) {
         alwaysAllowed.insert(tool)
         UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+        approvalQueue.bumpRevision()
     }
 
     func revokeAlways(_ tool: String) {
         alwaysAllowed.remove(tool)
         UserDefaults.standard.set(Array(alwaysAllowed), forKey: "always.allowed")
+        approvalQueue.bumpRevision()
     }
 
     func trust(_ chat: String, _ on: Bool) {
-        if on { trusted.insert(chat) } else { trusted.remove(chat) }
+        if on {
+            trusted.insert(chat)
+        } else {
+            trusted.remove(chat)
+            taint.revokeThrough(chat)
+        }
+        approvalQueue.bumpRevision()
     }
 
     /// Chats whose current turn has read the web (see `Taint`).
     let taint = TaintBook()
 
-    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
-        if !ask.forced, alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
+    func effectiveGrant(for tool: String, in chat: String?) -> Grant? {
+        if let chat, WorkspaceTools.names.contains(tool) {
+            return place(of: chat).grant(for: tool)
+        }
+        return Grant.of(tool: tool)
+    }
+
+    func pendingDecision(for approval: Approval) -> PendingApprovalDecision {
+        guard let tool = approval.toolName else { return .wait }
+        if let boundHost = approval.hostID, !boundHost.isEmpty,
+           let authChat = approval.authChat,
+           place(of: authChat).hostID != boundHost {
+            return .reject
+        }
+        let grant = approval.boundGrant ?? effectiveGrant(for: tool, in: approval.authChat)
+        if grant?.policy == .off { return .reject }
+        if approval.forced == true {
+            let isWebOnly = approval.detail?.text?.hasPrefix(Taint.reason) == true && !Taint.hardExits.contains(tool)
+            guard isWebOnly else { return .wait }
+            let allowedThrough: Bool
+            if let chat = approval.chat {
+                allowedThrough = taint.isAllowedThrough(chat)
+            } else {
+                allowedThrough = false
+            }
+            guard Grant.followPolicyAfterWeb || allowedThrough else { return .wait }
+        }
+        let chatTrusted: Bool
+        if let chat = approval.chat {
+            chatTrusted = trusted.contains(chat)
+        } else {
+            chatTrusted = false
+        }
+        if alwaysAllowed.contains(tool) || chatTrusted { return .allow }
+        if Grant.isFreeRunning, grant?.policy == .allow { return .allow }
+        if let grant {
+            switch grant.policy {
+            case .allow:
+                if !Grant.hasBuiltInConfirmation(tool) { return .allow }
+            case .smart:
+                if Grant.allowsSmartQuery(tool, grant: grant), !Grant.hasBuiltInConfirmation(tool) { return .allow }
+            case .ask, .off:
+                break
+            }
+        }
+        return .wait
+    }
+
+    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String, executionChat: String? = nil, workplace: WorkPlace? = nil) async -> Bool {
         let id = UUID().uuidString
+        let authChat = executionChat ?? chat
+        let invocationID = ToolInvocation.currentID ?? ""
+        let boundPlace = workplace ?? self.place(of: authChat)
+        let isWorkspaceTool = WorkspaceTools.names.contains(tool)
+        let boundGrant = isWorkspaceTool ? boundPlace.grant(for: tool) : Grant.of(tool: tool)
+        let boundHostID = isWorkspaceTool ? boundPlace.hostID : ""
+        let executionContext = ToolExecutionContext(
+            executionChat: authChat,
+            hostID: boundHostID,
+            grantID: boundGrant?.rawValue ?? ""
+        )
         let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
         let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
+            executionChat: executionChat,
+            hostID: isWorkspaceTool ? boundHostID : nil,
+            boundGrant: boundGrant,
             tool: ask.title, toolName: tool, reason: ask.reason, detail: detail,
             at: Now.ms, answerable: true, forced: ask.forced
         )
         let before = doing[chat]
-        doing[chat] = "等你批准"
-        BackgroundTurn.step(chat: chat, doing: "等你批准")
-        record(.waiting, in: chat)
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { approvals.append(approval) }
-        WidgetFeed.publish(self)
-        if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
-        Haptics.tick(0.8)
-        if UIApplication.shared.applicationState != .active {
-            Notify.approval(approval, from: bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
+        var announced = false
+        let queue = approvalQueue
+        let receipts = approvalReceipts
+        let allowed = await withTaskCancellationHandler {
+            await queue.awaitDecision(
+                id: id,
+                evaluate: { self.pendingDecision(for: approval) },
+                onEnqueue: {
+                    self.doing[chat] = "等你批准"
+                    BackgroundTurn.step(chat: chat, doing: "等你批准")
+                    if !announced {
+                        self.record(.waiting, in: chat)
+                        announced = true
+                    }
+                    if !self.approvals.contains(where: { $0.id == id }) {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { self.approvals.append(approval) }
+                    }
+                    WidgetFeed.publish(self)
+                    PetNews.shared.post(.approval, chat: chat, title: self.chatName(chat))
+                    Haptics.tick(0.8)
+                    if UIApplication.shared.applicationState != .active {
+                        Notify.approval(approval, from: self.bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
+                    }
+                },
+                onLeave: {
+                    Notify.clear(id)
+                    self.approvals.removeAll { $0.id == id }
+                    WidgetFeed.publish(self)
+                },
+                onUserApproved: {
+                    guard !Task.isCancelled else { return }
+                    if !boundHostID.isEmpty, self.place(of: authChat).hostID != boundHostID { return }
+                    receipts.record(invocation: invocationID, context: executionContext, tool: tool)
+                }
+            )
+        } onCancel: {
+            queue.cancel(id: id)
+            receipts.revoke(invocation: invocationID)
         }
-        let allowed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in waiters[id] = continuation }
+        if Task.isCancelled {
+            receipts.revoke(invocation: invocationID)
+        }
         if doing[chat] == "等你批准" { doing[chat] = before }
         WidgetFeed.publish(self)
-        return allowed
+        return Task.isCancelled ? false : allowed
+    }
+
+    /// Cancels pending approvals bound to an obsolete workplace/host when the user switches workplace mid-turn
+    /// so an action targeting the old host is never silently re-authorized under the new workplace's grant.
+    func cancelStaleWorkplaceApprovals(executionChat: String, oldHostID: String) {
+        approvalQueue.bumpRevision()
+        approvalReceipts.clear(executionChat: executionChat, hostID: oldHostID)
+        let stale = approvals.filter { $0.authChat == executionChat && $0.hostID == oldHostID }
+        guard !stale.isEmpty else { return }
+        let staleIDs = Set(stale.map(\.id))
+        for approval in stale {
+            Notify.clear(approval.id)
+            approvalQueue.cancel(id: approval.id)
+        }
+        approvals.removeAll { staleIDs.contains($0.id) }
+        WidgetFeed.publish(self)
+    }
+
+    /// Synchronously reconciles waiting approvals against live permission state with a bumped policy revision.
+    func reconcilePendingApprovals() {
+        if phase == .demo {
+            let rev = approvalQueue.bumpRevision()
+            let pending = approvals
+            for approval in pending where approval.answerable != false {
+                let decision = pendingDecision(for: approval)
+                guard decision != .wait else { continue }
+                Task {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    guard self.approvalQueue.currentRevision == rev else { return }
+                    guard self.pendingDecision(for: approval) == decision else { return }
+                    self.approvals.removeAll { $0.id == approval.id }
+                    WidgetFeed.publish(self)
+                }
+            }
+            return
+        }
+        var decisions: [String: PendingApprovalDecision] = [:]
+        for approval in approvals where approval.answerable != false {
+            decisions[approval.id] = pendingDecision(for: approval)
+        }
+        let settled = approvalQueue.reconcile(decisions: decisions)
+        guard !settled.isEmpty else { return }
+        let settledSet = Set(settled)
+        for id in settled { Notify.clear(id) }
+        approvals.removeAll { settledSet.contains($0.id) }
+        WidgetFeed.publish(self)
     }
 
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
-    func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false) async throws {
+    /// Standing permission side effects are committed ONLY after atomically claiming an active pending approval.
+    func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false, throughWeb: Bool = false) async throws {
         // A step that must be asked every time can be allowed once, never for good.
         let lasting = approval.forced != true
-        if allow, always, lasting, let name = approval.toolName { allowAlways(name) }
-        if allow, trustChat, lasting, let chat = approval.chat { trust(chat, true) }
+        let commitGrants: () -> Bool = {
+            guard allow else { return false }
+            if let boundHost = approval.hostID, !boundHost.isEmpty,
+               let authChat = approval.authChat,
+               self.place(of: authChat).hostID != boundHost {
+                return false
+            }
+            if let tool = approval.toolName,
+               (approval.boundGrant ?? self.effectiveGrant(for: tool, in: approval.authChat))?.policy == .off {
+                return false
+            }
+            var changed = false
+            if always, lasting, let name = approval.toolName {
+                self.allowAlways(name)
+                changed = true
+            }
+            if trustChat, lasting, let chat = approval.chat {
+                self.trust(chat, true)
+                changed = true
+            }
+            if throughWeb, let chat = approval.chat, let tool = approval.toolName,
+               approval.detail?.text?.hasPrefix(Taint.reason) == true,
+               !Taint.hardExits.contains(tool) {
+                self.taint.allowThrough(chat)
+                self.trust(chat, true)
+                changed = true
+            }
+            return changed
+        }
         if phase == .demo {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard approvals.contains(where: { $0.id == approval.id }) else {
+                throw TeamError(message: "这张单子已经不在了。")
+            }
+            _ = commitGrants()
             approvals.removeAll { $0.id == approval.id }
             WidgetFeed.publish(self)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             return
         }
         Notify.clear(approval.id)
-        guard let waiter = waiters.removeValue(forKey: approval.id) else {
-            approvals.removeAll { $0.id == approval.id }
-            WidgetFeed.publish(self)
-            throw TeamError(message: "这张单子已经不在了。")
+        var grantsChanged = false
+        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: allow) {
+            grantsChanged = commitGrants()
         }
         approvals.removeAll { $0.id == approval.id }
         WidgetFeed.publish(self)
-        waiter.resume(returning: allow)
+        guard resolved else {
+            throw TeamError(message: "这张单子已经不在了。")
+        }
+        if grantsChanged {
+            reconcilePendingApprovals()
+        }
     }
 
     /// 同意 / 不同意 pressed on a notification.
@@ -2082,16 +2326,21 @@ final class TeamModel: ObservableObject {
             Notify.now("这张单子已经过期了", Words.t("Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。"), chat: "")
             return
         }
-        // A slip that must be asked because outside text came before it, or that carries a command / code payload,
-        // is not answered blindly from a notification. 不同意 still works from there.
+        // A forced slip or one that carries a command / code payload is not answered blindly from a notification.
+        // 不同意 still works from there.
         let requiresInspection = approval.forced == true
             || approval.detail?.code != nil
             || approval.toolName == "shell"
             || (approval.toolName?.hasPrefix("ssh_") == true)
         if allow, requiresInspection {
-            let why = approval.forced == true
-                ? "它是在读过网页、邮件等外部内容之后提出的。"
-                : "这一单带有命令或详细参数，通知里显示不全，请打开 Clio 看清楚再决定。"
+            let why: String
+            if approval.detail?.text?.hasPrefix(Taint.reason) == true {
+                why = "这一轮读过网页或邮件等外部内容，请打开 Clio 看清楚再决定。"
+            } else if approval.forced == true {
+                why = "发邮件、填密码和设定时这类操作需要打开 Clio 确认。"
+            } else {
+                why = "这一单带有命令或详细参数，通知里显示不全，请打开 Clio 看清楚再决定。"
+            }
             Notify.now("这一单要打开 Clio 看清楚再批", why, chat: approval.chat ?? "")
             return
         }

@@ -22,6 +22,12 @@ public struct ApprovalAsk: Equatable, Sendable {
     }
 }
 
+/// Scopes a unique identifier to a single `Agent.perform(_:)` tool invocation via `@TaskLocal`
+/// so single-use approval receipts bind strictly to one call and never leak across calls or chats.
+public enum ToolInvocation {
+    @TaskLocal public static var currentID: String?
+}
+
 public struct ToolOutput: Equatable, Sendable {
     public var text: String
     public var isError: Bool
@@ -356,6 +362,13 @@ public struct Agent: Sendable {
     }
 
     private func perform(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
+        let invocationID = "\(call.id)-\(UUID().uuidString)"
+        return await ToolInvocation.$currentID.withValue(invocationID) {
+            await performBound(call, emit: emit)
+        }
+    }
+
+    private func performBound(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
         guard let tool = tools.first(where: { $0.spec.name == call.name }) else {
             return .toolResult("没有叫 \(call.name) 的工具。", for: call, isError: true)
         }

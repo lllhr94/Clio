@@ -8,6 +8,7 @@ struct GrantsPage: View {
     @Environment(\.scenePhase) private var phase
     @State private var policies: [Grant: Grant.Policy] = [:]
     @State private var systems: [Grant: Grant.System] = [:]
+    @AppStorage(Grant.followAfterWebKey) private var followAfterWeb = false
 
     private var groups: [(String, [Grant])] { [
         (L.t("permissions.web"), [.web, .browser, .links]),
@@ -24,6 +25,7 @@ struct GrantsPage: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
                         presets
+                        webGuardCard
                         Button {
                             askAll()
                         } label: {
@@ -133,6 +135,7 @@ struct GrantsPage: View {
                         Haptics.tick(0.6)
                         preset.apply()
                         for grant in Grant.allCases { policies[grant] = grant.policy }
+                        team.reconcilePendingApprovals()
                     } label: {
                         VStack(spacing: Ink.Space.xs / 2) {
                             Text(preset.title).font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -153,6 +156,32 @@ struct GrantsPage: View {
         }
     }
 
+    private var webGuardCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack(alignment: .top, spacing: Ink.Space.m) {
+                IconBadge(symbol: "exclamationmark.shield", tint: followAfterWeb ? Ink.Tile.xiang : Ink.Tile.off)
+                Toggle(isOn: $followAfterWeb) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                        Text(L.t("permissions.followAfterWeb"))
+                            .font(.system(size: Ink.Size.body, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                        Text(L.t("permissions.followAfterWebNote"))
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                }
+                .tint(Ink.warn)
+            }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+        .paperCard()
+        .onChange(of: followAfterWeb) { _, _ in
+            Haptics.tick(0.5)
+            team.reconcilePendingApprovals()
+        }
+    }
+
     private func row(_ grant: Grant) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(alignment: .top, spacing: Ink.Space.m) {
@@ -170,6 +199,7 @@ struct GrantsPage: View {
                 Haptics.tick(0.5)
                 grant.policy = value
                 policies[grant] = value
+                team.reconcilePendingApprovals()
                 if value != .off, systems[grant] == .notAsked {
                     Task {
                         await grant.requestSystem()
