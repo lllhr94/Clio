@@ -132,7 +132,8 @@ enum WebDAV {
         return Array(Set(names)).sorted(by: >)
     }
 
-    /// Downloads one backup to a protected temporary file inside `restoreInboxDirectory`.
+    /// Streams one backup into a protected temporary file inside `restoreInboxDirectory`,
+    /// checking HTTP status, `expectedContentLength`, and `Backup.maxBackupFileBytes` incrementally.
     static func download(_ name: String) async throws -> URL {
         guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
         guard name.hasSuffix(".clio-backup"),
@@ -143,41 +144,75 @@ enum WebDAV {
             throw TeamError(message: "网盘上的文件名不对。")
         }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
-        let (temp, response) = try await URLSession.shared.download(
+        let (bytes, response) = try await URLSession.shared.bytes(
             for: request(base.appendingPathComponent(name), method: "GET"),
             delegate: delegate
         )
-        do {
-            try check(response)
-            if response.expectedContentLength > Int64(Backup.maxBackupFileBytes) {
-                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
-            }
-            var st = stat()
-            guard lstat(temp.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
-                throw TeamError(message: "网盘下载的文件无效。")
-            }
-            guard st.st_size > 0 else {
-                throw TeamError(message: "网盘上的备份文件是空的。")
-            }
-            guard st.st_size <= Int64(Backup.maxBackupFileBytes) else {
-                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
-            }
-
-            let manager = FileManager.default
-            let inbox = restoreInboxDirectory
-            try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
-            let target = inbox.appendingPathComponent("dav-\(UUID().uuidString).clio-backup")
-            try? manager.removeItem(at: target)
-            try manager.moveItem(at: temp, to: target)
-            try? manager.setAttributes(
-                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                ofItemAtPath: target.path
-            )
-            return target
-        } catch {
-            try? FileManager.default.removeItem(at: temp)
-            throw error
+        try check(response)
+        if let finalURL = (response as? HTTPURLResponse)?.url,
+           !VoiceEndpoint.allowsRedirect(from: base, to: finalURL) {
+            throw TeamError(message: "网盘试图跳转到其他地址或降级连接，已中止。")
         }
+        if response.expectedContentLength > Int64(Backup.maxBackupFileBytes) {
+            throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+        }
+
+        let manager = FileManager.default
+        let inbox = restoreInboxDirectory
+        try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let target = inbox.appendingPathComponent("dav-\(UUID().uuidString).clio-backup")
+        try? manager.removeItem(at: target)
+        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        guard manager.createFile(atPath: target.path, contents: nil, attributes: protection) else {
+            throw TeamError(message: "没能在手机上建网盘恢复暂存文件。")
+        }
+
+        var completed = false
+        defer {
+            if !completed {
+                try? manager.removeItem(at: target)
+            }
+        }
+
+        let handle = try FileHandle(forWritingTo: target)
+        var handleClosed = false
+        defer {
+            if !handleClosed {
+                try? handle.close()
+            }
+        }
+
+        let chunkSize = 65_536
+        var buffer = Data()
+        buffer.reserveCapacity(chunkSize)
+        var total = 0
+
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            total += 1
+            guard total <= Backup.maxBackupFileBytes else {
+                throw TeamError(message: L.t("backupCrypto.davDownloadTooLarge"))
+            }
+            buffer.append(byte)
+            if buffer.count >= chunkSize {
+                try handle.write(contentsOf: buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !buffer.isEmpty {
+            try handle.write(contentsOf: buffer)
+        }
+        try handle.synchronize()
+        try handle.close()
+        handleClosed = true
+
+        guard total > 0 else {
+            throw TeamError(message: "网盘上的备份文件是空的。")
+        }
+        try? manager.setAttributes(protection, ofItemAtPath: target.path)
+        completed = true
+        return target
     }
 
     /// Removes any leftover downloaded/staged restore temp files in `restoreInboxDirectory`.

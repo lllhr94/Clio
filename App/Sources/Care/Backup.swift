@@ -54,18 +54,14 @@ enum Backup {
     /// Hard invariant: exporting `#keys` (`withKeys == true`) requires a non-empty `passphrase` and MUST produce an
     /// encrypted `CLIO-BACKUP-ENC-1\n` file; plaintext `#keys` backups are never emitted.
     static func make(withKeys: Bool, endpoints: [String], passphrase: String? = nil) throws -> (URL, Summary) {
-        let trimmedPassphrase = passphrase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let shouldEncrypt: Bool
-        if withKeys {
-            guard let passphrase else {
-                throw BackupCryptoError.passphraseRequired
-            }
-            guard !trimmedPassphrase.isEmpty else {
+        if let passphrase {
+            guard !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw BackupCryptoError.emptyPassphrase
             }
             shouldEncrypt = true
-        } else if !trimmedPassphrase.isEmpty {
-            shouldEncrypt = true
+        } else if withKeys {
+            throw BackupCryptoError.passphraseRequired
         } else {
             shouldEncrypt = false
         }
@@ -401,7 +397,12 @@ enum Backup {
                 throw TeamError(message: "本地数据目录异常（包含符号链接），已中止恢复。")
             }
             if manager.fileExists(atPath: live.path) {
-                try manager.copyItem(at: live, to: staging.appendingPathComponent(folder, isDirectory: true))
+                guard isRealDirectory(live) else {
+                    throw TeamError(message: "本地数据目录不是有效文件夹，已中止恢复。")
+                }
+                let stagedFolder = staging.appendingPathComponent(folder, isDirectory: true)
+                try manager.copyItem(at: live, to: stagedFolder)
+                try verifyNoSymlinks(under: stagedFolder, root: staging)
             }
         }
         stripDisallowedStagedArtifacts(in: staging.appendingPathComponent("Team", isDirectory: true))
@@ -578,20 +579,34 @@ enum Backup {
     private static func writeStagedFile(_ body: Data, to target: URL, root: URL) throws {
         let manager = FileManager.default
         let parent = target.deletingLastPathComponent()
+        guard isRealDirectory(root),
+              isContained(parent, inside: root),
+              isContained(target, inside: root),
+              !hasSymlinkOrInvalidAncestor(from: root, to: parent),
+              !isSymbolicLink(target),
+              !isRealDirectory(target) else {
+            throw TeamError(message: "备份里存在越界或符号链接路径，已中止恢复。")
+        }
         try manager.createDirectory(at: parent, withIntermediateDirectories: true)
-        guard isContained(parent, inside: root),
-              !hasSymlinkComponent(from: root, to: target),
+        guard isRealDirectory(parent),
+              isContained(parent, inside: root),
+              !hasSymlinkOrInvalidAncestor(from: root, to: parent),
+              !isSymbolicLink(target),
+              !isRealDirectory(target),
               isContained(target, inside: root) else {
             throw TeamError(message: "备份里存在越界或符号链接路径，已中止恢复。")
         }
         try body.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
-    private static func hasSymlinkComponent(from root: URL, to target: URL) -> Bool {
+    private static func hasSymlinkOrInvalidAncestor(from root: URL, to targetDirectory: URL) -> Bool {
         let rootStd = root.standardizedFileURL.path
-        var current = target.standardizedFileURL
+        var current = targetDirectory.standardizedFileURL
         while true {
             if isSymbolicLink(current) { return true }
+            if lstatExists(current) && (!isRealDirectory(current) || !isContained(current, inside: root)) {
+                return true
+            }
             if current.path == rootStd || current.path == "/" { break }
             let parent = current.deletingLastPathComponent()
             if parent.path == current.path { break }
@@ -602,7 +617,7 @@ enum Backup {
 
     private static func verifyNoSymlinks(under directory: URL, root: URL) throws {
         guard isRealDirectory(directory), isContained(directory, inside: root) else {
-            throw TeamError(message: "暂存的技能目录异常，已中止恢复。")
+            throw TeamError(message: "暂存的恢复目录异常，已中止恢复。")
         }
         guard let walker = FileManager.default.enumerator(
             at: directory,
@@ -614,14 +629,14 @@ enum Backup {
         for case let entry as URL in walker {
             var st = stat()
             guard lstat(entry.path, &st) == 0 else {
-                throw TeamError(message: "无法校验暂存技能文件，已中止恢复。")
+                throw TeamError(message: "无法校验暂存恢复文件，已中止恢复。")
             }
             let mode = st.st_mode & S_IFMT
             guard mode == S_IFREG || mode == S_IFDIR else {
-                throw TeamError(message: "备份里的技能包含不支持的链接或特殊文件，已中止恢复。")
+                throw TeamError(message: "恢复目录包含不支持的链接或特殊文件，已中止恢复。")
             }
             guard isContained(entry, inside: root) else {
-                throw TeamError(message: "备份里的技能路径越界，已中止恢复。")
+                throw TeamError(message: "恢复目录路径越界，已中止恢复。")
             }
         }
     }

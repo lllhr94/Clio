@@ -259,6 +259,7 @@ public enum BackupArchivePolicy: Sendable {
         ".sqlite3-wal",
         ".sqlite3-shm",
         ".sqlite3-journal",
+        ".journal",
         ".wal",
         ".shm",
     ]

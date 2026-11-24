@@ -153,7 +153,7 @@ struct CarePage: View {
                     busy: $restoringBusy,
                     onCancel: { cancelPendingRestore() },
                     onSubmit: { passphrase in
-                        Task { await executeRestore(pending: pending, passphrase: passphrase) }
+                        startUnlockRestore(pending: pending, passphrase: passphrase)
                     }
                 )
             }
@@ -547,6 +547,9 @@ struct CarePage: View {
     // MARK: Backup & Restore Actions
 
     private func make() {
+        guard !making, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
+            return
+        }
         if withKeys || encryptLocal {
             passphraseSetup = PassphraseSetupRequest(purpose: .localBackup(withKeys: withKeys))
         } else {
@@ -555,6 +558,9 @@ struct CarePage: View {
     }
 
     private func davUpload() {
+        guard !davBusy, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
+            return
+        }
         WebDAV.setPassword(davPassword)
         if davEncrypt {
             passphraseSetup = PassphraseSetupRequest(purpose: .webdavUpload)
@@ -579,6 +585,7 @@ struct CarePage: View {
     }
 
     private func performMake(withKeys includeKeys: Bool, passphrase: String?) {
+        guard !making, !restoringBusy, !restored, !Disk.frozen else { return }
         making = true
         made = nil
         let ids = team.settings.endpoints.map(\.id)
@@ -599,6 +606,7 @@ struct CarePage: View {
     }
 
     private func performDavUpload(passphrase: String?) {
+        guard !davBusy, !restoringBusy, !restored, !Disk.frozen else { return }
         davBusy = true
         let ids = team.settings.endpoints.map(\.id)
         Task {
@@ -621,6 +629,9 @@ struct CarePage: View {
 
     /// Lists the drive's backups first; the person picks one (newest at the top), then that one comes back.
     private func davRestore() {
+        guard !davBusy, !cleaningCache, !restoringBusy, !making, !restored, !Disk.frozen, pendingRestore == nil else {
+            return
+        }
         davBusy = true
         Task {
             do {
@@ -636,6 +647,7 @@ struct CarePage: View {
 
     private func davRestore(_ name: String) {
         davChoices = []
+        guard !davBusy, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
         davBusy = true
         restoringBusy = true
         Task {
@@ -661,6 +673,7 @@ struct CarePage: View {
     }
 
     private func prepareLocalRestore(from pickedURL: URL) {
+        guard !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
         restoringBusy = true
         Task {
             do {
@@ -689,7 +702,17 @@ struct CarePage: View {
         }
     }
 
+    private func startUnlockRestore(pending: PendingRestore, passphrase: String) {
+        guard !restoringBusy, !restored, !Disk.frozen else { return }
+        restoringBusy = true
+        Task { await executeRestore(pending: pending, passphrase: passphrase) }
+    }
+
     private func executeRestore(pending: PendingRestore, passphrase: String?) async {
+        guard !restored, !Disk.frozen else {
+            restoringBusy = false
+            return
+        }
         restoringBusy = true
         team.beginBackupRestore()
         await stopCleanBeforeRestore()
@@ -1116,7 +1139,8 @@ private struct PassphraseSetupSheet: View {
                     Image(systemName: reveal ? "eye.slash" : "eye")
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
-                        .frame(minWidth: 32, minHeight: 32)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(TapStyle())
                 .accessibilityLabel(reveal ? L.t("backupCrypto.hidePassphrase") : L.t("backupCrypto.showPassphrase"))
@@ -1163,6 +1187,7 @@ private struct PassphraseUnlockSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("backupCrypto.unlockAndRestore")) {
+                        guard canSubmit else { return }
                         Haptics.tick(0.6)
                         onSubmit(passphrase)
                     }
@@ -1217,7 +1242,8 @@ private struct PassphraseUnlockSheet: View {
                         Image(systemName: reveal ? "eye.slash" : "eye")
                             .font(Ink.secondary)
                             .foregroundStyle(Ink.inkSoft)
-                            .frame(minWidth: 32, minHeight: 32)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(TapStyle())
                     .disabled(busy)

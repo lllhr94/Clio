@@ -236,12 +236,14 @@ final class BackupCryptoTests: XCTestCase {
             "Team/sub/secrets.json",
             "Team/snapshots/s1.json",
             "Team/doccache/doc1.txt",
-            // SQLite / WAL / SHM / ClioMemory / ClioIndex / ClioQueued
+            // SQLite / WAL / SHM / journal / ClioMemory / ClioIndex / ClioQueued
             "ClioMemory/clio-memory.db",
             "ClioMemory/clio-memory.db-wal",
             "ClioMemory/clio-memory.db-shm",
             "ClioMemory/Mirrors/档案.md",
+            "clioMemory/sub/notes.json",
             "ClioIndex/clio-index.db",
+            "ClioINDEX/sub/index.json",
             "ClioQueued/slot.json",
             "Team/clio-memory.db",
             "Team/data.sqlite",
@@ -249,8 +251,10 @@ final class BackupCryptoTests: XCTestCase {
             "Team/data.sqlite-shm",
             "Team/data.sqlite3",
             "Team/data.db-journal",
+            "Team/data.journal",
             "Skills/skill.sqlite",
             "Skills/skill.sqlite-wal",
+            "Skills/skill.journal",
             // Traversal, hidden dotfiles, control chars, non-allowlisted roots
             "../Team/bots.json",
             "Team/../secrets.json",
@@ -272,6 +276,8 @@ final class BackupCryptoTests: XCTestCase {
             "书案/diary.md",
             "Den/rootfs/etc/shadow",
             "Team/bad\0file.json",
+            "Team/bad\nfile.json",
+            "Team/bad\rfile.json",
         ]
         for path in excluded {
             XCTAssertTrue(BackupArchivePolicy.isExcludedArchivePath(path), "Expected excluded path: \(path)")
