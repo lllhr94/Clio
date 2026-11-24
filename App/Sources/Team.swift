@@ -951,6 +951,7 @@ final class TeamModel: ObservableObject {
         queued.removeAll()
         unresolvedLeafOpenChats.removeAll()
         scheduleIndexResetForRestore()
+        prepareMemoryStoreForRestore()
     }
 
     func finishBackupRestoreFailed() {
@@ -2412,8 +2413,7 @@ extension TeamModel {
             book.memories = memories
             book.reviewFromDay = today
             do {
-                try Disk.write(book, "memory.json")
-                memoryBook = book
+                try commitMemoryBook(book)
             } catch {
                 return
             }
@@ -2543,10 +2543,7 @@ extension TeamModel {
         book.reviews.insert(MemoryReviewLog(id: UUID(), at: Date(), day: day, conversation: source.name,
                                             added: changes.added, merged: changes.merged), at: 0)
         book.reviews = Array(book.reviews.prefix(100))
-        try Disk.write(book, "memory.json")
-        memoryBook = book
-        memories = book.memories
-        memoryReviews = book.reviews
+        try commitMemoryBook(book)
         invalidateMemoryPromptCache()
     }
 
@@ -2576,8 +2573,7 @@ extension TeamModel {
             book.requests += 1
         }
         book.memories = memories
-        try Disk.write(book, "memory.json")
-        memoryBook = book
+        try commitMemoryBook(book)
 
         let secrets = Vault.allStrings().sorted { $0.count > $1.count }
         let safeSystem = MemoryReviewRules.clip(MemoryReviewRules.redacted(system, secrets: secrets), bytes: 1_200)
