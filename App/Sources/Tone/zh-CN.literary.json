@@ -840,6 +840,7 @@
     "searxngKeyBoundOrigin": "仅对当前实例生效：%@",
     "searxngKeyNeedURL": "请先在上方填写并保存 SearXNG 实例地址，再配置对应实例的密钥。",
     "searxngKeySaveURLFirst": "实例地址有未保存的修改；请先保存地址，再查看或修改该地址对应的密钥。",
+    "searxngKeyRequiresHTTPS": "当前实例使用 http://（仅用于局域网免密访问）；为保护密钥安全，只有 https:// 实例支持填写 Bearer 令牌。",
     "fallbackAndTestSection": "兜底与测试",
     "fallbackOrderTitle": "备用寻访源（按顺序尝试）",
     "fallbackOrderEmpty": "尚未添加备用寻访源；可按需添加多个，主寻访源失败或无结果时将依次尝试。",

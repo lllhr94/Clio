@@ -200,7 +200,12 @@ public enum WebText {
     }
 
     /// Removes balanced `<tag ...>...</tag>` elements whose opening tag satisfies `shouldStrip` in a single O(N) pass.
-    private static func stripBalancedContainers(_ html: String, tag: String, shouldStrip: (String) -> Bool) -> String {
+    private static func stripBalancedContainers(
+        _ html: String,
+        tag: String,
+        placeholder: String = " ",
+        shouldStrip: (String) -> Bool
+    ) -> String {
         let openToken = "<" + tag
         let closeToken = "</" + tag
         var out = ""
@@ -226,9 +231,10 @@ public enum WebText {
                 openToken: openToken,
                 closeToken: closeToken,
                 from: openClose.upperBound,
-                limit: html.endIndex
+                limit: html.endIndex,
+                trackListBoundaries: tag.lowercased() == "li"
             )
-            out.append(" ")
+            out.append(placeholder)
             cursor = scanEnd
         }
         return out
@@ -250,14 +256,18 @@ public enum WebText {
     }
 
     /// Scans forward once from `start` within `..<limit` tracking `<tag` / `</tag` depth in strictly linear O(N) time.
+    /// When `trackListBoundaries` is enabled (for `<li>`), a sibling `<li>` or closing parent list outside nested
+    /// `<ul>`/`<ol>`/`<menu>` implicitly closes an `<li>` whose `</li>` was omitted.
     private static func scanBalancedTagEnd(
         in html: String,
         openToken: String,
         closeToken: String,
         from start: String.Index,
-        limit: String.Index
+        limit: String.Index,
+        trackListBoundaries: Bool = false
     ) -> String.Index {
         var depth = 1
+        var listDepth = 0
         var scan = start
         while depth > 0, scan < limit {
             guard let lt = html.range(of: "<", range: scan..<limit) else {
@@ -272,9 +282,36 @@ public enum WebText {
                     return limit
                 }
             } else if matchesTagAt(html, index: lt.lowerBound, token: openToken, limit: limit) {
+                if trackListBoundaries && listDepth == 0 && depth == 1 {
+                    return lt.lowerBound
+                }
                 let afterToken = html.index(lt.lowerBound, offsetBy: openToken.count)
                 if let openEnd = html.range(of: ">", range: afterToken..<limit) {
                     depth += 1
+                    scan = openEnd.upperBound
+                } else {
+                    return limit
+                }
+            } else if trackListBoundaries, let listCloseLen = matchingListTagLength(html, index: lt.lowerBound, closing: true, limit: limit) {
+                if listDepth == 0 && depth == 1 {
+                    return lt.lowerBound
+                }
+                let afterToken = html.index(lt.lowerBound, offsetBy: listCloseLen)
+                if let closeEnd = html.range(of: ">", range: afterToken..<limit) {
+                    if listDepth > 0 {
+                        listDepth -= 1
+                        if listDepth == 0 {
+                            depth = min(depth, 1)
+                        }
+                    }
+                    scan = closeEnd.upperBound
+                } else {
+                    return limit
+                }
+            } else if trackListBoundaries, let listOpenLen = matchingListTagLength(html, index: lt.lowerBound, closing: false, limit: limit) {
+                let afterToken = html.index(lt.lowerBound, offsetBy: listOpenLen)
+                if let openEnd = html.range(of: ">", range: afterToken..<limit) {
+                    listDepth += 1
                     scan = openEnd.upperBound
                 } else {
                     return limit
@@ -284,6 +321,14 @@ public enum WebText {
             }
         }
         return scan
+    }
+
+    private static func matchingListTagLength(_ html: String, index: String.Index, closing: Bool, limit: String.Index) -> Int? {
+        let tokens = closing ? ["</ul", "</ol", "</menu"] : ["<ul", "<ol", "<menu"]
+        for token in tokens where matchesTagAt(html, index: index, token: token, limit: limit) {
+            return token.count
+        }
+        return nil
     }
 
     private static func matchesTagAt(_ html: String, index: String.Index, token: String, limit: String.Index) -> Bool {
@@ -297,11 +342,10 @@ public enum WebText {
     private static func isAdContainerTag(_ openTag: String) -> Bool {
         let lower = openTag.lowercased()
         let patterns = [
-            "\\bb_ad(?:top|bottom|last|slug|_container|s)?\\b",
+            "\\bb_ad(?:top|bottom|last|_container|s)?\\b",
             "\\bresult--ad\\b",
             "\\bresults_links_ad\\b",
             "\\bad_result\\b",
-            "\\bbadge--ad\\b",
             "\\bsponsored\\b",
             "\\bad_sc\\b",
             "data-ad(?:v|id|s|-)?\\s*=",
@@ -312,8 +356,7 @@ public enum WebText {
     private static func containsInlineAdMarker(_ piece: String) -> Bool {
         let lower = piece.lowercased()
         let markers = [
-            "\\bb_adslug\\b",
-            "\\bb_ad_label\\b",
+            "\\bb_ad(?:top|bottom|last|_container|slug|_label)?\\b",
             "\\bbadge--ad\\b",
             "\\bresult__badge--ad\\b",
             "\\bresult--ad\\b",
@@ -376,7 +419,7 @@ public enum WebText {
 
     public static func bingResults(_ html: String) -> [Result] {
         var cleaned = stripBalancedContainers(html, tag: "li", shouldStrip: isAdContainerTag)
-        cleaned = stripBalancedContainers(cleaned, tag: "div", shouldStrip: isAdContainerTag)
+        cleaned = stripBalancedContainers(cleaned, tag: "div", placeholder: "<span data-ad=\"1\"></span>", shouldStrip: isAdContainerTag)
 
         var results: [Result] = []
         var seen: Set<String> = []
@@ -430,11 +473,29 @@ public enum WebText {
             guard url.hasPrefix("http"), !isAdOrTrackingURL(url) else { continue }
             let title = plain(anchorMatch[2])
             guard !title.isEmpty, seen.insert(url).inserted else { continue }
-            let snippetHTML = first(piece, "class\\s*=\\s*[\"'][^\"']*\\bresult__snippet\\b[^\"']*[\"'][^>]*>(.*?)</(?:a|div|span)>") ?? ""
-            let snippet = plain(snippetHTML)
+            let snippet = extractDuckSnippet(in: piece)
             results.append(Result(title: title, url: url, snippet: snippet))
         }
         return results
+    }
+
+    private static func extractDuckSnippet(in piece: String) -> String {
+        let pattern = "<(a|div|span)\\b[^>]*class\\s*=\\s*[\"'][^\"']*\\bresult__snippet\\b[^\"']*[\"'][^>]*>"
+        let range = NSRange(piece.startIndex..., in: piece)
+        guard let match = regex(pattern).firstMatch(in: piece, range: range),
+              let fullRange = Range(match.range, in: piece),
+              let tagRange = Range(match.range(at: 1), in: piece) else {
+            return ""
+        }
+        let tag = String(piece[tagRange]).lowercased()
+        let end = scanBalancedTagEnd(
+            in: piece,
+            openToken: "<" + tag,
+            closeToken: "</" + tag,
+            from: fullRange.upperBound,
+            limit: piece.endIndex
+        )
+        return plain(String(piece[fullRange.upperBound..<end]))
     }
 
     private static func balancedTagBody(in html: String, tag: String, from start: String.Index, limit: String.Index) -> String {
@@ -446,7 +507,8 @@ public enum WebText {
             openToken: "<" + tag,
             closeToken: "</" + tag,
             from: openEnd.upperBound,
-            limit: limit
+            limit: limit,
+            trackListBoundaries: tag.lowercased() == "li"
         )
         return String(html[start..<end])
     }
@@ -542,6 +604,9 @@ enum WebFetch {
         let check = SearXNGEndpoint.checkRequestTransport(url)
         guard check.allowed else {
             throw ProviderError(check.errorMessage ?? SearXNGError.requiresHTTPS.localizedDescription)
+        }
+        if url.scheme?.lowercased() != "https", request.value(forHTTPHeaderField: "Authorization") != nil {
+            throw ProviderError("SearXNG 在 http:// 明文连接下不允许发送认证令牌，请改用 https://。")
         }
         if !check.isLAN {
             if LocalAddress.isLocal(url) {
@@ -1115,7 +1180,8 @@ public struct WebSearchConfig: Sendable, Equatable {
     }
 
     /// Resolves the API key for a given provider (checking `apiKeys` first, then `apiKey` for `primary`).
-    /// For `.searxng`, refuses to return a token if `searxngKeyOrigin` does not match `searxngURL`'s exact origin.
+    /// For `.searxng`, requires an `https://` base URL and refuses to return a token if `searxngKeyOrigin`
+    /// does not match `searxngURL`'s exact origin.
     public func key(for provider: WebSearchProvider) -> String? {
         let candidate: String?
         if let mapped = apiKeys[provider]?.trimmingCharacters(in: .whitespacesAndNewlines), !mapped.isEmpty {
@@ -1126,10 +1192,13 @@ public struct WebSearchConfig: Sendable, Equatable {
             candidate = nil
         }
         guard let candidate else { return nil }
-        if provider == .searxng, let expectedOrigin = searxngKeyOrigin {
+        if provider == .searxng {
             guard let rawURL = searxngURL,
-                  let actualOrigin = SearXNGEndpoint.originKey(forBaseURL: rawURL),
-                  actualOrigin == expectedOrigin else {
+                  case .success(let parsed) = SearXNGEndpoint.parse(rawURL),
+                  parsed.baseURL.lowercased().hasPrefix("https://") else {
+                return nil
+            }
+            if let expectedOrigin = searxngKeyOrigin, parsed.originKey != expectedOrigin {
                 return nil
             }
         }
@@ -1213,6 +1282,9 @@ enum WebSearchAPI {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(WebFetch.agent, forHTTPHeaderField: "User-Agent")
             if !trimmedKey.isEmpty {
+                guard url.scheme?.lowercased() == "https" else {
+                    throw ProviderError("SearXNG 仅在使用 https:// 地址时允许发送 Bearer 令牌。")
+                }
                 request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
             }
             return request
@@ -1398,8 +1470,12 @@ struct SearchRelevance {
     }
 
     func matches(_ result: WebText.Result) -> Bool {
-        if isOffTopicSpam(result) { return false }
-        guard !terms.isEmpty else { return true }
+        score(result) != nil
+    }
+
+    func score(_ result: WebText.Result) -> Double? {
+        if isOffTopicSpam(result) { return nil }
+        guard !terms.isEmpty else { return 1.0 }
         let domain = Self.domainText(from: result.url)
         let candidateAll = Self.normalized(result.title + " " + result.snippet + " " + domain)
         let candidateWords = Self.extractWordSet(from: candidateAll)
@@ -1416,12 +1492,14 @@ struct SearchRelevance {
 
         switch terms.count {
         case 1:
-            return avg >= 0.65
+            return avg >= 0.65 ? avg : nil
         case 2:
-            return (anyMatches == 2 && avg >= 0.65) || (strongMatches >= 1 && avg >= 0.65)
+            let ok = (anyMatches == 2 && avg >= 0.65) || (strongMatches >= 1 && avg >= 0.65)
+            return ok ? avg : nil
         default:
             let required = min(terms.count, max(2, (terms.count + 1) / 2))
-            return anyMatches >= required && strongMatches >= 1 && avg >= 0.55
+            let ok = anyMatches >= required && strongMatches >= 1
+            return ok ? avg : nil
         }
     }
 
@@ -1903,7 +1981,17 @@ public struct WebSearchTool: AgentTool {
             do {
                 try Task.checkCancellation()
                 let raw = parse(try await fetchHTML(url))
-                let results = raw.filter(relevance.matches)
+                var scored: [(index: Int, score: Double, result: WebText.Result)] = []
+                for (index, item) in raw.enumerated() {
+                    if let s = relevance.score(item) {
+                        scored.append((index: index, score: s, result: item))
+                    }
+                }
+                scored.sort { lhs, rhs in
+                    if lhs.score != rhs.score { return lhs.score > rhs.score }
+                    return lhs.index < rhs.index
+                }
+                let results = scored.map(\.result)
                 guard !results.isEmpty else {
                     hadUnrelatedResults = hadUnrelatedResults || !raw.isEmpty
                     continue

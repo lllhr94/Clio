@@ -93,6 +93,54 @@ final class WebSearchTests: XCTestCase {
         ])
     }
 
+    func testBingOmittedClosingLIAndChildBadgeAdMarkers() {
+        // Omitted `</li>` on `<li class="b_ad">` must not swallow the following organic `<li class="b_algo">`.
+        // Also `<div class="b_adSlug">` inside `<li class="b_algo">` pointing directly to advertiser domain must be caught.
+        let html = """
+        <ol id="b_results">
+          <li class="b_ad"><h2><a href="https://ad.example/top">顶部广告无闭合</a></h2><p>广告文案</p>
+          <li class="b_algo">
+            <div class="b_adSlug">Ad</div>
+            <h2><a href="https://advertiser.example.com/offer">广告主官网直链</a></h2>
+            <p>赞助产品介绍</p>
+          </li>
+          <li class="b_algo">
+            <h2><a href="https://docs.swift.org/concurrency/">Swift Concurrency</a></h2>
+            <p>Official documentation</p>
+          </li>
+        </ol>
+        """
+
+        let results = WebText.bingResults(html)
+        XCTAssertEqual(results, [
+            WebText.Result(
+                title: "Swift Concurrency",
+                url: "https://docs.swift.org/concurrency/",
+                snippet: "Official documentation"
+            ),
+        ])
+    }
+
+    func testDuckDuckGoSnippetPreservesTextAcrossNestedHighlightSpans() {
+        let html = """
+        <div class="result web-result">
+          <div class="links_main result__body">
+            <a class="result__a" href="https://swift.org/concurrency/">Swift Concurrency</a>
+            <a class="result__snippet" href="https://swift.org/concurrency/">Here is <span class="h">Swift</span> and <span class="h">concurrency</span> documentation guide.</a>
+          </div>
+        </div>
+        """
+
+        let results = WebText.duckResults(html)
+        XCTAssertEqual(results, [
+            WebText.Result(
+                title: "Swift Concurrency",
+                url: "https://swift.org/concurrency/",
+                snippet: "Here is Swift and concurrency documentation guide."
+            ),
+        ])
+    }
+
     // MARK: - CJK Relevance Scoring & Off-Topic Spam Filtering
 
     func testCJKRelevanceTokenizesNoSpaceQueriesAndParaphrases() {
@@ -222,6 +270,44 @@ final class WebSearchTests: XCTestCase {
         XCTAssertFalse(output.text.contains("点击广告"))
         XCTAssertFalse(output.text.contains("樱花动漫"))
         XCTAssertFalse(output.text.contains("同城交友"))
+    }
+
+    func testMultiWordQueryKeepsAuthoritativePartialMatchAndRanksHigherMatchesFirst() async throws {
+        let relevance = SearchRelevance(query: "Swift concurrency actor isolation")
+        let partial = WebText.Result(
+            title: "Swift Concurrency",
+            url: "https://docs.swift.org/swift-book/concurrency/",
+            snippet: "Official language documentation"
+        )
+        let full = WebText.Result(
+            title: "Swift Concurrency Actor Isolation",
+            url: "https://docs.swift.org/swift-book/isolation/",
+            snippet: "Sendable and actor isolation details"
+        )
+        let unrelated = WebText.Result(
+            title: "Cooking Recipes",
+            url: "https://food.example.org",
+            snippet: "Dinner ideas"
+        )
+
+        XCTAssertTrue(relevance.matches(partial))
+        XCTAssertTrue(relevance.matches(full))
+        XCTAssertFalse(relevance.matches(unrelated))
+
+        let tool = WebSearchTool { _ in
+            """
+            <ol id="b_results">
+              <li class="b_algo"><h2><a href="https://docs.swift.org/swift-book/concurrency/">Swift Concurrency</a></h2><p>Official language documentation</p></li>
+              <li class="b_algo"><h2><a href="https://docs.swift.org/swift-book/isolation/">Swift Concurrency Actor Isolation</a></h2><p>Sendable and actor isolation details</p></li>
+            </ol>
+            """
+        }
+        let out = try await tool.run(.object(["query": .string("Swift concurrency actor isolation")]))
+        XCTAssertFalse(out.isError)
+        let fullIdx = try XCTUnwrap(out.text.range(of: "Swift Concurrency Actor Isolation")?.lowerBound)
+        let partialIdx = try XCTUnwrap(out.text.range(of: "1. Swift Concurrency Actor Isolation")?.lowerBound)
+        XCTAssertEqual(fullIdx, partialIdx)
+        XCTAssertTrue(out.text.contains("2. Swift Concurrency"))
     }
 
     // MARK: - SearXNG URL Normalization & Security Rules
@@ -581,6 +667,70 @@ final class WebSearchTests: XCTestCase {
         let out = try await tool.run(.object(["query": .string("Swift")]))
         XCTAssertFalse(out.isError)
         XCTAssertTrue(out.text.contains("No Leaked Token"))
+    }
+
+    func testSearXNGNeverSendsBearerTokenOverPlaintextHTTPWhileHTTPSSendsIt() async throws {
+        // Config level: `key(for: .searxng)` skips tokens on plaintext HTTP LAN URLs, while returning them on HTTPS.
+        let httpConfig = WebSearchConfig(
+            primary: .searxng,
+            apiKey: "tok-plain-refused",
+            fallbackToBuiltin: false,
+            apiKeys: [.searxng: "tok-plain-refused"],
+            searxngURL: "http://192.168.1.50:8080"
+        )
+        XCTAssertNil(httpConfig.key(for: .searxng))
+
+        let httpsConfig = WebSearchConfig(
+            primary: .searxng,
+            apiKey: "tok-https-ok",
+            fallbackToBuiltin: false,
+            searxngURL: "https://searx.example"
+        )
+        XCTAssertEqual(httpsConfig.key(for: .searxng), "tok-https-ok")
+
+        // Request builder level: refuses attaching a token to plaintext http:// directly.
+        XCTAssertThrowsError(try WebSearchAPI.buildRequest(
+            provider: .searxng,
+            query: "Swift",
+            apiKey: "tok-plain-refused",
+            searxngURL: "http://192.168.1.50:8080"
+        ))
+
+        // Transport level: `WebFetch.searxngJSON` refuses an HTTP request carrying an Authorization header.
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [SearXNGFixtureProtocol.self]
+        let session = URLSession(configuration: sessionConfig)
+        defer { session.invalidateAndCancel() }
+        var badHTTPWithAuth = URLRequest(url: URL(string: "http://192.168.1.50:8080/search?q=Swift&format=json")!)
+        badHTTPWithAuth.setValue("Bearer tok-plain-refused", forHTTPHeaderField: "Authorization")
+        do {
+            _ = try await WebFetch.searxngJSON(badHTTPWithAuth, session: session)
+            XCTFail("Expected HTTP SearXNG request with Authorization header to be refused")
+        } catch {}
+
+        // Anonymous http:// LAN SearXNG continues working cleanly without Authorization.
+        let anonTool = WebSearchTool(
+            config: httpConfig,
+            sendJSON: { request in
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (200, Data(#"{"results":[{"title":"LAN Anonymous","url":"https://docs.example.org/lan","content":"OK"}]}"#.utf8))
+            }
+        )
+        let anonOut = try await anonTool.run(.object(["query": .string("Swift")]))
+        XCTAssertFalse(anonOut.isError)
+        XCTAssertTrue(anonOut.text.contains("LAN Anonymous"))
+
+        // HTTPS SearXNG sends Authorization cleanly.
+        let httpsTool = WebSearchTool(
+            config: httpsConfig,
+            sendJSON: { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tok-https-ok")
+                return (200, Data(#"{"results":[{"title":"HTTPS Authenticated","url":"https://docs.example.org/pub","content":"OK"}]}"#.utf8))
+            }
+        )
+        let httpsOut = try await httpsTool.run(.object(["query": .string("Swift")]))
+        XCTAssertFalse(httpsOut.isError)
+        XCTAssertTrue(httpsOut.text.contains("HTTPS Authenticated"))
     }
 }
 

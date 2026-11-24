@@ -82,20 +82,42 @@ enum SearchEngine {
     }
 
     /// Reads the saved Keychain key for a provider off the calling thread.
-    /// For `.searxng`, requires a valid `searxngURL` and binds strictly to its `scheme://host:port` origin.
+    /// For `.searxng`, requires an `https://` `searxngURL` and binds strictly to its `scheme://host:port` origin.
     static func readKey(for provider: WebSearchProvider, searxngURL: String? = nil) async -> String {
-        let origin = provider == .searxng ? searxngURL.flatMap { SearXNGEndpoint.originKey(forBaseURL: $0) } : nil
+        let origin: String?
+        if provider == .searxng {
+            guard let rawURL = searxngURL,
+                  case .success(let parsed) = SearXNGEndpoint.parse(rawURL),
+                  parsed.baseURL.lowercased().hasPrefix("https://") else {
+                return ""
+            }
+            origin = parsed.originKey
+        } else {
+            origin = nil
+        }
         guard let keyName = vaultKey(for: provider, searxngOrigin: origin) else { return "" }
         let raw = await Vault.readString(keyName) ?? ""
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Saves or clears a provider's API key in the Keychain (never in UserDefaults or backups).
-    /// For `.searxng`, requires a valid `searxngURL` and binds strictly to its `scheme://host:port` origin.
+    /// For `.searxng`, requires a valid `searxngURL` (and `https://` for non-empty tokens) bound to `scheme://host:port`.
     static func saveKey(_ value: String, for provider: WebSearchProvider, searxngURL: String? = nil) async {
-        let origin = provider == .searxng ? searxngURL.flatMap { SearXNGEndpoint.originKey(forBaseURL: $0) } : nil
-        guard let keyName = vaultKey(for: provider, searxngOrigin: origin) else { return }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let origin: String?
+        if provider == .searxng {
+            guard let rawURL = searxngURL,
+                  case .success(let parsed) = SearXNGEndpoint.parse(rawURL) else {
+                return
+            }
+            if !trimmed.isEmpty && !parsed.baseURL.lowercased().hasPrefix("https://") {
+                return
+            }
+            origin = parsed.originKey
+        } else {
+            origin = nil
+        }
+        guard let keyName = vaultKey(for: provider, searxngOrigin: origin) else { return }
         await Task.detached(priority: .userInitiated) {
             if trimmed.isEmpty {
                 Vault.remove(keyName)
@@ -209,13 +231,17 @@ struct SearchSettingsPage: View {
         savedSearxngURL.isEmpty ? nil : SearXNGEndpoint.originKey(forBaseURL: savedSearxngURL)
     }
 
+    private var savedSearxngAllowsKey: Bool {
+        savedSearxngURL.lowercased().hasPrefix("https://")
+    }
+
     private var hasUnsavedSearxngURL: Bool {
         trimmedSearxngDraft != savedSearxngURL
     }
 
     private var canEditKey: Bool {
         if selected == .searxng {
-            return !hasUnsavedSearxngURL && savedSearxngOrigin != nil
+            return !hasUnsavedSearxngURL && savedSearxngOrigin != nil && savedSearxngAllowsKey
         }
         return selected.supportsKey
     }
@@ -506,10 +532,17 @@ struct SearchSettingsPage: View {
                             .foregroundStyle(Ink.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if let origin = activeSearxngOrigin {
-                        Text(L.format("searchSettings.searxngKeyBoundOrigin", origin))
-                            .font(Ink.mono(Ink.Size.small))
-                            .foregroundStyle(Ink.inkFaint)
-                            .lineLimit(1)
+                        if savedSearxngAllowsKey {
+                            Text(L.format("searchSettings.searxngKeyBoundOrigin", origin))
+                                .font(Ink.mono(Ink.Size.small))
+                                .foregroundStyle(Ink.inkFaint)
+                                .lineLimit(1)
+                        } else {
+                            Text(L.t("searchSettings.searxngKeyRequiresHTTPS"))
+                                .font(.system(size: Ink.Size.small))
+                                .foregroundStyle(Ink.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else {
                         Text(L.t("searchSettings.searxngKeyNeedURL"))
                             .font(.system(size: Ink.Size.small))
@@ -904,11 +937,11 @@ struct SearchSettingsPage: View {
         keyInput = ""
         Task {
             await SearchEngine.saveKey(value, for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
+            keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
             guard selected == target, selectionVersion == version else { return }
             if target == .searxng {
                 guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
             }
-            keyedProviders.insert(target)
             savedMasked = SearchEngine.mask(value)
             keyNotice = L.t("searchSettings.keySavedNotice")
             testResult = nil
@@ -927,11 +960,11 @@ struct SearchSettingsPage: View {
         keyInput = ""
         Task {
             await SearchEngine.saveKey("", for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
+            keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
             guard selected == target, selectionVersion == version else { return }
             if target == .searxng {
                 guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
             }
-            keyedProviders.remove(target)
             savedMasked = ""
             keyNotice = L.format("searchSettings.keyClearedNotice", target.shortName)
             testResult = nil
@@ -950,16 +983,17 @@ struct SearchSettingsPage: View {
         let target = selected
         let version = selectionVersion
         let pendingInput = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pendingSearxng = trimmedSearxngDraft.isEmpty ? savedSearxngURL : trimmedSearxngDraft
+        let pendingSearxng = trimmedSearxngDraft
         let unsavedURL = hasUnsavedSearxngURL
         let pendingParsed = (target == .searxng) ? (try? SearXNGEndpoint.parse(pendingSearxng).get()) : nil
         let pendingOrigin = pendingParsed?.originKey
+        let pendingAllowsKey = pendingParsed?.baseURL.lowercased().hasPrefix("https://") ?? false
         probeTask = Task {
             let keyToUse: String?
             if !target.supportsKey {
                 keyToUse = nil
             } else if target == .searxng {
-                if let originBase = pendingParsed?.baseURL {
+                if let originBase = pendingParsed?.baseURL, pendingAllowsKey {
                     if !unsavedURL && !pendingInput.isEmpty && pendingOrigin == activeSearxngOrigin {
                         keyToUse = pendingInput
                     } else {
