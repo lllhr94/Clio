@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -13,6 +14,7 @@ struct CarePage: View {
     @State private var recentErrors: [String] = []
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
+    @State private var encryptLocal = false
     @State private var made: URL?
     @State private var sizeText = ""
     @State private var storage: StorageBreakdown?
@@ -26,6 +28,7 @@ struct CarePage: View {
     @State private var probes: [String: String] = [:]
     @AppStorage(WebDAV.urlKey) private var davURL = ""
     @AppStorage(WebDAV.userKey) private var davUser = ""
+    @AppStorage(WebDAV.encryptKey) private var davEncrypt = false
     /// Read from the keychain once when the page opens, kept here while typing, saved when leaving the field or page
     /// (the review, #28: reading and writing the keychain on every redraw and keystroke).
     @State private var davPassword = ""
@@ -40,6 +43,10 @@ struct CarePage: View {
     @AppStorage("care.spikeLab") private var spikeLab = false
     @State private var versionTapCount = 0
     @State private var lastVersionTapAt = Date.distantPast
+    @State private var passphraseSetup: PassphraseSetupRequest?
+    @State private var pendingSetupAction: PendingSetupAction?
+    @State private var pendingRestore: PendingRestore?
+    @State private var deferredNoticeAfterUnlock: String?
 
     private var showSpikeLab: Bool {
         #if DEBUG
@@ -50,148 +57,46 @@ struct CarePage: View {
     }
 
     private var backupOrRestoreBusy: Bool {
-        making || restoring || restoringBusy || davBusy || !davChoices.isEmpty || restored || Disk.frozen
+        making
+            || restoring
+            || restoringBusy
+            || davBusy
+            || !davChoices.isEmpty
+            || restored
+            || Disk.frozen
+            || pendingRestore != nil
+            || passphraseSetup != nil
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 PaperRows {
-                Section {
-                    Toggle(L.t("settings.backupIncludesKeys"), isOn: $withKeys)
-                    Button(making ? L.t("loading.preparingBackup") : L.t("actions.createBackup")) { make() }
-                        .disabled(making || cleaningCache || restoringBusy || restored)
-                    if let made {
-                        ShareLink(item: made) { Label("存到「文件」或发出去", systemImage: "square.and.arrow.up") }
+                    localBackupSection
+                    webdavSection
+                    archivedSection
+                    diagnosticInfoSection
+                    storageSection
+                    connectivitySection
+                    recentErrorsSection
+                    if hitchesReady {
+                        HitchSettings()
                     }
-                    Button(L.t("actions.restoreBackup")) { restoring = true }
-                        .disabled(cleaningCache || restoringBusy || davBusy || making || restored)
-                } header: { Text(L.t("settings.backup")) } footer: {
-                    Text(L.t("settings.backupPrivacy"))
+                    if showSpikeLab {
+                        spikeLabSection
+                    }
+                    diagnosticsActionSection
+                    aboutSection
                 }
-
-                Section {
-                    TextField(L.t("settings.davAddress"), text: $davURL)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    TextField(L.t("settings.davUser"), text: $davUser)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField(L.t("settings.davPassword"), text: $davPassword)
-                        .onSubmit { WebDAV.setPassword(davPassword) }
-                    if let problem = WebDAV.addressProblem(davURL) {
-                        Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
-                    }
-                    Button(davBusy ? L.t("loading.working") : L.t("actions.davUpload")) { davUpload() }
-                        .disabled(davBusy || !davReady || cleaningCache || restoringBusy || restored)
-                    Button(davBusy ? L.t("loading.working") : L.t("actions.davRestore")) { davRestore() }
-                        .disabled(davBusy || !davReady || cleaningCache || restoringBusy || making || restored)
-                } header: { Text(L.t("settings.davBackup")) } footer: {
-                    Text(L.t("settings.davNote"))
-                }
-
-                Section {
-                    if team.archived.isEmpty {
-                        Text(L.t("empty.archivedChats")).foregroundStyle(Ink.inkSoft)
-                    } else {
-                        ForEach(team.archived.sorted(), id: \.self) { key in
-                            HStack {
-                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                                    Text(team.chatName(key)).foregroundStyle(Ink.ink)
-                                    if let title = team.title(of: key) {
-                                        Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                    }
-                                }
-                                Spacer()
-                                Button(L.t("actions.restore")) {
-                                    withAnimation(Ink.Motion.settle) { team.archive(key, false) }
-                                    Haptics.tick(0.6)
-                                }
-                                .fontWeight(.medium)
-                            }
-                        }
-                    }
-                } header: { Text(L.t("settings.archivedConversations")) } footer: {
-                    Text(L.t("settings.archivedRestoreNote"))
-                }
-
-                Section {
-                    row("版本", "Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")（\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")）")
-                        .contentShape(Rectangle())
-                        .onTapGesture { handleVersionTap() }
-                    row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-                    row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
-                    row(Words.t("拾遗"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
-                    row("数据占用", sizeText.isEmpty ? L.t("loading.calculating") : sizeText)
-                    row(Words.t("斗室"), denText)
-                    row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
-                } header: { Text(L.t("settings.diagnosticInfo")) }
-
-                storageSection
-
-                Section {
-                    ForEach(team.settings.endpoints) { endpoint in
-                        row(endpoint.name, probes[endpoint.id] ?? "未测")
-                    }
-                    Button(probing ? L.t("loading.testingModels") : L.t("actions.testProviderConnections")) { probe() }.disabled(probing || team.settings.endpoints.isEmpty)
-                } header: { Text(L.t("settings.modelConnectivity")) }
-
-                Section {
-                    if !diagnosticsReady {
-                        Text(L.t("loading.calculating")).foregroundStyle(Ink.inkSoft)
-                    } else if recentErrors.isEmpty {
-                        Text(L.t("settings.noRecentErrors")).foregroundStyle(Ink.inkSoft)
-                    } else {
-                        ForEach(Array(recentErrors.enumerated()), id: \.offset) { _, line in
-                            Text(line).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
-                        }
-                        Button(L.t("actions.clearLogs"), role: .destructive) { Diag.clear(); recentErrors = []; notice = "清空了。" }
-                    }
-                } header: { Text(L.t("settings.recentErrors")) }
-
-                if hitchesReady {
-                    HitchSettings()
-                }
-
-                if showSpikeLab {
-                    Section {
-                        Button {
-                            Haptics.light()
-                            uikitSpikeOpen = true
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                                    Text(L.t("careSpike.title")).foregroundStyle(Ink.ink)
-                                    Text(L.t("careSpike.subtitle")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                }
-                                Spacer()
-                                Kit.chevron
-                            }
-                        }
-                        if spikeLab {
-                            Button(L.t("careSpike.hideLab"), role: .destructive) {
-                                spikeLab = false
-                                Haptics.tick(0.5)
-                            }
-                        }
-                    } header: { Text(L.t("careSpike.section")) }
-                }
-
-                Section {
-                    Button(copied ? "复制好了，贴给我就行" : (copyingReport ? "正在整理诊断…" : "复制整份诊断")) {
-                        copyReport()
-                    }
-                    .disabled(copyingReport)
-                } footer: { Text(L.t("settings.diagnosticsPrivacy")) }
-
-                Section {
-                    Link("github.com/lllhr94/Clio", destination: URL(string: "https://github.com/lllhr94/Clio")!)
-                } footer: { Text(L.t("settingsHome.aboutCredits")) }
-            }
             }
             .paperForm()
             .hitchPage("养护")
             .navigationTitle(L.t("settingsHome.care"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .onChange(of: withKeys) { _, includeKeys in
+                if includeKeys { encryptLocal = true }
+            }
             .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
             .task {
                 do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
@@ -212,6 +117,12 @@ struct CarePage: View {
             .onDisappear {
                 cleanTask?.cancel()
                 if davPasswordLoaded { WebDAV.setPassword(davPassword) }
+                pendingSetupAction = nil
+                deferredNoticeAfterUnlock = nil
+                if !restoringBusy {
+                    pendingRestore = nil
+                    WebDAV.cleanupRestoreInbox()
+                }
             }
             .task {
                 guard openRestore else { return }
@@ -220,39 +131,37 @@ struct CarePage: View {
             }
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
                 guard case .success(let url) = result else { return }
-                restoringBusy = true
-                team.beginBackupRestore()
-                Task {
-                    defer { restoringBusy = false }
-                    await stopCleanBeforeRestore()
-                    await team.waitForOpeningLeaves()
-                    // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
-                    let outcome = await StorageMaintenance.run {
-                        Result {
-                            try QueuedStore.armPreRestoreBarrier(teamRoot: Disk.root)
-                            do {
-                                let summary = try Backup.restore(from: url)
-                                QueuedStore.clearAllPendingLeafOpens()
-                                let report = QueuedStore.isolatePreRestoreQueues()
-                                return (summary, report)
-                            } catch {
-                                QueuedStore.disarmPreRestoreBarrier()
-                                throw error
-                            }
-                        }
-                    }
-                    switch outcome {
-                    case .success(let (summary, report)):
-                        team.finishBackupRestoreSucceeded()
-                        restored = true
-                        notice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。" + Self.isolationNotice(report)
-                    case .failure(let error):
-                        team.finishBackupRestoreFailed()
-                        notice = error.localizedDescription
-                    }
-                }
+                prepareLocalRestore(from: url)
             }
-            .confirmationDialog("从网盘的哪一份恢复？", isPresented: Binding(get: { !davChoices.isEmpty }, set: { if !$0 { davChoices = [] } }), titleVisibility: .visible) {
+            .sheet(item: $passphraseSetup, onDismiss: { runPendingSetupActionIfAny() }) { request in
+                PassphraseSetupSheet(
+                    purpose: request.purpose,
+                    onCancel: {
+                        pendingSetupAction = nil
+                        passphraseSetup = nil
+                    },
+                    onConfirm: { passphrase in
+                        pendingSetupAction = PendingSetupAction(purpose: request.purpose, passphrase: passphrase)
+                        passphraseSetup = nil
+                    }
+                )
+            }
+            .sheet(item: $pendingRestore, onDismiss: { handleUnlockSheetDismissed() }) { pending in
+                PassphraseUnlockSheet(
+                    displayName: pending.displayName,
+                    errorMessage: pending.wrongPassphraseHint,
+                    busy: $restoringBusy,
+                    onCancel: { cancelPendingRestore() },
+                    onSubmit: { passphrase in
+                        startUnlockRestore(pending: pending, passphrase: passphrase)
+                    }
+                )
+            }
+            .confirmationDialog(
+                "从网盘的哪一份恢复？",
+                isPresented: Binding(get: { !davChoices.isEmpty }, set: { if !$0 { davChoices = [] } }),
+                titleVisibility: .visible
+            ) {
                 ForEach(davChoices.prefix(8), id: \.self) { name in
                     Button(Self.backupLabel(name)) { davRestore(name) }
                 }
@@ -271,6 +180,182 @@ struct CarePage: View {
             .fullScreenCover(isPresented: $uikitSpikeOpen) {
                 SpikeChatSheet()
             }
+        }
+    }
+
+    // MARK: Sections
+
+    @ViewBuilder
+    private var localBackupSection: some View {
+        Section {
+            Toggle(L.t("settings.backupIncludesKeys"), isOn: $withKeys)
+            Toggle(L.t("backupCrypto.encryptLocalToggle"), isOn: $encryptLocal)
+                .disabled(withKeys)
+            Button(making ? L.t("loading.preparingBackup") : L.t("actions.createBackup")) { make() }
+                .disabled(making || cleaningCache || restoringBusy || restored || pendingRestore != nil)
+            if let made {
+                ShareLink(item: made) { Label("存到「文件」或发出去", systemImage: "square.and.arrow.up") }
+            }
+            Button(L.t("actions.restoreBackup")) { restoring = true }
+                .disabled(cleaningCache || restoringBusy || davBusy || making || restored || pendingRestore != nil)
+        } header: {
+            Text(L.t("settings.backup"))
+        } footer: {
+            if withKeys {
+                Text(L.t("backupCrypto.keysRequireEncryptionNote"))
+            } else {
+                Text(L.t("settings.backupPrivacy") + "\n" + L.t("backupCrypto.skillsAndEncryptionNote"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var webdavSection: some View {
+        Section {
+            TextField(L.t("settings.davAddress"), text: $davURL)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            TextField(L.t("settings.davUser"), text: $davUser)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+            SecureField(L.t("settings.davPassword"), text: $davPassword)
+                .onSubmit { WebDAV.setPassword(davPassword) }
+            if let problem = WebDAV.addressProblem(davURL) {
+                Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
+            }
+            Toggle(L.t("backupCrypto.davEncryptToggle"), isOn: $davEncrypt)
+            Button(davBusy ? L.t("loading.working") : L.t("actions.davUpload")) { davUpload() }
+                .disabled(davBusy || !davReady || cleaningCache || restoringBusy || restored || pendingRestore != nil)
+            Button(davBusy ? L.t("loading.working") : L.t("actions.davRestore")) { davRestore() }
+                .disabled(davBusy || !davReady || cleaningCache || restoringBusy || making || restored || pendingRestore != nil)
+        } header: {
+            Text(L.t("settings.davBackup"))
+        } footer: {
+            Text(L.t("settings.davNote") + "\n" + L.t("backupCrypto.davEncryptNote"))
+        }
+    }
+
+    @ViewBuilder
+    private var archivedSection: some View {
+        Section {
+            if team.archived.isEmpty {
+                Text(L.t("empty.archivedChats")).foregroundStyle(Ink.inkSoft)
+            } else {
+                ForEach(team.archived.sorted(), id: \.self) { key in
+                    HStack {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                            Text(team.chatName(key)).foregroundStyle(Ink.ink)
+                            if let title = team.title(of: key) {
+                                Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            }
+                        }
+                        Spacer()
+                        Button(L.t("actions.restore")) {
+                            withAnimation(Ink.Motion.settle) { team.archive(key, false) }
+                            Haptics.tick(0.6)
+                        }
+                        .fontWeight(.medium)
+                    }
+                }
+            }
+        } header: {
+            Text(L.t("settings.archivedConversations"))
+        } footer: {
+            Text(L.t("settings.archivedRestoreNote"))
+        }
+    }
+
+    @ViewBuilder
+    private var diagnosticInfoSection: some View {
+        Section {
+            row("版本", "Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")（\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")）")
+                .contentShape(Rectangle())
+                .onTapGesture { handleVersionTap() }
+            row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
+            row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
+            row(Words.t("拾遗"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
+            row("数据占用", sizeText.isEmpty ? L.t("loading.calculating") : sizeText)
+            row(Words.t("斗室"), denText)
+            row(Words.t("远山"), "\(Hills.shared.hosts.count) 台主机 · \(Hills.shared.servers.count) 个 MCP")
+        } header: {
+            Text(L.t("settings.diagnosticInfo"))
+        }
+    }
+
+    @ViewBuilder
+    private var connectivitySection: some View {
+        Section {
+            ForEach(team.settings.endpoints) { endpoint in
+                row(endpoint.name, probes[endpoint.id] ?? "未测")
+            }
+            Button(probing ? L.t("loading.testingModels") : L.t("actions.testProviderConnections")) { probe() }
+                .disabled(probing || team.settings.endpoints.isEmpty)
+        } header: {
+            Text(L.t("settings.modelConnectivity"))
+        }
+    }
+
+    @ViewBuilder
+    private var recentErrorsSection: some View {
+        Section {
+            if !diagnosticsReady {
+                Text(L.t("loading.calculating")).foregroundStyle(Ink.inkSoft)
+            } else if recentErrors.isEmpty {
+                Text(L.t("settings.noRecentErrors")).foregroundStyle(Ink.inkSoft)
+            } else {
+                ForEach(Array(recentErrors.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(Ink.mono(Ink.Size.small)).foregroundStyle(Ink.inkSoft)
+                }
+                Button(L.t("actions.clearLogs"), role: .destructive) { Diag.clear(); recentErrors = []; notice = "清空了。" }
+            }
+        } header: {
+            Text(L.t("settings.recentErrors"))
+        }
+    }
+
+    @ViewBuilder
+    private var spikeLabSection: some View {
+        Section {
+            Button {
+                Haptics.light()
+                uikitSpikeOpen = true
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                        Text(L.t("careSpike.title")).foregroundStyle(Ink.ink)
+                        Text(L.t("careSpike.subtitle")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                    }
+                    Spacer()
+                    Kit.chevron
+                }
+            }
+            if spikeLab {
+                Button(L.t("careSpike.hideLab"), role: .destructive) {
+                    spikeLab = false
+                    Haptics.tick(0.5)
+                }
+            }
+        } header: {
+            Text(L.t("careSpike.section"))
+        }
+    }
+
+    @ViewBuilder
+    private var diagnosticsActionSection: some View {
+        Section {
+            Button(copied ? "复制好了，贴给我就行" : (copyingReport ? "正在整理诊断…" : "复制整份诊断")) {
+                copyReport()
+            }
+            .disabled(copyingReport)
+        } footer: {
+            Text(L.t("settings.diagnosticsPrivacy"))
+        }
+    }
+
+    @ViewBuilder
+    private var aboutSection: some View {
+        Section {
+            Link("github.com/lllhr94/Clio", destination: URL(string: "https://github.com/lllhr94/Clio")!)
+        } footer: {
+            Text(L.t("settingsHome.aboutCredits"))
         }
     }
 
@@ -459,15 +544,78 @@ struct CarePage: View {
         !davURL.isEmpty && WebDAV.addressProblem(davURL) == nil && !davUser.isEmpty && !davPassword.isEmpty
     }
 
+    // MARK: Backup & Restore Actions
+
+    private func make() {
+        guard !making, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
+            return
+        }
+        if withKeys || encryptLocal {
+            passphraseSetup = PassphraseSetupRequest(purpose: .localBackup(withKeys: withKeys))
+        } else {
+            performMake(withKeys: false, passphrase: nil)
+        }
+    }
+
     private func davUpload() {
-        davBusy = true
+        guard !davBusy, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
+            return
+        }
         WebDAV.setPassword(davPassword)
+        if davEncrypt {
+            passphraseSetup = PassphraseSetupRequest(purpose: .webdavUpload)
+        } else {
+            performDavUpload(passphrase: nil)
+        }
+    }
+
+    private func runPendingSetupActionIfAny() {
+        guard let action = pendingSetupAction else { return }
+        pendingSetupAction = nil
+        handlePassphraseSetup(action.purpose, passphrase: action.passphrase)
+    }
+
+    private func handlePassphraseSetup(_ purpose: PassphrasePurpose, passphrase: String) {
+        switch purpose {
+        case .localBackup(let includeKeys):
+            performMake(withKeys: includeKeys, passphrase: passphrase)
+        case .webdavUpload:
+            performDavUpload(passphrase: passphrase)
+        }
+    }
+
+    private func performMake(withKeys includeKeys: Bool, passphrase: String?) {
+        guard !making, !restoringBusy, !restored, !Disk.frozen else { return }
+        making = true
+        made = nil
+        let ids = team.settings.endpoints.map(\.id)
+        Task {
+            await stopCleanBeforeRestore()
+            let result = await StorageMaintenance.run {
+                Result { try Backup.make(withKeys: includeKeys, endpoints: ids, passphrase: passphrase) }
+            }
+            making = false
+            switch result {
+            case .success(let (url, summary)):
+                made = url
+                notice = "打包好了：\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。点「存到文件或发出去」保存。"
+            case .failure(let error):
+                notice = "没打包成：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func performDavUpload(passphrase: String?) {
+        guard !davBusy, !restoringBusy, !restored, !Disk.frozen else { return }
+        davBusy = true
         let ids = team.settings.endpoints.map(\.id)
         Task {
             do {
                 await stopCleanBeforeRestore()
-                // Never with the model keys: a file on a drive is out of the phone's keychain (the review, #4).
-                let (url, summary) = try await StorageMaintenance.runThrowing { try Backup.make(withKeys: false, endpoints: ids) }
+                // Never include model API keys in WebDAV backups: remote drives sit outside the phone's keychain (review #4).
+                let (url, summary) = try await StorageMaintenance.runThrowing {
+                    try Backup.make(withKeys: false, endpoints: ids, passphrase: passphrase)
+                }
                 defer { try? FileManager.default.removeItem(at: url) }
                 if made == url { made = nil }
                 try await WebDAV.upload(url)
@@ -481,6 +629,9 @@ struct CarePage: View {
 
     /// Lists the drive's backups first; the person picks one (newest at the top), then that one comes back.
     private func davRestore() {
+        guard !davBusy, !cleaningCache, !restoringBusy, !making, !restored, !Disk.frozen, pendingRestore == nil else {
+            return
+        }
         davBusy = true
         Task {
             do {
@@ -496,43 +647,242 @@ struct CarePage: View {
 
     private func davRestore(_ name: String) {
         davChoices = []
+        guard !davBusy, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
         davBusy = true
         restoringBusy = true
         Task {
-            var armedRestoreGate = false
-            defer {
-                davBusy = false
-                restoringBusy = false
-            }
             do {
                 let file = try await WebDAV.download(name)
-                defer { try? FileManager.default.removeItem(at: file) }
-                await stopCleanBeforeRestore()
-                team.beginBackupRestore()
-                armedRestoreGate = true
-                await team.waitForOpeningLeaves()
-                let (summary, report) = try await StorageMaintenance.runThrowing {
-                    try QueuedStore.armPreRestoreBarrier(teamRoot: Disk.root)
-                    do {
-                        let summary = try Backup.restore(from: file)
-                        QueuedStore.clearAllPendingLeafOpens()
-                        let report = QueuedStore.isolatePreRestoreQueues()
-                        return (summary, report)
-                    } catch {
-                        QueuedStore.disarmPreRestoreBarrier()
-                        throw error
-                    }
+                let encrypted = await Task.detached(priority: .userInitiated) {
+                    Backup.isEncryptedBackup(at: file)
+                }.value
+                davBusy = false
+                let pending = PendingRestore(url: file, displayName: name, source: .webdav, wrongPassphraseHint: nil)
+                if encrypted {
+                    restoringBusy = false
+                    pendingRestore = pending
+                } else {
+                    await executeRestore(pending: pending, passphrase: nil)
                 }
-                team.finishBackupRestoreSucceeded()
-                restored = true
-                notice = "从网盘恢复了「\(name)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + Self.isolationNotice(report)
             } catch {
-                if armedRestoreGate {
-                    team.finishBackupRestoreFailed()
-                }
+                davBusy = false
+                restoringBusy = false
                 notice = "没恢复成：\(error.localizedDescription)"
             }
         }
+    }
+
+    private func prepareLocalRestore(from pickedURL: URL) {
+        guard !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
+        restoringBusy = true
+        Task {
+            do {
+                let stagedFile = try await Task.detached(priority: .userInitiated) {
+                    try Self.copySecurityScopedBackupToInbox(pickedURL)
+                }.value
+                let encrypted = await Task.detached(priority: .userInitiated) {
+                    Backup.isEncryptedBackup(at: stagedFile)
+                }.value
+                let pending = PendingRestore(
+                    url: stagedFile,
+                    displayName: pickedURL.lastPathComponent,
+                    source: .local,
+                    wrongPassphraseHint: nil
+                )
+                if encrypted {
+                    restoringBusy = false
+                    pendingRestore = pending
+                } else {
+                    await executeRestore(pending: pending, passphrase: nil)
+                }
+            } catch {
+                restoringBusy = false
+                notice = error.localizedDescription
+            }
+        }
+    }
+
+    private func startUnlockRestore(pending: PendingRestore, passphrase: String) {
+        guard !restoringBusy, !restored, !Disk.frozen else { return }
+        restoringBusy = true
+        Task { await executeRestore(pending: pending, passphrase: passphrase) }
+    }
+
+    private func executeRestore(pending: PendingRestore, passphrase: String?) async {
+        guard !restored, !Disk.frozen else {
+            restoringBusy = false
+            return
+        }
+        restoringBusy = true
+        team.beginBackupRestore()
+        await stopCleanBeforeRestore()
+        await team.waitForOpeningLeaves()
+        let file = pending.url
+        // Off the main thread and serialized against cache cleanup: a large backup takes a while to check and write.
+        let outcome = await StorageMaintenance.run {
+            Result {
+                try QueuedStore.armPreRestoreBarrier(teamRoot: Disk.root)
+                do {
+                    let summary = try Backup.restore(from: file, passphrase: passphrase)
+                    QueuedStore.clearAllPendingLeafOpens()
+                    let report = QueuedStore.isolatePreRestoreQueues()
+                    return (summary, report)
+                } catch {
+                    QueuedStore.disarmPreRestoreBarrier()
+                    throw error
+                }
+            }
+        }
+        restoringBusy = false
+
+        switch outcome {
+        case .success(let (summary, report)):
+            try? FileManager.default.removeItem(at: file)
+            let hadUnlockSheet = pendingRestore != nil
+            team.finishBackupRestoreSucceeded()
+            restored = true
+            let resultNotice: String
+            if pending.source == .webdav {
+                resultNotice = "从网盘恢复了「\(pending.displayName)」，\(summary.files) 项。要关掉 Clio 再打开才会生效。" + Self.isolationNotice(report)
+            } else {
+                resultNotice = "恢复了 \(summary.files) 项。要关掉 Clio 再打开才会生效；在那之前不会再保存任何东西。" + Self.isolationNotice(report)
+            }
+            if hadUnlockSheet {
+                deferredNoticeAfterUnlock = resultNotice
+                pendingRestore = nil
+            } else {
+                pendingRestore = nil
+                notice = resultNotice
+            }
+        case .failure(let error):
+            team.finishBackupRestoreFailed()
+            if let cryptoError = error as? BackupCryptoError,
+               cryptoError == .passphraseRequired || cryptoError == .emptyPassphrase || cryptoError == .authenticationFailed {
+                let hint: String?
+                if passphrase == nil && cryptoError == .passphraseRequired {
+                    hint = nil
+                } else {
+                    hint = cryptoError.localizedDescription
+                }
+                if var active = pendingRestore, active.id == pending.id {
+                    active.wrongPassphraseHint = hint
+                    pendingRestore = active
+                } else {
+                    pendingRestore = PendingRestore(
+                        id: pending.id,
+                        url: pending.url,
+                        displayName: pending.displayName,
+                        source: pending.source,
+                        wrongPassphraseHint: hint
+                    )
+                }
+                return
+            }
+            try? FileManager.default.removeItem(at: file)
+            let hadUnlockSheet = pendingRestore != nil
+            let failureNotice = pending.source == .webdav
+                ? "没恢复成：\(error.localizedDescription)"
+                : error.localizedDescription
+            if hadUnlockSheet {
+                deferredNoticeAfterUnlock = failureNotice
+                pendingRestore = nil
+            } else {
+                pendingRestore = nil
+                notice = failureNotice
+            }
+        }
+    }
+
+    private func cancelPendingRestore() {
+        guard !restoringBusy else { return }
+        if let pending = pendingRestore {
+            try? FileManager.default.removeItem(at: pending.url)
+        }
+        deferredNoticeAfterUnlock = nil
+        pendingRestore = nil
+        WebDAV.cleanupRestoreInbox()
+    }
+
+    private func handleUnlockSheetDismissed() {
+        if !restoringBusy && pendingRestore == nil {
+            WebDAV.cleanupRestoreInbox()
+        }
+        if let deferred = deferredNoticeAfterUnlock {
+            deferredNoticeAfterUnlock = nil
+            notice = deferred
+        }
+    }
+
+    private nonisolated static func copySecurityScopedBackupToInbox(_ url: URL) throws -> URL {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else {
+            throw TeamError(message: "找不到选择的备份文件。")
+        }
+        guard (st.st_mode & S_IFMT) == S_IFREG else {
+            throw TeamError(message: "选择的备份不是普通文件（可能是快捷方式或文件夹），已拒绝恢复。")
+        }
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values?.isSymbolicLink != true, values?.isRegularFile == true else {
+            throw TeamError(message: "选择的备份文件无效，已拒绝恢复。")
+        }
+        guard st.st_size > 0 else {
+            throw TeamError(message: "备份文件是空的。")
+        }
+        guard st.st_size <= Int64(Backup.maxBackupFileBytes) else {
+            throw TeamError(message: "备份文件太大，无法安全恢复。")
+        }
+
+        let manager = FileManager.default
+        let inbox = WebDAV.restoreInboxDirectory
+        try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let target = inbox.appendingPathComponent("local-\(UUID().uuidString).clio-backup")
+        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        guard manager.createFile(atPath: target.path, contents: nil, attributes: protection) else {
+            throw TeamError(message: "没能在手机上暂存备份文件。")
+        }
+
+        var copied = false
+        defer {
+            if !copied {
+                try? manager.removeItem(at: target)
+            }
+        }
+
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let writer = try FileHandle(forWritingTo: target)
+        var writerClosed = false
+        defer {
+            if !writerClosed {
+                try? writer.close()
+            }
+        }
+
+        var totalBytes = 0
+        let chunkSize = 1 << 20
+        while true {
+            let chunk = try autoreleasepool {
+                try reader.read(upToCount: chunkSize)
+            }
+            guard let chunk, !chunk.isEmpty else { break }
+            totalBytes += chunk.count
+            guard totalBytes <= Backup.maxBackupFileBytes else {
+                throw TeamError(message: "备份文件太大，无法安全恢复。")
+            }
+            try writer.write(contentsOf: chunk)
+        }
+        guard totalBytes > 0 else {
+            throw TeamError(message: "备份文件是空的。")
+        }
+        try writer.synchronize()
+        try writer.close()
+        writerClosed = true
+        try? manager.setAttributes(protection, ofItemAtPath: target.path)
+        copied = true
+        return target
     }
 
     private static func isolationNotice(_ report: IsolationReport) -> String {
@@ -560,24 +910,6 @@ struct CarePage: View {
             return "\(parts[0]) \(parts[1].prefix(2)):\(parts[1].suffix(2))"
         }
         return text
-    }
-
-    private func make() {
-        making = true
-        let ids = team.settings.endpoints.map(\.id)
-        let keys = withKeys
-        Task {
-            await stopCleanBeforeRestore()
-            let result = await StorageMaintenance.run { Result { try Backup.make(withKeys: keys, endpoints: ids) } }
-            making = false
-            switch result {
-            case .success(let (url, summary)):
-                made = url
-                notice = "打包好了：\(summary.files) 项，\(ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file))。点「存到文件或发出去」保存。"
-            case .failure(let error):
-                notice = "没打包成：\(error.localizedDescription)"
-            }
-        }
     }
 
     private func probe() {
@@ -611,6 +943,330 @@ struct CarePage: View {
                 }
             }
             probing = false
+        }
+    }
+}
+
+// MARK: Passphrase Sheets
+
+private enum RestoreSource: Sendable {
+    case local
+    case webdav
+}
+
+private enum PassphrasePurpose: Equatable, Sendable {
+    case localBackup(withKeys: Bool)
+    case webdavUpload
+}
+
+private struct PassphraseSetupRequest: Identifiable, Sendable {
+    let id = UUID()
+    let purpose: PassphrasePurpose
+}
+
+private struct PendingSetupAction: Sendable {
+    let purpose: PassphrasePurpose
+    let passphrase: String
+}
+
+private struct PendingRestore: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let url: URL
+    let displayName: String
+    let source: RestoreSource
+    var wrongPassphraseHint: String?
+
+    init(
+        id: UUID = UUID(),
+        url: URL,
+        displayName: String,
+        source: RestoreSource,
+        wrongPassphraseHint: String?
+    ) {
+        self.id = id
+        self.url = url
+        self.displayName = displayName
+        self.source = source
+        self.wrongPassphraseHint = wrongPassphraseHint
+    }
+}
+
+private struct PassphraseSetupSheet: View {
+    private static let minimumLength = 8
+
+    let purpose: PassphrasePurpose
+    let onCancel: () -> Void
+    let onConfirm: (String) -> Void
+
+    @State private var passphrase = ""
+    @State private var confirmation = ""
+    @State private var reveal = false
+
+    private var trimmedEmpty: Bool {
+        passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var validationError: String? {
+        if !passphrase.isEmpty && trimmedEmpty {
+            return L.t("backupCrypto.whitespaceError")
+        }
+        if !passphrase.isEmpty && passphrase.count < Self.minimumLength {
+            return L.format("backupCrypto.minLengthError", Self.minimumLength)
+        }
+        if !confirmation.isEmpty && confirmation != passphrase {
+            return L.t("backupCrypto.mismatchError")
+        }
+        return nil
+    }
+
+    private var canSubmit: Bool {
+        !trimmedEmpty && passphrase.count >= Self.minimumLength && confirmation == passphrase
+    }
+
+    private var subtitle: String {
+        switch purpose {
+        case .localBackup:
+            return L.t("backupCrypto.setupSubtitleLocal")
+        case .webdavUpload:
+            return L.t("backupCrypto.setupSubtitleWebDAV")
+        }
+    }
+
+    private var confirmTitle: String {
+        switch purpose {
+        case .localBackup:
+            return L.t("backupCrypto.confirmAndCreate")
+        case .webdavUpload:
+            return L.t("backupCrypto.confirmAndUpload")
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Ink.paper.ignoresSafeArea()
+                ScrollView {
+                    sheetContent
+                        .padding(.horizontal, Ink.Space.page)
+                        .padding(.vertical, Ink.Space.l)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) {
+                        Haptics.light()
+                        onCancel()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(confirmTitle) {
+                        Haptics.tick(0.6)
+                        onConfirm(passphrase)
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSubmit)
+                }
+            }
+        }
+    }
+
+    private var sheetContent: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.l) {
+            HStack(spacing: Ink.Space.m) {
+                IconBadge(symbol: "lock", tint: Ink.Tile.zhu, size: 44 * UIScale.factor)
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    Text(L.t("backupCrypto.setupTitle"))
+                        .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title2))
+                        .foregroundStyle(Ink.ink)
+                    Text(subtitle)
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                }
+            }
+
+            VStack(spacing: 0) {
+                passphraseInputRow(
+                    placeholder: L.t("backupCrypto.passphraseField"),
+                    text: $passphrase,
+                    showRevealToggle: true
+                )
+                Kit.rule(inset: Ink.Space.l)
+                passphraseInputRow(
+                    placeholder: L.t("backupCrypto.confirmField"),
+                    text: $confirmation,
+                    showRevealToggle: false
+                )
+            }
+            .paperCard()
+
+            if let validationError {
+                Text(validationError)
+                    .font(Ink.footnote)
+                    .foregroundStyle(passphrase.count < Self.minimumLength && !trimmedEmpty && confirmation.isEmpty ? Ink.warn : Ink.stop)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Label(L.t("backupCrypto.unrecoverableNote"), systemImage: "exclamationmark.triangle.fill")
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func passphraseInputRow(placeholder: String, text: Binding<String>, showRevealToggle: Bool) -> some View {
+        HStack(spacing: Ink.Space.s) {
+            if reveal {
+                TextField(placeholder, text: text)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(Ink.secondary)
+                    .foregroundStyle(Ink.ink)
+            } else {
+                SecureField(placeholder, text: text)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(Ink.secondary)
+                    .foregroundStyle(Ink.ink)
+            }
+            if showRevealToggle {
+                Button {
+                    reveal.toggle()
+                    Haptics.light()
+                } label: {
+                    Image(systemName: reveal ? "eye.slash" : "eye")
+                        .font(Ink.secondary)
+                        .foregroundStyle(Ink.inkSoft)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(TapStyle())
+                .accessibilityLabel(reveal ? L.t("backupCrypto.hidePassphrase") : L.t("backupCrypto.showPassphrase"))
+            }
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .frame(minHeight: Kit.rowHeight)
+    }
+}
+
+private struct PassphraseUnlockSheet: View {
+    let displayName: String
+    let errorMessage: String?
+    @Binding var busy: Bool
+    let onCancel: () -> Void
+    let onSubmit: (String) -> Void
+
+    @State private var passphrase = ""
+    @State private var reveal = false
+
+    private var canSubmit: Bool {
+        !busy && !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Ink.paper.ignoresSafeArea()
+                ScrollView {
+                    sheetContent
+                        .padding(.horizontal, Ink.Space.page)
+                        .padding(.vertical, Ink.Space.l)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) {
+                        Haptics.light()
+                        onCancel()
+                    }
+                    .disabled(busy)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("backupCrypto.unlockAndRestore")) {
+                        guard canSubmit else { return }
+                        Haptics.tick(0.6)
+                        onSubmit(passphrase)
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSubmit)
+                }
+            }
+        }
+        .interactiveDismissDisabled(busy)
+    }
+
+    private var sheetContent: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.l) {
+            HStack(spacing: Ink.Space.m) {
+                IconBadge(symbol: "key", tint: Ink.Tile.dai, size: 44 * UIScale.factor)
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    Text(L.t("backupCrypto.unlockTitle"))
+                        .font(Ink.mark(Ink.Size.title, bold: true, relativeTo: .title2))
+                        .foregroundStyle(Ink.ink)
+                    Text(L.t("backupCrypto.unlockSubtitle"))
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                }
+            }
+
+            Text(L.format("backupCrypto.unlockFileLabel", displayName))
+                .font(Ink.footnote)
+                .foregroundStyle(Ink.inkSoft)
+                .lineLimit(2)
+
+            VStack(spacing: 0) {
+                HStack(spacing: Ink.Space.s) {
+                    if reveal {
+                        TextField(L.t("backupCrypto.passphraseField"), text: $passphrase)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.ink)
+                            .disabled(busy)
+                    } else {
+                        SecureField(L.t("backupCrypto.passphraseField"), text: $passphrase)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.ink)
+                            .disabled(busy)
+                    }
+                    Button {
+                        reveal.toggle()
+                        Haptics.light()
+                    } label: {
+                        Image(systemName: reveal ? "eye.slash" : "eye")
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(TapStyle())
+                    .disabled(busy)
+                    .accessibilityLabel(reveal ? L.t("backupCrypto.hidePassphrase") : L.t("backupCrypto.showPassphrase"))
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .frame(minHeight: Kit.rowHeight)
+            }
+            .paperCard()
+
+            if busy {
+                HStack(spacing: Ink.Space.s) {
+                    ProgressView()
+                    Text(L.t("backupCrypto.decryptingAndRestoring"))
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                }
+            } else if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.stop)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

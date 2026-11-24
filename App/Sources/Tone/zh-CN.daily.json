@@ -1043,6 +1043,38 @@
     "stampJustNow": "刚刚",
     "stampLive": "实时"
   },
+  "backupCrypto": {
+    "encryptLocalToggle": "用口令加密备份",
+    "davEncryptToggle": "加密后再上传网盘",
+    "keysRequireEncryptionNote": "包含模型密钥的备份必须设口令加密；已安装技能也会一并打包（不含其余文件、密码保险箱、数据库缓存与未发出草稿）。",
+    "skillsAndEncryptionNote": "已安装技能也会一并打包（不含其余文件、密码保险箱、数据库缓存与未发出草稿）。开启加密后需凭口令才能恢复。",
+    "davEncryptNote": "网盘备份永远不带模型密钥；开启「加密后再上传网盘」会先在手机本地用口令加密，再传到网盘。",
+    "setupTitle": "设置备份口令",
+    "setupSubtitleLocal": "用这组口令把本地备份文件锁起来",
+    "setupSubtitleWebDAV": "先在手机本地加密，再上传到网盘",
+    "passphraseField": "输入口令",
+    "confirmField": "再输一遍确认",
+    "minLengthError": "口令至少要 %lld 个字符。",
+    "whitespaceError": "口令不能全是空白字符。",
+    "mismatchError": "两次输入的口令不一样。",
+    "unrecoverableNote": "口令不会保存在手机或网盘里。忘了口令就再也解不开这份备份，也没法找回。",
+    "confirmAndCreate": "加密并打包",
+    "confirmAndUpload": "加密并上传",
+    "unlockTitle": "解开加密备份",
+    "unlockSubtitle": "输入备份时设的口令，确认后才会替换本机数据",
+    "unlockFileLabel": "备份文件：%@",
+    "unlockAndRestore": "解锁并恢复",
+    "decryptingAndRestoring": "正在核对口令并恢复…",
+    "showPassphrase": "显示口令",
+    "hidePassphrase": "隐藏口令",
+    "davEmbeddedCredentials": "网址里不要带用户名或密码，填在下面两行就好。",
+    "davQueryOrFragment": "网盘地址里不要带 ? 参数或 # 片段，只填根目录地址。",
+    "davDownloadTooLarge": "网盘上的备份文件太大，无法安全恢复。"
+  },
+  "lookChatList": {
+    "toggle": "新版对话列表",
+    "note": "支持更跟手的滚动、跨段长按选字与引用；若遇到显示异常，关闭可立即切回旧版。"
+  },
   "memoryV2": {
     "searchPrompt": "搜索记忆、主题或分类",
     "filterAll": "全部",
