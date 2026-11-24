@@ -36,6 +36,18 @@ struct CarePage: View {
     @State private var probing = false
     @State private var copied = false
     @State private var copyingReport = false
+    @State private var uikitSpikeOpen = false
+    @AppStorage("care.spikeLab") private var spikeLab = false
+    @State private var versionTapCount = 0
+    @State private var lastVersionTapAt = Date.distantPast
+
+    private var showSpikeLab: Bool {
+        #if DEBUG
+        return true
+        #else
+        return spikeLab
+        #endif
+    }
 
     private var backupOrRestoreBusy: Bool {
         making || restoring || restoringBusy || davBusy || !davChoices.isEmpty || restored || Disk.frozen
@@ -103,6 +115,8 @@ struct CarePage: View {
 
                 Section {
                     row("版本", "Clio \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")（\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")）")
+                        .contentShape(Rectangle())
+                        .onTapGesture { handleVersionTap() }
                     row("系统", "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
                     row(Words.t("旅伴 / 雅集"), "\(team.bots.count) / \(team.rooms.count)")
                     row(Words.t("拾遗"), Words.t("常记 \(team.surfaceMemories.count) · 旧事 \(team.deepMemories.count)"))
@@ -135,6 +149,30 @@ struct CarePage: View {
 
                 if hitchesReady {
                     HitchSettings()
+                }
+
+                if showSpikeLab {
+                    Section {
+                        Button {
+                            Haptics.light()
+                            uikitSpikeOpen = true
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                    Text(L.t("careSpike.title")).foregroundStyle(Ink.ink)
+                                    Text(L.t("careSpike.subtitle")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                                }
+                                Spacer()
+                                Kit.chevron
+                            }
+                        }
+                        if spikeLab {
+                            Button(L.t("careSpike.hideLab"), role: .destructive) {
+                                spikeLab = false
+                                Haptics.tick(0.5)
+                            }
+                        }
+                    } header: { Text(L.t("careSpike.section")) }
                 }
 
                 Section {
@@ -230,6 +268,25 @@ struct CarePage: View {
                     Button(L.t("actions.done"), role: .cancel) {}
                 }
             }
+            .fullScreenCover(isPresented: $uikitSpikeOpen) {
+                SpikeChatSheet()
+            }
+        }
+    }
+
+    private func handleVersionTap() {
+        let now = Date()
+        if now.timeIntervalSince(lastVersionTapAt) > 1.5 {
+            versionTapCount = 1
+        } else {
+            versionTapCount += 1
+        }
+        lastVersionTapAt = now
+        if versionTapCount >= 5 {
+            versionTapCount = 0
+            spikeLab.toggle()
+            Haptics.tick(0.6)
+            notice = spikeLab ? L.t("careSpike.labEnabled") : L.t("careSpike.labDisabled")
         }
     }
 
