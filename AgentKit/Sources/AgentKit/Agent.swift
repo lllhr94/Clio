@@ -46,6 +46,8 @@ public struct ToolOutput: Equatable, Sendable {
 
 public protocol AgentTool: Sendable {
     var spec: ToolSpec { get }
+    /// Whether calling this tool has zero side effects and can safely run concurrently with other read-only tools.
+    var isReadOnlySafe: Bool { get }
     /// What the user sees while it runs: 「搜索：重庆天气」.
     func label(for arguments: JSONValue) -> String
     /// Nil: runs without asking.
@@ -54,6 +56,7 @@ public protocol AgentTool: Sendable {
 }
 
 public extension AgentTool {
+    var isReadOnlySafe: Bool { false }
     func approval(for arguments: JSONValue) -> ApprovalAsk? { nil }
 }
 
@@ -163,18 +166,43 @@ public struct Agent: Sendable {
         return false
     }
 
+    static let maxToolConcurrency = 4
+    static let repeatedLoopStopMessage = "（连续几步都在重复同样的操作没有新进展，我先停在这里。要接着试或换个做法就说一声。）"
+
+    struct CanonicalCall: Equatable, Sendable {
+        let name: String
+        let arguments: String
+    }
+
+    private struct PreparedCall: Sendable {
+        let index: Int
+        let call: ToolCall
+        let sameKey: String
+        let tool: AgentTool
+        let arguments: JSONValue
+        let title: String?
+    }
+
     public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
         var messages = history
         let specs = tools.map { Self.titled($0.spec) }
         var thinking = self.thinking
         var uncertain: Set<String> = []
+        var lastBatchSignature: [CanonicalCall]?
+        var consecutiveBatchRepeats = 0
         for step in 0..<maxSteps {
             try Task.checkCancellation()
             if step > 0, let inbox {
+                var heardAny = false
                 for said in await inbox() where !said.isEmpty {
                     let heard = Message.user(said)
                     messages.append(heard)
                     await emit(.message(heard))
+                    heardAny = true
+                }
+                if heardAny {
+                    lastBatchSignature = nil
+                    consecutiveBatchRepeats = 0
                 }
             }
             var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
@@ -302,23 +330,136 @@ public struct Agent: Sendable {
                 if Task.isCancelled { throw CancellationError() }
                 return
             }
-            for call in made {
-                // Stopped: no further step starts (the review, #2).
+            try await executeToolCalls(made, messages: &messages, uncertain: &uncertain, emit: emit)
+            let stepSignature = made.map { Self.canonicalCallSignature($0) }
+            if stepSignature == lastBatchSignature {
+                consecutiveBatchRepeats += 1
+            } else {
+                lastBatchSignature = stepSignature
+                consecutiveBatchRepeats = 1
+            }
+            if consecutiveBatchRepeats >= 3 {
+                await emit(.message(.assistant(Self.repeatedLoopStopMessage)))
+                return
+            }
+        }
+        await emit(.message(.assistant("（这件事步骤太多，我先停在这里。要我接着做就说一声。）")))
+    }
+
+    static func canonicalCallSignature(_ call: ToolCall) -> CanonicalCall {
+        let source = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = JSONValue.parse(source.isEmpty ? "{}" : source) {
+            let (untitledArguments, _) = untitled(parsed)
+            return CanonicalCall(name: call.name, arguments: "json:" + untitledArguments.compact)
+        }
+        return CanonicalCall(name: call.name, arguments: "raw:" + source)
+    }
+
+    private func prepareConcurrentCandidate(_ call: ToolCall, at index: Int, uncertain: Set<String>) -> PreparedCall? {
+        let same = call.name + "\u{1}" + call.arguments
+        guard !uncertain.contains(same) else { return nil }
+        guard let tool = tools.first(where: { $0.spec.name == call.name }) else { return nil }
+        guard tool.isReadOnlySafe else { return nil }
+        let source = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let given = JSONValue.parse(source.isEmpty ? "{}" : source) else { return nil }
+        let (arguments, title) = Self.untitled(given)
+        guard tool.approval(for: arguments) == nil else { return nil }
+        return PreparedCall(
+            index: index,
+            call: call,
+            sameKey: same,
+            tool: tool,
+            arguments: arguments,
+            title: title
+        )
+    }
+
+    private func executeToolCalls(
+        _ made: [ToolCall],
+        messages: inout [Message],
+        uncertain: inout Set<String>,
+        emit: @escaping @Sendable (AgentEvent) async -> Void
+    ) async throws {
+        var cursor = 0
+        while cursor < made.count {
+            try Task.checkCancellation()
+            var batch: [PreparedCall] = []
+            var lookahead = cursor
+            while lookahead < made.count,
+                  let candidate = prepareConcurrentCandidate(made[lookahead], at: lookahead, uncertain: uncertain) {
+                batch.append(candidate)
+                lookahead += 1
+            }
+            if batch.count >= 2 {
+                let results = try await performConcurrentBatch(batch, emit: emit)
+                for (prepared, result) in zip(batch, results) {
+                    if result.isError, result.text.hasPrefix(Self.unknownMark) {
+                        uncertain.insert(prepared.sameKey)
+                    }
+                    messages.append(result)
+                    await emit(.message(result))
+                }
                 try Task.checkCancellation()
+                cursor = lookahead
+            } else {
+                let call = made[cursor]
                 let same = call.name + "\u{1}" + call.arguments
                 let result: Message
                 if uncertain.contains(same) {
                     result = .toolResult("这一步刚才结果未知，同样的事没有再做一次。先查清现在的状态，或问用户要不要重做。", for: call, isError: true)
                 } else {
                     result = await perform(call, emit: emit)
-                    if result.isError, result.text.hasPrefix(Self.unknownMark) { uncertain.insert(same) }
+                    if result.isError, result.text.hasPrefix(Self.unknownMark) {
+                        uncertain.insert(same)
+                    }
                 }
                 messages.append(result)
                 await emit(.message(result))
                 try Task.checkCancellation()
+                cursor += 1
             }
         }
-        await emit(.message(.assistant("（这件事步骤太多，我先停在这里。要我接着做就说一声。）")))
+    }
+
+    private func performConcurrentBatch(
+        _ batch: [PreparedCall],
+        emit: @escaping @Sendable (AgentEvent) async -> Void
+    ) async throws -> [Message] {
+        var ordered: [Message?] = Array(repeating: nil, count: batch.count)
+        try await withThrowingTaskGroup(of: (offset: Int, message: Message).self) { group in
+            var next = 0
+            let initial = min(Self.maxToolConcurrency, batch.count)
+            while next < initial {
+                try Task.checkCancellation()
+                let offset = next
+                let item = batch[offset]
+                next += 1
+                group.addTask {
+                    try Task.checkCancellation()
+                    let message = await self.performPrepared(item, emit: emit)
+                    return (offset: offset, message: message)
+                }
+            }
+            while let done = try await group.next() {
+                ordered[done.offset] = done.message
+                if Task.isCancelled {
+                    group.cancelAll()
+                    throw CancellationError()
+                }
+                if next < batch.count {
+                    let offset = next
+                    let item = batch[offset]
+                    next += 1
+                    group.addTask {
+                        try Task.checkCancellation()
+                        let message = await self.performPrepared(item, emit: emit)
+                        return (offset: offset, message: message)
+                    }
+                }
+            }
+        }
+        try Task.checkCancellation()
+        return ordered.compactMap { $0 }
     }
 
     static func cutShort(text: String, reasoning: String, images: Int, calls: Int, finish: String?) -> CutShort? {
@@ -362,13 +503,6 @@ public struct Agent: Sendable {
     }
 
     private func perform(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
-        let invocationID = "\(call.id)-\(UUID().uuidString)"
-        return await ToolInvocation.$currentID.withValue(invocationID) {
-            await performBound(call, emit: emit)
-        }
-    }
-
-    private func performBound(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
         guard let tool = tools.first(where: { $0.spec.name == call.name }) else {
             return .toolResult("没有叫 \(call.name) 的工具。", for: call, isError: true)
         }
@@ -378,9 +512,42 @@ public struct Agent: Sendable {
         }
         // The model's own words for this step, for the person; the tool never sees them.
         let (arguments, title) = Self.untitled(given)
+        let invocationID = "\(call.id)-\(UUID().uuidString)"
+        return await ToolInvocation.$currentID.withValue(invocationID) {
+            await executeTool(call: call, tool: tool, arguments: arguments, title: title, allowApproval: true, emit: emit)
+        }
+    }
+
+    private func performPrepared(_ prepared: PreparedCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
+        let invocationID = "\(prepared.call.id)-\(UUID().uuidString)"
+        return await ToolInvocation.$currentID.withValue(invocationID) {
+            await executeTool(
+                call: prepared.call,
+                tool: prepared.tool,
+                arguments: prepared.arguments,
+                title: prepared.title,
+                allowApproval: false,
+                emit: emit
+            )
+        }
+    }
+
+    private func executeTool(
+        call: ToolCall,
+        tool: AgentTool,
+        arguments: JSONValue,
+        title: String?,
+        allowApproval: Bool,
+        emit: @Sendable (AgentEvent) async -> Void
+    ) async -> Message {
         await emit(.toolStarted(id: call.id, name: call.name, label: Self.label(tool.label(for: arguments), title: title)))
-        let asked = tool.approval(for: arguments) != nil
-        if let ask = tool.approval(for: arguments) {
+        let ask = tool.approval(for: arguments)
+        let asked = ask != nil
+        if let ask {
+            guard allowApproval else {
+                await emit(.toolFinished(id: call.id, ok: false))
+                return .toolResult("这一步临时需要确认，没有并行执行。", for: call, isError: true)
+            }
             guard await approve(ask, call.name) else {
                 await emit(.toolFinished(id: call.id, ok: false))
                 return .toolResult("用户没有同意这次操作，什么都没做。除非用户再次要求，不要重试。", for: call, isError: true)
