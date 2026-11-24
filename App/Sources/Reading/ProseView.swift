@@ -387,7 +387,7 @@ private struct CodeBlock: View {
     /// A line is wider than the block: only then may it slide.
     private var overflows: Bool { boxWidth > 0 && contentWidth > boxWidth + 1 }
 
-    private var lineCount: Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
+    private var lineCount: Int { text.utf8.reduce(1) { $0 + ($1 == 10 ? 1 : 0) } }
     /// What a program printed (``` text, output, console…): one green, like a terminal, not colored as code.
     private var isOutput: Bool {
         if ["text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session"].contains(language.lowercased()) { return true }
@@ -468,7 +468,7 @@ private struct CodeBlock: View {
         // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
         // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
         ScrollView(.horizontal) {
-            Text(isOutput ? Highlight.output(shown) : Highlight.code(shown, language: language))
+            Text(isOutput ? Highlight.output(shown, cache: !live) : Highlight.code(shown, language: language, cache: !live))
                 .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
                 .font(Ink.code)
                 // Tight column-aligned monospace rhythm (~0.13x font size) with clean vertical padding.
@@ -476,12 +476,16 @@ private struct CodeBlock: View {
                 .padding(.horizontal, Ink.Space.l)
                 .padding(.vertical, Ink.Space.m)
                 .fixedSize(horizontal: true, vertical: false)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { next in
+                    if abs(contentWidth - next) > 0.5 { contentWidth = next }
+                }
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(!overflows)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { next in
+            if abs(boxWidth - next) > 0.5 { boxWidth = next }
+        }
         .overlay(alignment: .leading) {
             if isOutput {
                 Rectangle().fill(Ink.Code.output.opacity(0.65)).frame(width: 2.5)
@@ -520,6 +524,93 @@ private struct CodeBlock: View {
             if folds { foldButton }
         }
         .inkBlock()
+    }
+}
+
+private final class TableCacheKey: NSObject {
+    let table: Prose.Table
+    let face: Pref.Face
+    let size: CGFloat
+    let fontGen: Int
+    private let cachedHash: Int
+
+    init(table: Prose.Table, face: Pref.Face, size: CGFloat, fontGen: Int) {
+        self.table = table
+        self.face = face
+        self.size = size
+        self.fontGen = fontGen
+        var hasher = Hasher()
+        hasher.combine(face)
+        hasher.combine(size)
+        hasher.combine(fontGen)
+        hasher.combine(table.header)
+        hasher.combine(table.rows.count)
+        if let first = table.rows.first { hasher.combine(first) }
+        if let last = table.rows.last, table.rows.count > 1 { hasher.combine(last) }
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TableCacheKey else { return false }
+        return cachedHash == other.cachedHash
+            && face == other.face
+            && size == other.size
+            && fontGen == other.fontGen
+            && table == other.table
+    }
+}
+
+private final class PreparedTable {
+    let widths: [CGFloat]
+    let header: [AttributedString]
+    let rows: [[AttributedString]]
+
+    init(widths: [CGFloat], header: [AttributedString], rows: [[AttributedString]]) {
+        self.widths = widths
+        self.header = header
+        self.rows = rows
+    }
+}
+
+@MainActor
+private enum TableLayoutCache {
+    private static let cache: NSCache<TableCacheKey, PreparedTable> = {
+        let cache = NSCache<TableCacheKey, PreparedTable>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    static func prepare(_ table: Prose.Table, cellSize: CGFloat) -> PreparedTable {
+        let key = TableCacheKey(table: table, face: Pref.face, size: cellSize, fontGen: FontShelf.shared.generation)
+        if let hit = cache.object(forKey: key) { return hit }
+        let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
+        let headFont = Ink.uiFace(cellSize, bold: true)
+        let bodyFont = Ink.uiFace(cellSize, bold: false)
+        let widths: [CGFloat] = (0..<columns).map { column in
+            var natural = measure(column < table.header.count ? table.header[column] : "", font: headFont)
+            for row in table.rows where column < row.count {
+                natural = max(natural, measure(row[column], font: bodyFont))
+            }
+            return max(28, ceil(natural) + 4)
+        }
+        let header = table.header.map(parseCell)
+        let rows = table.rows.map { $0.map(parseCell) }
+        let prepared = PreparedTable(widths: widths, header: header, rows: rows)
+        cache.setObject(prepared, forKey: key)
+        return prepared
+    }
+
+    private static func measure(_ cell: String, font: UIFont) -> CGFloat {
+        let plain = cell.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "~~", with: "")
+        return (plain as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    private static func parseCell(_ cell: String) -> AttributedString {
+        (try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(cell)
     }
 }
 
@@ -567,47 +658,31 @@ private struct TableBlock: View {
         return natural.map { max(floor, min($0, available * 0.7)) }
     }
 
-    private var widths: [CGFloat] {
-        let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        // Measured in the face the cells are set in, so a column is as wide as its words really are.
-        let head = Pref.face.postScript(bold: true).flatMap { UIFont(name: $0, size: Self.cellSize) } ?? .systemFont(ofSize: Self.cellSize, weight: .semibold)
-        let body = Pref.face.postScript(bold: false).flatMap { UIFont(name: $0, size: Self.cellSize) } ?? .systemFont(ofSize: Self.cellSize)
-        return (0..<columns).map { column in
-            var natural = Self.measure(column < table.header.count ? table.header[column] : "", font: head)
-            for row in table.rows where column < row.count {
-                natural = max(natural, Self.measure(row[column], font: body))
-            }
-            return max(28, ceil(natural) + 4)
-        }
-    }
-
-    /// One line's width, without the Markdown marks that are not drawn.
-    private static func measure(_ cell: String, font: UIFont) -> CGFloat {
-        let plain = cell.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "~~", with: "")
-        return (plain as NSString).size(withAttributes: [.font: font]).width
-    }
-
     var body: some View {
-        let widths = spread(self.widths)
+        let prepared = TableLayoutCache.prepare(table, cellSize: Self.cellSize)
+        let widths = spread(prepared.widths)
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
-                row(table.header, head: true, widths: widths)
+                row(prepared.header, head: true, widths: widths)
                     .background(Ink.mine.opacity(0.45))
                 Rectangle().fill(Ink.rule).frame(height: 0.75)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
+                ForEach(Array(prepared.rows.enumerated()), id: \.offset) { index, cells in
                     if index > 0 { Rectangle().fill(Ink.rule.opacity(0.7)).frame(height: 0.5) }
                     row(cells, head: false, widths: widths)
                         .background(index.isMultiple(of: 2) ? Color.clear : Ink.mine.opacity(0.18))
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { next in
+                if abs(contentWidth - next) > 0.5 { contentWidth = next }
+            }
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(!overflows)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { room = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { next in
+            if abs(room - next) > 0.5 { room = next }
+        }
         .overlay(alignment: .trailing) {
             if overflows {
                 LinearGradient(colors: [Ink.paperRaised.opacity(0), Ink.paperRaised], startPoint: .leading, endPoint: .trailing)
@@ -657,10 +732,10 @@ private struct TableBlock: View {
         return lines.joined(separator: "\n")
     }
 
-    private func row(_ cells: [String], head: Bool, widths: [CGFloat]) -> some View {
+    private func row(_ cells: [AttributedString], head: Bool, widths: [CGFloat]) -> some View {
         HStack(alignment: .top, spacing: Self.gap) {
             ForEach(Array(widths.enumerated()), id: \.offset) { column, width in
-                cellText(column < cells.count ? cells[column] : "", head: head, column: column)
+                cellText(column < cells.count ? cells[column] : AttributedString(""), head: head, column: column)
                     .frame(width: width, alignment: frameAlign(column))
             }
         }
@@ -673,9 +748,8 @@ private struct TableBlock: View {
         return align == .center ? .top : (align == .trailing ? .topTrailing : .topLeading)
     }
 
-    private func cellText(_ cell: String, head: Bool, column: Int) -> some View {
+    private func cellText(_ styled: AttributedString, head: Bool, column: Int) -> some View {
         let align = column < table.aligns.count ? table.aligns[column] : .leading
-        let styled = (try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(cell)
         // Cells in the reading face, like the words around the table; the body in full ink, as text to read.
         return Text(styled)
             .font(Ink.body(Double(Self.cellSize), bold: head))
@@ -686,8 +760,56 @@ private struct TableBlock: View {
     }
 }
 
+private final class HighlightCacheKey: NSObject {
+    let isOutput: Bool
+    let language: String
+    let codePref: Pref.Code
+    let size: Double
+    let text: String
+    private let cachedHash: Int
+
+    init(isOutput: Bool, language: String, codePref: Pref.Code, size: Double, text: String) {
+        self.isOutput = isOutput
+        self.language = language
+        self.codePref = codePref
+        self.size = size
+        self.text = text
+        var hasher = Hasher()
+        hasher.combine(isOutput)
+        hasher.combine(language)
+        hasher.combine(codePref)
+        hasher.combine(size)
+        mixFastStringHash(text, into: &hasher)
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? HighlightCacheKey else { return false }
+        return cachedHash == other.cachedHash
+            && isOutput == other.isOutput
+            && codePref == other.codePref
+            && size == other.size
+            && text.utf8.count == other.text.utf8.count
+            && language == other.language
+            && text == other.text
+    }
+}
+
+private final class HighlightBox {
+    let attributed: AttributedString
+    init(_ attributed: AttributedString) { self.attributed = attributed }
+}
+
 /// Keyword-level coloring, enough to read code at a glance.
 @MainActor enum Highlight {
+    private static let cache: NSCache<HighlightCacheKey, HighlightBox> = {
+        let cache = NSCache<HighlightCacheKey, HighlightBox>()
+        cache.countLimit = 256
+        return cache
+    }()
+
     private static let keywords: Set<String> = [
         "func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch",
         "def", "from", "as", "in", "not", "and", "or", "is", "None", "True", "False", "lambda", "with", "try", "except",
@@ -710,7 +832,16 @@ private struct TableBlock: View {
         }
     }
 
-    static func output(_ text: String) -> AttributedString {
+    static func output(_ text: String, cache useCache: Bool = true) -> AttributedString {
+        if useCache {
+            let key = HighlightCacheKey(isOutput: true, language: "", codePref: Pref.code, size: Pref.size, text: text)
+            if let hit = cache.object(forKey: key) { return hit.attributed }
+            let fonts = fonts(for: text)
+            var result = AttributedString()
+            append(text[...], fonts: fonts, to: &result)
+            cache.setObject(HighlightBox(result), forKey: key)
+            return result
+        }
         let fonts = fonts(for: text)
         var result = AttributedString()
         append(text[...], fonts: fonts, to: &result)
@@ -756,13 +887,18 @@ private struct TableBlock: View {
         flush(upTo: text.endIndex, into: &result)
     }
 
-    static func code(_ text: String, language: String) -> AttributedString {
+    static func code(_ text: String, language: String, cache useCache: Bool = true) -> AttributedString {
+        let lowerLang = language.lowercased()
+        let key: HighlightCacheKey? = useCache
+            ? HighlightCacheKey(isOutput: false, language: lowerLang, codePref: Pref.code, size: Pref.size, text: text)
+            : nil
+        if let key, let hit = cache.object(forKey: key) { return hit.attributed }
         let fonts = fonts(for: text)
         var out = AttributedString()
         var index = text.startIndex
         var start = index
         var style: Style = .plain
-        let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(language.lowercased())
+        let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(lowerLang)
         func flush(upTo end: String.Index) {
             guard start < end else { return }
             append(text[start..<end], fonts: fonts, color: style.color, italic: style == .comment, to: &out)
@@ -803,6 +939,7 @@ private struct TableBlock: View {
             index = end
         }
         flush(upTo: index)
+        if let key { cache.setObject(HighlightBox(out), forKey: key) }
         return out
     }
 }
@@ -859,6 +996,39 @@ private final class PublicImageRedirectDelegate: NSObject, URLSessionTaskDelegat
     }
 }
 
+private final class CachedLocalPicture {
+    let ref: WorkspaceFileRef
+    let image: UIImage
+    let modified: Date?
+
+    init(ref: WorkspaceFileRef, image: UIImage, modified: Date?) {
+        self.ref = ref
+        self.image = image
+        self.modified = modified
+    }
+}
+
+@MainActor
+private enum LocalPictureCache {
+    private static let cache: NSCache<NSString, CachedLocalPicture> = {
+        let cache = NSCache<NSString, CachedLocalPicture>()
+        cache.countLimit = 24
+        return cache
+    }()
+
+    static func get(_ key: String) -> CachedLocalPicture? {
+        cache.object(forKey: key as NSString)
+    }
+
+    static func set(_ entry: CachedLocalPicture?, for key: String) {
+        if let entry {
+            cache.setObject(entry, forKey: key as NSString)
+        } else {
+            cache.removeObject(forKey: key as NSString)
+        }
+    }
+}
+
 /// One picture in a reply: from the web, or from 书案 (a path the companion wrote there). Tap to see it whole,
 /// with the system viewer's share and save.
 struct ProsePicture: View {
@@ -871,6 +1041,25 @@ struct ProsePicture: View {
     @State private var workspaceRef: WorkspaceFileRef?
     @State private var failed = false
     @State private var open = false
+
+    @MainActor
+    init(source: String, label: String = "") {
+        self.source = source
+        self.label = label
+        let isRemote = URL(string: source).flatMap { url in
+            ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? url : nil
+        } != nil
+        if !isRemote {
+            let decodedPath = source.removingPercentEncoding ?? source
+            if let hit = LocalPictureCache.get(decodedPath) {
+                _image = State(initialValue: hit.image)
+                _workspaceRef = State(initialValue: hit.ref)
+                return
+            }
+        }
+        _image = State(initialValue: nil)
+        _workspaceRef = State(initialValue: nil)
+    }
 
     private var canOpen: Bool { workspaceRef != nil || remoteFile != nil }
 
@@ -906,16 +1095,22 @@ struct ProsePicture: View {
         }
     }
 
+    private enum LocalOutcome: Sendable {
+        case unchanged
+        case missing
+        case updated(WorkspaceFileRef, UIImage, Date?)
+    }
+
     private func load() async {
-        image = nil
-        remoteFile = nil
-        workspaceRef = nil
-        failed = false
         let written = source
         let remote = URL(string: written).flatMap { url in
             ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? url : nil
         }
         if let remote {
+            image = nil
+            remoteFile = nil
+            workspaceRef = nil
+            failed = false
             guard !LocalAddress.isLocal(remote), !(await LocalAddress.resolvesToLocal(remote)) else {
                 if !Task.isCancelled { failed = true }
                 return
@@ -944,18 +1139,44 @@ struct ProsePicture: View {
         }
 
         let decodedPath = written.removingPercentEncoding ?? written
-        let loaded = await Task.detached(priority: .userInitiated) { () -> (WorkspaceFileRef, UIImage)? in
-            guard let ref = WorkspaceFileRef.resolve(decodedPath),
-                  let picture = WorkspaceFileRef.loadImage(ref) else { return nil }
-            return (ref, picture)
+        let cached = LocalPictureCache.get(decodedPath)
+        if let cached {
+            if workspaceRef != cached.ref { workspaceRef = cached.ref }
+            if image !== cached.image { image = cached.image }
+            if remoteFile != nil { remoteFile = nil }
+            if failed { failed = false }
+        } else {
+            image = nil
+            remoteFile = nil
+            workspaceRef = nil
+            failed = false
+        }
+        let cachedRef = cached?.ref
+        let cachedModified = cached?.modified
+        let outcome = await Task.detached(priority: .userInitiated) { () -> LocalOutcome in
+            guard let ref = WorkspaceFileRef.resolve(decodedPath) else { return .missing }
+            let modified = (try? FileManager.default.attributesOfItem(atPath: ref.url.path))?[.modificationDate] as? Date
+            if let cachedRef, cachedRef == ref, cachedModified == modified {
+                return .unchanged
+            }
+            guard let picture = WorkspaceFileRef.loadImage(ref) else { return .missing }
+            return .updated(ref, picture, modified)
         }.value
         guard !Task.isCancelled else { return }
-        guard let (ref, picture) = loaded else {
-            failed = true
+        switch outcome {
+        case .unchanged:
             return
+        case .missing:
+            LocalPictureCache.set(nil, for: decodedPath)
+            image = nil
+            workspaceRef = nil
+            failed = true
+        case .updated(let ref, let picture, let modified):
+            LocalPictureCache.set(CachedLocalPicture(ref: ref, image: picture, modified: modified), for: decodedPath)
+            workspaceRef = ref
+            image = picture
+            failed = false
         }
-        workspaceRef = ref
-        image = picture
     }
 
     private static func downloadRemoteImage(_ remote: URL) async throws -> URL {
@@ -1014,6 +1235,32 @@ struct ProsePicture: View {
 }
 
 
+private final class CachedFileRef {
+    let ref: WorkspaceFileRef
+    init(_ ref: WorkspaceFileRef) { self.ref = ref }
+}
+
+@MainActor
+private enum FileCardCache {
+    private static let cache: NSCache<NSString, CachedFileRef> = {
+        let cache = NSCache<NSString, CachedFileRef>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    static func get(_ key: String) -> WorkspaceFileRef? {
+        cache.object(forKey: key as NSString)?.ref
+    }
+
+    static func set(_ ref: WorkspaceFileRef?, for key: String) {
+        if let ref {
+            cache.setObject(CachedFileRef(ref), forKey: key as NSString)
+        } else {
+            cache.removeObject(forKey: key as NSString)
+        }
+    }
+}
+
 /// A file the companion made, handed over in the reply: a line that is only a link into 书案 (`[周报.pdf](书案/周报.pdf)`)
 /// becomes a card. Tap it to read it in the system viewer, which can also share it or save it to 文件.
 struct FileCard: View {
@@ -1023,6 +1270,20 @@ struct FileCard: View {
     @State private var checked = false
     @State private var open = false
     @State private var interaction = false
+
+    @MainActor
+    init(label: String, path: String) {
+        self.label = label
+        self.path = path
+        let clean = path.removingPercentEncoding ?? path
+        if let hit = FileCardCache.get(clean) {
+            _resolved = State(initialValue: hit)
+            _checked = State(initialValue: true)
+        } else {
+            _resolved = State(initialValue: nil)
+            _checked = State(initialValue: false)
+        }
+    }
 
     private var document: InteractiveDocument? {
         guard let resolved, InteractiveDocument.supports(resolved.url) else { return nil }
@@ -1063,8 +1324,9 @@ struct FileCard: View {
             let clean = path.removingPercentEncoding ?? path
             let found = await Task.detached(priority: .utility) { WorkspaceFileRef.resolve(clean) }.value
             guard !Task.isCancelled else { return }
-            resolved = found
-            checked = true
+            FileCardCache.set(found, for: clean)
+            if resolved != found { resolved = found }
+            if !checked { checked = true }
         }
         .sheet(isPresented: $open) {
             if let resolved {
@@ -1183,7 +1445,7 @@ private struct ReplyProseLayout: View {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(blocks)
-        let format = "\(cacheScope)\(quoted ? "q-" : "")\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)"
+        let format = "\(cacheScope)\(quoted ? "q-" : "")\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)-\(UIScale.shared.value)"
         VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 let live = streaming && allowFade && index == parts.count - 1
@@ -1367,44 +1629,179 @@ private extension NSAttributedString.Key {
     static let clioInlineCode = Self("ClioInlineCode")
 }
 
+private func mixFastStringHash(_ text: String, into hasher: inout Hasher) {
+    let utf8 = text.utf8
+    hasher.combine(utf8.count)
+    for byte in utf8.prefix(64) { hasher.combine(byte) }
+    if utf8.count > 64 {
+        for byte in utf8.suffix(64) { hasher.combine(byte) }
+    }
+}
+
+private final class ProsePartKey: NSObject {
+    let format: String
+    let part: Int
+    let text: String
+    private let cachedHash: Int
+
+    init(format: String, part: Int, text: String) {
+        self.format = format
+        self.part = part
+        self.text = text
+        var hasher = Hasher()
+        hasher.combine(format)
+        hasher.combine(part)
+        mixFastStringHash(text, into: &hasher)
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? ProsePartKey else { return false }
+        return cachedHash == other.cachedHash
+            && part == other.part
+            && text.utf8.count == other.text.utf8.count
+            && format == other.format
+            && text == other.text
+    }
+}
+
+private final class ProseHeightKey: NSObject {
+    let format: String
+    let part: Int
+    let widthKey: Int
+    let text: String
+    private let cachedHash: Int
+
+    init(format: String, part: Int, widthKey: Int, text: String) {
+        self.format = format
+        self.part = part
+        self.widthKey = widthKey
+        self.text = text
+        var hasher = Hasher()
+        hasher.combine(format)
+        hasher.combine(part)
+        hasher.combine(widthKey)
+        mixFastStringHash(text, into: &hasher)
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? ProseHeightKey else { return false }
+        return cachedHash == other.cachedHash
+            && part == other.part
+            && widthKey == other.widthKey
+            && text.utf8.count == other.text.utf8.count
+            && format == other.format
+            && text == other.text
+    }
+}
+
+@MainActor
+private final class ProseRenderedWords {
+    let attributed: NSAttributedString
+    let codeRanges: [NSRange]
+    var pathsByWidth: [Int: CGPath] = [:]
+
+    init(attributed: NSAttributedString, codeRanges: [NSRange]) {
+        self.attributed = attributed
+        self.codeRanges = codeRanges
+    }
+
+    func storePath(_ path: CGPath, for widthKey: Int) {
+        if pathsByWidth.count >= 4 { pathsByWidth.removeAll(keepingCapacity: true) }
+        pathsByWidth[widthKey] = path
+    }
+}
+
+@MainActor
+private enum ProseLayoutCache {
+    private static let wordsCache: NSCache<ProsePartKey, ProseRenderedWords> = {
+        let cache = NSCache<ProsePartKey, ProseRenderedWords>()
+        cache.countLimit = 300
+        return cache
+    }()
+
+    private static let heightsCache: NSCache<ProseHeightKey, NSNumber> = {
+        let cache = NSCache<ProseHeightKey, NSNumber>()
+        cache.countLimit = 512
+        return cache
+    }()
+
+    static func words(format: String, part: Int, text: String) -> ProseRenderedWords? {
+        wordsCache.object(forKey: ProsePartKey(format: format, part: part, text: text))
+    }
+
+    static func storeWords(_ rendered: ProseRenderedWords, format: String, part: Int, text: String) {
+        wordsCache.setObject(rendered, forKey: ProsePartKey(format: format, part: part, text: text))
+    }
+
+    static func height(format: String, part: Int, widthKey: Int, text: String) -> CGFloat? {
+        heightsCache.object(forKey: ProseHeightKey(format: format, part: part, widthKey: widthKey, text: text))
+            .map { CGFloat($0.doubleValue) }
+    }
+
+    static func storeHeight(_ height: CGFloat, format: String, part: Int, widthKey: Int, text: String) {
+        heightsCache.setObject(NSNumber(value: Double(height)), forKey: ProseHeightKey(format: format, part: part, widthKey: widthKey, text: text))
+    }
+
+    static func extractCodeRanges(in words: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        words.enumerateAttribute(.clioInlineCode, in: NSRange(location: 0, length: words.length)) { value, range, _ in
+            if value != nil { ranges.append(range) }
+        }
+        return ranges
+    }
+}
+
 /// Draw code backgrounds from the same native text ranges that selection uses.
 private final class InlineCodeTextView: UITextView {
     private var codeRanges: [NSRange] = []
+    private var pathCache: ProseRenderedWords?
     private var paintedWidth: CGFloat?
     private let codeBackground = CAShapeLayer()
 
-    func replaceWords(with words: NSAttributedString) {
+    func replaceWords(with words: NSAttributedString, codeRanges: [NSRange], pathCache: ProseRenderedWords?) {
         attributedText = words
-        codeRanges.removeAll()
-        words.enumerateAttribute(.clioInlineCode, in: NSRange(location: 0, length: words.length)) { value, range, _ in
-            if value != nil { codeRanges.append(range) }
-        }
+        self.codeRanges = codeRanges
+        self.pathCache = pathCache
         if codeRanges.isEmpty { codeBackground.removeFromSuperlayer() }
         paintedWidth = nil
-        setNeedsLayout()
+        if !codeRanges.isEmpty { setNeedsLayout() }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         guard !codeRanges.isEmpty, bounds.width > 0, paintedWidth != bounds.width else { return }
-        let path = CGMutablePath()
-        for range in codeRanges {
-            guard let start = position(from: beginningOfDocument, offset: range.location),
-                  let end = position(from: start, offset: range.length),
-                  let textRange = textRange(from: start, to: end) else { continue }
-            for fragment in selectionRects(for: textRange) {
-                guard fragment.rect.width > 0, fragment.rect.height > 0 else { continue }
-                let rect = fragment.rect.insetBy(dx: -2.5, dy: fragment.rect.height * 0.06)
-                let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
-                path.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
+        let widthKey = Int((bounds.width * 2).rounded())
+        let resolvedPath: CGPath
+        if let cached = pathCache?.pathsByWidth[widthKey] {
+            resolvedPath = cached
+        } else {
+            let path = CGMutablePath()
+            for range in codeRanges {
+                guard let start = position(from: beginningOfDocument, offset: range.location),
+                      let end = position(from: start, offset: range.length),
+                      let textRange = textRange(from: start, to: end) else { continue }
+                for fragment in selectionRects(for: textRange) {
+                    guard fragment.rect.width > 0, fragment.rect.height > 0 else { continue }
+                    let rect = fragment.rect.insetBy(dx: -2.5, dy: fragment.rect.height * 0.06)
+                    let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
+                    path.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
+                }
             }
+            // The new width may arrive before TextKit has produced selection rectangles.
+            guard !path.isEmpty else { return }
+            pathCache?.storePath(path, for: widthKey)
+            resolvedPath = path
         }
-        // The new width may arrive before TextKit has produced selection rectangles.
-        guard !path.isEmpty else { return }
         paintedWidth = bounds.width
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        codeBackground.path = path
+        codeBackground.path = resolvedPath
         codeBackground.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
         if codeBackground.superlayer == nil { layer.insertSublayer(codeBackground, at: 0) }
         CATransaction.commit()
@@ -1421,14 +1818,6 @@ private struct ProseText: UIViewRepresentable {
     let fadeTail: Bool
     var quoted = false
 
-    private struct Length: Hashable {
-        let text: String
-        let part: Int
-        let format: String
-        let width: CGFloat
-    }
-
-    @MainActor private static var heights: [Length: CGFloat] = [:]
     @Environment(\.openURL) private var openURL
     @Environment(\.chatSelectionChanged) private var selectionChanged
     @Environment(\.chatQuoteSelection) private var quoteSelection
@@ -1456,10 +1845,18 @@ private struct ProseText: UIViewRepresentable {
         context.coordinator.selectionChanged = selectionChanged
         context.coordinator.quoteSelection = quoteSelection
         context.coordinator.speakSelection = speakSelection
-        if let words = context.coordinator.words(for: blocks, fade: fadeTail, quoted: quoted) {
+        if let update = context.coordinator.words(
+            for: blocks,
+            text: text,
+            part: part,
+            format: format,
+            streaming: streaming,
+            fade: fadeTail,
+            quoted: quoted
+        ) {
             let selection = view.selectedRange
-            let keepsSelection = selection.length > 0 && words.string.hasPrefix(view.attributedText?.string ?? "")
-            view.replaceWords(with: words)
+            let keepsSelection = selection.length > 0 && update.attributed.string.hasPrefix(view.attributedText?.string ?? "")
+            view.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache)
             if keepsSelection { view.selectedRange = selection }
         }
     }
@@ -1471,12 +1868,13 @@ private struct ProseText: UIViewRepresentable {
             let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
             return CGSize(width: width, height: ceil(fitted.height))
         }
-        let key = Length(text: text, part: part, format: format, width: width)
-        if let height = Self.heights[key] { return CGSize(width: width, height: height) }
+        let widthKey = Int((width * 2).rounded())
+        if let height = ProseLayoutCache.height(format: format, part: part, widthKey: widthKey, text: text) {
+            return CGSize(width: width, height: height)
+        }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let height = ceil(fitted.height)
-        if Self.heights.count >= 256, let older = Self.heights.keys.first { Self.heights.removeValue(forKey: older) }
-        Self.heights[key] = height
+        ProseLayoutCache.storeHeight(height, format: format, part: part, widthKey: widthKey, text: text)
         return CGSize(width: width, height: height)
     }
 
@@ -1492,12 +1890,54 @@ private struct ProseText: UIViewRepresentable {
         private let id = UUID()
         private var selected = false
 
+        private var settledKey: (format: String, part: Int, text: String)?
         private var blocks: [Prose.Block] = []
         private var spans: [NSAttributedString] = []
         private var fading = false
         private var isQuoted = false
 
-        func words(for next: [Prose.Block], fade: Bool, quoted: Bool) -> NSAttributedString? {
+        @MainActor
+        func words(
+            for next: [Prose.Block],
+            text: String,
+            part: Int,
+            format: String,
+            streaming: Bool,
+            fade: Bool,
+            quoted: Bool
+        ) -> (attributed: NSAttributedString, codeRanges: [NSRange], cache: ProseRenderedWords?)? {
+            if !streaming && !fade {
+                if let settled = settledKey,
+                   settled.part == part,
+                   settled.format == format,
+                   settled.text == text {
+                    return nil
+                }
+                if let cached = ProseLayoutCache.words(format: format, part: part, text: text) {
+                    settledKey = (format: format, part: part, text: text)
+                    blocks = []
+                    spans = []
+                    fading = false
+                    isQuoted = quoted
+                    return (attributed: cached.attributed, codeRanges: cached.codeRanges, cache: cached)
+                }
+                let built = NSMutableAttributedString()
+                for (index, block) in next.enumerated() {
+                    if index > 0 { built.append(NSAttributedString(string: "\n")) }
+                    built.append(ProseWords.make(block, first: index == 0, quoted: quoted))
+                }
+                let ranges = ProseLayoutCache.extractCodeRanges(in: built)
+                let rendered = ProseRenderedWords(attributed: built, codeRanges: ranges)
+                ProseLayoutCache.storeWords(rendered, format: format, part: part, text: text)
+                settledKey = (format: format, part: part, text: text)
+                blocks = []
+                spans = []
+                fading = false
+                isQuoted = quoted
+                return (attributed: rendered.attributed, codeRanges: rendered.codeRanges, cache: rendered)
+            }
+
+            settledKey = nil
             guard next != blocks || fade != fading || quoted != isQuoted else { return nil }
             let shared: Int
             if quoted == isQuoted {
@@ -1519,15 +1959,16 @@ private struct ProseText: UIViewRepresentable {
                 words.append(span)
             }
             if fade {
-                let text = words.string
-                let tail = text.suffix(12)
+                let raw = words.string
+                let tail = raw.suffix(12)
                 for (offset, index) in tail.indices.enumerated() {
-                    let range = NSRange(index..<text.index(after: index), in: text)
+                    let range = NSRange(index..<raw.index(after: index), in: raw)
                     guard let color = words.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor else { continue }
                     words.addAttribute(.foregroundColor, value: color.withAlphaComponent(Double(12 - offset) / 13), range: range)
                 }
             }
-            return words
+            let ranges = ProseLayoutCache.extractCodeRanges(in: words)
+            return (attributed: words, codeRanges: ranges, cache: nil)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -1581,21 +2022,5 @@ private struct ProseText: UIViewRepresentable {
             }
             return defaultAction
         }
-    }
-}
-
-extension Ink {
-    /// The reading face as a UIKit font, for native selectable text.
-    static func uiFace(_ size: CGFloat, bold: Bool = false) -> UIFont {
-        if let name = Pref.face.postScript(bold: bold), has(name), let font = UIFont(name: name, size: size) { return font }
-        let base = UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
-        let design: UIFontDescriptor.SystemDesign
-        switch Pref.face {
-        case .sans: design = .default
-        case .rounded: design = .rounded
-        default: design = .serif
-        }
-        guard let described = base.fontDescriptor.withDesign(design) else { return base }
-        return UIFont(descriptor: described, size: size)
     }
 }

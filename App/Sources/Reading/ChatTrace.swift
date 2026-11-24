@@ -8,6 +8,54 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
 
+private final class TraceKeepsakeKey: NSObject {
+    let line: ChatLine
+    let desk: String
+    private let cachedHash: Int
+
+    init(line: ChatLine, desk: String) {
+        self.line = line
+        self.desk = desk
+        var hasher = Hasher()
+        hasher.combine(line.id)
+        hasher.combine(line.tools.count)
+        hasher.combine(line.details.count)
+        hasher.combine(desk)
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TraceKeepsakeKey else { return false }
+        return cachedHash == other.cachedHash
+            && desk == other.desk
+            && line == other.line
+    }
+}
+
+private final class TraceKeepsakeBox {
+    let items: [Trace.Keepsake]
+    init(_ items: [Trace.Keepsake]) { self.items = items }
+}
+
+@MainActor
+private enum TraceKeepsakeCache {
+    private static let cache: NSCache<TraceKeepsakeKey, TraceKeepsakeBox> = {
+        let cache = NSCache<TraceKeepsakeKey, TraceKeepsakeBox>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    static func get(line: ChatLine, desk: String) -> [Trace.Keepsake]? {
+        cache.object(forKey: TraceKeepsakeKey(line: line, desk: desk))?.items
+    }
+
+    static func set(_ items: [Trace.Keepsake], line: ChatLine, desk: String) {
+        cache.setObject(TraceKeepsakeBox(items), forKey: TraceKeepsakeKey(line: line, desk: desk))
+    }
+}
+
 /// 行迹: one line when closed, a timeline when open. A running trace shows its newest step.
 struct Trace: View {
     let line: ChatLine
@@ -16,6 +64,25 @@ struct Trace: View {
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
     var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
+    @State private var keepsakes: [Keepsake]
+
+    @MainActor
+    init(
+        line: ChatLine,
+        visit: @escaping (URL) -> Void = { _ in },
+        openFile: @escaping (URL, MountedFolder?) -> Void = { _, _ in },
+        unremember: ((String, String) -> Bool)? = nil
+    ) {
+        self.line = line
+        self.visit = visit
+        self.openFile = openFile
+        self.unremember = unremember
+        if !line.live, let cached = TraceKeepsakeCache.get(line: line, desk: Words.t("书案/")) {
+            _keepsakes = State(initialValue: cached)
+        } else {
+            _keepsakes = State(initialValue: [])
+        }
+    }
 
     /// Normalizes a step label's leading place/tool prefix across daily and literary tones.
     nonisolated static func canonicalKind(of label: String) -> String? {
@@ -59,8 +126,8 @@ struct Trace: View {
     }
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
-    private struct Keepsake: Identifiable, Sendable {
-        enum Kind: Sendable { case event, reminder, file, remoteFile, command, health, weather }
+    fileprivate struct Keepsake: Identifiable, Equatable, Sendable {
+        enum Kind: Equatable, Sendable { case event, reminder, file, remoteFile, command, health, weather }
         let id: Int
         let kind: Kind
         let title: String
@@ -170,8 +237,6 @@ struct Trace: View {
         let line: ChatLine
         let desk: String
     }
-
-    @State private var keepsakes: [Keepsake] = []
 
     nonisolated private static func upsertLocalFile(
         into out: inout [Keepsake],
@@ -430,11 +495,17 @@ struct Trace: View {
         }
         .clipped()
         .task(id: line.live ? nil : KeepsakeInput(line: line, desk: Words.t("书案/"))) {
-            guard !line.live else { keepsakes = []; return }
+            guard !line.live else {
+                if !keepsakes.isEmpty { keepsakes = [] }
+                return
+            }
             let input = KeepsakeInput(line: line, desk: Words.t("书案/"))
             let job = Task.detached(priority: .utility) { Self.buildKeepsakes(input.line, desk: input.desk) }
             let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
-            if !Task.isCancelled { keepsakes = result }
+            if !Task.isCancelled {
+                TraceKeepsakeCache.set(result, line: input.line, desk: input.desk)
+                if keepsakes != result { keepsakes = result }
+            }
         }
         .animation(Ink.Motion.settle, value: line.tools.count)
         // Done: everything folds into the one line again.

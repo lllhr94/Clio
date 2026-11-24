@@ -93,41 +93,120 @@ extension ChatPage {
         return lines[..<start].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Worked out once per reply: the steps before a reply do not change after it, and every reply asked on every
-    /// redraw (twice), walking back through the chat each time.
+    /// Worked out once per reply and once per row-array snapshot: avoids O(N²) scans and full-string hashing on redraw.
     final class SourcesMemo {
-        var found: [String: [URL]] = [:]
+        struct LineMeta {
+            let urls: [URL]
+            let titles: [URL: String]
+            let trimmedText: String
+        }
+
+        var meta: [String: LineMeta] = [:]
+
+        private var cachedRows: [ChatLine] = []
+        private var cachedBotId: String = ""
+        private(set) var indexById: [String: Int] = [:]
+        private(set) var openers: Set<String> = []
+        private(set) var turnEnds: Set<String> = []
+        private(set) var newestBotId: String?
+
+        func sync(rows: [ChatLine], defaultBotId: String) {
+            let same = cachedBotId == defaultBotId
+                && rows.count == cachedRows.count
+                && rows.withUnsafeBufferPointer { current in
+                    cachedRows.withUnsafeBufferPointer { kept in
+                        current.baseAddress == kept.baseAddress
+                    }
+                }
+            if same { return }
+            cachedRows = rows
+            cachedBotId = defaultBotId
+            indexById.removeAll(keepingCapacity: true)
+            openers.removeAll(keepingCapacity: true)
+            turnEnds.removeAll(keepingCapacity: true)
+            newestBotId = nil
+
+            var lastVoice: String?
+            for index in rows.indices {
+                let line = rows[index]
+                indexById[line.id] = index
+                let voice: String?
+                switch line.kind {
+                case .user: voice = "me"
+                case .bot, .steps: voice = "bot:" + (line.speaker ?? defaultBotId)
+                case .note: voice = nil
+                }
+                if let voice {
+                    if voice != lastVoice { openers.insert(line.id) }
+                    lastVoice = voice
+                }
+                if line.kind == .bot { newestBotId = line.id }
+            }
+
+            var nextSpeaker: String?
+            var seenUserAfter = true
+            for index in rows.indices.reversed() {
+                let line = rows[index]
+                switch line.kind {
+                case .user:
+                    seenUserAfter = true
+                    nextSpeaker = nil
+                case .bot:
+                    if seenUserAfter || nextSpeaker != line.speaker {
+                        turnEnds.insert(line.id)
+                    }
+                    seenUserAfter = false
+                    nextSpeaker = line.speaker
+                case .steps, .note:
+                    break
+                }
+            }
+        }
+    }
+
+    func lineMeta(for line: ChatLine) -> SourcesMemo.LineMeta {
+        let memoKey = line.id + "|\(line.text.utf8.count)"
+        if let known = sourcesMemo.meta[memoKey] { return known }
+        let rows = displayedRows
+        sourcesMemo.sync(rows: rows, defaultBotId: bot.id)
+        let cited = SourcesRow.cited(in: line.text)
+        var urls = cited.map(\.url)
+        if let index = sourcesMemo.indexById[line.id] {
+            var cursor = index - 1
+            while cursor >= 0, rows[cursor].kind == .steps {
+                let step = rows[cursor]
+                for (position, label) in step.tools.enumerated() {
+                    let isSearch = label.hasPrefix("搜索") || label.hasPrefix("寻访")
+                    let isRead = label.hasPrefix("读网页") || Trace.canonicalKind(of: label) == "远游"
+                    guard isSearch || isRead, position < step.details.count else { continue }
+                    // Pages it read count first; then what a search brought back.
+                    let text = isSearch ? step.details[position].output : step.details[position].input
+                    for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
+                        if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
+                    }
+                }
+                cursor -= 1
+            }
+        }
+        let found = Array(urls.prefix(8))
+        let titles = Dictionary(cited.map { ($0.url, $0.title) }, uniquingKeysWith: { first, _ in first })
+        let trimmed = found.isEmpty ? line.text : Self.trimSourceList(line.text)
+        let computed = SourcesMemo.LineMeta(urls: found, titles: titles, trimmedText: trimmed)
+        if sourcesMemo.meta.count > 600 { sourcesMemo.meta.removeAll() }
+        sourcesMemo.meta[memoKey] = computed
+        return computed
     }
 
     func sources(for line: ChatLine) -> [URL] {
-        let memoKey = line.id + "|\(line.text.count)"
-        if let known = sourcesMemo.found[memoKey] { return known }
-        let found = findSources(for: line)
-        if sourcesMemo.found.count > 600 { sourcesMemo.found.removeAll() }
-        sourcesMemo.found[memoKey] = found
-        return found
+        lineMeta(for: line).urls
     }
 
-    func findSources(for line: ChatLine) -> [URL] {
-        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return [] }
-        // The pages the answer itself names come first: they are what it rests on.
-        var urls: [URL] = SourcesRow.cited(in: line.text).map(\.url)
-        var cursor = index - 1
-        while cursor >= 0, displayedRows[cursor].kind == .steps {
-            let step = displayedRows[cursor]
-            for (position, label) in step.tools.enumerated() {
-                let isSearch = label.hasPrefix("搜索") || label.hasPrefix("寻访")
-                let isRead = label.hasPrefix("读网页") || Trace.canonicalKind(of: label) == "远游"
-                guard isSearch || isRead, position < step.details.count else { continue }
-                // Pages it read count first; then what a search brought back.
-                let text = isSearch ? step.details[position].output : step.details[position].input
-                for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
-                    if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
-                }
-            }
-            cursor -= 1
+    var latestBotId: String? {
+        if historyPage == nil {
+            sourcesMemo.sync(rows: displayedRows, defaultBotId: bot.id)
+            return sourcesMemo.newestBotId
         }
-        return Array(urls.prefix(8))
+        return chat.lines.last(where: { $0.kind == .bot })?.id
     }
 
     /// What this conversation can reach, in one line: 「在书案干活 · 能联网 · 远山 jp-1」.
@@ -210,28 +289,29 @@ extension ChatPage {
                     PulseBox(text: felt, temper: Temper.of(line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)))
                 }
                 let writing = chat.fresh?.id == line.id ? chat.fresh?.shown : nil
-                let found = writing == nil ? sources(for: line) : []
+                let meta = writing == nil ? lineMeta(for: line) : nil
+                let found = meta?.urls ?? []
                 if let shown = writing {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
                     // When the sources row is under it, a 「来源：」 list the model wrote at the end is not shown twice.
-                    let shown = found.isEmpty ? line.text : Self.withoutSourceList(line.text)
+                    let shown = meta?.trimmedText ?? line.text
                     let looked = Self.lookback(shown)
                     // 「回望：…」 the companion wrote after its steps: a quiet line of its own, like 心绪, not body text.
                     if let note = looked.note { LookbackLine(text: note) }
                     SelectableProse(text: looked.rest)
                         .equatable()
                 }
-                if !found.isEmpty {
-                    SourcesRow(urls: found, titles: SourcesRow.titles(in: line.text)) { url in
+                if let meta, !found.isEmpty {
+                    SourcesRow(urls: found, titles: meta.titles) { url in
                         typing = false
                         Task { await team.browser.open(url) }
                         roaming = true
                     }
                 }
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
-                let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
+                let newest = line.id == latestBotId
                 // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
                 if writing == nil, newest ? !working : endsTurn(line) {
                     footer(line, newest: newest)
