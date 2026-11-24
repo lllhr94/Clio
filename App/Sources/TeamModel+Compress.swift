@@ -9,6 +9,7 @@ extension TeamModel {
 
 
     static func summaryFile(_ key: String) -> String { "chats/\(key)~summary.json" }
+    static func summaryTaintFile(_ key: String) -> String { "chats/\(key)~summary-tainted.json" }
 
     /// The digest of the part of this conversation that was folded away.
     func summary(_ key: String) -> String? {
@@ -18,11 +19,40 @@ extension TeamModel {
         return loaded.isEmpty ? nil : loaded
     }
 
+    func isSummaryTainted(_ key: String) -> Bool {
+        guard summary(key) != nil else {
+            summaryTaintBook[key] = false
+            return false
+        }
+        if let kept = summaryTaintBook[key] { return kept }
+        let loaded = keeping ? (Disk.load(Bool.self, Self.summaryTaintFile(key)) ?? false) : false
+        summaryTaintBook[key] = loaded
+        return loaded
+    }
+
+    func setSummaryTaint(_ key: String, _ tainted: Bool) {
+        summaryTaintBook[key] = tainted
+        guard keeping else { return }
+        if tainted {
+            Disk.save(true, Self.summaryTaintFile(key))
+        } else {
+            Disk.remove(Self.summaryTaintFile(key))
+        }
+    }
+
     func setSummary(_ key: String, _ text: String?) {
         objectWillChange.send()
         summaryBook[key] = text ?? ""
+        if text == nil || text?.isEmpty == true {
+            summaryTaintBook[key] = false
+        }
         guard keeping else { return }
-        if let text, !text.isEmpty { Disk.save(text, Self.summaryFile(key)) } else { Disk.remove(Self.summaryFile(key)) }
+        if let text, !text.isEmpty {
+            Disk.save(text, Self.summaryFile(key))
+        } else {
+            Disk.remove(Self.summaryFile(key))
+            Disk.remove(Self.summaryTaintFile(key))
+        }
     }
 
     /// In-memory summary length for reactive triggers without touching disk on the main thread.
@@ -78,6 +108,7 @@ extension TeamModel {
     }
 
     static func foldSummary(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary.json" }
+    static func foldSummaryTaint(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary-tainted.json" }
 
     /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
     @discardableResult
@@ -107,10 +138,19 @@ extension TeamModel {
         let speaker = { (entry: Entry) in entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name }
         // Only what the model will read is marked as folded: a part too long moves the cut earlier.
         let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
-        await flushMemoriesBeforeCompress(key: key, entries: Array(all[..<cut]), bot: bot)
+        let foldedSlice = Array(all[..<cut])
+        let previousSummaryTainted = isSummaryTainted(key)
+        let digestTainted = previousSummaryTainted || MemorySafety.entriesContainUntrustedSource(foldedSlice)
+        await flushMemoriesBeforeCompress(
+            key: key,
+            entries: foldedSlice,
+            bot: bot,
+            startEpoch: startEpoch,
+            firstKeptID: all[cut].id
+        )
         try Task.checkCancellation()
         guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
-        let (transcript, folded) = Turns.transcript(all[..<cut], name: speaker, label: \.label)
+        let (transcript, folded) = Turns.transcript(foldedSlice, name: speaker, label: \.label)
         let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
         let prompt = """
         \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
@@ -136,13 +176,19 @@ extension TeamModel {
             throw TeamError(message: "整理的时候聊天变了，下次再整理。")
         }
         let markerId = UUID().uuidString
-        if keeping, let old = summary(key) { Disk.save(old, Self.foldSummary(key, markerId)) }
+        if keeping, let old = summary(key) {
+            Disk.save(old, Self.foldSummary(key, markerId))
+            if previousSummaryTainted {
+                Disk.save(true, Self.foldSummaryTaint(key, markerId))
+            }
+        }
         let marker = Entry(id: markerId, at: current[at].at - 1,
                            message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)
         current.insert(marker, at: at)
         entries[key] = current
         if keeping { ChatDisk.save(current, chat: key) }
         setSummary(key, digest)
+        setSummaryTaint(key, digestTainted)
         notify(key, .changed)
         return folded
     }

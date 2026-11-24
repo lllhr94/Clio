@@ -28,7 +28,11 @@ extension TeamModel {
         }
         settleMemory()
         memoryBook.memories = memories
-        clearMemoryRetraction(text: fact)
+        if bot == nil {
+            clearMemoryRetraction(text: fact)
+        } else {
+            invalidateMemoryPromptCache()
+        }
         saveMemory()
         return added
     }

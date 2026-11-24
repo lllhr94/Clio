@@ -169,7 +169,12 @@ public enum MemorySafety {
         public var memoryBlock: String
         public var skillsBlock: String
         public var generation: UInt64
+
+        public var stablePrefix: String { prefix }
+        public var volatileTail: String { tail }
     }
+
+    public typealias AssembledPrompt = AssembledSystemPrompt
 
     public struct FlushTranscript: Equatable, Sendable {
         public var entryIDs: [String]
@@ -192,7 +197,9 @@ public enum MemorySafety {
         private var generation: UInt64 = 0
         private var retractedIDs: Set<String> = []
         private var retractedTexts: Set<String> = []
+        private var suppressedFlushTexts: Set<String> = []
         private var inFlightRetractedTexts: [String: UInt64] = [:]
+        private var didSeedSuppressedFlushTexts = false
         private var cachedKey: CacheKey?
         private var cachedBlock: MemoryBlock?
 
@@ -212,9 +219,22 @@ public enum MemorySafety {
             lock.unlock()
         }
 
+        public func seedSuppressedFlushTextsIfNeeded(_ loader: () -> [String]) {
+            lock.lock()
+            let needsLoad = !didSeedSuppressedFlushTexts
+            if needsLoad { didSeedSuppressedFlushTexts = true }
+            lock.unlock()
+            guard needsLoad else { return }
+            let loaded = loader().map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty }
+            guard !loaded.isEmpty else { return }
+            lock.lock()
+            suppressedFlushTexts.formUnion(loaded)
+            lock.unlock()
+        }
+
         /// Immediately invalidates cached memory output and blocks `id` from any stale memory snapshots.
-        /// If `textForInFlightGuard` is provided, in-flight memory flushes started before this generation
-        /// cannot re-introduce a fact with the same normalized text.
+        /// If `textForInFlightGuard` is provided, both in-flight and future compression flushes suppress
+        /// re-adding a fact with the same normalized text until explicitly re-added by the user.
         public func retract(id: String, textForInFlightGuard: String? = nil) {
             lock.lock()
             generation &+= 1
@@ -223,6 +243,7 @@ public enum MemorySafety {
                 let normalized = MemorySafety.normalizedFactKey(textForInFlightGuard)
                 if !normalized.isEmpty {
                     inFlightRetractedTexts[normalized] = generation
+                    suppressedFlushTexts.insert(normalized)
                 }
             }
             cachedKey = nil
@@ -237,6 +258,7 @@ public enum MemorySafety {
             generation &+= 1
             if !normalized.isEmpty {
                 retractedTexts.insert(normalized)
+                suppressedFlushTexts.insert(normalized)
                 inFlightRetractedTexts[normalized] = generation
             }
             cachedKey = nil
@@ -251,6 +273,7 @@ public enum MemorySafety {
             generation &+= 1
             if !normalized.isEmpty {
                 retractedTexts.remove(normalized)
+                suppressedFlushTexts.remove(normalized)
                 inFlightRetractedTexts.removeValue(forKey: normalized)
             }
             cachedKey = nil
@@ -265,6 +288,13 @@ public enum MemorySafety {
             return Set(inFlightRetractedTexts.compactMap { key, gen in
                 gen > startGeneration ? key : nil
             })
+        }
+
+        /// Active user-retracted normalized fact texts suppressed across compression flushes.
+        public func suppressedFlushTextsSnapshot() -> Set<String> {
+            lock.lock()
+            defer { lock.unlock() }
+            return suppressedFlushTexts
         }
 
         public func retractedIDsSnapshot() -> Set<String> {
@@ -505,6 +535,38 @@ public enum MemorySafety {
 
     // MARK: Taint isolation & flush filtering
 
+    /// True if any entry in `entries` carries explicit taint or came from an untrusted external-read tool.
+    public static func entriesContainUntrustedSource<E: MemoryExtractable>(_ entries: [E]) -> Bool {
+        entries.contains { entry in
+            entry.isTainted || (entry.role == .tool && Taint.reads(entry.toolName ?? ""))
+        }
+    }
+
+    /// Matches `reviewConversations`'s cutoff rule: `max(reviewFromDay ?? today, 7 days ago)`.
+    public static func flushCutoffDay(
+        reviewFromDay: String?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let today = Tide.day(of: now, calendar: calendar)
+        let sevenDaysAgo = Tide.day(of: now.addingTimeInterval(-7 * 86_400), calendar: calendar)
+        return max(reviewFromDay ?? today, sevenDaysAgo)
+    }
+
+    /// Remaining UTF-8 byte budget available for transcript content after system prompt and prompt header/existing memories.
+    public static func remainingTranscriptBudget(
+        totalLimit: Int = 10_000,
+        maxSystemBytes: Int = 1_200,
+        systemPrompt: String,
+        promptPrefix: String,
+        secrets: [String] = []
+    ) -> Int {
+        let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let safeSystem = clipUTF8(redactSecrets(systemPrompt, secrets: orderedSecrets), bytes: maxSystemBytes)
+        let safePrefix = redactSecrets(promptPrefix, secrets: orderedSecrets)
+        return max(0, totalLimit - safeSystem.utf8.count - safePrefix.utf8.count)
+    }
+
     /// Filters entries eligible for automatic memory extraction.
     /// Excludes notes, compression folds, tool outputs, tool-call preambles, empty entries,
     /// explicitly tainted entries, and legacy assistant replies produced after an untrusted tool read in the same turn.
@@ -544,13 +606,21 @@ public enum MemorySafety {
         return result
     }
 
-    /// True only when the untainted portion of `entries` contains both user and assistant messages
+    /// True only when the untainted, in-cutoff portion of `entries` contains both user and assistant messages
     /// and at least one extractable user entry has not already been processed.
     public static func hasFlushableConversation<E: MemoryExtractable>(
         _ entries: [E],
-        processedIDs: Set<String> = []
+        processedIDs: Set<String> = [],
+        cutoffDay: String? = nil,
+        minTimestampMs: Double? = nil,
+        calendar: Calendar = .current
     ) -> Bool {
-        let extractable = filterExtractableEntries(entries)
+        let extractable = inWindowExtractableEntries(
+            entries,
+            cutoffDay: cutoffDay,
+            minTimestampMs: minTimestampMs,
+            calendar: calendar
+        )
         guard extractable.contains(where: { $0.role == .user }),
               extractable.contains(where: { $0.role == .assistant }) else {
             return false
@@ -560,16 +630,26 @@ public enum MemorySafety {
     }
 
     /// Builds a bounded, secret-redacted transcript solely from untainted extractable entries before compression.
+    /// Guarantees every entry in `entryIDs` fits intact inside `maxTotalBytes`.
     public static func buildFlushTranscript<E: MemoryExtractable>(
         _ entries: [E],
         processedIDs: Set<String> = [],
         secrets: [String] = [],
         speakerName: (E) -> String = { _ in "旅伴" },
+        cutoffDay: String? = nil,
+        minTimestampMs: Double? = nil,
+        calendar: Calendar = .current,
         maxEntries: Int = 24,
         maxEntryBytes: Int = 400,
         maxTotalBytes: Int = 6_000
     ) -> FlushTranscript? {
-        let extractable = filterExtractableEntries(entries)
+        guard maxTotalBytes >= 64 else { return nil }
+        let extractable = inWindowExtractableEntries(
+            entries,
+            cutoffDay: cutoffDay,
+            minTimestampMs: minTimestampMs,
+            calendar: calendar
+        )
         guard extractable.contains(where: { $0.role == .user }),
               extractable.contains(where: { $0.role == .assistant }) else {
             return nil
@@ -588,13 +668,7 @@ public enum MemorySafety {
             let clipped = clipUTF8(redacted, bytes: maxEntryBytes)
             let line = "\(roleLabel)：\(clipped)"
             let lineBytes = line.utf8.count + (pickedLines.isEmpty ? 0 : 1)
-            if !pickedLines.isEmpty && usedBytes + lineBytes > maxTotalBytes {
-                break
-            }
-            if pickedLines.isEmpty && lineBytes > maxTotalBytes {
-                pickedEntries.append(entry)
-                pickedLines.append(clipUTF8(line, bytes: maxTotalBytes))
-                usedBytes = pickedLines[0].utf8.count
+            if usedBytes + lineBytes > maxTotalBytes {
                 break
             }
             pickedEntries.append(entry)
@@ -602,7 +676,7 @@ public enum MemorySafety {
             usedBytes += lineBytes
         }
 
-        guard !pickedEntries.isEmpty else { return nil }
+        guard !pickedEntries.isEmpty, pickedEntries.contains(where: { $0.role == .user }) else { return nil }
         pickedEntries.reverse()
         pickedLines.reverse()
         return FlushTranscript(
@@ -610,6 +684,54 @@ public enum MemorySafety {
             entriesCount: pickedEntries.count,
             transcript: pickedLines.joined(separator: "\n")
         )
+    }
+
+    private static func inWindowExtractableEntries<E: MemoryExtractable>(
+        _ entries: [E],
+        cutoffDay: String?,
+        minTimestampMs: Double?,
+        calendar: Calendar
+    ) -> [E] {
+        let filtered = filterExtractableEntries(entries)
+        guard cutoffDay != nil || minTimestampMs != nil else { return filtered }
+        return filtered.filter { entry in
+            if let minTimestampMs, entry.at < minTimestampMs { return false }
+            if let cutoffDay {
+                let day = Tide.day(of: Date(timeIntervalSince1970: entry.at / 1000), calendar: calendar)
+                if day < cutoffDay { return false }
+            }
+            return true
+        }
+    }
+
+    /// Re-validates before committing flush results that the conversation epoch, keeper anchor, and source entries are still intact.
+    public static func isFlushCommitValid(
+        preparedIDs: [String],
+        firstKeptID: String,
+        currentEntryIDs: Set<String>,
+        startEpoch: Int,
+        currentEpoch: Int
+    ) -> Bool {
+        guard startEpoch == currentEpoch, !preparedIDs.isEmpty, currentEntryIDs.contains(firstKeptID) else {
+            return false
+        }
+        return preparedIDs.allSatisfy { currentEntryIDs.contains($0) }
+    }
+
+    /// Drops any entry IDs already recorded in `processedByDay` (e.g. by background `reviewMemories` while flush was in flight).
+    /// Returns `[]` if no unprocessed `.user` entry remains.
+    public static func remainingUnprocessedEntryIDs(
+        _ preparedIDs: [String],
+        rolesByID: [String: Message.Role],
+        dayByID: [String: String],
+        processedByDay: [String: Set<String>]
+    ) -> [String] {
+        let remaining = preparedIDs.filter { id in
+            guard let day = dayByID[id] else { return false }
+            return !(processedByDay[day]?.contains(id) ?? false)
+        }
+        guard remaining.contains(where: { rolesByID[$0] == .user }) else { return [] }
+        return remaining
     }
 
     // MARK: Sanitization & deduplication

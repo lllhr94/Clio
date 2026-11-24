@@ -18,6 +18,25 @@ extension Memory {
 extension TeamModel {
     // MARK: Memory safety & prompt assembly
 
+    private static let retractedMemoryFile = "memory-retracted.json"
+
+    func ensureRetractedFlushTextsLoaded() {
+        let canLoad = keeping
+        memoryPromptState.seedSuppressedFlushTextsIfNeeded {
+            canLoad ? (Disk.load([String].self, Self.retractedMemoryFile) ?? []) : []
+        }
+    }
+
+    private func saveRetractedFlushTexts() {
+        guard keeping else { return }
+        let keys = Array(memoryPromptState.suppressedFlushTextsSnapshot()).sorted()
+        if keys.isEmpty {
+            Disk.remove(Self.retractedMemoryFile)
+        } else {
+            Disk.save(keys, Self.retractedMemoryFile)
+        }
+    }
+
     func liveMemoryFacts() -> [MemorySafety.Fact] {
         memories.map(\.safetyFact)
     }
@@ -35,14 +54,17 @@ extension TeamModel {
     }
 
     func invalidateMemoryPromptCache(retractedID: String? = nil, textForInFlightGuard: String? = nil) {
+        ensureRetractedFlushTextsLoaded()
         if let retractedID {
             memoryPromptState.retract(id: retractedID, textForInFlightGuard: textForInFlightGuard)
+            saveRetractedFlushTexts()
         } else {
             memoryPromptState.invalidate()
         }
     }
 
     func invalidateMemoryPromptCache(retractedItems: [(id: String, text: String)]) {
+        ensureRetractedFlushTextsLoaded()
         guard !retractedItems.isEmpty else {
             memoryPromptState.invalidate()
             return
@@ -50,10 +72,13 @@ extension TeamModel {
         for item in retractedItems {
             memoryPromptState.retract(id: item.id, textForInFlightGuard: item.text)
         }
+        saveRetractedFlushTexts()
     }
 
     func clearMemoryRetraction(text: String) {
+        ensureRetractedFlushTextsLoaded()
         memoryPromptState.clearRetraction(text: text)
+        saveRetractedFlushTexts()
     }
 
     func renderedMemoryBlock(memory: Bool) -> String {
@@ -124,21 +149,24 @@ extension TeamModel {
     }
 
     /// Lightweight, fail-open memory extraction run on untainted entries before `compress(_:)` folds them.
-    func flushMemoriesBeforeCompress(key: String, entries: [Entry], bot: BotInfo) async {
+    func flushMemoriesBeforeCompress(
+        key: String,
+        entries: [Entry],
+        bot: BotInfo,
+        startEpoch: Int,
+        firstKeptID: String
+    ) async {
         guard phase == .ready, keeping, !Disk.frozen else { return }
         guard Grant.memory.policy == .allow, !options(key).off.contains(Grant.memory.rawValue) else { return }
+        guard epochs[key, default: 0] == startEpoch, canAcceptInput(for: key) else { return }
+        ensureRetractedFlushTextsLoaded()
 
+        let now = Date()
+        let today = Tide.day(of: now)
+        let cutoffDay = MemorySafety.flushCutoffDay(reviewFromDay: memoryBook.reviewFromDay, now: now)
+        let minTimestampMs = now.timeIntervalSince1970 * 1000 - 8 * 86_400_000
         let processedIDs = memoryBook.processed.values.reduce(into: Set<String>()) { $0.formUnion($1) }
         let secrets = Vault.allStrings().sorted { $0.count > $1.count }
-        let crew = bots
-        guard let prepared = MemorySafety.buildFlushTranscript(
-            entries,
-            processedIDs: processedIDs,
-            secrets: secrets,
-            speakerName: { entry in
-                entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name
-            }
-        ) else { return }
 
         let facts = (Array(surfaceMemories.reversed()) + Array(deepMemories.suffix(12).reversed())).prefix(40)
         var existing: [String] = []
@@ -163,7 +191,36 @@ extension TeamModel {
         只读记录不得修改。可以识别重复，但不能把只读记录的编号当成合并目标。
         只输出 JSON 数组，最多六条，每条 {"text":"事实","merge":"可合并的编号"}。新事实省略 merge 字段。没有值得记的返回 []。
         """
-        let prompt = "现有记忆：\n\(existing.joined(separator: "\n"))\n\n对话资料：\n\(prepared.transcript)"
+        let promptPrefix = "现有记忆：\n\(existing.joined(separator: "\n"))\n\n对话资料：\n"
+        let transcriptBudget = MemorySafety.remainingTranscriptBudget(
+            totalLimit: MemoryReviewRules.inputBytes,
+            maxSystemBytes: 1_200,
+            systemPrompt: system,
+            promptPrefix: promptPrefix,
+            secrets: secrets
+        )
+        let crew = bots
+        guard let prepared = MemorySafety.buildFlushTranscript(
+            entries,
+            processedIDs: processedIDs,
+            secrets: secrets,
+            speakerName: { entry in
+                entry.speaker.flatMap { id in crew.first { $0.id == id }?.name } ?? bot.name
+            },
+            cutoffDay: cutoffDay,
+            minTimestampMs: minTimestampMs,
+            maxTotalBytes: transcriptBudget
+        ) else { return }
+
+        guard MemorySafety.isFlushCommitValid(
+            preparedIDs: prepared.entryIDs,
+            firstKeptID: firstKeptID,
+            currentEntryIDs: Set(history(key).map(\.id)),
+            startEpoch: startEpoch,
+            currentEpoch: epochs[key, default: 0]
+        ) else { return }
+
+        let prompt = promptPrefix + prepared.transcript
         let startGeneration = memoryPromptState.currentGeneration
 
         let reply: String?
@@ -186,11 +243,33 @@ extension TeamModel {
         guard !Task.isCancelled, let reply, !reply.isEmpty else { return }
         guard Grant.memory.policy == .allow, !options(key).off.contains(Grant.memory.rawValue),
               keeping, !Disk.frozen else { return }
+        guard canAcceptInput(for: key),
+              MemorySafety.isFlushCommitValid(
+                  preparedIDs: prepared.entryIDs,
+                  firstKeptID: firstKeptID,
+                  currentEntryIDs: Set(history(key).map(\.id)),
+                  startEpoch: startEpoch,
+                  currentEpoch: epochs[key, default: 0]
+              ) else { return }
+
+        let entryByID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let rolesByID = Dictionary(prepared.entryIDs.compactMap { id in entryByID[id].map { (id, $0.message.role) } }, uniquingKeysWith: { first, _ in first })
+        let dayByID = Dictionary(prepared.entryIDs.compactMap { id in
+            entryByID[id].map { (id, Tide.day(of: Date(timeIntervalSince1970: $0.at / 1000))) }
+        }, uniquingKeysWith: { first, _ in first })
+        let remainingIDs = MemorySafety.remainingUnprocessedEntryIDs(
+            prepared.entryIDs,
+            rolesByID: rolesByID,
+            dayByID: dayByID,
+            processedByDay: memoryBook.processed
+        )
+        guard !remainingIDs.isEmpty else { return }
         guard let decoded = try? MemoryReviewRules.decodeProposals(reply) else { return }
 
-        let retractedSinceStart = memoryPromptState.retractedTextsSince(startGeneration)
+        let suppressedTexts = memoryPromptState.suppressedFlushTextsSnapshot()
+            .union(memoryPromptState.retractedTextsSince(startGeneration))
         let currentSecrets = Vault.allStrings().sorted { $0.count > $1.count }
-        var acceptedKeys = Set(memories.map { MemorySafety.normalizedFactKey($0.text) }).union(retractedSinceStart)
+        var acceptedKeys = Set(memories.map { MemorySafety.normalizedFactKey($0.text) }).union(suppressedTexts)
         var filteredProposals: [MemoryReviewProposal] = []
         for proposal in decoded {
             guard let clean = MemorySafety.sanitizeProposedFact(proposal.text, secrets: currentSecrets) else { continue }
@@ -208,6 +287,7 @@ extension TeamModel {
 
         var book = memoryBook
         book.memories = memories
+        if book.reviewFromDay == nil { book.reviewFromDay = today }
         let changes = MemoryReviewRules.apply(
             filteredProposals,
             seen: seen,
@@ -217,14 +297,11 @@ extension TeamModel {
         )
         Self.settleMemory(&book.memories)
 
-        let entryByID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for id in prepared.entryIDs {
-            guard let entry = entryByID[id] else { continue }
-            let day = Tide.day(of: Date(timeIntervalSince1970: entry.at / 1000))
+        for id in remainingIDs {
+            guard let day = dayByID[id] else { continue }
             book.processed[day, default: []].insert(id)
         }
         if !changes.added.isEmpty || !changes.merged.isEmpty {
-            let today = Tide.day(of: Date())
             book.reviews.insert(
                 MemoryReviewLog(
                     id: UUID(),

@@ -317,6 +317,7 @@ final class TeamModel: ObservableObject {
         Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []
     }
     static func leafSummary(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary.json" }
+    static func leafSummaryTaint(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary-tainted.json" }
 
     func setLeaves(_ key: String, _ list: [Leaf]) {
         objectWillChange.send()
@@ -347,6 +348,7 @@ final class TeamModel: ObservableObject {
         if keeping {
             Disk.remove(Self.leafFile(key, id))
             Disk.remove(Self.leafSummary(key, id))
+            Disk.remove(Self.leafSummaryTaint(key, id))
         }
         return true
     }
@@ -374,7 +376,9 @@ final class TeamModel: ObservableObject {
         if keeping {
             ChatDisk.save(rest, chat: key)
             setSummary(key, Disk.load(String.self, Self.foldSummary(key, line.id)))
+            setSummaryTaint(key, Disk.load(Bool.self, Self.foldSummaryTaint(key, line.id)) ?? false)
             Disk.remove(Self.foldSummary(key, line.id))
+            Disk.remove(Self.foldSummaryTaint(key, line.id))
         } else {
             setSummary(key, nil)
         }
@@ -401,8 +405,10 @@ final class TeamModel: ObservableObject {
         }
         entries[key] = restored
         setSummary(key, Disk.load(String.self, Self.leafSummary(key, leaf.id)))
+        setSummaryTaint(key, Disk.load(Bool.self, Self.leafSummaryTaint(key, leaf.id)) ?? false)
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
+        Disk.remove(Self.leafSummaryTaint(key, leaf.id))
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
@@ -456,12 +462,15 @@ final class TeamModel: ObservableObject {
         guard keeping else { return }
         for entry in list where entry.fold == true {
             Disk.remove(Self.foldSummary(key, entry.id))
+            Disk.remove(Self.foldSummaryTaint(key, entry.id))
         }
         let chatsDir = Disk.root.appendingPathComponent("chats", isDirectory: true)
         let prefix = "\(key)~fold-"
-        let suffix = "~summary.json"
+        let summarySuffix = "~summary.json"
+        let taintSuffix = "~summary-tainted.json"
         if let items = try? FileManager.default.contentsOfDirectory(at: chatsDir, includingPropertiesForKeys: nil) {
-            for item in items where item.lastPathComponent.hasPrefix(prefix) && item.lastPathComponent.hasSuffix(suffix) {
+            for item in items where item.lastPathComponent.hasPrefix(prefix)
+                && (item.lastPathComponent.hasSuffix(summarySuffix) || item.lastPathComponent.hasSuffix(taintSuffix)) {
                 try? FileManager.default.removeItem(at: item)
             }
         }
@@ -501,17 +510,24 @@ final class TeamModel: ObservableObject {
         let waiting = queued[key] ?? []
         let nextLeaves = [leaf] + leaves(key)
         let leafAnchor = ConversationAnchor.from(entryIds: current.map(\.id))
+        let summaryWasTainted = isSummaryTainted(key)
         if keeping {
             // The page is emptied below: only once its copy, queued messages, and leaf index are all surely on disk.
             // Any failure rolls back the new leaf files and leaves the current conversation and active queue intact.
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
-                if let old = summary(key) { try Disk.write(old, Self.leafSummary(key, leaf.id)) }
+                if let old = summary(key) {
+                    try Disk.write(old, Self.leafSummary(key, leaf.id))
+                    if summaryWasTainted {
+                        try Disk.write(true, Self.leafSummaryTaint(key, leaf.id))
+                    }
+                }
                 if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey, anchor: leafAnchor) }
                 try Disk.write(nextLeaves, Self.leafList(key))
             } catch {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
+                Disk.remove(Self.leafSummaryTaint(key, leaf.id))
                 if !waiting.isEmpty { try? QueuedStore.saveAndWait([], for: leafKey) }
                 fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
                 return false
@@ -591,6 +607,7 @@ final class TeamModel: ObservableObject {
                 for leaf in oldLeaves {
                     Disk.remove(Self.leafFile(key, leaf.id))
                     Disk.remove(Self.leafSummary(key, leaf.id))
+                    Disk.remove(Self.leafSummaryTaint(key, leaf.id))
                 }
             }
             for leaf in oldLeaves {
@@ -640,13 +657,19 @@ final class TeamModel: ObservableObject {
         // (the review, #15).
         var kept: [Entry] = []
         var keptSummary: String?
+        var keptSummaryTainted = false
         if keeping {
             let file = Disk.url(Self.leafFile(key, leaf.id))
             let summaryPath = Self.leafSummary(key, leaf.id)
-            let read: (entries: [Entry]?, summary: String?, exists: Bool) = await Task.detached(priority: .userInitiated) {
-                guard FileManager.default.fileExists(atPath: file.path) else { return (nil, Disk.load(String.self, summaryPath), false) }
-                guard let data = try? Data(contentsOf: file), let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return (nil, nil, true) }
-                return (entries, Disk.load(String.self, summaryPath), true)
+            let summaryTaintPath = Self.leafSummaryTaint(key, leaf.id)
+            let read: (entries: [Entry]?, summary: String?, summaryTainted: Bool, exists: Bool) = await Task.detached(priority: .userInitiated) {
+                guard FileManager.default.fileExists(atPath: file.path) else {
+                    return (nil, Disk.load(String.self, summaryPath), Disk.load(Bool.self, summaryTaintPath) ?? false, false)
+                }
+                guard let data = try? Data(contentsOf: file), let entries = try? JSONDecoder().decode([Entry].self, from: data) else {
+                    return (nil, nil, false, true)
+                }
+                return (entries, Disk.load(String.self, summaryPath), Disk.load(Bool.self, summaryTaintPath) ?? false, true)
             }.value
             if read.exists, read.entries == nil {
                 fail(key, "这一段旧絮语读不出来，先留着没动。\n可能是格式不认识或文件坏了；先别删，备份一份。")
@@ -654,6 +677,7 @@ final class TeamModel: ObservableObject {
             }
             kept = read.entries ?? []
             keptSummary = read.summary
+            keptSummaryTainted = read.summaryTainted
         }
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return }
         guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
@@ -746,7 +770,11 @@ final class TeamModel: ObservableObject {
             }
         }
         setSummary(key, keptSummary)
-        if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
+        setSummaryTaint(key, keptSummary != nil && keptSummaryTainted)
+        if keeping {
+            Disk.remove(Self.leafSummary(key, leaf.id))
+            Disk.remove(Self.leafSummaryTaint(key, leaf.id))
+        }
         entries[key] = kept
         if !leafQueued.isEmpty {
             var merged = queued[key] ?? []
@@ -810,6 +838,7 @@ final class TeamModel: ObservableObject {
         if keeping {
             Disk.remove(Self.leafFile(key, leaf.id))
             Disk.remove(Self.leafSummary(key, leaf.id))
+            Disk.remove(Self.leafSummaryTaint(key, leaf.id))
         }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         let leafKey = Self.threadKey(key, leaf: leaf.id)
@@ -1368,7 +1397,8 @@ final class TeamModel: ObservableObject {
         guard messages.contains(where: { $0.role == .user }) else { return false }
         // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
         if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
-        if taint.isTainted(key) || context.hasTaintedHistory { markTurnMemoryTainted(key) }
+        let summaryIsTainted = summary(key) != nil && isSummaryTainted(key)
+        if taint.isTainted(key) || context.hasTaintedHistory || summaryIsTainted { markTurnMemoryTainted(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
@@ -2325,6 +2355,7 @@ final class TeamModel: ObservableObject {
     @Published var pinned: [String] = UserDefaults.standard.stringArray(forKey: "desk.pinned") ?? []
     var optionBook: [String: ChatOptions] = [:]
     var summaryBook: [String: String] = [:]
+    var summaryTaintBook: [String: Bool] = [:]
     @Published var compressing: Set<String> = []
     var balanceCheckedAt: [String: Date] = [:]
 }

@@ -71,8 +71,10 @@ final class MemorySafetyTests: XCTestCase {
         )
 
         XCTAssertEqual(first.prefix, second.prefix)
-        XCTAssertTrue(first.full.hasPrefix(first.prefix))
-        XCTAssertTrue(second.full.hasPrefix(second.prefix))
+        XCTAssertEqual(first.stablePrefix, first.prefix)
+        XCTAssertEqual(first.volatileTail, first.tail)
+        XCTAssertTrue(first.full.hasPrefix(first.stablePrefix))
+        XCTAssertTrue(second.full.hasPrefix(second.stablePrefix))
         XCTAssertNotEqual(first.full, second.full)
         XCTAssertFalse(first.prefix.contains("现在是 "))
         XCTAssertFalse(first.prefix.contains("日记"))
@@ -300,5 +302,204 @@ final class MemorySafetyTests: XCTestCase {
             XCTAssertLessThanOrEqual(clipped.utf8.count, limit)
             XCTAssertTrue(sample.hasPrefix(clipped))
         }
+    }
+
+    // MARK: 5. Cross-review fixes (#1–#6)
+
+    func testIsFlushCommitValidRejectsEpochMismatchAndMissingEntries() {
+        XCTAssertTrue(
+            MemorySafety.isFlushCommitValid(
+                preparedIDs: ["u1", "a1"],
+                firstKeptID: "u2",
+                currentEntryIDs: ["u1", "a1", "u2", "a2"],
+                startEpoch: 3,
+                currentEpoch: 3
+            )
+        )
+        XCTAssertFalse(
+            MemorySafety.isFlushCommitValid(
+                preparedIDs: ["u1", "a1"],
+                firstKeptID: "u2",
+                currentEntryIDs: ["u1", "a1", "u2", "a2"],
+                startEpoch: 3,
+                currentEpoch: 4
+            )
+        )
+        XCTAssertFalse(
+            MemorySafety.isFlushCommitValid(
+                preparedIDs: ["u1", "a1"],
+                firstKeptID: "u2",
+                currentEntryIDs: ["u1", "a1"],
+                startEpoch: 3,
+                currentEpoch: 3
+            )
+        )
+        XCTAssertFalse(
+            MemorySafety.isFlushCommitValid(
+                preparedIDs: ["u1", "a1"],
+                firstKeptID: "u2",
+                currentEntryIDs: ["u1", "u2"],
+                startEpoch: 3,
+                currentEpoch: 3
+            )
+        )
+    }
+
+    func testEntriesContainUntrustedSourceDetectsTaintedAndExternalToolReads() {
+        let clean: [MemorySafety.CandidateEntry] = [
+            .init(id: "u1", at: 1, role: .user, text: "读一下本地笔记"),
+            .init(id: "t1", at: 2, role: .tool, text: "本地文件内容", toolName: "read_file", isTainted: false),
+            .init(id: "a1", at: 3, role: .assistant, text: "读完了", isTainted: false),
+        ]
+        XCTAssertFalse(MemorySafety.entriesContainUntrustedSource(clean))
+
+        let taintedFlag: [MemorySafety.CandidateEntry] = [
+            .init(id: "u1", at: 1, role: .user, text: "看链接"),
+            .init(id: "a1", at: 2, role: .assistant, text: "总结如下", isTainted: true),
+        ]
+        XCTAssertTrue(MemorySafety.entriesContainUntrustedSource(taintedFlag))
+
+        let legacyExternalTool: [MemorySafety.CandidateEntry] = [
+            .init(id: "u1", at: 1, role: .user, text: "搜一下"),
+            .init(id: "t1", at: 2, role: .tool, text: "网页结果", toolName: "web_read", isTainted: false),
+        ]
+        XCTAssertTrue(MemorySafety.entriesContainUntrustedSource(legacyExternalTool))
+    }
+
+    func testRetractionSuppressionPersistsUntilUserExplicitlyReAdds() {
+        let state = MemorySafety.PromptState()
+        state.retract(id: "m1", textForInFlightGuard: "平时住杭州。")
+
+        // Even a flush starting in a LATER generation (e.g. an older unprocessed chat compressing later)
+        // must suppress the retracted memory.
+        let laterGeneration = state.currentGeneration
+        XCTAssertEqual(state.retractedTextsSince(laterGeneration), [])
+        XCTAssertTrue(state.suppressedFlushTextsSnapshot().contains(MemorySafety.normalizedFactKey("平时住杭州")))
+
+        let persistedKeys = Array(state.suppressedFlushTextsSnapshot())
+        let reloadedState = MemorySafety.PromptState()
+        reloadedState.seedSuppressedFlushTextsIfNeeded { persistedKeys }
+
+        let suppressed = reloadedState.suppressedFlushTextsSnapshot()
+        let acceptedBeforeReAdd = MemorySafety.deduplicateProposals(
+            ["平时住杭州", "喜欢喝绿茶"],
+            existing: [],
+            retractedNormalizedKeys: suppressed
+        )
+        XCTAssertEqual(acceptedBeforeReAdd, ["喜欢喝绿茶"])
+
+        // User explicitly re-adds the fact -> clears suppression.
+        reloadedState.clearRetraction(text: "平时住杭州")
+        let acceptedAfterReAdd = MemorySafety.deduplicateProposals(
+            ["平时住杭州"],
+            existing: [],
+            retractedNormalizedKeys: reloadedState.suppressedFlushTextsSnapshot()
+        )
+        XCTAssertEqual(acceptedAfterReAdd, ["平时住杭州"])
+    }
+
+    func testBuildFlushTranscriptEnforcesReviewFromDayAndSevenDayCutoff() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 25, hour: 12, minute: 0))!
+        let yesterday = calendar.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 12, minute: 0))!
+        let threeDaysAgo = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 12, minute: 0))!
+        let nineDaysAgo = calendar.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 12, minute: 0))!
+
+        // When reviewFromDay is nil, cutoff defaults to today -> yesterday's pre-upgrade entries are skipped.
+        let defaultCutoff = MemorySafety.flushCutoffDay(reviewFromDay: nil, now: now, calendar: calendar)
+        XCTAssertEqual(defaultCutoff, Tide.day(of: now, calendar: calendar))
+        let preUpgradeOnly: [MemorySafety.CandidateEntry] = [
+            .init(id: "old-u", at: yesterday.timeIntervalSince1970 * 1000, role: .user, text: "升级前说过的旧事"),
+            .init(id: "old-a", at: yesterday.timeIntervalSince1970 * 1000 + 1000, role: .assistant, text: "好的"),
+        ]
+        XCTAssertNil(
+            MemorySafety.buildFlushTranscript(
+                preUpgradeOnly,
+                cutoffDay: defaultCutoff,
+                minTimestampMs: now.timeIntervalSince1970 * 1000 - 8 * 86_400_000,
+                calendar: calendar
+            )
+        )
+
+        // When reviewFromDay is 14 days ago, 7-day lookback clamps cutoff so 9-day-old entries stay excluded
+        // while 3-day-old entries are included.
+        let clampedCutoff = MemorySafety.flushCutoffDay(reviewFromDay: "2026-11-11", now: now, calendar: calendar)
+        XCTAssertEqual(clampedCutoff, Tide.day(of: now.addingTimeInterval(-7 * 86_400), calendar: calendar))
+        let spanning: [MemorySafety.CandidateEntry] = [
+            .init(id: "u-9d", at: nineDaysAgo.timeIntervalSince1970 * 1000, role: .user, text: "九天前的话"),
+            .init(id: "a-9d", at: nineDaysAgo.timeIntervalSince1970 * 1000 + 1000, role: .assistant, text: "九天前回复"),
+            .init(id: "u-3d", at: threeDaysAgo.timeIntervalSince1970 * 1000, role: .user, text: "三天前刚换了新电脑"),
+            .init(id: "a-3d", at: threeDaysAgo.timeIntervalSince1970 * 1000 + 1000, role: .assistant, text: "恭喜换新电脑"),
+        ]
+        guard let built = MemorySafety.buildFlushTranscript(
+            spanning,
+            cutoffDay: clampedCutoff,
+            minTimestampMs: now.timeIntervalSince1970 * 1000 - 8 * 86_400_000,
+            calendar: calendar
+        ) else {
+            XCTFail("Expected 3-day-old entries within 7-day cutoff")
+            return
+        }
+        XCTAssertEqual(built.entryIDs, ["u-3d", "a-3d"])
+    }
+
+    func testRemainingTranscriptBudgetAndIntactPacking() {
+        let system = String(repeating: "系", count: 500) // > 1200 UTF-8 bytes, clipped to 1200
+        let existingPrefix = String(repeating: "a", count: 8_600)
+        let budget = MemorySafety.remainingTranscriptBudget(
+            totalLimit: 10_000,
+            maxSystemBytes: 1_200,
+            systemPrompt: system,
+            promptPrefix: existingPrefix
+        )
+        XCTAssertEqual(budget, 200)
+
+        let entries: [MemorySafety.CandidateEntry] = [
+            .init(id: "u1", at: 1, role: .user, text: String(repeating: "x", count: 160)),
+            .init(id: "u2", at: 2, role: .user, text: "短句一"),
+            .init(id: "a2", at: 3, role: .assistant, text: "短答二"),
+        ]
+        guard let built = MemorySafety.buildFlushTranscript(entries, maxTotalBytes: budget) else {
+            XCTFail("Expected recent short entries to fit within remaining 200 bytes")
+            return
+        }
+        // Only entries that fit completely within `budget` may be included and marked processed.
+        XCTAssertEqual(built.entryIDs, ["u2", "a2"])
+        XCTAssertLessThanOrEqual(built.transcript.utf8.count, budget)
+
+        // Tiny remaining budget (< 64 bytes) refuses to emit truncated fragments.
+        XCTAssertNil(MemorySafety.buildFlushTranscript(entries, maxTotalBytes: 40))
+    }
+
+    func testRemainingUnprocessedEntryIDsSkipsConcurrentReviewOverlap() {
+        let roles: [String: Message.Role] = ["u1": .user, "a1": .assistant, "u2": .user, "a2": .assistant]
+        let days: [String: String] = [
+            "u1": "2026-11-24",
+            "a1": "2026-11-24",
+            "u2": "2026-11-25",
+            "a2": "2026-11-25",
+        ]
+
+        // Background review processed day 1 while flush was in-flight; day 2 remains unprocessed.
+        let partialRemaining = MemorySafety.remainingUnprocessedEntryIDs(
+            ["u1", "a1", "u2", "a2"],
+            rolesByID: roles,
+            dayByID: days,
+            processedByDay: ["2026-11-24": ["u1", "a1"]]
+        )
+        XCTAssertEqual(partialRemaining, ["u2", "a2"])
+
+        // If all user entries were already processed concurrently, return empty to avoid duplicate or orphan commits.
+        let noneRemaining = MemorySafety.remainingUnprocessedEntryIDs(
+            ["u1", "a1", "u2", "a2"],
+            rolesByID: roles,
+            dayByID: days,
+            processedByDay: [
+                "2026-11-24": ["u1", "a1"],
+                "2026-11-25": ["u2"],
+            ]
+        )
+        XCTAssertEqual(noneRemaining, [])
     }
 }
