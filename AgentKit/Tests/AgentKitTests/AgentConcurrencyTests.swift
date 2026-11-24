@@ -100,6 +100,23 @@ private actor TimelineTracker {
         return true
     }
 
+    func waitForPeakInFlight(_ target: Int, timeoutMilliseconds: Int = 2500) async -> Bool {
+        if maxInFlight >= target { return true }
+        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        while maxInFlight < target {
+            if ContinuousClock.now >= deadline { return false }
+            let remaining = deadline - ContinuousClock.now
+            let step: Duration
+            if remaining < .milliseconds(10) {
+                step = remaining
+            } else {
+                step = .milliseconds(10)
+            }
+            try? await Task.sleep(for: step)
+        }
+        return true
+    }
+
     func waitForFinished(_ id: String, timeoutMilliseconds: Int = 2500) async -> Bool {
         if finishedIDs.contains(id) { return true }
         let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
@@ -147,7 +164,7 @@ private struct BarrierReadTool: AgentTool {
         let id = arguments["id"]?.string ?? "?"
         await tracker.begin(id)
         if targetInFlight > 1, barrierIDs == nil || barrierIDs?.contains(id) == true {
-            let reached = await tracker.waitForInFlight(targetInFlight)
+            let reached = await tracker.waitForPeakInFlight(targetInFlight)
             if !reached {
                 await tracker.end(id)
                 return ToolOutput("未达到并发目标 \(targetInFlight)", isError: true)
@@ -194,7 +211,7 @@ final class AgentConcurrencyTests: XCTestCase {
 
     func testReadOnlyToolsRunConcurrentlyWithBoundedMaxConcurrency4() async throws {
         let tracker = TimelineTracker()
-        let readTool = BarrierReadTool(name: "read_item", tracker: tracker, targetInFlight: 4)
+        let readTool = BarrierReadTool(name: "read_item", tracker: tracker, targetInFlight: 4, barrierIDs: ["0", "1", "2", "3"])
         XCTAssertTrue(readTool.isReadOnlySafe)
 
         let batch = makeCalls([
@@ -422,7 +439,7 @@ final class AgentConcurrencyTests: XCTestCase {
                 let id = arguments["id"]?.string ?? ""
                 let before = ToolInvocation.currentID
                 await tracker.begin(id)
-                _ = await tracker.waitForInFlight(4)
+                _ = await tracker.waitForPeakInFlight(4)
                 await Task.yield()
                 let after = ToolInvocation.currentID
                 await box.record(id, before: before, after: after)
@@ -872,7 +889,7 @@ final class AgentConcurrencyTests: XCTestCase {
                 await tracker.begin(id)
                 // Simulate permission tightening right before execution while inside a parallel batch.
                 if arguments["tighten"]?.bool == true {
-                    _ = await tracker.waitForInFlight(2)
+                    _ = await tracker.waitForPeakInFlight(2)
                     policy.setAskRequired(true)
                 }
                 if policy.isAskRequired() {
