@@ -2012,7 +2012,7 @@ private struct ProseText: UIViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: InlineCodeTextView, context: Context) -> CGSize? {
         guard let width = proposal.width ?? uiView.superview?.bounds.width ?? uiView.window?.bounds.width,
-              width > 0 else { return nil }
+              width.isFinite, width > 0 else { return nil }
         if streaming {
             let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
             return CGSize(width: width, height: ceil(fitted.height))
@@ -2021,9 +2021,23 @@ private struct ProseText: UIViewRepresentable {
         if let height = ProseLayoutCache.height(format: format, part: part, widthKey: widthKey, text: text) {
             return CGSize(width: width, height: height)
         }
+        if !blocks.isEmpty, (uiView.attributedText?.length ?? 0) == 0,
+           let update = context.coordinator.words(
+               for: blocks,
+               text: text,
+               part: part,
+               format: format,
+               streaming: false,
+               fade: false,
+               quoted: quoted
+           ) {
+            uiView.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache)
+        }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let height = ceil(fitted.height)
-        ProseLayoutCache.storeHeight(height, format: format, part: part, widthKey: widthKey, text: text)
+        if blocks.isEmpty || (uiView.attributedText?.length ?? 0) > 0 {
+            ProseLayoutCache.storeHeight(height, format: format, part: part, widthKey: widthKey, text: text)
+        }
         return CGSize(width: width, height: height)
     }
 

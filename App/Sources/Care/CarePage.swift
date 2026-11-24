@@ -35,6 +35,7 @@ struct CarePage: View {
     @State private var davChoices: [String] = []
     @State private var probing = false
     @State private var copied = false
+    @State private var copyingReport = false
 
     private var backupOrRestoreBusy: Bool {
         making || restoring || restoringBusy || davBusy || !davChoices.isEmpty || restored || Disk.frozen
@@ -137,11 +138,10 @@ struct CarePage: View {
                 }
 
                 Section {
-                    Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
-                        UIPasteboard.general.string = report
-                        copied = true
-                        Haptics.tick(0.6)
+                    Button(copied ? "复制好了，贴给我就行" : (copyingReport ? "正在整理诊断…" : "复制整份诊断")) {
+                        copyReport()
                     }
+                    .disabled(copyingReport)
                 } footer: { Text(L.t("settings.diagnosticsPrivacy")) }
 
                 Section {
@@ -157,9 +157,7 @@ struct CarePage: View {
             .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
             .task {
                 do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-                let errors = await Task.detached(priority: .utility) {
-                    Array(Diag.log.reversed().prefix(20))
-                }.value
+                let errors = Array((await Diag.snapshot(suffix: 20)).reversed())
                 guard !Task.isCancelled else { return }
                 recentErrors = errors
                 diagnosticsReady = true
@@ -364,22 +362,39 @@ struct CarePage: View {
         }
     }
 
-    private var report: String {
-        var lines = ["Clio 诊断 \(Date().formatted())"]
-        lines.append("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
-        lines.append("\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
-        lines.append(Words.t("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)"))
-        lines.append(Words.t("斗室：\(denText)"))
+    private func copyReport() {
+        guard !copyingReport else { return }
+        copied = false
+        copyingReport = true
+        var prefix = ["Clio 诊断 \(Date().formatted())"]
+        prefix.append("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
+        prefix.append("\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)")
+        prefix.append(Words.t("旅伴 \(team.bots.count)，雅集 \(team.rooms.count)，拾遗 \(team.memories.count)，数据 \(sizeText.isEmpty ? L.t("loading.calculating") : sizeText)"))
+        prefix.append(Words.t("斗室：\(denText)"))
         for endpoint in team.settings.endpoints {
-            lines.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
+            prefix.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
         }
-        lines.append("设置：" + ["look.face", "look.size", "look.scheme", "chat.contextShare", "chat.compressShare", "chat.autoCompress", "chat.temperature", "chat.maxOutput", "chat.maxSteps"]
+        prefix.append("设置：" + ["look.face", "look.size", "look.scheme", "chat.contextShare", "chat.compressShare", "chat.autoCompress", "chat.temperature", "chat.maxOutput", "chat.maxSteps"]
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
-        lines.append("最近的错误：")
-        lines += Diag.log.suffix(20)
+        prefix.append("最近的错误：")
+        let header = prefix
+        let trail = DiagTrail.reportLines(limit: 25)
         let hitches = Hitches.shared
-        if !hitches.recent.isEmpty { lines.append(hitches.report(limit: 20)) }
-        return lines.joined(separator: "\n")
+        let hitchReport = hitches.recent.isEmpty ? nil : hitches.report(limit: 20)
+        Task { @MainActor in
+            defer { copyingReport = false }
+            let errors = await Diag.snapshot(suffix: 20)
+            var lines = header
+            lines += errors
+            if !trail.isEmpty {
+                lines.append("近期操作轨迹（不含聊天内容）：")
+                lines += trail
+            }
+            if let hitchReport { lines.append(hitchReport) }
+            UIPasteboard.general.string = lines.joined(separator: "\n")
+            Haptics.tick(0.6)
+            copied = true
+        }
     }
 
     /// Address, user and password are filled in and the address is allowed.

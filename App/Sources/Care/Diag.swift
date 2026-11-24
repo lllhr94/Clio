@@ -17,22 +17,108 @@ private enum DiagStamp {
         defer { lock.unlock() }
         return formatter.string(from: date)
     }
+
+    static func preciseString(from date: Date) -> String {
+        let tenth = Int((date.timeIntervalSince1970.truncatingRemainder(dividingBy: 1) * 10).rounded(.down))
+        let digit = min(max(tenth, 0), 9)
+        return "\(string(from: date)).\(digit)"
+    }
 }
 
 /// 诊断: the last few things that went wrong, kept for the 诊断 page.
 enum Diag {
     private static let key = "diag.log"
+    private static let queue = DispatchQueue(label: "clio.diag.log", qos: .utility)
 
     static func note(_ text: String) {
-        var log = UserDefaults.standard.stringArray(forKey: key) ?? []
-        let stamp = DiagStamp.string(from: Date())
-        // The log is copied out to share when something breaks: no kept secret goes with it.
-        log.append("\(stamp)  \(Shell.mask(text, secrets: Vault.allStrings()))")
-        UserDefaults.standard.set(Array(log.suffix(60)), forKey: key)
+        let now = Date()
+        // Keep Keychain masking and UserDefaults persistence off the main thread so logging never triggers a hitch.
+        queue.async {
+            var log = UserDefaults.standard.stringArray(forKey: key) ?? []
+            let stamp = DiagStamp.string(from: now)
+            // The log is copied out to share when something breaks: no kept secret goes with it.
+            log.append("\(stamp)  \(Shell.mask(text, secrets: Vault.allStrings()))")
+            UserDefaults.standard.set(Array(log.suffix(60)), forKey: key)
+        }
     }
 
-    static var log: [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
-    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
+    /// Reads the log in FIFO order after any queued `note(...)` writes without blocking the main thread.
+    static func snapshot(suffix limit: Int? = nil) async -> [String] {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let all = UserDefaults.standard.stringArray(forKey: key) ?? []
+                if let limit {
+                    continuation.resume(returning: Array(all.suffix(limit)))
+                } else {
+                    continuation.resume(returning: all)
+                }
+            }
+        }
+    }
+
+    static func clear() {
+        DiagTrail.clear()
+        queue.async { UserDefaults.standard.removeObject(forKey: key) }
+    }
+}
+
+/// Lightweight in-memory ring buffer of privacy-safe UI events (never message text, paths, URLs, or secrets)
+/// so diagnostic reports show what happened right before a jump or hitch without asking the user to recall it.
+enum DiagTrail {
+    private struct Entry: Sendable {
+        let at: Date
+        let uptime: TimeInterval
+        let event: String
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var entries: [Entry] = []
+    private static let limit = 40
+
+    static func record(_ event: String) {
+        let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        lock.withLock {
+            if let last = entries.last, last.event == event, uptime - last.uptime < 0.25 {
+                return
+            }
+            entries.append(Entry(at: now, uptime: uptime, event: event))
+            if entries.count > limit {
+                entries.removeFirst(entries.count - limit)
+            }
+        }
+    }
+
+    /// Recent events within `window` seconds, oldest first, formatted with relative age (e.g. "-0.4s 收键盘").
+    static func recentContext(within window: TimeInterval = 4, limit count: Int = 6) -> [String] {
+        let now = ProcessInfo.processInfo.systemUptime
+        let picked: [Entry] = lock.withLock {
+            Array(entries.filter { now - $0.uptime <= window }.suffix(count))
+        }
+        return picked.map { entry in
+            let age = max(0, now - entry.uptime)
+            return String(format: "-%.1fs %@", age, entry.event)
+        }
+    }
+
+    /// Most recent UI event within `window` seconds, attached to hitches so idle stutters identify their trigger.
+    static func latest(within window: TimeInterval = 1.5) -> String? {
+        let now = ProcessInfo.processInfo.systemUptime
+        return lock.withLock {
+            guard let last = entries.last, now - last.uptime <= window else { return nil }
+            return last.event
+        }
+    }
+
+    /// Chronological timestamped lines for the copied diagnostic report.
+    static func reportLines(limit count: Int = 25) -> [String] {
+        let snapshot: [Entry] = lock.withLock { Array(entries.suffix(count)) }
+        return snapshot.map { "\(DiagStamp.preciseString(from: $0.at))  \($0.event)" }
+    }
+
+    static func clear() {
+        lock.withLock { entries.removeAll(keepingCapacity: true) }
+    }
 }
 
 /// 掉帧记录仪: gaps longer than the scheduled display interval, with the current page and activity,
@@ -102,10 +188,14 @@ final class Hitches {
         }
     }
 
-    func enter(_ page: String) { pages.append(page) }
+    func enter(_ page: String) {
+        pages.append(page)
+        DiagTrail.record("进页：\(page)")
+    }
 
     func leave(_ page: String) {
         if let index = pages.lastIndex(of: page), index > 0 { pages.remove(at: index) }
+        DiagTrail.record("离页：\(page)")
     }
 
     /// Says what is going on in one slot; nil clears it.
@@ -135,6 +225,8 @@ final class Hitches {
     func report(limit: Int?) -> String {
         guard !recent.isEmpty else { return "掉帧记录：没有记录到漏刷新。" }
         let worst = recent.map(\.ms).max() ?? 0
+        let over50 = recent.filter { $0.ms >= 50 }.count
+        let over100 = recent.filter { $0.ms >= 100 }.count
         var byPage: [String: Int] = [:]
         for hitch in recent { byPage[hitch.page, default: 0] += 1 }
         let pages = byPage.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value) 次" }.joined(separator: "，")
@@ -144,7 +236,7 @@ final class Hitches {
         } else {
             rows = Array(recent.reversed())
         }
-        return (["掉帧记录：共 \(recent.count) 次，最长 \(worst) ms；\(pages)"] + rows.map(\.line)).joined(separator: "\n")
+        return (["掉帧记录：共 \(recent.count) 次（≥50ms \(over50) 次，≥100ms \(over100) 次），最长 \(worst) ms；\(pages)"] + rows.map(\.line)).joined(separator: "\n")
     }
 
     fileprivate func tick(_ time: CFTimeInterval, interval: CFTimeInterval) {
@@ -159,7 +251,12 @@ final class Hitches {
         let hz = Int((1 / expected).rounded())
         let now = Date()
         let page = pages.last ?? Words.t("案头")
-        let action = actions.sorted { $0.key < $1.key }.map(\.value).joined(separator: "，")
+        var parts = actions.sorted { $0.key < $1.key }.map(\.value)
+        if let recentEvent = DiagTrail.latest(within: 1.5),
+           !parts.contains(where: { $0.contains(recentEvent) }) {
+            parts.append(recentEvent)
+        }
+        let action = parts.joined(separator: "，")
         // Slow frames in a row are one stutter: keep its worst frame.
         if let previous = recent.last, now.timeIntervalSince(previous.at) < 0.3, previous.page == page {
             if gap > previous.ms {

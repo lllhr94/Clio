@@ -20,6 +20,8 @@ extension ChatPage {
     /// Everything said is looked through, not only what is on screen.
     func startFinding() {
         Haptics.light()
+        settleJump?.cancel()
+        viewport.advanceNavigation()
         withAnimation(Ink.Motion.settle) { finding = true }
         findFocus = true
         findLoadTask?.cancel()
@@ -96,13 +98,17 @@ extension ChatPage {
         guard !found.isEmpty else { return }
         findAt = (findAt + step + found.count) % found.count
         let target = found[findAt]
+        settleJump?.cancel()
+        viewport.advanceNavigation()
+        let generation = viewport.navigationGeneration
         reveal(target)
         following = false
         Haptics.tick(0.4)
         findScrollTask?.cancel()
         findScrollTask = Task { @MainActor in
             await Task.yield()
-            guard !Task.isCancelled, finding else { return }
+            guard !Task.isCancelled, finding,
+                  generation == viewport.navigationGeneration else { return }
             viewport.recordJump("点了搜索结果")
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .center) }
         }
