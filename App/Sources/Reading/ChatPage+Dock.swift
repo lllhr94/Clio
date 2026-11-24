@@ -314,173 +314,82 @@ extension ChatPage {
         .padding(.bottom, Ink.Space.s)
         .animation(petDockMotion, value: waiting?.id)
         .overlay(alignment: .top) {
-            floatingJumpControls
+            ChatFloatingJumpOverlay(
+                chrome: chrome,
+                petPerch: petPerch,
+                inHistory: historyPage != nil,
+                following: following,
+                onPrevious: { stepQuestion(earlier: true) },
+                onNext: { stepQuestion(earlier: false) },
+                onLatest: returnToLatest
+            )
         }
     }
 
-    var floatingJumpControls: some View {
-        let controlHeight = 32 * UIScale.factor
-        return HStack(spacing: Ink.Space.xs) {
-            HStack(spacing: 0) {
-                jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
-                Rectangle()
-                    .fill(Ink.rule.opacity(0.7))
-                    .frame(width: 0.5, height: 14 * UIScale.factor)
-                jumpButton("arrow.down", title: "chat.nextQuestion", earlier: false)
-            }
-            .frame(height: controlHeight)
-            .glassBacking(in: Capsule())
-            .opacity(jumpVisible ? 1 : 0)
-            .allowsHitTesting(jumpVisible)
-            .accessibilityHidden(!jumpVisible)
-
-            if latestIsFloating {
-                backToEnd
-                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .offset(y: -(controlHeight + Ink.Space.s))
-        .onChange(of: jumpVisible, initial: true) { _, _ in updateJumpKeepOut() }
-        .onChange(of: latestIsFloating, initial: true) { _, _ in updateJumpKeepOut() }
-        .animation(Ink.Motion.settle, value: jumpVisible)
-        .animation(Ink.Motion.settle, value: latestIsFloating)
-    }
-
-    func updateJumpKeepOut() {
-        let width: CGFloat
-        if jumpVisible && latestIsFloating {
-            width = 104 * UIScale.factor + Ink.Space.xs + Ink.Space.s
-        } else if jumpVisible {
-            width = 70 * UIScale.factor + Ink.Space.s
-        } else if latestIsFloating {
-            width = 32 * UIScale.factor + Ink.Space.s
-        } else {
-            width = 0
-        }
-        withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = width }
-    }
-
-    /// 长对话小地图 (after Kelivo): while scrolling a long conversation, a thin strip at the right edge with a tick
-    /// for each thing you asked; the ones on screen are darker. A tap goes there. Hidden when not scrolling.
-    @ViewBuilder
     var minimap: some View {
-        let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
-        let asked = rows.indices.filter { rows[$0].kind == .user }
-        if jumpVisible, rows.count >= 30, asked.count >= 4 {
-            let visible = Set(viewport.ids)
-            let first = rows.startIndex
-            let span = max(1, rows.count - 1)
-            GeometryReader { box in
-                let height = box.size.height
-                let place = { (index: Int) in height * CGFloat(index - first) / CGFloat(span) }
-                let nearest = { (y: CGFloat) in asked.min(by: { abs(place($0) - y) < abs(place($1) - y) }) }
-                ZStack(alignment: .top) {
-                    Capsule().fill(Ink.rule.opacity(0.28)).frame(width: 1)
-                    ForEach(asked, id: \.self) { index in
-                        // While sliding, the finger's question is the one lit; otherwise the ones on screen.
-                        let lit = minimapScrub.map { $0 == index } ?? visible.contains(rows[index].id)
-                        Capsule()
-                            .fill(lit ? Ink.accent : Ink.inkFaint.opacity(0.45))
-                            .frame(width: lit ? 10 : 4, height: lit ? 2.5 : 2)
-                            .offset(y: place(index) - 1)
-                    }
-                }
-                .frame(width: 16, height: height, alignment: .top)
-                .contentShape(Rectangle().inset(by: -Ink.Space.m))
-                // Tap, or slide along it: the question under the finger lights at once (with a tick and its first
-                // words beside the strip), and letting go goes there. One gesture for the whole strip (the review, #32).
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { drag in
-                            hideJumps?.cancel()
-                            guard let index = nearest(drag.location.y), index != minimapScrub else { return }
-                            if minimapScrub != nil { Haptics.tick(0.3) }
-                            minimapScrub = index
-                        }
-                        .onEnded { drag in
-                            let index = nearest(drag.location.y) ?? minimapScrub
-                            minimapScrub = nil
-                            guard let index, rows.indices.contains(index) else { return }
-                            jump(to: rows[index].id, animated: false)
-                        }
-                )
-                .overlay(alignment: .topTrailing) {
-                    if let index = minimapScrub, rows.indices.contains(index) {
-                        Text(rows[index].text.replacingOccurrences(of: "\n", with: " "))
-                            .font(.system(size: Ink.Size.small))
-                            .foregroundStyle(Ink.ink)
-                            .lineLimit(2)
-                            .frame(width: 200, alignment: .trailing)
-                            .padding(.horizontal, Ink.Space.m)
-                            .padding(.vertical, Ink.Space.s)
-                            .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
-                            .offset(x: -24, y: min(max(0, place(index) - 18), max(0, height - 44)))
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
-                    }
-                }
-            }
-            .frame(width: 16)
-            .padding(.vertical, Ink.Bar.height * 2)
-            .padding(.trailing, 2)
-            .transition(.opacity)
-            // VoiceOver: one element that steps through the questions with a swipe up or down.
-            .accessibilityElement()
-            .accessibilityLabel(L.t("chat.questionMap"))
-            .accessibilityValue(minimapPlace(rows: rows, asked: asked, visible: visible))
-            .accessibilityAdjustableAction { direction in
-                let earlier = direction == .decrement
-                if let target = question(earlier: earlier) { jump(to: target) }
-            }
+        ChatMinimapOverlay(
+            chrome: chrome,
+            viewport: viewport,
+            chat: chat,
+            historyPage: historyPage,
+            shownCount: shownCount,
+            onCancelHide: { hideJumps?.cancel() },
+            onJump: { id, animated, label in jump(to: id, animated: animated, source: label) },
+            onStepQuestion: { earlier in stepQuestion(earlier: earlier) }
+        )
+    }
+
+    func scheduleJumpSettle(to id: String, source: String, delayMs: Int) {
+        let generation = viewport.navigationGeneration
+        settleJump?.cancel()
+        settleJump = Task { @MainActor in
+            defer { if !Task.isCancelled { settleJump = nil } }
+            do { try await Task.sleep(for: .milliseconds(delayMs)) } catch { return }
+            guard !Task.isCancelled,
+                  generation == viewport.navigationGeneration,
+                  !touchScrolling, !viewport.isTouching, !following, historyPage == nil,
+                  selecting.isEmpty, !viewport.ids.contains(id) else { return }
+            viewport.recordJump("\(source)落位")
+            scroller?.scrollTo(id, anchor: .top)
         }
     }
 
-    func minimapPlace(rows: ArraySlice<ChatLine>, asked: [Int], visible: Set<String>) -> String {
-        guard let at = asked.firstIndex(where: { visible.contains(rows[$0].id) }) else { return "\(asked.count)" }
-        return "\(at + 1) / \(asked.count)"
-    }
-
-    func jump(to id: String, animated: Bool = true) {
+    func jump(to id: String, animated: Bool = true, source: String = "小地图") {
         Haptics.tick(0.4)
         following = false
         jumpedTo = id
         lingerJumpButtons()
-        viewport.recordJump("小地图")
+        viewport.recordJump(source)
         // From the 小地图 the page goes straight there: a long animated scroll through a lazy list lags behind.
         if animated {
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
         } else {
             scroller?.scrollTo(id, anchor: .top)
         }
+        scheduleJumpSettle(to: id, source: source, delayMs: animated ? 380 : 120)
     }
 
     func lingerJumpButtons() {
         hideJumps?.cancel()
         hideJumps = Task {
             do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
-            jumpVisible = false
+            if chrome.jumpVisible {
+                DiagTrail.record("隐藏跳转钮")
+                chrome.jumpVisible = false
+            }
         }
     }
 
-    func jumpButton(_ symbol: String, title: String, earlier: Bool) -> some View {
-        Button {
-            guard let target = question(earlier: earlier) else { return }
-            Haptics.light()
-            following = false
-            jumpedTo = target
-            lingerJumpButtons()
-            viewport.recordJump(earlier ? "点了上一句" : "点了下一句")
-            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
-        } label: {
-            Image(systemName: symbol)
-                .font(.system(size: Ink.Size.small, weight: .semibold))
-                .foregroundStyle(Ink.inkSoft)
-                .frame(width: 34 * UIScale.factor, height: 32 * UIScale.factor)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(L.t(title))
+    func stepQuestion(earlier: Bool) {
+        guard let target = question(earlier: earlier) else { return }
+        let label = earlier ? "点了上一句" : "点了下一句"
+        Haptics.light()
+        following = false
+        jumpedTo = target
+        lingerJumpButtons()
+        viewport.recordJump(label)
+        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
+        scheduleJumpSettle(to: target, source: label, delayMs: 380)
     }
 
     func question(earlier: Bool) -> String? {
@@ -494,20 +403,10 @@ extension ChatPage {
         return rows[after...].first(where: { $0.kind == .user })?.id
     }
 
-    func floating(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: Ink.Size.small, weight: .semibold))
-            .foregroundStyle(Ink.ink)
-            .frame(width: 32 * UIScale.factor, height: 32 * UIScale.factor)
-            .glassFace(in: Circle())
-    }
-
-    var latestIsFloating: Bool {
-        jumpVisible && (historyPage != nil || farFromEnd && !following)
-    }
-
     func returnToLatest() {
         Haptics.light()
+        settleJump?.cancel()
+        viewport.recordJump("回到最新")
         following = true
         jumpedTo = nil
         if historyPage == nil {
@@ -516,14 +415,6 @@ extension ChatPage {
             historyPage = nil
             followToEnd()
         }
-    }
-
-    var backToEnd: some View {
-        Button(action: returnToLatest) {
-            floating("arrow.down.to.line")
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(L.t("chat.latest"))
     }
 
     static let end = "foot-of-page"
@@ -551,8 +442,11 @@ extension ChatPage {
     }
 
     private func presentApproval(_ approval: Approval) {
+        DiagTrail.record("开审批详情")
         followPending?.cancel()
         settleEnd?.cancel()
+        settleJump?.cancel()
+        viewport.advanceNavigation()
         typing = false
         approving = approval
     }
@@ -571,10 +465,16 @@ extension ChatPage {
 
     func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
+            if selecting.isEmpty { DiagTrail.record("开始选字") }
             selecting.insert(id)
             followPending?.cancel()
-        } else if selecting.remove(id) != nil, selecting.isEmpty, viewport.needsEndCorrection {
-            followToEnd(settle: false)
+            settleJump?.cancel()
+            viewport.advanceNavigation()
+        } else if selecting.remove(id) != nil, selecting.isEmpty {
+            DiagTrail.record("结束选字")
+            if viewport.needsEndCorrection {
+                followToEnd(settle: false)
+            }
         }
     }
 
@@ -595,6 +495,8 @@ extension ChatPage {
 
     func toEnd(animated: Bool = false) {
         guard historyPage == nil, selecting.isEmpty, let scroller else { return }
+        settleJump?.cancel()
+        viewport.advanceNavigation()
         if animated {
             withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
         } else {
