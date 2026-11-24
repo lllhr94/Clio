@@ -15,10 +15,10 @@ final class Dictation: ObservableObject {
     /// Gets everything heard so far, whole each time.
     var onText: ((String) -> Void)?
 
-    private let engine = AVAudioEngine()
+    private var engine: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+    private var recognizer: SFSpeechRecognizer?
 
     private var recorder: AVAudioRecorder?
     private var cloudFile: URL?
@@ -87,17 +87,23 @@ final class Dictation: ObservableObject {
             cancel()
             return
         }
-        guard let recognizer, recognizer.isAvailable else {
+        let activeRecognizer = recognizer ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+        guard let activeRecognizer, activeRecognizer.isAvailable else {
+            recognizer = nil
             problem = "语音识别现在用不了，稍后再试。"
             cancel()
             return
         }
+        recognizer = activeRecognizer
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true)
             recordingSessionActive = true
-            let input = engine.inputNode
+            teardownEngine()
+            let activeEngine = AVAudioEngine()
+            engine = activeEngine
+            let input = activeEngine.inputNode
             let hardware = input.inputFormat(forBus: 0)
             let format = input.outputFormat(forBus: 0)
             guard Self.usable(hardware), Self.usable(format) else {
@@ -116,10 +122,10 @@ final class Dictation: ObservableObject {
                 }
             })
             tapInstalled = true
-            engine.prepare()
-            try engine.start()
+            activeEngine.prepare()
+            try activeEngine.start()
             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { listening = true }
-            task = recognizer.recognitionTask(with: request, resultHandler: Self.results { [weak self] text, done in
+            task = activeRecognizer.recognitionTask(with: request, resultHandler: Self.results { [weak self] text, done in
                 Task { @MainActor in
                     guard let self, self.sessionID == id else { return }
                     if let text { self.onText?(text) }
@@ -266,12 +272,21 @@ final class Dictation: ObservableObject {
         finish(cancelTask: true)
     }
 
-    private func stopRecording() {
-        if engine.isRunning { engine.stop() }
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
+    private func teardownEngine() {
+        if let activeEngine = engine {
+            if activeEngine.isRunning { activeEngine.stop() }
+            if tapInstalled {
+                activeEngine.inputNode.removeTap(onBus: 0)
+                tapInstalled = false
+            }
+            engine = nil
+        } else {
             tapInstalled = false
         }
+    }
+
+    private func stopRecording() {
+        teardownEngine()
         if let rec = recorder {
             rec.stop()
             recorder = nil

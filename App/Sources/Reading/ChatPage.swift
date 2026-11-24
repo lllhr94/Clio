@@ -278,16 +278,20 @@ struct ChatPage: View {
                 if canLoadEarlier { earlier }
                 let heads = openers
                 let lit = finding ? currentHit : nil
+                let animateRow = historyPage == nil
+                let firstRowId = displayedRows.first?.id
+                let recentSecondLastId = chat.lines.count >= 2 ? chat.lines[chat.lines.count - 2].id : nil
+                let recentLastId = chat.lines.last?.id
                 // Keep distant replies unmounted when the keyboard, stream or window size changes.
                 LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
                     ForEach(historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows) { line in
+                        let isRecent = animateRow && (line.id == recentLastId || line.id == recentSecondLastId) && chat.fresh?.id != line.id
                         turnRow(line, opens: heads.contains(line.id), lit: lit == line.id)
                             // A turn starts with what you said: more room above it than between the parts of a reply.
-                            .padding(.top, line.kind == .user && line.id != displayedRows.first?.id ? Ink.Space.l : 0)
+                            .padding(.top, line.kind == .user && line.id != firstRowId ? Ink.Space.l : 0)
                             .id(line.id)
                             // Only what just arrived rises into place; history loaded above stays still.
-                            .transition(historyPage == nil && chat.fresh?.id != line.id &&
-                                        chat.lines.suffix(2).contains(where: { $0.id == line.id })
+                            .transition(isRecent
                                         ? .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).combined(with: .offset(y: 8))
                                         : .identity)
                     }
@@ -359,6 +363,7 @@ struct ChatPage: View {
             ScrollView {
                 conversationContent
             }
+            .observeProseStyle()
             .environment(\.chatSelectionChanged, selectionChanged)
             .environment(\.chatQuoteSelection) { picked in
                 Haptics.tick(0.5)

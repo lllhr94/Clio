@@ -24,12 +24,14 @@ enum ParsedCache {
 /// A companion's words, set as a page: paragraphs, lists, tables, code and quotes.
 /// While a reply is still arriving, only its last block changes, and that block's newest glyphs fade in.
 struct ProseView: View {
-    // Read so a change in 纸墨 redraws the text.
+    // Read once at the top level so inner blocks stay pure without subscribing to UserDefaults.
     @AppStorage("look.face") private var face = "serif"
     @AppStorage("look.code") private var code = "maple"
     @AppStorage("look.size") private var size = 17.0
     @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
     @AppStorage("look.fade") private var fade = true
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var text: String
     /// True while more is coming: the tail of the last block fades.
     var streaming = false
@@ -40,16 +42,29 @@ struct ProseView: View {
     }
 
     var body: some View {
-        let _ = (face, code, size)
+        let style = ProseStyle.make(
+            face: face,
+            code: code,
+            size: size,
+            lineHeight: leading,
+            fade: fade,
+            dark: scheme == .dark,
+            reduceMotion: reduceMotion
+        )
         let blocks = streaming ? Prose.parse(Prose.mend(text)) : ParsedCache.blocks(text)
         // Paragraphs a little under one line apart, as in the reading apps that read best.
-        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
+        VStack(alignment: .leading, spacing: style.paragraphGap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                BlockView(block: block, fading: fade && streaming && index == blocks.count - 1, live: streaming && index == blocks.count - 1)
+                BlockView(
+                    block: block,
+                    style: style,
+                    fading: style.fade && streaming && index == blocks.count - 1,
+                    live: streaming && index == blocks.count - 1
+                )
             }
         }
         // Changes to reading typography rebuild blocks that do not observe those preferences themselves.
-        .id("\(face)-\(code)-\(size)-\(leading)")
+        .id(style.typographyKey)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
     }
@@ -58,13 +73,17 @@ struct ProseView: View {
 /// Once sealed, a block keeps its identity and its original text while the tail grows.
 struct StreamingProse: View {
     let text: String
+    @Environment(\.proseStyle) private var envStyle
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scanner = StreamBlocks()
     @State private var sealed: [Prose.Block] = []
     @State private var tail: [Prose.Block] = []
 
     var body: some View {
+        let style = envStyle ?? ProseStyle.current(dark: scheme == .dark, reduceMotion: reduceMotion)
         let blocks = scanner.receivedBytes == 0 ? Prose.parse(Prose.mend(text)) : sealed + tail
-        ReplyProseLayout(text: text, blocks: blocks, streaming: true)
+        ReplyProseLayout(text: text, blocks: blocks, style: style, streaming: true)
             .onChange(of: text, initial: true) { _, new in
                 // A shortened stream starts over; the caller gives every new reply its own identity.
                 if new.utf8.count < scanner.receivedBytes {
@@ -162,26 +181,144 @@ struct StreamBlocks {
     }
 }
 
-/// Shared typographic proportions used by both `BlockView` and `ProseWords` so streaming and finished text match.
-private enum ProseMetrics {
-    static func headingSize(level: Int) -> CGFloat {
-        let base = CGFloat(Pref.size)
+/// Snapshot of reading typography and appearance passed from a single observer down to pure prose views.
+struct ProseStyle: Equatable {
+    let face: Pref.Face
+    let code: Pref.Code
+    let size: Double
+    let lineHeight: Double
+    let fade: Bool
+    let dark: Bool
+    let reduceMotion: Bool
+    let themeKey: String
+    let white: Bool
+    let oled: Bool
+    let fontGeneration: Int
+    let uiScale: Double
+
+    var uiScaleFactor: CGFloat { CGFloat(uiScale) }
+    var typographyKey: String {
+        "\(face.rawValue)-\(code.rawValue)-\(size)-\(lineHeight)"
+    }
+    var formatKey: String {
+        "\(typographyKey)-\(dark)-\(themeKey)-\(white)-\(oled)-\(fontGeneration)-\(uiScale)"
+    }
+    var leading: CGFloat { Ink.leading(size: size, lineHeight: lineHeight, face: face) }
+    var paragraphGap: CGFloat { CGFloat(size) * 0.72 }
+    var readingFont: Font { Ink.face(face, CGFloat(size), bold: false) }
+    var codeSize: Double { max(12, size - 3) }
+    var codeFont: Font { Ink.mono(CGFloat(codeSize), preference: code) }
+    var inlineCodeFont: Font { Ink.mono(CGFloat(max(12, size - 2)), preference: code) }
+    var tableCellSize: CGFloat { CGFloat(max(12, size - 2)) }
+    var headingBottom: CGFloat { CGFloat(size) * 0.35 }
+    var listSpacing: CGFloat { CGFloat(size) * 0.42 }
+    var codeLineSpacing: CGFloat { max(1.5, CGFloat(codeSize) * 0.13) }
+    var inlineCodeCorner: CGFloat { 5 * uiScaleFactor }
+
+    func bodyFont(_ pt: Double, bold: Bool) -> Font {
+        Ink.face(face, CGFloat(pt), bold: bold)
+    }
+
+    func headingSize(level: Int) -> CGFloat {
+        let base = CGFloat(size)
         if level <= 1 { return (base * 1.24).rounded() }
         if level == 2 { return (base * 1.13).rounded() }
         return (base * 1.05).rounded()
     }
 
-    static func headingTop(level: Int) -> CGFloat {
-        let base = CGFloat(Pref.size)
+    func headingTop(level: Int) -> CGFloat {
+        let base = CGFloat(size)
         if level <= 1 { return base * 1.1 }
         if level == 2 { return base * 0.85 }
         return base * 0.55
     }
 
-    static var headingBottom: CGFloat { CGFloat(Pref.size) * 0.35 }
-    static var listSpacing: CGFloat { CGFloat(Pref.size) * 0.42 }
-    static var codeLineSpacing: CGFloat { max(1.5, CGFloat(max(12, Pref.size - 3)) * 0.13) }
-    static var inlineCodeCorner: CGFloat { 5 * UIScale.factor }
+    @MainActor
+    static func make(
+        face rawFace: String,
+        code rawCode: String,
+        size: Double,
+        lineHeight: Double,
+        fade: Bool,
+        dark: Bool,
+        reduceMotion: Bool
+    ) -> ProseStyle {
+        let theme = Theme.shared
+        return ProseStyle(
+            face: Pref.Face(rawValue: rawFace) ?? .serif,
+            code: Pref.Code(rawValue: rawCode) ?? .maple,
+            size: size,
+            lineHeight: lineHeight,
+            fade: fade,
+            dark: dark,
+            reduceMotion: reduceMotion,
+            themeKey: theme.key,
+            white: theme.white,
+            oled: theme.oled,
+            fontGeneration: FontShelf.shared.generation,
+            uiScale: UIScale.shared.value
+        )
+    }
+
+    @MainActor
+    static func current(dark: Bool, reduceMotion: Bool = false) -> ProseStyle {
+        let theme = Theme.shared
+        return ProseStyle(
+            face: theme.face,
+            code: theme.code,
+            size: theme.size,
+            lineHeight: theme.lineHeight,
+            fade: theme.fade,
+            dark: dark,
+            reduceMotion: reduceMotion,
+            themeKey: theme.key,
+            white: theme.white,
+            oled: theme.oled,
+            fontGeneration: FontShelf.shared.generation,
+            uiScale: UIScale.shared.value
+        )
+    }
+}
+
+private struct ProseStyleKey: EnvironmentKey {
+    static let defaultValue: ProseStyle? = nil
+}
+
+extension EnvironmentValues {
+    var proseStyle: ProseStyle? {
+        get { self[ProseStyleKey.self] }
+        set { self[ProseStyleKey.self] = newValue }
+    }
+}
+
+private struct ProseStyleObserverModifier: ViewModifier {
+    @AppStorage("look.face") private var face = "serif"
+    @AppStorage("look.code") private var code = "maple"
+    @AppStorage("look.size") private var size = 17.0
+    @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
+    @AppStorage("look.fade") private var fade = true
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let style = ProseStyle.make(
+            face: face,
+            code: code,
+            size: size,
+            lineHeight: leading,
+            fade: fade,
+            dark: scheme == .dark,
+            reduceMotion: reduceMotion
+        )
+        content.environment(\.proseStyle, style)
+    }
+}
+
+extension View {
+    /// Subscribes to reading typography once at the container level so row-level prose views avoid duplicate observers.
+    func observeProseStyle() -> some View {
+        modifier(ProseStyleObserverModifier())
+    }
 }
 
 /// Shared quote container used by both `BlockView` and `ReplyProseLayout`, keeping native `ProseText` selection inside quotes.
@@ -206,6 +343,7 @@ private struct QuoteCard<Content: View>: View {
 
 private struct BlockView: View {
     let block: Prose.Block
+    let style: ProseStyle
     let fading: Bool
     /// The last block of a reply still being written, whether or not text fades in: a formula is not typeset and
     /// long code is not folded until it is complete.
@@ -215,46 +353,46 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            Inline(text: text, font: Ink.body(Double(ProseMetrics.headingSize(level: level)), bold: true), fading: fading, tight: true)
+            Inline(text: text, style: style, font: style.bodyFont(Double(style.headingSize(level: level)), bold: true), fading: fading, tight: true)
                 // Much more air above a heading than below it, so it plainly belongs to what follows.
-                .padding(.top, ProseMetrics.headingTop(level: level))
-                .padding(.bottom, min(0, ProseMetrics.headingBottom - Ink.paragraphGap))
+                .padding(.top, style.headingTop(level: level))
+                .padding(.bottom, min(0, style.headingBottom - style.paragraphGap))
         case .paragraph(let text):
             if let files = FileCard.links(in: text) {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     ForEach(Array(files.enumerated()), id: \.offset) { _, file in FileCard(label: file.label, path: file.path) }
                 }
             } else if text.contains("![") {
-                PictureParagraph(text: text, fading: fading)
+                PictureParagraph(text: text, style: style, fading: fading)
             } else {
-                Inline(text: text, font: Ink.reading, fading: fading)
+                Inline(text: text, style: style, font: style.readingFont, fading: fading)
             }
         case .list(let items):
             // Items closer together than paragraphs, with enough rhythm for numbered points to breathe.
-            VStack(alignment: .leading, spacing: ProseMetrics.listSpacing) {
+            VStack(alignment: .leading, spacing: style.listSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
-                    HStack(alignment: .firstTextBaseline, spacing: Pref.size * 0.45) {
+                    HStack(alignment: .firstTextBaseline, spacing: style.size * 0.45) {
                         marker(item)
-                            .frame(width: item.number != nil ? Pref.size * 1.3 : Pref.size * 0.85, alignment: item.number != nil ? .trailing : .center)
-                        Inline(text: item.text, font: Ink.reading, fading: fading && index == items.count - 1)
+                            .frame(width: item.number != nil ? style.size * 1.3 : style.size * 0.85, alignment: item.number != nil ? .trailing : .center)
+                        Inline(text: item.text, style: style, font: style.readingFont, fading: fading && index == items.count - 1)
                     }
-                    .padding(.leading, CGFloat(item.depth) * Pref.size * 1.25)
+                    .padding(.leading, CGFloat(item.depth) * style.size * 1.25)
                 }
             }
         case .quote(let blocks):
             QuoteCard {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
-                        BlockView(block: inner, fading: fading && index == blocks.count - 1, live: live && index == blocks.count - 1)
+                        BlockView(block: inner, style: style, fading: fading && index == blocks.count - 1, live: live && index == blocks.count - 1)
                     }
                 }
                 .environment(\.noteInk, noteInk ?? Ink.inkSoft)
             }
         case .code(let language, let text, _):
-            CodeBlock(language: language, text: text, live: live)
+            CodeBlock(language: language, text: text, style: style, live: live)
         case .table(let table):
-            TableBlock(table: table)
+            TableBlock(table: table, style: style)
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading || live)
         case .rule:
@@ -265,7 +403,7 @@ private struct BlockView: View {
             )
             .frame(height: 0.75)
             .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, CGFloat(Pref.size) * 0.65)
+            .padding(.vertical, CGFloat(style.size) * 0.65)
         }
     }
 
@@ -278,12 +416,12 @@ private struct BlockView: View {
         } else if let number = item.number {
             // Numbers in tabular figures and quiet ink: they anchor the left edge without fighting bold lead-ins.
             Text("\(number).")
-                .font(Ink.body(Pref.size * 0.92, bold: false).monospacedDigit())
+                .font(style.bodyFont(style.size * 0.92, bold: false).monospacedDigit())
                 .foregroundStyle(Ink.inkFaint)
         } else {
             let glyph = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪")
             Text(glyph)
-                .font(.system(size: CGFloat(Pref.size) * (item.depth == 0 ? 0.95 : 0.78), weight: .semibold))
+                .font(.system(size: CGFloat(style.size) * (item.depth == 0 ? 0.95 : 0.78), weight: .semibold))
                 .foregroundStyle(Ink.inkFaint)
         }
     }
@@ -292,6 +430,7 @@ private struct BlockView: View {
 /// Words with inline marks: bold, italics, code, links, strikethrough.
 private struct Inline: View {
     let text: String
+    let style: ProseStyle
     let font: Font
     let fading: Bool
     /// Headings: closer lines.
@@ -303,7 +442,7 @@ private struct Inline: View {
         for run in out.runs {
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
-                out[run.range].font = Ink.mono(CGFloat(max(12, Pref.size - 2)))
+                out[run.range].font = style.inlineCodeFont
                 // In the accent, on its pill, as the Claude app sets inline code (the owner's reference).
                 out[run.range].foregroundColor = Ink.accent
             }
@@ -328,9 +467,9 @@ private struct Inline: View {
     var body: some View {
         styled
             .font(font)
-            .lineSpacing(tight ? Ink.leading * 0.5 : Ink.leading)
+            .lineSpacing(tight ? style.leading * 0.5 : style.leading)
             .foregroundStyle(noteInk ?? Ink.ink)
-            .textRenderer(TailFade(on: fading))
+            .textRenderer(TailFade(on: fading, inlineCodeCorner: style.inlineCodeCorner))
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -341,12 +480,13 @@ private struct InlineCodeBadge: TextAttribute {}
 struct TailFade: TextRenderer {
     var on: Bool
     var tail = 12
+    var inlineCodeCorner: CGFloat = 5 * UIScale.factor
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         for line in layout {
             for run in line where run[InlineCodeBadge.self] != nil {
                 let rect = run.typographicBounds.rect.insetBy(dx: -2.5, dy: -0.5)
-                let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
+                let radius = min(inlineCodeCorner, rect.height * 0.3)
                 context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(Ink.mine.opacity(0.85)))
             }
         }
@@ -378,6 +518,7 @@ struct TailFade: TextRenderer {
 private struct CodeBlock: View {
     let language: String
     let text: String
+    let style: ProseStyle
     /// Still being written: it grows in full, and folds only once complete (folding at line 21 jumped the page).
     var live = false
     @State private var copied = false
@@ -448,7 +589,7 @@ private struct CodeBlock: View {
                 .font(.system(size: Ink.Size.micro, weight: .medium))
                 .foregroundStyle(copied ? Ink.ok : Ink.inkSoft)
                 .padding(.horizontal, Ink.Space.s)
-                .frame(height: 26 * UIScale.factor)
+                .frame(height: 26 * style.uiScaleFactor)
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
@@ -456,7 +597,7 @@ private struct CodeBlock: View {
         }
         .padding(.leading, Ink.Space.l)
         .padding(.trailing, Ink.Space.s)
-        .frame(height: 32 * UIScale.factor)
+        .frame(height: 32 * style.uiScaleFactor)
         .background(Ink.mine.opacity(0.42))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Ink.rule.opacity(0.75)).frame(height: 0.5)
@@ -468,11 +609,11 @@ private struct CodeBlock: View {
         // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
         // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
         ScrollView(.horizontal) {
-            Text(isOutput ? Highlight.output(shown, cache: !live) : Highlight.code(shown, language: language, cache: !live))
+            Text(isOutput ? Highlight.output(shown, style: style, cache: !live) : Highlight.code(shown, language: language, style: style, cache: !live))
                 .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
-                .font(Ink.code)
+                .font(style.codeFont)
                 // Tight column-aligned monospace rhythm (~0.13x font size) with clean vertical padding.
-                .lineSpacing(ProseMetrics.codeLineSpacing)
+                .lineSpacing(style.codeLineSpacing)
                 .padding(.horizontal, Ink.Space.l)
                 .padding(.vertical, Ink.Space.m)
                 .fixedSize(horizontal: true, vertical: false)
@@ -509,7 +650,7 @@ private struct CodeBlock: View {
                 .font(.system(size: Ink.Size.small, weight: .medium))
                 .foregroundStyle(Ink.accent)
                 .frame(maxWidth: .infinity)
-                .frame(height: 34 * UIScale.factor)
+                .frame(height: 34 * style.uiScaleFactor)
                 .background(Ink.mine.opacity(0.28))
                 .contentShape(Rectangle())
         }
@@ -582,12 +723,13 @@ private enum TableLayoutCache {
         return cache
     }()
 
-    static func prepare(_ table: Prose.Table, cellSize: CGFloat) -> PreparedTable {
-        let key = TableCacheKey(table: table, face: Pref.face, size: cellSize, fontGen: FontShelf.shared.generation)
+    static func prepare(_ table: Prose.Table, style: ProseStyle) -> PreparedTable {
+        let cellSize = style.tableCellSize
+        let key = TableCacheKey(table: table, face: style.face, size: cellSize, fontGen: style.fontGeneration)
         if let hit = cache.object(forKey: key) { return hit }
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let headFont = Ink.uiFace(cellSize, bold: true)
-        let bodyFont = Ink.uiFace(cellSize, bold: false)
+        let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
+        let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
         let widths: [CGFloat] = (0..<columns).map { column in
             var natural = measure(column < table.header.count ? table.header[column] : "", font: headFont)
             for row in table.rows where column < row.count {
@@ -620,9 +762,8 @@ private enum TableLayoutCache {
 /// running over it.
 private struct TableBlock: View {
     let table: Prose.Table
+    let style: ProseStyle
 
-    /// Table text, two points under the reading size.
-    private static var cellSize: CGFloat { CGFloat(max(12, Pref.size - 2)) }
     private static let gap: CGFloat = 20
     /// How wide the block is on the page, so a narrow table can spread across it.
     @State private var room: CGFloat = 0
@@ -659,7 +800,7 @@ private struct TableBlock: View {
     }
 
     var body: some View {
-        let prepared = TableLayoutCache.prepare(table, cellSize: Self.cellSize)
+        let prepared = TableLayoutCache.prepare(table, style: style)
         let widths = spread(prepared.widths)
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
@@ -740,7 +881,7 @@ private struct TableBlock: View {
             }
         }
         .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, Self.cellSize * 0.62)
+        .padding(.vertical, style.tableCellSize * 0.62)
     }
 
     private func frameAlign(_ column: Int) -> Alignment {
@@ -752,10 +893,10 @@ private struct TableBlock: View {
         let align = column < table.aligns.count ? table.aligns[column] : .leading
         // Cells in the reading face, like the words around the table; the body in full ink, as text to read.
         return Text(styled)
-            .font(Ink.body(Double(Self.cellSize), bold: head))
+            .font(style.bodyFont(Double(style.tableCellSize), bold: head))
             .foregroundStyle(Ink.ink)
             .multilineTextAlignment(align == .center ? .center : (align == .trailing ? .trailing : .leading))
-            .lineSpacing(Self.cellSize * 0.25)
+            .lineSpacing(style.tableCellSize * 0.25)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -832,25 +973,25 @@ private final class HighlightBox {
         }
     }
 
-    static func output(_ text: String, cache useCache: Bool = true) -> AttributedString {
+    static func output(_ text: String, style: ProseStyle, cache useCache: Bool = true) -> AttributedString {
         if useCache {
-            let key = HighlightCacheKey(isOutput: true, language: "", codePref: Pref.code, size: Pref.size, text: text)
+            let key = HighlightCacheKey(isOutput: true, language: "", codePref: style.code, size: style.size, text: text)
             if let hit = cache.object(forKey: key) { return hit.attributed }
-            let fonts = fonts(for: text)
+            let fonts = fonts(for: text, style: style)
             var result = AttributedString()
             append(text[...], fonts: fonts, to: &result)
             cache.setObject(HighlightBox(result), forKey: key)
             return result
         }
-        let fonts = fonts(for: text)
+        let fonts = fonts(for: text, style: style)
         var result = AttributedString()
         append(text[...], fonts: fonts, to: &result)
         return result
     }
 
-    private static func fonts(for text: String) -> (narrow: Font, wide: Font) {
-        guard text.contains(where: wide) else { return (Ink.code, Ink.code) }
-        return Ink.codeBlockFonts()
+    private static func fonts(for text: String, style: ProseStyle) -> (narrow: Font, wide: Font) {
+        guard text.contains(where: wide) else { return (style.codeFont, style.codeFont) }
+        return Ink.codeBlockFonts(size: CGFloat(style.codeSize), preference: style.code)
     }
 
     private static func wide(_ character: Character) -> Bool {
@@ -887,13 +1028,13 @@ private final class HighlightBox {
         flush(upTo: text.endIndex, into: &result)
     }
 
-    static func code(_ text: String, language: String, cache useCache: Bool = true) -> AttributedString {
+    static func code(_ text: String, language: String, style proseStyle: ProseStyle, cache useCache: Bool = true) -> AttributedString {
         let lowerLang = language.lowercased()
         let key: HighlightCacheKey? = useCache
-            ? HighlightCacheKey(isOutput: false, language: lowerLang, codePref: Pref.code, size: Pref.size, text: text)
+            ? HighlightCacheKey(isOutput: false, language: lowerLang, codePref: proseStyle.code, size: proseStyle.size, text: text)
             : nil
         if let key, let hit = cache.object(forKey: key) { return hit.attributed }
-        let fonts = fonts(for: text)
+        let fonts = fonts(for: text, style: proseStyle)
         var out = AttributedString()
         var index = text.startIndex
         var start = index
@@ -947,14 +1088,17 @@ private final class HighlightBox {
 
 /// A paragraph with pictures in it (`![描述](地址)`): the words, then each picture under them.
 private struct PictureParagraph: View {
+    private static let picturePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
+
     let text: String
+    let style: ProseStyle
     let fading: Bool
 
     var body: some View {
         let parts = Self.split(text)
-        VStack(alignment: .leading, spacing: Pref.size * 0.6) {
+        VStack(alignment: .leading, spacing: style.size * 0.6) {
             if !parts.words.isEmpty {
-                Inline(text: parts.words, font: Ink.reading, fading: fading)
+                Inline(text: parts.words, style: style, font: style.readingFont, fading: fading)
             }
             ForEach(Array(parts.pictures.enumerated()), id: \.offset) { _, picture in
                 ProsePicture(source: picture.source, label: picture.label)
@@ -963,7 +1107,7 @@ private struct PictureParagraph: View {
     }
 
     static func split(_ text: String) -> (words: String, pictures: [(label: String, source: String)]) {
-        guard let pattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#) else {
+        guard let pattern = picturePattern else {
             return (text, [])
         }
         let whole = NSRange(text.startIndex..., in: text)
@@ -1493,12 +1637,16 @@ struct FileCard: View {
         return checked ? "找不到这个文件了" : L.t("loading.generic")
     }
 
+    private static let linkPattern = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(\s*<?([^)>]+?)>?\s*\)$"#)
+
     /// The links in a paragraph made only of links to files (one per line), or nil when it is ordinary text.
     static func links(in text: String) -> [(label: String, path: String)]? {
-        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        guard !lines.isEmpty, let pattern = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(\s*<?([^)>]+?)>?\s*\)$"#) else { return nil }
+        guard text.contains("]("), let pattern = linkPattern else { return nil }
         var found: [(label: String, path: String)] = []
-        for line in lines {
+        for rawLine in text.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            guard line.hasPrefix("[") else { return nil }
             let range = NSRange(line.startIndex..., in: line)
             guard let match = pattern.firstMatch(in: line, range: range),
                   let label = Range(match.range(at: 1), in: line), let target = Range(match.range(at: 2), in: line) else { return nil }
@@ -1508,7 +1656,7 @@ struct FileCard: View {
             if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("mailto:") { return nil }
             found.append((String(line[label]), path))
         }
-        return found
+        return found.isEmpty ? nil : found
     }
 
     static func symbol(for path: String) -> String {
@@ -1544,23 +1692,25 @@ extension ProseView: Equatable {
 /// stand between them as their own blocks (code keeps its copy button).
 struct SelectableProse: View, Equatable {
     let text: String
+    @Environment(\.proseStyle) private var envStyle
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: SelectableProse, rhs: SelectableProse) -> Bool {
+        lhs.text == rhs.text
+    }
 
     var body: some View {
-        ReplyProseLayout(text: text, blocks: ParsedCache.blocks(text))
+        let style = envStyle ?? ProseStyle.current(dark: scheme == .dark, reduceMotion: reduceMotion)
+        ReplyProseLayout(text: text, blocks: ParsedCache.blocks(text), style: style)
     }
 }
 
 /// Both stages of a reply use the same layout. Only the growing tail needs live formatting.
 private struct ReplyProseLayout: View {
-    @AppStorage("look.face") private var face = "serif"
-    @AppStorage("look.code") private var code = "maple"
-    @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.lineHeight") private var leading = Pref.defaultLineHeight
-    @AppStorage("look.fade") private var fade = true
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let text: String
     let blocks: [Prose.Block]
+    let style: ProseStyle
     var streaming = false
     var allowFade = true
     var quoted = false
@@ -1592,16 +1742,15 @@ private struct ReplyProseLayout: View {
     }
 
     var body: some View {
-        let _ = (face, code, size, leading)
         let parts = Self.parts(blocks)
-        let format = "\(cacheScope)\(quoted ? "q-" : "")\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)-\(UIScale.shared.value)"
-        VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : Ink.paragraphGap) {
+        let format = "\(cacheScope)\(quoted ? "q-" : "")\(style.formatKey)"
+        VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : style.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 let live = streaming && allowFade && index == parts.count - 1
                 switch part {
                 case .words(let blocks):
-                    ProseText(blocks: blocks, text: text, part: index, format: format,
-                              streaming: streaming, fadeTail: live && fade && !reduceMotion, quoted: quoted)
+                    ProseText(blocks: blocks, text: text, part: index, format: format, style: style,
+                              streaming: streaming, fadeTail: live && style.fade && !style.reduceMotion, quoted: quoted)
                 case .block(let block):
                     if case .quote(let inner) = block {
                         QuoteCard {
@@ -1609,6 +1758,7 @@ private struct ReplyProseLayout: View {
                                 ReplyProseLayout(
                                     text: text,
                                     blocks: inner,
+                                    style: style,
                                     streaming: streaming,
                                     allowFade: live,
                                     quoted: true,
@@ -1617,12 +1767,12 @@ private struct ReplyProseLayout: View {
                             )
                         }
                     } else {
-                        BlockView(block: block, fading: false, live: unfinished(block, live: live))
+                        BlockView(block: block, style: style, fading: false, live: unfinished(block, live: live))
                     }
                 }
             }
         }
-        .id(format)
+        .id("\(cacheScope)\(quoted ? "q-" : "")\(style.typographyKey)")
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1643,14 +1793,14 @@ enum ProseWords {
         }
     }
 
-    static func make(_ block: Prose.Block, first: Bool, quoted: Bool = false) -> NSAttributedString {
-        set(block, quoteDepth: 0, first: first, quoted: quoted)
+    static func make(_ block: Prose.Block, style proseStyle: ProseStyle, first: Bool, quoted: Bool = false) -> NSAttributedString {
+        set(block, style: proseStyle, quoteDepth: 0, first: first, quoted: quoted)
     }
 
-    private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
+    private static func style(using proseStyle: ProseStyle, spacing: CGFloat? = nil, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = tight ? Ink.leading * 0.5 : Ink.leading
-        style.paragraphSpacing = spacing
+        style.lineSpacing = tight ? proseStyle.leading * 0.5 : proseStyle.leading
+        style.paragraphSpacing = spacing ?? proseStyle.paragraphGap
         style.paragraphSpacingBefore = before
         style.firstLineHeadIndent = indent
         style.headIndent = indent + hanging
@@ -1658,19 +1808,20 @@ enum ProseWords {
         return style
     }
 
-    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
-        let quote = CGFloat(quoteDepth) * Pref.size * 1.1
+    private static func set(_ block: Prose.Block, style proseStyle: ProseStyle, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
+        let quote = CGFloat(quoteDepth) * proseStyle.size * 1.1
         let ink = (quoted || quoteDepth > 0) ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
         switch block {
         case .heading(let level, let text):
-            let before: CGFloat = first ? 0 : ProseMetrics.headingTop(level: level)
-            return inline(text, size: ProseMetrics.headingSize(level: level), bold: true, ink: ink,
-                          paragraph: style(spacing: ProseMetrics.headingBottom, before: before, indent: quote, tight: true))
+            let before: CGFloat = first ? 0 : proseStyle.headingTop(level: level)
+            return inline(text, size: proseStyle.headingSize(level: level), bold: true, proseStyle: proseStyle, ink: ink,
+                          paragraph: style(using: proseStyle, spacing: proseStyle.headingBottom, before: before, indent: quote, tight: true))
         case .paragraph(let text):
-            return inline(text, size: Pref.size, bold: false, ink: ink, paragraph: style(indent: quote))
+            return inline(text, size: proseStyle.size, bold: false, proseStyle: proseStyle, ink: ink,
+                          paragraph: style(using: proseStyle, indent: quote))
         case .list(let items):
             let out = NSMutableAttributedString()
-            let base = CGFloat(Pref.size)
+            let base = CGFloat(proseStyle.size)
             for (index, item) in items.enumerated() {
                 if index > 0 { out.append(NSAttributedString(string: "\n")) }
                 let marker: String
@@ -1692,18 +1843,18 @@ enum ProseWords {
                 let indent = quote + CGFloat(item.depth) * base * 1.25
                 let hang = item.number != nil ? base * 1.75 : base * 1.25
                 let last = index == items.count - 1
-                let paragraph = style(spacing: last ? Ink.paragraphGap : ProseMetrics.listSpacing, indent: indent, hanging: hang)
+                let paragraph = style(using: proseStyle, spacing: last ? proseStyle.paragraphGap : proseStyle.listSpacing, indent: indent, hanging: hang)
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
-                    .font: Ink.uiFace(markerSize), .foregroundColor: markerColor, .paragraphStyle: paragraph,
+                    .font: Ink.uiFace(markerSize, face: proseStyle.face), .foregroundColor: markerColor, .paragraphStyle: paragraph,
                 ]))
-                out.append(inline(item.text, size: base, bold: false, ink: ink, paragraph: paragraph))
+                out.append(inline(item.text, size: base, bold: false, proseStyle: proseStyle, ink: ink, paragraph: paragraph))
             }
             return out
         case .quote(let inner):
             let out = NSMutableAttributedString()
             for (index, block) in inner.enumerated() {
                 if index > 0 { out.append(NSAttributedString(string: "\n")) }
-                out.append(set(block, quoteDepth: quoteDepth + 1, first: first && index == 0))
+                out.append(set(block, style: proseStyle, quoteDepth: quoteDepth + 1, first: first && index == 0))
             }
             return out
         default:
@@ -1712,24 +1863,24 @@ enum ProseWords {
     }
 
     /// One block's words with their marks: bold, italics, code, links, strikethrough.
-    private static func inline(_ text: String, size: CGFloat, bold: Bool, ink: UIColor, paragraph: NSParagraphStyle) -> NSAttributedString {
+    private static func inline(_ text: String, size: CGFloat, bold: Bool, proseStyle: ProseStyle, ink: UIColor, paragraph: NSParagraphStyle) -> NSAttributedString {
         let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
         let out = NSMutableAttributedString()
         for run in parsed.runs {
             let piece = String(parsed[run.range].characters)
             let intent = run.inlinePresentationIntent ?? []
-            var font = Ink.uiFace(size, bold: bold || intent.contains(.stronglyEmphasized))
+            var font = Ink.uiFace(size, bold: bold || intent.contains(.stronglyEmphasized), face: proseStyle.face)
             if intent.contains(.emphasized), let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
                 font = UIFont(descriptor: slanted, size: size)
             }
             var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph]
             // 文楷 has one weight for reading and bold: bold words are drawn with a thin outline so they still stand out.
-            if Pref.face == .wenkai, bold || intent.contains(.stronglyEmphasized) {
+            if proseStyle.face == .wenkai, bold || intent.contains(.stronglyEmphasized) {
                 attributes[.strokeWidth] = -3.0
                 attributes[.strokeColor] = ink
             }
             if intent.contains(.code) {
-                attributes[.font] = Ink.uiMono(max(12, size - 2))
+                attributes[.font] = Ink.uiMono(max(12, size - 2), preference: proseStyle.code)
                 attributes[.foregroundColor] = UIColor(Ink.accent)
                 attributes[.clioInlineCode] = true
             }
@@ -1911,12 +2062,14 @@ private final class InlineCodeTextView: UITextView {
     private var codeRanges: [NSRange] = []
     private var pathCache: ProseRenderedWords?
     private var paintedWidth: CGFloat?
+    private var inlineCodeCorner: CGFloat = 5
     private let codeBackground = CAShapeLayer()
 
-    func replaceWords(with words: NSAttributedString, codeRanges: [NSRange], pathCache: ProseRenderedWords?) {
+    func replaceWords(with words: NSAttributedString, codeRanges: [NSRange], pathCache: ProseRenderedWords?, inlineCodeCorner: CGFloat) {
         attributedText = words
         self.codeRanges = codeRanges
         self.pathCache = pathCache
+        self.inlineCodeCorner = inlineCodeCorner
         if codeRanges.isEmpty { codeBackground.removeFromSuperlayer() }
         paintedWidth = nil
         if !codeRanges.isEmpty { setNeedsLayout() }
@@ -1938,7 +2091,7 @@ private final class InlineCodeTextView: UITextView {
                 for fragment in selectionRects(for: textRange) {
                     guard fragment.rect.width > 0, fragment.rect.height > 0 else { continue }
                     let rect = fragment.rect.insetBy(dx: -2.5, dy: fragment.rect.height * 0.06)
-                    let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
+                    let radius = min(inlineCodeCorner, rect.height * 0.3)
                     path.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
                 }
             }
@@ -1963,6 +2116,7 @@ private struct ProseText: UIViewRepresentable {
     let text: String
     let part: Int
     let format: String
+    let style: ProseStyle
     let streaming: Bool
     let fadeTail: Bool
     var quoted = false
@@ -1999,13 +2153,14 @@ private struct ProseText: UIViewRepresentable {
             text: text,
             part: part,
             format: format,
+            style: style,
             streaming: streaming,
             fade: fadeTail,
             quoted: quoted
         ) {
             let selection = view.selectedRange
             let keepsSelection = selection.length > 0 && update.attributed.string.hasPrefix(view.attributedText?.string ?? "")
-            view.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache)
+            view.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache, inlineCodeCorner: style.inlineCodeCorner)
             if keepsSelection { view.selectedRange = selection }
         }
     }
@@ -2027,11 +2182,12 @@ private struct ProseText: UIViewRepresentable {
                text: text,
                part: part,
                format: format,
+               style: style,
                streaming: false,
                fade: false,
                quoted: quoted
            ) {
-            uiView.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache)
+            uiView.replaceWords(with: update.attributed, codeRanges: update.codeRanges, pathCache: update.cache, inlineCodeCorner: style.inlineCodeCorner)
         }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let height = ceil(fitted.height)
@@ -2056,6 +2212,7 @@ private struct ProseText: UIViewRepresentable {
         private var settledKey: (format: String, part: Int, text: String)?
         private var blocks: [Prose.Block] = []
         private var spans: [NSAttributedString] = []
+        private var streamFormat = ""
         private var fading = false
         private var isQuoted = false
 
@@ -2065,6 +2222,7 @@ private struct ProseText: UIViewRepresentable {
             text: String,
             part: Int,
             format: String,
+            style: ProseStyle,
             streaming: Bool,
             fade: Bool,
             quoted: Bool
@@ -2080,6 +2238,7 @@ private struct ProseText: UIViewRepresentable {
                     settledKey = (format: format, part: part, text: text)
                     blocks = []
                     spans = []
+                    streamFormat = ""
                     fading = false
                     isQuoted = quoted
                     return (attributed: cached.attributed, codeRanges: cached.codeRanges, cache: cached)
@@ -2087,7 +2246,7 @@ private struct ProseText: UIViewRepresentable {
                 let built = NSMutableAttributedString()
                 for (index, block) in next.enumerated() {
                     if index > 0 { built.append(NSAttributedString(string: "\n")) }
-                    built.append(ProseWords.make(block, first: index == 0, quoted: quoted))
+                    built.append(ProseWords.make(block, style: style, first: index == 0, quoted: quoted))
                 }
                 let ranges = ProseLayoutCache.extractCodeRanges(in: built)
                 let rendered = ProseRenderedWords(attributed: built, codeRanges: ranges)
@@ -2095,24 +2254,26 @@ private struct ProseText: UIViewRepresentable {
                 settledKey = (format: format, part: part, text: text)
                 blocks = []
                 spans = []
+                streamFormat = ""
                 fading = false
                 isQuoted = quoted
                 return (attributed: rendered.attributed, codeRanges: rendered.codeRanges, cache: rendered)
             }
 
             settledKey = nil
-            guard next != blocks || fade != fading || quoted != isQuoted else { return nil }
+            guard next != blocks || fade != fading || quoted != isQuoted || format != streamFormat else { return nil }
             let shared: Int
-            if quoted == isQuoted {
+            if quoted == isQuoted && format == streamFormat {
                 shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
             } else {
                 shared = 0
             }
             spans.removeSubrange(shared...)
             for index in next.indices.dropFirst(shared) {
-                spans.append(ProseWords.make(next[index], first: index == 0, quoted: quoted))
+                spans.append(ProseWords.make(next[index], style: style, first: index == 0, quoted: quoted))
             }
             blocks = next
+            streamFormat = format
             fading = fade
             isQuoted = quoted
 

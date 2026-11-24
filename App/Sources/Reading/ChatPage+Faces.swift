@@ -223,10 +223,10 @@ extension ChatPage {
         return (nil, text)
     }
 
-    /// Your bubble's glass: the paper's tint, or the colour picked in 外观 (stronger, so it shows through the glass).
+    /// Your bubble's tint: the paper's tone, the colour picked in 外观, or the accent wash while editing.
     func bubbleTint(editing: Bool) -> Color {
-        if editing { return Ink.accentWash.opacity(0.45) }
-        return Theme.shared.bubble.isEmpty ? Ink.mine.opacity(0.45) : Ink.bubble.opacity(0.85)
+        if editing { return Ink.accentWash }
+        return Ink.bubble
     }
 
     /// No more of the companion's words follow before the user speaks again.
