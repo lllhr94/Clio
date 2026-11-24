@@ -53,6 +53,9 @@ struct ClioRoot: View {
         .tint(Ink.accent)
         .clioScheme(scheme)
         .modifier(FormPresenter(inBrowser: false))
+        .onOpenURL { url in
+            handleIncomingURL(url)
+        }
         .onChange(of: scenePhase) { _, now in
             if now == .active {
                 KeepAwake.stop()
@@ -83,6 +86,50 @@ struct ClioRoot: View {
                 team.routinesIfDue()
                 MemoryNight.tick()
             }
+        }
+    }
+
+    private func handleIncomingURL(_ url: URL) {
+        if url.isFileURL {
+            // Acquire security-scoped access synchronously during the UI callback, then move
+            // File Provider download, copy, and PDF text extraction off the main thread.
+            let lease = InboxImport.ScopedLease(url)
+            let filename = url.lastPathComponent
+            Task.detached(priority: .userInitiated) {
+                do {
+                    let rel = try InboxImport.copyOne(lease)
+                    await MainActor.run {
+                        ShortcutDoor.knock(.importedFiles(paths: [rel], failed: []))
+                    }
+                } catch {
+                    let message = "没拿到「\(filename)」：\(error.localizedDescription)"
+                    await MainActor.run {
+                        ShortcutDoor.knock(.importedFiles(paths: [], failed: [message]))
+                    }
+                }
+            }
+            return
+        }
+        guard url.scheme == "clio" else { return }
+        switch url.host {
+        case "chat":
+            let target = url.lastPathComponent
+            ShortcutDoor.pendingChat = target
+            NotificationCenter.default.post(name: .clioOpenChat, object: target)
+        case "ask", "share":
+            ShortcutDoor.knock(.ask(ShortcutText.fromURL(url)))
+        case "dictate":
+            ShortcutDoor.knock(.dictate)
+        case "new":
+            ShortcutDoor.knock(.fresh)
+        case "settings":
+            let page = url.pathComponents.dropFirst().first.map { item in
+                url.fragment.map { item + "#" + $0 } ?? item
+            } ?? ""
+            ShortcutDoor.pendingSettings = page
+            NotificationCenter.default.post(name: .clioSettingsRoute, object: nil)
+        default:
+            break
         }
     }
 }
@@ -672,8 +719,21 @@ struct Desk: View {
         }
     }
 
-    private var archivedThreads: [(id: Opened, name: String, preview: String, at: Double, bot: BotInfo?)] {
-        recent.filter { team.archived.contains($0.id.id) }
+    private var archivedRows: [SideConversation] {
+        let currentRows = recent
+            .filter { team.archived.contains($0.id.id) }
+            .map(SideConversation.current)
+        let owners = team.bots.map { (Opened.companion($0.id), $0.name) }
+            + team.rooms.map { (Opened.gathering($0.id), $0.name) }
+        let leafRows = owners.flatMap { owner, name in
+            team.leaves(owner.id).compactMap { leaf -> SideConversation? in
+                guard leaf.marker == nil, leaf.count > 0 else { return nil }
+                let past = PastLeaf(owner: owner, ownerName: name, leaf: leaf)
+                guard team.archived.contains(past.id) else { return nil }
+                return .past(past)
+            }
+        }
+        return (currentRows + leafRows).sorted { $0.at > $1.at }
     }
 
     @ViewBuilder
@@ -780,14 +840,15 @@ struct Desk: View {
                     if row.id != section.rows.last?.id { Kit.rule(inset: 40) }
                 }
             }
-            if !archivedThreads.isEmpty {
+            let archived = archivedRows
+            if !archived.isEmpty {
                 Button {
                     Haptics.light()
                     withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
                 } label: {
                     HStack(spacing: Ink.Space.s) {
                         Image(systemName: "archivebox").font(.system(size: Ink.Size.small))
-                        Text("已归档 \(archivedThreads.count) 段").font(.system(size: Ink.Size.sub, weight: .medium))
+                        Text("已归档 \(archived.count) 段").font(.system(size: Ink.Size.sub, weight: .medium))
                         Image(systemName: "chevron.down").font(.system(size: Ink.Size.micro, weight: .semibold))
                             .rotationEffect(.degrees(showArchived ? 180 : 0))
                         Spacer()
@@ -799,9 +860,14 @@ struct Desk: View {
                 .buttonStyle(TapStyle())
                 .padding(.top, Ink.Space.l)
                 if showArchived {
-                    ForEach(archivedThreads, id: \.id) { item in
-                        thread(item)
-                            .opacity(0.75)
+                    ForEach(archived) { row in
+                        Group {
+                            switch row {
+                            case .current(let item): thread(item)
+                            case .past(let past): pastRow(past)
+                            }
+                        }
+                        .opacity(0.75)
                         Kit.rule(inset: 40)
                     }
                 }
@@ -1001,34 +1067,32 @@ struct Desk: View {
             Text(clearingIsRoom ? Words.t("雅集和里面的话都会删掉，旅伴们还在。") : Words.t("这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。"))
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
-            if let chat = note.object as? String { openChat(chat) }
+            if let chat = ShortcutDoor.pendingChat ?? (note.object as? String) {
+                ShortcutDoor.pendingChat = nil
+                openChat(chat)
+            }
             takeNotifications()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .clioSettingsRoute)) { _ in
+            takePendingRoutes()
         }
         .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
-        .onOpenURL { url in
-            // The home-screen widget: clio://chat/bot-…. Control Center and the Action Button: clio://ask, clio://dictate.
-            // Shared from another app: the file waits in the newest conversation's composer.
-            if url.isFileURL {
-                ShortcutDoor.knock(.files([url]))
-                return
-            }
-            guard url.scheme == "clio" else { return }
-            switch url.host {
-            case "chat": NotificationCenter.default.post(name: .clioOpenChat, object: url.lastPathComponent)
-            case "ask", "share": ShortcutDoor.knock(.ask(ShortcutText.fromURL(url)))
-            case "dictate": ShortcutDoor.knock(.dictate)
-            case "new": ShortcutDoor.knock(.fresh)
-            case "settings":
-                settingsPage = url.pathComponents.dropFirst().first.map { page in
-                    url.fragment.map { page + "#" + $0 } ?? page
-                }
-                tuning = true
-            default: break
-            }
-        }
         .task {
             takeNotifications()
+            takePendingRoutes()
             answerShortcut()
+        }
+    }
+
+    private func takePendingRoutes() {
+        if let chat = ShortcutDoor.pendingChat {
+            ShortcutDoor.pendingChat = nil
+            openChat(chat)
+        }
+        if let page = ShortcutDoor.pendingSettings {
+            ShortcutDoor.pendingSettings = nil
+            settingsPage = page.isEmpty ? nil : page
+            tuning = true
         }
     }
 

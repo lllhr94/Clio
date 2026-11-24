@@ -12,6 +12,8 @@ struct StepDetail: Equatable, Sendable {
     var photo: String?
     /// For the person only: a changed file's whole comparison.
     var full: String?
+    /// Raw tool identifier (e.g. `write_file`, `shell`), kept so trace cards do not depend on display wording.
+    var tool: String? = nil
 }
 
 /// One row of a chat.
@@ -172,6 +174,11 @@ final class ChatModel {
             } else {
                 lines = build(newest)
             }
+            // A reply can arrive while the initial history is loading and there is no listener yet.
+            target = team.streamed[key]?.text ?? ""
+            shown = target.count
+            publishedShown = shown
+            streaming = target
             loaded = true
             opening = nil
         }
@@ -189,6 +196,7 @@ final class ChatModel {
         clearThinking()
         typing?.cancel()
         typing = nil
+        fresh = nil
     }
 
     // MARK: Even pace
@@ -200,20 +208,20 @@ final class ChatModel {
             while !Task.isCancelled, let self, self.step() {
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self?.typing = nil
+            if !Task.isCancelled { self?.typing = nil }
         }
     }
 
     /// Lets a few more characters out. False when there is nothing left to let out.
     private func step() -> Bool {
         if let settling = fresh, settling.shown != nil {
-            guard shown < finalCount else {
+            shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
+            if shown >= finalCount {
                 // The same layout stays in place. No crossfade over the finished text.
                 fresh?.shown = nil
                 return false
             }
-            shown = min(finalCount, shown + max(1, (finalCount - shown) / 10))
-            if shown >= finalCount || due() { fresh?.shown = shown }
+            if due() { fresh?.shown = shown }
             return true
         }
         let goal = target.count
@@ -337,7 +345,7 @@ final class ChatModel {
                     stepAt = entry.at
                 }
                 let input = message.toolCallId.flatMap { calls[$0] } ?? ""
-                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail))
+                out[open!].details.append(StepDetail(input: input, output: message.text, seconds: stepAt > 0 ? Int(((entry.at - stepAt) / 1000).rounded()) : nil, photo: entry.photos.first, full: message.detail, tool: message.toolName))
                 stepAt = entry.at
                 let label = entry.label ?? message.toolName ?? "一步"
                 out[open!].tools.append(message.isError ? (message.text.hasPrefix(Agent.unknownMark) ? "\(label)（结果未知）" : "\(label)（没成功）") : label)
@@ -379,10 +387,6 @@ final class ChatModel {
                 lines = next
             }
         }
-    }
-
-    private static func same(_ left: String, _ right: String) -> Bool {
-        left.trimmingCharacters(in: .whitespacesAndNewlines) == right.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: Live
@@ -458,7 +462,10 @@ final class ChatModel {
             clearThinking()
             running = label
             rebuildToolRows(team.history(key))
-        case .changed:
+        case .streamReset:
+            clearThinking()
+            resetLiveReply()
+        case .changed, .replyCommitted:
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
             if target.isEmpty, let last = all.last?.message,
@@ -467,37 +474,11 @@ final class ChatModel {
                 return
             }
             cancelToolRows()
-            let next = build(all)
-            if !target.isEmpty, let reply = next.last(where: { $0.kind == .bot }), !lines.contains(where: { $0.id == reply.id }) {
-                // The kept row takes over exactly where the streaming one stood. Not only when the words match to
-                // the letter: the kept text can differ a little (a 心绪 taken out, trailing spaces, a sources list
-                // tidied), and waiting for an exact match left both rows up, then dropped the streaming one, so the
-                // answer seemed to vanish and come back.
-                finalCount = reply.text.count
-                if !Self.same(reply.text, target) { shown = min(shown, finalCount) }
-                fresh = Fresh(id: reply.id, shown: shown < finalCount ? shown : nil)
-                target = ""
-                streaming = ""
-                pulse = ""
-                heldRows = nil
-                lines = next
-                if fresh?.shown != nil { type() }
-                Haptics.tick(0.6)
-            } else {
-                if all.last?.note == true {
-                    target = ""
-                    streaming = ""
-                }
-                apply(next)
-            }
+            updateKeptRows(build(all), event: event)
         case .finished:
             running = nil
             clearThinking()
-            pulse = ""
-            if !target.isEmpty {
-                target = ""
-                streaming = ""
-            }
+            resetLiveReply()
             rebuildToolRows(team.history(key))
         case .failed(let message):
             cancelToolRows()
@@ -506,6 +487,35 @@ final class ChatModel {
             withAnimation(.smooth) { error = message }
             Haptics.lock()
         }
+    }
+
+    private func resetLiveReply() {
+        target = ""
+        if !streaming.isEmpty { streaming = "" }
+        if !pulse.isEmpty { pulse = "" }
+    }
+
+    private func updateKeptRows(_ next: [ChatLine], event: TurnEvent) {
+        guard !target.isEmpty, case let .replyCommitted(id) = event else {
+            // A timed delivery or a status note can arrive while a different reply is still being written.
+            apply(next)
+            return
+        }
+        guard let reply = next.first(where: { $0.id == id && $0.kind == .bot }) else {
+            // A tool-only reply can have emitted whitespace without producing a visible message.
+            if target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { resetLiveReply() }
+            apply(next)
+            return
+        }
+        // Continue from the last visible character, even if the saved version has been tidied.
+        finalCount = reply.text.count
+        shown = min(publishedShown, finalCount)
+        fresh = Fresh(id: id, shown: shown > 0 && shown < finalCount ? shown : nil)
+        resetLiveReply()
+        heldRows = nil
+        lines = next
+        if fresh?.shown != nil { type() }
+        Haptics.tick(0.6)
     }
 
     /// A kept photo. `preview` is ignored: the phone has the whole photo.

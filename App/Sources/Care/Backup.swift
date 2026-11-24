@@ -69,6 +69,7 @@ enum Backup {
             count += 1
         }
         let manager = FileManager.default
+        var archivedEndpoints: [Endpoint]?
         for folder in folders {
             let base = support.appendingPathComponent(folder, isDirectory: true)
             guard let walker = manager.enumerator(at: base, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
@@ -79,6 +80,9 @@ enum Backup {
                 if skipped.contains(where: { relative.hasPrefix($0) }) { continue }
                 // One at a time, and a file that cannot be read is named, not silently left out.
                 guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { unreadable.append(relative); continue }
+                if relative == "Team/settings.json" {
+                    archivedEndpoints = (try? JSONDecoder().decode(TeamSettings.self, from: data))?.endpoints
+                }
                 try autoreleasepool { try add(relative, data) }
             }
         }
@@ -93,10 +97,8 @@ enum Backup {
             try add("#settings", data)
         }
         if withKeys {
-            var keys: [String: String] = [:]
-            for id in endpoints {
-                if let key = Vault.load(String.self, key: "key-\(id)") { keys[id] = key }
-            }
+            let currentEndpoints = archivedEndpoints ?? Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
+            let keys = TeamModel.exportBackupKeys(endpoints: currentEndpoints, allowedIDs: endpoints)
             if let data = try? JSONEncoder().encode(keys) { try add("#keys", data) }
         }
         try out.synchronize()
@@ -170,14 +172,44 @@ enum Backup {
             count += 1
         }
 
-        // 3. Swap, folder by folder, putting the old one back if a step fails. Saving stops first, then the last queued
-        // saves are let through (they find saving stopped), so none lands in the middle of the swap.
+        // Verify and stage credentials before any restored settings become visible to a reader.
+        let restoredKeys: [String: String]?
+        if let item = items.last(where: { $0.path == "#keys" }) {
+            do {
+                restoredKeys = try JSONDecoder().decode([String: String].self, from: data.subdata(in: item.range))
+            } catch {
+                throw TeamError(message: "备份里的模型密钥读不出来，本机数据没有改动。")
+            }
+        } else {
+            restoredKeys = nil
+        }
+        let stagedSettings = staging.appendingPathComponent("Team/settings.json")
+        let wasFrozen = Disk.frozen
         Disk.frozen = true
+        var committed = false
+        defer { if !committed { Disk.frozen = wasFrozen } }
         ChatDisk.finishWrites()
         Disk.forgetPhotos()
-        try manager.createDirectory(at: old, withIntermediateDirectories: true)
+        let previousEndpoints = Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
+        var preparedEndpoints: [Endpoint] = []
         var swapped: [String] = []
         do {
+            if manager.fileExists(atPath: stagedSettings.path) {
+                var settings = try JSONDecoder().decode(TeamSettings.self, from: Data(contentsOf: stagedSettings))
+                do {
+                    preparedEndpoints = try TeamModel.prepareBackupServices(
+                        previous: previousEndpoints, restored: settings.endpoints, keys: restoredKeys
+                    )
+                } catch {
+                    throw TeamError(message: "没能保存备份里的模型服务密钥。请解锁手机后再试，原来的密钥还在。")
+                }
+                settings.endpoints = preparedEndpoints
+                try JSONEncoder().encode(settings).write(to: stagedSettings, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            } else if restoredKeys?.isEmpty == false {
+                throw TeamError(message: "备份缺少模型服务设置，无法确认密钥应该用在哪个地址。")
+            }
+            try manager.createDirectory(at: old, withIntermediateDirectories: true)
+            // Swap only after the restored settings point exclusively at verified or retained slots.
             for folder in folders {
                 let live = support.appendingPathComponent(folder, isDirectory: true)
                 let fresh = staging.appendingPathComponent(folder, isDirectory: true)
@@ -197,12 +229,14 @@ enum Backup {
                     try? manager.moveItem(at: kept, to: live)
                 }
             }
-            Disk.frozen = false
+            TeamModel.discardCredentials(from: preparedEndpoints, keeping: previousEndpoints)
             throw TeamError(message: "恢复没成功（\(error.localizedDescription)），本地数据已经还原成原样。")
         }
+        committed = true
         try? manager.removeItem(at: old)
+        TeamModel.discardCredentials(from: previousEndpoints, keeping: preparedEndpoints)
 
-        // 4. Settings and keys, now that the files are in.
+        // 4. Import UI preferences, now that the restored files are in.
         for item in items {
             let body = data.subdata(in: item.range)
             switch item.path {
@@ -213,14 +247,10 @@ enum Backup {
                     }
                     count += 1
                 }
-            case "#keys":
-                if let keys = try? JSONDecoder().decode([String: String].self, from: body) {
-                    for (id, key) in keys { Vault.save(key, as: "key-\(id)") }
-                    count += 1
-                }
             default: break
             }
         }
+        if restoredKeys != nil { count += 1 }
         return Summary(files: count, bytes: data.count)
     }
 }

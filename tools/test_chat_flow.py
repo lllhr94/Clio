@@ -45,10 +45,22 @@ def fixture() -> str:
     if sleeps != 1:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
+    model = ROOT / "App/Sources/Chat.swift"
+    reply_text = extract(model, r"^        case \.text\(let piece\):\n.*?(?=^        case )", "live reply text handler")
+    reply_reset = extract(model, r"^        case \.streamReset:\n.*?(?=^        case )", "live reply reset handler")
     fragments = {
+        "TURN_EVENT": extract(ROOT / "App/Sources/Team.swift", r"^enum TurnEvent \{\n.*?^\}", "turn events"),
+        "KEPT_ROWS": member(model, "updateKeptRows"),
+        "RESET_REPLY": member(model, "resetLiveReply"),
+        "ADD_TEXT": "\n".join(reply_text.splitlines()[1:]),
+        "STREAM_RESET": "\n".join(reply_reset.splitlines()[1:]),
+        "TYPING_STEP": member(model, "step"),
         "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
         "DRAFT_INPUT": extract(chat, r"^enum DraftInput \{\n.*?^\}", "draft rules"),
         "BELOW": chat_member("below"),
+        "END_ALIGNMENT": chat_member("endAlignment"),
+        "END_ALIGNMENT_CHANGED": chat_member("endAlignmentChanged"),
+        "SELECTION_CHANGED": chat_member("selectionChanged"),
         "PHASE": phase_body,
         "FOLLOW": schedule,
         "CLEAR_COMPOSER": chat_member("clearComposer"),

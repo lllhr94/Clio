@@ -5,9 +5,9 @@
 
 ## 分支怎么走，免得撞车
 
-- `batch-0.34` 是本批次的集成分支（0.33 已发布），只由 Claude 合并和推送。**2026-11-23 起约一个月 Claude 不在，由 Codex 临时合并，规矩见 `docs/HANDOFF.md`。**
+- `batch-0.35` 是本批次的集成分支（0.34 已发布），只由 Claude 合并和推送。**2026-11-23 起约一个月 Claude 不在，由 Codex 临时合并，规矩见 `docs/HANDOFF.md`。**
 - **改了 Swift 代码的 PR，交之前自己在分支上跑一次 CI 编译（`shots=false`），编过了再交**，PR 里贴运行链接。只改文档和素材的可以不跑。
-- Codex 每个任务从最新的 `batch-0.34` 拉一个分支：`codex/<任务名>`，做完开 PR 合进 `batch-0.34`，写清楚改了什么、怎么验证（CI 编译结果、截图）。Claude 审完合并。
+- Codex 每个任务从最新的 `batch-0.35` 拉一个分支：`codex/<任务名>`，做完开 PR 合进 `batch-0.35`，写清楚改了什么、怎么验证（CI 编译结果、截图）。Claude 审完合并。
 - **Antigravity**（Google 的智能体编辑器，主人 11-22 接入）：和 Codex 同样的规矩。每个任务从最新的 `batch-*` 拉 `antigravity/<任务名>` 分支，做完开 PR，写清改了什么、怎么验证（CI 编译结果）；Claude 审完合并。不直接推 `batch-*` / `main`。审查意见写进 `docs/REVIEW-ANTIGRAVITY.md`（或发给主人转交），由 Claude 判断要不要做、交给谁做。开工前先读 `AGENTS.md` 和 `docs/STATUS.md`。
 - Gemini 的产出由主人放进 `design/incoming/`（或发给 Claude / Codex），由写代码的一方接入。
 - 谁做完一项，就在本文件把它勾掉，并更新 `docs/STATUS.md`。
@@ -47,7 +47,7 @@
 
 - [x] **C10 称谓铺满第二轮**：分支 `codex/c10-tone-2`。把界面上还写死的中文名词、提示、按钮改成 `L.t("…")`（重点：设置各子页的说明文字、连接器页、斗室、书案、批准单、填表）。新键两份词典同时加；书卷说法拿不准的先和日常写成一样，在 PR 里列成表请主人定。遵守 `AGENTS.md`「称谓」一节：书卷词只当功能名，按钮用日常说法。
 - [x] **C11 规矩自动检查**：分支 `codex/c11-lint`。写 `tools/lint.py`，在 CI 编译前跑，违反就报错并指出文件行号：两份词典键不一致；`App/Sources` 里出现 `design: .monospaced`、`.custom("`（`Ink.swift`、`Kit.swift` 除外）、`Color(red:` / `Color(hex:`（`Ink.swift`、`NoteSheet.swift`、`Photos.swift` 除外）。把它加进 `.github/workflows/build.yml`。
-- [ ] **C12 宠物画中画（先调研）**：分支 `codex/c12-pet-pip`。切出 App 后，宠物能不能用 iPhone 的画中画小窗继续显示（`AVPictureInPictureController` + 把序列帧画进 `AVSampleBufferDisplayLayer`）。先交一份调研：可行性、耗电、要不要额外权限、自签安装有没有限制；主人点头再写代码，做成「宠物设置」里的开关，默认关。
+- [x] **C12 宠物画中画（先调研）**：分支 `codex/c12-pet-pip`。切出 App 后，宠物能不能用 iPhone 的画中画小窗继续显示（`AVPictureInPictureController` + 把序列帧画进 `AVSampleBufferDisplayLayer`）。先交一份调研：可行性、耗电、要不要额外权限、自签安装有没有限制；主人点头再写代码，做成「宠物设置」里的开关，默认关。
 - [x] **C13 无障碍**：分支 `codex/c13-a11y`。只有图标的按钮都要有 `accessibilityLabel`（中文）；系统字号调到最大时，设置、聊天、批准单不能截断或重叠（必要时换行或缩小间距）。列出改了哪些地方。
 
 - [x] **C14 聊天手感的规则测试**（第一批 A～D 已做完，可以开始）：给分段规则、跟随规则、发送补位写单元测试（见该文 E 条）。
@@ -101,22 +101,22 @@
 
 （Codex 先做 C17，再做 C14。）
 
-- [ ] **C18 记忆夜里整理**：分支 `codex/c18-memory-night`，PR 合到 `batch-0.34`。设计见 `docs/COMPANION-DESIGN.md` 第 3 节（主人已定）。
+- [x] **C18 记忆夜里整理**：分支 `codex/c18-memory-night`，PR 合到 `batch-0.34`。设计见 `docs/COMPANION-DESIGN.md` 第 3 节（主人已定）。
   1. 每天夜里用系统给的后台时间（`BGProcessingTask`，要在 `project.yml` 登记任务 id），把当天每段絮语里值得记的事整理进常记：去重、和已有的合并，不删主人手写的。同时写当天的手札（沿用现在的 `diaryIfDue`）。
   2. 聊完空闲 10 分钟，对这一段做一次同样的整理（App 在前台或有后台时间时）。
   3. 每次整理记一条记录（哪天、哪段、新记了什么、合并了什么），在「常记」页能看到。
   4. 用便宜的小模型（设置里没有就用默认模型），一次整理的花费要有上限；失败就跳过，下次再来，不弹错。
   5. 不改 `ChatPage.swift`、`ProseView.swift`、`Pet/`。交 PR 前在自己分支跑一次 CI（shots=false）。
 
-- [ ] **C19 首页整理**：分支 `codex/c19-home`，PR 合到 `batch-0.34`。见 `docs/COMPANION-DESIGN.md` 第 6 节。只动侧边栏 / 首页（`Desk.swift` 的列表部分、`Team.swift` 里对话的存取），不碰 `ChatPage.swift`、`ProseView.swift`、`Pet/`、`NameCardView.swift`。
+- [x] **C19 首页整理**：分支 `codex/c19-home`，PR 合到 `batch-0.34`。见 `docs/COMPANION-DESIGN.md` 第 6 节。只动侧边栏 / 首页（`Desk.swift` 的列表部分、`Team.swift` 里对话的存取），不碰 `ChatPage.swift`、`ProseView.swift`、`Pet/`、`NameCardView.swift`。
   1. 对话筛选：全部 / 正在做 / 等我确认 / 未读，在侧边栏顶上常驻，选中的记住。
   2. 归档：滑动或长按归档后，底部提示条 4 秒内可「撤销」；切出 App 立刻生效。归档的对话能在搜索里找回、恢复。
   3. 颜色标签：长按对话打一个颜色（用 `Ink.Tile` 的几种），侧边栏行首一个小色点；筛选里能按颜色看。
   4. 第一次用的三步清单：还没接任何模型服务时，首页显示「接一家服务 → 选默认模型 → 或者从备份恢复」，每步点了直达；这时先不显示新对话入口。
   5. 交 PR 前跑一次 CI（shots=false），列出改了什么、怎么在真机上试。
-- [ ] **C20 常亮黑屏**：分支 `codex/c20-always-on`。新文件里做一个全黑的覆盖窗口：只显示当前旅伴的宠物小像、正在做的这一步、已用时间，每 15 秒整体挪一点位置防烧屏，任何触摸关闭；期间屏幕不自动锁（`isIdleTimerDisabled`），关闭后恢复。只提供 `AlwaysOn.show(chat:)` / `hide()` 这样的入口，聊天页里的按钮由 Claude 接。不碰 `ChatPage.swift`。
+- [x] **C20 常亮黑屏**：分支 `codex/c20-always-on`。新文件里做一个全黑的覆盖窗口：只显示当前旅伴的宠物小像、正在做的这一步、已用时间，每 15 秒整体挪一点位置防烧屏，任何触摸关闭；期间屏幕不自动锁（`isIdleTimerDisabled`），关闭后恢复。只提供 `AlwaysOn.show(chat:)` / `hide()` 这样的入口，聊天页里的按钮由 Claude 接。不碰 `ChatPage.swift`。
 
-- [ ] **C21 互查：审 Claude 这一批**（C18～C20 交完后做）。不改代码，只在 PR 里或 `docs/REVIEW-0.34.md` 写问题清单（文件:行、触发条件、后果、建议改法），按严重程度排。范围是 batch-0.34 上从 `39a26d8` 到最新的 Claude 提交，加上 `cbe41a9`（名帖卡）：
+- [x] **C21 互查：审 Claude 这一批**（C18～C20 交完后做）。不改代码，只在 PR 里或 `docs/REVIEW-0.34.md` 写问题清单（文件:行、触发条件、后果、建议改法），按严重程度排。范围是 batch-0.34 上从 `39a26d8` 到最新的 Claude 提交，加上 `cbe41a9`（名帖卡）：
   - 性格（`Temper.swift`、`Pulse.swift`、`Team.swift` 的 system 和 saveBot）：老旅伴是否都按「温」，白纸是否完全不写心绪，用户设定是否压过性格。
   - 朱印字（`Kit.swift` 的 `ClioSeal`、`App/Fonts/ClioSeal-Regular.ttf`）：字体名、OFL 声明、缺字退回是否可靠。
   - 名帖（`NameCardView.swift`、`NameCard.swift`、`Desk.swift` 收名帖）：旧名帖文件能否照收；照片和宠物是否跟着走；**有没有任何记忆被带出去**。
@@ -125,14 +125,14 @@
   - 规矩：设计系统、词典两份键一致、不写死字号颜色。
 
 
-- [ ] **C22 宠物跟着弹出框上下（学 DSH Go 的手感，只学思路不抄代码）**：分支 `codex/c22-pet-motion`，PR 合到 `batch-0.34`。只动 `App/Sources/Pet/` 和 `ChatPage.swift` 里摆宠物的那几行。
+- [x] **C22 宠物跟着弹出框上下（学 DSH Go 的手感，只学思路不抄代码）**：分支 `codex/c22-pet-motion`，PR 合到 `batch-0.34`。只动 `App/Sources/Pet/` 和 `ChatPage.swift` 里摆宠物的那几行。
   1. 现在：聊天页底下弹出东西（批准单、填表、问答框、键盘、附件面板、找字栏等）时，宠物要么被盖住，要么原地跳到新位置。
   2. 要的：底下弹出框出来时，宠物被「顶上去」，站在框的上沿，带一点弹性（落地稍微压扁再回弹）；框收起或取消后，宠物「掉下来」回到输入框上沿，落地有一下轻微的弹和落地状态帧（有就用宠物包里的 `jump` / `land` 类状态，没有就用 idle）。全程跟着框的高度走，不闪、不瞬移；键盘起落同理，跟键盘动画同步。
   3. 用户拖到别处的宠物：不跟着上下；「回到输入框上」后才重新跟。
   4. 关掉「减少动态效果」时才有弹性，开着时只平移。
   5. 主人用真机看，交 PR 时写清楚怎么试（哪几个框能触发）。
 
-- [ ] **C23 宠物大小重做（学 DSH Go 的调法）**：同一个分支或单独 `codex/c23-pet-size`。
+- [x] **C23 宠物大小重做（学 DSH Go 的调法）**：同一个分支或单独 `codex/c23-pet-size`。
   1. 现在 `PetLibrary.factor`：小 0.75 / 标准 1 / 大 1.35 / 自定 0.5～3。主人反馈：前几档几乎看不出区别，只有拉到 300% 才明显变大。
   2. 改成：一根滑杆直接调（像 DSH Go 那样），拖的时候宠物在预览里实时变大小，旁边写百分比；档位按看得出差别来分（比如 60% / 100% / 150% / 200% / 250% / 300% 吸附，或按面积而不是边长来算刻度——你挑一种，在 PR 里说明为什么）。
   3. 「标准」的大小重新定：在 iPhone 普通屏上，标准要清楚看得见宠物的表情；宠物素材的像素要整倍放大（像素图不糊），不整倍时就近取整。
@@ -141,7 +141,7 @@
 
 两项交 PR 前在自己分支跑一次 CI（shots=false）。
 
-- [ ] **C24 掉帧（主人 11-21 14:29～14:35 的真机记录）**：分支 `codex/c24-jank`。共 172 次，最长 29593 ms。
+- [x] **C24 掉帧（主人 11-21 14:29～14:35 的真机记录）**：分支 `codex/c24-jank`。共 172 次，最长 29593 ms。
   1. **最严重**：14:32:47 在「调弦」（设置）卡死 29.6 秒，之前 14:32:10 还有一次 872 ms。先查设置里哪些东西在主线程同步做：备份 `Backup.make`（`CarePage` 211 行附近，要确认不在主线程打包）、`CarePage` 算存储占用时遍历整个文件夹（181 行）、`FontShelf` 下载苹果字体、`PetLibrary.reload` 读宠物包、`Skills` 扫文件夹、模型列表拉取、`BrandIcon`。都挪到后台，界面先显示「计算中」。主人截图显示卡死后紧接着打开的是「远程主机」（远山）页：它每次重画都从钥匙串读 SSH 私钥算公钥，Claude 已改成只算一次（`Hills.publicKey`）；再查 `Vault.load` 会不会在面容锁开着时卡住主线程。另：连接器页分类按钮下面列表文字透上来（主人 11-21 截图），垫纸色没生效，一起修。
   2. **打开页面就掉一帧 100～250 ms**：调弦、养护、技能、定时、远山、书案，第一次进页都有。查 `onAppear` / `init` 里的读盘和解码（JSON、图片、词典），改成后台读、读完再显示。
   3. **打字时每次 38～57 ms**（14:30:37～43 连续）：输入框每打一个字整页重画。把输入框状态挪出 `ChatPage` 的 body（单独小视图持有 `@State`），回复列表不跟着重算。
@@ -149,9 +149,9 @@
   4b. **0.34 (172) 新回归**（主人 16:14 记录）：聊天页什么都不做时每 2～4 秒卡一次约 100 ms（之前约 20～40 ms）。这包新加的有：C22 的 `PetPerch`（CADisplayLink 采样、另一个窗口）和 Claude 的来源解析（每次重画对每条回复跑正则，Claude 已加缓存，见 `SourcesRow.cited` / `withoutSourceList`）。先确认缓存后是否还在，还在就查 `PetPerch.Tracker` 是否没停下来，以及聊天页为何每隔几秒整页重画。
   5. 改一项在真机记录里对照一项（设置 › 养护 › 掉帧记录），PR 里列改前改后。不改功能和文字。
 
-- [ ] **C25 修 C21 复查的 7 条**：分支 `codex/c25-recheck-fixes`。清单在 `docs/REVIEW-0.34.md`「Codex 复查（11-21）」，按 P1→P3 顺序修，一条一个提交：撤回按条目 ID（P1）、跳到很早的结果后窗口缩回（P1）、旧健康卡顺序（P2）、长图分享用最新图（P2）、旧名帖定格图提示（P3）、一眼卡按最后改动去重（P3）、问答目录标题和名帖性格栏走词典（P3）。顺带修群聊「明 / 活」先显示成「温」（原 #8）。交 PR 前跑 CI（shots=false）。
+- [x] **C25 修 C21 复查的 7 条**：分支 `codex/c25-recheck-fixes`。清单在 `docs/REVIEW-0.34.md`「Codex 复查（11-21）」，按 P1→P3 顺序修，一条一个提交：撤回按条目 ID（P1）、跳到很早的结果后窗口缩回（P1）、旧健康卡顺序（P2）、长图分享用最新图（P2）、旧名帖定格图提示（P3）、一眼卡按最后改动去重（P3）、问答目录标题和名帖性格栏走词典（P3）。顺带修群聊「明 / 活」先显示成「温」（原 #8）。交 PR 前跑 CI（shots=false）。
 
-- [ ] **C26 聊天页：自由选字能复制、跳转按钮不打扰、顶栏收进一个菜单**：分支 `codex/c26-chat-polish`。
+- [x] **C26 聊天页：自由选字能复制、跳转按钮不打扰、顶栏收进一个菜单**：分支 `codex/c26-chat-polish`。
   1. **自由选字复制一次都没成功**（主人 11-21 真机）。选字是 `ProseView.swift` 的 `ProseText`（UITextView，`isSelectable`）。先在真机或模拟器复现：长按能不能选中？有没有出「拷贝」？点了剪贴板里有没有？逐个排查：聊天列表上的 `onTapGesture`（`ChatPage` 784 / 815 行附近）、回复行的 `.contextMenu`、`SelectableProse` 的 `.equatable()` 和重画时 `attributedText` 被重设导致选区丢失、C22 的宠物浮层窗口 `PetPerch.Surface`（窗口在主窗口之上，`hitTest`）挡住了编辑菜单的点按。修好后长按选字 → 拖动跨段 → 拷贝 → 粘贴要稳定成功。
   2. **「上一条 / 下一条 / 到底」按钮常驻太打扰**。改成：平时都不显示；往上滑离开底部时，右下出一个「到最新」小圆钮（带未读数更好）；只有在滑动中或刚停下 2 秒内，旁边才出「上一句 / 下一句」，停住后淡出。动画用透明度，不要重排列表，不能引起掉帧（改完对照掉帧记录）。
   3. **右上角按钮越来越多**。参考 Open Minis（主人 11-21 截图）：顶栏右边只留一个 ⋯，菜单分组：新对话、分享、在对话里找｜压缩、清空｜终端、浏览器、对话文件｜技能、MCP。Clio 现在顶栏上的浏览器、书案、笔记等按钮收进去；旅伴正在用浏览器时，顶栏可以临时出一个会动的地球，用完消失。菜单文字走词典，危险项红色并二次确认。
@@ -162,8 +162,8 @@
 详细内容和不碰的文件见 `docs/REVIEW-ANTIGRAVITY.md`「派出去的活」。
 
 - [x] **A1 外观即时生效 + 深色 / 小屏**：改由 Claude 做（11-22 夜），见 `REVIEW-ANTIGRAVITY.md`。
-- [ ] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，现在就可以开始。
-- [ ] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`，[PR #33](https://github.com/lllhr94/Clio/pull/33) 待复核。后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
+- [x] **A2（Antigravity）网络安全 + AgentKit 细节 + 单测**：分支 `antigravity/a2-engine`，现在就可以开始。
+- [x] **C32（Codex）流畅度、并发、后台**：分支 `codex/c32-smooth`，[PR #33](https://github.com/lllhr94/Clio/pull/33) 待复核。后台真机验证和排除文件里的宠物舞台时钟联动仍待跟进。
 
 ## 0.35（11-22 深夜排好；0.34 已发布）
 
@@ -175,32 +175,34 @@
 
 ### Codex：C33 聊天页和侧边栏收尾（分支 `codex/c33-chat-side`，先把 C32 交完）
 
-- [ ] 1. **聊天页 ⋯ 里的「新对话」也先问**：和主页、侧边栏一样弹 `NewChatSheet`（选助手、这次参考不参考记忆）。`NewChatSheet` 在 `Desk.swift` 末尾，挪成公用的，别复制一份。
-- [ ] 2. **侧边栏的旧对话行**（`Desk.swift` 的 `pastRow`）：左滑「删除」（先确认，后果用 `errors.cannotUndo`）、长按「重命名」。删除和改名在 `Team.swift` 加最小的函数（`deleteLeaf` / `renameLeaf`），只动 leaves 那几个函数，不碰 `ask` / `answer` / 污点。
-- [ ] 3. **流式时的轻微抖动**：回复正在写时用 `StreamBlocks`，写完换成 `ProseView` 定稿排版，两者的列表间距、表格、代码块高度差一点，换的那一下会跳。让两边的排版一致（同一套间距和高度），用 CI 截图 `chat-stream` 对比「写到一半」和「写完」两张，贴进 PR。
-- [ ] 4. **截图巡检加三个场景**：`stops`（设置 › 字号与行距，打开字号的档位卡）、`newchat`（新对话页）、`sidebar-past`（侧边栏里有置顶、有收起的旧对话）。深色、大字号各跑一次，看档位卡有没有出屏、文字有没有截断。
-- [ ] 5. 交 PR 前在自己分支跑 CI（shots=true 跑一次新场景）。
+- [x] 1. **聊天页 ⋯ 里的「新对话」也先问**：和主页、侧边栏一样弹 `NewChatSheet`（选助手、这次参考不参考记忆）。`NewChatSheet` 在 `Desk.swift` 末尾，挪成公用的，别复制一份。
+- [x] 2. **侧边栏的旧对话行**（`Desk.swift` 的 `pastRow`）：左滑「删除」（先确认，后果用 `errors.cannotUndo`）、长按「重命名」。删除和改名在 `Team.swift` 加最小的函数（`deleteLeaf` / `renameLeaf`），只动 leaves 那几个函数，不碰 `ask` / `answer` / 污点。
+- [x] 3. **流式时的轻微抖动**：回复正在写时用 `StreamBlocks`，写完换成 `ProseView` 定稿排版，两者的列表间距、表格、代码块高度差一点，换的那一下会跳。让两边的排版一致（同一套间距和高度），用 CI 截图 `chat-stream` 对比「写到一半」和「写完」两张，贴进 PR。
+- [x] 4. **截图巡检加三个场景**：`stops`（设置 › 字号与行距，打开字号的档位卡）、`newchat`（新对话页）、`sidebar-past`（侧边栏里有置顶、有收起的旧对话）。深色、大字号各跑一次，看档位卡有没有出屏、文字有没有截断。
+- [x] 5. 交 PR 前在自己分支跑 CI（shots=true 跑一次新场景）。
 
 ### Antigravity：A3 文案扫尾 + 模型服务方案（分支 `antigravity/a3-words`，和 A2 可以同时做）
 
-- [ ] 1. **书卷词扫尾**：界面上看得到的中文里，还有书卷词没走词典的（扫描脚本思路：找 Swift 字符串里的「旅伴、书案、斗室、远山、远游、信匣、拾遗、絮语、名帖、晨信、笺、落款」等，跳过已包在 `Words.t(...)` / `L.t(...)` 里的）。范围：`App/Sources/Study/`、`Hills/`、`Roam/`、`Connect/`、`Grant/`、`Reading/NameCard*.swift`、`Reading/CardEditors.swift`、`Care/CarePage.swift`。界面文字包进 `Words.t(...)` 或换成 `L.t("键")`；**给模型看的工具说明不改**（模型认那些名字）。不碰 `Desk.swift`、`ChatPage.swift`、`Chat.swift`、`ProseView.swift`（Codex 在改），不碰 `Vault/`、`Team.swift`、`Backup.swift`（等 Claude）。把扫描脚本加进 `tools/lint.py` 当警告（不挡编译）。
-- [ ] 2. **模型服务这一块的整理方案（只写文档，不写代码）**：主人说「又杂又乱，逻辑不对」。写 `docs/PROPOSAL-MODELS.md`：
+- [x] 1. **书卷词扫尾**：界面上看得到的中文里，还有书卷词没走词典的（扫描脚本思路：找 Swift 字符串里的「旅伴、书案、斗室、远山、远游、信匣、拾遗、絮语、名帖、晨信、笺、落款」等，跳过已包在 `Words.t(...)` / `L.t(...)` 里的）。范围：`App/Sources/Study/`、`Hills/`、`Roam/`、`Connect/`、`Grant/`、`Reading/NameCard*.swift`、`Reading/CardEditors.swift`、`Care/CarePage.swift`。界面文字包进 `Words.t(...)` 或换成 `L.t("键")`；**给模型看的工具说明不改**（模型认那些名字）。不碰 `Desk.swift`、`ChatPage.swift`、`Chat.swift`、`ProseView.swift`（Codex 在改），不碰 `Vault/`、`Team.swift`、`Backup.swift`（等 Claude）。把扫描脚本加进 `tools/lint.py` 当警告（不挡编译）。
+- [x] 2. **模型服务这一块的整理方案（只写文档，不写代码）**：主人说「又杂又乱，逻辑不对」。写 `docs/PROPOSAL-MODELS.md`：
   - 先按第一次用的人走一遍现状：添加服务（`SetupView`）→ 服务页（`ServicePage`）→ 模型详情（`ModelSheet`）→ 默认 / 备用 / 记忆整理模型 → 生图模型 → 聊天里换模型、选思考档位。每一步截图或写清楚看到什么，列出哪里重复、哪里找不到、哪里叫法不一致。
   - 对照 Cherry Studio、ChatGPT / Claude App、HanaAgent（Apache，可以借鉴写法，要致谢）、Open Minis（GPL，只学思路）各自怎么组织「服务商 → 模型 → 能力 / 思考档位 → 默认模型」。
   - 给出新结构：几页、每页放什么、从哪进；用 Markdown 画草图。列出要删、要合、要挪的东西。
   - **交给主人定**，主人点头后再派人写代码。
-- [ ] 3. A2 的单测里加上思考档位：每种 `ThinkingStyle` 对每个 `Thinking` 档发出去的字段对不对（`AgentKit/Sources/AgentKit/Thinking.swift`）。
+- [x] 3. A2 的单测里加上思考档位：每种 `ThinkingStyle` 对每个 `Thinking` 档发出去的字段对不对（`AgentKit/Sources/AgentKit/Thinking.swift`）。
 
 ### 等主人定的
 
-- 「项目」分组：项目里放什么（几段对话 + 一个文件夹？）、和助手怎么对应。
-- 模型服务页：看了 A3 的方案再定。
-- SwiftNIOSSH 要不要锁死版本。
-- 0.34 什么时候「发」。
+- ~~「项目」分组~~：主人定了，手机上不做（每段对话已能选工作地点）。
+- ~~模型服务页~~：主人 11-22 按 `PROPOSAL-MODELS.md` 定了，聊天侧 C34、设置侧 A4 已合入 0.35，待真机复核。
+- ~~SwiftNIOSSH 要不要锁死版本~~：已锁（Citadel 0.12.1 + swift-nio-ssh 0.3.7，`be574c2`）。
+- ~~0.34 什么时候「发」~~：11-22 已发（`v0.34`）。
+- 0.35 什么时候「发」。
+- 下一批小改动（`FEEDBACK.md`「下一批」）、浏览器和云端（`BROWSER-AND-CLOUD.md`）、闲谈、天气卡片、宠物画中画（C12 调研已交）、让 AI 做宠物。
 
 ### 模型服务整理（主人 11-22 定了，按 `docs/PROPOSAL-MODELS.md` 第四、七节做）
 
-- [ ] **A4（Antigravity）设置这一侧**：分支 `antigravity/a4-models`。设置首页「模型」组改成「模型服务」「默认模型」两行；「默认模型」一页合并默认、备用、记忆整理、生图；服务商页和模型详情（`ModelSheet`）按方案统一成 `paperCard()` 风格，去掉重复入口；`SetupView` 顺手修方案里的 2 个坑。调数值一律 `StopRow`。不碰 `ChatPage.swift`、`Desk.swift`。
+- [x] **A4（Antigravity）设置这一侧**：分支 `antigravity/a4-models`。设置首页「模型」组改成「模型服务」「默认模型」两行；「默认模型」一页合并默认、备用、记忆整理、生图；服务商页和模型详情（`ModelSheet`）按方案统一成 `paperCard()` 风格，去掉重复入口；`SetupView` 顺手修方案里的 2 个坑。调数值一律 `StopRow`。不碰 `ChatPage.swift`、`Desk.swift`。
 - [x] C33 已合（11-22）。
 - [x] **C35（Codex）小毛病一批**（已合入 PR #37）（分支 `codex/c35-polish`，可以先于 C34 做，量小）：
   1. 回复写完后，站在计划条上的宠物挡住回复下面的「⋯」：宠物默认停的横向位置避开最后一条回复的操作行（宠物规则不变：只在输入框上沿左右动，不改高度）。
@@ -210,15 +212,15 @@
   5. 不开截图（主人定），CI 编过就交 PR，写清楚真机怎么试。
 - [x] **C34（Codex）聊天这一侧**（实现及审查修订见 PR #38）（C33 之后）：聊天顶栏淡字显示当前模型名；思考档位挪进选模型的弹出菜单顶上（只显示测出来能用的档，没测过就按服务的写法），底栏的思考按钮去掉。只动 `ChatPage.swift` 里模型和思考那几处。
 
-- [ ] **A5（Antigravity）小组件、灵动岛、快捷指令走查**（A4 之后，分支 `antigravity/a5-surfaces`）：`Widget/`、`LiveTurns` / 灵动岛、`Shortcuts.swift`、通知文案。逐个看：日常 / 书卷称谓对不对（`Shortcuts.swift` 里还有「絮语、旅伴」没走词典）、深色和纯黑下看不看得清、文字会不会被截断、没做完的入口别摆出来。改完列表交 PR。不碰 `ChatPage.swift`、`Desk.swift`、`Team.swift`、`Vault/`。不开截图。
+- [x] **A5（Antigravity）小组件、灵动岛、快捷指令走查**（A4 之后，分支 `antigravity/a5-surfaces`）：`Widget/`、`LiveTurns` / 灵动岛、`Shortcuts.swift`、通知文案。逐个看：日常 / 书卷称谓对不对（`Shortcuts.swift` 里还有「絮语、旅伴」没走词典）、深色和纯黑下看不看得清、文字会不会被截断、没做完的入口别摆出来。改完列表交 PR。不碰 `ChatPage.swift`、`Desk.swift`、`Team.swift`、`Vault/`。不开截图。
 
 ### 谷歌复盘之后（11-22 夜，Claude 核对过代码）
 
 谷歌的对标复盘（`clio_benchmark_review.md`，主人那里）点出的几条，Claude 逐条对过代码：缓存、扁平书案、技能导入入口、看不到发给模型什么、备份不含书案、两个巨石文件，都属实。Anthropic 缓存 Claude 当晚已做（只对 api.anthropic.com 生效；DeepSeek、Kimi、OpenAI 本来就自动缓存）。其余这样分：
 
-- [ ] **A6（Antigravity）外部文件夹挂进书案**（A5 之后，分支 `antigravity/a6-folders`）：在书案里「添加文件夹」，用系统文件选择器选 iCloud / Obsidian / 别的 App 的文件夹，存成安全书签（security-scoped bookmark），之后模型的工作区工具能读写它（路径写成 `书案/挂载/<名字>/…`）。只学 Open Minis 的思路。要点：每次用前 `startAccessingSecurityScopedResource`；书签失效要提示重新选；不让软链接跳出；删挂载只删书签不删文件。动 `Study/Place.swift`、`Study/Workspace.swift`、`Study/StudyPage.swift`，不碰别的。
-- [ ] **A7（Antigravity）技能一键安装**：技能页加「从链接 / zip 安装」：GitHub 目录链接或 zip，里面有 `SKILL.md` 的就装进 `书案/技能/<名字>/`；装之前给主人看名字、说明、有哪些文件（脚本要特别标出），点确认才装。zip 解压照宠物包那样限大小、防路径穿越。动 `Skills.swift` 和技能页。
-- [ ] **C36（Codex）「这次发给模型什么」只读页**（**现在就可以做**）：用量页里加一行「看看发给模型的内容」，点开分段显示：系统提示、记忆、技能说明、工具清单（名字和说明）、带上的对话条数和字数。只读，可以复制。需要在 `Team.swift` 加一个只读函数把这几段拿出来（复用 `system(for:…)`、`tools(for:…)`，不改它们），**不碰 `ask` / `answer` / 污点**。密钥、信匣内容本来就不在里面，交 PR 时说明核对过。
+- [x] **A6（Antigravity）外部文件夹挂进书案**（A5 之后，分支 `antigravity/a6-folders`）：在书案里「添加文件夹」，用系统文件选择器选 iCloud / Obsidian / 别的 App 的文件夹，存成安全书签（security-scoped bookmark），之后模型的工作区工具能读写它（路径写成 `书案/挂载/<名字>/…`）。只学 Open Minis 的思路。要点：每次用前 `startAccessingSecurityScopedResource`；书签失效要提示重新选；不让软链接跳出；删挂载只删书签不删文件。动 `Study/Place.swift`、`Study/Workspace.swift`、`Study/StudyPage.swift`，不碰别的。
+- [x] **A7（Antigravity）技能一键安装**：技能页加「从链接 / zip 安装」：GitHub 目录链接或 zip，里面有 `SKILL.md` 的就装进 `书案/技能/<名字>/`；装之前给主人看名字、说明、有哪些文件（脚本要特别标出），点确认才装。zip 解压照宠物包那样限大小、防路径穿越。动 `Skills.swift` 和技能页。
+- [x] **C36（Codex）「这次发给模型什么」只读页**（**现在就可以做**）：用量页里加一行「看看发给模型的内容」，点开分段显示：系统提示、记忆、技能说明、工具清单（名字和说明）、带上的对话条数和字数。只读，可以复制。需要在 `Team.swift` 加一个只读函数把这几段拿出来（复用 `system(for:…)`、`tools(for:…)`，不改它们），**不碰 `ask` / `answer` / 污点**。密钥、信匣内容本来就不在里面，交 PR 时说明核对过。
 - [x] **C37 拆巨石文件：Claude 11-22 夜全部做完**（`ChatPage.swift` 4164→1070 行，`Team.swift` 2906→1751 行，其余进了 `ChatPage+*.swift`、`TeamModel+*.swift`；只搬家，CI 编过）。原任务说明留作记录：**C37（Codex）拆巨石文件**（**现在就做，排在 C36 前面**；主人 11-22 定：C34、C35 都合完了，正好拆）：`ChatPage.swift` 按块拆成几个文件（顶栏、输入框、消息行、菜单和弹出页、跳转和小地图），`Team.swift` 拆成扩展（记忆、对话记录、定时和提醒、晨信和日记、用量）。**只搬家不改逻辑**，搬完 CI 编过、聊天流程测试过。`Team.swift` 里批准和污点那几个函数原地不动。
   - **`ChatPage.swift` 已由 Claude 拆完（11-22 夜）**：主文件 1070 行，其余按段落进了 `ChatPage+顶栏/输入框/附件/消息行/查找/头像/底部卡片/斜杠` 等扩展文件，独立的小视图进了 `ChatTrace`、`ChatSources`、`ChatCards` 等文件。Codex 只剩 `Team.swift`，照同样做法：存储属性留在主文件，按 `// MARK` 段落搬成 `extension TeamModel`，`private` 改成默认可见性。每一步只搬一块、单独提交，哪步编不过退回哪步。
   - **合并条件**：CI 编过 + 聊天流程测试过 + Antigravity 逐文件核对「只搬没改」（对比搬走前后的代码，除了 `private` 改成别的可见性、加 `extension` 外壳，不许有别的差异）+ 主人真机把聊天、批准单、新对话、侧边栏、设置点一遍没变化。满足就合，不用等 Claude。
@@ -226,14 +228,14 @@
 - [x] 网盘恢复能选哪一份（Claude 11-22 夜）。
 - [ ] **等 Claude 回来做**（`Backup.swift` 是安全边界）：备份带上 `书案/技能/`（不带整个书案，太大，文件 App 里能拷）。
 
-- [ ] **A8（Antigravity）回答里的互动预览卡**（主人 11-22 提：要在正文里直接出预览，用来核对燃气管线测绘数据；主人 11-22 已同意，做成通用的，不只测绘）。别家的做法：Claude 的 Artifacts 和 Open WebUI 都放在侧栏或全屏、跑在隔离的 iframe 里、限制联网；Open Minis 是点文件打开全屏网页预览。都不在消息里常驻一个活的网页（手机上太重、和滚动抢手势）。Clio 照这个思路：
+- [x] **A8（Antigravity）回答里的互动预览卡**（主人 11-22 提：要在正文里直接出预览，用来核对燃气管线测绘数据；主人 11-22 已同意，做成通用的，不只测绘）。别家的做法：Claude 的 Artifacts 和 Open WebUI 都放在侧栏或全屏、跑在隔离的 iframe 里、限制联网；Open Minis 是点文件打开全屏网页预览。都不在消息里常驻一个活的网页（手机上太重、和滚动抢手势）。Clio 照这个思路：
   1. **消息里是一张静态缩略卡**：助手写出的 `.html` 先在后台用 `WKWebView` 渲染一次、截成图，卡片显示缩略图、标题、「点开互动」。长对话里不常驻网页，不掉帧。
   2. **点开是全屏互动页**：`WKWebView`，允许 JavaScript，能缩放、横屏；**不许联网**（`WKContentRuleList` 挡掉 http/https，只用 `loadFileURL(_:allowingReadAccessTo:)` 读它所在的文件夹），右上「完成」「分享」。文件同时留在书案里。
   3. 书案里点 `.html` / `.svg` 也进这个页面，替掉不跑脚本的快速预览。
   4. 提示词加一句：要做可互动的图表、示意图时，写成单个自带脚本和样式的 `.html`，不引用网上的库。
   5. 文件：新页面放 `Study/`，聊天卡片只改 `ChatPage+Rows.swift` 里认文件的那一处。
 - [x] **数据核对和画图（通用，主人 11-22 定：别专门做测绘，很多地方都用得上）**：Claude 已在提示词里加一条：给表格要核对、统计、看趋势时，模型只读表头和几行样例写脚本，整份在手机上算，逐条列出问题行；要画图就写成不联网的单文件 `.html`。测点、账单、成绩、步数、行情、能耗都适用。互动查看靠 A8。
-- [ ] **C38（Codex）侧边栏里每一段对话都一样能管**（主人 11-22）：现在侧边栏的「对话」分两种：每个助手当前那段（能置顶、归档、标颜色、改名），和「新对话」收起来的旧对话（只能改名、左滑删除）。主人要的是：**任何一段都能置顶、归档、删除、改名**，不分是不是当前那段。
+- [x] **C38（Codex）侧边栏里每一段对话都一样能管**（主人 11-22）：现在侧边栏的「对话」分两种：每个助手当前那段（能置顶、归档、标颜色、改名），和「新对话」收起来的旧对话（只能改名、左滑删除）。主人要的是：**任何一段都能置顶、归档、删除、改名**，不分是不是当前那段。
   1. 置顶、归档的记录从「按助手」扩到「按每一段」：当前段还用 `bot-xxx`，旧对话用 `bot-xxx~<leafId>` 作键，存在原来的 `pinned` / `archived` 里（`TeamModel+Chats.swift`）。翻回、另起一叶、删除旧对话时把键跟着改或清掉。
   2. 侧边栏每一行（`Desk.swift` 的 `sideThread` 和 `pastRow`）的长按菜单统一成：置顶 / 取消置顶、重命名、颜色标签、归档 / 恢复、删除（红色，先确认，后果用 `errors.cannotUndo`）。当前段的「删除」就是清空这段（已有的清空流程）。左滑统一成：归档、删除。
   3. 置顶的旧对话出现在「置顶」组；归档的不在列表里，搜索能找回。

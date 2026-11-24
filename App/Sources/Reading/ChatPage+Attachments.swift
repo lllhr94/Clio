@@ -8,6 +8,124 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
 
+/// Copies external files safely into `书案/收件` while holding any temporary security scope
+/// acquired synchronously on the UI callback until the background copy finishes.
+enum InboxImport {
+    final class ScopedLease: @unchecked Sendable {
+        let url: URL
+        private let lock = NSLock()
+        private var active: Bool
+
+        init(_ url: URL) {
+            self.url = url
+            self.active = url.startAccessingSecurityScopedResource()
+        }
+
+        func release() {
+            lock.lock()
+            let shouldStop = active
+            active = false
+            lock.unlock()
+            if shouldStop {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        deinit {
+            release()
+        }
+    }
+
+    nonisolated static func sanitizeFilename(_ raw: String) -> String {
+        var cleaned = raw
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\0", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return "收件文件"
+        }
+        return String(cleaned.prefix(120))
+    }
+
+    nonisolated static func copyOne(_ url: URL) throws -> String {
+        try copyOne(ScopedLease(url))
+    }
+
+    nonisolated static func copyOne(_ lease: ScopedLease) throws -> String {
+        defer { lease.release() }
+        guard !Disk.frozen else {
+            throw WorkspaceError.cannot("正在恢复数据，请稍后再试。")
+        }
+        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        guard Workspace.isInsideRealRoot(inbox, root: Workspace.root) else {
+            throw WorkspaceError.cannot("收件目录不可用。")
+        }
+
+        let safeName = sanitizeFilename(lease.url.lastPathComponent)
+        let safeURL = URL(fileURLWithPath: safeName)
+        let base = safeURL.deletingPathExtension().lastPathComponent
+        let ext = safeURL.pathExtension
+
+        var coordError: NSError?
+        var copyError: Error?
+        var copiedTarget: URL?
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(readingItemAt: lease.url, options: [], error: &coordError) { coordinatedURL in
+            var number = 1
+            while number <= 10_000 {
+                let candidate = number == 1
+                    ? safeName
+                    : (ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                let target = inbox.appendingPathComponent(candidate)
+                guard Workspace.isInsideRealRoot(target, root: inbox) else {
+                    copyError = WorkspaceError.cannot("目标路径不安全。")
+                    return
+                }
+                do {
+                    try FileManager.default.copyItem(at: coordinatedURL, to: target)
+                    copiedTarget = target
+                    return
+                } catch let err as NSError where err.domain == NSCocoaErrorDomain && err.code == NSFileWriteFileExistsError {
+                    number += 1
+                    continue
+                } catch {
+                    copyError = error
+                    return
+                }
+            }
+            copyError = WorkspaceError.cannot("同名文件过多，请先清理收件目录。")
+        }
+        if let copyError { throw copyError }
+        if let coordError { throw coordError }
+        guard let target = copiedTarget else {
+            throw WorkspaceError.cannot("无法读取共享文件。")
+        }
+        // Release external security scope as soon as our local sandbox copy is complete.
+        lease.release()
+
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: target.path
+        )
+        if target.pathExtension.lowercased() == "pdf", let text = PDFText.extract(target), !text.isEmpty {
+            let sidecar = target.appendingPathExtension("txt")
+            if Workspace.isInsideRealRoot(sidecar, root: inbox) {
+                try? Data(text.utf8).write(to: sidecar, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
+        }
+        return Workspace.relative(target)
+    }
+
+    nonisolated static func localDayStamp(_ date: Date = Date()) -> String {
+        let comps = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", comps.year ?? 2026, comps.month ?? 1, comps.day ?? 1)
+    }
+}
+
 extension ChatPage {
     // MARK: Attachments
 
@@ -24,7 +142,7 @@ extension ChatPage {
     /// Keep the pasted text until its attachment is ready and the same draft is still on screen.
     func keepLongPaste(_ old: String, _ new: String) {
         pasteTask?.cancel()
-        guard new.utf8.count > DraftInput.pasteLimit else { return }
+        guard !Disk.frozen, new.utf8.count > DraftInput.pasteLimit else { return }
         let largeChange = new.utf8.count - old.utf8.count > DraftInput.pasteLimit
         let revision = attachmentRevision
         pasteTask = Task {
@@ -32,14 +150,16 @@ extension ChatPage {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
             }
             let worker = Task.detached(priority: .userInitiated) { () -> (URL, String, Int)? in
-                guard let pasted = DraftInput.longInsertion(from: old, to: new), !Task.isCancelled else { return nil }
+                guard !Disk.frozen, let pasted = DraftInput.longInsertion(from: old, to: new), !Task.isCancelled else { return nil }
                 let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
-                let stamp = Date().formatted(.iso8601.year().month().day())
+                let stamp = InboxImport.localDayStamp()
                 let id = UUID().uuidString.prefix(8)
                 let file = inbox.appendingPathComponent("粘贴片段-\(stamp)-\(id).txt")
                 do {
                     try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
-                    try Data(pasted.utf8).write(to: file, options: .atomic)
+                    guard Workspace.isInsideRealRoot(inbox, root: Workspace.root),
+                          Workspace.isInsideRealRoot(file, root: inbox) else { return nil }
+                    try Data(pasted.utf8).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                     return (file, Workspace.relative(file), pasted.count)
                 } catch {
                     return nil
@@ -63,30 +183,34 @@ extension ChatPage {
 
     /// Files picked from the Files app land in 书案/收件, and the companion is told where.
     func receive(_ urls: [URL]) {
-        let inbox = Workspace.root.appendingPathComponent("收件", isDirectory: true)
-        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
-        for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            var target = inbox.appendingPathComponent(url.lastPathComponent)
-            var number = 2
-            while FileManager.default.fileExists(atPath: target.path) {
-                let base = url.deletingPathExtension().lastPathComponent
-                let ext = url.pathExtension
-                target = inbox.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
-                number += 1
-            }
-            do {
-                try FileManager.default.copyItem(at: url, to: target)
-                if target.pathExtension.lowercased() == "pdf", let text = PDFText.extract(target), !text.isEmpty {
-                    try? Data(text.utf8).write(to: target.appendingPathExtension("txt"))
+        guard !Disk.frozen, !urls.isEmpty else { return }
+        let leases = urls.map(InboxImport.ScopedLease.init)
+        let revision = attachmentRevision
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) { () -> (paths: [String], failed: [String]) in
+                var paths: [String] = []
+                var failed: [String] = []
+                for lease in leases {
+                    do {
+                        let rel = try InboxImport.copyOne(lease)
+                        paths.append(rel)
+                    } catch {
+                        failed.append("没拿到「\(lease.url.lastPathComponent)」：\(error.localizedDescription)")
+                    }
                 }
-                files.append(Workspace.relative(target))
-            } catch {
-                say("没拿到「\(url.lastPathComponent)」：\(error.localizedDescription)")
+                return (paths, failed)
+            }.value
+            guard revision == attachmentRevision else { return }
+            var addedAny = false
+            for rel in outcome.paths where !files.contains(rel) {
+                files.append(rel)
+                addedAny = true
             }
+            if let firstError = outcome.failed.first {
+                say(firstError)
+            }
+            if addedAny { Haptics.tick(0.6) }
         }
-        if !urls.isEmpty { Haptics.tick(0.6) }
     }
 
     /// What goes after the message so the companion knows about the files.

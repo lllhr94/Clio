@@ -161,7 +161,7 @@ extension ChatPage {
             // The plan sits right on the composer, as one block with it, not as a second bar floating above.
             VStack(spacing: Ink.Space.xs) {
                 if let plan = team.plans[chat.key] {
-                    PlanCard(steps: plan) { team.clearPlan(chat.key) }
+                    PlanCard(steps: plan, maxHeight: chatViewport.height > 0 ? max(160, chatViewport.height * 0.38) : nil) { team.clearPlan(chat.key) }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 dock
@@ -495,27 +495,42 @@ extension ChatPage {
 
     static let end = "foot-of-page"
 
-    /// Points of the page still below the visible part, counting the composer's inset at the bottom.
+    /// Distance to the resting bottom offset. A short page rests at its top inset.
     static func below(_ geometry: ScrollGeometry) -> CGFloat {
-        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY
+        let bottom = max(-geometry.contentInsets.top,
+                         geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height)
+        return bottom - geometry.contentOffset.y
+    }
+
+    /// Observe further drift without scheduling scrolls for every point of movement.
+    static func endAlignment(_ geometry: ScrollGeometry) -> CGFloat {
+        let distance = below(geometry)
+        return abs(distance) <= 2 ? 0 : (distance / 16).rounded(.awayFromZero)
+    }
+
+    func endAlignmentChanged(_ alignment: CGFloat) {
+        viewport.needsEndCorrection = alignment != 0
+        if viewport.needsEndCorrection, followPending?.isCancelled != false { followToEnd(settle: false) }
     }
 
     func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
             selecting.insert(id)
             followPending?.cancel()
-        } else {
-            selecting.remove(id)
+        } else if selecting.remove(id) != nil, selecting.isEmpty, viewport.needsEndCorrection {
+            followToEnd(settle: false)
         }
     }
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     func followToEnd(settle: Bool = true) {
-        guard historyPage == nil, following, selecting.isEmpty else { return }
+        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
+            defer { if !Task.isCancelled { followPending = nil } }
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
-            guard following else { return }
+            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
+                  viewport.needsEndCorrection else { return }
             toEnd()
         }
     }
@@ -529,11 +544,12 @@ extension ChatPage {
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
         // The first jump goes by guessed heights of rows not drawn yet; once they are drawn the foot may sit elsewhere.
-        // One more look a moment later puts the page on the real foot instead of a blank stretch.
+        // Correct once if the real foot still differs after those rows have been drawn.
         settleEnd?.cancel()
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
-            guard following, historyPage == nil, selecting.isEmpty else { return }
+            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
+                  viewport.needsEndCorrection else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }
@@ -619,7 +635,7 @@ extension ChatPage {
                         .background(fill, in: .circle)
                 } else {
                     Image(systemName: symbol)
-                        .font(.system(size: mode == 3 ? 16 : 15, weight: mode == 3 ? .medium : .bold))
+                        .font(.system(size: Ink.Size.sub, weight: mode == 3 ? .medium : .bold))
                         .foregroundStyle(mode == 3 ? Ink.inkSoft : Ink.paper)
                         .contentTransition(.symbolEffect(.replace))
                         .symbolEffect(.variableColor.iterative, isActive: mode == 0)

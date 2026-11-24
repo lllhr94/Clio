@@ -1,5 +1,6 @@
 import AgentKit
 import AppIntents
+import Craft
 import SwiftUI
 
 /// What Siri or a shortcut asked for. Each one only opens Clio at the composer: nothing is sent on its own.
@@ -10,8 +11,8 @@ enum ShortcutAsk: Equatable {
     case dictate
     /// Turn a new leaf with the newest companion and wait at the composer.
     case fresh
-    /// Files shared to Clio from another app (共享 → Clio): they go into 书案/收件 and wait in the composer.
-    case files([URL])
+    /// Files shared to Clio from another app, already copied safely into 书案/收件 while security scope was active.
+    case importedFiles(paths: [String], failed: [String])
 }
 
 /// Hands a shortcut's request to the screens. Kept until taken, because a cold start draws the desk after the intent has run.
@@ -19,11 +20,20 @@ enum ShortcutAsk: Equatable {
 enum ShortcutDoor {
     /// Waiting for the desk to pick a conversation.
     static var pending: ShortcutAsk?
+    /// Waiting for the desk to open a specific chat (`clio://chat/...`) on cold start.
+    static var pendingChat: String?
+    /// Waiting for the desk to open a specific settings destination (`clio://settings/...`) on cold start.
+    static var pendingSettings: String?
     /// Waiting for that conversation's page, by chat key.
     static var forChat: [String: ShortcutAsk] = [:]
 
     static func knock(_ ask: ShortcutAsk) {
-        pending = ask
+        if case .importedFiles(let newPaths, let newFailed) = ask,
+           case .importedFiles(let oldPaths, let oldFailed) = pending {
+            pending = .importedFiles(paths: oldPaths + newPaths, failed: oldFailed + newFailed)
+        } else {
+            pending = ask
+        }
         NotificationCenter.default.post(name: .clioShortcut, object: nil)
     }
 
@@ -35,6 +45,8 @@ extension Notification.Name {
     static let clioShortcut = Notification.Name("clio.shortcut")
     /// The desk has picked the conversation; its page takes the request.
     static let clioShortcutReady = Notification.Name("clio.shortcutReady")
+    /// Deep link asked to open a settings page.
+    static let clioSettingsRoute = Notification.Name("clio.settingsRoute")
 }
 
 struct AskClioIntent: AppIntent {
@@ -88,6 +100,12 @@ struct QuickAnswerIntent: AppIntent {
     var question: String
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        if UserDefaults.standard.bool(forKey: "lock.faceid") {
+            let unlocked = await MainActor.run { AppLock.isCurrentlyUnlocked }
+            guard unlocked else {
+                throw TeamError(message: "Clio 已开启面容锁，请先打开 Clio 解锁后再试。")
+            }
+        }
         let asked = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !asked.isEmpty else { throw TeamError(message: "没听到问题。") }
         let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
@@ -96,7 +114,7 @@ struct QuickAnswerIntent: AppIntent {
             throw TeamError(message: "Clio 里还没有可用的模型，先打开 Clio 接一家模型服务。")
         }
         let model = String(ref[ref.index(after: slash)...])
-        guard let key = Vault.load(String.self, key: "key-\(endpoint.id)"), !key.isEmpty else {
+        guard let key = TeamModel.resolveEndpointKey(for: endpoint) else {
             throw TeamError(message: "拿不到 \(endpoint.name) 的密钥，解锁手机后再试一次。")
         }
         let agent = Agent(provider: endpoint.provider(key: key), model: model,

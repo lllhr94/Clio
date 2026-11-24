@@ -239,7 +239,7 @@ struct ChatDisplayPage: View {
                             .foregroundStyle(Ink.ink)
                         Spacer(minLength: Ink.Space.s)
                         Text(voiceSummary)
-                            .font(.system(size: Ink.Size.small))
+                            .font(Ink.mono(Ink.Size.small))
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(1)
                     }
@@ -406,12 +406,45 @@ struct MorningSettingsPage: View {
 
 struct PrivacySettingsPage<VaultRow: View>: View {
     @AppStorage("lock.faceid") private var faceLock = false
+    @State private var verifying = false
     @ViewBuilder var vaultRow: VaultRow
 
+    private var lockBinding: Binding<Bool> {
+        Binding(
+            get: { faceLock },
+            set: { next in
+                if next {
+                    faceLock = true
+                } else {
+                    requestDisableLock()
+                }
+            }
+        )
+    }
+
+    private func requestDisableLock() {
+        guard faceLock, !verifying else { return }
+        verifying = true
+        Task { @MainActor in
+            let ok = await AppLock.verifyDeviceOwner(reason: "关闭 Clio 面容锁")
+            verifying = false
+            if ok {
+                faceLock = false
+            } else {
+                Haptics.lock()
+            }
+        }
+    }
+
     var body: some View {
-        PreferenceForm(L.t("settings.faceLock"), reset: { faceLock = false }) {
+        PreferenceForm(L.t("settings.faceLock"), reset: {
+            if faceLock {
+                requestDisableLock()
+            }
+        }) {
             Section {
-                Toggle(L.t("settings.faceLock"), isOn: $faceLock)
+                Toggle(L.t("settings.faceLock"), isOn: lockBinding)
+                    .disabled(verifying)
             } header: { Text(L.t("settings.appLock")) } footer: {
                 Text(L.t("settings.faceLockNote"))
             }

@@ -261,8 +261,14 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         // While a companion is at work on its own tab, a click or a redirect may not take it to the phone itself or
         // the home network (a router's page, a NAS); the user can still go there by hand.
         if actors > 0, owners[ObjectIdentifier(webView)] != nil, let target = navigationAction.request.url,
-           target.scheme?.hasPrefix("http") == true, LocalAddress.isLocal(target) {
-            return (.cancel, preferences)
+           target.scheme?.hasPrefix("http") == true {
+            var isLocalTarget = LocalAddress.isLocal(target)
+            if !isLocalTarget {
+                isLocalTarget = await LocalAddress.resolvesToLocal(target)
+            }
+            if isLocalTarget {
+                return (.cancel, preferences)
+            }
         }
         return (navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
@@ -386,7 +392,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         guard !wanted.isEmpty else {
             throw ProviderError("信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。")
         }
-        guard host == wanted || host.hasSuffix("." + wanted) || wanted.hasSuffix("." + host) else {
+        guard host == wanted || host.hasSuffix("." + wanted) else {
             throw ProviderError("这一页是 \(host)，信匣里「\(entry)」是给 \(wanted) 用的，不填。")
         }
         let result = try await tab.callAsyncJavaScript(Self.secretScript, arguments: ["ref": ref, "text": text, "submit": submit, "password": password],
@@ -550,14 +556,26 @@ extension BrowserSession: WKDownloadDelegate {
         guard answer?["keep"] == Words.t("存进书案") else { return nil }
         let folder = Workspace.root.appendingPathComponent("收件", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var target = folder.appendingPathComponent(suggestedFilename)
+        guard Workspace.isInsideRealRoot(folder, root: Workspace.root) else { return nil }
+        let safeName: String = {
+            let stripped = (suggestedFilename as NSString).lastPathComponent
+                .components(separatedBy: CharacterSet(charactersIn: "/\\:\0"))
+                .joined(separator: "-")
+                .replacingOccurrences(of: "..", with: "-")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if stripped.isEmpty || stripped == "." || stripped == ".." { return "download" }
+            return String(stripped.prefix(120))
+        }()
+        var target = folder.appendingPathComponent(safeName)
         var number = 2
         while FileManager.default.fileExists(atPath: target.path) {
-            let base = (suggestedFilename as NSString).deletingPathExtension
-            let ext = (suggestedFilename as NSString).pathExtension
+            let base = (safeName as NSString).deletingPathExtension
+            let ext = (safeName as NSString).pathExtension
             target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
             number += 1
         }
+        guard Workspace.isInsideRealRoot(target, root: folder),
+              Workspace.isInsideRealRoot(target, root: Workspace.root) else { return nil }
         downloadTargets[ObjectIdentifier(download)] = target
         return target
     }
@@ -601,7 +619,9 @@ enum RoamTools {
                 return ApprovalAsk(title: Words.t("让旅伴去 \(site.host)"), reason: "这一轮头一次打开这个网站。同意后，这一轮里它可以在这个网站上看页面、点按钮；填字和登录照旧另外问你。")
             }) { arguments in
                 guard let site = Self.site(arguments["url"]?.string) else { return ToolOutput("网址不对：\(arguments["url"]?.string ?? "")", isError: true) }
-                if LocalAddress.isLocal(site.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+                var isLocalOpen = LocalAddress.isLocal(site.url)
+                if !isLocalOpen { isLocalOpen = await LocalAddress.resolvesToLocal(site.url) }
+                if isLocalOpen { return ToolOutput(LocalAddress.refusal, isError: true) }
                 sites.allow(site.host, chat: chat)
                 let url = site.url
                 let address = url.absoluteString
@@ -640,7 +660,9 @@ enum RoamTools {
                 switch action {
                 case "new":
                     if let written = arguments["url"]?.string, let site = Self.site(written) {
-                        if LocalAddress.isLocal(site.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+                        var isLocalNewTab = LocalAddress.isLocal(site.url)
+                        if !isLocalNewTab { isLocalNewTab = await LocalAddress.resolvesToLocal(site.url) }
+                        if isLocalNewTab { return ToolOutput(LocalAddress.refusal, isError: true) }
                         guard sites.allows(site.host, chat: chat) else { return ToolOutput("这一轮还没去过 \(site.host)：先用 browser_open 打开它（会问用户），再开新标签。", isError: true) }
                         _ = await browser.newTab(for: chat, site.url)
                     } else {
@@ -810,11 +832,12 @@ struct RoamPage: View {
                     Button(L.t("roam.newTab"), systemImage: "plus") { Task { await browser.newTab(); editing = true } }
                     Button(L.t("roam.closeTab"), systemImage: "xmark", role: .destructive) { browser.closeTab(browser.currentTab) }
                 } label: {
+                    let badgeSide = 22 * UIScale.factor
                     Text("\(browser.tabs.count)")
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.ink)
-                        .frame(width: 22, height: 22)
-                        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Ink.ink, lineWidth: 1.5))
+                        .frame(width: badgeSide, height: badgeSide)
+                        .overlay(RoundedRectangle(cornerRadius: Kit.iconCorner(badgeSide), style: .continuous).strokeBorder(Ink.ink, lineWidth: 1.5))
                         .frame(width: Kit.badge, height: Ink.Bar.height)
                 }
                 .accessibilityLabel(L.format("roam.tabCount", browser.tabs.count))
@@ -836,7 +859,11 @@ struct RoamPage: View {
                         Section(Words.t("这次下载到书案/收件的")) {
                             // Each opens to read, as Open Minis' downloads panel does.
                             ForEach(browser.downloads.suffix(8).reversed(), id: \.self) { path in
-                                Button(path, systemImage: FileCard.symbol(for: path)) { previewing = Workspace.resolve(path) }
+                                Button(path, systemImage: FileCard.symbol(for: path)) {
+                                    if let resolved = Workspace.resolve(path), Workspace.isInsideRealRoot(resolved, root: Workspace.root) {
+                                        previewing = resolved
+                                    }
+                                }
                             }
                         }
                     } label: {
