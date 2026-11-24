@@ -13,7 +13,12 @@ final class PetLibrary {
     static let shared = PetLibrary()
 
     /// The pack that is yours. Bundled packs are "builtin-<folder>", imported ones "user-<name>".
-    var choice: String { didSet { UserDefaults.standard.set(choice, forKey: "pet.choice") } }
+    var choice: String {
+        didSet {
+            UserDefaults.standard.set(choice, forKey: "pet.choice")
+            if oldValue != choice { PetSheets.activate(choice) }
+        }
+    }
     /// Stands on the composer. Off, it still appears in portraits and illustrations.
     var visible: Bool { didSet { UserDefaults.standard.set(visible, forKey: "pet.visible") } }
     /// Requested size relative to the 48-point standard, rounded for the current sprite and screen when drawn.
@@ -44,6 +49,7 @@ final class PetLibrary {
         quiet = store.bool(forKey: "pet.quiet")
         hiddenUntil = (store.object(forKey: "pet.hiddenUntil") as? Double).map(Date.init(timeIntervalSince1970:))
         if savedScale == nil, oldSize != nil { store.set(factor, forKey: "pet.sizeScale") }
+        PetSheets.activate(choice)
         Task { await reload() }
     }
 
@@ -71,6 +77,7 @@ final class PetLibrary {
         }.value
         packs = Self.ordered(found)
         if !packs.isEmpty, !packs.contains(where: { $0.id == choice }) { choice = Self.standard }
+        PetSheets.activate(choice)
         loading = false
     }
 
@@ -119,6 +126,7 @@ final class PetLibrary {
         do { try FileManager.default.removeItem(at: pack.dir) } catch { return }
         PetSheets.forget(id)
         if choice == id { choice = Self.standard }
+        PetSheets.activate(choice)
         packs.removeAll { $0.id == id }
     }
 
