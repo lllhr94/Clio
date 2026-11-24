@@ -358,11 +358,14 @@ extension TeamModel {
         guard canMutateMemoryState,
               let memory = memories.first(where: { $0.id == id }),
               memory.text == fact, memory.by != nil, memory.editedByUser != true else { return false }
-        return deleteMemory(id)
+        return performDeleteMemory(id)
     }
 
-    @discardableResult
-    func deleteMemory(_ id: String) -> Bool {
+    func deleteMemory(_ id: String) {
+        _ = performDeleteMemory(id)
+    }
+
+    private func performDeleteMemory(_ id: String) -> Bool {
         guard canMutateMemoryState else { return false }
         let removed = memories.first { $0.id == id }
         let now = Now.ms
