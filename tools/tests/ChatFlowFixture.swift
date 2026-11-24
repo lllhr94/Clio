@@ -8,6 +8,7 @@ import CoreGraphics
 // RULE: STREAM_BLOCKS
 // RULE: DRAFT_INPUT
 // RULE: TURN_EVENT
+// RULE: INLINE_APPROVAL
 
 private enum ScrollPhase { case idle, interacting, decelerating, animating }
 
@@ -306,11 +307,33 @@ private enum ChatFlowTests {
             try await inlineApprovalWaitsForLayout()
             try smartApprovalQueries()
             try passiveReadingHasNoResizeAnchor()
+            try inlineApprovalRouting()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    static func inlineApprovalRouting() throws {
+        try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: false, tool: "shell", hasCode: true),
+                  true, "Ordinary approval is available in chat")
+        for tool in ["shell", "ssh_run", "ssh_job_start", "run_js"] {
+            try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: tool, hasCode: false),
+                      false, "An inline command approval must show the complete payload")
+            try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: tool, hasCode: true),
+                      true, "A forced command with the full payload can ask inline")
+        }
+        for tool in ["browser_fill_secret", "gmail_send", "schedule_task", "open_link", "browser_type", "mcp_calendar", "ssh_job_stop", "ssh_job_check"] {
+            try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: tool, hasCode: true),
+                      false, "Other forced approvals use the full slip (\(tool))")
+        }
+        try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: nil, hasCode: true),
+                  false, "A forced approval without a tool identifier uses the full slip")
+        try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: false, tool: "open_link", hasCode: false),
+                  true, "An ordinary text approval stays available in chat")
+        try check(InlineApprovalPolicy.canAnswer(answerable: false, forced: true, tool: "shell", hasCode: true),
+                  false, "An old approval stays read-only")
     }
 
     @MainActor

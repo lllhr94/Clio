@@ -81,8 +81,10 @@ extension ChatPage {
         switch card {
         case .waiting:
             if let waiting {
-                // A plain ask is answered right here; a forced one (after reading the web) gets the full slip.
-                if waiting.forced == true || waiting.answerable == false {
+                if !InlineApprovalPolicy.canAnswer(answerable: waiting.answerable != false,
+                                                   forced: waiting.forced == true,
+                                                   tool: waiting.toolName,
+                                                   hasCode: waiting.detail?.code?.isEmpty == false) {
                     Button {
                         Haptics.grab()
                         presentApproval(waiting)
