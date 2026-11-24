@@ -72,6 +72,13 @@ public final class MemoryStore: @unchecked Sendable {
         return try readMetaStructLocked()
     }
 
+    func foreignKeysEnabledForTesting() throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = try openOrRecoverLocked()
+        return try scalarInt32Locked("PRAGMA foreign_keys;") == 1
+    }
+
     public func checkpoint() throws {
         lock.lock()
         defer { lock.unlock() }
@@ -256,6 +263,7 @@ public final class MemoryStore: @unchecked Sendable {
             if let tomb = try fetchTombstoneLocked(textSHA256: safeHash) {
                 if explicitUserAction {
                     try deleteTombstoneLocked(textSHA256: safeHash)
+                    try purgeDeletedRowsLocked(textSHA256: safeHash, excludingID: candidate.id)
                     candidate.updatedAtMs = max(candidate.updatedAtMs, tomb.deletedAtMs + 1)
                 } else if candidate.automatic && !candidate.editedByUser {
                     return nil
@@ -519,6 +527,7 @@ public final class MemoryStore: @unchecked Sendable {
             row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
             try upsertRecordRowLocked(row)
             try deleteTombstoneLocked(textSHA256: row.textSHA256)
+            try purgeDeletedRowsLocked(textSHA256: row.textSHA256, excludingID: row.id)
             try bumpRevisionLocked()
             return row
         }
@@ -1684,6 +1693,13 @@ public final class MemoryStore: @unchecked Sendable {
                 .double(tomb.deletedAtMs),
                 .text(tomb.reason),
             ]
+        )
+    }
+
+    private func purgeDeletedRowsLocked(textSHA256: String, excludingID: String) throws {
+        try runPreparedLocked(
+            "DELETE FROM memories WHERE text_sha256 = ? AND deleted_at_ms IS NOT NULL AND id != ?;",
+            bindings: [.text(textSHA256), .text(excludingID)]
         )
     }
 

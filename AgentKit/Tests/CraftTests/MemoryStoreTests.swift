@@ -65,7 +65,7 @@ final class MemoryStoreTests: XCTestCase {
         defer { sqlite3_close_v2(raw) }
         XCTAssertEqual(try rawString(raw, sql: "PRAGMA journal_mode;").lowercased(), "wal")
         XCTAssertEqual(try rawInt(raw, sql: "PRAGMA user_version;"), 1)
-        XCTAssertEqual(try rawInt(raw, sql: "PRAGMA foreign_keys;"), 1)
+        XCTAssertTrue(try store.foreignKeysEnabledForTesting())
 
         _ = try store.upsert(
             MemoryRecord(
