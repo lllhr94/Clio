@@ -360,6 +360,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.photoZoomNamespace) private var photoZoomNamespace
 
     @AppStorage("chat.faces") private var faces = false
     @AppStorage("look.thinking") private var showThinking = true
@@ -368,6 +369,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
     @State private var fullFrame: CGRect = .zero
     @State private var safeFrame: CGRect = .zero
     @State private var rowsMemo = ChatRowsMemo()
+    @State private var photoHero: ChatPhotoHeroTarget?
 
     private var safeTopInset: CGFloat {
         guard fullFrame.height > 0, safeFrame.height > 0 else { return 0 }
@@ -407,6 +409,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
     var body: some View {
         let state = makeListState()
         ZStack {
+            photoHeroProxy
+
             ChatListUIKitRepresentable(
                 state: state,
                 styleSignal: styleSignal,
@@ -416,6 +420,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 touchScrolling: $touchScrolling,
                 quote: $quote,
                 jumpedTo: $jumpedTo,
+                photoHero: $photoHero,
                 chrome: chrome,
                 viewport: viewport,
                 petPerch: petPerch,
@@ -452,6 +457,45 @@ struct ChatUIKitContainer<Minimap: View>: View {
         }
         .onChange(of: followState.following, initial: true) { _, resting in
             petPerch.avoidsReplies = resting
+        }
+    }
+
+    @ViewBuilder
+    private var photoHeroProxy: some View {
+        if let photoZoomNamespace, !reduceMotion, fullFrame.height > 0 {
+            let localRect = resolvedHeroLocalRect
+            let heroID = photoHero?.id ?? "__clio-photo-hero-idle__"
+            photoHeroPreviewContent
+                .frame(width: localRect.width, height: localRect.height)
+                .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                .modifier(PhotoZoomSourceModifier(id: heroID, namespace: photoZoomNamespace, enabled: true))
+                .position(x: localRect.midX, y: localRect.midY)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var resolvedHeroLocalRect: CGRect {
+        guard let hero = photoHero else {
+            return CGRect(x: 0, y: 0, width: ChatCellMetrics.photoSize, height: ChatCellMetrics.photoSize)
+        }
+        return CGRect(
+            x: hero.globalRect.minX - fullFrame.minX,
+            y: hero.globalRect.minY - fullFrame.minY,
+            width: max(1, hero.globalRect.width),
+            height: max(1, hero.globalRect.height)
+        )
+    }
+
+    @ViewBuilder
+    private var photoHeroPreviewContent: some View {
+        if let thumb = photoHero?.image {
+            Image(uiImage: thumb)
+                .resizable()
+                .scaledToFill()
+        } else {
+            Ink.paperRaised.opacity(0.7)
         }
     }
 
@@ -600,6 +644,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     @Binding var touchScrolling: Bool
     @Binding var quote: String?
     @Binding var jumpedTo: String?
+    @Binding var photoHero: ChatPhotoHeroTarget?
     let chrome: ChatChrome
     let viewport: ChatViewport
     let petPerch: PetPerch
@@ -662,12 +707,12 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
                 uiViewController.refreshTypographyAndTheme()
             }
 
-            uiViewController.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
-
             if coordinator.lastSyncedFollowing != following {
                 coordinator.lastSyncedFollowing = following
                 uiViewController.setFollowingFromHost(following)
             }
+
+            uiViewController.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
 
             uiViewController.applyState(state)
         }
@@ -807,6 +852,39 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         actions.onPickStarter = { [weak coordinator] text in
             guard let coordinator, !coordinator.isDismantled else { return }
             onPickStarter(text)
+        }
+
+        actions.onPreparePhotoHero = { [weak coordinator] target in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if photoHero != target {
+                photoHero = target
+            }
+            bridge.matchedHeroID = target.id
+        }
+
+        actions.onClearPhotoHero = { [weak coordinator] id in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if bridge.matchedHeroID == id {
+                bridge.matchedHeroID = nil
+            }
+            if photoHero?.id == id {
+                photoHero = nil
+            }
+        }
+
+        actions.currentPreparedHeroID = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return nil }
+            return photoHero?.id
+        }
+
+        bridge.onDismissPhotoHero = { [weak coordinator] dismissedID in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if bridge.matchedHeroID == dismissedID {
+                bridge.matchedHeroID = nil
+            }
+            if photoHero?.id == dismissedID {
+                photoHero = nil
+            }
         }
     }
 

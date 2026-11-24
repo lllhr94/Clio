@@ -54,6 +54,42 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
     private var userDefaultsObserver: NSObjectProtocol?
+    private var keyboardObserverTokens: [NSObjectProtocol] = []
+
+    private let keyboardSpacerView = UIView()
+    private var insetDisplayLink: CADisplayLink?
+    private var insetCatchUpStartTime: CFTimeInterval = 0
+    private var insetCatchUpDuration: CFTimeInterval = 0
+    private var insetCatchUpFromBottom: CGFloat = 0
+    private var insetCatchUpToBottom: CGFloat = 0
+    private var targetTopInset: CGFloat = 0
+    private var targetBottomInset: CGFloat = 0
+
+    private var activeKeyboardStartOverlap: CGFloat = 0
+    private var activeKeyboardEndOverlap: CGFloat = 0
+    private var activeKeyboardDuration: TimeInterval = 0
+    private var activeKeyboardDeadline: CFTimeInterval = 0
+
+    private var isTrackingUserScroll = false
+    private var wasPinnedAtDragStart = false
+    private var userMovedAwayFromBottomDuringDrag = false
+    private var lastReportedHeroTarget: ChatPhotoHeroTarget?
+
+    private var isUserTouchScrolling: Bool {
+        guard collectionView != nil else { return false }
+        return collectionView.isDragging || collectionView.isDecelerating || isTrackingUserScroll
+    }
+
+    private var canAutoPinToBottom: Bool {
+        isPinnedToBottom
+            && !isUserTouchScrolling
+            && !(currentState?.historyInView ?? false)
+            && selectingOwnerIDs.isEmpty
+    }
+
+    private var reduceMotionEnabled: Bool {
+        currentState?.reduceMotion ?? UIAccessibility.isReduceMotionEnabled
+    }
 
     func performHostUpdate(_ work: () -> Void) {
         let wasInHost = isInHostUpdate
@@ -66,15 +102,21 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isDismantled = true
         pendingHostMetricFlush = false
         pendingDynamicRefresh = false
+        stopInsetDisplayLink()
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = nil
         if let observer = userDefaultsObserver {
             NotificationCenter.default.removeObserver(observer)
             userDefaultsObserver = nil
         }
+        for token in keyboardObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        keyboardObserverTokens.removeAll()
         let owner = lastReportedReplyOwner
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
+        lastReportedHeroTarget = nil
         return owner
     }
 
@@ -88,9 +130,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     deinit {
+        insetDisplayLink?.invalidate()
         loadEarlierResetTask?.cancel()
         if let observer = userDefaultsObserver {
             NotificationCenter.default.removeObserver(observer)
+        }
+        for token in keyboardObserverTokens {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 
@@ -99,6 +145,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         currentStyle = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
         view.backgroundColor = UIColor(Ink.paper)
 
+        setupKeyboardTracking()
         setupCollectionView()
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) { (controller: ChatListViewController, _) in
@@ -728,11 +775,26 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         loadEarlierResetTask = nil
         clearAllSelections()
         layoutCache.invalidateAll()
+        stopInsetDisplayLink()
         animatedScrollID &+= 1
         isPinnedToBottom = true
+        isTrackingUserScroll = false
+        wasPinnedAtDragStart = false
+        userMovedAwayFromBottomDuringDrag = false
         hasPerformedInitialScroll = false
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
+        lastReportedHeroTarget = nil
+        if let heroID = actions.currentPreparedHeroID() {
+            if isInHostUpdate {
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isDismantled else { return }
+                    self.actions.onClearPhotoHero(heroID)
+                }
+            } else {
+                actions.onClearPhotoHero(heroID)
+            }
+        }
         scheduleHostMetricsFlush()
 
         items = buildItemIDs(for: next)
@@ -914,7 +976,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             pendingSelectionTransfers[targetBotID] = snap
         }
 
-        let shouldPinToBottom = isPinnedToBottom && !next.historyInView && selectingOwnerIDs.isEmpty
+        let shouldPinToBottom = canAutoPinToBottom
         let switchedHistoryView = prev.historyInView != next.historyInView
         let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!shouldPinToBottom && !switchedHistoryView && pendingScrollRequest == nil)
             ? topVisibleAnchor()
@@ -1181,6 +1243,158 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    @MainActor
+    private final class InsetClock: NSObject {
+        weak var owner: ChatListViewController?
+        init(_ owner: ChatListViewController) { self.owner = owner }
+        @objc func beat(_ link: CADisplayLink) {
+            guard let owner else { link.invalidate(); return }
+            owner.stepInsetTick(link)
+        }
+    }
+
+    private func setupKeyboardTracking() {
+        keyboardSpacerView.backgroundColor = .clear
+        keyboardSpacerView.isUserInteractionEnabled = false
+        keyboardSpacerView.isAccessibilityElement = false
+        keyboardSpacerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(keyboardSpacerView)
+        view.keyboardLayoutGuide.followsUndockedKeyboard = true
+        NSLayoutConstraint.activate([
+            keyboardSpacerView.topAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            keyboardSpacerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            keyboardSpacerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            keyboardSpacerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        let willChange = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let beginRect = (note.userInfo?[UIResponder.keyboardFrameBeginUserInfoKey] as? NSValue)?.cgRectValue
+            let endRect = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval) ?? 0.25
+            MainActor.assumeIsolated {
+                self?.handleKeyboardWillChangeFrame(beginScreen: beginRect, endScreen: endRect, duration: duration)
+            }
+        }
+        let didChange = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardDidChangeFrameNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let endRect = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            MainActor.assumeIsolated {
+                self?.handleKeyboardDidChangeFrame(endScreen: endRect)
+            }
+        }
+        keyboardObserverTokens = [willChange, didChange]
+    }
+
+    private func keyboardOverlap(forScreenRect screenRect: CGRect) -> CGFloat {
+        guard let screen = view.window?.windowScene?.screen else { return 0 }
+        let local = view.convert(screenRect, from: screen.coordinateSpace)
+        return max(0, view.bounds.maxY - local.minY)
+    }
+
+    private func currentKeyboardLayoutOverlap() -> CGFloat {
+        max(0, view.bounds.maxY - view.keyboardLayoutGuide.layoutFrame.minY)
+    }
+
+    private func handleKeyboardWillChangeFrame(beginScreen: CGRect?, endScreen: CGRect?, duration: TimeInterval) {
+        guard !isDismantled, isViewLoaded, view.window != nil else { return }
+        let beginOverlap = beginScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
+        let endOverlap = endScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
+
+        activeKeyboardStartOverlap = beginOverlap
+        activeKeyboardEndOverlap = endOverlap
+        activeKeyboardDuration = duration
+        if duration > 0.01 {
+            activeKeyboardDeadline = CACurrentMediaTime() + duration + 0.12
+        } else {
+            activeKeyboardDeadline = 0
+        }
+
+        if insetDisplayLink != nil && abs(insetCatchUpToBottom - insetCatchUpFromBottom) > 0.5 && duration > 0.01 {
+            insetCatchUpDuration = max(0.08, duration)
+        }
+    }
+
+    private func handleKeyboardDidChangeFrame(endScreen: CGRect?) {
+        guard !isDismantled, isViewLoaded, view.window != nil else { return }
+        if let endScreen {
+            activeKeyboardEndOverlap = keyboardOverlap(forScreenRect: endScreen)
+            activeKeyboardStartOverlap = activeKeyboardEndOverlap
+        }
+        activeKeyboardDeadline = 0
+        if insetDisplayLink != nil {
+            stopInsetDisplayLink()
+            applyInsetsNow(top: targetTopInset, bottom: targetBottomInset)
+        }
+    }
+
+    private func currentKeyboardAnimationProgress() -> CGFloat? {
+        let kbDelta = activeKeyboardEndOverlap - activeKeyboardStartOverlap
+        guard abs(kbDelta) > 1,
+              keyboardSpacerView.layer.animationKeys()?.isEmpty == false,
+              let presentation = keyboardSpacerView.layer.presentation(),
+              view.bounds.height > 0 else {
+            return nil
+        }
+        let currentOverlap = max(0, view.bounds.maxY - presentation.frame.minY)
+        let raw = (currentOverlap - activeKeyboardStartOverlap) / kbDelta
+        return min(1, max(0, raw))
+    }
+
+    private func startInsetCatchUp(toBottom desiredBottom: CGFloat, duration: TimeInterval) {
+        guard collectionView != nil else { return }
+        insetCatchUpFromBottom = collectionView.contentInset.bottom
+        insetCatchUpToBottom = desiredBottom
+        insetCatchUpStartTime = CACurrentMediaTime()
+        insetCatchUpDuration = max(0.08, duration)
+
+        if insetDisplayLink == nil {
+            let link = CADisplayLink(target: InsetClock(self), selector: #selector(InsetClock.beat(_:)))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            link.add(to: .main, forMode: .common)
+            insetDisplayLink = link
+        }
+    }
+
+    private func stopInsetDisplayLink() {
+        insetDisplayLink?.invalidate()
+        insetDisplayLink = nil
+    }
+
+    private func stepInsetTick(_ link: CADisplayLink) {
+        guard !isDismantled, isViewLoaded, collectionView != nil, collectionView.bounds.width > 0 else {
+            stopInsetDisplayLink()
+            return
+        }
+        let now = link.timestamp
+        let progress: CGFloat
+        if now <= activeKeyboardDeadline,
+           let kbProgress = currentKeyboardAnimationProgress() {
+            progress = kbProgress
+        } else {
+            let elapsed = max(0, now - insetCatchUpStartTime)
+            let dur = max(0.01, insetCatchUpDuration)
+            let t = min(1, elapsed / dur)
+            progress = CGFloat(t * t * (3 - 2 * t))
+        }
+
+        let nextBottom = insetCatchUpFromBottom + (insetCatchUpToBottom - insetCatchUpFromBottom) * progress
+        let finished = progress >= 1 || abs(nextBottom - insetCatchUpToBottom) < 0.5
+        let resolvedBottom = finished ? insetCatchUpToBottom : nextBottom
+
+        applyInsetsNow(top: targetTopInset, bottom: resolvedBottom)
+
+        if finished {
+            stopInsetDisplayLink()
+        }
+    }
+
     private var hostTopInset: CGFloat = 0
     private var hostBottomInset: CGFloat = 0
 
@@ -1200,20 +1414,92 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ? hostTopInset
             : max(view.safeAreaInsets.top, windowTop + (currentState?.headerHeight ?? 0))
         let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
-        let topInset = resolvedTop + Ink.Space.s
-        let bottomInset = resolvedBottom + Ink.Space.xs
-        let current = collectionView.contentInset
-        guard abs(current.top - topInset) > 0.5 || abs(current.bottom - bottomInset) > 0.5 else { return }
+        let desiredTop = resolvedTop + Ink.Space.s
+        let desiredBottom = resolvedBottom + Ink.Space.xs
 
+        let comparedTop = insetDisplayLink != nil ? targetTopInset : collectionView.contentInset.top
+        let comparedBottom = insetDisplayLink != nil ? targetBottomInset : collectionView.contentInset.bottom
+        guard abs(comparedTop - desiredTop) > 0.5 || abs(comparedBottom - desiredBottom) > 0.5 else { return }
+
+        targetTopInset = desiredTop
+        targetBottomInset = desiredBottom
+
+        guard hasPerformedInitialScroll else {
+            stopInsetDisplayLink()
+            applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+            return
+        }
+
+        let bottomDelta = desiredBottom - collectionView.contentInset.bottom
+        if abs(bottomDelta) <= 0.5 {
+            stopInsetDisplayLink()
+            applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+            return
+        }
+
+        let now = CACurrentMediaTime()
+        let inKeyboardWindow = now <= activeKeyboardDeadline
+            && activeKeyboardDuration > 0.01
+            && abs(activeKeyboardEndOverlap - activeKeyboardStartOverlap) > 1
+        let isInteractiveFingerFollow = collectionView.isDragging && !inKeyboardWindow
+        let shouldSnapImmediately = isInteractiveFingerFollow || (reduceMotionEnabled && (!inKeyboardWindow || activeKeyboardDuration <= 0.01))
+
+        if shouldSnapImmediately {
+            stopInsetDisplayLink()
+            applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+        } else {
+            let duration = inKeyboardWindow ? max(0.08, activeKeyboardDuration) : 0.22
+            startInsetCatchUp(toBottom: desiredBottom, duration: duration)
+        }
+    }
+
+    private func applyInsetsNow(top: CGFloat, bottom: CGFloat) {
+        guard collectionView != nil, collectionView.bounds.width > 0 else { return }
+        let current = collectionView.contentInset
+        guard abs(current.top - top) > 0.25 || abs(current.bottom - bottom) > 0.25 else { return }
+
+        let shouldPinToBottom = canAutoPinToBottom
+        let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!shouldPinToBottom && hasPerformedInitialScroll && !isUserTouchScrolling)
+            ? topVisibleAnchor()
+            : nil
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         let wasProgrammatic = isProgrammaticScroll
         isProgrammaticScroll = true
-        collectionView.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
-        collectionView.verticalScrollIndicatorInsets = collectionView.contentInset
-        if hasPerformedInitialScroll && isPinnedToBottom && !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty {
-            scrollToBottom(animated: false)
+
+        let nextInset = UIEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+        collectionView.contentInset = nextInset
+        collectionView.verticalScrollIndicatorInsets = nextInset
+
+        if hasPerformedInitialScroll {
+            if shouldPinToBottom {
+                scrollToBottom(animated: false)
+            } else if !isUserTouchScrolling,
+                      let anchor,
+                      let newIdx = itemIndexByID[anchor.id],
+                      let afterAttrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: newIdx)) {
+                let minY = -nextInset.top
+                let maxY = bottomOffsetY(for: collectionView)
+                let desiredY = afterAttrs.frame.minY - anchor.visualY
+                let clampedY = min(maxY, max(minY, desiredY))
+                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
+                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
+                }
+            } else if !isUserTouchScrolling {
+                let minY = -nextInset.top
+                let maxY = bottomOffsetY(for: collectionView)
+                let clampedY = min(maxY, max(minY, collectionView.contentOffset.y))
+                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
+                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
+                }
+            }
         }
+
         lastScrollOffsetY = collectionView.contentOffset.y
         isProgrammaticScroll = wasProgrammatic
+        CATransaction.commit()
+
         if hasPerformedInitialScroll {
             publishVisibleAndFooterMetrics()
         }
@@ -1273,7 +1559,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func preserveReadingAnchorDuring(_ work: () -> Void) {
         let anchor = topVisibleAnchor()
-        let wasPinned = isPinnedToBottom && !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty
+        let wasPinned = canAutoPinToBottom
         UIView.performWithoutAnimation {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -1282,7 +1568,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             work()
             if wasPinned {
                 scrollToBottom(animated: false)
-            } else if let anchor,
+            } else if !isUserTouchScrolling,
+                      let anchor,
                       let newIdx = itemIndexByID[anchor.id],
                       let afterAttrs = resolvedLayoutAttributes(at: IndexPath(item: 0, section: newIdx)) {
                 let targetY = afterAttrs.frame.minY - anchor.visualY
@@ -1296,7 +1583,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func applyStreamingResizePreservingScroll() {
         let savedOffsetY = collectionView.contentOffset.y
-        let pinned = isPinnedToBottom && !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty
+        let pinned = canAutoPinToBottom
         let wasProgrammatic = isProgrammaticScroll
 
         UIView.performWithoutAnimation {
@@ -1309,7 +1596,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
             if pinned {
                 scrollToBottom(animated: false)
-            } else if !wasProgrammatic {
+            } else if !wasProgrammatic && !isUserTouchScrolling {
                 collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: savedOffsetY)
             }
 
@@ -1327,7 +1614,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func setFollowingFromHost(_ following: Bool) {
         isPinnedToBottom = following
-        if following && isViewLoaded && collectionView.bounds.width > 0 && !(currentState?.historyInView ?? false) && !isProgrammaticScroll {
+        if following,
+           !isUserTouchScrolling,
+           selectingOwnerIDs.isEmpty,
+           isViewLoaded,
+           collectionView.bounds.width > 0,
+           !(currentState?.historyInView ?? false),
+           !isProgrammaticScroll {
             let dist = bottomOffsetY(for: collectionView) - collectionView.contentOffset.y
             if dist > 2 {
                 scrollToBottom(animated: false)
@@ -1489,6 +1782,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         dragStartOffsetY = scrollView.contentOffset.y
+        isTrackingUserScroll = true
+        wasPinnedAtDragStart = isPinnedToBottom
+        userMovedAwayFromBottomDuringDrag = false
         if isProgrammaticScroll {
             animatedScrollID &+= 1
             isProgrammaticScroll = false
@@ -1497,10 +1793,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         actions.onTouchScrollingChanged(true, true)
         actions.chat.setBrowsingHistory(true)
         actions.onScrollingChanged(true)
-        actions.onDragStarted()
-        if isPinnedToBottom {
-            isPinnedToBottom = false
-            actions.onFollowingChanged(false)
+        if !isPinnedToBottom {
+            actions.onDragStarted()
         }
     }
 
@@ -1524,19 +1818,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func handleUserScrollEnded(_ scrollView: UIScrollView) {
+        isTrackingUserScroll = false
         actions.onScrollPhaseChanged("静止")
         actions.onTouchScrollingChanged(false, false)
         actions.chat.setBrowsingHistory(false)
         actions.onScrollingChanged(false)
 
         let distanceFromBottom = bottomOffsetY(for: scrollView) - scrollView.contentOffset.y
-        let shouldFollow = !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty && distanceFromBottom < 80
+        let withinFollowThreshold = distanceFromBottom < 80
+            || (wasPinnedAtDragStart && !userMovedAwayFromBottomDuringDrag && distanceFromBottom < 120)
+        let shouldFollow = !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty && withinFollowThreshold
         if isPinnedToBottom != shouldFollow {
             isPinnedToBottom = shouldFollow
             actions.onFollowingChanged(shouldFollow)
         }
-        if shouldFollow && distanceFromBottom > 2 {
-            scrollToBottom(animated: false)
+        if shouldFollow && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
+            scrollToBottom(animated: distanceFromBottom > 12)
         }
         actions.onScrollEnded()
         publishVisibleAndFooterMetrics()
@@ -1550,13 +1847,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         lastScrollOffsetY = currentY
 
         let bottomY = bottomOffsetY(for: scrollView)
-        let isUserTouchScrolling = scrollView.isDragging || scrollView.isDecelerating
+        let touching = scrollView.isDragging || scrollView.isDecelerating
         if !isProgrammaticScroll && !isInHostUpdate {
-            let userMoving = scrollView.isTracking || isUserTouchScrolling
+            let userMoving = scrollView.isTracking || touching
             let movedUp = currentY < prevY - 0.5 || (scrollView.isDragging && currentY < dragStartOffsetY - 0.5)
-            if userMoving && movedUp && currentY < bottomY - 2 && isPinnedToBottom {
-                isPinnedToBottom = false
-                actions.onFollowingChanged(false)
+            if userMoving && movedUp && currentY < bottomY - 4 {
+                userMovedAwayFromBottomDuringDrag = true
+                if isPinnedToBottom {
+                    isPinnedToBottom = false
+                    actions.onFollowingChanged(false)
+                    actions.onDragStarted()
+                }
             }
         }
 
@@ -1564,7 +1865,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let movingUp = currentY < prevY
         if !isProgrammaticScroll,
            !isInHostUpdate,
-           isUserTouchScrolling,
+           touching,
            !isPinnedToBottom,
            !isLoadingEarlierRequest,
            selectingOwnerIDs.isEmpty,
@@ -1590,6 +1891,21 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         } else if let user = cell as? ChatUserCell {
             for uuid in user.activeSelectionOwnerIDs() {
                 handleSelectionChanged(uuid, false)
+            }
+            if let heroID = actions.currentPreparedHeroID(),
+               user.containsAttachment(heroID),
+               actions.bridge.activeViewingPhotoID != heroID {
+                if lastReportedHeroTarget?.id == heroID {
+                    lastReportedHeroTarget = nil
+                }
+                if isInHostUpdate {
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isDismantled else { return }
+                        self.actions.onClearPhotoHero(heroID)
+                    }
+                } else {
+                    actions.onClearPhotoHero(heroID)
+                }
             }
         }
     }
@@ -1621,6 +1937,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         ids.reserveCapacity(visiblePaths.count)
         var latestOwner: String?
         var latestRect: CGRect = .null
+        let trackedHeroID = actions.currentPreparedHeroID()
+        var matchedHeroTarget: ChatPhotoHeroTarget?
 
         for path in visiblePaths where path.section < items.count {
             let itemID = items[path.section]
@@ -1631,7 +1949,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                let owner = cell.latestFooterOwnerID {
                 latestOwner = owner
                 latestRect = cell.footerActionsRectInWindow()
+            } else if let trackedHeroID,
+                      matchedHeroTarget == nil,
+                      let user = collectionView.cellForItem(at: path) as? ChatUserCell,
+                      let target = user.photoHeroTarget(for: trackedHeroID) {
+                matchedHeroTarget = target
             }
+        }
+
+        if let matchedHeroTarget, lastReportedHeroTarget != matchedHeroTarget {
+            lastReportedHeroTarget = matchedHeroTarget
+            actions.onPreparePhotoHero(matchedHeroTarget)
+        } else if trackedHeroID == nil {
+            lastReportedHeroTarget = nil
         }
 
         let distanceFromBottom = bottomOffsetY(for: collectionView) - collectionView.contentOffset.y

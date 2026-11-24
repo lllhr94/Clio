@@ -2145,6 +2145,9 @@ struct ProsePicture: View {
     let source: String
     var label: String = ""
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var zoomNamespace
+    @State private var zoomID = UUID()
     @State private var image: UIImage?
     @State private var remoteFile: URL?
     @State private var workspaceRef: WorkspaceFileRef?
@@ -2195,6 +2198,7 @@ struct ProsePicture: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 360, alignment: .leading)
                     .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .modifier(ProsePictureZoomSource(id: zoomID, namespace: zoomNamespace, enabled: !reduceMotion))
                     .onTapGesture {
                         if let ref = workspaceRef, !ref.isMountCurrent {
                             let decodedPath = source.removingPercentEncoding ?? source
@@ -2234,11 +2238,14 @@ struct ProsePicture: View {
             }
         }
         .sheet(isPresented: $open) {
-            if let activeWorkspaceRef {
-                NavigationStack { StudyFile(url: activeWorkspaceRef.url, mount: activeWorkspaceRef.mount, showsDone: true) }
-            } else if let remoteFile {
-                QuickPreview(url: remoteFile).ignoresSafeArea()
+            Group {
+                if let activeWorkspaceRef {
+                    NavigationStack { StudyFile(url: activeWorkspaceRef.url, mount: activeWorkspaceRef.mount, showsDone: true) }
+                } else if let remoteFile {
+                    QuickPreview(url: remoteFile).ignoresSafeArea()
+                }
             }
+            .modifier(ProsePictureZoomDestination(id: zoomID, namespace: zoomNamespace, enabled: !reduceMotion))
         }
     }
 
@@ -3320,6 +3327,34 @@ private struct ProseText: UIViewRepresentable {
                 return UIAction { _ in open(url) }
             }
             return defaultAction
+        }
+    }
+}
+
+private struct ProsePictureZoomSource: ViewModifier {
+    let id: UUID
+    let namespace: Namespace.ID
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.matchedTransitionSource(id: id, in: namespace)
+        } else {
+            content
+        }
+    }
+}
+
+private struct ProsePictureZoomDestination: ViewModifier {
+    let id: UUID
+    let namespace: Namespace.ID
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            content
         }
     }
 }

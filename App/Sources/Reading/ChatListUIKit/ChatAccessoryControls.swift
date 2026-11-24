@@ -274,7 +274,15 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
 final class ChatRemotePhotoView: UIView {
     private static let cache = NSCache<NSString, UIImage>()
 
+    var onPrepareTouch: ((String) -> Void)?
+    var onCancelTouch: ((String) -> Void)?
     var onTap: ((String) -> Void)?
+    var currentImage: UIImage? { imageView.image }
+
+    func frameInWindow() -> CGRect? {
+        guard window != nil, bounds.width > 0, bounds.height > 0 else { return nil }
+        return convert(bounds, to: nil)
+    }
 
     private let imageView = UIImageView()
     private let placeholderIcon = UIImageView()
@@ -309,6 +317,14 @@ final class ChatRemotePhotoView: UIView {
         spinner.hidesWhenStopped = true
         addSubview(spinner)
 
+        tapButton.addAction(UIAction { [weak self] _ in
+            guard let self, !self.currentAttachmentID.isEmpty else { return }
+            self.onPrepareTouch?(self.currentAttachmentID)
+        }, for: .touchDown)
+        tapButton.addAction(UIAction { [weak self] _ in
+            guard let self, !self.currentAttachmentID.isEmpty else { return }
+            self.onCancelTouch?(self.currentAttachmentID)
+        }, for: [.touchUpOutside, .touchCancel])
         tapButton.addAction(UIAction { [weak self] _ in
             guard let self, !self.currentAttachmentID.isEmpty else { return }
             Haptics.tick(0.5)
@@ -360,6 +376,8 @@ final class ChatRemotePhotoView: UIView {
         imageView.image = nil
         placeholderIcon.isHidden = true
         spinner.stopAnimating()
+        onPrepareTouch = nil
+        onCancelTouch = nil
         onTap = nil
     }
 
