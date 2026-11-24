@@ -4,17 +4,17 @@ import Foundation
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
 // RULE: STREAM_BLOCKS
 // RULE: DRAFT_INPUT
+// RULE: TURN_EVENT
 
-private enum ScrollPhase { case idle, interacting, decelerating }
+private enum ScrollPhase { case idle, interacting, decelerating, animating }
 
 private struct ScrollGeometry {
-    let contentSize: ContentSize
+    let contentSize: CGSize
+    let containerSize: CGSize
     let contentInsets: Insets
-    let visibleRect: VisibleRect
+    let contentOffset: CGPoint
 
-    struct ContentSize { let height: CGFloat }
-    struct Insets { let bottom: CGFloat }
-    struct VisibleRect { let maxY: CGFloat }
+    struct Insets { let top: CGFloat; let bottom: CGFloat }
 }
 
 private enum Words {
@@ -92,19 +92,38 @@ private final class FlowFixture {
     var jumpVisible = false
     var selecting: Set<UUID> = []
     var historyPage: [String]?
+    let viewport = Viewport()
+
+    final class Viewport {
+        var needsEndCorrection = true
+    }
 
     func lingerJumpButtons() {}
     func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
+    private var settleEnd: Task<Void, Never>?
     let clock = Clock()
+    private var alignment: CGFloat = 0
+
+    static func geometry(content: CGFloat = 800, offset: CGFloat) -> ScrollGeometry {
+        ScrollGeometry(contentSize: .init(width: 0, height: content),
+                       containerSize: .init(width: 0, height: 500),
+                       contentInsets: .init(top: 20, bottom: 100),
+                       contentOffset: .init(x: 0, y: offset))
+    }
+
+    func measure(content: CGFloat = 800, offset: CGFloat) -> Task<Void, Never>? {
+        let next = Self.endAlignment(Self.geometry(content: content, offset: offset))
+        if next != alignment {
+            alignment = next
+            endAlignmentChanged(next)
+        }
+        return followPending
+    }
 
     func changePhase(from old: ScrollPhase, to phase: ScrollPhase, at distance: CGFloat) {
-        let geometry = ScrollGeometry(
-            contentSize: .init(height: 800),
-            contentInsets: .init(bottom: 100),
-            visibleRect: .init(maxY: 900 - distance)
-        )
+        let geometry = Self.geometry(offset: 400 - distance)
         let context = (geometry: geometry, unused: ())
 // RULE: PHASE
     }
@@ -125,8 +144,56 @@ private final class FlowFixture {
     }
 
 // RULE: BELOW
+// RULE: END_ALIGNMENT
+// RULE: END_ALIGNMENT_CHANGED
+// RULE: SELECTION_CHANGED
 // RULE: FOLLOW
 // RULE: CLEAR_COMPOSER
+}
+
+private struct ChatLine {
+    enum Kind { case bot, note }
+    let id: String
+    let kind: Kind
+    let text: String
+}
+
+private enum Haptics {
+    static func tick(_ strength: Double) {}
+}
+
+private final class ReplyFixture {
+    struct Fresh {
+        let id: String
+        var shown: Int?
+    }
+
+    var target = "abcdef"
+    var streaming = "abc"
+    var pulse = ""
+    var thinking = ""
+    var finalCount = 0
+    var shown = 4
+    var publishedShown = 3
+    var fresh: Fresh?
+    var heldRows: [ChatLine]?
+    var lines: [ChatLine] = []
+
+    func update(_ next: [ChatLine], event: TurnEvent) { updateKeptRows(next, event: event) }
+    func advance() -> Bool { step() }
+    func apply(_ next: [ChatLine]) { lines = next }
+    func type() {}
+    func due() -> Bool { true }
+    func clearThinking() { thinking = "" }
+    func useBackupModel() {
+// RULE: STREAM_RESET
+    }
+    func add(_ piece: String) {
+// RULE: ADD_TEXT
+    }
+// RULE: KEPT_ROWS
+// RULE: RESET_REPLY
+// RULE: TYPING_STEP
 }
 
 @main
@@ -138,11 +205,114 @@ private enum ChatFlowTests {
             try await followingTheReader()
             try await latestFollowWins()
             try await sendingCoalesces()
+            try await skipFollowOnceAligned()
+            try await growingReplyKeepsFollowing()
+            try await releasingSelectionResumesFollowing()
+            try replyHandoff()
+            try replyBoundaries()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    @MainActor
+    static func skipFollowOnceAligned() async throws {
+        let flow = FlowFixture()
+        let request = flow.requestFollow()
+        await flow.clock.waitForSleepers(1)
+        flow.viewport.needsEndCorrection = false
+        try flow.clock.advance(32_000_000)
+        await request?.value
+        try check(flow.scrolls, [], "The system anchor settled the scroll before the delayed request")
+    }
+
+    static func replyHandoff() throws {
+        let flow = ReplyFixture()
+        let note = ChatLine(id: "note", kind: .note, text: "Status")
+        let scheduled = ChatLine(id: "scheduled", kind: .bot, text: "Scheduled delivery")
+        let reply = ChatLine(id: "reply", kind: .bot, text: "abcde")
+        flow.update([note, scheduled], event: .changed)
+        try check(flow.lines.map(\.id), ["note", "scheduled"], "Independent history changes still appear")
+        try check(flow.streaming, "abc", "A note and scheduled delivery leave the live reply in place")
+        flow.update([note, scheduled], event: .replyCommitted(reply.id))
+        try check(flow.streaming, "abc", "A missing saved row cannot replace the visible stream")
+        flow.update([note, reply, scheduled], event: .replyCommitted(reply.id))
+        try check(flow.fresh?.id, reply.id, "Only the committed row replaces the stream")
+        try check(flow.fresh?.shown, 3, "The saved row starts at the last visible character")
+        try check(flow.streaming, "", "The live row retires when its replacement is present")
+        try check(flow.advance(), true, "The rest of the kept reply can still animate")
+        try check(flow.fresh?.shown, 4, "The reply shows the next character")
+        try check(flow.advance(), false, "The completed reply stops animating on the final character")
+        try check(flow.fresh?.shown, nil, "The final character and settled row appear together")
+
+        let fast = ReplyFixture()
+        fast.publishedShown = 0
+        fast.streaming = ""
+        fast.update([reply], event: .replyCommitted(reply.id))
+        try check(fast.fresh?.shown, nil, "An instant reply can display in full without an empty frame")
+    }
+
+    @MainActor
+    static func growingReplyKeepsFollowing() async throws {
+        let flow = FlowFixture()
+        try check(FlowFixture.endAlignment(FlowFixture.geometry(content: 120, offset: -20)), 0,
+                  "A short conversation rests against its top inset")
+        try check(FlowFixture.endAlignment(FlowFixture.geometry(offset: 450)), -4,
+                  "An offset past the end after content shrinks is still detected")
+        flow.changePhase(from: .idle, to: .interacting, at: 40)
+        try check(flow.measure(offset: 360) == nil, true, "Movement under the finger never schedules a correction")
+        flow.changePhase(from: .interacting, to: .idle, at: 40)
+        let resumed = flow.measure(offset: 360)
+        try check(resumed != nil, true, "Releasing within 80 points schedules correction with no fresh geometry event")
+        await flow.clock.waitForSleepers(1)
+        let coalesced = flow.measure(offset: 340)
+        try check(coalesced != nil && resumed?.isCancelled == false, true, "Further drift keeps the correction already scheduled")
+        try flow.clock.advance(16_000_000)
+        await resumed?.value
+
+        let further = flow.measure(offset: 310)
+        try check(further != nil, true, "Continued drift schedules again without ever passing through aligned")
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(16_000_000)
+        await further?.value
+        try check(flow.scrolls, [false, false], "Both drift corrections ran")
+    }
+
+    @MainActor
+    static func releasingSelectionResumesFollowing() async throws {
+        let flow = FlowFixture()
+        let selection = UUID()
+        flow.selectionChanged(selection, true)
+        try check(flow.measure(offset: 350) == nil, true, "Geometry changes while selecting do not follow")
+        flow.selectionChanged(selection, false)
+        let resumed = flow.measure(offset: 350)
+        try check(resumed != nil, true, "Ending selection corrects existing drift")
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(16_000_000)
+        await resumed?.value
+        try check(flow.scrolls, [false], "Ending selection restarts following")
+    }
+
+    static func replyBoundaries() throws {
+        let flow = ReplyFixture()
+        flow.pulse = "old pulse"
+        flow.thinking = "old thought"
+        flow.useBackupModel()
+        try check(flow.streaming, "", "Switching models clears the previous visible stream")
+        try check(flow.pulse, "", "Switching models clears the previous pulse")
+        try check(flow.thinking, "", "Switching models clears the previous thought")
+        flow.add("new reply")
+        try check(flow.target, "new reply", "The backup model starts its own buffer")
+
+        flow.target = "\n \n"
+        flow.streaming = "\n \n"
+        flow.update([], event: .changed)
+        try check(flow.target, "\n \n", "An unrelated change does not discard whitespace in an active reply")
+        flow.update([], event: .replyCommitted("tool"))
+        try check(flow.target, "", "A whitespace-only tool preamble is retired when committed")
+        try check(flow.streaming, "", "The tool preamble no longer covers later thinking")
     }
 
     static func paragraphsAndFences() throws {
@@ -203,12 +373,21 @@ private enum ChatFlowTests {
         try check(flow.chat.browsing, true, "Holding off row refresh during the drag")
         flow.changePhase(from: .interacting, to: .idle, at: 80)
         try check(flow.following, false, "At the threshold, keep the reader's position")
+        flow.changePhase(from: .animating, to: .idle, at: 0)
+        try check(flow.following, false, "A programmatic scroll cannot turn following back on")
         try check(flow.requestFollow() == nil, true, "Arriving text does not restart following")
         flow.changePhase(from: .idle, to: .interacting, at: 80)
         flow.changePhase(from: .interacting, to: .decelerating, at: 79)
         try check(flow.following, false, "Wait for the user's fling to stop")
         flow.changePhase(from: .decelerating, to: .idle, at: 79)
         try check(flow.following, true, "Resume within 80 points including the composer inset")
+        await flow.clock.waitForSleepers(1)
+        let resumed = flow.measure(offset: 321)
+        try flow.clock.advance(16_000_000)
+        await resumed?.value
+        try check(flow.scrolls, [false], "Resuming near the end corrects the resting position")
+        flow.changePhase(from: .animating, to: .idle, at: 150)
+        try check(flow.following, true, "A programmatic scroll cannot turn following off")
         try check(flow.chat.browsing, false, "Resume row refresh when scrolling stops")
         flow.selecting.insert(UUID())
         try check(flow.requestFollow() == nil, true, "A selection prevents auto-follow")
@@ -219,7 +398,7 @@ private enum ChatFlowTests {
         flow.changePhase(from: .idle, to: .interacting, at: 300)
         try flow.clock.advance(32_000_000)
         await scheduled?.value
-        try check(flow.scrolls, [], "A drag stops the scheduled follow")
+        try check(flow.scrolls, [false], "A drag stops the scheduled follow")
     }
 
     @MainActor

@@ -210,20 +210,20 @@ extension ChatPage {
                     PulseBox(text: felt, temper: Temper.of(line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)))
                 }
                 let writing = chat.fresh?.id == line.id ? chat.fresh?.shown : nil
+                let found = writing == nil ? sources(for: line) : []
                 if let shown = writing {
                     StreamingProse(text: String(line.text.prefix(shown)))
                 } else {
                     // Long-press selects words (across paragraphs); what the old long-press menu had is behind ⋯ under the reply.
                     // When the sources row is under it, a 「来源：」 list the model wrote at the end is not shown twice.
-                    let shown = sources(for: line).isEmpty ? line.text : Self.withoutSourceList(line.text)
+                    let shown = found.isEmpty ? line.text : Self.withoutSourceList(line.text)
                     let looked = Self.lookback(shown)
                     // 「回望：…」 the companion wrote after its steps: a quiet line of its own, like 心绪, not body text.
                     if let note = looked.note { LookbackLine(text: note) }
                     SelectableProse(text: looked.rest)
                         .equatable()
                 }
-                let found = sources(for: line)
-                if !found.isEmpty, !(chat.fresh?.id == line.id) {
+                if !found.isEmpty {
                     SourcesRow(urls: found, titles: SourcesRow.titles(in: line.text)) { url in
                         typing = false
                         Task { await team.browser.open(url) }
@@ -233,7 +233,7 @@ extension ChatPage {
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
                 let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
                 // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
-                if writing == nil, newest ? !working : (!(chat.fresh?.id == line.id) && endsTurn(line)) {
+                if writing == nil, newest ? !working : endsTurn(line) {
                     footer(line, newest: newest)
                         .transition(.opacity)
                 }

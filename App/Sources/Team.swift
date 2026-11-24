@@ -54,6 +54,10 @@ struct Approval: Identifiable, Equatable {
 enum TurnEvent {
     /// The kept messages changed: read them again.
     case changed
+    /// This saved assistant row replaces the live reply.
+    case replyCommitted(String)
+    /// The next model starts a separate reply after a failed attempt.
+    case streamReset
     /// More of the reply being written.
     case text(String)
     /// A tool started.
@@ -764,7 +768,7 @@ final class TeamModel: ObservableObject {
         }
     }
 
-    func append(_ entry: Entry, to key: String, onSaved: (@Sendable (Bool) -> Void)? = nil) {
+    func append(_ entry: Entry, to key: String, event: TurnEvent = .changed, onSaved: (@Sendable (Bool) -> Void)? = nil) {
         var list = history(key)
         list.append(entry)
         entries[key] = list
@@ -773,7 +777,7 @@ final class TeamModel: ObservableObject {
         } else {
             onSaved?(true)
         }
-        notify(key, .changed)
+        notify(key, event)
     }
 
     func listen(_ key: String, _ handler: @escaping (TurnEvent) -> Void) -> UUID {
@@ -1137,7 +1141,8 @@ final class TeamModel: ObservableObject {
         let kept = streamed.removeValue(forKey: key)
         let partial = kept?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !partial.isEmpty {
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(partial + "……"), speaker: kept?.speaker), to: key)
+            let entry = Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(partial + "……"), speaker: kept?.speaker)
+            append(entry, to: key, event: .replyCommitted(entry.id))
         }
         pausing[key] = (doing: doing[key] ?? "干活", saved: !partial.isEmpty)
         pausedAway.insert(key)
@@ -1341,6 +1346,9 @@ final class TeamModel: ObservableObject {
             let used = "\(endpoint.id)/\(found.model)"
             if forced == nil, let backup = settings.backupModel, backup != used, let other = resolve(backup) {
                 let advice = Explain.model(error, service: endpoint.name)
+                streamed[key] = nil
+                pulseSplitters[key] = nil
+                notify(key, .streamReset)
                 append(Entry(id: UUID().uuidString, at: Now.ms,
                              message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(other.model) 接着答。"),
                              note: true), to: key)
@@ -1510,7 +1518,7 @@ final class TeamModel: ObservableObject {
                     }
                 }
             } else {
-                append(entry, to: key)
+                append(entry, to: key, event: message.role == .assistant ? .replyCommitted(entry.id) : .changed)
             }
             if message.role == .user { doing[key] = "收到插话，接着做" }
             if message.role == .assistant, !message.text.isEmpty { touch(key, preview: message.text, speaker: speaker) }
