@@ -73,9 +73,11 @@ extension ChatPage {
            let colon = last.firstIndex(where: { $0 == "：" || $0 == ":" }),
            ["来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References"].contains(String(last[..<colon]).trimmingCharacters(in: .whitespaces)) {
             let rest = last[last.index(after: colon)...]
-            let bare = rest.replacingOccurrences(of: #"\[[^\]]*\]\([^)]*\)|https?://\S+"#, with: "", options: .regularExpression)
-            if rest.contains("http"), bare.trimmingCharacters(in: CharacterSet(charactersIn: " 、，,;；。.")).isEmpty {
-                return lines.dropLast().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if rest.contains("http") {
+                let bare = rest.replacingOccurrences(of: #"\[[^\]]*\]\([^)]*\)|https?://\S+"#, with: "", options: .regularExpression)
+                if bare.trimmingCharacters(in: CharacterSet(charactersIn: " 、，,;；。.")).isEmpty {
+                    return lines.dropLast().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                }
             }
         }
         let heads = ["来源", "参考来源", "参考资料", "参考", "资料来源", "信息来源", "Sources", "References"]
@@ -181,6 +183,7 @@ extension ChatPage {
                     guard isSearch || isRead, position < step.details.count else { continue }
                     // Pages it read count first; then what a search brought back.
                     let text = isSearch ? step.details[position].output : step.details[position].input
+                    guard text.contains("http") else { continue }
                     for match in text.matches(of: #/https?://[^\s"'<>()\[\]，。]+/#) {
                         if let url = URL(string: String(match.output)), url.host != nil, !SourcesRow.isSearchPage(url), !urls.contains(url) { urls.append(url) }
                     }
@@ -253,16 +256,21 @@ extension ChatPage {
                     }
                 }
                 if !line.text.isEmpty {
+                    let isEditing = editing == line.id
                     Text(line.text)
                         .font(.system(size: Ink.Size.body))
                         .foregroundStyle(Ink.ink)
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, 10 * UIScale.factor)
-                        // Real Liquid Glass, as Open Minis does: your bubbles scroll over replies, code and pictures,
-                        // so the glass has something to catch. Tinted a little with the paper, so it stays Clio's.
-                        .glassEffect(.regular.tint(bubbleTint(editing: editing == line.id)),
-                                     in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                        .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous),
+                                     tint: bubbleTint(editing: isEditing))
+                        .overlay {
+                            if isEditing {
+                                RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
+                                    .strokeBorder(Ink.accent, lineWidth: 1.5)
+                            }
+                        }
                         .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
