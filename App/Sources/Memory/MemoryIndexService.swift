@@ -11,16 +11,17 @@ final class MemoryIndexService: @unchecked Sendable {
         let name: String
     }
 
-    private struct SlotKey: Hashable {
-        let chatKey: String
-        let leafID: String
-    }
-
     private struct PendingSlot {
-        let key: SlotKey
+        let key: MemoryIndexSlotKey
         let chatName: String
         let leafTitle: String
         let entries: [Entry]
+    }
+
+    private struct ExpectedSlot {
+        let chatName: String
+        let leafTitle: String
+        let digest: String
     }
 
     private struct StoredLeaf: Decodable {
@@ -41,7 +42,7 @@ final class MemoryIndexService: @unchecked Sendable {
     private let teamRoot: URL
     private let queue = DispatchQueue(label: "clio.memory-index", qos: .utility)
     private let pendingLock = NSLock()
-    private var pendingSlots: [SlotKey: PendingSlot] = [:]
+    private var pendingSlots: [MemoryIndexSlotKey: PendingSlot] = [:]
     private var scheduledFlushItem: DispatchWorkItem?
 
     init(databaseURL: URL = MemoryIndexService.defaultDatabaseURL, teamRoot: URL = Disk.root) {
@@ -52,11 +53,11 @@ final class MemoryIndexService: @unchecked Sendable {
     /// Reconciles `clio-index.db` against canonical JSONs on disk without touching the main thread.
     func warmup(catalog: [ChatDescriptor]) {
         queue.async { [weak self] in
-            self?.reconcileAndFlushLocked(catalog: catalog)
+            self?.reconcileCatalogLocked(catalog: catalog)
         }
     }
 
-    /// Coalesces an incremental live-chat or leaf update and writes it on the background index queue.
+    /// Coalesces an incremental live-chat or leaf update and writes only that slot on the background index queue.
     func scheduleSync(
         chatKey: String,
         chatName: String,
@@ -64,13 +65,13 @@ final class MemoryIndexService: @unchecked Sendable {
         leafTitle: String = "",
         entries: [Entry]
     ) {
-        let slotKey = SlotKey(chatKey: chatKey, leafID: leafID)
+        let slotKey = MemoryIndexSlotKey(chatKey: chatKey, leafID: leafID)
         let pending = PendingSlot(key: slotKey, chatName: chatName, leafTitle: leafTitle, entries: entries)
         pendingLock.lock()
         pendingSlots[slotKey] = pending
         if scheduledFlushItem == nil {
             let item = DispatchWorkItem { [weak self] in
-                self?.flushPendingSlots()
+                self?.flushPendingSlotsLocked(catalog: nil)
             }
             scheduledFlushItem = item
             pendingLock.unlock()
@@ -90,8 +91,15 @@ final class MemoryIndexService: @unchecked Sendable {
                     try self.rebuildFromDiskLocked(catalog: catalog)
                 } else {
                     ChatDisk.finishWrites()
-                    let fp = self.computeSourceFingerprint(catalog: catalog)
-                    try self.database.updateLeafTitle(chatKey: chatKey, leafID: leafID, leafTitle: title, sourceFingerprint: fp)
+                    let digest = self.computeSlotDigest(chatKey: chatKey, leafID: leafID, title: title)
+                    let secrets = Vault.allStrings()
+                    try self.database.updateLeafTitle(
+                        chatKey: chatKey,
+                        leafID: leafID,
+                        leafTitle: title,
+                        slotDigest: digest,
+                        secrets: secrets
+                    )
                 }
             } catch {
                 // Derived index is strictly fail-safe and rebuilds automatically on next access.
@@ -102,11 +110,11 @@ final class MemoryIndexService: @unchecked Sendable {
     func scheduleDeleteChat(chatKey: String, includingLeaves: Bool = true, leafID: String? = nil, catalog: [ChatDescriptor]) {
         pendingLock.lock()
         if let leafID {
-            pendingSlots.removeValue(forKey: SlotKey(chatKey: chatKey, leafID: leafID))
+            pendingSlots.removeValue(forKey: MemoryIndexSlotKey(chatKey: chatKey, leafID: leafID))
         } else if includingLeaves {
             pendingSlots = pendingSlots.filter { $0.key.chatKey != chatKey }
         } else {
-            pendingSlots.removeValue(forKey: SlotKey(chatKey: chatKey, leafID: ""))
+            pendingSlots.removeValue(forKey: MemoryIndexSlotKey(chatKey: chatKey, leafID: ""))
         }
         pendingLock.unlock()
 
@@ -119,12 +127,10 @@ final class MemoryIndexService: @unchecked Sendable {
                     try self.rebuildFromDiskLocked(catalog: catalog)
                 } else {
                     ChatDisk.finishWrites()
-                    let fp = self.computeSourceFingerprint(catalog: catalog)
                     try self.database.deleteChat(
                         chatKey: chatKey,
                         includingLeaves: includingLeaves,
-                        leafID: leafID,
-                        sourceFingerprint: fp
+                        leafID: leafID
                     )
                 }
             } catch {
@@ -146,7 +152,7 @@ final class MemoryIndexService: @unchecked Sendable {
         }
     }
 
-    /// Flushes pending incremental writes, self-heals/rebuilds if missing, corrupt, or stale, and executes SQL-isolated search.
+    /// Flushes pending incremental writes, reconciles stale/missing slots only, and executes SQL-isolated search.
     func search(
         query: String,
         context: MemoryAccessContext,
@@ -198,10 +204,6 @@ final class MemoryIndexService: @unchecked Sendable {
 
     // MARK: - Background Worker Execution (runs only on `queue`)
 
-    private func flushPendingSlots() {
-        flushPendingSlotsLocked(catalog: nil)
-    }
-
     private func flushPendingSlotsLocked(catalog: [ChatDescriptor]?) {
         let batch = drainPendingSlots()
         guard !batch.isEmpty else { return }
@@ -214,8 +216,9 @@ final class MemoryIndexService: @unchecked Sendable {
             }
             ChatDisk.finishWrites()
             let secrets = Vault.allStrings()
-            let fingerprint = catalog.map { computeSourceFingerprint(catalog: $0) }
             for item in batch {
+                let titleForDigest = item.key.leafID.isEmpty ? item.chatName : item.leafTitle
+                let digest = computeSlotDigest(chatKey: item.key.chatKey, leafID: item.key.leafID, title: titleForDigest)
                 let records = Self.makeRecords(
                     from: item.entries,
                     chatKey: item.key.chatKey,
@@ -227,7 +230,7 @@ final class MemoryIndexService: @unchecked Sendable {
                     chatKey: item.key.chatKey,
                     leafID: item.key.leafID,
                     records: records,
-                    sourceFingerprint: fingerprint,
+                    slotDigest: digest,
                     secrets: secrets
                 )
             }
@@ -236,16 +239,9 @@ final class MemoryIndexService: @unchecked Sendable {
         }
     }
 
-    private func reconcileAndFlushLocked(catalog: [ChatDescriptor]) {
-        flushPendingSlotsLocked(catalog: catalog)
+    private func reconcileCatalogLocked(catalog: [ChatDescriptor]) {
         do {
-            _ = try database.openOrRecover()
-            ChatDisk.finishWrites()
-            let diskFingerprint = computeSourceFingerprint(catalog: catalog)
-            let state = try database.buildState()
-            if database.needsRebuildFromSource || state.state != "ready" || state.sourceFingerprint != diskFingerprint {
-                try rebuildFromDiskLocked(catalog: catalog, precomputedFingerprint: diskFingerprint)
-            }
+            try reconcileIfNeededThrowingLocked(catalog: catalog)
         } catch {
             // Self-heals on next open/search.
         }
@@ -257,29 +253,87 @@ final class MemoryIndexService: @unchecked Sendable {
         catalog: [ChatDescriptor]
     ) -> [MemoryIndexHit] {
         do {
-            flushPendingSlotsLocked(catalog: catalog)
-            _ = try database.openOrRecover()
-            ChatDisk.finishWrites()
-            let diskFingerprint = computeSourceFingerprint(catalog: catalog)
-            let state = try database.buildState()
-            if database.needsRebuildFromSource || state.state != "ready" || state.sourceFingerprint != diskFingerprint {
-                try rebuildFromDiskLocked(catalog: catalog, precomputedFingerprint: diskFingerprint)
-            }
+            try reconcileIfNeededThrowingLocked(catalog: catalog)
             return try database.search(query: query, context: context)
         } catch {
             return []
         }
     }
 
-    private func rebuildFromDiskLocked(
-        catalog: [ChatDescriptor],
-        precomputedFingerprint: String? = nil
-    ) throws {
+    private func reconcileIfNeededThrowingLocked(catalog: [ChatDescriptor]) throws {
+        flushPendingSlotsLocked(catalog: catalog)
+        _ = try database.openOrRecover()
         ChatDisk.finishWrites()
-        let fingerprint = precomputedFingerprint ?? computeSourceFingerprint(catalog: catalog)
+        let state = try database.buildState()
+        if database.needsRebuildFromSource || state.state != "ready" {
+            try rebuildFromDiskLocked(catalog: catalog)
+            return
+        }
+
+        let expectedSlots = buildExpectedSlots(catalog: catalog)
+        let storedSlots = try database.readSlotVersions()
+        let validChatKeys = Set(catalog.map(\.key))
+
+        let hasMissingChat = storedSlots.keys.contains { !validChatKeys.contains($0.chatKey) }
+        if hasMissingChat {
+            try database.pruneMissingChats(validChatKeys: validChatKeys)
+        }
+
+        for slotKey in storedSlots.keys where validChatKeys.contains(slotKey.chatKey) && expectedSlots[slotKey] == nil {
+            if slotKey.leafID.isEmpty {
+                try database.deleteChat(chatKey: slotKey.chatKey, includingLeaves: false)
+            } else {
+                try database.deleteChat(chatKey: slotKey.chatKey, includingLeaves: false, leafID: slotKey.leafID)
+            }
+        }
+
+        let dirtyKeys = expectedSlots.keys.filter { storedSlots[$0] != expectedSlots[$0]?.digest }
+        if !dirtyKeys.isEmpty {
+            let secrets = Vault.allStrings()
+            let decoder = JSONDecoder()
+            for slotKey in dirtyKeys {
+                guard let info = expectedSlots[slotKey] else { continue }
+                let relPath = slotKey.leafID.isEmpty
+                    ? Disk.chatFile(slotKey.chatKey)
+                    : TeamModel.leafFile(slotKey.chatKey, slotKey.leafID)
+                let url = teamRoot.appendingPathComponent(relPath)
+                let entries = decodeEntriesLeniently(at: url, decoder: decoder) ?? []
+                let records = Self.makeRecords(
+                    from: entries,
+                    chatKey: slotKey.chatKey,
+                    chatName: info.chatName,
+                    leafID: slotKey.leafID,
+                    leafTitle: info.leafTitle
+                )
+                try database.replaceSlot(
+                    chatKey: slotKey.chatKey,
+                    leafID: slotKey.leafID,
+                    records: records,
+                    slotDigest: info.digest,
+                    secrets: secrets
+                )
+            }
+        }
+
+        let catalogFingerprint = computeCatalogFingerprint(expectedSlots: expectedSlots)
+        if state.sourceFingerprint != catalogFingerprint {
+            try database.updateSourceFingerprint(catalogFingerprint)
+        }
+    }
+
+    private func rebuildFromDiskLocked(catalog: [ChatDescriptor]) throws {
+        ChatDisk.finishWrites()
+        let expectedSlots = buildExpectedSlots(catalog: catalog)
         let secrets = Vault.allStrings()
         let allRecords = loadAllCanonicalRecords(catalog: catalog)
-        try database.rebuild(records: allRecords, sourceFingerprint: fingerprint, secrets: secrets)
+        let slotDigests = expectedSlots.mapValues(\.digest)
+        let fingerprint = computeCatalogFingerprint(expectedSlots: expectedSlots)
+        try database.rebuild(
+            records: allRecords,
+            sourceFingerprint: fingerprint,
+            slotDigests: slotDigests,
+            secrets: secrets
+        )
     }
 
     private func drainPendingSlots() -> [PendingSlot] {
@@ -292,7 +346,58 @@ final class MemoryIndexService: @unchecked Sendable {
         return values
     }
 
-    // MARK: - Read-Only Canonical JSON Scanning
+    // MARK: - Read-Only Canonical JSON Scanning & Digests
+
+    private func buildExpectedSlots(catalog: [ChatDescriptor]) -> [MemoryIndexSlotKey: ExpectedSlot] {
+        var slots: [MemoryIndexSlotKey: ExpectedSlot] = [:]
+        let decoder = JSONDecoder()
+
+        for chat in catalog {
+            let liveKey = MemoryIndexSlotKey(chatKey: chat.key, leafID: "")
+            let liveDigest = computeSlotDigest(chatKey: chat.key, leafID: "", title: chat.name)
+            slots[liveKey] = ExpectedSlot(chatName: chat.name, leafTitle: "", digest: liveDigest)
+
+            let leavesURL = teamRoot.appendingPathComponent(TeamModel.leafList(chat.key))
+            if let data = try? Data(contentsOf: leavesURL),
+               let leaves = try? decoder.decode([StoredLeaf].self, from: data) {
+                for leaf in leaves {
+                    let leafKey = MemoryIndexSlotKey(chatKey: chat.key, leafID: leaf.id)
+                    let leafDigest = computeSlotDigest(chatKey: chat.key, leafID: leaf.id, title: leaf.title)
+                    slots[leafKey] = ExpectedSlot(chatName: chat.name, leafTitle: leaf.title, digest: leafDigest)
+                }
+            }
+        }
+        return slots
+    }
+
+    private func computeSlotDigest(chatKey: String, leafID: String, title: String) -> String {
+        let relPath = leafID.isEmpty ? Disk.chatFile(chatKey) : TeamModel.leafFile(chatKey, leafID)
+        let url = teamRoot.appendingPathComponent(relPath)
+        let titleHash = Self.sha256Hex(Data(title.utf8))
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+              values.isRegularFile == true else {
+            return "missing|\(titleHash)"
+        }
+        let size = values.fileSize ?? 0
+        let mtimeMs = Int64(((values.contentModificationDate ?? .distantPast).timeIntervalSince1970) * 1000)
+        return "\(size):\(mtimeMs)|\(titleHash)"
+    }
+
+    private func computeCatalogFingerprint(expectedSlots: [MemoryIndexSlotKey: ExpectedSlot]) -> String {
+        let lines = expectedSlots.keys.sorted { lhs, rhs in
+            if lhs.chatKey != rhs.chatKey { return lhs.chatKey < rhs.chatKey }
+            return lhs.leafID < rhs.leafID
+        }.compactMap { key -> String? in
+            guard let expected = expectedSlots[key] else { return nil }
+            return "\(key.chatKey)~\(key.leafID)=\(expected.digest)"
+        }
+        return Self.sha256Hex(Data(lines.joined(separator: "\n").utf8))
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
 
     private func loadAllCanonicalRecords(catalog: [ChatDescriptor]) -> [MemoryIndexRecord] {
         var all: [MemoryIndexRecord] = []
@@ -346,40 +451,6 @@ final class MemoryIndexService: @unchecked Sendable {
             return lenient.compactMap(\.entry)
         }
         return nil
-    }
-
-    private func computeSourceFingerprint(catalog: [ChatDescriptor]) -> String {
-        var lines: [String] = []
-        let sortedCatalog = catalog.sorted { $0.key < $1.key }
-        for chat in sortedCatalog {
-            lines.append("c:\(chat.key)=\(chat.name)")
-        }
-
-        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
-        let fm = FileManager.default
-        if let items = try? fm.contentsOfDirectory(
-            at: chatsDir,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            let sortedItems = items.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            for item in sortedItems {
-                let name = item.lastPathComponent
-                guard name.hasSuffix(".json"),
-                      !name.hasSuffix("~options.json"),
-                      !name.hasSuffix("~summary.json"),
-                      !name.contains(".broken-") else { continue }
-                guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
-                      values.isRegularFile == true else { continue }
-                let size = values.fileSize ?? 0
-                let mtimeMs = Int64(((values.contentModificationDate ?? .distantPast).timeIntervalSince1970) * 1000)
-                lines.append("f:\(name):\(size):\(mtimeMs)")
-            }
-        }
-
-        let payload = lines.joined(separator: "\n")
-        let digest = SHA256.hash(data: Data(payload.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     static func makeRecords(

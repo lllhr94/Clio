@@ -6,6 +6,17 @@ import Darwin
 import Glibc
 #endif
 
+/// Identifies a single conversation storage slot (`leafID == ""` for live chat).
+public struct MemoryIndexSlotKey: Hashable, Sendable, Equatable {
+    public var chatKey: String
+    public var leafID: String
+
+    public init(chatKey: String, leafID: String = "") {
+        self.chatKey = chatKey
+        self.leafID = leafID
+    }
+}
+
 /// SQL-layer access scope & isolation policy enforced directly inside SQLite `WHERE` predicates.
 public struct MemoryAccessContext: Sendable, Equatable {
     public var callerChatKey: String
@@ -13,6 +24,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
     public var allowDelegated: Bool
     public var allowNotes: Bool
     public var allowedRoles: Set<String>
+    public var allowedChatKeys: Set<String>?
     public var excludedChatKeys: Set<String>
     public var excludedThreadKeys: Set<String>
     public var includeOtherChats: Bool
@@ -25,6 +37,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
         allowDelegated: Bool = false,
         allowNotes: Bool = false,
         allowedRoles: Set<String> = ["user", "assistant"],
+        allowedChatKeys: Set<String>? = nil,
         excludedChatKeys: Set<String> = [],
         excludedThreadKeys: Set<String> = [],
         includeOtherChats: Bool = false,
@@ -36,6 +49,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
         self.allowDelegated = allowDelegated
         self.allowNotes = allowNotes
         self.allowedRoles = allowedRoles
+        self.allowedChatKeys = allowedChatKeys
         self.excludedChatKeys = excludedChatKeys
         self.excludedThreadKeys = excludedThreadKeys
         self.includeOtherChats = includeOtherChats
@@ -47,6 +61,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
     public static func toolSearch(
         chatKey: String,
         allowCrossChat: Bool = false,
+        allowedChatKeys: Set<String>? = nil,
         excludedChatKeys: Set<String> = [],
         excludedThreadKeys: Set<String> = [],
         includeLeaves: Bool = true,
@@ -58,6 +73,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
             allowDelegated: false,
             allowNotes: false,
             allowedRoles: ["user", "assistant"],
+            allowedChatKeys: allowedChatKeys,
             excludedChatKeys: excludedChatKeys,
             excludedThreadKeys: excludedThreadKeys,
             includeOtherChats: allowCrossChat,
@@ -69,6 +85,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
     /// Strict scope for a delegated helper companion: current chat only, no cross-chat access, no tainted/delegated rows.
     public static func delegatedToolSearch(
         chatKey: String,
+        allowedChatKeys: Set<String>? = nil,
         excludedChatKeys: Set<String> = [],
         limit: Int = 8
     ) -> MemoryAccessContext {
@@ -78,6 +95,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
             allowDelegated: false,
             allowNotes: false,
             allowedRoles: ["user", "assistant"],
+            allowedChatKeys: allowedChatKeys,
             excludedChatKeys: excludedChatKeys,
             excludedThreadKeys: [],
             includeOtherChats: false,
@@ -92,6 +110,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
         allowTainted: Bool = false,
         allowDelegated: Bool = false,
         allowNotes: Bool = false,
+        allowedChatKeys: Set<String>? = nil,
         limit: Int = 20
     ) -> MemoryAccessContext {
         MemoryAccessContext(
@@ -100,6 +119,7 @@ public struct MemoryAccessContext: Sendable, Equatable {
             allowDelegated: allowDelegated,
             allowNotes: allowNotes,
             allowedRoles: ["user", "assistant"],
+            allowedChatKeys: allowedChatKeys,
             excludedChatKeys: [],
             excludedThreadKeys: [],
             includeOtherChats: chatKey == nil,
@@ -302,7 +322,7 @@ private func memoryIndexSQLiteTraceCallback(
 
 /// Thread-safe, self-healing, read-only rebuildable SQLite3 + FTS5 derived search index for conversation history.
 public final class MemoryIndexDatabase: @unchecked Sendable {
-    public static let schemaVersion: Int32 = 1
+    public static let schemaVersion: Int32 = 2
     private static let maxStoredSnippetBytes = 16_384
 
     public static var isFTS5Supported: Bool {
@@ -400,6 +420,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
     public func rebuild(
         records: [MemoryIndexRecord],
         sourceFingerprint: String,
+        slotDigests: [MemoryIndexSlotKey: String] = [:],
         secrets: [String] = []
     ) throws {
         lock.lock()
@@ -424,7 +445,11 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             try execLocked("BEGIN IMMEDIATE;")
             do {
                 try execLocked("DELETE FROM messages_meta;")
+                try execLocked("DELETE FROM slot_versions;")
                 try insertRecordsLocked(records, orderedSecrets: orderedSecrets)
+                for (slotKey, digest) in slotDigests {
+                    try setSlotVersionLocked(chatKey: slotKey.chatKey, leafID: slotKey.leafID, digest: digest)
+                }
                 try setBuildStateLocked("state", "ready")
                 try setBuildStateLocked("schema_version", String(Self.schemaVersion))
                 try setBuildStateLocked("last_built_at", nowString)
@@ -444,12 +469,12 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Replaces all rows for a single `(chatKey, leafID)` slot inside an atomic transaction.
+    /// Replaces all rows for a single `(chatKey, leafID)` slot inside an atomic transaction without stamping full catalog fingerprint.
     public func replaceSlot(
         chatKey: String,
         leafID: String = "",
         records: [MemoryIndexRecord],
-        sourceFingerprint: String? = nil,
+        slotDigest: String? = nil,
         secrets: [String] = []
     ) throws {
         lock.lock()
@@ -462,8 +487,8 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             do {
                 try deleteSlotLocked(chatKey: chatKey, leafID: leafID)
                 try insertRecordsLocked(records, orderedSecrets: orderedSecrets)
-                if let sourceFingerprint {
-                    try setBuildStateLocked("source_fingerprint", sourceFingerprint)
+                if let slotDigest {
+                    try setSlotVersionLocked(chatKey: chatKey, leafID: leafID, digest: slotDigest)
                 }
                 try execLocked("COMMIT;")
             } catch {
@@ -478,26 +503,32 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Updates `leaf_title` for an existing shelved leaf without touching canonical JSON.
+    /// Updates `leaf_title` for an existing shelved leaf after redacting secrets, without stamping catalog fingerprint.
     public func updateLeafTitle(
         chatKey: String,
         leafID: String,
         leafTitle: String,
-        sourceFingerprint: String? = nil
+        slotDigest: String? = nil,
+        secrets: [String] = []
     ) throws {
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
+
+        let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let safeLeafTitle = orderedSecrets.isEmpty
+            ? leafTitle
+            : MemorySafety.redactSecrets(leafTitle, secrets: orderedSecrets)
 
         do {
             try execLocked("BEGIN IMMEDIATE;")
             do {
                 try runPreparedLocked(
                     "UPDATE messages_meta SET leaf_title = ? WHERE chat_key = ? AND leaf_id = ?;",
-                    bindings: [.text(leafTitle), .text(chatKey), .text(leafID)]
+                    bindings: [.text(safeLeafTitle), .text(chatKey), .text(leafID)]
                 )
-                if let sourceFingerprint {
-                    try setBuildStateLocked("source_fingerprint", sourceFingerprint)
+                if let slotDigest {
+                    try setSlotVersionLocked(chatKey: chatKey, leafID: leafID, digest: slotDigest)
                 }
                 try execLocked("COMMIT;")
             } catch {
@@ -512,12 +543,11 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Deletes indexed rows for a live chat, a specific leaf, or an entire conversation and all its leaves.
+    /// Deletes indexed rows and slot digests for a live chat, a specific leaf, or an entire conversation and all its leaves.
     public func deleteChat(
         chatKey: String,
         includingLeaves: Bool = true,
-        leafID: String? = nil,
-        sourceFingerprint: String? = nil
+        leafID: String? = nil
     ) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -528,16 +558,19 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             do {
                 if let leafID {
                     try deleteSlotLocked(chatKey: chatKey, leafID: leafID)
+                    try deleteSlotVersionLocked(chatKey: chatKey, leafID: leafID)
                 } else if includingLeaves {
                     try runPreparedLocked(
                         "DELETE FROM messages_meta WHERE chat_key = ?;",
                         bindings: [.text(chatKey)]
                     )
+                    try runPreparedLocked(
+                        "DELETE FROM slot_versions WHERE chat_key = ?;",
+                        bindings: [.text(chatKey)]
+                    )
                 } else {
                     try deleteSlotLocked(chatKey: chatKey, leafID: "")
-                }
-                if let sourceFingerprint {
-                    try setBuildStateLocked("source_fingerprint", sourceFingerprint)
+                    try deleteSlotVersionLocked(chatKey: chatKey, leafID: "")
                 }
                 try execLocked("COMMIT;")
             } catch {
@@ -552,11 +585,8 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         }
     }
 
-    /// Removes indexed rows belonging to conversations no longer present in `validChatKeys`.
-    public func pruneMissingChats(
-        validChatKeys: Set<String>,
-        sourceFingerprint: String? = nil
-    ) throws {
+    /// Removes indexed rows and slot digests belonging to conversations no longer present in `validChatKeys`.
+    public func pruneMissingChats(validChatKeys: Set<String>) throws {
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
@@ -566,14 +596,13 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             do {
                 if validChatKeys.isEmpty {
                     try execLocked("DELETE FROM messages_meta;")
+                    try execLocked("DELETE FROM slot_versions;")
                 } else {
                     let sorted = validChatKeys.sorted()
                     let placeholders = Array(repeating: "?", count: sorted.count).joined(separator: ", ")
-                    let sql = "DELETE FROM messages_meta WHERE chat_key NOT IN (\(placeholders));"
-                    try runPreparedLocked(sql, bindings: sorted.map { .text($0) })
-                }
-                if let sourceFingerprint {
-                    try setBuildStateLocked("source_fingerprint", sourceFingerprint)
+                    let bindings = sorted.map { SQLBinding.text($0) }
+                    try runPreparedLocked("DELETE FROM messages_meta WHERE chat_key NOT IN (\(placeholders));", bindings: bindings)
+                    try runPreparedLocked("DELETE FROM slot_versions WHERE chat_key NOT IN (\(placeholders));", bindings: bindings)
                 }
                 try execLocked("COMMIT;")
             } catch {
@@ -586,6 +615,13 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             }
             throw error
         }
+    }
+
+    public func readSlotVersions() throws -> [MemoryIndexSlotKey: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = try openOrRecoverLocked()
+        return try readSlotVersionsLocked()
     }
 
     public func updateSourceFingerprint(_ fingerprint: String) throws {
@@ -621,7 +657,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             let terms = MemoryIndexTokenizer.fallbackLikeTerms(for: query)
             guard !terms.isEmpty else { return [] }
             for term in terms {
-                whereClauses.append("LOWER(m.snippet_text) LIKE ? ESCAPE '\\'")
+                whereClauses.append("m.normalized_text LIKE ? ESCAPE '\\'")
                 bindings.append(.text("%\(Self.escapeLike(term))%"))
             }
         }
@@ -643,6 +679,18 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             whereClauses.append("m.role IN (\(placeholders))")
             for role in sortedRoles {
                 bindings.append(.text(role))
+            }
+        }
+        if let allowedChats = context.allowedChatKeys {
+            if allowedChats.isEmpty {
+                whereClauses.append("1 = 0")
+            } else {
+                let sortedAllowed = allowedChats.sorted()
+                let placeholders = Array(repeating: "?", count: sortedAllowed.count).joined(separator: ", ")
+                whereClauses.append("m.chat_key IN (\(placeholders))")
+                for chatKey in sortedAllowed {
+                    bindings.append(.text(chatKey))
+                }
             }
         }
         if !context.includeLeaves {
@@ -834,8 +882,8 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             }
 
             let expectedTables: Set<String> = fts5Active
-                ? ["build_state", "messages_meta", "messages_fts"]
-                : ["build_state", "messages_meta"]
+                ? ["build_state", "slot_versions", "messages_meta", "messages_fts"]
+                : ["build_state", "slot_versions", "messages_meta"]
             let foundTables = try existingTableNamesLocked()
             guard expectedTables.isSubset(of: foundTables) else {
                 return .schemaMismatch
@@ -917,6 +965,14 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             );
             """)
             try execLocked("""
+            CREATE TABLE slot_versions (
+                chat_key TEXT NOT NULL,
+                leaf_id TEXT NOT NULL DEFAULT '',
+                slot_digest TEXT NOT NULL,
+                PRIMARY KEY (chat_key, leaf_id)
+            );
+            """)
+            try execLocked("""
             CREATE TABLE messages_meta (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_key TEXT NOT NULL,
@@ -930,6 +986,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                 delegated INTEGER NOT NULL DEFAULT 0 CHECK (delegated IN (0, 1)),
                 is_note INTEGER NOT NULL DEFAULT 0 CHECK (is_note IN (0, 1)),
                 snippet_text TEXT NOT NULL,
+                normalized_text TEXT NOT NULL DEFAULT '',
                 body_tokens TEXT NOT NULL DEFAULT '',
                 cjk_unigrams TEXT NOT NULL DEFAULT '',
                 UNIQUE(chat_key, leaf_id, entry_id)
@@ -1035,8 +1092,8 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
         let sql = """
         INSERT INTO messages_meta (
             chat_key, chat_name, leaf_id, leaf_title, entry_id, role, at_ms,
-            tainted, delegated, is_note, snippet_text, body_tokens, cjk_unigrams
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tainted, delegated, is_note, snippet_text, normalized_text, body_tokens, cjk_unigrams
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chat_key, leaf_id, entry_id) DO UPDATE SET
             chat_name = excluded.chat_name,
             leaf_title = excluded.leaf_title,
@@ -1046,6 +1103,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             delegated = excluded.delegated,
             is_note = excluded.is_note,
             snippet_text = excluded.snippet_text,
+            normalized_text = excluded.normalized_text,
             body_tokens = excluded.body_tokens,
             cjk_unigrams = excluded.cjk_unigrams;
         """
@@ -1064,6 +1122,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
             let trimmed = safeText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             let clipped = MemorySafety.clipUTF8(trimmed, bytes: Self.maxStoredSnippetBytes)
+            let normalizedText = MemoryIndexTokenizer.normalize(clipped)
             let tokens = MemoryIndexTokenizer.indexTokens(for: clipped)
 
             let safeChatName = orderedSecrets.isEmpty
@@ -1089,6 +1148,7 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                     .int(record.delegated ? 1 : 0),
                     .int(record.isNote ? 1 : 0),
                     .text(clipped),
+                    .text(normalizedText),
                     .text(tokens.bodyTokens),
                     .text(tokens.cjkUnigrams),
                 ],
@@ -1100,6 +1160,44 @@ public final class MemoryIndexDatabase: @unchecked Sendable {
                 throw sqliteErrorLocked(code: stepRC)
             }
         }
+    }
+
+    private func setSlotVersionLocked(chatKey: String, leafID: String, digest: String) throws {
+        try runPreparedLocked(
+            "INSERT OR REPLACE INTO slot_versions(chat_key, leaf_id, slot_digest) VALUES (?, ?, ?);",
+            bindings: [.text(chatKey), .text(leafID), .text(digest)]
+        )
+    }
+
+    private func deleteSlotVersionLocked(chatKey: String, leafID: String) throws {
+        try runPreparedLocked(
+            "DELETE FROM slot_versions WHERE chat_key = ? AND leaf_id = ?;",
+            bindings: [.text(chatKey), .text(leafID)]
+        )
+    }
+
+    private func readSlotVersionsLocked() throws -> [MemoryIndexSlotKey: String] {
+        guard let db else { throw MemoryIndexError.sqlite(code: SQLITE_MISUSE, message: "database closed") }
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, "SELECT chat_key, leaf_id, slot_digest FROM slot_versions;", -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            throw sqliteErrorLocked(code: rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var result: [MemoryIndexSlotKey: String] = [:]
+        while true {
+            let stepRC = sqlite3_step(stmt)
+            if stepRC == SQLITE_ROW {
+                let key = MemoryIndexSlotKey(chatKey: Self.columnText(stmt, 0), leafID: Self.columnText(stmt, 1))
+                result[key] = Self.columnText(stmt, 2)
+            } else if stepRC == SQLITE_DONE {
+                break
+            } else {
+                throw sqliteErrorLocked(code: stepRC)
+            }
+        }
+        return result
     }
 
     private func deleteSlotLocked(chatKey: String, leafID: String) throws {

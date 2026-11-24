@@ -196,7 +196,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     static func of(tool name: String) -> Grant? {
         switch name {
         case "web_search", "web_read", "weather": .web
-        case "remember", "forget", "recall": .memory
+        case "remember", "forget", "recall", "search_history": .memory
         case "message_later", "schedule_task", "scheduled_tasks", "cancel_task": .letters
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders

@@ -157,14 +157,30 @@ final class MemoryIndexTests: XCTestCase {
         // FTS5 operator words & punctuation must never cause syntax errors
         XCTAssertEqual(try db.search(query: "AND OR NOT NEAR \"foo:bar\" *", context: ctx), [])
 
-        // Verify fallback LIKE mode also works identically if FTS5 were unavailable
+        // Verify fallback LIKE mode also works identically if FTS5 were unavailable, including NFKC/diacritic normalization
         let fallbackURL = dir.appendingPathComponent("fallback-index.db")
         let fallbackDB = MemoryIndexDatabase(databaseURL: fallbackURL, forceDisableFTS5ForTesting: true)
         defer { fallbackDB.close() }
         XCTAssertEqual(try fallbackDB.openOrRecover(), .missing)
         XCTAssertFalse(fallbackDB.isFTS5Active)
-        try fallbackDB.rebuild(records: records, sourceFingerprint: "fp-fb")
-        XCTAssertEqual(try fallbackDB.search(query: "Xcode报错", context: ctx).map(\.entryID), ["e2"])
+        let fallbackRecords = records + [
+            MemoryIndexRecord(
+                chatKey: "bot-a",
+                chatName: "团子",
+                entryID: "e8",
+                role: "user",
+                atMs: 8_000,
+                text: "遇到了全角 Ｘｃｏｄｅ 报错，顺便在 Café 调试。"
+            ),
+        ]
+        try fallbackDB.rebuild(records: fallbackRecords, sourceFingerprint: "fp-fb")
+        XCTAssertEqual(try fallbackDB.search(query: "Xcode报错", context: ctx).map(\.entryID), ["e8", "e2"])
+        let fullwidthHits = try fallbackDB.search(query: "Xcode", context: ctx)
+        XCTAssertEqual(fullwidthHits.map(\.entryID), ["e8", "e2"])
+        XCTAssertTrue(fullwidthHits.first?.snippet.contains("Ｘｃｏｄｅ") == true)
+        let diacriticHits = try fallbackDB.search(query: "cafe", context: ctx)
+        XCTAssertEqual(diacriticHits.map(\.entryID), ["e8"])
+        XCTAssertTrue(diacriticHits.first?.snippet.contains("Café") == true)
         XCTAssertEqual(try fallbackDB.search(query: "猫", context: ctx).map(\.entryID), ["e5"])
     }
 
@@ -414,17 +430,54 @@ final class MemoryIndexTests: XCTestCase {
             []
         )
 
-        // 2. Cross-chat toolSearch respecting excludedChatKeys
+        // 2. Cross-chat toolSearch respecting excludedChatKeys and SQL-layer allowedChatKeys allowlist
         _ = db.drainSQLTrace()
         let crossHits = try db.search(
             query: keyword,
-            context: .toolSearch(chatKey: "bot-a", allowCrossChat: true, excludedChatKeys: ["bot-c"], limit: 20)
+            context: .toolSearch(
+                chatKey: "bot-a",
+                allowCrossChat: true,
+                allowedChatKeys: ["bot-a", "bot-b"],
+                excludedChatKeys: ["bot-c"],
+                limit: 20
+            )
         )
         let crossTrace = db.drainSQLTrace().joined(separator: "\n")
         XCTAssertEqual(Set(crossHits.map(\.entryID)), ["clean-a", "leaf-a", "clean-b"])
         XCTAssertTrue(crossTrace.contains("m.tainted = 0"))
         XCTAssertTrue(crossTrace.contains("m.delegated = 0"))
+        XCTAssertTrue(crossTrace.contains("m.chat_key IN ('bot-a', 'bot-b')"))
         XCTAssertTrue(crossTrace.contains("m.chat_key NOT IN ('bot-c')"))
+
+        // Allowed list omitting deleted/revoked chat excludes it at SQL level even without excludedChatKeys
+        _ = db.drainSQLTrace()
+        let allowOnlyB = try db.search(
+            query: keyword,
+            context: .toolSearch(
+                chatKey: "bot-a",
+                allowCrossChat: true,
+                allowedChatKeys: ["bot-b"],
+                limit: 20
+            )
+        )
+        let allowOnlyBTrace = db.drainSQLTrace().joined(separator: "\n")
+        XCTAssertEqual(allowOnlyB.map(\.entryID), ["clean-b"])
+        XCTAssertTrue(allowOnlyBTrace.contains("m.chat_key IN ('bot-b')"))
+
+        // Empty allowlist enforces 1 = 0 in SQLite WHERE clause
+        _ = db.drainSQLTrace()
+        let allowEmpty = try db.search(
+            query: keyword,
+            context: .toolSearch(
+                chatKey: "bot-a",
+                allowCrossChat: true,
+                allowedChatKeys: [],
+                limit: 20
+            )
+        )
+        let allowEmptyTrace = db.drainSQLTrace().joined(separator: "\n")
+        XCTAssertEqual(allowEmpty, [])
+        XCTAssertTrue(allowEmptyTrace.contains("1 = 0"))
 
         // 3. Delegated helper toolSearch: current live chat only, no cross-chat, no leaves
         _ = db.drainSQLTrace()
@@ -482,7 +535,7 @@ final class MemoryIndexTests: XCTestCase {
         XCTAssertFalse(portHits[0].snippet.contains(secret))
         XCTAssertTrue(portHits[0].snippet.contains("〔隐去〕"))
 
-        // Incremental slot replacement removes stale tokens immediately
+        // Incremental slot replacement removes stale tokens immediately and preserves catalog fingerprint
         try db.replaceSlot(
             chatKey: "bot-a",
             leafID: "",
@@ -496,13 +549,15 @@ final class MemoryIndexTests: XCTestCase {
                     text: "已改用杭州机房节点部署。"
                 ),
             ],
-            sourceFingerprint: "fp-2",
+            slotDigest: "digest-2",
             secrets: [secret]
         )
+        XCTAssertEqual((try db.buildState()).sourceFingerprint, "fp-1")
+        XCTAssertEqual(try db.readSlotVersions()[MemoryIndexSlotKey(chatKey: "bot-a", leafID: "")], "digest-2")
         XCTAssertEqual(try db.search(query: "服务器", context: .toolSearch(chatKey: "bot-a")), [])
         XCTAssertEqual(try db.search(query: "杭州机房", context: .toolSearch(chatKey: "bot-a")).map(\.entryID), ["e2"])
 
-        // Add leaf, update leaf title, then delete leaf and verify FTS consistency
+        // Add leaf, update leaf title with secret redaction, then delete leaf and verify FTS consistency
         try db.replaceSlot(
             chatKey: "bot-a",
             leafID: "leaf-9",
@@ -517,17 +572,37 @@ final class MemoryIndexTests: XCTestCase {
                     atMs: 150,
                     text: "旧页里的成都美食攻略。"
                 ),
-            ]
+            ],
+            slotDigest: "leaf-digest-1"
         )
-        try db.updateLeafTitle(chatKey: "bot-a", leafID: "leaf-9", leafTitle: "成都攻略")
+        try db.updateLeafTitle(
+            chatKey: "bot-a",
+            leafID: "leaf-9",
+            leafTitle: "成都攻略 \(secret)",
+            slotDigest: "leaf-digest-2",
+            secrets: [secret]
+        )
         let leafHits = try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a"))
-        XCTAssertEqual(leafHits.first?.leafTitle, "成都攻略")
+        XCTAssertEqual(leafHits.first?.leafTitle, "成都攻略 〔隐去〕")
+        XCTAssertEqual(try db.readSlotVersions()[MemoryIndexSlotKey(chatKey: "bot-a", leafID: "leaf-9")], "leaf-digest-2")
+
+        // Verify directly in raw SQLite that the secret never landed in messages_meta.leaf_title
+        let raw = try openRawSQLite(dbURL)
+        defer { sqlite3_close_v2(raw) }
+        XCTAssertEqual(
+            try rawCount(raw, sql: "SELECT COUNT(*) FROM messages_meta WHERE leaf_title LIKE '%\(secret)%';"),
+            0
+        )
+        XCTAssertEqual((try db.buildState()).sourceFingerprint, "fp-1")
 
         try db.deleteChat(chatKey: "bot-a", includingLeaves: false, leafID: "leaf-9")
+        XCTAssertNil(try db.readSlotVersions()[MemoryIndexSlotKey(chatKey: "bot-a", leafID: "leaf-9")])
+        XCTAssertEqual((try db.buildState()).sourceFingerprint, "fp-1")
         XCTAssertEqual(try db.search(query: "成都美食", context: .toolSearch(chatKey: "bot-a")), [])
         XCTAssertEqual(try db.search(query: "杭州机房", context: .toolSearch(chatKey: "bot-a")).map(\.entryID), ["e2"])
 
         try db.deleteChat(chatKey: "bot-a", includingLeaves: true)
+        XCTAssertTrue(try db.readSlotVersions().isEmpty)
         XCTAssertEqual(try db.search(query: "杭州机房", context: .toolSearch(chatKey: "bot-a")), [])
         XCTAssertEqual((try db.buildState()).indexedCount, 0)
         XCTAssertTrue(try db.verifyFTSIntegrity())

@@ -1889,14 +1889,10 @@ final class TeamModel: ObservableObject {
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
         all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
-        let searchHistoryTool = SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
+        all.append(SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
             await self?.searchHistory(query: query, chatKey: key, includeAllChats: includeAllChats, helping: helping, limit: limit)
                 ?? "当前无法检索历史记录。"
-        }
-        let searchHistoryManagedByGrants = Grant.of(tool: "search_history") != nil
-        if searchHistoryManagedByGrants {
-            all.append(searchHistoryTool)
-        }
+        })
         all.append(CalendarListTool())
         all.append(CalendarAddTool())
         all.append(RemindersListTool())
@@ -1952,7 +1948,7 @@ final class TeamModel: ObservableObject {
                 allowAfterWeb: { Grant.followPolicyAfterWeb }
             )
         }
-        var gated = Grant.gate(
+        return Grant.gate(
             guarded,
             workspace: grants,
             executionChat: key,
@@ -1965,35 +1961,6 @@ final class TeamModel: ObservableObject {
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
         }
-        if !searchHistoryManagedByGrants {
-            let memoryGrant = Grant.memory
-            if memoryGrant.policy != .off && !off.contains(memoryGrant.rawValue) {
-                let guardedSearchHistory = TaintGuard(
-                    searchHistoryTool,
-                    key: key,
-                    optInKey: approvalChat,
-                    book: taintBook,
-                    isInside: { host.isInside($0) },
-                    allowAfterWeb: { Grant.followPolicyAfterWeb }
-                )
-                gated.append(
-                    LiveGatedTool(
-                        inner: guardedSearchHistory,
-                        context: ToolExecutionContext(
-                            executionChat: key,
-                            hostID: "",
-                            grantID: memoryGrant.rawValue
-                        ),
-                        receipts: receipts,
-                        policyRevision: { queue.currentRevision },
-                        isContextStillValid: nil,
-                        access: { memoryGrant.liveAccess(for: "search_history") },
-                        reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
-                    )
-                )
-            }
-        }
-        return gated
     }
 
     // MARK: 派活

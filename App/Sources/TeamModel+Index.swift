@@ -87,7 +87,7 @@ extension TeamModel {
     ) async -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "要提供想找的关键词。" }
-        guard !Disk.frozen else { return "刚恢复了备份，重新打开 Clio 后再试。" }
+        guard !Disk.frozen, !queueDispatchSuspended else { return "刚恢复了备份，重新打开 Clio 后再试。" }
         if Grant.memory.policy == .off || options(chatKey).off.contains(Grant.memory.rawValue) {
             return "当前对话已关闭记忆权限，不能翻找历史记录。"
         }
@@ -96,17 +96,25 @@ extension TeamModel {
         let allowCrossChat = !helping && includeAllChats
         let catalog = indexCatalog()
         let validKeys = Set(catalog.map(\.key))
+        guard validKeys.contains(chatKey) else {
+            return "这段对话已不存在。"
+        }
+
         var excludedChatKeys: Set<String> = []
         for otherKey in validKeys where otherKey != chatKey {
             if options(otherKey).off.contains(Grant.memory.rawValue) {
                 excludedChatKeys.insert(otherKey)
             }
         }
+        let allowedChatKeys: Set<String> = allowCrossChat
+            ? validKeys.subtracting(excludedChatKeys)
+            : [chatKey]
 
         let context: MemoryAccessContext
         if helping {
             context = .delegatedToolSearch(
                 chatKey: chatKey,
+                allowedChatKeys: [chatKey],
                 excludedChatKeys: excludedChatKeys,
                 limit: clampedLimit
             )
@@ -114,17 +122,55 @@ extension TeamModel {
             context = .toolSearch(
                 chatKey: chatKey,
                 allowCrossChat: allowCrossChat,
+                allowedChatKeys: allowedChatKeys,
                 excludedChatKeys: excludedChatKeys,
                 includeLeaves: true,
                 limit: clampedLimit
             )
         }
 
-        let hits: [MemoryIndexHit]
-        if keeping {
-            hits = await MemoryIndexService.shared.search(query: trimmed, context: context, catalog: catalog)
+        let startEpoch = epochs[chatKey, default: 0]
+        let expectedKeeping = keeping
+        let rawHits: [MemoryIndexHit]
+        if expectedKeeping {
+            rawHits = await MemoryIndexService.shared.search(query: trimmed, context: context, catalog: catalog)
         } else {
-            hits = searchInMemoryDemo(query: trimmed, context: context)
+            rawHits = searchInMemoryDemo(query: trimmed, context: context)
+        }
+
+        // Post-await TOCTOU guard: re-verify permissions, backup/restore state, epoch, and surviving chats/leaves.
+        guard !Task.isCancelled else { return "这一轮已经停下，检索没有继续。" }
+        guard !Disk.frozen, !queueDispatchSuspended else { return "刚恢复了备份，重新打开 Clio 后再试。" }
+        guard keeping == expectedKeeping, (expectedKeeping ? phase == .ready : phase == .demo) else {
+            return "当前状态已变化，请重新发起检索。"
+        }
+        guard epochs[chatKey, default: 0] == startEpoch else {
+            return "这段对话已重置或切换，检索结果已失效。"
+        }
+        guard Grant.memory.policy != .off, !options(chatKey).off.contains(Grant.memory.rawValue) else {
+            return "当前对话已关闭记忆权限，不能翻找历史记录。"
+        }
+
+        let liveValidKeys = Set(indexCatalog().map(\.key))
+        guard liveValidKeys.contains(chatKey) else {
+            return "这段对话已不存在。"
+        }
+
+        let hits = rawHits.filter { hit in
+            guard liveValidKeys.contains(hit.chatKey) else { return false }
+            guard !options(hit.chatKey).off.contains(Grant.memory.rawValue) else { return false }
+            if helping {
+                guard hit.chatKey == chatKey, hit.leafID.isEmpty else { return false }
+            } else if !allowCrossChat {
+                guard hit.chatKey == chatKey else { return false }
+            }
+            if hit.leafID.isEmpty {
+                if let inMemory = entries[hit.chatKey] {
+                    return inMemory.contains { $0.id == hit.entryID }
+                }
+                return true
+            }
+            return leaves(hit.chatKey).contains { $0.id == hit.leafID }
         }
 
         guard !hits.isEmpty else {
@@ -159,8 +205,12 @@ extension TeamModel {
         guard !terms.isEmpty else { return [] }
 
         let keys: [String] = context.includeOtherChats
-            ? Array(entries.keys).filter { !context.excludedChatKeys.contains($0) }
-            : [context.callerChatKey].filter { !context.excludedChatKeys.contains($0) }
+            ? Array(entries.keys).filter { key in
+                !context.excludedChatKeys.contains(key) && (context.allowedChatKeys?.contains(key) ?? true)
+            }
+            : [context.callerChatKey].filter { key in
+                !context.excludedChatKeys.contains(key) && (context.allowedChatKeys?.contains(key) ?? true)
+            }
 
         var hits: [MemoryIndexHit] = []
         for key in keys {
