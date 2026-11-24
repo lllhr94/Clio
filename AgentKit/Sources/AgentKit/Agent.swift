@@ -539,7 +539,7 @@ public struct Agent: Sendable {
         }
         let source = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let given = JSONValue.parse(source.isEmpty ? "{}" : source) else {
-            return .toolResult("参数不是合法的 JSON：\(call.arguments.prefix(200))", for: call, isError: true)
+            return .toolResult("参数不是合法的 JSON：\(source.prefix(200))", for: call, isError: true)
         }
         // The model's own words for this step, for the person; the tool never sees them.
         let (arguments, title) = Self.untitled(given)

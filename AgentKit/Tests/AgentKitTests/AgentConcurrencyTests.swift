@@ -139,13 +139,14 @@ private struct BarrierReadTool: AgentTool {
     let name: String
     let tracker: TimelineTracker
     let targetInFlight: Int
+    var barrierIDs: Set<String>? = nil
     var spec: ToolSpec { ToolSpec(name: name, description: "", parameters: ["type": "object"]) }
     var isReadOnlySafe: Bool { true }
     func label(for arguments: JSONValue) -> String { "只读" }
     func run(_ arguments: JSONValue) async throws -> ToolOutput {
         let id = arguments["id"]?.string ?? "?"
         await tracker.begin(id)
-        if targetInFlight > 1 {
+        if targetInFlight > 1, barrierIDs == nil || barrierIDs?.contains(id) == true {
             let reached = await tracker.waitForInFlight(targetInFlight)
             if !reached {
                 await tracker.end(id)
@@ -577,7 +578,7 @@ final class AgentConcurrencyTests: XCTestCase {
         }
 
         let tracker = TimelineTracker()
-        let readTool = BarrierReadTool(name: "read_item", tracker: tracker, targetInFlight: 2)
+        let readTool = BarrierReadTool(name: "read_item", tracker: tracker, targetInFlight: 2, barrierIDs: ["2", "3"])
         let firstTurn = makeCalls([("u0", "uncertain_send", "{}")])
         let secondTurn = makeCalls([
             ("u1", "uncertain_send", "{}"),
@@ -871,8 +872,8 @@ final class AgentConcurrencyTests: XCTestCase {
                 await tracker.begin(id)
                 // Simulate permission tightening right before execution while inside a parallel batch.
                 if arguments["tighten"]?.bool == true {
-                    policy.setAskRequired(true)
                     _ = await tracker.waitForInFlight(2)
+                    policy.setAskRequired(true)
                 }
                 if policy.isAskRequired() {
                     if ToolInvocation.isConcurrentBatch {
