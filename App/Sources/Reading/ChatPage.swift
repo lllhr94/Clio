@@ -12,7 +12,7 @@ import VisionKit
 struct ChatPage: View {
     let team: TeamModel
     @State var chat: ChatModel
-    @State var dictation = Dictation()
+    @State var dictationSlot = ChatDictationSlot()
     let asker = Asker.shared
     @State var petPerch = PetPerch()
     @State var chatViewport = CGSize.zero
@@ -137,7 +137,7 @@ struct ChatPage: View {
             doing: doing,
             working: working,
             typing: typing,
-            listening: dictation.listening,
+            listening: dictationSlot.instance?.listening == true,
             cheering: idleMood.cheering,
             dozing: idleMood.dozing
         )
@@ -277,7 +277,7 @@ struct ChatPage: View {
                         chat: chat,
                         team: team,
                         bot: bot,
-                        dictation: dictation,
+                        dictationSlot: dictationSlot,
                         idleMood: idleMood,
                         starters: starters,
                         reach: reach,
@@ -582,26 +582,48 @@ struct ChatPage: View {
 
     /// Puts a queued or interjected turn back into the composer atomically once persisted on disk.
     func withdrawQueued(_ item: TeamModel.Queued) {
+        Self.performWithdrawQueued(
+            item,
+            chat: chat,
+            team: team,
+            draftState: draftState,
+            photos: $photos,
+            files: $files,
+            draftAttachmentQueuedIds: $draftAttachmentQueuedIds,
+            typing: $typing
+        )
+    }
+
+    static func performWithdrawQueued(
+        _ item: TeamModel.Queued,
+        chat: ChatModel,
+        team: TeamModel,
+        draftState: ChatDraft,
+        photos: Binding<[Data]>,
+        files: Binding<[String]>,
+        draftAttachmentQueuedIds: Binding<[UUID]>,
+        typing: FocusState<Bool>.Binding
+    ) {
         guard let back = team.unqueue(chat.key, item.id, deferRemoval: true) else { return }
         let chatKey = chat.key
         draftState.load(chatKey)
         let textSnapshot: StoredTextDraft?
         if !back.text.isEmpty {
-            draft = draft.isEmpty ? back.text : draft + "\n" + back.text
+            draftState.text = draftState.text.isEmpty ? back.text : draftState.text + "\n" + back.text
             draftState.recordQueuedId(back.id)
             textSnapshot = draftState.prepareAtomicSave()
         } else {
             textSnapshot = nil
         }
         if !back.photos.isEmpty {
-            let previousCount = photos.count
-            photos.append(contentsOf: back.photos)
-            if !draftAttachmentQueuedIds.contains(back.id) {
-                draftAttachmentQueuedIds.append(back.id)
+            let previousCount = photos.wrappedValue.count
+            photos.wrappedValue.append(contentsOf: back.photos)
+            if !draftAttachmentQueuedIds.wrappedValue.contains(back.id) {
+                draftAttachmentQueuedIds.wrappedValue.append(back.id)
             }
-            let snapshotPhotos = photos
-            let snapshotFiles = files
-            let snapshotIds = draftAttachmentQueuedIds
+            let snapshotPhotos = photos.wrappedValue
+            let snapshotFiles = files.wrappedValue
+            let snapshotIds = draftAttachmentQueuedIds.wrappedValue
             Task {
                 let textOk: Bool
                 if let textSnapshot {
@@ -623,19 +645,19 @@ struct ChatPage: View {
                 if textOk && photosOk {
                     team.confirmQueuedRemoved([back.id], for: chatKey)
                 } else {
-                    draftAttachmentQueuedIds.removeAll { $0 == back.id }
+                    draftAttachmentQueuedIds.wrappedValue.removeAll { $0 == back.id }
                     draftState.removeQueuedId(back.id)
                     if !back.text.isEmpty {
-                        if draft == back.text {
-                            draft = ""
-                        } else if draft.hasSuffix("\n" + back.text) {
-                            draft = String(draft.dropLast(back.text.count + 1))
+                        if draftState.text == back.text {
+                            draftState.text = ""
+                        } else if draftState.text.hasSuffix("\n" + back.text) {
+                            draftState.text = String(draftState.text.dropLast(back.text.count + 1))
                         }
                     }
                     draftState.flush()
-                    if photos.count >= previousCount + back.photos.count,
-                       Array(photos[previousCount..<(previousCount + back.photos.count)]) == back.photos {
-                        photos.removeSubrange(previousCount..<(previousCount + back.photos.count))
+                    if photos.wrappedValue.count >= previousCount + back.photos.count,
+                       Array(photos.wrappedValue[previousCount..<(previousCount + back.photos.count)]) == back.photos {
+                        photos.wrappedValue.removeSubrange(previousCount..<(previousCount + back.photos.count))
                     }
                     team.restoreInFlightQueued([back.id], to: chatKey)
                     Diag.note("撤回的草稿没存进手机，原消息已留在排队里。")
@@ -648,10 +670,10 @@ struct ChatPage: View {
                     team.confirmQueuedRemoved([back.id], for: chatKey)
                 } else {
                     draftState.removeQueuedId(back.id)
-                    if draft == back.text {
-                        draft = ""
-                    } else if draft.hasSuffix("\n" + back.text) {
-                        draft = String(draft.dropLast(back.text.count + 1))
+                    if draftState.text == back.text {
+                        draftState.text = ""
+                    } else if draftState.text.hasSuffix("\n" + back.text) {
+                        draftState.text = String(draftState.text.dropLast(back.text.count + 1))
                     }
                     draftState.flush()
                     team.restoreInFlightQueued([back.id], to: chatKey)
@@ -661,12 +683,13 @@ struct ChatPage: View {
         } else {
             team.confirmQueuedRemoved([back.id], for: chatKey)
         }
-        typing = true
+        typing.wrappedValue = true
     }
 
     /// Starts dictation; what is heard is added after what was already written.
     func listen() {
-        guard !dictation.busy else { return }
+        if let existing = dictationSlot.instance, existing.busy { return }
+        let active = dictationSlot.ensure()
         if voice.isSpeaking {
             _ = voice.stopSpeaking(at: .immediate)
             speakingText = nil
@@ -674,10 +697,10 @@ struct ChatPage: View {
         Haptics.grab()
         typing = false
         dictationMerger.start(initialDraft: draft)
-        dictation.onText = { heard in
+        active.onText = { heard in
             draft = dictationMerger.merge(currentDraft: draft, heard: heard)
         }
-        Task { await dictation.start() }
+        Task { await active.start() }
     }
 
     /// Siri or a shortcut sent us here: put the words in, listen, or just wait at the composer. Nothing is sent.
@@ -722,7 +745,7 @@ struct ChatPage: View {
             chrome: chrome,
             petPerch: petPerch,
             asker: asker,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             draftState: draftState,
             followState: followState,
             idleMood: idleMood,
@@ -799,42 +822,107 @@ struct ChatPage: View {
     }
 
     func syncBridge() {
-        bridge.onViewPhoto = { ref in viewing = ref }
-        bridge.onQuote = { id, text in quoting = Noting(id: id, text: text) }
-        bridge.onEdit = { id, text in
+        let chatRef = chat
+        let teamRef = team
+        let draftRef = draftState
+        let noticeRef = notice
+        let dictationRef = dictationSlot
+        let voiceRef = voice
+
+        let viewingBinding = $viewing
+        let quotingBinding = $quoting
+        let editingBinding = $editing
+        let typingBinding = $typing
+        let roamingBinding = $roaming
+        let readingBinding = $reading
+        let leafingBinding = $leafing
+        let savingNoteBinding = $savingNote
+        let notingBinding = $noting
+        let followingBinding = $following
+        let undoAskBinding = $undoAsk
+        let tuningOpenBinding = $tuningOpen
+        let careOpenBinding = $careOpen
+        let speakingTextBinding = $speakingText
+        let photosBinding = $photos
+        let filesBinding = $files
+        let queuedIdsBinding = $draftAttachmentQueuedIds
+
+        bridge.onViewPhoto = { ref in viewingBinding.wrappedValue = ref }
+        bridge.onQuote = { id, text in quotingBinding.wrappedValue = Noting(id: id, text: text) }
+        bridge.onEdit = { [weak draftRef] id, text in
             withAnimation(Ink.Motion.settle) {
-                editing = id
-                draft = text
+                editingBinding.wrappedValue = id
+                draftRef?.text = text
             }
-            typing = true
+            typingBinding.wrappedValue = true
         }
-        bridge.onOpenURL = { url in
-            typing = false
-            Task { await team.browser.open(url) }
-            roaming = true
+        bridge.onOpenURL = { [weak teamRef] url in
+            typingBinding.wrappedValue = false
+            if let teamRef { Task { await teamRef.browser.open(url) } }
+            roamingBinding.wrappedValue = true
         }
-        bridge.onOpenFile = { url, mount in reading = ReadingFile(url: url, mount: mount) }
-        bridge.onOpenLeaves = { leafing = true }
-        bridge.onAct = { next in act(next) }
-        bridge.onSpeak = { text in speak(text) }
-        bridge.onSaveNote = { id, text in savingNote = Noting(id: id, text: text) }
-        bridge.onLongNote = { id, text in noting = Noting(id: id, text: text) }
-        bridge.onFork = { line in fork(at: line) }
-        bridge.onRedo = { redo() }
-        bridge.onContinueStepLimit = {
-            following = true
-            _ = chat.send(L.t("chat.continuePrompt"), photos: [])
+        bridge.onOpenFile = { url, mount in readingBinding.wrappedValue = ReadingFile(url: url, mount: mount) }
+        bridge.onOpenLeaves = { leafingBinding.wrappedValue = true }
+        bridge.onAct = { [weak chatRef, weak teamRef, weak noticeRef] next in
+            guard let chatRef, let teamRef, let noticeRef else { return }
+            Self.performAct(
+                next,
+                chat: chatRef,
+                team: teamRef,
+                notice: noticeRef,
+                following: followingBinding,
+                undoAsk: undoAskBinding,
+                tuningOpen: tuningOpenBinding,
+                careOpen: careOpenBinding
+            )
         }
-        bridge.onSay = { text in say(text) }
-        bridge.onRetry = {
-            following = true
-            chat.retry()
+        bridge.onSpeak = { [weak dictationRef, weak voiceRef] text in
+            guard let dictationRef, let voiceRef else { return }
+            Self.performSpeak(text, dictationSlot: dictationRef, voice: voiceRef, speakingText: speakingTextBinding)
         }
-        bridge.onWithdrawQueued = { item in withdrawQueued(item) }
-        bridge.onSendQueuedNow = {
+        bridge.onSaveNote = { id, text in savingNoteBinding.wrappedValue = Noting(id: id, text: text) }
+        bridge.onLongNote = { id, text in notingBinding.wrappedValue = Noting(id: id, text: text) }
+        bridge.onFork = { [weak chatRef, weak teamRef] line in
+            guard let chatRef, let teamRef else { return }
             Haptics.thud()
-            following = true
-            team.sendQueueNow(chat.key)
+            teamRef.fork(chatRef.key, at: line.id)
+        }
+        bridge.onRedo = { [weak chatRef, weak teamRef] in
+            guard let chatRef, let teamRef else { return }
+            Self.performRedo(chat: chatRef, team: teamRef, following: followingBinding, undoAsk: undoAskBinding)
+        }
+        bridge.onContinueStepLimit = { [weak chatRef] in
+            guard let chatRef else { return }
+            followingBinding.wrappedValue = true
+            _ = chatRef.send(L.t("chat.continuePrompt"), photos: [])
+        }
+        bridge.onSay = { [weak noticeRef] text in
+            guard let noticeRef else { return }
+            Self.postComposerNotice(text, to: noticeRef)
+        }
+        bridge.onRetry = { [weak chatRef] in
+            guard let chatRef else { return }
+            followingBinding.wrappedValue = true
+            chatRef.retry()
+        }
+        bridge.onWithdrawQueued = { [weak chatRef, weak teamRef, weak draftRef] item in
+            guard let chatRef, let teamRef, let draftRef else { return }
+            Self.performWithdrawQueued(
+                item,
+                chat: chatRef,
+                team: teamRef,
+                draftState: draftRef,
+                photos: photosBinding,
+                files: filesBinding,
+                draftAttachmentQueuedIds: queuedIdsBinding,
+                typing: typingBinding
+            )
+        }
+        bridge.onSendQueuedNow = { [weak chatRef, weak teamRef] in
+            guard let chatRef, let teamRef else { return }
+            Haptics.thud()
+            followingBinding.wrappedValue = true
+            teamRef.sendQueueNow(chatRef.key)
         }
     }
 
@@ -879,7 +967,7 @@ struct ChatPage: View {
         .onChange(of: scenePhase) { _, next in
             if next == .background {
                 DiagTrail.record("退后台")
-                dictation.cancel()
+                dictationSlot.cancelIfActive()
                 _ = voice.stopSpeaking(at: .immediate)
                 speakingText = nil
             } else if next == .active {
@@ -908,9 +996,10 @@ struct ChatPage: View {
             cancelFindTasks()
             pasteTask?.cancel()
             selecting.removeAll()
-            dictation.cancel()
+            dictationSlot.cancelIfActive()
             _ = voice.stopSpeaking(at: .immediate)
             speakingText = nil
+            bridge.unbind()
         }
         .sheet(item: $noting) { note in
             NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
@@ -1140,7 +1229,7 @@ struct ChatPage: View {
 
     func leave() {
         typing = false
-        dictation.cancel()
+        dictationSlot.cancelIfActive()
         _ = voice.stopSpeaking(at: .immediate)
         speakingText = nil
         Haptics.light()
@@ -1207,6 +1296,22 @@ final class ChatWorkTimer {
     var since: Date?
 }
 
+@MainActor @Observable
+final class ChatDictationSlot {
+    private(set) var instance: Dictation?
+
+    func ensure() -> Dictation {
+        if let instance { return instance }
+        let created = Dictation()
+        instance = created
+        return created
+    }
+
+    func cancelIfActive() {
+        instance?.cancel()
+    }
+}
+
 @MainActor
 final class ChatRowBridge {
     var onViewPhoto: (String) -> Void = { _ in }
@@ -1226,6 +1331,26 @@ final class ChatRowBridge {
     var onRetry: () -> Void = {}
     var onWithdrawQueued: (TeamModel.Queued) -> Void = { _ in }
     var onSendQueuedNow: () -> Void = {}
+
+    func unbind() {
+        onViewPhoto = { _ in }
+        onQuote = { _, _ in }
+        onEdit = { _, _ in }
+        onOpenURL = { _ in }
+        onOpenFile = { _, _ in }
+        onOpenLeaves = {}
+        onAct = { _ in }
+        onSpeak = { _ in }
+        onSaveNote = { _, _ in }
+        onLongNote = { _, _ in }
+        onFork = { _ in }
+        onRedo = {}
+        onContinueStepLimit = {}
+        onSay = { _ in }
+        onRetry = {}
+        onWithdrawQueued = { _ in }
+        onSendQueuedNow = {}
+    }
 }
 
 struct ChatEarlierButtonView: View {
@@ -1258,7 +1383,7 @@ struct ChatEmptyContentView: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
     let bot: BotInfo
-    @ObservedObject var dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let starters: [(String, String, String)]
     let reach: String
@@ -1270,22 +1395,20 @@ struct ChatEmptyContentView: View {
     private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
-    private var petState: String {
-        ChatPage.companionPetState(
-            waiting: waiting,
-            hasStreaming: chat.hasStreaming,
-            doing: doing,
-            working: working,
-            typing: typing.wrappedValue,
-            listening: dictation.listening,
-            cheering: idleMood.cheering,
-            dozing: idleMood.dozing
-        )
-    }
-
     var body: some View {
         VStack(spacing: Ink.Space.l) {
-            PetStill(size: 96, state: petState, bot: isRoom ? nil : bot)
+            ChatEmptyPetFace(
+                dictationSlot: dictationSlot,
+                waiting: waiting,
+                hasStreaming: chat.hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing.wrappedValue,
+                cheering: idleMood.cheering,
+                dozing: idleMood.dozing,
+                isRoom: isRoom,
+                bot: bot
+            )
             if isRoom {
                 Text(L.t("empty.groupChat"))
                     .font(Ink.reading)
@@ -1322,6 +1445,75 @@ struct ChatEmptyContentView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 72)
+    }
+}
+
+private struct ChatEmptyPetFace: View {
+    let dictationSlot: ChatDictationSlot
+    let waiting: Approval?
+    let hasStreaming: Bool
+    let doing: String?
+    let working: Bool
+    let typing: Bool
+    let cheering: Bool
+    let dozing: Bool
+    let isRoom: Bool
+    let bot: BotInfo
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveEmptyPetFace(
+                dictation: dictation,
+                waiting: waiting,
+                hasStreaming: hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing,
+                cheering: cheering,
+                dozing: dozing,
+                isRoom: isRoom,
+                bot: bot
+            )
+        } else {
+            let state = ChatPage.companionPetState(
+                waiting: waiting,
+                hasStreaming: hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing,
+                listening: false,
+                cheering: cheering,
+                dozing: dozing
+            )
+            PetStill(size: 96, state: state, bot: isRoom ? nil : bot)
+        }
+    }
+}
+
+private struct ChatActiveEmptyPetFace: View {
+    @ObservedObject var dictation: Dictation
+    let waiting: Approval?
+    let hasStreaming: Bool
+    let doing: String?
+    let working: Bool
+    let typing: Bool
+    let cheering: Bool
+    let dozing: Bool
+    let isRoom: Bool
+    let bot: BotInfo
+
+    var body: some View {
+        let state = ChatPage.companionPetState(
+            waiting: waiting,
+            hasStreaming: hasStreaming,
+            doing: doing,
+            working: working,
+            typing: typing,
+            listening: dictation.listening,
+            cheering: cheering,
+            dozing: dozing
+        )
+        PetStill(size: 96, state: state, bot: isRoom ? nil : bot)
     }
 }
 

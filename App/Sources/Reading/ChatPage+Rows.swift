@@ -61,7 +61,7 @@ extension ChatPage {
     }
 
     var empty: some View {
-        emptyStateView(isWorking: working, isListening: dictation.listening)
+        emptyStateView(isWorking: working, isListening: dictationSlot.instance?.listening == true)
     }
 
     /// The pages the steps right before this reply read or found, for a row of sources under it.

@@ -45,7 +45,7 @@ extension ChatPage {
             team: team,
             bot: bot,
             side: side,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             idleMood: idleMood,
             followState: followState,
             notice: notice,
@@ -91,7 +91,7 @@ struct ChatTopBarView: View {
     let team: TeamModel
     let bot: BotInfo
     let side: SideControl
-    let dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let followState: ChatFollowState
     let notice: ChatComposerNotice
@@ -172,7 +172,7 @@ struct ChatTopBarView: View {
             chat: chat,
             team: team,
             bot: bot,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             idleMood: idleMood,
             viewportWidth: viewportWidth,
             largeText: largeText,
@@ -237,7 +237,7 @@ private struct ChatTopBarIdentityView: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
     let bot: BotInfo
-    @ObservedObject var dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let viewportWidth: CGFloat
     let largeText: Bool
@@ -253,19 +253,6 @@ private struct ChatTopBarIdentityView: View {
     private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
-    private var petState: String {
-        ChatPage.companionPetState(
-            waiting: waiting,
-            hasStreaming: chat.hasStreaming,
-            doing: doing,
-            working: working,
-            typing: typing.wrappedValue,
-            listening: dictation.listening,
-            cheering: idleMood.cheering,
-            dozing: idleMood.dozing
-        )
-    }
-
     private var headerLine: String {
         let status = ChatPage.companionStatus(waiting: waiting, doing: doing)
         if working || waiting != nil { return status }
@@ -274,14 +261,24 @@ private struct ChatTopBarIdentityView: View {
 
     var body: some View {
         HStack(spacing: Ink.Space.s) {
-            PetStill(size: 28 * UIScale.factor, state: petState, avatar: true, bot: isRoom ? nil : bot)
-                .breathing(working, tint: Ink.accent)
-                // Its face opens a glance at it: what it does, what it made, its schedule.
-                .onTapGesture {
-                    guard !isRoom else { detailOpen = true; return }
-                    Haptics.light()
-                    glancing = true
-                }
+            ChatTopBarPetFace(
+                dictationSlot: dictationSlot,
+                waiting: waiting,
+                hasStreaming: chat.hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing.wrappedValue,
+                cheering: idleMood.cheering,
+                dozing: idleMood.dozing,
+                isRoom: isRoom,
+                bot: bot
+            )
+            // Its face opens a glance at it: what it does, what it made, its schedule.
+            .onTapGesture {
+                guard !isRoom else { detailOpen = true; return }
+                Haptics.light()
+                glancing = true
+            }
                 .popover(isPresented: $glancing) {
                     GlanceCard(
                         team: team,
@@ -470,5 +467,76 @@ private struct ChatTopBarControlsView: View {
             typing.wrappedValue = false
             action()
         }
+    }
+}
+
+private struct ChatTopBarPetFace: View {
+    let dictationSlot: ChatDictationSlot
+    let waiting: Approval?
+    let hasStreaming: Bool
+    let doing: String?
+    let working: Bool
+    let typing: Bool
+    let cheering: Bool
+    let dozing: Bool
+    let isRoom: Bool
+    let bot: BotInfo
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveTopBarPetFace(
+                dictation: dictation,
+                waiting: waiting,
+                hasStreaming: hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing,
+                cheering: cheering,
+                dozing: dozing,
+                isRoom: isRoom,
+                bot: bot
+            )
+        } else {
+            let state = ChatPage.companionPetState(
+                waiting: waiting,
+                hasStreaming: hasStreaming,
+                doing: doing,
+                working: working,
+                typing: typing,
+                listening: false,
+                cheering: cheering,
+                dozing: dozing
+            )
+            PetStill(size: 28 * UIScale.factor, state: state, avatar: true, bot: isRoom ? nil : bot)
+                .breathing(working, tint: Ink.accent)
+        }
+    }
+}
+
+private struct ChatActiveTopBarPetFace: View {
+    @ObservedObject var dictation: Dictation
+    let waiting: Approval?
+    let hasStreaming: Bool
+    let doing: String?
+    let working: Bool
+    let typing: Bool
+    let cheering: Bool
+    let dozing: Bool
+    let isRoom: Bool
+    let bot: BotInfo
+
+    var body: some View {
+        let state = ChatPage.companionPetState(
+            waiting: waiting,
+            hasStreaming: hasStreaming,
+            doing: doing,
+            working: working,
+            typing: typing,
+            listening: dictation.listening,
+            cheering: cheering,
+            dozing: dozing
+        )
+        PetStill(size: 28 * UIScale.factor, state: state, avatar: true, bot: isRoom ? nil : bot)
+            .breathing(working, tint: Ink.accent)
     }
 }

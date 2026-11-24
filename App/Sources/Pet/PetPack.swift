@@ -1,4 +1,5 @@
 import ImageIO
+import Observation
 import SwiftUI
 import UIKit
 
@@ -221,18 +222,39 @@ enum PetSheets {
         var lastUsed: UInt64
     }
 
-    private static let noCacheOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+    @MainActor @Observable
+    private final class AtlasSignal {
+        var revision: UInt64 = 0
+    }
+
+    private struct SlicedFrame: @unchecked Sendable {
+        let index: Int
+        let image: CGImage
+        let bytes: Int
+    }
+
+    private struct PlaceholderEntry {
+        let index: Int
+        let image: CGImage
+    }
+
     private static let maxActiveSheetBytes = 8 * 1024 * 1024
     private static let maxRetainedSingleSheetBytes = 4 * 1024 * 1024
     private static let maxActiveSheets = 2
     private static let maxInactiveStillPixels = 192
     private static let maxActiveFramePixels = 512
+    private static let maxAtlasBatchBytes = 6 * 1024 * 1024
+    private static let maxPlaceholders = 12
 
+    private static let signal = AtlasSignal()
     private static var primaryPackID: String?
     private static var playbackPackID: String?
     private static var accessTick: UInt64 = 0
     private static var sheets: [String: SheetEntry] = [:]
     private static var totalSheetBytes = 0
+    private static var sheetByteEstimates: [String: Int] = [:]
+    private static var inFlightAtlases: Set<String> = []
+    private static var placeholders: [String: PlaceholderEntry] = [:]
 
     private static let activeCells: NSCache<NSString, ImageBox> = {
         let cache = NSCache<NSString, ImageBox>()
@@ -267,6 +289,7 @@ enum PetSheets {
             playbackPackID = nil
         }
         evictSheets(except: activeIDs)
+        evictPlaceholders(except: activeIDs)
         activeCells.removeAllObjects()
     }
 
@@ -281,6 +304,8 @@ enum PetSheets {
         clearSheets()
         activeCells.removeAllObjects()
         inactiveStills.removeAllObjects()
+        placeholders.removeAll()
+        sheetByteEstimates.removeAll()
     }
 
     private static var activeIDs: Set<String> {
@@ -313,10 +338,40 @@ enum PetSheets {
         }
     }
 
-    private static func decodeSheetImage(_ pack: PetPack, _ name: String) -> CGImage? {
+    private static func evictPlaceholders(except keptIDs: Set<String>) {
+        for key in Array(placeholders.keys) {
+            let packID = String(key.split(separator: "/", maxSplits: 1).first ?? "")
+            if !keptIDs.contains(packID) {
+                placeholders.removeValue(forKey: key)
+            }
+        }
+    }
+
+    nonisolated private static func estimatedSheetBytes(at url: URL) -> Int? {
+        let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, noCache),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, noCache) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int,
+              let h = props[kCGImagePropertyPixelHeight] as? Int,
+              w > 0, h > 0 else { return nil }
+        return w * h * 4
+    }
+
+    nonisolated private static func decodeSheetImage(at url: URL) -> CGImage? {
+        let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, noCache) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, noCache)
+    }
+
+    private static func isOversizedSheet(_ pack: PetPack, _ name: String) -> Bool {
+        let key = pack.id + "/" + name
+        if let known = sheetByteEstimates[key] {
+            return known > maxRetainedSingleSheetBytes
+        }
         let url = pack.dir.appendingPathComponent(name)
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, noCacheOptions) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, noCacheOptions)
+        guard let bytes = estimatedSheetBytes(at: url) else { return false }
+        sheetByteEstimates[key] = bytes
+        return bytes > maxRetainedSingleSheetBytes
     }
 
     private static func storeActiveSheet(_ image: CGImage, for key: String) {
@@ -342,7 +397,7 @@ enum PetSheets {
             sheets[key] = hit
             return hit.image
         }
-        guard let image = decodeSheetImage(pack, name) else { return nil }
+        guard let image = decodeSheetImage(at: pack.dir.appendingPathComponent(name)) else { return nil }
         if isActivePack(pack.id) {
             storeActiveSheet(image, for: key)
         }
@@ -364,10 +419,11 @@ enum PetSheets {
         if forPlayback, playbackPackID != pack.id {
             playbackPackID = pack.id
             evictSheets(except: activeIDs)
+            evictPlaceholders(except: activeIDs)
         }
 
         let active = forPlayback || isActivePack(pack.id)
-        let targetLimit: Int?
+        let targetLimit: Int
         if active {
             targetLimit = min(maxActiveFramePixels, max(24, maxPixelSize ?? maxActiveFramePixels))
         } else {
@@ -387,13 +443,31 @@ enum PetSheets {
             return hit.image
         }
 
+        let sheetKey = pack.id + "/" + anim.sheet
+        // When a sheet exceeds the uncompressed retention cap (> 4 MiB), avoid repeating full-PNG decodes
+        // on MainActor: slice frames in one deduplicated background pass while returning the nearest cached frame.
+        if sheets[sheetKey] == nil && isOversizedSheet(pack, anim.sheet) {
+            _ = signal.revision
+            let placeholderKey = "\(sheetKey)@\(targetDims.width)x\(targetDims.height)"
+            scheduleLargeAtlasBatch(
+                pack: pack,
+                anim: anim,
+                requestedIndex: index,
+                targetWidth: targetDims.width,
+                targetHeight: targetDims.height,
+                active: active,
+                placeholderKey: placeholderKey
+            )
+            return nearestCachedCell(pack: pack, anim: anim, requestedIndex: index, targetDims: targetDims, active: active, placeholderKey: placeholderKey)
+        }
+
         let built: CGImage? = autoreleasepool {
             let sourceSheet: CGImage?
             if active {
                 sourceSheet = sheet(pack, anim.sheet)
             } else {
                 // Inactive packs decode once on demand without retaining the full sprite sheet in memory.
-                sourceSheet = decodeSheetImage(pack, anim.sheet)
+                sourceSheet = decodeSheetImage(at: pack.dir.appendingPathComponent(anim.sheet))
             }
             guard let sourceSheet else { return nil }
             return cropCell(
@@ -416,7 +490,116 @@ enum PetSheets {
         return built
     }
 
-    private static func scaledDimensions(
+    private static func nearestCachedCell(
+        pack: PetPack,
+        anim: PetPack.Anim,
+        requestedIndex: Int,
+        targetDims: (width: Int, height: Int),
+        active: Bool,
+        placeholderKey: String
+    ) -> CGImage? {
+        if active {
+            var bestDistance = Int.max
+            var bestImage: CGImage?
+            for frame in anim.frames {
+                let candidateKey = "\(pack.id)/\(anim.sheet)#\(frame.i)@\(targetDims.width)x\(targetDims.height)" as NSString
+                if let hit = activeCells.object(forKey: candidateKey) {
+                    let distance = abs(frame.i - requestedIndex)
+                    if distance < bestDistance {
+                        bestDistance = distance
+                        bestImage = hit.image
+                    }
+                }
+            }
+            if let bestImage { return bestImage }
+        }
+        return placeholders[placeholderKey]?.image
+    }
+
+    private static func scheduleLargeAtlasBatch(
+        pack: PetPack,
+        anim: PetPack.Anim,
+        requestedIndex: Int,
+        targetWidth: Int,
+        targetHeight: Int,
+        active: Bool,
+        placeholderKey: String
+    ) {
+        let batchKey = "\(placeholderKey)#\(active ? 1 : 0)"
+        guard !inFlightAtlases.contains(batchKey) else { return }
+        inFlightAtlases.insert(batchKey)
+
+        var indices: [Int] = [requestedIndex]
+        if active {
+            var seen: Set<Int> = [requestedIndex]
+            for candidate in anim.frames where !seen.contains(candidate.i) {
+                seen.insert(candidate.i)
+                let key = "\(pack.id)/\(anim.sheet)#\(candidate.i)@\(targetWidth)x\(targetHeight)" as NSString
+                if activeCells.object(forKey: key) == nil { indices.append(candidate.i) }
+            }
+            for other in pack.animations.values where other.sheet == anim.sheet && other.frameW == anim.frameW && other.frameH == anim.frameH && other.cols == anim.cols {
+                for candidate in other.frames where !seen.contains(candidate.i) {
+                    seen.insert(candidate.i)
+                    let key = "\(pack.id)/\(anim.sheet)#\(candidate.i)@\(targetWidth)x\(targetHeight)" as NSString
+                    if activeCells.object(forKey: key) == nil { indices.append(candidate.i) }
+                }
+            }
+        }
+        let url = pack.dir.appendingPathComponent(anim.sheet)
+        let packID = pack.id
+        let sheetName = anim.sheet
+        let pixelArt = pack.pixelArt
+        let frameOrder = indices
+
+        Task.detached(priority: .userInitiated) {
+            let sliced: [SlicedFrame] = autoreleasepool {
+                guard let atlas = Self.decodeSheetImage(at: url) else { return [] }
+                var out: [SlicedFrame] = []
+                var batchBytes = 0
+                let limit = active ? Self.maxAtlasBatchBytes : 512 * 1024
+                for idx in frameOrder {
+                    if Task.isCancelled { break }
+                    guard let cell = Self.cropCell(
+                        from: atlas,
+                        anim: anim,
+                        index: idx,
+                        pixelArt: pixelArt,
+                        targetWidth: targetWidth,
+                        targetHeight: targetHeight
+                    ) else { continue }
+                    let bytes = max(1, cell.bytesPerRow * cell.height)
+                    if !out.isEmpty && batchBytes + bytes > limit { break }
+                    batchBytes += bytes
+                    out.append(SlicedFrame(index: idx, image: cell, bytes: bytes))
+                }
+                return out
+            }
+
+            await MainActor.run {
+                PetSheets.inFlightAtlases.remove(batchKey)
+                guard !sliced.isEmpty else { return }
+                if active && !PetSheets.isActivePack(packID) { return }
+                for item in sliced {
+                    let itemKey = "\(packID)/\(sheetName)#\(item.index)@\(targetWidth)x\(targetHeight)" as NSString
+                    let box = ImageBox(item.image)
+                    if active {
+                        PetSheets.activeCells.setObject(box, forKey: itemKey, cost: item.bytes)
+                    } else {
+                        PetSheets.inactiveStills.setObject(box, forKey: itemKey, cost: item.bytes)
+                    }
+                }
+                if let first = sliced.first {
+                    if PetSheets.placeholders.count >= PetSheets.maxPlaceholders {
+                        PetSheets.placeholders.removeAll(keepingCapacity: true)
+                    }
+                    PetSheets.placeholders[placeholderKey] = PlaceholderEntry(index: first.index, image: first.image)
+                }
+                PetSheets.signal.revision &+= 1
+            }
+        }
+    }
+
+    nonisolated private static func scaledDimensions(
         width: Int,
         height: Int,
         pixelArt: Bool,
@@ -427,14 +610,19 @@ enum PetSheets {
         guard let maxPixelSize, maxPixelSize > 0 else { return (safeW, safeH) }
         let peak = max(safeW, safeH)
         guard peak > maxPixelSize else { return (safeW, safeH) }
+        if pixelArt {
+            let divisor = max(2, Int(ceil(Double(peak) / Double(maxPixelSize))))
+            let outW = max(1, safeW / divisor)
+            let outH = max(1, safeH / divisor)
+            return (outW, outH)
+        }
         let ratio = Double(maxPixelSize) / Double(peak)
         let outW = max(1, Int((Double(safeW) * ratio).rounded()))
         let outH = max(1, Int((Double(safeH) * ratio).rounded()))
-        if pixelArt && outW == safeW && outH == safeH { return (safeW, safeH) }
         return (outW, outH)
     }
 
-    private static func cropCell(
+    nonisolated private static func cropCell(
         from sheet: CGImage,
         anim: PetPack.Anim,
         index: Int,
@@ -461,7 +649,7 @@ enum PetSheets {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return cropped }
-        context.interpolationQuality = (pixelArt && dstW >= srcW && dstH >= srcH) ? .none : .high
+        context.interpolationQuality = pixelArt ? .none : .high
         context.draw(cropped, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
         return context.makeImage() ?? cropped
     }
@@ -472,6 +660,12 @@ enum PetSheets {
             if let removed = sheets.removeValue(forKey: key) {
                 totalSheetBytes = max(0, totalSheetBytes - removed.bytes)
             }
+        }
+        for key in Array(sheetByteEstimates.keys) where key.hasPrefix(prefix) {
+            sheetByteEstimates.removeValue(forKey: key)
+        }
+        for key in Array(placeholders.keys) where key.hasPrefix(prefix) {
+            placeholders.removeValue(forKey: key)
         }
         if isActivePack(id) {
             activeCells.removeAllObjects()
@@ -533,7 +727,8 @@ struct SpritePet: View {
         if let animation = pack.animations[anim] {
             let ms = Int(date.timeIntervalSince(since) * 1000)
             let index = animation.cell(at: max(0, ms))
-            let targetPixels = max(24, Int(ceil(max(animation.box.w, animation.box.h) * Double(u * displayScale))))
+            let rawPixels = max(animation.box.w, animation.box.h) * Double(u * displayScale)
+            let targetPixels = max(24, pack.pixelArt ? Int(rawPixels.rounded()) : Int(ceil(rawPixels)))
             ZStack(alignment: .topLeading) {
                 Color.clear.frame(width: CGFloat(pack.canvasW) * u, height: CGFloat(pack.canvasH) * u)
                 if let cell = PetSheets.cell(pack, animation, index, maxPixelSize: targetPixels, forPlayback: true) {

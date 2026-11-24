@@ -57,7 +57,7 @@ extension ChatPage {
             draftState: draftState,
             chat: chat,
             team: team,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             botName: bot.name,
             largeText: largeText,
             typing: $typing,
@@ -76,7 +76,7 @@ extension ChatPage {
             bot: bot,
             chrome: chrome,
             petPerch: petPerch,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             draftState: draftState,
             followState: followState,
             notice: notice,
@@ -309,7 +309,9 @@ extension ChatPage {
 
     /// Writing something: the row of chips shows under the text field.
     var composing: Bool {
-        typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || dictation.listening || dictation.transcribing
+        let listening = dictationSlot.instance?.listening == true
+        let transcribing = dictationSlot.instance?.transcribing == true
+        return typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || listening || transcribing
     }
 
     var sendingBlocked: Bool {
@@ -324,7 +326,7 @@ extension ChatPage {
         ChatActionButtonView(
             chat: chat,
             team: team,
-            dictation: dictation,
+            dictationSlot: dictationSlot,
             draftState: draftState,
             confirmStop: confirmStop,
             askingStop: $askingStop,
@@ -349,7 +351,7 @@ struct ChatBottomStackView<FindBar: View>: View {
     let chrome: ChatChrome
     let petPerch: PetPerch
     let asker: Asker
-    let dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
     let followState: ChatFollowState
     let idleMood: ChatIdleMood
@@ -423,7 +425,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                         bot: bot,
                         chrome: chrome,
                         petPerch: petPerch,
-                        dictation: dictation,
+                        dictationSlot: dictationSlot,
                         draftState: draftState,
                         followState: followState,
                         notice: notice,
@@ -470,7 +472,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                     chat: chat,
                     team: team,
                     asker: asker,
-                    dictation: dictation,
+                    dictationSlot: dictationSlot,
                     petPerch: petPerch,
                     face: isRoom ? nil : bot.avatar,
                     baseSheetOpen: baseSheetOpen,
@@ -528,7 +530,7 @@ private struct ChatPetPerchAnchorView: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
     @ObservedObject var asker: Asker
-    @ObservedObject var dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let petPerch: PetPerch
     let face: String?
     let baseSheetOpen: Bool
@@ -552,9 +554,48 @@ private struct ChatPetPerchAnchorView: View {
 
     var body: some View {
         let showingSheet = baseSheetOpen || (asker.current.map { !$0.inline } ?? false)
+        if let dictation = dictationSlot.instance {
+            ChatActivePetPerchAnchorView(
+                dictation: dictation,
+                perch: petPerch,
+                mood: petMood,
+                face: face,
+                showingSheet: showingSheet,
+                coveredByPage: coveredByPage,
+                onOpenSettings: onOpenSettings
+            )
+        } else {
+            PetPerchAnchor(
+                perch: petPerch,
+                mood: petMood,
+                face: face,
+                showingSheet: showingSheet,
+                covered: coveredByPage,
+                quiet: false,
+                enabled: PetLibrary.shared.visible,
+                openSettings: onOpenSettings
+            )
+            .frame(height: 1)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct ChatActivePetPerchAnchorView: View {
+    @ObservedObject var dictation: Dictation
+    let perch: PetPerch
+    let mood: PetMood
+    let face: String?
+    let showingSheet: Bool
+    let coveredByPage: Bool
+    let onOpenSettings: () -> Void
+
+    var body: some View {
         PetPerchAnchor(
-            perch: petPerch,
-            mood: petMood,
+            perch: perch,
+            mood: mood,
             face: face,
             showingSheet: showingSheet,
             covered: coveredByPage,
@@ -563,7 +604,7 @@ private struct ChatPetPerchAnchorView: View {
             openSettings: onOpenSettings
         )
         .frame(height: 1)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in petPerch.layoutChanged() }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in perch.layoutChanged() }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -575,7 +616,7 @@ struct ChatComposerBarView: View {
     let bot: BotInfo
     let chrome: ChatChrome
     let petPerch: PetPerch
-    let dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
     let followState: ChatFollowState
     let notice: ChatComposerNotice
@@ -635,12 +676,12 @@ struct ChatComposerBarView: View {
                 onPresentApproval: onPresentApproval,
                 onToEnd: onToEnd
             )
-            ChatDictationProblemView(dictation: dictation)
+            ChatDictationProblemView(dictationSlot: dictationSlot)
             ChatComposerMainCard(
                 chat: chat,
                 team: team,
                 bot: bot,
-                dictation: dictation,
+                dictationSlot: dictationSlot,
                 draftState: draftState,
                 notice: notice,
                 contextMetrics: contextMetrics,
@@ -865,6 +906,16 @@ private struct ChatDockAreaView: View {
 }
 
 private struct ChatDictationProblemView: View {
+    let dictationSlot: ChatDictationSlot
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveDictationProblemView(dictation: dictation)
+        }
+    }
+}
+
+private struct ChatActiveDictationProblemView: View {
     @ObservedObject var dictation: Dictation
 
     var body: some View {
@@ -881,7 +932,7 @@ private struct ChatComposerMainCard: View {
     let chat: ChatModel
     let team: TeamModel
     let bot: BotInfo
-    let dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
     let notice: ChatComposerNotice
     let contextMetrics: ChatContextMetrics
@@ -927,7 +978,7 @@ private struct ChatComposerMainCard: View {
                     draftState: draftState,
                     chat: chat,
                     team: team,
-                    dictation: dictation,
+                    dictationSlot: dictationSlot,
                     botName: bot.name,
                     largeText: largeText,
                     typing: typing,
@@ -938,7 +989,7 @@ private struct ChatComposerMainCard: View {
                 chat: chat,
                 team: team,
                 bot: bot,
-                dictation: dictation,
+                dictationSlot: dictationSlot,
                 draftState: draftState,
                 notice: notice,
                 contextMetrics: contextMetrics,
@@ -1091,12 +1142,177 @@ private struct ChatComposerAccessoryRow: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
     let bot: BotInfo
-    @ObservedObject var dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
     let notice: ChatComposerNotice
     let contextMetrics: ChatContextMetrics
     let largeText: Bool
     let confirmStop: Bool
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let fileNote: () -> String
+    let outgoingText: () -> String
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveComposerAccessoryRow(
+                dictation: dictation,
+                chat: chat,
+                team: team,
+                bot: bot,
+                dictationSlot: dictationSlot,
+                draftState: draftState,
+                notice: notice,
+                contextMetrics: contextMetrics,
+                largeText: largeText,
+                confirmStop: confirmStop,
+                typing: typing,
+                usageOpen: $usageOpen,
+                pickerShown: $pickerShown,
+                importingFile: $importingFile,
+                picks: $picks,
+                attaching: $attaching,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                onPasteChange: onPasteChange,
+                onReceiveURLs: onReceiveURLs,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom,
+                fileNote: fileNote,
+                outgoingText: outgoingText
+            )
+        } else {
+            ChatComposerAccessoryCore(
+                chat: chat,
+                team: team,
+                bot: bot,
+                dictationSlot: dictationSlot,
+                draftState: draftState,
+                notice: notice,
+                contextMetrics: contextMetrics,
+                largeText: largeText,
+                confirmStop: confirmStop,
+                isDictating: false,
+                typing: typing,
+                usageOpen: $usageOpen,
+                pickerShown: $pickerShown,
+                importingFile: $importingFile,
+                picks: $picks,
+                attaching: $attaching,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                onPasteChange: onPasteChange,
+                onReceiveURLs: onReceiveURLs,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom,
+                fileNote: fileNote,
+                outgoingText: outgoingText
+            )
+        }
+    }
+}
+
+private struct ChatActiveComposerAccessoryRow: View {
+    @ObservedObject var dictation: Dictation
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    let dictationSlot: ChatDictationSlot
+    let draftState: ChatDraft
+    let notice: ChatComposerNotice
+    let contextMetrics: ChatContextMetrics
+    let largeText: Bool
+    let confirmStop: Bool
+    let typing: FocusState<Bool>.Binding
+
+    @Binding var usageOpen: Bool
+    @Binding var pickerShown: Bool
+    @Binding var importingFile: Bool
+    @Binding var picks: [PhotosPickerItem]
+    @Binding var attaching: Bool
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+
+    let onPasteChange: (String, String) -> Void
+    let onReceiveURLs: ([URL]) -> Void
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+    let fileNote: () -> String
+    let outgoingText: () -> String
+
+    var body: some View {
+        ChatComposerAccessoryCore(
+            chat: chat,
+            team: team,
+            bot: bot,
+            dictationSlot: dictationSlot,
+            draftState: draftState,
+            notice: notice,
+            contextMetrics: contextMetrics,
+            largeText: largeText,
+            confirmStop: confirmStop,
+            isDictating: dictation.listening || dictation.transcribing,
+            typing: typing,
+            usageOpen: $usageOpen,
+            pickerShown: $pickerShown,
+            importingFile: $importingFile,
+            picks: $picks,
+            attaching: $attaching,
+            askingStop: $askingStop,
+            editing: $editing,
+            quote: $quote,
+            photos: photos,
+            files: files,
+            onPasteChange: onPasteChange,
+            onReceiveURLs: onReceiveURLs,
+            onListen: onListen,
+            onClearComposer: onClearComposer,
+            onRedoFrom: onRedoFrom,
+            fileNote: fileNote,
+            outgoingText: outgoingText
+        )
+    }
+}
+
+private struct ChatComposerAccessoryCore: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    let dictationSlot: ChatDictationSlot
+    let draftState: ChatDraft
+    let notice: ChatComposerNotice
+    let contextMetrics: ChatContextMetrics
+    let largeText: Bool
+    let confirmStop: Bool
+    let isDictating: Bool
     let typing: FocusState<Bool>.Binding
 
     @Binding var usageOpen: Bool
@@ -1125,8 +1341,7 @@ private struct ChatComposerAccessoryRow: View {
             || !files.isEmpty
             || editing != nil
             || quote != nil
-            || dictation.listening
-            || dictation.transcribing
+            || isDictating
     }
 
     var body: some View {
@@ -1155,7 +1370,7 @@ private struct ChatComposerAccessoryRow: View {
                     draftState: draftState,
                     chat: chat,
                     team: team,
-                    dictation: dictation,
+                    dictationSlot: dictationSlot,
                     botName: bot.name,
                     largeText: largeText,
                     typing: typing,
@@ -1177,7 +1392,7 @@ private struct ChatComposerAccessoryRow: View {
             ChatActionButtonView(
                 chat: chat,
                 team: team,
-                dictation: dictation,
+                dictationSlot: dictationSlot,
                 draftState: draftState,
                 confirmStop: confirmStop,
                 askingStop: $askingStop,
@@ -1200,7 +1415,71 @@ private struct ChatDraftFieldView: View {
     let draftState: ChatDraft
     let chat: ChatModel
     let team: TeamModel
+    let dictationSlot: ChatDictationSlot
+    let botName: String
+    let largeText: Bool
+    let typing: FocusState<Bool>.Binding
+    let onPasteChange: (String, String) -> Void
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveDraftFieldView(
+                dictation: dictation,
+                draftState: draftState,
+                chat: chat,
+                team: team,
+                botName: botName,
+                largeText: largeText,
+                typing: typing,
+                onPasteChange: onPasteChange
+            )
+        } else {
+            ChatDraftFieldCore(
+                draftState: draftState,
+                chat: chat,
+                team: team,
+                listening: false,
+                transcribing: false,
+                botName: botName,
+                largeText: largeText,
+                typing: typing,
+                onPasteChange: onPasteChange
+            )
+        }
+    }
+}
+
+private struct ChatActiveDraftFieldView: View {
     @ObservedObject var dictation: Dictation
+    let draftState: ChatDraft
+    let chat: ChatModel
+    let team: TeamModel
+    let botName: String
+    let largeText: Bool
+    let typing: FocusState<Bool>.Binding
+    let onPasteChange: (String, String) -> Void
+
+    var body: some View {
+        ChatDraftFieldCore(
+            draftState: draftState,
+            chat: chat,
+            team: team,
+            listening: dictation.listening,
+            transcribing: dictation.transcribing,
+            botName: botName,
+            largeText: largeText,
+            typing: typing,
+            onPasteChange: onPasteChange
+        )
+    }
+}
+
+private struct ChatDraftFieldCore: View {
+    let draftState: ChatDraft
+    let chat: ChatModel
+    let team: TeamModel
+    let listening: Bool
+    let transcribing: Bool
     let botName: String
     let largeText: Bool
     let typing: FocusState<Bool>.Binding
@@ -1211,8 +1490,8 @@ private struct ChatDraftFieldView: View {
     }
 
     private var placeholder: String {
-        if dictation.listening { return "正在听，说完点右边" }
-        if dictation.transcribing { return "正在转写语音…" }
+        if listening { return "正在听，说完点右边" }
+        if transcribing { return "正在转写语音…" }
         if working { return "在做 · 可以直接插话" }
         return "同\(botName)说点什么…"
     }
@@ -1251,7 +1530,7 @@ private struct ChatContextRingButton: View {
 private struct ChatActionButtonView: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
-    @ObservedObject var dictation: Dictation
+    let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
     let confirmStop: Bool
     @Binding var askingStop: Bool
@@ -1261,6 +1540,114 @@ private struct ChatActionButtonView: View {
     let files: [String]
     let fileNote: () -> String
     let outgoingText: () -> String
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+
+    var body: some View {
+        if let dictation = dictationSlot.instance {
+            ChatActiveActionButtonView(
+                dictation: dictation,
+                chat: chat,
+                team: team,
+                draftState: draftState,
+                confirmStop: confirmStop,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                fileNote: fileNote,
+                outgoingText: outgoingText,
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom
+            )
+        } else {
+            ChatActionButtonCore(
+                chat: chat,
+                team: team,
+                draftState: draftState,
+                confirmStop: confirmStop,
+                listening: false,
+                transcribing: false,
+                level: 0,
+                askingStop: $askingStop,
+                editing: $editing,
+                quote: $quote,
+                photos: photos,
+                files: files,
+                fileNote: fileNote,
+                outgoingText: outgoingText,
+                onStopDictation: {},
+                onCancelDictation: {},
+                onListen: onListen,
+                onClearComposer: onClearComposer,
+                onRedoFrom: onRedoFrom
+            )
+        }
+    }
+}
+
+private struct ChatActiveActionButtonView: View {
+    @ObservedObject var dictation: Dictation
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let draftState: ChatDraft
+    let confirmStop: Bool
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+    let fileNote: () -> String
+    let outgoingText: () -> String
+    let onListen: () -> Void
+    let onClearComposer: () -> Void
+    let onRedoFrom: (String, String) -> Bool
+
+    var body: some View {
+        ChatActionButtonCore(
+            chat: chat,
+            team: team,
+            draftState: draftState,
+            confirmStop: confirmStop,
+            listening: dictation.listening,
+            transcribing: dictation.transcribing,
+            level: dictation.level,
+            askingStop: $askingStop,
+            editing: $editing,
+            quote: $quote,
+            photos: photos,
+            files: files,
+            fileNote: fileNote,
+            outgoingText: outgoingText,
+            onStopDictation: { dictation.stop() },
+            onCancelDictation: { dictation.cancel() },
+            onListen: onListen,
+            onClearComposer: onClearComposer,
+            onRedoFrom: onRedoFrom
+        )
+    }
+}
+
+private struct ChatActionButtonCore: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let draftState: ChatDraft
+    let confirmStop: Bool
+    let listening: Bool
+    let transcribing: Bool
+    let level: CGFloat
+    @Binding var askingStop: Bool
+    @Binding var editing: String?
+    @Binding var quote: String?
+    let photos: [Data]
+    let files: [String]
+    let fileNote: () -> String
+    let outgoingText: () -> String
+    let onStopDictation: () -> Void
+    let onCancelDictation: () -> Void
     let onListen: () -> Void
     let onClearComposer: () -> Void
     let onRedoFrom: (String, String) -> Bool
@@ -1282,9 +1669,9 @@ private struct ChatActionButtonView: View {
         let symbol: String
         let fill: Color
         let label: String
-        if dictation.listening {
+        if listening {
             mode = 0; symbol = "waveform"; fill = Ink.stop; label = "说完了"
-        } else if dictation.transcribing {
+        } else if transcribing {
             mode = 4; symbol = "ellipsis"; fill = Ink.accentWash; label = L.t("voiceSettings.cancelTranscribe")
         } else if working && !canSend {
             mode = 1; symbol = "stop.fill"; fill = Ink.ink; label = "让它停下"
@@ -1297,10 +1684,10 @@ private struct ChatActionButtonView: View {
             switch mode {
             case 0:
                 Haptics.light()
-                dictation.stop()
+                onStopDictation()
             case 4:
                 Haptics.light()
-                dictation.cancel()
+                onCancelDictation()
             case 1:
                 if confirmStop {
                     Haptics.light()
@@ -1332,7 +1719,7 @@ private struct ChatActionButtonView: View {
         } label: {
             ZStack {
                 if mode == 0 {
-                    Circle().fill(Ink.stop.opacity(0.25)).scaleEffect(1 + dictation.level * 0.6)
+                    Circle().fill(Ink.stop.opacity(0.25)).scaleEffect(1 + level * 0.6)
                 }
                 if mode == 4 {
                     ProgressView()

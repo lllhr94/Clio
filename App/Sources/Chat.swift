@@ -155,6 +155,7 @@ final class ChatModel {
         }
     }
     @ObservationIgnored private var toolRows: Task<Void, Never>?
+    @ObservationIgnored private var prewarmTask: Task<Void, Never>?
     private var browsingHistory = false
     private var heldRows: [ChatLine]?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
@@ -198,47 +199,49 @@ final class ChatModel {
         if demo {
             if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
-            ProsePrewarm.schedule(lines: Array(lines.suffix(60)), styleKey: styleKey)
+            schedulePrewarm(lines.suffix(60), styleKey: styleKey)
             return
         }
         opening = Task { [weak self] in
             guard let self else { return }
             let history = await team.loadHistory(key)
             guard !Task.isCancelled else { return }
+            feed = team.listen(key) { [weak self] event in self?.hear(event) }
             let pageLimit = limit
             let initialWorking = team.isWorking(key)
             var firstPage: [ChatLine]?
             if !history.isEmpty {
                 firstPage = await Task.detached(priority: .userInitiated) {
-                    let rows = Self.buildRows(history.suffix(pageLimit), working: initialWorking, running: nil)
-                    if !Task.isCancelled {
-                        ProsePrewarm.prewarm(lines: rows.suffix(60), styleKey: styleKey)
-                    }
-                    return rows
+                    Self.buildRows(history.suffix(pageLimit), working: initialWorking, running: nil)
                 }.value
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    if let feed { team.unlisten(feed); self.feed = nil }
+                    return
+                }
             }
-            feed = team.listen(key) { [weak self] event in self?.hear(event) }
             let newest = team.history(key)
             if let firstPage, pageLimit == limit, team.isWorking(key) == initialWorking, running == nil, history == newest {
                 hasEarlier = history.count > pageLimit
                 lines = firstPage
             } else {
-                let rebuilt = build(newest)
-                lines = rebuilt
-                ProsePrewarm.schedule(lines: Array(rebuilt.suffix(60)), styleKey: styleKey)
+                lines = build(newest)
             }
             // A reply can arrive while the initial history is loading and there is no listener yet.
-            target = team.streamed[key]?.text ?? ""
-            shown = target.count
-            publishedShown = shown
-            streaming = target
+            if target.isEmpty {
+                target = team.streamed[key]?.text ?? ""
+                shown = target.count
+                publishedShown = shown
+                streaming = target
+            }
             loaded = true
             opening = nil
+            schedulePrewarm(lines.suffix(60), styleKey: styleKey)
         }
     }
 
     func close() {
+        prewarmTask?.cancel()
+        prewarmTask = nil
         cancelToolRows()
         opening?.cancel()
         opening = nil
@@ -251,6 +254,18 @@ final class ChatModel {
         typing?.cancel()
         typing = nil
         fresh = nil
+    }
+
+    private func schedulePrewarm(_ targetLines: ArraySlice<ChatLine>, styleKey: ProseStyleKey) {
+        prewarmTask?.cancel()
+        let targets = Array(targetLines.filter { $0.kind == .bot && !$0.text.isEmpty })
+        guard !targets.isEmpty else {
+            prewarmTask = nil
+            return
+        }
+        prewarmTask = Task.detached(priority: .utility) {
+            ProsePrewarm.prewarm(lines: targets[...], styleKey: styleKey)
+        }
     }
 
     // MARK: Even pace
@@ -317,13 +332,7 @@ final class ChatModel {
         let working = team.isWorking(key)
         let tool = running
         let page = await Task.detached(priority: .userInitiated) {
-            let rows = Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
-            if !Task.isCancelled {
-                let addedCount = max(0, rows.count - priorCount)
-                let prewarmSlice = addedCount > 0 ? rows.prefix(addedCount).suffix(60) : rows.suffix(60)
-                ProsePrewarm.prewarm(lines: prewarmSlice, styleKey: styleKey)
-            }
-            return rows
+            Self.buildRows(history.suffix(nextLimit), working: working, running: tool)
         }.value
         guard !Task.isCancelled, team.epochs[key, default: 0] == epoch else { return }
         // A tool event may have started another build while the larger page was being prepared.
@@ -334,10 +343,13 @@ final class ChatModel {
         if newest == history, working == team.isWorking(key), tool == running {
             hasEarlier = newest.count > limit
             lines = page
+            let addedCount = max(0, page.count - priorCount)
+            let prewarmSlice = addedCount > 0 ? page.prefix(addedCount).suffix(60) : page.suffix(60)
+            schedulePrewarm(prewarmSlice, styleKey: styleKey)
         } else {
             let rebuilt = build(newest)
             lines = rebuilt
-            ProsePrewarm.schedule(lines: Array(rebuilt.suffix(60)), styleKey: styleKey)
+            schedulePrewarm(rebuilt.suffix(60), styleKey: styleKey)
         }
     }
 
@@ -494,11 +506,7 @@ final class ChatModel {
         let styleKey = ProseStyleKey.current()
         toolRows = Task { [weak self] in
             let worker = Task.detached(priority: .userInitiated) {
-                let rows = Self.buildRows(history.suffix(pageLimit), working: working, running: label)
-                if !Task.isCancelled {
-                    ProsePrewarm.prewarm(lines: rows.suffix(16), styleKey: styleKey)
-                }
-                return rows
+                Self.buildRows(history.suffix(pageLimit), working: working, running: label)
             }
             let next = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard let self, !Task.isCancelled else { return }
@@ -511,6 +519,7 @@ final class ChatModel {
             }
             self.hasEarlier = current.count > pageLimit
             self.apply(next)
+            self.schedulePrewarm(next.suffix(16), styleKey: styleKey)
         }
     }
 
@@ -548,7 +557,7 @@ final class ChatModel {
             updateKeptRows(next, event: event)
             if case .replyCommitted(let id) = event,
                let committed = next.first(where: { $0.id == id && $0.kind == .bot }) {
-                ProsePrewarm.schedule(lines: [committed], styleKey: ProseStyleKey.current())
+                schedulePrewarm([committed][...], styleKey: ProseStyleKey.current())
             }
         case .finished:
             running = nil

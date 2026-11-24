@@ -171,15 +171,39 @@ extension ChatPage {
     /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
     @discardableResult
     func redo(from entry: String? = nil, text: String? = nil) -> Bool {
+        Self.performRedo(
+            chat: chat,
+            team: team,
+            following: $following,
+            undoAsk: $undoAsk,
+            from: entry,
+            text: text
+        )
+    }
+
+    @discardableResult
+    static func performRedo(
+        chat: ChatModel,
+        team: TeamModel,
+        following: Binding<Bool>,
+        undoAsk: Binding<UndoAsk?>,
+        from entry: String? = nil,
+        text: String? = nil
+    ) -> Bool {
+        let sendingBlocked = team.phase != .demo && !team.canAcceptInput(for: chat.key)
         guard !sendingBlocked else { return false }
-        following = true
+        following.wrappedValue = true
         let changed = team.changedFiles(chat.key, from: entry)
         guard !changed.isEmpty else {
             if let entry, let text { return chat.resend(entry, text: text) }
             chat.retry()
             return true
         }
-        undoAsk = UndoAsk(entry: entry, text: text, files: changed.map { WorkPlace(code: $0.place).title + "：" + $0.path })
+        undoAsk.wrappedValue = UndoAsk(
+            entry: entry,
+            text: text,
+            files: changed.map { WorkPlace(code: $0.place).title + "：" + $0.path }
+        )
         return true
     }
 
@@ -189,21 +213,46 @@ extension ChatPage {
     }
 
     func act(_ next: Explain.Next) {
+        Self.performAct(
+            next,
+            chat: chat,
+            team: team,
+            notice: notice,
+            following: $following,
+            undoAsk: $undoAsk,
+            tuningOpen: $tuningOpen,
+            careOpen: $careOpen
+        )
+    }
+
+    static func performAct(
+        _ next: Explain.Next,
+        chat: ChatModel,
+        team: TeamModel,
+        notice: ChatComposerNotice,
+        following: Binding<Bool>,
+        undoAsk: Binding<UndoAsk?>,
+        tuningOpen: Binding<Bool>,
+        careOpen: Binding<Bool>
+    ) {
         switch next {
-        case .retry: redo()
+        case .retry:
+            _ = performRedo(chat: chat, team: team, following: following, undoAsk: undoAsk)
         case .resume:
-            following = true
+            following.wrappedValue = true
             team.resume(chat.key)
-        case .tuning: tuningOpen = true
-        case .care: careOpen = true
+        case .tuning:
+            tuningOpen.wrappedValue = true
+        case .care:
+            careOpen.wrappedValue = true
         case .compress:
-            say(L.t("loading.compactingContext"))
+            postComposerNotice(L.t("loading.compactingContext"), to: notice)
             Task {
                 do {
                     let folded = try await team.compress(chat.key)
-                    say("压好了：较早的 \(folded) 条写成了提要。再发一次试试。")
+                    postComposerNotice("压好了：较早的 \(folded) 条写成了提要。再发一次试试。", to: notice)
                 } catch {
-                    say(error.localizedDescription)
+                    postComposerNotice(error.localizedDescription, to: notice)
                 }
             }
         }
@@ -328,17 +377,26 @@ extension ChatPage {
     }
 
     func speak(_ text: String) {
-        if dictation.busy {
-            dictation.cancel()
+        Self.performSpeak(text, dictationSlot: dictationSlot, voice: voice, speakingText: $speakingText)
+    }
+
+    static func performSpeak(
+        _ text: String,
+        dictationSlot: ChatDictationSlot,
+        voice: AVSpeechSynthesizer,
+        speakingText: Binding<String?>
+    ) {
+        if let active = dictationSlot.instance, active.busy {
+            active.cancel()
         }
         if voice.isSpeaking {
             _ = voice.stopSpeaking(at: .immediate)
-            if speakingText == text {
-                speakingText = nil
+            if speakingText.wrappedValue == text {
+                speakingText.wrappedValue = nil
                 return
             }
         }
-        speakingText = text
+        speakingText.wrappedValue = text
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? session.setActive(true)

@@ -1,5 +1,4 @@
 import AgentKit
-import CoreText
 import UIKit
 import Prose
 import SwiftUI
@@ -165,7 +164,6 @@ struct PreparsedCodeModel: Equatable, Sendable {
 }
 
 struct PreparsedTableModel: Equatable, Sendable {
-    let widths: [CGFloat]
     let header: [AttributedString]
     let rows: [[AttributedString]]
 }
@@ -257,6 +255,7 @@ private final class BoundedLRUCache<Key: Hashable, Value>: @unchecked Sendable {
 
     func set(_ value: Value, for key: Key, cost: Int = 1) {
         let safeCost = max(1, cost)
+        guard safeCost <= totalCostLimit else { return }
         lock.lock()
         defer { lock.unlock() }
         if let existing = map[key] {
@@ -387,23 +386,11 @@ private struct ProseCodeCacheKey: Hashable, Sendable {
 
 private struct ProseTableModelKey: Hashable, Sendable {
     let table: Prose.Table
-    let faceRaw: String
-    let cellSize: Double
-    let fontGeneration: Int
-    let customFontAvailable: Bool
     private let cachedHash: Int
 
-    nonisolated init(table: Prose.Table, styleKey: ProseStyleKey) {
+    nonisolated init(table: Prose.Table) {
         self.table = table
-        self.faceRaw = styleKey.faceRaw
-        self.cellSize = styleKey.tableCellSize
-        self.fontGeneration = styleKey.fontGeneration
-        self.customFontAvailable = styleKey.customFontAvailable
         var hasher = Hasher()
-        hasher.combine(faceRaw)
-        hasher.combine(cellSize)
-        hasher.combine(fontGeneration)
-        hasher.combine(customFontAvailable)
         hasher.combine(table.header)
         hasher.combine(table.rows.count)
         if let first = table.rows.first { hasher.combine(first) }
@@ -412,12 +399,7 @@ private struct ProseTableModelKey: Hashable, Sendable {
     }
 
     nonisolated static func == (lhs: ProseTableModelKey, rhs: ProseTableModelKey) -> Bool {
-        lhs.cachedHash == rhs.cachedHash
-            && lhs.faceRaw == rhs.faceRaw
-            && lhs.cellSize == rhs.cellSize
-            && lhs.fontGeneration == rhs.fontGeneration
-            && lhs.customFontAvailable == rhs.customFontAvailable
-            && lhs.table == rhs.table
+        lhs.cachedHash == rhs.cachedHash && lhs.table == rhs.table
     }
 
     nonisolated func hash(into hasher: inout Hasher) {
@@ -427,18 +409,44 @@ private struct ProseTableModelKey: Hashable, Sendable {
 
 /// Shared thread-safe LRU caches holding immutable pre-parsed blocks, syntax tokens, and table prep.
 enum ProsePrebuiltCache {
-    private static let blocksCache = BoundedLRUCache<ProseTextCacheKey, [Prose.Block]>(countLimit: 400)
-    private static let replyByEntry = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(countLimit: 240, totalCostLimit: 8 * 1024 * 1024)
-    private static let replyByText = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(countLimit: 240, totalCostLimit: 8 * 1024 * 1024)
-    private static let codeCache = BoundedLRUCache<ProseCodeCacheKey, PreparsedCodeModel>(countLimit: 256, totalCostLimit: 4 * 1024 * 1024)
-    private static let tableCache = BoundedLRUCache<ProseTableModelKey, PreparsedTableModel>(countLimit: 128)
+    private static let blocksTotalLimit = 4 * 1024 * 1024
+    private static let blocksSingleLimit = 1024 * 1024
+    private static let replyTotalLimit = 8 * 1024 * 1024
+    private static let replySingleLimit = 2 * 1024 * 1024
+    private static let codeTotalLimit = 4 * 1024 * 1024
+    private static let codeSingleLimit = 1024 * 1024
+    private static let tableTotalLimit = 2 * 1024 * 1024
+    private static let tableSingleLimit = 512 * 1024
+
+    private static let blocksCache = BoundedLRUCache<ProseTextCacheKey, [Prose.Block]>(
+        countLimit: 400,
+        totalCostLimit: blocksTotalLimit
+    )
+    private static let replyByEntry = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(
+        countLimit: 240,
+        totalCostLimit: replyTotalLimit
+    )
+    private static let replyByText = BoundedLRUCache<ProseReplyCacheKey, PreparsedReply>(
+        countLimit: 240,
+        totalCostLimit: replyTotalLimit
+    )
+    private static let codeCache = BoundedLRUCache<ProseCodeCacheKey, PreparsedCodeModel>(
+        countLimit: 256,
+        totalCostLimit: codeTotalLimit
+    )
+    private static let tableCache = BoundedLRUCache<ProseTableModelKey, PreparsedTableModel>(
+        countLimit: 128,
+        totalCostLimit: tableTotalLimit
+    )
 
     nonisolated static func blocks(for text: String) -> [Prose.Block]? {
         blocksCache.get(ProseTextCacheKey(text))
     }
 
     nonisolated static func storeBlocks(_ blocks: [Prose.Block], for text: String) {
-        blocksCache.set(blocks, for: ProseTextCacheKey(text), cost: max(1, text.utf8.count))
+        let cost = estimatedBlocksCost(blocks, fallbackTextBytes: text.utf8.count)
+        guard cost <= blocksSingleLimit else { return }
+        blocksCache.set(blocks, for: ProseTextCacheKey(text), cost: cost)
     }
 
     nonisolated static func reply(entryID: String, text: String, styleKey: ProseStyleKey) -> PreparsedReply? {
@@ -449,7 +457,8 @@ enum ProsePrebuiltCache {
     }
 
     nonisolated static func storeReply(_ reply: PreparsedReply, entryID: String, text: String) {
-        let cost = max(1, text.utf8.count)
+        let cost = estimatedReplyCost(reply, sourceBytes: text.utf8.count)
+        guard cost <= replySingleLimit else { return }
         if !entryID.isEmpty {
             replyByEntry.set(reply, for: ProseReplyCacheKey(entryID: entryID, text: text, styleKey: reply.styleKey), cost: cost)
         }
@@ -461,15 +470,121 @@ enum ProsePrebuiltCache {
     }
 
     nonisolated static func storeCodeModel(_ model: PreparsedCodeModel, text: String) {
-        codeCache.set(model, for: ProseCodeCacheKey(isOutput: model.isOutput, language: model.language, text: text), cost: max(1, text.utf8.count))
+        let cost = estimatedCodeCost(model)
+        guard cost <= codeSingleLimit else { return }
+        codeCache.set(model, for: ProseCodeCacheKey(isOutput: model.isOutput, language: model.language, text: text), cost: cost)
     }
 
-    nonisolated static func tableModel(for table: Prose.Table, styleKey: ProseStyleKey) -> PreparsedTableModel? {
-        tableCache.get(ProseTableModelKey(table: table, styleKey: styleKey))
+    nonisolated static func tableModel(for table: Prose.Table) -> PreparsedTableModel? {
+        tableCache.get(ProseTableModelKey(table: table))
     }
 
-    nonisolated static func storeTableModel(_ model: PreparsedTableModel, for table: Prose.Table, styleKey: ProseStyleKey) {
-        tableCache.set(model, for: ProseTableModelKey(table: table, styleKey: styleKey), cost: max(1, table.rows.count * 32))
+    nonisolated static func storeTableModel(_ model: PreparsedTableModel, for table: Prose.Table) {
+        let cost = estimatedTableCost(model)
+        guard cost <= tableSingleLimit else { return }
+        tableCache.set(model, for: ProseTableModelKey(table: table), cost: cost)
+    }
+
+    nonisolated private static func estimatedBlocksCost(_ blocks: [Prose.Block], fallbackTextBytes: Int) -> Int {
+        var total = 64 + fallbackTextBytes
+        for block in blocks {
+            total += estimatedBlockWeight(block)
+        }
+        return max(1, total)
+    }
+
+    nonisolated private static func estimatedBlockWeight(_ block: Prose.Block) -> Int {
+        switch block {
+        case .heading(_, let text), .paragraph(let text), .math(let text):
+            return 48 + text.utf8.count * 2
+        case .list(let items):
+            return items.reduce(48) { $0 + 48 + $1.text.utf8.count * 2 }
+        case .quote(let inner):
+            return inner.reduce(48) { $0 + estimatedBlockWeight($1) }
+        case .code(let language, let text, _):
+            return 64 + language.utf8.count + text.utf8.count * 2
+        case .table(let table):
+            var cells = table.header.count
+            var bytes = table.header.reduce(0) { $0 + $1.utf8.count }
+            for row in table.rows {
+                cells += row.count
+                for cell in row { bytes += cell.utf8.count }
+            }
+            return 64 + cells * 48 + bytes * 2
+        case .rule:
+            return 24
+        }
+    }
+
+    nonisolated private static func estimatedInlineCost(_ inline: PreparsedInline) -> Int {
+        inline.runs.reduce(32) { $0 + 48 + $1.text.utf8.count * 2 }
+    }
+
+    nonisolated private static func estimatedCodeCost(_ model: PreparsedCodeModel) -> Int {
+        64 + model.segments.count * 48 + model.trimmedText.utf8.count * 2
+    }
+
+    nonisolated private static func estimatedTableCost(_ model: PreparsedTableModel) -> Int {
+        var cellCount = model.header.count
+        var utf8Count = model.header.reduce(0) { $0 + $1.characters.count * 2 }
+        for row in model.rows {
+            cellCount += row.count
+            for cell in row { utf8Count += cell.characters.count * 2 }
+        }
+        return 64 + cellCount * 96 + utf8Count
+    }
+
+    nonisolated private static func estimatedWordItemCost(_ item: PreparsedWordItem) -> Int {
+        switch item {
+        case .heading(_, let inline), .paragraph(let inline):
+            return 32 + estimatedInlineCost(inline)
+        case .list(let items):
+            return items.reduce(32) { $0 + 48 + estimatedInlineCost($1.inline) }
+        case .quote(let inner):
+            return inner.reduce(32) { $0 + estimatedWordItemCost($1) }
+        }
+    }
+
+    nonisolated private static func estimatedBlockItemCost(_ item: PreparsedBlockItem) -> Int {
+        switch item {
+        case .heading(_, let inline), .paragraph(let inline):
+            return 32 + estimatedInlineCost(inline)
+        case .fileCards(let files):
+            return files.reduce(32) { $0 + 64 + $1.label.utf8.count + $1.path.utf8.count }
+        case .picture(let words, let pics):
+            let wordsCost = words.map(estimatedInlineCost) ?? 0
+            return 32 + wordsCost + pics.reduce(0) { $0 + 64 + $1.label.utf8.count + $1.source.utf8.count }
+        case .list(let items):
+            return items.reduce(32) { $0 + 48 + estimatedInlineCost($1.inline) }
+        case .quote(let inner):
+            return inner.reduce(32) { $0 + estimatedPartCost($1) }
+        case .code(_, let text, _, let folded, let full):
+            let base = 64 + text.utf8.count
+            return base + (folded.map(estimatedCodeCost) ?? 0) + (full.map(estimatedCodeCost) ?? 0)
+        case .table(_, let model):
+            return 48 + estimatedTableCost(model)
+        case .math(let text):
+            return 48 + text.utf8.count * 2
+        case .rule:
+            return 24
+        }
+    }
+
+    nonisolated private static func estimatedPartCost(_ part: PreparsedPart) -> Int {
+        switch part {
+        case .words(_, let items):
+            return items.reduce(32) { $0 + estimatedWordItemCost($1) }
+        case .block(_, let item):
+            return 32 + estimatedBlockItemCost(item)
+        }
+    }
+
+    nonisolated private static func estimatedReplyCost(_ reply: PreparsedReply, sourceBytes: Int) -> Int {
+        var total = estimatedBlocksCost(reply.rawBlocks, fallbackTextBytes: sourceBytes)
+        for part in reply.parts {
+            total += estimatedPartCost(part)
+        }
+        return max(1, total)
     }
 }
 
@@ -615,49 +730,17 @@ enum CodeTokenizer {
     }
 }
 
-/// Thread-safe table cell markdown parsing & CoreText width measurement off-MainActor.
+/// Thread-safe table cell inline markdown pre-parser off-MainActor; widths remain anchored to MainActor `Ink.uiFace`.
 enum TablePreparer {
-    nonisolated static func prepare(_ table: Prose.Table, styleKey: ProseStyleKey) -> PreparsedTableModel {
-        if let hit = ProsePrebuiltCache.tableModel(for: table, styleKey: styleKey) {
+    nonisolated static func prepare(_ table: Prose.Table) -> PreparsedTableModel {
+        if let hit = ProsePrebuiltCache.tableModel(for: table) {
             return hit
-        }
-        let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let cellSize = CGFloat(styleKey.tableCellSize)
-        let headFont = ctFont(size: cellSize, bold: true, faceRaw: styleKey.faceRaw, customFontAvailable: styleKey.customFontAvailable)
-        let bodyFont = ctFont(size: cellSize, bold: false, faceRaw: styleKey.faceRaw, customFontAvailable: styleKey.customFontAvailable)
-        let widths: [CGFloat] = (0..<columns).map { column in
-            var natural = measure(column < table.header.count ? table.header[column] : "", font: headFont)
-            for row in table.rows where column < row.count {
-                natural = max(natural, measure(row[column], font: bodyFont))
-            }
-            return max(28, ceil(natural) + 4)
         }
         let header = table.header.map(parseCell)
         let rows = table.rows.map { $0.map(parseCell) }
-        let prepared = PreparsedTableModel(widths: widths, header: header, rows: rows)
-        ProsePrebuiltCache.storeTableModel(prepared, for: table, styleKey: styleKey)
+        let prepared = PreparsedTableModel(header: header, rows: rows)
+        ProsePrebuiltCache.storeTableModel(prepared, for: table)
         return prepared
-    }
-
-    nonisolated private static func ctFont(size: CGFloat, bold: Bool, faceRaw: String, customFontAvailable: Bool) -> CTFont {
-        let name: String
-        if customFontAvailable, let face = Pref.Face(rawValue: faceRaw), let ps = face.postScript(bold: bold) {
-            name = ps
-        } else {
-            name = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
-        }
-        return CTFontCreateWithName(name as CFString, size, nil)
-    }
-
-    nonisolated private static func measure(_ cell: String, font: CTFont) -> CGFloat {
-        let plain = cell.replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "~~", with: "")
-        guard !plain.isEmpty else { return 0 }
-        let attrs = [kCTFontAttributeName: font] as CFDictionary
-        guard let cfAttr = CFAttributedStringCreate(kCFAllocatorDefault, plain as CFString, attrs) else { return 0 }
-        let line = CTLineCreateWithAttributedString(cfAttr)
-        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
     }
 
     nonisolated private static func parseCell(_ cell: String) -> AttributedString {
@@ -830,7 +913,7 @@ enum ProsePrewarm {
             }
             return .code(language: language, text: text, closed: closed, foldedModel: foldedModel, fullModel: fullModel)
         case .table(let table):
-            return .table(table, model: TablePreparer.prepare(table, styleKey: styleKey))
+            return .table(table, model: TablePreparer.prepare(table))
         case .math(let text):
             return .math(text)
         case .rule:
@@ -1578,9 +1661,13 @@ private final class PreparedTable {
 
 @MainActor
 private enum TableLayoutCache {
+    private static let totalCostLimit = 4 * 1024 * 1024
+    private static let maxSingleTableCost = 1024 * 1024
+
     private static let cache: NSCache<TableCacheKey, PreparedTable> = {
         let cache = NSCache<TableCacheKey, PreparedTable>()
         cache.countLimit = 128
+        cache.totalCostLimit = totalCostLimit
         return cache
     }()
 
@@ -1588,11 +1675,6 @@ private enum TableLayoutCache {
         let cellSize = style.tableCellSize
         let key = TableCacheKey(table: table, face: style.face, size: cellSize, fontGen: style.fontGeneration)
         if let hit = cache.object(forKey: key) { return hit }
-        if let model = preparsed ?? ProsePrebuiltCache.tableModel(for: table, styleKey: ProseStyleKey.from(style)) {
-            let prepared = PreparedTable(widths: model.widths, header: model.header, rows: model.rows)
-            cache.setObject(prepared, forKey: key)
-            return prepared
-        }
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
         let headFont = Ink.uiFace(cellSize, bold: true, face: style.face)
         let bodyFont = Ink.uiFace(cellSize, bold: false, face: style.face)
@@ -1603,11 +1685,31 @@ private enum TableLayoutCache {
             }
             return max(28, ceil(natural) + 4)
         }
-        let header = table.header.map(parseCell)
-        let rows = table.rows.map { $0.map(parseCell) }
+        let header: [AttributedString]
+        let rows: [[AttributedString]]
+        if let model = preparsed ?? ProsePrebuiltCache.tableModel(for: table) {
+            header = model.header
+            rows = model.rows
+        } else {
+            header = table.header.map(parseCell)
+            rows = table.rows.map { $0.map(parseCell) }
+        }
         let prepared = PreparedTable(widths: widths, header: header, rows: rows)
-        cache.setObject(prepared, forKey: key)
+        let cost = estimatedCost(widths: widths, header: header, rows: rows)
+        if cost <= maxSingleTableCost {
+            cache.setObject(prepared, forKey: key, cost: cost)
+        }
         return prepared
+    }
+
+    private static func estimatedCost(widths: [CGFloat], header: [AttributedString], rows: [[AttributedString]]) -> Int {
+        var cellCount = header.count
+        var charCount = header.reduce(0) { $0 + $1.characters.count }
+        for row in rows {
+            cellCount += row.count
+            for cell in row { charCount += cell.characters.count }
+        }
+        return 64 + widths.count * 16 + cellCount * 96 + charCount * 2
     }
 
     private static func measure(_ cell: String, font: UIFont) -> CGFloat {
