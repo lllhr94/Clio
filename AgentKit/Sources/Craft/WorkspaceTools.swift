@@ -4,11 +4,13 @@ import Foundation
 /// A tool made of closures.
 public struct HostTool: AgentTool {
     public let spec: ToolSpec
+    public let isReadOnlySafe: Bool
     let shown: @Sendable (JSONValue) -> String
     let act: @Sendable (JSONValue) async throws -> ToolOutput
 
-    public init(name: String, description: String, parameters: JSONValue, label: @escaping @Sendable (JSONValue) -> String, act: @escaping @Sendable (JSONValue) async throws -> ToolOutput) {
+    public init(name: String, description: String, parameters: JSONValue, isReadOnlySafe: Bool = false, label: @escaping @Sendable (JSONValue) -> String, act: @escaping @Sendable (JSONValue) async throws -> ToolOutput) {
         spec = ToolSpec(name: name, description: description, parameters: parameters)
+        self.isReadOnlySafe = isReadOnlySafe
         shown = label
         self.act = act
     }
@@ -128,7 +130,7 @@ public enum WorkspaceTools {
     // MARK: Files
 
     static func readFile(_ host: WorkspaceHost, _ kit: WorkspaceKit) -> AgentTool {
-        HostTool(name: "read_file", description: "读\(host.title)里的一个文本文件，每行带行号。大文件用 from（从第几行起，1 开始）和 lines（读几行，默认 400）分段读。", parameters: ["type": "object", "properties": ["path": path(host), "from": ["type": "number"], "lines": ["type": "number"]], "required": ["path"]], label: { "\(host.title)：读 \($0["path"]?.string ?? "")" }) { arguments in
+        HostTool(name: "read_file", description: "读\(host.title)里的一个文本文件，每行带行号。大文件用 from（从第几行起，1 开始）和 lines（读几行，默认 400）分段读。", parameters: ["type": "object", "properties": ["path": path(host), "from": ["type": "number"], "lines": ["type": "number"]], "required": ["path"]], isReadOnlySafe: true, label: { "\(host.title)：读 \($0["path"]?.string ?? "")" }) { arguments in
             let target = arguments["path"]?.string ?? ""
             do {
                 let data = try await host.readFile(target)
@@ -190,7 +192,7 @@ public enum WorkspaceTools {
     }
 
     static func listDir(_ host: WorkspaceHost) -> AgentTool {
-        HostTool(name: "list_dir", description: "看\(host.title)里一个文件夹有什么。path 留空看 \(host.root)；depth 是往下看几层，默认 2。", parameters: ["type": "object", "properties": ["path": path(host), "depth": ["type": "number"]]], label: { "\(host.title)：翻看 \($0["path"]?.string ?? "")" }) { arguments in
+        HostTool(name: "list_dir", description: "看\(host.title)里一个文件夹有什么。path 留空看 \(host.root)；depth 是往下看几层，默认 2。", parameters: ["type": "object", "properties": ["path": path(host), "depth": ["type": "number"]]], isReadOnlySafe: true, label: { "\(host.title)：翻看 \($0["path"]?.string ?? "")" }) { arguments in
             do {
                 return ToolOutput(try await host.listDir(arguments["path"]?.string ?? "", depth: (arguments["depth"]?.int ?? 2)))
             } catch {
@@ -200,7 +202,7 @@ public enum WorkspaceTools {
     }
 
     static func glob(_ host: WorkspaceHost) -> AgentTool {
-        HostTool(name: "glob", description: "按文件名找\(host.title)里的文件。pattern 用通配符：*.md 是所有 md；**/*.py 是各层的 py；notes/2026-* 是某个文件夹里的；*.{jpg,png} 是两种都要。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只在这个文件夹里找，留空是整个 \(host.root)"]], "required": ["pattern"]], label: { "\(host.title)：找 \($0["pattern"]?.string ?? "")" }) { arguments in
+        HostTool(name: "glob", description: "按文件名找\(host.title)里的文件。pattern 用通配符：*.md 是所有 md；**/*.py 是各层的 py；notes/2026-* 是某个文件夹里的；*.{jpg,png} 是两种都要。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只在这个文件夹里找，留空是整个 \(host.root)"]], "required": ["pattern"]], isReadOnlySafe: true, label: { "\(host.title)：找 \($0["pattern"]?.string ?? "")" }) { arguments in
             let pattern = (arguments["pattern"]?.string ?? "*").trimmingCharacters(in: .whitespaces)
             do {
                 let found = try await host.glob(pattern, in: arguments["path"]?.string ?? "")
@@ -214,7 +216,7 @@ public enum WorkspaceTools {
     }
 
     static func grep(_ host: WorkspaceHost, _ kit: WorkspaceKit) -> AgentTool {
-        HostTool(name: "grep", description: "在\(host.title)的文本文件里搜内容，返回「文件:行号:那一行」。pattern 是正则（搜普通文字也行）；include 限定文件名，比如 *.swift。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只搜这个文件夹或文件，留空是整个 \(host.root)"], "include": ["type": "string"], "ignore_case": ["type": "boolean"]], "required": ["pattern"]], label: { "\(host.title)：搜 \($0["pattern"]?.string ?? "")" }) { arguments in
+        HostTool(name: "grep", description: "在\(host.title)的文本文件里搜内容，返回「文件:行号:那一行」。pattern 是正则（搜普通文字也行）；include 限定文件名，比如 *.swift。", parameters: ["type": "object", "properties": ["pattern": ["type": "string"], "path": ["type": "string", "description": "只搜这个文件夹或文件，留空是整个 \(host.root)"], "include": ["type": "string"], "ignore_case": ["type": "boolean"]], "required": ["pattern"]], isReadOnlySafe: true, label: { "\(host.title)：搜 \($0["pattern"]?.string ?? "")" }) { arguments in
             let pattern = arguments["pattern"]?.string ?? ""
             guard !pattern.isEmpty else { return ToolOutput("要搜什么？", isError: true) }
             do {
@@ -230,7 +232,7 @@ public enum WorkspaceTools {
     }
 
     static func viewImage(_ host: WorkspaceHost) -> AgentTool {
-        HostTool(name: "view_image", description: "看\(host.title)里的一张图片（jpg、png、heic 等）：用户发来的截图、扫描件、画出来的图表。会缩到长边 1280 像素。", parameters: ["type": "object", "properties": ["path": path(host)], "required": ["path"]], label: { "\(host.title)：看图 \($0["path"]?.string ?? "")" }) { arguments in
+        HostTool(name: "view_image", description: "看\(host.title)里的一张图片（jpg、png、heic 等）：用户发来的截图、扫描件、画出来的图表。会缩到长边 1280 像素。", parameters: ["type": "object", "properties": ["path": path(host)], "required": ["path"]], isReadOnlySafe: true, label: { "\(host.title)：看图 \($0["path"]?.string ?? "")" }) { arguments in
             let target = arguments["path"]?.string ?? ""
             do {
                 let shot = try await host.viewImage(target)
