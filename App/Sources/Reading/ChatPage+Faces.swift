@@ -24,14 +24,8 @@ extension ChatPage {
 
     /// The lines that open a run by one speaker: only they carry a face, so a reply in several parts shows it once.
     var openers: Set<String> {
-        var heads: Set<String> = []
-        var last: String?
-        for line in displayedRows {
-            guard let who = voice(line) else { continue }
-            if who != last { heads.insert(line.id) }
-            last = who
-        }
-        return heads
+        sourcesMemo.sync(rows: displayedRows, defaultBotId: bot.id)
+        return sourcesMemo.openers
     }
 
     /// A line with its face: the companion's above its reply, yours beside your bubble, and the time when a while has passed.
@@ -92,9 +86,11 @@ extension ChatPage {
 
     /// 「昨天 23:10」 over a line said more than half an hour after the one before it.
     func timeGap(before line: ChatLine) -> String? {
+        let rows = displayedRows
+        sourcesMemo.sync(rows: rows, defaultBotId: bot.id)
         guard let at = line.at,
-              let index = displayedRows.firstIndex(where: { $0.id == line.id }), index > 0,
-              let before = displayedRows[..<index].last(where: { $0.at != nil })?.at,
+              let index = sourcesMemo.indexById[line.id], index > 0,
+              let before = rows[..<index].last(where: { $0.at != nil })?.at,
               at - before > 30 * 60 * 1000 else { return nil }
         let date = Date(timeIntervalSince1970: at / 1000)
         let calendar = Calendar.current
@@ -215,6 +211,8 @@ extension ChatPage {
     /// A first line 「回望：…」 taken off the reply, and the rest.
     static func lookback(_ text: String) -> (note: String?, rest: String) {
         let trimmed = text.drop { $0 == "\n" || $0 == " " }
+        let probe = trimmed.drop { $0 == "*" || $0 == " " }
+        guard probe.hasPrefix("回望") else { return (nil, text) }
         guard let first = trimmed.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else { return (nil, text) }
         let line = first.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
         for head in ["回望：", "回望:"] where line.hasPrefix(head) {
@@ -233,13 +231,9 @@ extension ChatPage {
 
     /// No more of the companion's words follow before the user speaks again.
     func endsTurn(_ line: ChatLine) -> Bool {
-        guard let index = displayedRows.firstIndex(where: { $0.id == line.id }) else { return true }
-        for later in displayedRows[(index + 1)...] {
-            // In a group, another companion speaking ends this one's turn.
-            if later.kind == .bot { return later.speaker != line.speaker }
-            if later.kind == .user { return true }
-        }
-        return true
+        sourcesMemo.sync(rows: displayedRows, defaultBotId: bot.id)
+        if sourcesMemo.indexById[line.id] == nil { return true }
+        return sourcesMemo.turnEnds.contains(line.id)
     }
 
     func fork(at line: ChatLine) {

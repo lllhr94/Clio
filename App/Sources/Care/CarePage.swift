@@ -9,6 +9,7 @@ struct CarePage: View {
     var openRestore = false
     @State private var denState = Den.State.asleep
     @State private var diagnosticsReady = false
+    @State private var hitchesReady = false
     @State private var recentErrors: [String] = []
     @Environment(\.dismiss) private var dismiss
     @State private var withKeys = false
@@ -131,7 +132,9 @@ struct CarePage: View {
                     }
                 } header: { Text(L.t("settings.recentErrors")) }
 
-                if diagnosticsReady { HitchSettings() }
+                if hitchesReady {
+                    HitchSettings()
+                }
 
                 Section {
                     Button(copied ? "复制好了，贴给我就行" : "复制整份诊断") {
@@ -154,10 +157,15 @@ struct CarePage: View {
             .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
             .task {
                 do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-                let errors = await Task.detached(priority: .utility) { Array(Diag.log.reversed().prefix(20)) }.value
+                let errors = await Task.detached(priority: .utility) {
+                    Array(Diag.log.reversed().prefix(20))
+                }.value
                 guard !Task.isCancelled else { return }
                 recentErrors = errors
                 diagnosticsReady = true
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                hitchesReady = true
                 await measureStorage()
             }
             .task {
@@ -370,7 +378,7 @@ struct CarePage: View {
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)
         let hitches = Hitches.shared
-        if !hitches.recent.isEmpty { lines.append(hitches.report.split(separator: "\n").prefix(21).joined(separator: "\n")) }
+        if !hitches.recent.isEmpty { lines.append(hitches.report(limit: 20)) }
         return lines.joined(separator: "\n")
     }
 
@@ -569,34 +577,88 @@ private enum StorageMaintenance {
 }
 
 
+private struct HitchRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let line: String
+    let severe: Bool
+}
+
 private struct HitchSettings: View {
+    @State private var rows: [HitchRow] = []
+    @State private var totalCount = 0
+    @State private var lastVersion: UInt64 = .max
     @State private var hitchesCopied = false
     @AppStorage("look.fps") private var fps = false
     @AppStorage("care.hitches") private var recordingHitches = false
-    @ObservedObject private var hitches = Hitches.shared
 
     var body: some View {
         Section {
             Toggle(L.t("settings.showFrameRate"), isOn: $fps)
             Toggle(L.t("settings.recordHitches"), isOn: $recordingHitches)
-            if hitches.recent.isEmpty {
+            if rows.isEmpty {
                 Text(recordingHitches ? "还没有记到卡顿。照常用一会儿，卡了再回来看。" : "打开后，Clio 会记下每一次卡顿。").foregroundStyle(Ink.inkSoft)
             } else {
-                ForEach(Array(hitches.recent.reversed().prefix(15).enumerated()), id: \.offset) { _, hitch in
-                    Text(hitch.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(hitch.ms >= 100 ? Ink.stop : Ink.inkSoft)
+                ForEach(rows) { row in
+                    Text(row.line).font(Ink.mono(Ink.Size.small)).foregroundStyle(row.severe ? Ink.stop : Ink.inkSoft)
                 }
-                Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(hitches.recent.count) 条）") {
-                    UIPasteboard.general.string = hitches.report
+                Button(hitchesCopied ? "复制好了，贴给我就行" : "复制掉帧记录（\(totalCount) 条）") {
+                    UIPasteboard.general.string = Hitches.shared.report
                     hitchesCopied = true
                     Haptics.tick(0.6)
                 }
                 Button("清空掉帧记录", role: .destructive) {
-                    hitches.clear()
+                    Hitches.shared.clear()
+                    rows = []
+                    totalCount = 0
+                    lastVersion = Hitches.shared.version
                     hitchesCopied = false
                 }
             }
         } header: { Text(L.t("settings.frameDrops")) } footer: {
             Text(L.t("settings.recordHitchesNote"))
         }
+        .task(id: recordingHitches) {
+            await refreshHitches(force: true)
+            guard recordingHitches else { return }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(1200))
+                } catch {
+                    return
+                }
+                await refreshHitches(force: false)
+            }
+        }
+    }
+
+    private func refreshHitches(force: Bool) async {
+        let version = Hitches.shared.version
+        guard force || version != lastVersion else { return }
+        let rawHitches = Array(Hitches.shared.recent.suffix(15).reversed())
+        let total = Hitches.shared.recent.count
+        let formatted = await Task.detached(priority: .utility) {
+            rawHitches.enumerated().map { index, hitch in
+                HitchRow(
+                    id: "\(hitch.at.timeIntervalSinceReferenceDate)-\(hitch.ms)-\(index)",
+                    line: hitch.line,
+                    severe: hitch.ms >= 100
+                )
+            }
+        }.value
+        guard !Task.isCancelled else { return }
+        // Do not resurrect rows if the user cleared hitches while formatting ran off-main.
+        if Hitches.shared.version != version && Hitches.shared.recent.isEmpty {
+            rows = []
+            totalCount = 0
+            lastVersion = Hitches.shared.version
+            hitchesCopied = false
+            return
+        }
+        if total != totalCount || rows != formatted {
+            hitchesCopied = false
+        }
+        rows = formatted
+        totalCount = total
+        lastVersion = version
     }
 }

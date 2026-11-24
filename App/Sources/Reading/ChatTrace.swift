@@ -8,6 +8,72 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
 
+private final class TraceKeepsakeKey: NSObject {
+    let line: ChatLine
+    let desk: String
+    private let cachedHash: Int
+
+    init(line: ChatLine, desk: String) {
+        self.line = line
+        self.desk = desk
+        var hasher = Hasher()
+        hasher.combine(line.id)
+        hasher.combine(line.tools.count)
+        hasher.combine(line.details.count)
+        hasher.combine(desk)
+        self.cachedHash = hasher.finalize()
+    }
+
+    override var hash: Int { cachedHash }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TraceKeepsakeKey else { return false }
+        return cachedHash == other.cachedHash
+            && desk == other.desk
+            && line == other.line
+    }
+}
+
+private final class TraceKeepsakeBox {
+    let items: [Trace.Keepsake]
+    let mountRevision: UInt64
+    init(_ items: [Trace.Keepsake], mountRevision: UInt64) {
+        self.items = items
+        self.mountRevision = mountRevision
+    }
+}
+
+@MainActor
+private enum TraceKeepsakeCache {
+    private static let cache: NSCache<TraceKeepsakeKey, TraceKeepsakeBox> = {
+        let cache = NSCache<TraceKeepsakeKey, TraceKeepsakeBox>()
+        cache.countLimit = 200
+        _ = NotificationCenter.default.addObserver(forName: MountedFolders.changed, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { TraceKeepsakeCache.clear() }
+        }
+        return cache
+    }()
+
+    static func clear() {
+        cache.removeAllObjects()
+    }
+
+    static func get(line: ChatLine, desk: String) -> [Trace.Keepsake]? {
+        let key = TraceKeepsakeKey(line: line, desk: desk)
+        guard let box = cache.object(forKey: key) else { return nil }
+        if box.mountRevision != MountedFolders.revision {
+            cache.removeObject(forKey: key)
+            return nil
+        }
+        return box.items
+    }
+
+    static func set(_ items: [Trace.Keepsake], line: ChatLine, desk: String, mountRevision: UInt64 = MountedFolders.revision) {
+        guard mountRevision == MountedFolders.revision else { return }
+        cache.setObject(TraceKeepsakeBox(items, mountRevision: mountRevision), forKey: TraceKeepsakeKey(line: line, desk: desk))
+    }
+}
+
 enum TraceStepStatus: Equatable, Sendable {
     case ok, failed, unknown
 
@@ -44,6 +110,26 @@ struct Trace: View {
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
     var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
+    @State private var keepsakes: [Keepsake]
+    @State private var mountRevision = MountedFolders.revision
+
+    @MainActor
+    init(
+        line: ChatLine,
+        visit: @escaping (URL) -> Void = { _ in },
+        openFile: @escaping (URL, MountedFolder?) -> Void = { _, _ in },
+        unremember: ((String, String) -> Bool)? = nil
+    ) {
+        self.line = line
+        self.visit = visit
+        self.openFile = openFile
+        self.unremember = unremember
+        if !line.live, let cached = TraceKeepsakeCache.get(line: line, desk: Words.t("书案/")) {
+            _keepsakes = State(initialValue: cached)
+        } else {
+            _keepsakes = State(initialValue: [])
+        }
+    }
 
     /// Normalizes a step label's leading place/tool prefix across daily and literary tones.
     nonisolated static func canonicalKind(of label: String) -> String? {
@@ -87,8 +173,8 @@ struct Trace: View {
     }
 
     /// What the steps left behind worth a card: a date set, a reminder, a file written, a command run.
-    private struct Keepsake: Identifiable, Sendable {
-        enum Kind: Sendable { case event, reminder, file, remoteFile, command, health, weather }
+    fileprivate struct Keepsake: Identifiable, Equatable, Sendable {
+        enum Kind: Equatable, Sendable { case event, reminder, file, remoteFile, command, health, weather }
         let id: Int
         let kind: Kind
         let title: String
@@ -157,17 +243,23 @@ struct Trace: View {
         return kinds.contains(url.pathExtension.lowercased())
     }
 
+    private var activeKeepsakes: [Keepsake] {
+        keepsakes.filter { item in
+            item.mount.map(MountedFolders.isCurrent) ?? true
+        }
+    }
+
     /// The files these steps wrote or changed.
-    private var changedFiles: [Keepsake] { keepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
+    private var changedFiles: [Keepsake] { activeKeepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
 
     /// The shell / SSH commands these steps ran.
-    private var ranCommands: [Keepsake] { keepsakes.filter { $0.kind == .command } }
+    private var ranCommands: [Keepsake] { activeKeepsakes.filter { $0.kind == .command } }
 
     /// Keepsakes rendered as standalone cards (excluding grouped multi-file and multi-command batches).
     private var standaloneKeepsakes: [Keepsake] {
         let groupFiles = changedFiles.count >= 2
         let groupCommands = ranCommands.count >= 2
-        return keepsakes.filter { item in
+        return activeKeepsakes.filter { item in
             if groupFiles, item.kind == .file || item.kind == .remoteFile { return false }
             if groupCommands, item.kind == .command { return false }
             return true
@@ -224,6 +316,7 @@ struct Trace: View {
                 let hasTally = counts[index].added > 0 || counts[index].removed > 0
                 Kit.rule(inset: Ink.Space.l)
                 Button {
+                    guard item.mount.map(MountedFolders.isCurrent) ?? true else { return }
                     Haptics.light()
                     if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                         diffing = DiffShow(title: item.title, place: item.changesDetail(hasTally: hasTally), diff: diff, url: item.url, mount: item.mount)
@@ -385,9 +478,8 @@ struct Trace: View {
     private struct KeepsakeInput: Equatable, Sendable {
         let line: ChatLine
         let desk: String
+        let mountRevision: UInt64
     }
-
-    @State private var keepsakes: [Keepsake] = []
 
     nonisolated private static func upsertLocalFile(
         into out: inout [Keepsake],
@@ -685,12 +777,34 @@ struct Trace: View {
             }
         }
         .clipped()
-        .task(id: line.live ? nil : KeepsakeInput(line: line, desk: Words.t("书案/"))) {
-            guard !line.live else { keepsakes = []; return }
-            let input = KeepsakeInput(line: line, desk: Words.t("书案/"))
+        .task(id: line.live ? nil : KeepsakeInput(line: line, desk: Words.t("书案/"), mountRevision: mountRevision)) {
+            guard !line.live else {
+                if !keepsakes.isEmpty { keepsakes = [] }
+                return
+            }
+            let input = KeepsakeInput(line: line, desk: Words.t("书案/"), mountRevision: mountRevision)
+            let startMountRevision = MountedFolders.revision
             let job = Task.detached(priority: .utility) { Self.buildKeepsakes(input.line, desk: input.desk) }
             let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
-            if !Task.isCancelled { keepsakes = result }
+            if !Task.isCancelled {
+                let currentOnly = result.filter { item in
+                    item.mount.map(MountedFolders.isCurrent) ?? true
+                }
+                if startMountRevision == MountedFolders.revision {
+                    TraceKeepsakeCache.set(currentOnly, line: input.line, desk: input.desk, mountRevision: startMountRevision)
+                }
+                if keepsakes != currentOnly { keepsakes = currentOnly }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+            if let show = diffing, let mount = show.mount, !MountedFolders.isCurrent(mount) {
+                diffing = nil
+            }
+            let filtered = keepsakes.filter { item in
+                item.mount.map(MountedFolders.isCurrent) ?? true
+            }
+            if filtered != keepsakes { keepsakes = filtered }
+            mountRevision = MountedFolders.revision
         }
         .animation(Ink.Motion.settle, value: line.tools.count)
         // Done: everything folds into the one line again.
@@ -709,6 +823,7 @@ struct Trace: View {
                     Haptics.light()
                     switch item.kind {
                     case .file, .remoteFile:
+                        guard item.mount.map(MountedFolders.isCurrent) ?? true else { return }
                         if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
                             diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url, mount: item.mount)
                         } else if let url = item.url {
@@ -766,7 +881,13 @@ struct Trace: View {
         }
         Color.clear.frame(height: 0)
             .sheet(item: $diffing) { show in
-                DiffSheet(title: show.title, place: show.place, diff: show.diff, url: show.url) { url in
+                let mountValid = show.mount.map(MountedFolders.isCurrent) ?? true
+                let openableURL = mountValid ? show.url : nil
+                DiffSheet(title: show.title, place: show.place, diff: show.diff, url: openableURL) { url in
+                    guard show.mount.map(MountedFolders.isCurrent) ?? true else {
+                        diffing = nil
+                        return
+                    }
                     diffing = nil
                     openFile(url, show.mount)
                 }

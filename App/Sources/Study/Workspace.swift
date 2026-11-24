@@ -58,16 +58,24 @@ enum MountedFolders {
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [MountedFolder]?
+    nonisolated(unsafe) private static var generation: UInt64 = 1
+
+    /// Monotonically incremented whenever mounts are added, removed, reauthorized, or updated.
+    static var revision: UInt64 { lock.withLock { generation } }
 
     private static func allUnlocked(fresh: Bool) -> [MountedFolder] {
         if !fresh, let cache { return cache }
         let loaded = Disk.load([MountedFolder].self, "mounts.json") ?? []
+        if let cache, cache != loaded {
+            generation &+= 1
+        }
         cache = loaded
         return loaded
     }
 
     private static func saveUnlocked(_ list: [MountedFolder]) {
         cache = list
+        generation &+= 1
         Disk.save(list, "mounts.json")
     }
 
@@ -79,6 +87,15 @@ enum MountedFolders {
 
     static func all(fresh: Bool = false) -> [MountedFolder] {
         lock.withLock { allUnlocked(fresh: fresh) }
+    }
+
+    /// Fast in-memory check that this mount record is still active and has not been unmounted or rebound.
+    static func isCurrent(_ mount: MountedFolder) -> Bool {
+        lock.withLock {
+            allUnlocked(fresh: false).contains {
+                $0.id == mount.id && $0.name == mount.name && $0.bookmark == mount.bookmark
+            }
+        }
     }
 
     static func named(_ name: String) -> MountedFolder? {
@@ -224,6 +241,7 @@ enum MountedFolders {
 
     /// Opens a security-scoped folder for UI navigation. Caller must call `token.stop()` when leaving.
     static func openForUI(_ mount: MountedFolder) -> (url: URL, token: ScopeToken)? {
+        guard isCurrent(mount) else { return nil }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: mount.bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
             return nil
@@ -243,6 +261,9 @@ enum MountedFolders {
 
     /// Resolves a mount, enters its security scope, guards against symlink escape, and runs `body`.
     static func withAccess<T>(_ mount: MountedFolder, innerParts: [String] = [], body: (_ root: URL, _ target: URL) throws -> T) throws -> T {
+        guard isCurrent(mount) else {
+            throw WorkspaceError.cannot(Words.t("挂载的文件夹「\(mount.name)」已取消或已重新挂载。"))
+        }
         var stale = false
         let rootURL: URL
         do {
@@ -271,6 +292,9 @@ enum MountedFolders {
 
     /// Async counterpart to `withAccess` for tools that await inside a mounted folder.
     static func withAccessAsync<T>(_ mount: MountedFolder, innerParts: [String] = [], body: (_ root: URL, _ target: URL) async throws -> T) async throws -> T {
+        guard isCurrent(mount) else {
+            throw WorkspaceError.cannot(Words.t("挂载的文件夹「\(mount.name)」已取消或已重新挂载。"))
+        }
         var stale = false
         let rootURL: URL
         do {

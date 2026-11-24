@@ -76,7 +76,7 @@ final class Theme {
         UserDefaults.standard.set(key, forKey: "look.accent")
     }
 
-    var palette: Ink.Palette { Ink.palettes.first { $0.key == key } ?? Ink.palettes[0] }
+    var palette: Ink.Palette { Ink.palette(for: key) }
 
     // Reading size, line height and light / dark: set from several pages with `@AppStorage`, read everywhere through
     // `Pref`. Kept here so every view that read them is drawn again the moment they change — before, only the reply
@@ -161,11 +161,13 @@ enum Ink {
     /// The grounds: paper (or pure white) in light mode, warm ink-grey (or pure black) in dark mode.
     static var paper: Color {
         let theme = Theme.shared, palette = theme.palette
-        return pair(theme.white ? 0xFFFFFF : palette.paperLight, theme.oled ? 0x000000 : palette.paperDark)
+        if theme.white { return theme.oled ? palette.paperWhiteOled : palette.paperWhite }
+        return theme.oled ? palette.paperOled : palette.paper
     }
     static var paperRaised: Color {
         let theme = Theme.shared, palette = theme.palette
-        return pair(theme.white ? 0xF4F4F5 : palette.raisedLight, theme.oled ? 0x121212 : palette.raisedDark)
+        if theme.white { return theme.oled ? palette.raisedWhiteOled : palette.raisedWhite }
+        return theme.oled ? palette.raisedOled : palette.raised
     }
     static let ink = pair(0x2B2A27, 0xECE6DA)
     static let inkSoft = pair(0x6F6A60, 0xA39C8E)
@@ -224,7 +226,7 @@ enum Ink {
     static let sealInk = pair(0xFBF3EA, 0xFBF3EA)
     static var rule: Color {
         let theme = Theme.shared, palette = theme.palette
-        return theme.white ? pair(0xE4E4E7, palette.ruleDark) : palette.rule
+        return theme.white ? palette.ruleWhite : palette.rule
     }
     /// The accent and its pale ground, from the palette the user picked.
     static var accent: Color { Theme.shared.palette.accent }
@@ -238,9 +240,17 @@ enum Ink {
         var tile: Color
         var wash: Color
         var paper: Color
+        var paperWhite: Color
+        var paperOled: Color
+        var paperWhiteOled: Color
         var raised: Color
+        var raisedWhite: Color
+        var raisedOled: Color
+        var raisedWhiteOled: Color
         var rule: Color
+        var ruleWhite: Color
         var mine: Color
+        var mineWhite: Color
         /// The light-mode paper, for the pure-black dark mode that keeps the light one as it is.
         var paperLight: UInt32
         var raisedLight: UInt32
@@ -257,19 +267,24 @@ enum Ink {
             self.accent = Ink.pair(light, dark)
             self.tile = Ink.pair(light, Ink.mix(light, 0xFFFFFF, 0.08))
             self.wash = wash
-            func mixed(_ baseLight: UInt32, _ baseDark: UInt32, _ amount: Double) -> Color {
-                Ink.pair(Ink.mix(baseLight, light, amount * tint), Ink.mix(baseDark, dark, amount * tint))
-            }
-            paper = mixed(0xF6F1E7, 0x1C1A17, 0.05)
-            raised = mixed(0xFBF8F1, 0x26231F, 0.035)
             paperLight = Ink.mix(0xF6F1E7, light, 0.05 * tint)
             raisedLight = Ink.mix(0xFBF8F1, light, 0.035 * tint)
             paperDark = Ink.mix(0x1C1A17, dark, 0.05 * tint)
             raisedDark = Ink.mix(0x26231F, dark, 0.035 * tint)
             ruleDark = Ink.mix(0x37332D, dark, 0.08 * tint)
             mineDark = Ink.mix(0x322E28, dark, 0.07 * tint)
-            rule = mixed(0xE4DCCB, 0x37332D, 0.08)
-            mine = mixed(0xECE4D3, 0x322E28, 0.07)
+            paper = Ink.pair(paperLight, paperDark)
+            paperWhite = Ink.pair(0xFFFFFF, paperDark)
+            paperOled = Ink.pair(paperLight, 0x000000)
+            paperWhiteOled = Ink.pair(0xFFFFFF, 0x000000)
+            raised = Ink.pair(raisedLight, raisedDark)
+            raisedWhite = Ink.pair(0xF4F4F5, raisedDark)
+            raisedOled = Ink.pair(raisedLight, 0x121212)
+            raisedWhiteOled = Ink.pair(0xF4F4F5, 0x121212)
+            rule = Ink.pair(Ink.mix(0xE4DCCB, light, 0.08 * tint), ruleDark)
+            ruleWhite = Ink.pair(0xE4E4E7, ruleDark)
+            mine = Ink.pair(Ink.mix(0xECE4D3, light, 0.07 * tint), mineDark)
+            mineWhite = Ink.pair(0xEFEFF1, mineDark)
         }
     }
 
@@ -291,16 +306,18 @@ enum Ink {
         Palette(key: "teng", title: "藤", light: 0x6E5A92, dark: 0xA996CF, wash: pair(0xE9E4F2, 0x332C42), tint: 1),
         Palette(key: "mo", title: "墨", light: 0x3F3D39, dark: 0xC9C2B5, wash: pair(0xE8E5DF, 0x35332F), tint: 0.5),
     ]
+    private static let paletteMap: [String: Palette] = Dictionary(uniqueKeysWithValues: palettes.map { ($0.key, $0) })
+    static func palette(for key: String) -> Palette { paletteMap[key] ?? palettes[0] }
     /// Your own bubbles: the paper's tint, or a soft wash of the colour you picked (text stays plain ink, so it
     /// always reads).
     static var bubble: Color {
         let theme = Theme.shared
-        guard !theme.bubble.isEmpty, let picked = palettes.first(where: { $0.key == theme.bubble }) else { return mine }
+        guard !theme.bubble.isEmpty, let picked = paletteMap[theme.bubble] else { return mine }
         return picked.wash
     }
     static var mine: Color {
         let theme = Theme.shared, palette = theme.palette
-        return theme.white ? pair(0xEFEFF1, palette.mineDark) : palette.mine
+        return theme.white ? palette.mineWhite : palette.mine
     }
     static let ok = pair(0x5E8C6A, 0x7FB08C)
     static let warn = pair(0xC08A3E, 0xD9A65C)
@@ -341,9 +358,42 @@ enum Ink {
     }
 
     /// Forget which fonts are on the phone (one has just been fetched).
-    static func recheckFonts() { fonts.removeAllObjects() }
+    static func recheckFonts() {
+        fonts.removeAllObjects()
+        monoFonts.removeAllObjects()
+        uiFaces.removeAllObjects()
+    }
 
     private static let fonts = NSCache<NSString, NSNumber>()
+    private static let monoFonts = NSCache<NSString, UIFont>()
+    private static let uiFaces = NSCache<NSString, UIFont>()
+
+    /// The reading face as a UIKit font, for native selectable text and line-height metrics.
+    static func uiFace(_ size: CGFloat, bold: Bool = false) -> UIFont {
+        let current = Pref.face
+        if current.downloads { _ = Theme.shared.fontsArrived }
+        let key = "\(current.rawValue)|\(bold ? 1 : 0)|\(size)" as NSString
+        if let cached = uiFaces.object(forKey: key) { return cached }
+        let resolved: UIFont
+        if let name = current.postScript(bold: bold), has(name), let font = UIFont(name: name, size: size) {
+            resolved = font
+        } else {
+            let base = UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+            let design: UIFontDescriptor.SystemDesign
+            switch current {
+            case .sans: design = .default
+            case .rounded: design = .rounded
+            default: design = .serif
+            }
+            if let described = base.fontDescriptor.withDesign(design) {
+                resolved = UIFont(descriptor: described, size: size)
+            } else {
+                resolved = base
+            }
+        }
+        uiFaces.setObject(resolved, forKey: key)
+        return resolved
+    }
 
     /// Any face at any size; a face not on the phone yet stands in as the system serif.
     static func face(_ face: Pref.Face, _ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
@@ -411,11 +461,19 @@ enum Ink {
     /// Maple Mono, with Clio Mono CN behind it for Chinese: every Chinese character exactly two letters wide, so
     /// columns of output and code line up even with Chinese in them (Maple Mono CN, cut to GB2312).
     private static func mapleWithChinese(_ size: CGFloat, bold: Bool) -> UIFont? {
+        let key = "\(bold ? 1 : 0)|\(size)" as NSString
+        if let cached = monoFonts.object(forKey: key) { return cached }
         let name = bold ? "MapleMono-SemiBold" : "MapleMono-Regular"
         guard has(name), let latin = UIFont(name: name, size: size) else { return nil }
-        guard has("ClioMonoCN-Regular") else { return latin }
-        let chinese = UIFontDescriptor(fontAttributes: [.name: "ClioMonoCN-Regular"])
-        return UIFont(descriptor: latin.fontDescriptor.addingAttributes([.cascadeList: [chinese]]), size: size)
+        let resolved: UIFont
+        if has("ClioMonoCN-Regular") {
+            let chinese = UIFontDescriptor(fontAttributes: [.name: "ClioMonoCN-Regular"])
+            resolved = UIFont(descriptor: latin.fontDescriptor.addingAttributes([.cascadeList: [chinese]]), size: size)
+        } else {
+            resolved = latin
+        }
+        monoFonts.setObject(resolved, forKey: key)
+        return resolved
     }
 
     /// Titles and inscriptions, in the face picked for them in 字体 (文楷 unless changed): the welcome pages,
