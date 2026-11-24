@@ -369,20 +369,12 @@ struct ChatPage: View {
             .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
-            // Whenever something new pushes the bottom out of sight while the page follows, go back down at once.
-            // Nothing moves while the reader is up reading older lines.
-            // How far the last line is from sitting just above the composer. The composer (and the bar over it
-            // while the companion works) is an inset: without counting it, the page kept stopping one composer short.
+            // Size changes already use the bottom anchor while following. Only schedule a correction
+            // when the viewport actually leaves the bottom, rather than scrolling again on every reflow.
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) > 2
             } action: { _, behind in
-                if behind, following { followToEnd(settle: false) }
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height
-            } action: { _, _ in
-                // Every time what is on the page grows, keep to the bottom right away, not every 80 characters.
-                if following { followToEnd(settle: false) }
+                if behind { followToEnd(settle: false) }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) >= 80
@@ -417,13 +409,15 @@ struct ChatPage: View {
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
                 if phase == .interacting {
                     following = false
+                    followPending?.cancel()
+                    settleEnd?.cancel()
                     jumpedTo = nil
                     hideJumps?.cancel()
                     jumpVisible = true
                 }
-                if phase == .idle, old != .idle {
+                if phase == .idle, old == .interacting || old == .decelerating {
                     following = historyPage == nil && selecting.isEmpty && Self.below(context.geometry) < 80
-                    if old == .interacting || old == .decelerating { lingerJumpButtons() }
+                    lingerJumpButtons()
                 }
             }
             .scrollIndicators(.hidden)
@@ -770,6 +764,8 @@ struct ChatPage: View {
         .hitchPage(isRoom ? "雅集" : "絮语")
         .onDisappear {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
+            followPending?.cancel()
+            settleEnd?.cancel()
             draftState.flush()
             DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             chat.close()

@@ -5,7 +5,7 @@ import Foundation
 // RULE: STREAM_BLOCKS
 // RULE: DRAFT_INPUT
 
-private enum ScrollPhase { case idle, interacting, decelerating }
+private enum ScrollPhase { case idle, interacting, decelerating, animating }
 
 private struct ScrollGeometry {
     let contentSize: ContentSize
@@ -97,6 +97,7 @@ private final class FlowFixture {
     func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
     private var followPending: Task<Void, Never>?
+    private var settleEnd: Task<Void, Never>?
     let clock = Clock()
 
     func changePhase(from old: ScrollPhase, to phase: ScrollPhase, at distance: CGFloat) {
@@ -203,12 +204,16 @@ private enum ChatFlowTests {
         try check(flow.chat.browsing, true, "Holding off row refresh during the drag")
         flow.changePhase(from: .interacting, to: .idle, at: 80)
         try check(flow.following, false, "At the threshold, keep the reader's position")
+        flow.changePhase(from: .animating, to: .idle, at: 0)
+        try check(flow.following, false, "A programmatic scroll cannot turn following back on")
         try check(flow.requestFollow() == nil, true, "Arriving text does not restart following")
         flow.changePhase(from: .idle, to: .interacting, at: 80)
         flow.changePhase(from: .interacting, to: .decelerating, at: 79)
         try check(flow.following, false, "Wait for the user's fling to stop")
         flow.changePhase(from: .decelerating, to: .idle, at: 79)
         try check(flow.following, true, "Resume within 80 points including the composer inset")
+        flow.changePhase(from: .animating, to: .idle, at: 150)
+        try check(flow.following, true, "A programmatic scroll cannot turn following off")
         try check(flow.chat.browsing, false, "Resume row refresh when scrolling stops")
         flow.selecting.insert(UUID())
         try check(flow.requestFollow() == nil, true, "A selection prevents auto-follow")

@@ -511,11 +511,11 @@ extension ChatPage {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     func followToEnd(settle: Bool = true) {
-        guard historyPage == nil, following, selecting.isEmpty else { return }
+        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
-            guard following else { return }
+            guard following, !touchScrolling else { return }
             toEnd()
         }
     }
@@ -533,7 +533,7 @@ extension ChatPage {
         settleEnd?.cancel()
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
-            guard following, historyPage == nil, selecting.isEmpty else { return }
+            guard following, !touchScrolling, historyPage == nil, selecting.isEmpty else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }
