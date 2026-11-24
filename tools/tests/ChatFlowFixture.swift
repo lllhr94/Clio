@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 // Only the platform inputs and side effects are simulated. The runner fills in
 // the app's function bodies so the assertions cannot pass against a copy of the rules.
