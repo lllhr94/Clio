@@ -12,10 +12,12 @@ public struct MemoryMirrorBot: Equatable, Sendable {
     }
 }
 
-/// Deterministic, secret-redacting Markdown mirror generator for `书案/档案.md` and `书案/镇纸.md`.
+/// Deterministic, secret-redacting Markdown mirror generator for `档案.md` and `镇纸.md`.
 public enum MemoryMarkdownRenderer {
     public static let startMarker = "<!-- clio:memory-mirror:start -->"
     public static let endMarker = "<!-- clio:memory-mirror:end -->"
+    private static let markerPrefix = "<!-- clio:memory-mirror:"
+    private static let escapedMarkerPrefix = "&lt;!-- clio:memory-mirror:"
 
     public static func renderZhenzhi(
         records: [MemoryRecord],
@@ -97,10 +99,16 @@ public enum MemoryMarkdownRenderer {
             lines.append("## 助手设定")
             lines.append("")
             for bot in bots {
-                let safeName = redact(bot.name.trimmingCharacters(in: .whitespacesAndNewlines), orderedSecrets: orderedSecrets)
+                let safeName = escapeManagedMarkers(
+                    redact(bot.name.trimmingCharacters(in: .whitespacesAndNewlines), orderedSecrets: orderedSecrets)
+                )
                 guard !safeName.isEmpty else { continue }
                 let safeRole = bot.role
-                    .map { redact($0.trimmingCharacters(in: .whitespacesAndNewlines), orderedSecrets: orderedSecrets) }
+                    .map {
+                        escapeManagedMarkers(
+                            redact($0.trimmingCharacters(in: .whitespacesAndNewlines), orderedSecrets: orderedSecrets)
+                        )
+                    }
                     .flatMap { $0.isEmpty ? nil : $0 }
                 var suffix: [String] = []
                 if bot.isMain { suffix.append("主") }
@@ -152,14 +160,14 @@ public enum MemoryMarkdownRenderer {
     }
 
     /// Merges `managedBlock` into existing file content without clobbering user manual notes outside the markers.
+    /// Boundaries are recognized only when `startMarker` / `endMarker` occupy their own standalone line.
     public static func mergeManagedSection(_ managedBlock: String, into existing: String?) -> String {
         guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return managedBlock + "\n"
         }
-        if let startRange = existing.range(of: startMarker),
-           let endRange = existing.range(of: endMarker, range: startRange.upperBound..<existing.endIndex) {
+        if let range = standaloneManagedSectionRange(in: existing) {
             var updated = existing
-            updated.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: managedBlock)
+            updated.replaceSubrange(range, with: managedBlock)
             if !updated.hasSuffix("\n") { updated.append("\n") }
             return updated
         }
@@ -171,17 +179,56 @@ public enum MemoryMarkdownRenderer {
         merged != existing
     }
 
+    public static func escapeManagedMarkers(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: startMarker, with: "&lt;!-- clio:memory-mirror:start --&gt;")
+            .replacingOccurrences(of: endMarker, with: "&lt;!-- clio:memory-mirror:end --&gt;")
+            .replacingOccurrences(of: markerPrefix, with: escapedMarkerPrefix)
+    }
+
+    private static func standaloneManagedSectionRange(in text: String) -> Range<String.Index>? {
+        var cursor = text.startIndex
+        var startLower: String.Index?
+        while cursor < text.endIndex {
+            let lineRange = text.lineRange(for: cursor..<cursor)
+            let stripped = String(text[lineRange])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
+                .trimmingCharacters(in: .whitespaces)
+            if startLower == nil {
+                if stripped == startMarker {
+                    startLower = lineRange.lowerBound
+                }
+            } else if stripped == endMarker, let startLower {
+                var contentEnd = lineRange.upperBound
+                while contentEnd > lineRange.lowerBound {
+                    let prev = text.index(before: contentEnd)
+                    let ch = text[prev]
+                    if ch == "\n" || ch == "\r" {
+                        contentEnd = prev
+                    } else {
+                        break
+                    }
+                }
+                return startLower..<contentEnd
+            }
+            cursor = lineRange.upperBound
+        }
+        return nil
+    }
+
     private static func formatBullet(_ record: MemoryRecord, secrets: [String]) -> String {
-        let safeText = redact(record.text, orderedSecrets: secrets)
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeText = escapeManagedMarkers(
+            redact(record.text, orderedSecrets: secrets)
+                .replacingOccurrences(of: "\r\n", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         var tags: [String] = []
         if !record.kind.isEmpty && record.kind != "fact" {
-            tags.append(redact(record.kind, orderedSecrets: secrets))
+            tags.append(escapeManagedMarkers(redact(record.kind, orderedSecrets: secrets)))
         }
         if !record.topic.isEmpty {
-            tags.append(redact(record.topic, orderedSecrets: secrets))
+            tags.append(escapeManagedMarkers(redact(record.topic, orderedSecrets: secrets)))
         }
         if tags.isEmpty {
             return "- \(safeText)"

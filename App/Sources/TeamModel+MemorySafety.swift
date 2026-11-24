@@ -434,10 +434,7 @@ extension TeamModel {
             )
             book.reviews = Array(book.reviews.prefix(100))
         }
-        guard (try? Disk.write(book, "memory.json")) != nil else { return }
-        memoryBook = book
-        memories = book.memories
-        memoryReviews = book.reviews
+        guard (try? commitMemoryBook(book)) != nil else { return }
         invalidateMemoryPromptCache()
     }
 }

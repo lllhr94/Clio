@@ -125,10 +125,18 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Read APIs
 
-    public func list(layer: MemoryLayer? = nil, includeDeleted: Bool = false) throws -> [MemoryRecord] {
+    public func list(
+        layer: MemoryLayer? = nil,
+        includeDeleted: Bool = false,
+        secrets: [String] = []
+    ) throws -> [MemoryRecord] {
+        let ordered = Self.orderedSecrets(secrets)
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
+        if !ordered.isEmpty {
+            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        }
         return try listLocked(layer: layer, includeDeleted: includeDeleted)
     }
 
@@ -163,10 +171,14 @@ public final class MemoryStore: @unchecked Sendable {
         return try fetchTombstoneLocked(textSHA256: hash) != nil
     }
 
-    public func activeFacts() throws -> [MemorySafety.Fact] {
+    public func activeFacts(secrets: [String] = []) throws -> [MemorySafety.Fact] {
+        let ordered = Self.orderedSecrets(secrets)
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
+        if !ordered.isEmpty {
+            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        }
         let rows = try listLocked(layer: nil, includeDeleted: false)
         return rows.compactMap(\.safetyFact)
     }
@@ -174,7 +186,8 @@ public final class MemoryStore: @unchecked Sendable {
     public func search(
         query: String,
         layers: Set<MemoryLayer> = [.pinned, .surface, .deep],
-        limit: Int = 8
+        limit: Int = 8,
+        secrets: [String] = []
     ) throws -> [MemoryRecord] {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty, !layers.isEmpty else { return [] }
@@ -190,9 +203,13 @@ public final class MemoryStore: @unchecked Sendable {
         }
         guard !terms.isEmpty else { return [] }
 
+        let ordered = Self.orderedSecrets(secrets)
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
+        if !ordered.isEmpty {
+            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        }
         let candidates = try listLocked(layer: nil, includeDeleted: false)
             .filter { layers.contains($0.layer) }
 
@@ -256,29 +273,6 @@ public final class MemoryStore: @unchecked Sendable {
                 try upsertRecordRowLocked(updated)
                 try bumpRevisionLocked()
                 return updated
-            }
-
-            if let existingByHash = try fetchActiveRecordByHashLocked(safeHash) {
-                var merged = existingByHash
-                merged.text = candidate.text
-                merged.textSHA256 = safeHash
-                merged.usedAtMs = max(existingByHash.usedAtMs ?? 0, candidate.usedAtMs ?? candidate.updatedAtMs)
-                merged.updatedAtMs = max(existingByHash.updatedAtMs, candidate.updatedAtMs)
-                if explicitUserAction || candidate.editedByUser {
-                    merged.editedByUser = merged.editedByUser || candidate.editedByUser
-                }
-                if existingByHash.pinned || candidate.pinned || existingByHash.layer == .pinned || candidate.layer == .pinned {
-                    merged.pinned = true
-                    merged.layer = .pinned
-                } else {
-                    merged.layer = candidate.layer
-                    merged.pinned = false
-                }
-                if !candidate.topic.isEmpty { merged.topic = candidate.topic }
-                if candidate.kind != "fact" { merged.kind = candidate.kind }
-                try upsertRecordRowLocked(merged)
-                try bumpRevisionLocked()
-                return merged
             }
 
             try upsertRecordRowLocked(candidate)
@@ -678,10 +672,14 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Canonical Book Snapshot & Bidirectional Reconciliation
 
-    public func snapshotBook() throws -> CanonicalMemoryBook {
+    public func snapshotBook(secrets: [String] = []) throws -> CanonicalMemoryBook {
+        let ordered = Self.orderedSecrets(secrets)
         lock.lock()
         defer { lock.unlock() }
         _ = try openOrRecoverLocked()
+        if !ordered.isEmpty {
+            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        }
         return try snapshotBookLocked()
     }
 
@@ -707,12 +705,121 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Private Reconcile & Snapshot Logic
 
+    private func scrubStoredSecretsIfNeededLocked(orderedSecrets: [String], nowMs: Double) throws {
+        guard !orderedSecrets.isEmpty else { return }
+        let rows = try listLocked(layer: nil, includeDeleted: true)
+        let tombs = try readTombstonesLocked()
+        let reviews = try readReviewsLocked()
+
+        let hasRowSecret = rows.contains { row in
+            Self.redact(row.text, orderedSecrets: orderedSecrets) != row.text
+                || Self.redact(row.topic, orderedSecrets: orderedSecrets) != row.topic
+        }
+        let hasTombSecret = tombs.contains { tomb in
+            Self.redact(tomb.reason, orderedSecrets: orderedSecrets) != tomb.reason
+        }
+        let hasReviewSecret = reviews.contains { review in
+            Self.redact(review.conversation, orderedSecrets: orderedSecrets) != review.conversation
+                || review.added.contains { Self.redact($0.text, orderedSecrets: orderedSecrets) != $0.text }
+                || review.merged.contains {
+                    Self.redact($0.before, orderedSecrets: orderedSecrets) != $0.before
+                        || Self.redact($0.after, orderedSecrets: orderedSecrets) != $0.after
+                }
+        }
+        guard hasRowSecret || hasTombSecret || hasReviewSecret else { return }
+
+        _ = try performWriteTransactionLocked {
+            try redactStoredStateLocked(orderedSecrets: orderedSecrets, nowMs: nowMs)
+        }
+    }
+
+    private func redactStoredStateLocked(orderedSecrets: [String], nowMs: Double) throws {
+        guard !orderedSecrets.isEmpty else { return }
+        var changed = false
+
+        let rows = try listLocked(layer: nil, includeDeleted: true)
+        for var row in rows {
+            let safeText = Self.redact(row.text, orderedSecrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeTopic = Self.redact(row.topic, orderedSecrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard safeText != row.text || safeTopic != row.topic else { continue }
+            changed = true
+            let safeHash = MemorySafety.retractionHash(safeText)
+            if safeText.isEmpty || safeHash.isEmpty {
+                if row.deletedAtMs == nil {
+                    row.deletedAtMs = nowMs
+                }
+                row.text = "〔隐去〕"
+                row.textSHA256 = MemorySafety.retractionHash("〔隐去〕")
+            } else {
+                row.text = safeText
+                row.textSHA256 = safeHash
+            }
+            row.topic = safeTopic
+            row.updatedAtMs = max(row.updatedAtMs, nowMs)
+            try upsertRecordRowLocked(row)
+        }
+
+        let tombs = try readTombstonesLocked()
+        for var tomb in tombs {
+            let safeReason = Self.redact(tomb.reason, orderedSecrets: orderedSecrets)
+            if safeReason != tomb.reason {
+                tomb.reason = safeReason
+                try upsertTombstoneLocked(tomb)
+                changed = true
+            }
+        }
+
+        let reviews = try readReviewsLocked()
+        var reviewChanged = false
+        let scrubbedReviews: [CanonicalMemoryReviewLog] = reviews.map { entry in
+            let safeConv = Self.redact(entry.conversation, orderedSecrets: orderedSecrets)
+            let safeAdded = entry.added.map {
+                CanonicalMemoryReviewLog.Addition(
+                    memoryID: $0.memoryID,
+                    text: Self.redact($0.text, orderedSecrets: orderedSecrets)
+                )
+            }
+            let safeMerged = entry.merged.map {
+                CanonicalMemoryReviewLog.Change(
+                    memoryID: $0.memoryID,
+                    before: Self.redact($0.before, orderedSecrets: orderedSecrets),
+                    after: Self.redact($0.after, orderedSecrets: orderedSecrets)
+                )
+            }
+            let updated = CanonicalMemoryReviewLog(
+                id: entry.id,
+                at: entry.at,
+                day: entry.day,
+                conversation: safeConv,
+                added: safeAdded,
+                merged: safeMerged
+            )
+            if updated != entry { reviewChanged = true }
+            return updated
+        }
+        if reviewChanged {
+            try replaceReviewsLocked(scrubbedReviews)
+            changed = true
+        }
+
+        if changed {
+            try bumpRevisionLocked()
+        }
+    }
+
     private func reconcileLocked(
         book: CanonicalMemoryBook,
         orderedSecrets: [String],
         nowMs: Double,
         jsonDigest: String?
     ) throws {
+        // Re-redact ALL retained DB rows, tombstones, and review logs against live Vault secrets first.
+        if !orderedSecrets.isEmpty {
+            try redactStoredStateLocked(orderedSecrets: orderedSecrets, nowMs: nowMs)
+        }
+
         var mergedTombstones: [String: MemoryTombstone] = [:]
         for tomb in try readTombstonesLocked() {
             mergedTombstones[tomb.textSHA256] = tomb
@@ -740,11 +847,11 @@ public final class MemoryStore: @unchecked Sendable {
             }
         }
 
-        // Collect all existing DB rows by ID and active hash.
+        // Collect all existing DB rows strictly by ID (never collapse distinct IDs by retractionHash).
         let allDBRows = try listLocked(layer: nil, includeDeleted: true)
         var rowsByID = Dictionary(allDBRows.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
 
-        // First enforce incoming tombstones against existing DB rows.
+        // Enforce incoming tombstones against existing DB rows.
         for (id, var row) in rowsByID where row.deletedAtMs == nil {
             if let tomb = mergedTombstones[row.textSHA256], tomb.deletedAtMs >= row.updatedAtMs {
                 row.deletedAtMs = tomb.deletedAtMs
@@ -754,7 +861,7 @@ public final class MemoryStore: @unchecked Sendable {
             }
         }
 
-        // Reconcile incoming active + archived items from canonical book.
+        // Reconcile incoming active + archived items from canonical book strictly by ID.
         let incomingTagged: [(item: CanonicalMemoryItem, isArchivedBucket: Bool)] =
             book.memories.map { ($0, false) } + book.archived.map { ($0, true) }
 
@@ -803,21 +910,6 @@ public final class MemoryStore: @unchecked Sendable {
                 )
                 try upsertRecordRowLocked(merged)
                 rowsByID[merged.id] = merged
-            } else if let existingSameHash = rowsByID.values.first(where: { $0.deletedAtMs == nil && $0.textSHA256 == hash }) {
-                if incomingUpdatedAt > existingSameHash.updatedAtMs {
-                    let merged = mergeExistingRecord(
-                        existingSameHash,
-                        with: rawItem,
-                        safeText: safeText,
-                        hash: hash,
-                        targetLayer: targetLayer,
-                        safeTopic: safeTopic,
-                        safeKind: safeKind,
-                        incomingUpdatedAt: incomingUpdatedAt
-                    )
-                    try upsertRecordRowLocked(merged)
-                    rowsByID[merged.id] = merged
-                }
             } else {
                 let record = MemoryRecord(
                     id: rawItem.id,
@@ -1056,6 +1148,12 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Private SQLite Operations
 
+    private enum ValidationOutcome {
+        case valid
+        case recover(MemoryStoreRecoveryReason)
+        case transient(MemoryStoreError)
+    }
+
     private func performWriteTransactionLocked<T>(_ body: () throws -> T) throws -> T {
         do {
             try execLocked("BEGIN IMMEDIATE;")
@@ -1108,41 +1206,51 @@ public final class MemoryStore: @unchecked Sendable {
             nil
         )
         guard openRC == SQLITE_OK, let validCandidate = candidate else {
+            let errMsg = candidate.map { String(cString: sqlite3_errmsg($0)) } ?? "sqlite open error \(openRC)"
             if let candidate { sqlite3_close_v2(candidate) }
-            unlinkDatabaseFiles()
-            try createFreshDatabaseLocked(reason: .corrupt)
-            return .corrupt
+            if isCorruptionCode(openRC) {
+                try recreateFreshDatabaseLocked(reason: .corrupt)
+                return .corrupt
+            }
+            // Transient errors (SQLITE_BUSY / SQLITE_LOCKED / SQLITE_PERM / SQLITE_CANTOPEN) must preserve the DB file.
+            throw MemoryStoreError.openFailed(code: openRC, message: errMsg)
         }
 
         self.db = validCandidate
 
-        let recovery = validateOpenedDatabaseLocked()
-        if recovery == .none {
+        switch validateOpenedDatabaseLocked() {
+        case .valid:
             do {
                 try configureRuntimePragmasLocked()
                 self.openedIdentity = Self.fileIdentity(databaseURL)
                 _lastRecoveryReason = .none
                 return .none
             } catch {
-                let reason: MemoryStoreRecoveryReason = isCorruptionError(error) ? .corrupt : .schemaMismatch
-                try recreateFreshDatabaseLocked(reason: reason)
-                return reason
+                if isCorruptionError(error) {
+                    try recreateFreshDatabaseLocked(reason: .corrupt)
+                    return .corrupt
+                }
+                closeLocked()
+                throw error
             }
-        } else {
-            try recreateFreshDatabaseLocked(reason: recovery)
-            return recovery
+        case .recover(let reason):
+            try recreateFreshDatabaseLocked(reason: reason)
+            return reason
+        case .transient(let error):
+            closeLocked()
+            throw error
         }
     }
 
-    private func validateOpenedDatabaseLocked() -> MemoryStoreRecoveryReason {
+    private func validateOpenedDatabaseLocked() -> ValidationOutcome {
         do {
             try execLocked("PRAGMA busy_timeout = 5000;")
 
             let check = try scalarStringLocked("PRAGMA quick_check(1);")
-            guard check == "ok" else { return .corrupt }
+            guard check == "ok" else { return .recover(.corrupt) }
 
             let userVer = try scalarInt32Locked("PRAGMA user_version;")
-            guard userVer == Self.schemaVersion else { return .schemaMismatch }
+            guard userVer == Self.schemaVersion else { return .recover(.schemaMismatch) }
 
             let expectedTables: Set<String> = [
                 "store_meta",
@@ -1152,20 +1260,48 @@ public final class MemoryStore: @unchecked Sendable {
                 "memory_processed_entries",
             ]
             let foundTables = try existingTableNamesLocked()
-            guard expectedTables.isSubset(of: foundTables) else { return .schemaMismatch }
+            guard expectedTables.isSubset(of: foundTables) else { return .recover(.schemaMismatch) }
 
             let metaMap = try readMetaMapLocked()
-            guard metaMap["schema_version"] == String(Self.schemaVersion) else { return .schemaMismatch }
-            return .none
+            guard metaMap["schema_version"] == String(Self.schemaVersion) else { return .recover(.schemaMismatch) }
+            return .valid
+        } catch let storeError as MemoryStoreError {
+            if isCorruptionError(storeError) {
+                return .recover(.corrupt)
+            }
+            return .transient(storeError)
         } catch {
-            return isCorruptionError(error) ? .corrupt : .schemaMismatch
+            return .transient(.sqlite(code: SQLITE_ERROR, message: error.localizedDescription))
         }
     }
 
     private func recreateFreshDatabaseLocked(reason: MemoryStoreRecoveryReason) throws {
         closeLocked()
-        unlinkDatabaseFiles()
+        if reason == .corrupt || reason == .schemaMismatch {
+            quarantineCorruptDatabaseFilesLocked()
+        } else {
+            unlinkDatabaseFiles()
+        }
         try createFreshDatabaseLocked(reason: reason)
+    }
+
+    private func quarantineCorruptDatabaseFilesLocked() {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: databaseURL.path) {
+            let stamp = Int64(Date().timeIntervalSince1970 * 1000)
+            let suffix = UUID().uuidString.prefix(6)
+            let quarantineURL = databaseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("\(databaseURL.lastPathComponent).corrupt-\(stamp)-\(suffix)")
+            do {
+                try fm.moveItem(at: databaseURL, to: quarantineURL)
+            } catch {
+                try? fm.removeItem(at: databaseURL)
+            }
+        }
+        for sidecar in ["-wal", "-shm", "-journal"] {
+            try? fm.removeItem(atPath: databaseURL.path + sidecar)
+        }
     }
 
     private func createFreshDatabaseLocked(reason: MemoryStoreRecoveryReason) throws {
@@ -1859,10 +1995,14 @@ public final class MemoryStore: @unchecked Sendable {
         return .sqlite(code: code, message: msg)
     }
 
-    private func isCorruptionError(_ error: Error) -> Bool {
-        guard case .sqlite(let code, _) = error as? MemoryStoreError else { return false }
+    private func isCorruptionCode(_ code: Int32) -> Bool {
         let primary = code & 0xFF
         return primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB
+    }
+
+    private func isCorruptionError(_ error: Error) -> Bool {
+        guard case .sqlite(let code, _) = error as? MemoryStoreError else { return false }
+        return isCorruptionCode(code)
     }
 
     private static func decodeRecordRow(_ stmt: OpaquePointer) -> MemoryRecord {

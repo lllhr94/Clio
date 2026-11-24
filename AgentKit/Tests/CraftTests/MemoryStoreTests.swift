@@ -546,4 +546,203 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertFalse(MemoryMarkdownRenderer.shouldWrite(merged: secondMerge, existing: firstMerge))
         XCTAssertEqual(secondMerge, firstMerge)
     }
+
+    // MARK: 5. Late-Added Vault Secret Re-Redaction (P1b)
+
+    func testLateAddedVaultSecretRedactsSurvivingSQLiteRecords() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-memory.db")
+
+        let store = MemoryStore(databaseURL: dbURL)
+        defer { store.close() }
+
+        // Stored earlier before the user added this token to Vault.
+        _ = try store.upsert(
+            MemoryRecord(
+                id: "m-late",
+                text: "测试接口的密钥是 late-vault-secret-2026 请记住",
+                layer: .pinned,
+                pinned: true,
+                topic: "token late-vault-secret-2026",
+                createdAtMs: 5_000,
+                updatedAtMs: 5_000
+            )
+        )
+        _ = try store.reconcile(
+            book: CanonicalMemoryBook(
+                reviews: [
+                    CanonicalMemoryReviewLog(
+                        id: UUID(),
+                        at: Date(),
+                        day: "2026-11-25",
+                        conversation: "小克 late-vault-secret-2026",
+                        added: [.init(memoryID: "m-late", text: "测试接口的密钥是 late-vault-secret-2026 请记住")],
+                        merged: []
+                    ),
+                ]
+            ),
+            nowMs: 5_100
+        )
+
+        // Later, user saves "late-vault-secret-2026" into Vault; reconcile with stale/empty JSON must still scrub DB!
+        let lateSecrets = ["late-vault-secret-2026"]
+        let reconciled = try store.reconcile(book: CanonicalMemoryBook(), secrets: lateSecrets, nowMs: 6_000)
+        XCTAssertEqual(reconciled.memories.count, 1)
+        XCTAssertFalse(reconciled.memories[0].text.contains("late-vault-secret-2026"))
+        XCTAssertTrue(reconciled.memories[0].text.contains("〔隐去〕"))
+        XCTAssertFalse(reconciled.memories[0].topic?.contains("late-vault-secret-2026") ?? false)
+        XCTAssertFalse(reconciled.reviews[0].conversation.contains("late-vault-secret-2026"))
+        XCTAssertFalse(reconciled.reviews[0].added[0].text.contains("late-vault-secret-2026"))
+
+        // Also test late-added secret scrubbing directly via list(secrets:), activeFacts(secrets:), snapshotBook(secrets:).
+        _ = try store.upsert(
+            MemoryRecord(
+                id: "m-late-2",
+                text: "备用口令 second-late-secret-999",
+                layer: .surface,
+                createdAtMs: 7_000,
+                updatedAtMs: 7_000
+            )
+        )
+        let facts = try store.activeFacts(secrets: ["second-late-secret-999"])
+        XCTAssertTrue(facts.allSatisfy { !$0.text.contains("second-late-secret-999") })
+
+        let raw = try openRawSQLite(dbURL)
+        defer { sqlite3_close_v2(raw) }
+        let dbText1 = try rawString(raw, sql: "SELECT text FROM memories WHERE id = 'm-late';")
+        let dbText2 = try rawString(raw, sql: "SELECT text FROM memories WHERE id = 'm-late-2';")
+        let dbReview = try rawString(raw, sql: "SELECT payload_json FROM memory_reviews LIMIT 1;")
+        XCTAssertFalse(dbText1.contains("late-vault-secret-2026"))
+        XCTAssertFalse(dbText2.contains("second-late-secret-999"))
+        XCTAssertFalse(dbReview.contains("late-vault-secret-2026"))
+    }
+
+    // MARK: 6. Distinct Memories Sharing Normalized Retraction Hash Stay Distinct (P1c)
+
+    func testDistinctRecordsWithSameRetractionHashStayDistinct() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-memory.db")
+
+        let store = MemoryStore(databaseURL: dbURL)
+        defer { store.close() }
+
+        _ = try store.upsert(
+            MemoryRecord(id: "id-upper", text: "变量名是 Foo", layer: .surface, createdAtMs: 1_000, updatedAtMs: 1_000)
+        )
+        _ = try store.upsert(
+            MemoryRecord(id: "id-lower", text: "变量名是 foo", layer: .surface, createdAtMs: 2_000, updatedAtMs: 2_000)
+        )
+        XCTAssertEqual(Set(try store.list().map(\.id)), ["id-upper", "id-lower"])
+
+        // Reconcile incoming book with distinct IDs sharing retractionHash("喜欢吃辣") must NOT collapse them.
+        let book = CanonicalMemoryBook(
+            memories: [
+                CanonicalMemoryItem(id: "id-upper", text: "变量名是 Foo", at: 1_000, updatedAt: 1_000),
+                CanonicalMemoryItem(id: "id-lower", text: "变量名是 foo", at: 2_000, updatedAt: 2_000),
+                CanonicalMemoryItem(id: "id-punc-1", text: "喜欢吃辣。", at: 3_000, updatedAt: 3_000),
+                CanonicalMemoryItem(id: "id-punc-2", text: "喜欢吃辣", at: 4_000, updatedAt: 4_000),
+            ]
+        )
+        let merged = try store.reconcile(book: book, nowMs: 5_000)
+        XCTAssertEqual(Set(merged.memories.map(\.id)), ["id-upper", "id-lower", "id-punc-1", "id-punc-2"])
+        XCTAssertEqual(try store.activeFacts().count, 4)
+
+        // Tombstone still suppresses resurrection by retractionHash when deleted.
+        _ = try store.softDelete(id: "id-upper", nowMs: 6_000)
+        XCTAssertTrue(try store.isSuppressed(text: "变量名是 foo"))
+    }
+
+    // MARK: 7. Transient SQLite Error Preservation & Corrupt Quarantine (P2e)
+
+    func testTransientSQLiteErrorPreservesDBAndCorruptQuarantines() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("clio-memory.db")
+
+        var store = MemoryStore(databaseURL: dbURL)
+        _ = try store.upsert(
+            MemoryRecord(id: "m-keep", text: "重要记忆不能被瞬时错误删库", layer: .pinned, pinned: true, createdAtMs: 1_000)
+        )
+        try store.checkpoint()
+        store.close()
+
+        // Make DB temporarily unreadable/unwritable (simulates transient SQLITE_CANTOPEN / permission error).
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dbURL.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dbURL.path) }
+
+        if !FileManager.default.isReadableFile(atPath: dbURL.path) {
+            store = MemoryStore(databaseURL: dbURL)
+            XCTAssertThrowsError(try store.openOrRecover())
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dbURL.path))
+
+            // Restoring permissions recovers the original DB completely intact!
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dbURL.path)
+            XCTAssertEqual(try store.openOrRecover(), .none)
+            XCTAssertEqual(try store.list().map(\.id), ["m-keep"])
+            store.close()
+        } else {
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dbURL.path)
+        }
+
+        // True corruption moves broken DB to `.corrupt-*` quarantine instead of silently deleting it.
+        try Data("CORRUPTED_BYTES_HEADER".utf8).write(to: dbURL, options: .atomic)
+        store = MemoryStore(databaseURL: dbURL)
+        XCTAssertEqual(try store.openOrRecover(), .corrupt)
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertTrue(files.contains { $0.hasPrefix("clio-memory.db.corrupt-") })
+        store.close()
+    }
+
+    // MARK: 8. Markdown Marker Escaping & Standalone Line Boundary Parsing (P2f)
+
+    func testMarkdownMirrorEscapesMarkersAndParsesStandaloneLinesOnly() {
+        let records = [
+            MemoryRecord(
+                id: "m-marker",
+                text: "用户笔记含 <!-- clio:memory-mirror:start --> 和 <!-- clio:memory-mirror:end --> 字样",
+                layer: .pinned,
+                pinned: true,
+                kind: "note",
+                topic: "<!-- clio:memory-mirror:end -->",
+                createdAtMs: 1_700_000_000_000,
+                updatedAtMs: 1_700_000_000_000
+            ),
+        ]
+        let bots = [
+            MemoryMirrorBot(name: "小克 <!-- clio:memory-mirror:end -->", role: "助理", isMain: true),
+        ]
+        let tz = TimeZone(secondsFromGMT: 8 * 3600) ?? .current
+        let zhenzhi = MemoryMarkdownRenderer.renderZhenzhi(records: records, timeZone: tz)
+        let dangan = MemoryMarkdownRenderer.renderDangan(records: records, bots: bots, timeZone: tz)
+
+        let zhenzhiLines = zhenzhi.components(separatedBy: "\n")
+        XCTAssertEqual(zhenzhiLines.filter { $0 == MemoryMarkdownRenderer.startMarker }.count, 1)
+        XCTAssertEqual(zhenzhiLines.filter { $0 == MemoryMarkdownRenderer.endMarker }.count, 1)
+        XCTAssertTrue(zhenzhi.contains("&lt;!-- clio:memory-mirror:start --&gt;"))
+
+        let danganLines = dangan.components(separatedBy: "\n")
+        XCTAssertEqual(danganLines.filter { $0 == MemoryMarkdownRenderer.startMarker }.count, 1)
+        XCTAssertEqual(danganLines.filter { $0 == MemoryMarkdownRenderer.endMarker }.count, 1)
+
+        // Inline marker inside user header must NOT be treated as boundary; standalone markers must update cleanly.
+        let existingWithInline = """
+        # 手写头部：注意这里提到 <!-- clio:memory-mirror:start --> 只是正文
+
+        \(MemoryMarkdownRenderer.startMarker)
+        旧内容
+        \(MemoryMarkdownRenderer.endMarker)
+
+        底部用户笔记（含 <!-- clio:memory-mirror:end --> 示例）
+        """
+        let merged = MemoryMarkdownRenderer.mergeManagedSection(dangan, into: existingWithInline)
+        XCTAssertTrue(merged.hasPrefix("# 手写头部：注意这里提到 <!-- clio:memory-mirror:start --> 只是正文\n"))
+        XCTAssertTrue(merged.contains("底部用户笔记（含 <!-- clio:memory-mirror:end --> 示例）"))
+        XCTAssertFalse(merged.contains("旧内容"))
+        XCTAssertFalse(MemoryMarkdownRenderer.shouldWrite(
+            merged: MemoryMarkdownRenderer.mergeManagedSection(dangan, into: merged),
+            existing: merged
+        ))
+    }
 }

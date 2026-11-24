@@ -314,43 +314,39 @@ extension TeamModel {
     func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
     func saveMemory() {
         guard keeping, !Disk.frozen else { return }
+        var book = memoryBook
+        book.memories = memories
+        _ = try? commitMemoryBook(book)
+    }
+
+    @discardableResult
+    func commitMemoryBook(_ book: MemoryBook) throws -> MemoryBook {
+        guard keeping, !Disk.frozen else {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
         ensureRetractedFlushHashesLoaded()
         let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
-        var sanitized = memories
-        var didSanitize = false
-        for index in sanitized.indices {
-            let safe = MemorySafety.redactSecrets(sanitized[index].text, secrets: orderedSecrets)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if safe != sanitized[index].text {
-                sanitized[index].text = safe
-                didSanitize = true
-            }
-        }
-        let filtered = sanitized.filter { !$0.text.isEmpty }
-        if filtered != memories {
-            memories = filtered
-            didSanitize = true
-        }
-        memoryBook.memories = memories
-        if didSanitize {
-            memoryPromptState.invalidate()
-            syncLivePromptsFromMemories()
-        }
         let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
-        let editedTexts = MemoryStoreBridge.shared.persistAppSave(
-            book: memoryBook,
+        let committed = try MemoryStoreBridge.shared.commitAppBook(
+            book,
             suppressedHashes: suppressed,
             bots: bots,
             mainBotId: mainBotId,
             secrets: orderedSecrets
         )
-        for edited in editedTexts {
+        memoryBook = committed.book
+        if memories != committed.book.memories {
+            memories = committed.book.memories
+        }
+        memoryReviews = committed.book.reviews
+        for edited in committed.editedTexts {
             clearMemoryRetraction(text: edited)
         }
+        return committed.book
     }
 
     func prepareMemoryStoreForRestore() {
-        MemoryStoreBridge.shared.handleBackupRestoreSucceeded()
+        MemoryStoreBridge.shared.prepareForBackupRestore()
     }
 
     func resetMemoryStore() {
