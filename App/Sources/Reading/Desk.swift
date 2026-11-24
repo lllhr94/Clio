@@ -342,10 +342,12 @@ struct Desk: View {
 
     private func openSide() {
         Haptics.light()
+        DiagTrail.record("开侧边栏")
         withAnimation(Ink.Motion.unfold) { sideOpen = true; pull = 0 }
     }
 
     private func closeSide() {
+        DiagTrail.record("关侧边栏")
         withAnimation(Ink.Motion.unfold) { sideOpen = false; pull = 0 }
     }
 

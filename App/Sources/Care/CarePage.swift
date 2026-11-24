@@ -377,6 +377,11 @@ struct CarePage: View {
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)
+        let trail = DiagTrail.reportLines(limit: 25)
+        if !trail.isEmpty {
+            lines.append("近期操作轨迹（不含聊天内容）：")
+            lines += trail
+        }
         let hitches = Hitches.shared
         if !hitches.recent.isEmpty { lines.append(hitches.report(limit: 20)) }
         return lines.joined(separator: "\n")

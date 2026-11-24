@@ -267,6 +267,7 @@ struct Trace: View {
     }
 
     private func openCommand(_ item: Keepsake) {
+        DiagTrail.record("开命令详情")
         let command = (item.rawCommand ?? item.title).trimmingCharacters(in: .whitespacesAndNewlines)
         let output = item.fullOutput ?? ""
         inspectingCommand = CommandShow(
@@ -727,6 +728,8 @@ struct Trace: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
+                let willOpen = !open
+                DiagTrail.record(willOpen ? "展开步骤(\(line.tools.count)步)" : "收起步骤")
                 withAnimation(Ink.Motion.unfold) { open.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
