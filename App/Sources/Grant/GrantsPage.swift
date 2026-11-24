@@ -133,6 +133,7 @@ struct GrantsPage: View {
                         Haptics.tick(0.6)
                         preset.apply()
                         for grant in Grant.allCases { policies[grant] = grant.policy }
+                        team.reconcilePendingApprovals()
                     } label: {
                         VStack(spacing: Ink.Space.xs / 2) {
                             Text(preset.title).font(.system(size: Ink.Size.sub, weight: .semibold))
@@ -170,6 +171,7 @@ struct GrantsPage: View {
                 Haptics.tick(0.5)
                 grant.policy = value
                 policies[grant] = value
+                team.reconcilePendingApprovals()
                 if value != .off, systems[grant] == .notAsked {
                     Task {
                         await grant.requestSystem()

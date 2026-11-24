@@ -226,12 +226,39 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Pure in-conversation orchestration tools that do not touch external services or user data directly.
     private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion"]
 
+    /// Whether the user chose 「放手」 and has kept every enabled non-vault ability on `.allow`.
+    static var isFreeRunning: Bool {
+        if Preset.current == .free { return true }
+        guard UserDefaults.standard.string(forKey: "grantPreset.selected") == Preset.free.rawValue else { return false }
+        var hasAllowed = false
+        for grant in Grant.allCases where grant != .vault {
+            switch grant.policy {
+            case .allow: hasAllowed = true
+            case .off: continue
+            case .ask, .smart: return false
+            }
+        }
+        return hasAllowed
+    }
+
+    /// Tools that ask for their own non-forced confirmation even when their grant is `.allow` (outside 「放手」).
+    private static let builtInConfirmationTools: Set<String> = [
+        "browser_open", "browser_type", "calendar_add", "reminder_add",
+        "contacts_add", "photos_save", "open_link", "desk_delete",
+        "cancel_task", "gmail_draft",
+    ]
+
+    static func hasBuiltInConfirmation(_ tool: String) -> Bool {
+        builtInConfirmationTools.contains(tool) || tool.hasPrefix("mcp_")
+    }
+
     /// Only built-in queries in their actual capability. Remote workspaces use a different grant.
     static func allowsSmartQuery(_ name: String, grant: Grant) -> Bool {
         grant == .desk && ["read_file", "list_dir", "glob", "grep", "read_pdf", "search_docs"].contains(name)
     }
 
-    /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.
+    /// The tools a companion gets: switched-off abilities left out, the rest wrapped in `GatedTool`
+    /// so permission changes made mid-turn take effect immediately.
     /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
     static func gate(_ tools: [AgentTool], workspace: [String: Grant] = [:]) -> [AgentTool] {
         tools.compactMap { tool in
@@ -240,12 +267,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
                 if internalTools.contains(name) { return tool }
                 return Asking(inner: tool, grant: nil)
             }
-            switch grant.policy {
-            case .off: return nil
-            case .allow: return tool
-            case .smart where allowsSmartQuery(name, grant: grant): return tool
-            case .smart, .ask: return Asking(inner: tool, grant: grant)
-            }
+            if grant.policy == .off { return nil }
+            return GatedTool(inner: tool, grant: grant)
         }
     }
 
@@ -321,7 +344,55 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A tool whose ability is set to ask: every call waits for the user's seal.
+/// Wraps a granted tool so permission changes made in Settings take effect immediately on the running turn.
+struct GatedTool: AgentTool {
+    let inner: AgentTool
+    let grant: Grant
+
+    var spec: ToolSpec { inner.spec }
+    func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
+
+    func approval(for arguments: JSONValue) -> ApprovalAsk? {
+        switch grant.policy {
+        case .off:
+            return nil
+        case .allow:
+            return Self.allowedApproval(inner: inner, arguments: arguments)
+        case .smart where Grant.allowsSmartQuery(spec.name, grant: grant):
+            return Self.allowedApproval(inner: inner, arguments: arguments)
+        case .smart, .ask:
+            if let existing = inner.approval(for: arguments) {
+                if existing.code != nil { return existing }
+                var copy = existing
+                copy.code = Taint.codePayload(tool: spec.name, arguments: arguments)
+                return copy
+            }
+            return ApprovalAsk(
+                title: "用\(grant.title)",
+                reason: inner.label(for: arguments),
+                code: Taint.codePayload(tool: spec.name, arguments: arguments)
+            )
+        }
+    }
+
+    func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        if grant.policy == .off {
+            return ToolOutput("用户已经关掉了「\(grant.title)」权限，没有继续执行。", isError: true)
+        }
+        return try await inner.run(arguments)
+    }
+
+    private static func allowedApproval(inner: AgentTool, arguments: JSONValue) -> ApprovalAsk? {
+        guard var existing = inner.approval(for: arguments) else { return nil }
+        if !existing.forced, Grant.isFreeRunning { return nil }
+        if existing.code == nil {
+            existing.code = Taint.codePayload(tool: inner.spec.name, arguments: arguments)
+        }
+        return existing
+    }
+}
+
+/// A tool whose ability is unregistered or set to ask: every call waits for the user's seal.
 struct Asking: AgentTool {
     let inner: AgentTool
     let grant: Grant?

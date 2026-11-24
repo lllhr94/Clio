@@ -1330,8 +1330,6 @@ final class TeamModel: ObservableObject {
         }.value
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
-        // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
-        if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
@@ -1849,7 +1847,7 @@ final class TeamModel: ObservableObject {
         - 做好了用户要看的文件（文稿、表格、图片、代码文件），回答里把它单独写一行链接：文件写成 [文件名](书案/路径)，图片写成 ![说明](书案/路径)。用户在聊天里点一下就能直接打开、分享、存走，不要只让用户「去书案里找」。网上的图片也可以用 ![说明](网址) 直接放进回答。要算数、处理数据，用 run_js 真的算，不要心算。用户从 ＋ 带进来的文件都在书案/收件。
         - 斗室是手机里的 Alpine Linux，书案在里面的 /root/desk。要装软件、跑 Python、做 run_js 做不了的事，就用 shell；它是模拟运行，比较慢，命令尽量简洁。
         - 你还能用手机的一些本事：所在（where_am_i）、通讯录、相册、步数、「健康」里的睡眠心率（health_read）、剪贴板、打开链接、手机状态。用户说「附近」「今天走了多少」「帮我复制」之类时直接用，不用先问。用户在「应许」里关掉的本事你看不到。
-        - 远山是用户在别处的电脑。工作地点就是某台远山时，用八件工作区工具；要临时在别的主机上跑一条命令，用 ssh_run，跑几分钟以上的用 ssh_job_start 放到后台。只看远山上已启动的后台任务进度或日志时，用 ssh_job_check 并传主机名和任务编号。mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
+        - 远山是用户在别处的电脑。工作地点就是某台远山时，用八件工作区工具；要临时在别的主机上跑一条命令，用 ssh_run，跑几分钟以上的用 ssh_job_start 放到后台。只看远山上已启动的后台任务进度或日志时，用 ssh_job_check 并传主机名和任务编号。探测主机状况或排查问题时，把系统、CPU/内存、磁盘、网络端口、进程和服务等只读检查合进一条复合命令一次跑完，不要拆成十几次单步 ssh_run。mcp_ 开头的工具来自用户接入的 MCP 服务（比如 VPS 上的浏览器）。手机里的远游过不了的验证，可以试试远山的浏览器。
         - 需要用户提供信息（地址、账号、选项）时，用 ask_user 递一张笺，不要让用户在聊天里打出密码。密码这类机密会存进信匣，你只拿到编号；网页登录用 browser_fill_secret，加 SSH 主机用 ssh_add_host。vault_list 能看信匣里有什么（看不到密码）。
         - 用户想省钱、领券、签到攒积分、比价、薅羊毛时，主动帮着做：查官方活动和比价，在远游里点「领取」「签到」，每天要做的用 schedule_task 到点去做。只做官方 App、官网和正规平台自己的活动。
         - 用户给你一份表格或数据文件（测点、账单、成绩、步数、行情、能耗……）要核对、统计或看趋势时：先只读表头和前几行弄清格式，再写脚本（run_js，或斗室里的 Python）在手机上把整份算完，不要把整份数据读进对话；用户要的是检查，就逐条列出有问题的行（第几行、哪一项、差多少、为什么算问题）。要画图时，写成一个自带脚本和样式、不引用网上资源的单文件 .html 放进书案（问题点标出来，点一下能看原始数据），回答里给出它的链接。
@@ -1911,12 +1909,12 @@ final class TeamModel: ObservableObject {
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         let off = Set(options(key).off)
         let host = workplace.host
-        // After the turn reads the web, commands, secrets, far computers and writes outside the workspace always ask.
-        return Grant.gate(all, workspace: grants).filter { tool in
+        // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
+        let guarded = all.map { TaintGuard($0, key: key, book: taint, isInside: { host.isInside($0) }) }
+        return Grant.gate(guarded, workspace: grants).filter { tool in
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
         }
-        .map { TaintGuard($0, key: key, book: taint, isInside: { host.isInside($0) }) }
     }
 
     // MARK: 派活
@@ -2026,8 +2024,19 @@ final class TeamModel: ObservableObject {
     /// Chats whose current turn has read the web (see `Taint`).
     let taint = TaintBook()
 
+    func effectiveGrant(for tool: String, in chat: String?) -> Grant? {
+        if let chat, WorkspaceTools.names.contains(tool) {
+            return place(of: chat).grant(for: tool)
+        }
+        return Grant.of(tool: tool)
+    }
+
     func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
         if !ask.forced, alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
+        if !ask.forced, Grant.isFreeRunning,
+           let grant = effectiveGrant(for: tool, in: chat), grant.policy == .allow {
+            return true
+        }
         let id = UUID().uuidString
         let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
         let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
@@ -2053,6 +2062,45 @@ final class TeamModel: ObservableObject {
         return allowed
     }
 
+    /// When the user changes permissions or presets mid-turn, immediately settle any waiting approvals it affects.
+    func reconcilePendingApprovals() {
+        let pending = approvals
+        for approval in pending where approval.answerable != false {
+            guard phase == .demo || waiters[approval.id] != nil else { continue }
+            guard let tool = approval.toolName else { continue }
+            let grant = effectiveGrant(for: tool, in: approval.chat)
+            if grant?.policy == .off {
+                Task { try? await self.answer(approval, allow: false) }
+                continue
+            }
+            guard approval.forced != true else { continue }
+            let chatTrusted: Bool
+            if let chat = approval.chat {
+                chatTrusted = trusted.contains(chat)
+            } else {
+                chatTrusted = false
+            }
+            let standing = alwaysAllowed.contains(tool) || chatTrusted
+            let freeAllowed = Grant.isFreeRunning && grant?.policy == .allow
+            let policyAllowed: Bool
+            if let grant {
+                switch grant.policy {
+                case .allow:
+                    policyAllowed = !Grant.hasBuiltInConfirmation(tool)
+                case .smart:
+                    policyAllowed = Grant.allowsSmartQuery(tool, grant: grant) && !Grant.hasBuiltInConfirmation(tool)
+                case .ask, .off:
+                    policyAllowed = false
+                }
+            } else {
+                policyAllowed = false
+            }
+            if standing || freeAllowed || policyAllowed {
+                Task { try? await self.answer(approval, allow: true) }
+            }
+        }
+    }
+
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
     func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false) async throws {
         // A step that must be asked every time can be allowed once, never for good.
@@ -2074,6 +2122,9 @@ final class TeamModel: ObservableObject {
         approvals.removeAll { $0.id == approval.id }
         WidgetFeed.publish(self)
         waiter.resume(returning: allow)
+        if allow, lasting, always || trustChat {
+            reconcilePendingApprovals()
+        }
     }
 
     /// 同意 / 不同意 pressed on a notification.
@@ -2082,16 +2133,21 @@ final class TeamModel: ObservableObject {
             Notify.now("这张单子已经过期了", Words.t("Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。"), chat: "")
             return
         }
-        // A slip that must be asked because outside text came before it, or that carries a command / code payload,
-        // is not answered blindly from a notification. 不同意 still works from there.
+        // A forced slip or one that carries a command / code payload is not answered blindly from a notification.
+        // 不同意 still works from there.
         let requiresInspection = approval.forced == true
             || approval.detail?.code != nil
             || approval.toolName == "shell"
             || (approval.toolName?.hasPrefix("ssh_") == true)
         if allow, requiresInspection {
-            let why = approval.forced == true
-                ? "它是在读过网页、邮件等外部内容之后提出的。"
-                : "这一单带有命令或详细参数，通知里显示不全，请打开 Clio 看清楚再决定。"
+            let why: String
+            if approval.detail?.text?.hasPrefix(Taint.reason) == true {
+                why = "这一轮读过网页或邮件等外部内容，请打开 Clio 看清楚再决定。"
+            } else if approval.forced == true {
+                why = "发邮件、填密码和设定时这类操作需要打开 Clio 确认。"
+            } else {
+                why = "这一单带有命令或详细参数，通知里显示不全，请打开 Clio 看清楚再决定。"
+            }
             Notify.now("这一单要打开 Clio 看清楚再批", why, chat: approval.chat ?? "")
             return
         }

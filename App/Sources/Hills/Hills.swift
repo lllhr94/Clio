@@ -402,9 +402,7 @@ final class Hills: ObservableObject {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
             })
-            tools.append(DeskTool(name: "ssh_job_stop", description: Words.t("停掉远山上的一个后台任务。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }, approval: { arguments in
-                ApprovalAsk(title: Words.t("停掉远山的后台任务"), reason: "\(arguments["host"]?.string ?? "") · \(arguments["job"]?.string ?? "")")
-            }) { arguments in
+            tools.append(DeskTool(name: "ssh_job_stop", description: Words.t("停掉远山上的一个后台任务。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
                     try await Hills.stopJob(arguments["job"]?.string ?? "", on: host)

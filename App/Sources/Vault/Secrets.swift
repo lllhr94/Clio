@@ -273,7 +273,7 @@ enum SecretTools {
                 ],
                 "required": ["ref", "id"],
             ], label: { Words.t("远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]") }, approval: { arguments in
-                ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: Words.t("信匣编号 ") + "\(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")")
+                ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: Words.t("信匣编号 ") + "\(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")", forced: true)
             }) { arguments in
                 let id = arguments["id"]?.string ?? ""
                 guard let item = await Secrets.shared.item(id) else { return ToolOutput("信匣里没有编号 \(id)。", isError: true) }
