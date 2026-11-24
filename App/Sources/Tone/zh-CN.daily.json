@@ -934,8 +934,11 @@
   "trace": {
     "commandsCount": "跑了 %lld 条命令",
     "commandsFailedCount": "%lld 条失败",
+    "commandsUnknownCount": "%lld 条结果未知",
     "commandFailed": "失败",
+    "commandUnknown": "结果未知",
     "commandFailedDetail": "执行未成功",
+    "commandUnknownDetail": "结果未知，可能已执行，请先确认状态",
     "commandTitle": "命令详情",
     "commandLabel": "命令",
     "outputLabel": "输出",

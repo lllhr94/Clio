@@ -8,6 +8,34 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
 
+enum TraceStepStatus: Equatable, Sendable {
+    case ok, failed, unknown
+
+    nonisolated static func parse(_ label: String) -> (status: TraceStepStatus, clean: String) {
+        if label.hasSuffix("（没成功）") {
+            return (.failed, String(label.dropLast(5)).trimmingCharacters(in: .whitespaces))
+        }
+        if label.hasSuffix("（结果未知）") {
+            return (.unknown, String(label.dropLast(6)).trimmingCharacters(in: .whitespaces))
+        }
+        return (.ok, label)
+    }
+
+    /// Only steps known to have succeeded produce outcome cards (calendar, reminder, file edits, etc.).
+    nonisolated var allowsOutcomeCard: Bool { self == .ok }
+
+    /// Commands keep executed failures and unknown outcomes (so users can inspect logs without losing status),
+    /// while skipping commands that were rejected, cancelled, blocked, or empty before running.
+    nonisolated static func shouldKeepCommand(status: TraceStepStatus, output: String) -> Bool {
+        if status == .ok { return true }
+        let skipped = output == "命令是空的。"
+            || output.hasPrefix("用户没有同意这次操作")
+            || output.hasPrefix("这一轮已经停下，这一步没有做")
+            || output.hasPrefix("这一步刚才结果未知，同样的事没有再做一次")
+        return !skipped
+    }
+}
+
 /// 行迹: one line when closed, a timeline when open. A running trace shows its newest step.
 struct Trace: View {
     let line: ChatLine
@@ -78,7 +106,7 @@ struct Trace: View {
         var rawCommand: String?
         var fullOutput: String?
         var seconds: Int?
-        var failed: Bool = false
+        var status: TraceStepStatus = .ok
 
         var displayDetail: String { place.map { Words.t($0) + " · " + detail } ?? detail }
         func changesDetail(hasTally: Bool) -> String {
@@ -110,7 +138,7 @@ struct Trace: View {
         let title: String
         let place: String?
         let seconds: Int?
-        let failed: Bool
+        let status: TraceStepStatus
         let command: String
         let output: String
     }
@@ -153,10 +181,18 @@ struct Trace: View {
             title: item.humanTitle ? item.title : L.t("trace.commandTitle"),
             place: item.place.map(Words.t),
             seconds: item.seconds,
-            failed: item.failed,
+            status: item.status,
             command: command,
             output: output
         )
+    }
+
+    private static func statusColor(_ status: TraceStepStatus, normal: Color) -> Color {
+        switch status {
+        case .ok: return normal
+        case .failed: return Ink.stop
+        case .unknown: return Ink.warn
+        }
     }
 
     /// Lines added and taken out, read off a comparison.
@@ -224,7 +260,16 @@ struct Trace: View {
     /// with each row tappable to inspect the full command and full output.
     private var commandsCard: some View {
         let commands = ranCommands
-        let failedCount = commands.filter(\.failed).count
+        let failedCount = commands.filter { $0.status == .failed }.count
+        let unknownCount = commands.filter { $0.status == .unknown }.count
+        let headerIconColor: Color
+        if failedCount == commands.count {
+            headerIconColor = Ink.stop
+        } else if failedCount + unknownCount == commands.count && unknownCount > 0 {
+            headerIconColor = Ink.warn
+        } else {
+            headerIconColor = Ink.inkSoft
+        }
         return VStack(alignment: .leading, spacing: 0) {
             Button {
                 Haptics.light()
@@ -233,7 +278,7 @@ struct Trace: View {
                 HStack(spacing: Ink.Space.s) {
                     Image(systemName: "terminal")
                         .font(.system(size: Ink.Size.sub))
-                        .foregroundStyle(failedCount == commands.count ? Ink.stop : Ink.inkSoft)
+                        .foregroundStyle(headerIconColor)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: Ink.Space.s) {
                             Text(L.format("trace.commandsCount", commands.count))
@@ -244,11 +289,16 @@ struct Trace: View {
                                     .font(.system(size: Ink.Size.micro, weight: .medium))
                                     .foregroundStyle(Ink.stop)
                             }
+                            if unknownCount > 0 {
+                                Text(L.format("trace.commandsUnknownCount", unknownCount))
+                                    .font(.system(size: Ink.Size.micro, weight: .medium))
+                                    .foregroundStyle(Ink.warn)
+                            }
                         }
                         if !commandsOpen, let latest = commands.last {
                             Text(latest.commandTitle)
                                 .font(latest.humanTitle ? Ink.footnote : Ink.mono(Ink.Size.micro))
-                                .foregroundStyle(latest.failed ? Ink.stop.opacity(0.85) : Ink.inkFaint)
+                                .foregroundStyle(Self.statusColor(latest.status, normal: Ink.inkFaint).opacity(latest.status == .ok ? 1 : 0.85))
                                 .lineLimit(1)
                         }
                     }
@@ -281,7 +331,7 @@ struct Trace: View {
             HStack(alignment: .top, spacing: Ink.Space.m) {
                 Text("\(index + 1)")
                     .font(Ink.mono(Ink.Size.micro, weight: .medium))
-                    .foregroundStyle(item.failed ? Ink.stop : Ink.inkFaint)
+                    .foregroundStyle(Self.statusColor(item.status, normal: Ink.inkFaint))
                     .frame(width: 20, alignment: .trailing)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 2) {
@@ -292,14 +342,19 @@ struct Trace: View {
                         .multilineTextAlignment(.leading)
                     Text(item.commandLinePreview)
                         .font(Ink.mono(Ink.Size.micro))
-                        .foregroundStyle(item.failed ? Ink.stop.opacity(0.85) : Ink.inkFaint)
+                        .foregroundStyle(Self.statusColor(item.status, normal: Ink.inkFaint).opacity(item.status == .ok ? 1 : 0.85))
                         .lineLimit(1)
                 }
                 Spacer(minLength: Ink.Space.s)
-                if item.failed {
+                if item.status == .failed {
                     Text(L.t("trace.commandFailed"))
                         .font(.system(size: Ink.Size.micro, weight: .medium))
                         .foregroundStyle(Ink.stop)
+                        .padding(.top, 2)
+                } else if item.status == .unknown {
+                    Text(L.t("trace.commandUnknown"))
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(Ink.warn)
                         .padding(.top, 2)
                 } else if let seconds = item.seconds, seconds >= 2 {
                     Text(Clock.said(seconds))
@@ -369,33 +424,18 @@ struct Trace: View {
         }
     }
 
-    nonisolated private static func wasCommandSkipped(_ output: String) -> Bool {
-        output == "命令是空的。"
-            || output.hasPrefix("用户没有同意这次操作")
-            || output.hasPrefix("这一轮已经停下，这一步没有做")
-            || output.hasPrefix("这一步刚才结果未知，同样的事没有再做一次")
-    }
-
     nonisolated private static func resolvedCommandOutput(full: String?, output: String) -> String {
         if let full, !full.isEmpty { return full }
         return output
-    }
-
-    nonisolated private static func stripStatusSuffix(_ text: String) -> String {
-        for suffix in ["（没成功）", "（结果未知）"] where text.hasSuffix(suffix) {
-            return String(text.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
-        }
-        return text
     }
 
     nonisolated private static func buildKeepsakes(_ line: ChatLine, desk: String) -> [Keepsake] {
         var out: [Keepsake] = []
         for (index, tool) in line.tools.enumerated() {
             if Task.isCancelled { break }
-            let failed = tool.hasSuffix("（没成功）")
-            let unknown = tool.hasSuffix("（结果未知）")
-            let commandFailed = failed || unknown
-            let cleanTool = stripStatusSuffix(tool)
+            let parsed = TraceStepStatus.parse(tool)
+            let status = parsed.status
+            let cleanTool = parsed.clean
             let detail = index < line.details.count ? line.details[index] : nil
             let output = detail?.output ?? ""
             let full = detail?.full
@@ -404,7 +444,7 @@ struct Trace: View {
             let rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : cleanTool
             let kind = canonicalKind(of: cleanTool)
 
-            if !failed {
+            if status.allowsOutcomeCard {
                 if cleanTool.hasPrefix("新建日程：") {
                     out.append(Keepsake(id: index, kind: .event, title: String(cleanTool.dropFirst(5)), detail: "已加进日历", url: URL(string: "calshow://")))
                     continue
@@ -424,7 +464,7 @@ struct Trace: View {
                 let args = detail.flatMap { JSONValue.parse($0.input) }
                 switch toolName {
                 case "write_file", "edit_file":
-                    guard !failed else { continue }
+                    guard status.allowsOutcomeCard else { continue }
                     let fallbackPath = (rest.hasPrefix("写 ") || rest.hasPrefix("改 ")) ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces) : ""
                     let rawPath = (args?["path"]?.string ?? fallbackPath).trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !rawPath.isEmpty else { continue }
@@ -446,7 +486,7 @@ struct Trace: View {
                         upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
                     }
                 case "make_document":
-                    guard !failed else { continue }
+                    guard status.allowsOutcomeCard else { continue }
                     var docPath = rest.hasPrefix("写 ") ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces) : ""
                     if docPath.isEmpty, output.hasPrefix("做好了：") {
                         let after = String(output.dropFirst(4))
@@ -458,7 +498,7 @@ struct Trace: View {
                 case "shell":
                     if args?["background"]?.bool == true { continue }
                     if let job = args?["job"]?.string, !job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-                    if commandFailed, wasCommandSkipped(output) { continue }
+                    guard TraceStepStatus.shouldKeepCommand(status: status, output: output) else { continue }
                     let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let stepTitle = (args?["step_title"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let preview = commandPreview(cmd)
@@ -475,10 +515,10 @@ struct Trace: View {
                         rawCommand: cmd.isEmpty ? rest : cmd,
                         fullOutput: commandOutput,
                         seconds: detail?.seconds,
-                        failed: commandFailed
+                        status: status
                     ))
                 case "ssh_run":
-                    if commandFailed, wasCommandSkipped(output) { continue }
+                    guard TraceStepStatus.shouldKeepCommand(status: status, output: output) else { continue }
                     let hostName = (args?["host"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let stepTitle = (args?["step_title"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -497,7 +537,7 @@ struct Trace: View {
                         rawCommand: cmd.isEmpty ? rest : cmd,
                         fullOutput: commandOutput,
                         seconds: detail?.seconds,
-                        failed: commandFailed
+                        status: status
                     ))
                 default:
                     break
@@ -505,7 +545,7 @@ struct Trace: View {
                 continue
             }
 
-            if !failed, kind == "书案", rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
+            if status.allowsOutcomeCard, kind == "书案", rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
                 let rawPath = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                 if let ref = WorkspaceFileRef.resolve(rawPath) {
                     upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
@@ -513,7 +553,7 @@ struct Trace: View {
             } else if kind == "斗室" || kind == "远山" {
                 if ["读 ", "找 ", "搜 ", "翻看 ", "看图 ", "看后台任务", "看看后台任务", "停掉后台任务", "后台跑"].contains(where: { rest.hasPrefix($0) }) { continue }
                 if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
-                    guard !failed else { continue }
+                    guard status.allowsOutcomeCard else { continue }
                     let rawPath = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                     let change = Diff.counts(in: output).map { " · −\($0.removed) +\($0.added) 行" } ?? ""
                     let localRef = kind == "斗室" ? WorkspaceFileRef.resolve(rawPath) : nil
@@ -530,7 +570,7 @@ struct Trace: View {
                     ))
                     continue
                 }
-                if commandFailed, wasCommandSkipped(output) { continue }
+                guard TraceStepStatus.shouldKeepCommand(status: status, output: output) else { continue }
                 let preview = commandPreview(rest)
                 let commandOutput = resolvedCommandOutput(full: full, output: output)
                 out.append(Keepsake(
@@ -542,7 +582,7 @@ struct Trace: View {
                     rawCommand: rest,
                     fullOutput: commandOutput,
                     seconds: detail?.seconds,
-                    failed: commandFailed
+                    status: status
                 ))
             }
         }
@@ -737,7 +777,7 @@ struct Trace: View {
                     title: show.title,
                     place: show.place,
                     seconds: show.seconds,
-                    failed: show.failed,
+                    status: show.status,
                     command: show.command,
                     output: show.output
                 )
@@ -907,7 +947,7 @@ struct Trace: View {
     }
 
     private func standaloneKeepsakeBody(_ item: Keepsake) -> some View {
-        let isFailedCommand = item.kind == .command && item.failed
+        let commandStatus: TraceStepStatus = item.kind == .command ? item.status : .ok
         let titleText = item.kind == .command ? item.commandTitle : item.title
         let titleFont: Font
         if item.kind == .command && !item.humanTitle {
@@ -918,7 +958,7 @@ struct Trace: View {
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             Image(systemName: Self.keepsakeIcon(item.kind))
                 .font(.system(size: Ink.Size.body))
-                .foregroundStyle(isFailedCommand ? Ink.stop : Ink.accent)
+                .foregroundStyle(Self.statusColor(commandStatus, normal: Ink.accent))
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(titleText)
@@ -928,7 +968,7 @@ struct Trace: View {
                     .multilineTextAlignment(.leading)
                 Text(item.displayDetail)
                     .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
-                    .foregroundStyle(isFailedCommand ? Ink.stop.opacity(0.85) : Ink.inkSoft)
+                    .foregroundStyle(Self.statusColor(commandStatus, normal: Ink.inkSoft).opacity(commandStatus == .ok ? 1 : 0.85))
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
                 if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
@@ -939,10 +979,14 @@ struct Trace: View {
                 }
             }
             Spacer(minLength: 0)
-            if isFailedCommand {
+            if commandStatus == .failed {
                 Text(L.t("trace.commandFailed"))
                     .font(.system(size: Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.stop)
+            } else if commandStatus == .unknown {
+                Text(L.t("trace.commandUnknown"))
+                    .font(.system(size: Ink.Size.micro, weight: .medium))
+                    .foregroundStyle(Ink.warn)
             }
             if item.kind != .remoteFile || item.diff != nil || item.url != nil {
                 Image(systemName: "chevron.right")
@@ -1176,7 +1220,7 @@ private struct CommandSheet: View {
     let title: String
     let place: String?
     let seconds: Int?
-    let failed: Bool
+    let status: TraceStepStatus
     let command: String
     let output: String
 
@@ -1217,12 +1261,16 @@ private struct CommandSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    if failed || metadata != nil {
-                        HStack(spacing: Ink.Space.s) {
-                            if failed {
+                    if status != .ok || metadata != nil {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                            if status == .failed {
                                 Label(L.t("trace.commandFailedDetail"), systemImage: "exclamationmark.triangle.fill")
                                     .font(.system(size: Ink.Size.small, weight: .medium))
                                     .foregroundStyle(Ink.stop)
+                            } else if status == .unknown {
+                                Label(L.t("trace.commandUnknownDetail"), systemImage: "questionmark.circle.fill")
+                                    .font(.system(size: Ink.Size.small, weight: .medium))
+                                    .foregroundStyle(Ink.warn)
                             }
                             if let metadata {
                                 Text(metadata)
