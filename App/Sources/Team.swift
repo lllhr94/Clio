@@ -102,11 +102,14 @@ final class TeamModel: ObservableObject {
     @Published var rooms: [RoomInfo] = []
     @Published var approvals: [Approval] = []
     @Published var questions: [String: Question] = [:]
-    @Published var memories: [Memory] = []
+    @Published var memories: [Memory] = [] {
+        didSet { syncLivePromptsFromMemories() }
+    }
     @Published var memoryReviews: [MemoryReviewLog] = []
     var memoryBook = MemoryBook()
     let memoryPromptState = MemorySafety.PromptState()
     var memoryTaintedTurns: Set<String> = []
+    var livePromptRefreshers: [UUID: MemorySafety.LivePromptRefresher] = [:]
     var reviewingMemory = false
     var memoryReviewAttempts: [String: Date] = [:]
     var cleanReviewTails: [String: ReviewTail] = [:]
@@ -317,7 +320,6 @@ final class TeamModel: ObservableObject {
         Disk.load([Entry].self, Self.leafFile(key, leaf.id)) ?? []
     }
     static func leafSummary(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary.json" }
-    static func leafSummaryTaint(_ key: String, _ id: String) -> String { "chats/\(key)~\(id)~summary-tainted.json" }
 
     func setLeaves(_ key: String, _ list: [Leaf]) {
         objectWillChange.send()
@@ -348,7 +350,6 @@ final class TeamModel: ObservableObject {
         if keeping {
             Disk.remove(Self.leafFile(key, id))
             Disk.remove(Self.leafSummary(key, id))
-            Disk.remove(Self.leafSummaryTaint(key, id))
         }
         return true
     }
@@ -375,10 +376,8 @@ final class TeamModel: ObservableObject {
         entries[key] = rest
         if keeping {
             ChatDisk.save(rest, chat: key)
-            setSummary(key, Disk.load(String.self, Self.foldSummary(key, line.id)))
-            setSummaryTaint(key, Disk.load(Bool.self, Self.foldSummaryTaint(key, line.id)) ?? false)
+            setSummary(key, record: Disk.load(MemorySafety.SummaryRecord.self, Self.foldSummary(key, line.id)))
             Disk.remove(Self.foldSummary(key, line.id))
-            Disk.remove(Self.foldSummaryTaint(key, line.id))
         } else {
             setSummary(key, nil)
         }
@@ -404,11 +403,9 @@ final class TeamModel: ObservableObject {
             return
         }
         entries[key] = restored
-        setSummary(key, Disk.load(String.self, Self.leafSummary(key, leaf.id)))
-        setSummaryTaint(key, Disk.load(Bool.self, Self.leafSummaryTaint(key, leaf.id)) ?? false)
+        setSummary(key, record: Disk.load(MemorySafety.SummaryRecord.self, Self.leafSummary(key, leaf.id)))
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
-        Disk.remove(Self.leafSummaryTaint(key, leaf.id))
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
@@ -417,7 +414,7 @@ final class TeamModel: ObservableObject {
     /// The person rewrote the 前情提要 by hand.
     func editSummary(_ key: String, _ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        setSummary(key, trimmed.isEmpty ? nil : trimmed)
+        setSummary(key, trimmed.isEmpty ? nil : trimmed, tainted: isSummaryTainted(key))
     }
 
     /// The current conversation's title, if one was written.
@@ -462,15 +459,12 @@ final class TeamModel: ObservableObject {
         guard keeping else { return }
         for entry in list where entry.fold == true {
             Disk.remove(Self.foldSummary(key, entry.id))
-            Disk.remove(Self.foldSummaryTaint(key, entry.id))
         }
         let chatsDir = Disk.root.appendingPathComponent("chats", isDirectory: true)
         let prefix = "\(key)~fold-"
-        let summarySuffix = "~summary.json"
-        let taintSuffix = "~summary-tainted.json"
+        let suffix = "~summary.json"
         if let items = try? FileManager.default.contentsOfDirectory(at: chatsDir, includingPropertiesForKeys: nil) {
-            for item in items where item.lastPathComponent.hasPrefix(prefix)
-                && (item.lastPathComponent.hasSuffix(summarySuffix) || item.lastPathComponent.hasSuffix(taintSuffix)) {
+            for item in items where item.lastPathComponent.hasPrefix(prefix) && item.lastPathComponent.hasSuffix(suffix) {
                 try? FileManager.default.removeItem(at: item)
             }
         }
@@ -510,24 +504,19 @@ final class TeamModel: ObservableObject {
         let waiting = queued[key] ?? []
         let nextLeaves = [leaf] + leaves(key)
         let leafAnchor = ConversationAnchor.from(entryIds: current.map(\.id))
-        let summaryWasTainted = isSummaryTainted(key)
         if keeping {
             // The page is emptied below: only once its copy, queued messages, and leaf index are all surely on disk.
             // Any failure rolls back the new leaf files and leaves the current conversation and active queue intact.
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
-                if let old = summary(key) {
+                if let old = summaryRecord(key) {
                     try Disk.write(old, Self.leafSummary(key, leaf.id))
-                    if summaryWasTainted {
-                        try Disk.write(true, Self.leafSummaryTaint(key, leaf.id))
-                    }
                 }
                 if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey, anchor: leafAnchor) }
                 try Disk.write(nextLeaves, Self.leafList(key))
             } catch {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
-                Disk.remove(Self.leafSummaryTaint(key, leaf.id))
                 if !waiting.isEmpty { try? QueuedStore.saveAndWait([], for: leafKey) }
                 fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
                 return false
@@ -607,7 +596,6 @@ final class TeamModel: ObservableObject {
                 for leaf in oldLeaves {
                     Disk.remove(Self.leafFile(key, leaf.id))
                     Disk.remove(Self.leafSummary(key, leaf.id))
-                    Disk.remove(Self.leafSummaryTaint(key, leaf.id))
                 }
             }
             for leaf in oldLeaves {
@@ -656,20 +644,18 @@ final class TeamModel: ObservableObject {
         // A leaf that is there but cannot be read stays where it is, untouched: opening it must not throw it away
         // (the review, #15).
         var kept: [Entry] = []
-        var keptSummary: String?
-        var keptSummaryTainted = false
+        var keptSummary: MemorySafety.SummaryRecord?
         if keeping {
             let file = Disk.url(Self.leafFile(key, leaf.id))
             let summaryPath = Self.leafSummary(key, leaf.id)
-            let summaryTaintPath = Self.leafSummaryTaint(key, leaf.id)
-            let read: (entries: [Entry]?, summary: String?, summaryTainted: Bool, exists: Bool) = await Task.detached(priority: .userInitiated) {
+            let read: (entries: [Entry]?, summary: MemorySafety.SummaryRecord?, exists: Bool) = await Task.detached(priority: .userInitiated) {
                 guard FileManager.default.fileExists(atPath: file.path) else {
-                    return (nil, Disk.load(String.self, summaryPath), Disk.load(Bool.self, summaryTaintPath) ?? false, false)
+                    return (nil, Disk.load(MemorySafety.SummaryRecord.self, summaryPath), false)
                 }
                 guard let data = try? Data(contentsOf: file), let entries = try? JSONDecoder().decode([Entry].self, from: data) else {
-                    return (nil, nil, false, true)
+                    return (nil, nil, true)
                 }
-                return (entries, Disk.load(String.self, summaryPath), Disk.load(Bool.self, summaryTaintPath) ?? false, true)
+                return (entries, Disk.load(MemorySafety.SummaryRecord.self, summaryPath), true)
             }.value
             if read.exists, read.entries == nil {
                 fail(key, "这一段旧絮语读不出来，先留着没动。\n可能是格式不认识或文件坏了；先别删，备份一份。")
@@ -677,7 +663,6 @@ final class TeamModel: ObservableObject {
             }
             kept = read.entries ?? []
             keptSummary = read.summary
-            keptSummaryTainted = read.summaryTainted
         }
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return }
         guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
@@ -769,12 +754,8 @@ final class TeamModel: ObservableObject {
                 return
             }
         }
-        setSummary(key, keptSummary)
-        setSummaryTaint(key, keptSummary != nil && keptSummaryTainted)
-        if keeping {
-            Disk.remove(Self.leafSummary(key, leaf.id))
-            Disk.remove(Self.leafSummaryTaint(key, leaf.id))
-        }
+        setSummary(key, record: keptSummary)
+        if keeping { Disk.remove(Self.leafSummary(key, leaf.id)) }
         entries[key] = kept
         if !leafQueued.isEmpty {
             var merged = queued[key] ?? []
@@ -838,7 +819,6 @@ final class TeamModel: ObservableObject {
         if keeping {
             Disk.remove(Self.leafFile(key, leaf.id))
             Disk.remove(Self.leafSummary(key, leaf.id))
-            Disk.remove(Self.leafSummaryTaint(key, leaf.id))
         }
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
         let leafKey = Self.threadKey(key, leaf: leaf.id)
@@ -1408,10 +1388,11 @@ final class TeamModel: ObservableObject {
             return false
         }
         hostBindings.set(workplace.hostID, for: key)
-        let assembled = assembledSystemPrompt(for: bot, in: key, room: room, workplace: workplace, memory: usesMemory)
-        let extraPrompt = assembled.tail.isEmpty ? "" : "\n\n" + assembled.tail
+        let (refresher, refresherToken) = registerLivePromptRefresher(for: bot, in: key, room: room, workplace: workplace, memory: usesMemory)
+        defer { unregisterLivePromptRefresher(refresherToken) }
+        let assembled = refresher.currentPrompt()
         var agent = Agent(
-            provider: recordingProvider(endpoint.provider(key: apiKey), chat: key, base: assembled.prefix, extra: extraPrompt, memory: usesMemory, memoryBlock: assembled.memoryBlock),
+            provider: recordingProvider(endpoint.provider(key: apiKey), chat: key, refresher: refresher),
             model: found.model,
             system: assembled.full,
             tools: traits.tools ? tools(for: bot, key: key, canSee: traits.sees, workplace: workplace) : [],
@@ -1855,13 +1836,10 @@ final class TeamModel: ObservableObject {
     /// Read-only snapshots for the usage sheet, scoped to the open conversation.
     func modelInputs(_ key: String) -> [ModelInput] { modelInputLog.requests(in: key) }
 
-    private func recordingProvider(_ provider: any ModelProvider, chat: String, base: String, extra: String, memory: Bool, memoryBlock: String? = nil) -> ModelInputProvider {
+    private func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemorySafety.LivePromptRefresher) -> LivePromptProvider {
         let epoch = epochs[chat, default: 0]
         let session = modelInputLog.session
-        let resolvedMemory = memoryBlock ?? renderedMemoryBlock(memory: memory)
-        let skills = SkillShelf.promptBlock.trimmingCharacters(in: .newlines)
-        let sections = ModelInputSections(base: base, extra: extra, memory: resolvedMemory, skills: skills)
-        return ModelInputProvider(upstream: provider, sections: sections) { [weak self] input in
+        return LivePromptProvider(upstream: provider, refresher: refresher) { [weak self] input in
             Task { @MainActor in
                 guard let self, self.modelInputLog.session == session, self.epochs[chat, default: 0] == epoch else { return }
                 let exists = chat.hasPrefix("room-")
@@ -1998,20 +1976,22 @@ final class TeamModel: ObservableObject {
         }
         let asked = "【\(asker.name)请你帮忙，这不是用户本人的话】\(words)"
         var askedEntry = Entry(id: UUID().uuidString, at: Now.ms, message: .user(asked))
+        askedEntry.delegated = true
         if isTurnMemoryTainted(key) { askedEntry.tainted = true }
         append(askedEntry, to: helperKey)
         touch(helperKey, preview: nil)
         let traits = found.endpoint.traits(found.model)
         hostBindings.set(helperPlace.hostID, for: helperKey)
-        let helperPrompt = assembledSystemPrompt(
+        let (helperRefresher, helperRefresherToken) = registerLivePromptRefresher(
             for: helper,
             room: nil,
             memory: true,
             extraTail: "这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。"
         )
-        let extraPrompt = helperPrompt.tail.isEmpty ? "" : "\n\n" + helperPrompt.tail
+        defer { unregisterLivePromptRefresher(helperRefresherToken) }
+        let helperPrompt = helperRefresher.currentPrompt()
         var agent = Agent(
-            provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, base: helperPrompt.prefix, extra: extraPrompt, memory: true, memoryBlock: helperPrompt.memoryBlock),
+            provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, refresher: helperRefresher),
             model: found.model,
             system: helperPrompt.full,
             tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true, displayChat: key, workplace: helperPlace) : [],
@@ -2354,8 +2334,7 @@ final class TeamModel: ObservableObject {
     /// Conversations kept at the top of the list, in the order they were pinned.
     @Published var pinned: [String] = UserDefaults.standard.stringArray(forKey: "desk.pinned") ?? []
     var optionBook: [String: ChatOptions] = [:]
-    var summaryBook: [String: String] = [:]
-    var summaryTaintBook: [String: Bool] = [:]
+    var summaryBook: [String: MemorySafety.SummaryRecord] = [:]
     @Published var compressing: Set<String> = []
     var balanceCheckedAt: [String: Date] = [:]
 }
@@ -2517,15 +2496,23 @@ extension TeamModel {
         只输出 JSON 数组，最多六条，每条 {"text":"事实","merge":"可合并的编号"}。新事实省略 merge 字段。没有值得记的返回 []。
         """
         let prompt = "现有记忆：\n\(existing.joined(separator: "\n"))\n\n对话资料：\n\(transcript)"
+        let startGeneration = memoryPromptState.currentGeneration
         let reply = try await memorySummary(system: system, prompt: prompt, outputLimit: MemoryReviewRules.outputTokens)
         let proposals = try MemoryReviewRules.decodeProposals(reply)
         try Task.checkCancellation()
         guard canReview(source.key), memories == original,
               reviewBatch(source, cutoff: cutoff, now: Date())?.lines == lines else { throw CancellationError() }
+        let currentSecrets = Vault.allStrings().sorted { $0.count > $1.count }
+        let filteredProposals = filterMemoryProposals(
+            proposals,
+            seen: seen,
+            startGeneration: startGeneration,
+            secrets: currentSecrets
+        )
         var book = memoryBook
         book.memories = memories
-        let changes = MemoryReviewRules.apply(proposals, seen: seen, to: &book.memories, at: Now.ms,
-                                              secrets: Vault.allStrings())
+        let changes = MemoryReviewRules.apply(filteredProposals, seen: seen, to: &book.memories, at: Now.ms,
+                                              secrets: currentSecrets)
         Self.settleMemory(&book.memories)
         book.processed = book.processed.filter { $0.key >= cutoff }
         book.processed[day, default: []].formUnion(lines.map(\.id))

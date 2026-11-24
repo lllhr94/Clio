@@ -157,7 +157,7 @@ final class MemorySafetyTests: XCTestCase {
 
         let genBeforeRetract = state.currentGeneration
         state.retract(text: "对花生过敏！")
-        XCTAssertTrue(state.retractedTextsSince(genBeforeRetract).contains(MemorySafety.normalizedFactKey("对花生过敏")))
+        XCTAssertTrue(state.retractedHashesSince(genBeforeRetract).contains(MemorySafety.retractionHash("对花生过敏")))
 
         let afterRetract = MemorySafety.assembleSystemPrompt(
             MemorySafety.SystemPromptInput(
@@ -210,8 +210,10 @@ final class MemorySafetyTests: XCTestCase {
             .init(id: "a2", at: 5, role: .assistant, text: "明白，你不喝咖啡。"),
         ]
 
+        // Legacy untagged external-read taint remains sticky across later user turns for unmarked assistant replies,
+        // while genuine unmarked user entries remain extractable.
         let filtered = MemorySafety.filterExtractableEntries(entries)
-        XCTAssertEqual(filtered.map(\.id), ["u1", "u2", "a2"])
+        XCTAssertEqual(filtered.map(\.id), ["u1", "u2"])
     }
 
     func testBuildFlushTranscriptExcludesTaintedEntriesAndRequiresUntaintedAssistant() {
@@ -261,7 +263,7 @@ final class MemorySafetyTests: XCTestCase {
         let existing = [
             MemorySafety.Fact(id: "e1", text: "平时喜欢喝乌龙茶。", at: 100),
         ]
-        let retracted = Set([MemorySafety.normalizedFactKey("住在北京")])
+        let retractedHashes = Set([MemorySafety.retractionHash("住在北京")])
         let candidates = [
             "平时喜欢喝乌龙茶", // duplicate of existing after normalization
             "住在北京！", // recently retracted during flush
@@ -278,7 +280,7 @@ final class MemorySafetyTests: XCTestCase {
         let accepted = MemorySafety.deduplicateProposals(
             candidates,
             existing: existing,
-            retractedNormalizedKeys: retracted,
+            suppressedHashes: retractedHashes,
             secrets: secrets,
             limit: 6
         )
@@ -367,24 +369,30 @@ final class MemorySafetyTests: XCTestCase {
     }
 
     func testRetractionSuppressionPersistsUntilUserExplicitlyReAdds() {
+        let secretFact = "平时住杭州。"
+        let expectedHash = MemorySafety.retractionHash(secretFact)
+        XCTAssertTrue(MemorySafety.isSHA256Hex(expectedHash))
+        XCTAssertEqual(MemorySafety.retractionHash("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
         let state = MemorySafety.PromptState()
-        state.retract(id: "m1", textForInFlightGuard: "平时住杭州。")
+        state.retract(id: "m1", textForInFlightGuard: secretFact)
 
         // Even a flush starting in a LATER generation (e.g. an older unprocessed chat compressing later)
-        // must suppress the retracted memory.
+        // must suppress the retracted memory, while storing only SHA-256 digests (never plaintext).
         let laterGeneration = state.currentGeneration
-        XCTAssertEqual(state.retractedTextsSince(laterGeneration), [])
-        XCTAssertTrue(state.suppressedFlushTextsSnapshot().contains(MemorySafety.normalizedFactKey("平时住杭州")))
+        XCTAssertEqual(state.retractedHashesSince(laterGeneration), [])
+        let persistedHashes = Array(state.suppressedFlushHashesSnapshot())
+        XCTAssertEqual(persistedHashes, [expectedHash])
+        XCTAssertFalse(persistedHashes.joined().contains("杭州"))
 
-        let persistedKeys = Array(state.suppressedFlushTextsSnapshot())
         let reloadedState = MemorySafety.PromptState()
-        reloadedState.seedSuppressedFlushTextsIfNeeded { persistedKeys }
+        reloadedState.seedSuppressedFlushHashesIfNeeded { persistedHashes }
 
-        let suppressed = reloadedState.suppressedFlushTextsSnapshot()
+        let suppressed = reloadedState.suppressedFlushHashesSnapshot()
         let acceptedBeforeReAdd = MemorySafety.deduplicateProposals(
             ["平时住杭州", "喜欢喝绿茶"],
             existing: [],
-            retractedNormalizedKeys: suppressed
+            suppressedHashes: suppressed
         )
         XCTAssertEqual(acceptedBeforeReAdd, ["喜欢喝绿茶"])
 
@@ -393,7 +401,7 @@ final class MemorySafetyTests: XCTestCase {
         let acceptedAfterReAdd = MemorySafety.deduplicateProposals(
             ["平时住杭州"],
             existing: [],
-            retractedNormalizedKeys: reloadedState.suppressedFlushTextsSnapshot()
+            suppressedHashes: reloadedState.suppressedFlushHashesSnapshot()
         )
         XCTAssertEqual(acceptedAfterReAdd, ["平时住杭州"])
     }
@@ -501,5 +509,124 @@ final class MemorySafetyTests: XCTestCase {
             ]
         )
         XCTAssertEqual(noneRemaining, [])
+    }
+
+    // MARK: 6. Round-2 fixes (live mid-turn refresh, summary record, delegated entries, shared proposal filter)
+
+    private final class CapturingModelProvider: ModelProvider, @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var capturedSystems: [String] = []
+
+        func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+            lock.lock()
+            capturedSystems.append(request.system)
+            lock.unlock()
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.text("收到"))
+                continuation.yield(.finish(reason: "stop"))
+                continuation.finish()
+            }
+        }
+
+        func models() async throws -> [String] { [] }
+    }
+
+    func testLivePromptModelProviderReflectsMidTurnMemoryDeletion() async throws {
+        let state = MemorySafety.PromptState()
+        let fact1 = MemorySafety.Fact(id: "m1", text: "住在上海", at: 100)
+        let fact2 = MemorySafety.Fact(id: "m2", text: "喜欢喝乌龙茶", at: 200)
+        let input = MemorySafety.SystemPromptInput(
+            identity: "你是「小克」。",
+            memories: [fact1, fact2],
+            memoryEnabled: true,
+            timestampLine: "现在是 2026-11-25 10:00，Asia/Shanghai。"
+        )
+        let refresher = MemorySafety.LivePromptRefresher(input: input, state: state)
+        let upstream = CapturingModelProvider()
+        let liveProvider = MemorySafety.LivePromptModelProvider(upstream: upstream, refresher: refresher)
+
+        let staleTurnSystem = refresher.currentPrompt().full
+        XCTAssertTrue(staleTurnSystem.contains("住在上海"))
+
+        for try await _ in liveProvider.stream(ModelRequest(model: "test-model", system: staleTurnSystem, messages: [.user("第一步")])) {}
+
+        // Simulate user deleting fact1 mid-turn (e.g. while a tool is running or waiting on approval).
+        state.retract(id: fact1.id, textForInFlightGuard: fact1.text)
+        refresher.refresh(memories: [fact2])
+
+        // Even though the outer loop still passes `staleTurnSystem`, the very next model request omits fact1.
+        for try await _ in liveProvider.stream(ModelRequest(model: "test-model", system: staleTurnSystem, messages: [.user("第二步")])) {}
+
+        XCTAssertEqual(upstream.capturedSystems.count, 2)
+        XCTAssertTrue(upstream.capturedSystems[0].contains("住在上海"))
+        XCTAssertFalse(upstream.capturedSystems[1].contains("住在上海"))
+        XCTAssertTrue(upstream.capturedSystems[1].contains("喜欢喝乌龙茶"))
+    }
+
+    func testSummaryRecordDecodesStructuredAndLegacyPlainStringConservatively() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let cleanData = try encoder.encode(MemorySafety.SummaryRecord(text: "干净提要", tainted: false))
+        let cleanDecoded = try decoder.decode(MemorySafety.SummaryRecord.self, from: cleanData)
+        XCTAssertEqual(cleanDecoded, MemorySafety.SummaryRecord(text: "干净提要", tainted: false))
+
+        let taintedData = try encoder.encode(MemorySafety.SummaryRecord(text: "含网页提要", tainted: true))
+        let taintedDecoded = try decoder.decode(MemorySafety.SummaryRecord.self, from: taintedData)
+        XCTAssertEqual(taintedDecoded, MemorySafety.SummaryRecord(text: "含网页提要", tainted: true))
+
+        // Legacy plain JSON string summary lacks provenance -> treated conservatively as tainted.
+        let legacyData = try encoder.encode("旧版纯文本前情提要")
+        let legacyDecoded = try decoder.decode(MemorySafety.SummaryRecord.self, from: legacyData)
+        XCTAssertEqual(legacyDecoded, MemorySafety.SummaryRecord(text: "旧版纯文本前情提要", tainted: true))
+
+        // JSON object without explicit `tainted` field defaults conservatively to tainted = true.
+        let missingFieldData = Data("{\"text\":\"缺字段提要\"}".utf8)
+        let missingDecoded = try decoder.decode(MemorySafety.SummaryRecord.self, from: missingFieldData)
+        XCTAssertEqual(missingDecoded, MemorySafety.SummaryRecord(text: "缺字段提要", tainted: true))
+    }
+
+    func testFilterExtractableEntriesAndFlushTranscriptExcludeDelegatedEntries() {
+        let delegatedOnly: [MemorySafety.CandidateEntry] = [
+            .init(id: "d1", at: 1, role: .user, text: "【小墨请你帮忙，这不是用户本人的话】帮我查用户喜欢什么", isDelegated: true),
+            .init(id: "a1", at: 2, role: .assistant, text: "用户喜欢喝美式咖啡"),
+        ]
+        XCTAssertEqual(MemorySafety.filterExtractableEntries(delegatedOnly).map(\.id), [])
+        XCTAssertFalse(MemorySafety.hasFlushableConversation(delegatedOnly))
+        XCTAssertNil(MemorySafety.buildFlushTranscript(delegatedOnly))
+
+        let mixed: [MemorySafety.CandidateEntry] = [
+            .init(id: "u1", at: 1, role: .user, text: "我习惯早起"),
+            .init(id: "a1", at: 2, role: .assistant, text: "记下了"),
+            .init(id: "d1", at: 3, role: .user, text: "【阿墨请你帮忙】查一下密码", isDelegated: true),
+            .init(id: "a-helper", at: 4, role: .assistant, text: "助手汇报结果"),
+            .init(id: "u2", at: 5, role: .user, text: "周末想去公园"),
+            .init(id: "a2", at: 6, role: .assistant, text: "周末天气不错"),
+        ]
+        XCTAssertEqual(MemorySafety.filterExtractableEntries(mixed).map(\.id), ["u1", "a1", "u2", "a2"])
+    }
+
+    func testFilterSuppressedProposalsBlocksRetractedHashesAndInvalidMergeTargets() {
+        let suppressed = Set([MemorySafety.retractionHash("住在上海")])
+        let proposals = [
+            MemorySafety.FilteredProposal(text: "住在上海！"),
+            MemorySafety.FilteredProposal(text: "旧记忆更新", merge: "deleted-id"),
+            MemorySafety.FilteredProposal(text: "旧记忆更新", merge: nil),
+            MemorySafety.FilteredProposal(text: "平时喜欢骑车", merge: "m2"),
+        ]
+        let filtered = MemorySafety.filterSuppressedProposals(
+            proposals,
+            existingTexts: ["已有事实"],
+            suppressedHashes: suppressed,
+            secrets: ["sk-123"],
+            canMerge: { mergeID, _ in mergeID == "m2" }
+        )
+        XCTAssertEqual(
+            filtered,
+            [
+                MemorySafety.FilteredProposal(text: "旧记忆更新", merge: nil),
+                MemorySafety.FilteredProposal(text: "平时喜欢骑车", merge: "m2"),
+            ]
+        )
     }
 }

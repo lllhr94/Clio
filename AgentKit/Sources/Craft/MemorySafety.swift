@@ -1,5 +1,8 @@
 import AgentKit
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 
 /// A conversation entry inspected for memory extraction safety.
 public protocol MemoryExtractable {
@@ -12,6 +15,7 @@ public protocol MemoryExtractable {
     var hasToolCalls: Bool { get }
     var toolName: String? { get }
     var isTainted: Bool { get }
+    var isDelegated: Bool { get }
 }
 
 /// Pure rules for memory taint isolation, deterministic prompt-cache prefix assembly,
@@ -47,6 +51,7 @@ public enum MemorySafety {
         public var hasToolCalls: Bool
         public var toolName: String?
         public var isTainted: Bool
+        public var isDelegated: Bool
 
         public init(
             id: String,
@@ -57,7 +62,8 @@ public enum MemorySafety {
             isFold: Bool = false,
             hasToolCalls: Bool = false,
             toolName: String? = nil,
-            isTainted: Bool = false
+            isTainted: Bool = false,
+            isDelegated: Bool = false
         ) {
             self.id = id
             self.at = at
@@ -68,6 +74,45 @@ public enum MemorySafety {
             self.hasToolCalls = hasToolCalls
             self.toolName = toolName
             self.isTainted = isTainted
+            self.isDelegated = isDelegated
+        }
+    }
+
+    /// Atomic persisted summary record binding digest text and source taint provenance together.
+    /// Legacy plain-String JSON summaries decode conservatively with `tainted = true`.
+    public struct SummaryRecord: Codable, Equatable, Sendable {
+        public var text: String
+        public var tainted: Bool
+
+        public init(text: String, tainted: Bool) {
+            self.text = text
+            self.tainted = tainted
+        }
+
+        public init(from decoder: Decoder) throws {
+            if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+                self.text = try container.decode(String.self, forKey: .text)
+                self.tainted = try container.decodeIfPresent(Bool.self, forKey: .tainted) ?? true
+                return
+            }
+            let single = try decoder.singleValueContainer()
+            self.text = try single.decode(String.self)
+            self.tainted = true
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case text
+            case tainted
+        }
+    }
+
+    public struct FilteredProposal: Equatable, Sendable {
+        public var text: String
+        public var merge: String?
+
+        public init(text: String, merge: String? = nil) {
+            self.text = text
+            self.merge = merge
         }
     }
 
@@ -191,15 +236,16 @@ public enum MemorySafety {
             let facts: [Fact]
             let excludedIDs: Set<String>
             let excludedTexts: Set<String>
+            let excludedTextHashes: Set<String>
         }
 
         private let lock = NSLock()
         private var generation: UInt64 = 0
         private var retractedIDs: Set<String> = []
-        private var retractedTexts: Set<String> = []
-        private var suppressedFlushTexts: Set<String> = []
-        private var inFlightRetractedTexts: [String: UInt64] = [:]
-        private var didSeedSuppressedFlushTexts = false
+        private var retractedPromptHashes: Set<String> = []
+        private var suppressedFlushHashes: Set<String> = []
+        private var inFlightRetractedHashes: [String: UInt64] = [:]
+        private var didSeedSuppressedFlushHashes = false
         private var cachedKey: CacheKey?
         private var cachedBlock: MemoryBlock?
 
@@ -219,47 +265,54 @@ public enum MemorySafety {
             lock.unlock()
         }
 
-        public func seedSuppressedFlushTextsIfNeeded(_ loader: () -> [String]) {
+        /// Seeds persisted SHA-256 retraction hashes once per lifecycle (hashing any legacy non-hex values immediately).
+        public func seedSuppressedFlushHashesIfNeeded(_ loader: () -> [String]) {
             lock.lock()
-            let needsLoad = !didSeedSuppressedFlushTexts
-            if needsLoad { didSeedSuppressedFlushTexts = true }
+            let needsLoad = !didSeedSuppressedFlushHashes
+            if needsLoad { didSeedSuppressedFlushHashes = true }
             lock.unlock()
             guard needsLoad else { return }
-            let loaded = loader().map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty }
-            guard !loaded.isEmpty else { return }
+            let hashes = loader().compactMap { entry -> String? in
+                let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                if MemorySafety.isSHA256Hex(trimmed) {
+                    return trimmed.lowercased()
+                }
+                let hashed = MemorySafety.retractionHash(trimmed)
+                return hashed.isEmpty ? nil : hashed
+            }
+            guard !hashes.isEmpty else { return }
             lock.lock()
-            suppressedFlushTexts.formUnion(loaded)
+            suppressedFlushHashes.formUnion(hashes)
             lock.unlock()
         }
 
         /// Immediately invalidates cached memory output and blocks `id` from any stale memory snapshots.
-        /// If `textForInFlightGuard` is provided, both in-flight and future compression flushes suppress
-        /// re-adding a fact with the same normalized text until explicitly re-added by the user.
+        /// If `textForInFlightGuard` is provided, stores its irreversible SHA-256 hash so both in-flight
+        /// and future extraction flushes suppress re-adding it until explicitly re-added by the user.
         public func retract(id: String, textForInFlightGuard: String? = nil) {
+            let hash = textForInFlightGuard.map(MemorySafety.retractionHash) ?? ""
             lock.lock()
             generation &+= 1
             if !id.isEmpty { retractedIDs.insert(id) }
-            if let textForInFlightGuard {
-                let normalized = MemorySafety.normalizedFactKey(textForInFlightGuard)
-                if !normalized.isEmpty {
-                    inFlightRetractedTexts[normalized] = generation
-                    suppressedFlushTexts.insert(normalized)
-                }
+            if !hash.isEmpty {
+                inFlightRetractedHashes[hash] = generation
+                suppressedFlushHashes.insert(hash)
             }
             cachedKey = nil
             cachedBlock = nil
             lock.unlock()
         }
 
-        /// Immediately invalidates cached memory output and excludes any memory matching `text` by normalized key.
+        /// Immediately invalidates cached memory output and excludes any memory matching `text` via SHA-256 hash.
         public func retract(text: String) {
-            let normalized = MemorySafety.normalizedFactKey(text)
+            let hash = MemorySafety.retractionHash(text)
             lock.lock()
             generation &+= 1
-            if !normalized.isEmpty {
-                retractedTexts.insert(normalized)
-                suppressedFlushTexts.insert(normalized)
-                inFlightRetractedTexts[normalized] = generation
+            if !hash.isEmpty {
+                retractedPromptHashes.insert(hash)
+                suppressedFlushHashes.insert(hash)
+                inFlightRetractedHashes[hash] = generation
             }
             cachedKey = nil
             cachedBlock = nil
@@ -268,45 +321,39 @@ public enum MemorySafety {
 
         /// Re-allows a fact text when the user explicitly adds it again, and invalidates cached prompt state.
         public func clearRetraction(text: String) {
-            let normalized = MemorySafety.normalizedFactKey(text)
+            let hash = MemorySafety.retractionHash(text)
             lock.lock()
             generation &+= 1
-            if !normalized.isEmpty {
-                retractedTexts.remove(normalized)
-                suppressedFlushTexts.remove(normalized)
-                inFlightRetractedTexts.removeValue(forKey: normalized)
+            if !hash.isEmpty {
+                retractedPromptHashes.remove(hash)
+                suppressedFlushHashes.remove(hash)
+                inFlightRetractedHashes.removeValue(forKey: hash)
             }
             cachedKey = nil
             cachedBlock = nil
             lock.unlock()
         }
 
-        /// Normalized texts deleted or retracted strictly after `startGeneration`.
-        public func retractedTextsSince(_ startGeneration: UInt64) -> Set<String> {
+        /// SHA-256 digests of normalized facts deleted or retracted strictly after `startGeneration`.
+        public func retractedHashesSince(_ startGeneration: UInt64) -> Set<String> {
             lock.lock()
             defer { lock.unlock() }
-            return Set(inFlightRetractedTexts.compactMap { key, gen in
+            return Set(inFlightRetractedHashes.compactMap { key, gen in
                 gen > startGeneration ? key : nil
             })
         }
 
-        /// Active user-retracted normalized fact texts suppressed across compression flushes.
-        public func suppressedFlushTextsSnapshot() -> Set<String> {
+        /// Active user-retracted SHA-256 digests suppressed across memory extraction and compression flushes.
+        public func suppressedFlushHashesSnapshot() -> Set<String> {
             lock.lock()
             defer { lock.unlock() }
-            return suppressedFlushTexts
+            return suppressedFlushHashes
         }
 
         public func retractedIDsSnapshot() -> Set<String> {
             lock.lock()
             defer { lock.unlock() }
             return retractedIDs
-        }
-
-        public func retractedTextsSnapshot() -> Set<String> {
-            lock.lock()
-            defer { lock.unlock() }
-            return retractedTexts
         }
 
         public func renderMemoryBlock(
@@ -318,13 +365,14 @@ public enum MemorySafety {
             lock.lock()
             let combinedIDs = excludingIDs.union(retractedIDs)
             let normalizedInputTexts = Set(excludingTexts.map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty })
-            let combinedTexts = normalizedInputTexts.union(retractedTexts)
+            let promptHashes = retractedPromptHashes
             let key = CacheKey(
                 generation: generation,
                 enabled: enabled,
                 facts: facts,
                 excludedIDs: combinedIDs,
-                excludedTexts: combinedTexts
+                excludedTexts: normalizedInputTexts,
+                excludedTextHashes: promptHashes
             )
             if cachedKey == key, let cachedBlock {
                 lock.unlock()
@@ -336,7 +384,8 @@ public enum MemorySafety {
                 from: facts,
                 enabled: enabled,
                 excludingIDs: combinedIDs,
-                excludingTexts: combinedTexts
+                excludingTexts: normalizedInputTexts,
+                excludingTextHashes: promptHashes
             )
 
             lock.lock()
@@ -346,6 +395,54 @@ public enum MemorySafety {
             }
             lock.unlock()
             return rendered
+        }
+    }
+
+    /// Thread-safe holder that keeps an active turn's system prompt synchronized with live memory mutations.
+    public final class LivePromptRefresher: @unchecked Sendable {
+        private let lock = NSLock()
+        private var input: SystemPromptInput
+        private let state: PromptState
+        private var snapshot: AssembledSystemPrompt
+
+        public init(input: SystemPromptInput, state: PromptState) {
+            self.input = input
+            self.state = state
+            self.snapshot = MemorySafety.assembleSystemPrompt(input, state: state)
+        }
+
+        public func currentPrompt() -> AssembledSystemPrompt {
+            lock.lock()
+            defer { lock.unlock() }
+            return snapshot
+        }
+
+        public func refresh(memories: [Fact]) {
+            lock.lock()
+            input.memories = memories
+            snapshot = MemorySafety.assembleSystemPrompt(input, state: state)
+            lock.unlock()
+        }
+    }
+
+    /// `ModelProvider` wrapper that synchronously injects the latest live-refreshed system prompt before each request.
+    public struct LivePromptModelProvider: ModelProvider {
+        public let upstream: any ModelProvider
+        public let refresher: LivePromptRefresher
+
+        public init(upstream: any ModelProvider, refresher: LivePromptRefresher) {
+            self.upstream = upstream
+            self.refresher = refresher
+        }
+
+        public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+            var updated = request
+            updated.system = refresher.currentPrompt().full
+            return upstream.stream(updated)
+        }
+
+        public func models() async throws -> [String] {
+            try await upstream.models()
         }
     }
 
@@ -384,7 +481,8 @@ public enum MemorySafety {
     public static func orderedSurfaceFacts(
         from facts: [Fact],
         excludingIDs: Set<String> = [],
-        excludingTexts: Set<String> = []
+        excludingTexts: Set<String> = [],
+        excludingTextHashes: Set<String> = []
     ) -> [Fact] {
         let excludedNormalized = Set(excludingTexts.map(normalizedFactKey).filter { !$0.isEmpty })
         return facts.filter { fact in
@@ -393,7 +491,11 @@ public enum MemorySafety {
             guard !trimmed.isEmpty else { return false }
             guard !excludingIDs.contains(fact.id) else { return false }
             let key = normalizedFactKey(trimmed)
-            return !excludedNormalized.contains(key)
+            if excludedNormalized.contains(key) { return false }
+            if !excludingTextHashes.isEmpty && excludingTextHashes.contains(retractionHash(trimmed)) {
+                return false
+            }
+            return true
         }.sorted { lhs, rhs in
             if lhs.at != rhs.at { return lhs.at < rhs.at }
             return lhs.id < rhs.id
@@ -404,9 +506,15 @@ public enum MemorySafety {
     public static func renderSurfaceMemories(
         _ facts: [Fact],
         excludingIDs: Set<String> = [],
-        excludingTexts: Set<String> = []
+        excludingTexts: Set<String> = [],
+        excludingTextHashes: Set<String> = []
     ) -> String {
-        let surface = orderedSurfaceFacts(from: facts, excludingIDs: excludingIDs, excludingTexts: excludingTexts)
+        let surface = orderedSurfaceFacts(
+            from: facts,
+            excludingIDs: excludingIDs,
+            excludingTexts: excludingTexts,
+            excludingTextHashes: excludingTextHashes
+        )
         guard !surface.isEmpty else { return "" }
         let lines = surface.map { "- \($0.text.trimmingCharacters(in: .whitespacesAndNewlines))" }
         return "你记得的关于用户的事：\n" + lines.joined(separator: "\n")
@@ -416,19 +524,27 @@ public enum MemorySafety {
         from facts: [Fact],
         enabled: Bool,
         excludingIDs: Set<String> = [],
-        excludingTexts: Set<String> = []
+        excludingTexts: Set<String> = [],
+        excludingTextHashes: Set<String> = []
     ) -> MemoryBlock {
         guard enabled else { return .empty }
         let excludedNormalized = Set(excludingTexts.map(normalizedFactKey).filter { !$0.isEmpty })
-        let surfaceFacts = orderedSurfaceFacts(from: facts, excludingIDs: excludingIDs, excludingTexts: excludingTexts)
+        let surfaceFacts = orderedSurfaceFacts(
+            from: facts,
+            excludingIDs: excludingIDs,
+            excludingTexts: excludingTexts,
+            excludingTextHashes: excludingTextHashes
+        )
         let deepCount = facts.reduce(into: 0) { count, fact in
             guard fact.isDeep else { return }
             let trimmed = fact.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             guard !excludingIDs.contains(fact.id) else { return }
-            if !excludedNormalized.contains(normalizedFactKey(trimmed)) {
-                count += 1
+            guard !excludedNormalized.contains(normalizedFactKey(trimmed)) else { return }
+            if !excludingTextHashes.isEmpty && excludingTextHashes.contains(retractionHash(trimmed)) {
+                return
             }
+            count += 1
         }
         let surfaceBlock: String
         if surfaceFacts.isEmpty {
@@ -569,33 +685,47 @@ public enum MemorySafety {
 
     /// Filters entries eligible for automatic memory extraction.
     /// Excludes notes, compression folds, tool outputs, tool-call preambles, empty entries,
-    /// explicitly tainted entries, and legacy assistant replies produced after an untrusted tool read in the same turn.
+    /// companion-delegated prompts/replies, explicitly tainted entries, and legacy assistant replies
+    /// in any conversation where a legacy untagged external-read tool occurred (sticky across later turns).
     public static func filterExtractableEntries<E: MemoryExtractable>(_ entries: [E]) -> [E] {
         var result: [E] = []
-        var turnHasExternalTaint = false
+        var turnHasExplicitTaint = false
+        var legacySawUntrusted = false
+        var inDelegatedTurn = false
         for entry in entries {
             if entry.isNote || entry.isFold { continue }
             switch entry.role {
             case .user:
-                if entry.isTainted {
-                    turnHasExternalTaint = true
+                if entry.isDelegated {
+                    inDelegatedTurn = true
+                    if entry.isTainted { turnHasExplicitTaint = true }
                     continue
                 }
-                turnHasExternalTaint = false
+                if entry.isTainted {
+                    turnHasExplicitTaint = true
+                    inDelegatedTurn = false
+                    continue
+                }
+                turnHasExplicitTaint = false
+                inDelegatedTurn = false
                 if !entry.hasToolCalls && !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     result.append(entry)
                 }
             case .tool:
-                if entry.isTainted || Taint.reads(entry.toolName ?? "") {
-                    turnHasExternalTaint = true
+                if !entry.isTainted && Taint.reads(entry.toolName ?? "") {
+                    legacySawUntrusted = true
+                } else if entry.isTainted {
+                    turnHasExplicitTaint = true
                 }
                 continue
             case .assistant:
                 if entry.isTainted {
-                    turnHasExternalTaint = true
+                    turnHasExplicitTaint = true
                     continue
                 }
-                guard !turnHasExternalTaint,
+                guard !turnHasExplicitTaint,
+                      !legacySawUntrusted,
+                      !inDelegatedTurn,
                       !entry.hasToolCalls,
                       !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     continue
@@ -734,10 +864,87 @@ public enum MemorySafety {
         return remaining
     }
 
-    // MARK: Sanitization & deduplication
+    // MARK: Sanitization, hashing & deduplication
 
     public static func normalizedFactKey(_ text: String) -> String {
         text.lowercased().filter { !$0.isWhitespace && !$0.isPunctuation }
+    }
+
+    public static func isSHA256Hex(_ value: String) -> Bool {
+        guard value.count == 64 else { return false }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 97 && scalar.value <= 102)
+                || (scalar.value >= 65 && scalar.value <= 70)
+        }
+    }
+
+    /// Irreversible lowercase SHA-256 hex digest of `normalizedFactKey(text)`, or `""` when empty.
+    public static func retractionHash(_ text: String) -> String {
+        let key = normalizedFactKey(text)
+        guard !key.isEmpty else { return "" }
+        return sha256Hex(Data(key.utf8))
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        #if canImport(CryptoKit)
+        let digest = CryptoKit.SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+        #else
+        return pureSwiftSHA256Hex(data)
+        #endif
+    }
+
+    private static func pureSwiftSHA256Hex(_ data: Data) -> String {
+        let k: [UInt32] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        ]
+        var h: [UInt32] = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        ]
+        var bytes = [UInt8](data)
+        let bitLen = UInt64(bytes.count) &* 8
+        bytes.append(0x80)
+        while bytes.count % 64 != 56 { bytes.append(0) }
+        for shift in stride(from: 56, through: 0, by: -8) {
+            bytes.append(UInt8((bitLen >> shift) & 0xff))
+        }
+        func ror(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
+        for chunkStart in stride(from: 0, to: bytes.count, by: 64) {
+            var w = [UInt32](repeating: 0, count: 64)
+            for i in 0..<16 {
+                let idx = chunkStart + i * 4
+                w[i] = (UInt32(bytes[idx]) << 24) | (UInt32(bytes[idx + 1]) << 16)
+                    | (UInt32(bytes[idx + 2]) << 8) | UInt32(bytes[idx + 3])
+            }
+            for i in 16..<64 {
+                let s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >> 3)
+                let s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >> 10)
+                w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
+            }
+            var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7]
+            for i in 0..<64 {
+                let s1 = ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)
+                let ch = (e & f) ^ ((~e) & g)
+                let temp1 = hh &+ s1 &+ ch &+ k[i] &+ w[i]
+                let s0 = ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)
+                let maj = (a & b) ^ (a & c) ^ (b & c)
+                let temp2 = s0 &+ maj
+                hh = g; g = f; f = e; e = d &+ temp1
+                d = c; c = b; b = a; a = temp1 &+ temp2
+            }
+            h[0] &+= a; h[1] &+= b; h[2] &+= c; h[3] &+= d
+            h[4] &+= e; h[5] &+= f; h[6] &+= g; h[7] &+= hh
+        }
+        return h.map { String(format: "%08x", $0) }.joined()
     }
 
     public static func clipUTF8(_ text: String, bytes: Int) -> String {
@@ -775,25 +982,48 @@ public enum MemorySafety {
         return cleaned
     }
 
-    /// Deduplicates sanitized candidates against existing memories, recently retracted texts,
+    /// Filters proposals against existing memories, SHA-256 retracted-fact digests, secret rules, and merge targets.
+    /// Shared between background `reviewMemories` and `flushMemoriesBeforeCompress`.
+    public static func filterSuppressedProposals(
+        _ proposals: [FilteredProposal],
+        existingTexts: [String],
+        suppressedHashes: Set<String>,
+        secrets: [String] = [],
+        canMerge: (String, String) -> Bool = { _, _ in true },
+        limit: Int = 6
+    ) -> [FilteredProposal] {
+        var seen = Set(existingTexts.map(normalizedFactKey).filter { !$0.isEmpty })
+        var accepted: [FilteredProposal] = []
+        for proposal in proposals {
+            guard accepted.count < limit else { break }
+            guard let clean = sanitizeProposedFact(proposal.text, secrets: secrets) else { continue }
+            let key = normalizedFactKey(clean)
+            let hash = retractionHash(clean)
+            guard !suppressedHashes.contains(hash) else { continue }
+            if let merge = proposal.merge {
+                guard canMerge(merge, clean) else { continue }
+            }
+            guard seen.insert(key).inserted else { continue }
+            accepted.append(FilteredProposal(text: clean, merge: proposal.merge))
+        }
+        return accepted
+    }
+
+    /// Deduplicates sanitized candidates against existing memories, retracted-fact hashes (or normalized keys),
     /// and other candidates in the same batch.
     public static func deduplicateProposals(
         _ candidates: [String],
         existing: [Fact],
-        retractedNormalizedKeys: Set<String> = [],
+        suppressedHashes: Set<String> = [],
         secrets: [String] = [],
         limit: Int = 6
     ) -> [String] {
-        var seen = Set(existing.map { normalizedFactKey($0.text) })
-        seen.formUnion(retractedNormalizedKeys)
-        var accepted: [String] = []
-        for candidate in candidates {
-            guard accepted.count < limit else { break }
-            guard let clean = sanitizeProposedFact(candidate, secrets: secrets) else { continue }
-            let key = normalizedFactKey(clean)
-            guard seen.insert(key).inserted else { continue }
-            accepted.append(clean)
-        }
-        return accepted
+        filterSuppressedProposals(
+            candidates.map { FilteredProposal(text: $0) },
+            existingTexts: existing.map(\.text),
+            suppressedHashes: suppressedHashes,
+            secrets: secrets,
+            limit: limit
+        ).map(\.text)
     }
 }

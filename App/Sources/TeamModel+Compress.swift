@@ -9,55 +9,46 @@ extension TeamModel {
 
 
     static func summaryFile(_ key: String) -> String { "chats/\(key)~summary.json" }
-    static func summaryTaintFile(_ key: String) -> String { "chats/\(key)~summary-tainted.json" }
+
+    /// The persisted digest + provenance record of the folded part of this conversation.
+    func summaryRecord(_ key: String) -> MemorySafety.SummaryRecord? {
+        if let kept = summaryBook[key] { return kept.text.isEmpty ? nil : kept }
+        let loaded = keeping ? Disk.load(MemorySafety.SummaryRecord.self, Self.summaryFile(key)) : nil
+        let valid = loaded.flatMap { $0.text.isEmpty ? nil : $0 }
+        summaryBook[key] = valid ?? MemorySafety.SummaryRecord(text: "", tainted: false)
+        return valid
+    }
 
     /// The digest of the part of this conversation that was folded away.
     func summary(_ key: String) -> String? {
-        if let kept = summaryBook[key] { return kept.isEmpty ? nil : kept }
-        let loaded = keeping ? (Disk.load(String.self, Self.summaryFile(key)) ?? "") : ""
-        summaryBook[key] = loaded
-        return loaded.isEmpty ? nil : loaded
+        summaryRecord(key)?.text
     }
 
     func isSummaryTainted(_ key: String) -> Bool {
-        guard summary(key) != nil else {
-            summaryTaintBook[key] = false
-            return false
-        }
-        if let kept = summaryTaintBook[key] { return kept }
-        let loaded = keeping ? (Disk.load(Bool.self, Self.summaryTaintFile(key)) ?? false) : false
-        summaryTaintBook[key] = loaded
-        return loaded
+        summaryRecord(key)?.tainted ?? false
     }
 
-    func setSummaryTaint(_ key: String, _ tainted: Bool) {
-        summaryTaintBook[key] = tainted
-        guard keeping else { return }
-        if tainted {
-            Disk.save(true, Self.summaryTaintFile(key))
-        } else {
-            Disk.remove(Self.summaryTaintFile(key))
-        }
+    func setSummary(_ key: String, _ text: String?, tainted: Bool = false) {
+        let clean = text ?? ""
+        let record: MemorySafety.SummaryRecord? = clean.isEmpty ? nil : MemorySafety.SummaryRecord(text: clean, tainted: tainted)
+        setSummary(key, record: record)
     }
 
-    func setSummary(_ key: String, _ text: String?) {
+    func setSummary(_ key: String, record: MemorySafety.SummaryRecord?) {
         objectWillChange.send()
-        summaryBook[key] = text ?? ""
-        if text == nil || text?.isEmpty == true {
-            summaryTaintBook[key] = false
-        }
+        let clean = record.flatMap { $0.text.isEmpty ? nil : $0 }
+        summaryBook[key] = clean ?? MemorySafety.SummaryRecord(text: "", tainted: false)
         guard keeping else { return }
-        if let text, !text.isEmpty {
-            Disk.save(text, Self.summaryFile(key))
+        if let clean {
+            Disk.save(clean, Self.summaryFile(key))
         } else {
             Disk.remove(Self.summaryFile(key))
-            Disk.remove(Self.summaryTaintFile(key))
         }
     }
 
     /// In-memory summary length for reactive triggers without touching disk on the main thread.
     func cachedSummaryLength(_ key: String) -> Int {
-        summaryBook[key]?.count ?? 0
+        summaryBook[key]?.text.count ?? 0
     }
 
     func summaryBlock(_ key: String) -> String {
@@ -108,7 +99,6 @@ extension TeamModel {
     }
 
     static func foldSummary(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary.json" }
-    static func foldSummaryTaint(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary-tainted.json" }
 
     /// Folds the older part of a conversation into a digest. The full text is kept as a leaf. Returns how many messages were folded.
     @discardableResult
@@ -139,8 +129,8 @@ extension TeamModel {
         // Only what the model will read is marked as folded: a part too long moves the cut earlier.
         let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
         let foldedSlice = Array(all[..<cut])
-        let previousSummaryTainted = isSummaryTainted(key)
-        let digestTainted = previousSummaryTainted || MemorySafety.entriesContainUntrustedSource(foldedSlice)
+        let previousRecord = summaryRecord(key)
+        let digestTainted = (previousRecord?.tainted ?? false) || MemorySafety.entriesContainUntrustedSource(foldedSlice)
         await flushMemoriesBeforeCompress(
             key: key,
             entries: foldedSlice,
@@ -176,19 +166,15 @@ extension TeamModel {
             throw TeamError(message: "整理的时候聊天变了，下次再整理。")
         }
         let markerId = UUID().uuidString
-        if keeping, let old = summary(key) {
-            Disk.save(old, Self.foldSummary(key, markerId))
-            if previousSummaryTainted {
-                Disk.save(true, Self.foldSummaryTaint(key, markerId))
-            }
+        if keeping, let previousRecord {
+            Disk.save(previousRecord, Self.foldSummary(key, markerId))
         }
         let marker = Entry(id: markerId, at: current[at].at - 1,
                            message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)
         current.insert(marker, at: at)
         entries[key] = current
         if keeping { ChatDisk.save(current, chat: key) }
-        setSummary(key, digest)
-        setSummaryTaint(key, digestTainted)
+        setSummary(key, digest, tainted: digestTainted)
         notify(key, .changed)
         return folded
     }

@@ -68,6 +68,8 @@ struct Entry: Codable, Identifiable, Equatable, Sendable {
     var queuedIds: [UUID]?
     /// True when this entry introduced or was produced after reading untrusted external content (web, mail, clipboard, MCP).
     var tainted: Bool? = nil
+    /// True when this entry is a companion-to-companion delegation prompt rather than user speech.
+    var delegated: Bool? = nil
 }
 
 /// A message a Bot set for later; it shows in the chat once its time has come.

@@ -7,6 +7,7 @@ extension Entry: MemoryExtractable {
     var hasToolCalls: Bool { !message.toolCalls.isEmpty }
     var toolName: String? { message.toolName }
     var isTainted: Bool { tainted == true }
+    var isDelegated: Bool { delegated == true }
 }
 
 extension Memory {
@@ -15,25 +16,57 @@ extension Memory {
     }
 }
 
+/// Wraps an upstream `ModelProvider` and `ModelInputProvider` so every request inside an active turn
+/// synchronously pulls the latest memory-filtered system prompt under `NSLock`.
+struct LivePromptProvider: ModelProvider {
+    let upstream: any ModelProvider
+    let refresher: MemorySafety.LivePromptRefresher
+    let record: @Sendable (ModelInput) -> Void
+
+    func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+        let livePrompt = refresher.currentPrompt()
+        var updated = request
+        updated.system = livePrompt.full
+        let extra = livePrompt.tail.isEmpty ? "" : "\n\n" + livePrompt.tail
+        let sections = ModelInputSections(
+            base: livePrompt.prefix,
+            extra: extra,
+            memory: livePrompt.memoryBlock,
+            skills: livePrompt.skillsBlock
+        )
+        return ModelInputProvider(upstream: upstream, sections: sections, record: record).stream(updated)
+    }
+
+    func models() async throws -> [String] { try await upstream.models() }
+}
+
 extension TeamModel {
     // MARK: Memory safety & prompt assembly
 
     private static let retractedMemoryFile = "memory-retracted.json"
 
-    func ensureRetractedFlushTextsLoaded() {
+    func ensureRetractedFlushHashesLoaded() {
         let canLoad = keeping
-        memoryPromptState.seedSuppressedFlushTextsIfNeeded {
-            canLoad ? (Disk.load([String].self, Self.retractedMemoryFile) ?? []) : []
+        var sawPlaintextLegacy = false
+        memoryPromptState.seedSuppressedFlushHashesIfNeeded {
+            guard canLoad, let stored = Disk.load([String].self, Self.retractedMemoryFile) else { return [] }
+            if stored.contains(where: { !MemorySafety.isSHA256Hex($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
+                sawPlaintextLegacy = true
+            }
+            return stored
+        }
+        if sawPlaintextLegacy {
+            saveRetractedFlushHashes()
         }
     }
 
-    private func saveRetractedFlushTexts() {
+    private func saveRetractedFlushHashes() {
         guard keeping else { return }
-        let keys = Array(memoryPromptState.suppressedFlushTextsSnapshot()).sorted()
-        if keys.isEmpty {
+        let hashes = Array(memoryPromptState.suppressedFlushHashesSnapshot()).sorted()
+        if hashes.isEmpty {
             Disk.remove(Self.retractedMemoryFile)
         } else {
-            Disk.save(keys, Self.retractedMemoryFile)
+            Disk.save(hashes, Self.retractedMemoryFile)
         }
     }
 
@@ -53,39 +86,15 @@ extension TeamModel {
         memoryTaintedTurns.contains(key) || taint.isTainted(key)
     }
 
-    func invalidateMemoryPromptCache(retractedID: String? = nil, textForInFlightGuard: String? = nil) {
-        ensureRetractedFlushTextsLoaded()
-        if let retractedID {
-            memoryPromptState.retract(id: retractedID, textForInFlightGuard: textForInFlightGuard)
-            saveRetractedFlushTexts()
-        } else {
-            memoryPromptState.invalidate()
+    func syncLivePromptsFromMemories() {
+        guard !livePromptRefreshers.isEmpty else { return }
+        let facts = liveMemoryFacts()
+        for refresher in livePromptRefreshers.values {
+            refresher.refresh(memories: facts)
         }
     }
 
-    func invalidateMemoryPromptCache(retractedItems: [(id: String, text: String)]) {
-        ensureRetractedFlushTextsLoaded()
-        guard !retractedItems.isEmpty else {
-            memoryPromptState.invalidate()
-            return
-        }
-        for item in retractedItems {
-            memoryPromptState.retract(id: item.id, textForInFlightGuard: item.text)
-        }
-        saveRetractedFlushTexts()
-    }
-
-    func clearMemoryRetraction(text: String) {
-        ensureRetractedFlushTextsLoaded()
-        memoryPromptState.clearRetraction(text: text)
-        saveRetractedFlushTexts()
-    }
-
-    func renderedMemoryBlock(memory: Bool) -> String {
-        memoryPromptState.renderMemoryBlock(from: liveMemoryFacts(), enabled: memory).fullBlock
-    }
-
-    func assembledSystemPrompt(
+    func registerLivePromptRefresher(
         for bot: BotInfo,
         in key: String? = nil,
         room: RoomInfo?,
@@ -93,7 +102,71 @@ extension TeamModel {
         memory: Bool = true,
         extraTail: String? = nil,
         now: Date = Date()
-    ) -> MemorySafety.AssembledSystemPrompt {
+    ) -> (refresher: MemorySafety.LivePromptRefresher, token: UUID) {
+        let input = systemPromptInput(
+            for: bot,
+            in: key,
+            room: room,
+            workplace: workplace,
+            memory: memory,
+            extraTail: extraTail,
+            now: now
+        )
+        let refresher = MemorySafety.LivePromptRefresher(input: input, state: memoryPromptState)
+        let token = UUID()
+        livePromptRefreshers[token] = refresher
+        return (refresher, token)
+    }
+
+    func unregisterLivePromptRefresher(_ token: UUID) {
+        livePromptRefreshers.removeValue(forKey: token)
+    }
+
+    func invalidateMemoryPromptCache(retractedID: String? = nil, textForInFlightGuard: String? = nil) {
+        ensureRetractedFlushHashesLoaded()
+        if let retractedID {
+            memoryPromptState.retract(id: retractedID, textForInFlightGuard: textForInFlightGuard)
+            saveRetractedFlushHashes()
+        } else {
+            memoryPromptState.invalidate()
+        }
+        syncLivePromptsFromMemories()
+    }
+
+    func invalidateMemoryPromptCache(retractedItems: [(id: String, text: String)]) {
+        ensureRetractedFlushHashesLoaded()
+        guard !retractedItems.isEmpty else {
+            memoryPromptState.invalidate()
+            syncLivePromptsFromMemories()
+            return
+        }
+        for item in retractedItems {
+            memoryPromptState.retract(id: item.id, textForInFlightGuard: item.text)
+        }
+        saveRetractedFlushHashes()
+        syncLivePromptsFromMemories()
+    }
+
+    func clearMemoryRetraction(text: String) {
+        ensureRetractedFlushHashesLoaded()
+        memoryPromptState.clearRetraction(text: text)
+        saveRetractedFlushHashes()
+        syncLivePromptsFromMemories()
+    }
+
+    func renderedMemoryBlock(memory: Bool) -> String {
+        memoryPromptState.renderMemoryBlock(from: liveMemoryFacts(), enabled: memory).fullBlock
+    }
+
+    func systemPromptInput(
+        for bot: BotInfo,
+        in key: String? = nil,
+        room: RoomInfo?,
+        workplace: WorkPlace? = nil,
+        memory: Bool = true,
+        extraTail: String? = nil,
+        now: Date = Date()
+    ) -> MemorySafety.SystemPromptInput {
         let role = (bot.role?.isEmpty == false) ? "，\(bot.role!)" : ""
         let identity = "你是「\(bot.name)」\(role)。你住在用户的 iPhone 里，是用户的旅伴之一。"
         let persona = Temper.of(bot).persona
@@ -124,7 +197,7 @@ extension TeamModel {
         let pulse = (key != nil && Pulse.on) ? Temper.of(bot).pulsePrompt : nil
         let hint = key != nil ? connectorHint : nil
 
-        let input = MemorySafety.SystemPromptInput(
+        return MemorySafety.SystemPromptInput(
             identity: identity,
             persona: persona,
             speechStyle: speechStyle,
@@ -145,7 +218,54 @@ extension TeamModel {
             connectorHint: hint,
             extraTail: extraTail
         )
+    }
+
+    func assembledSystemPrompt(
+        for bot: BotInfo,
+        in key: String? = nil,
+        room: RoomInfo?,
+        workplace: WorkPlace? = nil,
+        memory: Bool = true,
+        extraTail: String? = nil,
+        now: Date = Date()
+    ) -> MemorySafety.AssembledSystemPrompt {
+        let input = systemPromptInput(
+            for: bot,
+            in: key,
+            room: room,
+            workplace: workplace,
+            memory: memory,
+            extraTail: extraTail,
+            now: now
+        )
         return MemorySafety.assembleSystemPrompt(input, state: memoryPromptState)
+    }
+
+    /// Shared proposal filter used by both background `reviewMemories` and `flushMemoriesBeforeCompress`.
+    func filterMemoryProposals(
+        _ proposals: [MemoryReviewProposal],
+        seen: [String: String],
+        startGeneration: UInt64? = nil,
+        secrets: [String]
+    ) -> [MemoryReviewProposal] {
+        ensureRetractedFlushHashesLoaded()
+        var suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        if let startGeneration {
+            suppressed.formUnion(memoryPromptState.retractedHashesSince(startGeneration))
+        }
+        let filtered = MemorySafety.filterSuppressedProposals(
+            proposals.map { MemorySafety.FilteredProposal(text: $0.text, merge: $0.merge) },
+            existingTexts: memories.map(\.text),
+            suppressedHashes: suppressed,
+            secrets: secrets,
+            canMerge: { mergeID, _ in
+                guard let target = memories.first(where: { $0.id == mergeID }),
+                      MemoryReviewRules.mayMerge(target),
+                      seen[mergeID] == target.text else { return false }
+                return true
+            }
+        )
+        return filtered.map { MemoryReviewProposal(text: $0.text, merge: $0.merge) }
     }
 
     /// Lightweight, fail-open memory extraction run on untainted entries before `compress(_:)` folds them.
@@ -159,7 +279,7 @@ extension TeamModel {
         guard phase == .ready, keeping, !Disk.frozen else { return }
         guard Grant.memory.policy == .allow, !options(key).off.contains(Grant.memory.rawValue) else { return }
         guard epochs[key, default: 0] == startEpoch, canAcceptInput(for: key) else { return }
-        ensureRetractedFlushTextsLoaded()
+        ensureRetractedFlushHashesLoaded()
 
         let now = Date()
         let today = Tide.day(of: now)
@@ -266,24 +386,13 @@ extension TeamModel {
         guard !remainingIDs.isEmpty else { return }
         guard let decoded = try? MemoryReviewRules.decodeProposals(reply) else { return }
 
-        let suppressedTexts = memoryPromptState.suppressedFlushTextsSnapshot()
-            .union(memoryPromptState.retractedTextsSince(startGeneration))
         let currentSecrets = Vault.allStrings().sorted { $0.count > $1.count }
-        var acceptedKeys = Set(memories.map { MemorySafety.normalizedFactKey($0.text) }).union(suppressedTexts)
-        var filteredProposals: [MemoryReviewProposal] = []
-        for proposal in decoded {
-            guard let clean = MemorySafety.sanitizeProposedFact(proposal.text, secrets: currentSecrets) else { continue }
-            let normalizedKey = MemorySafety.normalizedFactKey(clean)
-            guard acceptedKeys.insert(normalizedKey).inserted else { continue }
-            if let merge = proposal.merge {
-                guard let target = memories.first(where: { $0.id == merge }),
-                      MemoryReviewRules.mayMerge(target),
-                      seen[merge] == target.text else { continue }
-                filteredProposals.append(MemoryReviewProposal(text: clean, merge: merge))
-            } else {
-                filteredProposals.append(MemoryReviewProposal(text: clean, merge: nil))
-            }
-        }
+        let filteredProposals = filterMemoryProposals(
+            decoded,
+            seen: seen,
+            startGeneration: startGeneration,
+            secrets: currentSecrets
+        )
 
         var book = memoryBook
         book.memories = memories
