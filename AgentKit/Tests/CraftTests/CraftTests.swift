@@ -1695,6 +1695,40 @@ final class PermissionGateTests: XCTestCase {
         XCTAssertEqual(reconfirms.get(), 0)
     }
 
+    func testRemoteHostConfigurationChangeBlocksPreviouslyBoundToolsInEveryConversation() async throws {
+        let bindings = HostBindingBook()
+        let runs = LockedBox(0)
+        let original = "hill:host:original"
+        let edited = "hill:host:edited"
+        let removed = "hill:host:unavailable"
+        bindings.set(original, for: "main")
+        bindings.set(original, for: "helper")
+        bindings.set("hill:other:original", for: "unrelated")
+
+        let staleTool = LiveGatedTool(
+            inner: CountingTool("write_file", runs: runs),
+            context: ToolExecutionContext(executionChat: "main", hostID: original, grantID: "hills"),
+            isContextStillValid: { bindings.current(for: "main") == original },
+            access: { .allow(bypassNonForced: false) }
+        )
+
+        XCTAssertEqual(Set(bindings.replace(original, with: edited)), Set(["main", "helper"]))
+        let afterEdit = try await staleTool.run([:])
+        XCTAssertEqual(afterEdit.text, LiveGatedTool.workplaceChangedRefusal)
+
+        let editedTool = LiveGatedTool(
+            inner: CountingTool("write_file", runs: runs),
+            context: ToolExecutionContext(executionChat: "helper", hostID: edited, grantID: "hills"),
+            isContextStillValid: { bindings.current(for: "helper") == edited },
+            access: { .allow(bypassNonForced: false) }
+        )
+        XCTAssertEqual(Set(bindings.replace(edited, with: removed)), Set(["main", "helper"]))
+        let afterRemoval = try await editedTool.run([:])
+        XCTAssertEqual(afterRemoval.text, LiveGatedTool.workplaceChangedRefusal)
+        XCTAssertEqual(bindings.current(for: "unrelated"), "hill:other:original")
+        XCTAssertEqual(runs.get(), 0)
+    }
+
     func testWorkplaceSwitchLocalAllowToRemoteAskAndRemoteAToRemoteBBlocksStaleHost() async throws {
         // Case 1: Reverse switch local desk (`.allow`) -> remote VPS (`.ask`) blocks stale local-desk tool.
         do {

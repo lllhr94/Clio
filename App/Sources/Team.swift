@@ -1,4 +1,5 @@
 import AgentKit
+import Combine
 import Craft
 import Observation
 import SwiftUI
@@ -163,6 +164,7 @@ final class TeamModel: ObservableObject {
     let approvalQueue = PendingApprovalQueue()
     let approvalReceipts = ApprovalReceiptBook()
     let hostBindings = HostBindingBook()
+    private var hostBindingObserver: AnyCancellable?
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
@@ -249,6 +251,12 @@ final class TeamModel: ObservableObject {
     var written: [String: Int] = [:]
 
     init() {
+        hostBindingObserver = Hills.shared.hostBindingChanges.sink { [weak self] change in
+            guard let self else { return }
+            for key in self.hostBindings.replace(change.old, with: change.new) {
+                self.cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: change.old)
+            }
+        }
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
         if let shot = Shots.name {
             loading = false
@@ -1355,6 +1363,10 @@ final class TeamModel: ObservableObject {
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
         let workplace = place(of: key)
+        guard workplace.host != nil else {
+            fail(key, WorkPlace.missingHostMessage)
+            return false
+        }
         hostBindings.set(workplace.hostID, for: key)
         let basePrompt = system(for: bot, room: room, memory: usesMemory)
         let extraPrompt = summaryBlock(key) + offBlock(key) + workplace.promptLine
@@ -1905,6 +1917,7 @@ final class TeamModel: ObservableObject {
         all += RoamTools.all(browser, canSee: canSee, chat: key)
         // The eight workspace tools work wherever this conversation is bound: 书案, 斗室 or a 远山 computer.
         let workplace = workplace ?? self.place(of: key)
+        guard let host = workplace.host else { return [] }
         let boundHostID = workplace.hostID
         hostBindings.set(boundHostID, for: key)
         let code = workplace.code
@@ -1915,8 +1928,8 @@ final class TeamModel: ObservableObject {
             beforeChange: { host, path in await Snapshots.shared.keep(key, place: code, host: host, path: path) },
             tail: { output.add($0) }
         )
-        all += WorkspaceTools.all(host: workplace.host, kit: kit)
-        let deskHost = WorkPlace.desk.host
+        all += WorkspaceTools.all(host: host, kit: kit)
+        let deskHost = LocalDeskHost()
         all += Workspace.tools(
             beforeChange: { path in await Snapshots.shared.keep(key, place: WorkPlace.desk.code, host: deskHost, path: path) },
             recordPreRead: { path, preRead in await Snapshots.shared.keepPreRead(key, place: WorkPlace.desk.code, path: path, preRead: preRead) }
@@ -1934,7 +1947,6 @@ final class TeamModel: ObservableObject {
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         let off = Set(options(key).off)
-        let host = workplace.host
         let taintBook = taint
         let receipts = approvalReceipts
         let queue = approvalQueue
@@ -1980,6 +1992,8 @@ final class TeamModel: ObservableObject {
         let helperId = helper.id
         let helperName = helper.name
         guard !isWorking(helperKey) else { return ToolOutput("\(helper.name)正在忙自己的事，等它忙完再请，或者你自己来。", isError: true) }
+        let helperPlace = place(of: helperKey)
+        guard helperPlace.host != nil else { return ToolOutput(WorkPlace.missingHostMessage, isError: true) }
         guard let found = resolve(helper.model ?? settings.defaultModel) ?? resolve(settings.defaultModel),
               let apiKey = apiKey(for: found.endpoint.id), !apiKey.isEmpty else {
             return ToolOutput("\(helper.name)用的模型连不上（没设好或没有密钥）。", isError: true)
@@ -2000,7 +2014,6 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(asked)), to: helperKey)
         touch(helperKey, preview: nil)
         let traits = found.endpoint.traits(found.model)
-        let helperPlace = place(of: helperKey)
         hostBindings.set(helperPlace.hostID, for: helperKey)
         let basePrompt = system(for: helper, room: nil)
         let extraPrompt = "\n\n这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。"

@@ -65,6 +65,14 @@ public final class HostBindingBook: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return hosts[chat]
     }
+
+    /// Changes every live binding to this remote host and returns the affected execution conversations.
+    public func replace(_ oldHostID: String, with newHostID: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let affected = hosts.compactMap { $0.value == oldHostID ? $0.key : nil }
+        for chat in affected { hosts[chat] = newHostID }
+        return affected
+    }
 }
 
 /// Records explicit one-shot user approvals bound to one exact tool invocation and execution context

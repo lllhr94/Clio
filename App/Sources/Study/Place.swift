@@ -25,8 +25,14 @@ enum WorkPlace: Hashable, Sendable {
         }
     }
 
-    /// Non-empty stable host identity bound to workspace tools and approvals for this turn.
-    var hostID: String { code ?? "desk" }
+    /// Includes the live remote configuration revision. Editing a host invalidates its previous bindings.
+    @MainActor
+    var hostID: String {
+        if case .hill(let id) = self { return Hills.shared.hostBindingID(id) }
+        return code ?? "desk"
+    }
+
+    static let missingHostMessage = "所选的远程主机已删除或不可用，请重新选择工作地点。"
 
     var symbol: String {
         switch self {
@@ -51,14 +57,14 @@ enum WorkPlace: Hashable, Sendable {
         }
     }
 
-    /// The same verbs for every place. A 远山 host that was deleted falls back to 书案.
+    /// The same verbs for every place. A missing remote host has no execution target.
     @MainActor
-    var host: WorkspaceHost {
+    var host: (any WorkspaceHost)? {
         switch self {
         case .desk: return LocalDeskHost()
         case .den: return DenHost()
         case .hill:
-            guard let found = hillHost else { return LocalDeskHost() }
+            guard let found = hillHost else { return nil }
             return SSHHost(found)
         }
     }
@@ -89,7 +95,7 @@ enum WorkPlace: Hashable, Sendable {
         case .den:
             return "\n\n这段絮语的工作地点是斗室（手机里的 Alpine Linux）。八件工作区工具都在斗室里，相对路径从 /root/desk 算起；/root/desk 就是书案，用户在书案里也能看到。"
         case .hill:
-            guard let host = hillHost else { return "\n\n用户把这段絮语的工作地点设在一台远山主机上，但那台主机已经删掉了，现在退回书案。需要时请用户在输入框下重新选地方。" }
+            guard let host = hillHost else { return "\n\n" + Self.missingHostMessage }
             return "\n\n这段絮语的工作地点是远山主机「\(host.name)」（\(host.user)@\(host.address)）。八件工作区工具都在那台电脑上，相对路径从 ~ 算起；要跑很久的命令用 shell 带 background: true 放到后台，之后用 job 查。"
         }
     }

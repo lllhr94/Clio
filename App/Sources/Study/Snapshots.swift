@@ -244,7 +244,12 @@ final class Snapshots {
                     held.insert(which)
                     continue
                 }
-                let host = place.host
+                guard let host = place.host else {
+                    failed.append("\(place.title)：\(kept.path)（主机不可用，没动）")
+                    left[turn.id, default: []].append(kept)
+                    held.insert(which)
+                    continue
+                }
                 do {
                     if let backup = kept.backup {
                         let data = try Data(contentsOf: Self.chatFolder(key).appendingPathComponent(turn.id).appendingPathComponent(backup))
