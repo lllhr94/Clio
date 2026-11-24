@@ -439,7 +439,8 @@ public enum MemoryImporter {
     }
 
     private static func parseStandaloneSubheader(_ trimmed: String) -> String? {
-        if trimmed.hasPrefix("-") || trimmed.hasPrefix("*") || trimmed.hasPrefix("•")
+        let isAsteriskBullet = trimmed.hasPrefix("*") && !trimmed.hasPrefix("**")
+        if trimmed.hasPrefix("-") || isAsteriskBullet || trimmed.hasPrefix("+") || trimmed.hasPrefix("•")
             || trimmed.hasPrefix("·") || trimmed.hasPrefix(">") {
             return nil
         }
@@ -465,7 +466,7 @@ public enum MemoryImporter {
         ) {
             working = String(working[checkboxRange.upperBound...])
         } else if let bulletRange = working.range(
-            of: #"^(?:[-*+]\s+|[•·▪▫◦‣●○]\s*|\d{1,3}[\.\)、]\s+|[\(（]\d{1,3}[\)）]\s*)"#,
+            of: #"^(?:[-*+]\s+|[•·▪▫◦‣●○]\s*|\d{1,3}(?:[\.\)]\s+|、\s*)|[\(（]\d{1,3}[\)）]\s*)"#,
             options: .regularExpression
         ) {
             working = String(working[bulletRange.upperBound...])
