@@ -342,13 +342,18 @@ extension TeamModel {
             || current?.topic != cleanTopic
 
         if layer == .archived {
+            if !keeping {
+                setMemoryLayer(id, .archived)
+                return
+            }
             if textChanged {
                 if !memories.contains(where: { $0.id == id }) {
-                    setMemoryLayer(id, .surface)
+                    // Temporarily promote through `.deep` so editing text never runs `settleMemory` or bumps `used`.
+                    setMemoryLayer(id, .deep)
                 }
                 editMemory(id, safeText)
-            }
-            if metaChanged {
+                setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
+            } else if metaChanged {
                 setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
             }
             return
@@ -446,6 +451,37 @@ extension TeamModel {
 
             var nextBook = memoryBook
             nextBook.memories = nextMemories
+
+            if activeEntries.count == 1 {
+                let single = activeEntries[0]
+                let finalLayer: MemoryLayer
+                if single.layer == .pinned {
+                    finalLayer = .pinned
+                } else if let settled = nextMemories.first(where: { $0.id == single.memory.id }) {
+                    finalLayer = settled.deep == true ? .deep : .surface
+                } else {
+                    finalLayer = single.layer
+                }
+                let mutation: MemoryCommitMutation
+                if finalLayer == .pinned || single.kind != "fact" || !single.topic.isEmpty {
+                    mutation = .layerAndMetadata(
+                        id: single.memory.id,
+                        layer: finalLayer,
+                        kind: single.kind,
+                        topic: single.topic,
+                        confidence: nil,
+                        fallbackMemory: single.memory,
+                        nowMs: now
+                    )
+                } else {
+                    mutation = .remember(memory: single.memory, explicitUserAction: true, nowMs: now)
+                }
+                guard (try? commitMemoryBook(nextBook, mutation: mutation)) != nil else {
+                    return 0
+                }
+                return 1
+            }
+
             guard (try? commitMemoryBook(nextBook, mutation: .none)) != nil else {
                 return 0
             }
@@ -570,7 +606,8 @@ extension TeamModel {
 
     private func performDeleteMemory(_ id: String) -> Bool {
         guard canMutateMemoryState else { return false }
-        let removed = memories.first { $0.id == id }
+        let removedText = memories.first(where: { $0.id == id })?.text
+            ?? (keeping ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text : nil)
         let now = Now.ms
         var nextBook = memoryBook
         nextBook.memories.removeAll { $0.id == id }
@@ -580,14 +617,14 @@ extension TeamModel {
             memories = nextBook.memories
             memoryBook = nextBook
             memoryReviews = nextBook.reviews
-            memoryPromptState.retract(id: id, textForInFlightGuard: removed?.text)
+            memoryPromptState.retract(id: id, textForInFlightGuard: removedText)
             syncLivePromptsFromMemories()
             return true
         }
 
         guard (try? commitMemoryBook(
             nextBook,
-            mutation: .softDelete(items: [(id: id, text: removed?.text)], reason: "user_delete", nowMs: now)
+            mutation: .softDelete(items: [(id: id, text: removedText)], reason: "user_delete", nowMs: now)
         )) != nil else {
             return false
         }

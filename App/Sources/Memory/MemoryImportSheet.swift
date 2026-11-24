@@ -11,11 +11,16 @@ struct MemoryImportSheet: View {
     @State private var rawText = ""
     @State private var defaultLayer: MemoryLayer = .surface
     @State private var pickingFile = false
+    @State private var loadingFile = false
     @State private var loadedFileName: String?
     @State private var fileError: String?
     @State private var candidates: [MemoryImportCandidate] = []
     @State private var skipped: [MemoryImportSkippedItem] = []
     @State private var commitNotice: String?
+
+    @State private var cachedSecrets: [String] = []
+    @State private var cachedExistingTexts: [String] = []
+    @State private var cachedSuppressedHashes: Set<String> = []
 
     private static let maxImportBytes = 1_048_576
 
@@ -73,7 +78,7 @@ struct MemoryImportSheet: View {
                         commitImport()
                     }
                     .fontWeight(.semibold)
-                    .disabled(selectedCount == 0 || !team.canMutateMemoryState)
+                    .disabled(selectedCount == 0 || loadingFile || !team.canMutateMemoryState)
                 }
             }
             .fileImporter(
@@ -100,8 +105,8 @@ struct MemoryImportSheet: View {
             .onChange(of: defaultLayer) { _, _ in
                 reparse(preservingDeselections: true)
             }
-            .onAppear {
-                reparse(preservingDeselections: false)
+            .task {
+                await loadImportContext()
             }
         }
     }
@@ -142,6 +147,12 @@ struct MemoryImportSheet: View {
                             .foregroundStyle(Ink.accent)
                     }
                     .buttonStyle(TapStyle())
+                    .disabled(loadingFile)
+
+                    if loadingFile {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
 
                     Spacer(minLength: Ink.Space.s)
 
@@ -269,7 +280,7 @@ struct MemoryImportSheet: View {
                         toggleSelection(id: item.id)
                     }
 
-                HStack(spacing: Ink.Space.xs) {
+                WrapLayout(spacing: Ink.Space.xs) {
                     Menu {
                         ForEach(MemoryLayer.allCases, id: \.self) { layer in
                             Button {
@@ -312,16 +323,6 @@ struct MemoryImportSheet: View {
         .padding(.vertical, Ink.Space.m)
     }
 
-    private func toggleSelection(id: String) {
-        guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
-        candidates[index].selected.toggle()
-    }
-
-    private func setTargetLayer(id: String, layer: MemoryLayer) {
-        guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
-        candidates[index].targetLayer = layer
-    }
-
     private var skippedSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.format("memoryImport.skippedSection", skipped.count))
@@ -331,7 +332,7 @@ struct MemoryImportSheet: View {
                         Kit.rule(inset: Ink.Space.l)
                     }
                     VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        Text(item.text)
+                        Text(item.reason == .secretDetected ? L.t("memoryImport.secretBlockedPreview") : item.text)
                             .font(.system(size: Ink.Size.small))
                             .foregroundStyle(Ink.inkSoft)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -351,6 +352,35 @@ struct MemoryImportSheet: View {
 
     // MARK: - Actions
 
+    private func toggleSelection(id: String) {
+        guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
+        candidates[index].selected.toggle()
+    }
+
+    private func setTargetLayer(id: String, layer: MemoryLayer) {
+        guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
+        candidates[index].targetLayer = layer
+    }
+
+    private func loadImportContext() async {
+        let liveTexts = team.memories.map(\.text)
+        let promptSuppressed = team.memoryPromptState.suppressedFlushHashesSnapshot()
+        let keeping = team.keeping
+
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            let secrets = Vault.allStrings()
+            let archivedTexts = keeping
+                ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.text)
+                : []
+            return (secrets: secrets, archivedTexts: archivedTexts)
+        }.value
+
+        cachedSecrets = snapshot.secrets
+        cachedExistingTexts = liveTexts + snapshot.archivedTexts
+        cachedSuppressedHashes = promptSuppressed
+        reparse(preservingDeselections: true)
+    }
+
     private func reparse(preservingDeselections: Bool) {
         let deselectedKeys: Set<String>
         if preservingDeselections {
@@ -361,69 +391,92 @@ struct MemoryImportSheet: View {
             deselectedKeys = []
         }
 
-        var existingTexts = team.memories.map(\.text)
-        if team.keeping {
-            existingTexts.append(contentsOf: team.archivedMemories.map(\.text))
+        let keeping = team.keeping
+        let retractedCheck: ((String) -> Bool)?
+        if keeping {
+            retractedCheck = { MemoryStoreBridge.shared.isSuppressedInShadow(text: $0) }
+        } else {
+            retractedCheck = nil
         }
-        let suppressedHashes = team.memoryPromptState.suppressedFlushHashesSnapshot()
-        let secrets = Vault.allStrings()
 
         let preview = MemoryImporter.parse(
             rawText,
             defaultLayer: defaultLayer,
-            existingTexts: existingTexts,
-            suppressedHashes: suppressedHashes,
-            secrets: secrets
+            existingTexts: cachedExistingTexts,
+            suppressedHashes: cachedSuppressedHashes,
+            secrets: cachedSecrets,
+            isRetracted: retractedCheck
         )
 
-        var nextCandidates: [MemoryImportCandidate] = []
-        var nextSkipped = preview.skipped
-        for var candidate in preview.candidates {
-            if team.keeping && MemoryStoreBridge.shared.isSuppressedInShadow(text: candidate.text) {
-                nextSkipped.append(MemoryImportSkippedItem(text: candidate.text, reason: .retracted))
-                continue
+        var nextCandidates = preview.candidates
+        if !deselectedKeys.isEmpty {
+            for index in nextCandidates.indices {
+                let key = MemorySafety.normalizedFactKey(nextCandidates[index].text)
+                if deselectedKeys.contains(key) {
+                    nextCandidates[index].selected = false
+                }
             }
-            let key = MemorySafety.normalizedFactKey(candidate.text)
-            if deselectedKeys.contains(key) {
-                candidate.selected = false
-            }
-            nextCandidates.append(candidate)
         }
 
         candidates = nextCandidates
-        skipped = nextSkipped
+        skipped = preview.skipped
     }
 
     private func handlePickedFile(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else {
             return
         }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer {
-            if scoped { url.stopAccessingSecurityScopedResource() }
+        loadingFile = true
+        fileError = nil
+
+        Task {
+            defer { loadingFile = false }
+            let loadResult = await Self.readTextFile(at: url, maxBytes: Self.maxImportBytes)
+            switch loadResult {
+            case .success(let decoded):
+                fileError = nil
+                loadedFileName = url.lastPathComponent
+                rawText = decoded
+            case .failure(let errorKey):
+                fileError = L.t(errorKey)
+            }
         }
-        do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey])
-            if let fileSize = values.fileSize, fileSize > Self.maxImportBytes {
-                fileError = L.t("memoryImport.fileReadError")
-                return
+    }
+
+    private enum FileReadResult: Sendable {
+        case success(String)
+        case failure(String)
+    }
+
+    private nonisolated static func readTextFile(at url: URL, maxBytes: Int) async -> FileReadResult {
+        await Task.detached(priority: .userInitiated) {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
             }
-            let data = try Data(contentsOf: url)
-            guard data.count <= Self.maxImportBytes else {
-                fileError = L.t("memoryImport.fileReadError")
-                return
+            do {
+                let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                if values.isRegularFile == false {
+                    return .failure("memoryImport.fileNotRegularError")
+                }
+                if let fileSize = values.fileSize, fileSize > maxBytes {
+                    return .failure("memoryImport.fileReadError")
+                }
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                guard data.count <= maxBytes else {
+                    return .failure("memoryImport.fileReadError")
+                }
+                if let utf8 = String(data: data, encoding: .utf8) {
+                    return .success(utf8)
+                }
+                if let utf16 = String(data: data, encoding: .utf16) {
+                    return .success(utf16)
+                }
+                return .failure("memoryImport.fileEncodingError")
+            } catch {
+                return .failure("memoryImport.fileReadError")
             }
-            let decoded = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
-            guard let decoded else {
-                fileError = L.t("memoryImport.fileReadError")
-                return
-            }
-            fileError = nil
-            loadedFileName = url.lastPathComponent
-            rawText = decoded
-        } catch {
-            fileError = L.t("memoryImport.fileReadError")
-        }
+        }.value
     }
 
     private func commitImport() {
@@ -440,7 +493,9 @@ struct MemoryImportSheet: View {
         } else {
             Haptics.thud()
             commitNotice = L.t("memoryImport.noneCommitted")
-            reparse(preservingDeselections: true)
+            Task {
+                await loadImportContext()
+            }
         }
     }
 }

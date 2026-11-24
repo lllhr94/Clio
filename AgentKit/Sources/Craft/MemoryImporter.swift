@@ -78,6 +78,8 @@ public struct MemoryImportPreview: Equatable, Sendable {
 /// Parses pasted notes and `.txt` / `.md` memory exports (including Clio mirrors, ChatGPT, and Claude notes)
 /// into sanitized, deduplicated, secret-safe `MemoryImportCandidate` items.
 public enum MemoryImporter {
+    public static let redactedSecretPreview = "〔隐去〕已拦截疑似包含密钥或敏感凭据的条目"
+
     private static let maxFactBytes = 450
     private static let maxTopicLength = 40
 
@@ -142,7 +144,8 @@ public enum MemoryImporter {
         defaultLayer: MemoryLayer = .surface,
         existingTexts: [String] = [],
         suppressedHashes: Set<String> = [],
-        secrets: [String] = []
+        secrets: [String] = [],
+        isRetracted: ((String) -> Bool)? = nil
     ) -> MemoryImportPreview {
         let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         let normalized = normalizeInputLines(rawText)
@@ -234,8 +237,7 @@ public enum MemoryImporter {
             guard !bodyText.isEmpty else { continue }
 
             if containsSecret(bodyText, orderedSecrets: orderedSecrets) {
-                let masked = redactForPreview(bodyText, orderedSecrets: orderedSecrets)
-                skipped.append(MemoryImportSkippedItem(text: masked, reason: .secretDetected))
+                skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
                 continue
             }
 
@@ -253,7 +255,7 @@ public enum MemoryImporter {
             let hash = MemorySafety.retractionHash(sanitized)
             guard !key.isEmpty, !hash.isEmpty else { continue }
 
-            if suppressedSet.contains(hash) {
+            if suppressedSet.contains(hash) || isRetracted?(sanitized) == true {
                 skipped.append(MemoryImportSkippedItem(text: sanitized, reason: .retracted))
                 continue
             }
@@ -594,27 +596,5 @@ public enum MemoryImporter {
             }
         }
         return false
-    }
-
-    private static func redactForPreview(_ text: String, orderedSecrets: [String]) -> String {
-        var result = orderedSecrets.isEmpty ? text : MemorySafety.redactSecrets(text, secrets: orderedSecrets)
-        for pattern in tokenSecretPatterns {
-            result = result.replacingOccurrences(of: pattern, with: "〔隐去〕", options: .regularExpression)
-        }
-        if let regex = try? NSRegularExpression(pattern: assignmentSecretPattern, options: []) {
-            let nsRange = NSRange(result.startIndex..<result.endIndex, in: result)
-            let matches = regex.matches(in: result, options: [], range: nsRange).reversed()
-            for match in matches {
-                guard match.numberOfRanges >= 2,
-                      let rhsRange = Range(match.range(at: 1), in: result) else {
-                    continue
-                }
-                let rhs = String(result[rhsRange]).lowercased()
-                if rhs.count >= 4 && !harmlessSecretPlaceholders.contains(rhs) {
-                    result.replaceSubrange(rhsRange, with: "〔隐去〕")
-                }
-            }
-        }
-        return result
     }
 }

@@ -193,14 +193,36 @@ final class MemoryImporterTests: XCTestCase {
         XCTAssertEqual(preview.skipped.filter { $0.reason == .secretDetected }.count, 5)
         XCTAssertEqual(preview.skipped.filter { $0.reason == .tooLong }.count, 1)
 
-        // Ensure raw secret tokens never leak into skipped preview text.
+        // Ensure secret-blocked skipped items use the generic redacted placeholder and leak zero characters.
         for item in preview.skipped where item.reason == .secretDetected {
+            XCTAssertEqual(item.text, MemoryImporter.redactedSecretPreview)
             XCTAssertFalse(item.text.contains(syntheticVaultSecret))
             XCTAssertFalse(item.text.contains(syntheticApiToken))
             XCTAssertFalse(item.text.contains(syntheticGhToken))
             XCTAssertFalse(item.text.contains("demo-pass-9876"))
+            XCTAssertFalse(item.text.contains("OpenAI"))
+            XCTAssertFalse(item.text.contains("password"))
             XCTAssertTrue(item.text.contains("〔隐去〕"))
         }
+    }
+
+    func testRetractedPredicateDeduplicatesRepeatedRetractedItems() {
+        let retractedText = "以前用过某旧系统"
+        let input = """
+        - \(retractedText)
+        - \(retractedText)
+        - 喜欢喝绿茶
+        """
+
+        let preview = MemoryImporter.parse(
+            input,
+            defaultLayer: .surface,
+            isRetracted: { $0 == retractedText }
+        )
+
+        XCTAssertEqual(preview.candidates.map(\.text), ["喜欢喝绿茶"])
+        XCTAssertEqual(preview.skipped.count, 2)
+        XCTAssertTrue(preview.skipped.allSatisfy { $0.reason == .retracted })
     }
 
     func testParsesChatGPTStyleNoteAndInlineTagSyntax() {

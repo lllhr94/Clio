@@ -81,11 +81,13 @@ struct MemoryBadgePill: View {
     var foreground: Color = Ink.inkSoft
     var background: Color = Ink.rule.opacity(0.55)
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         Text(text)
             .font(.system(size: Ink.Size.micro, weight: .medium))
             .foregroundStyle(foreground)
-            .lineLimit(1)
+            .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
             .padding(.horizontal, Ink.Space.s)
             .padding(.vertical, Ink.Space.xs / 2)
             .background(background, in: Capsule())
@@ -131,30 +133,41 @@ struct MemoryPageV2: View {
     @State private var importFeedback: String?
     @State private var refreshRevision = 0
 
-    private var allRecords: [MemoryRecord] {
-        _ = refreshRevision
-        var byID: [String: MemoryRecord] = [:]
-        if team.keeping {
-            for record in MemoryStoreBridge.shared.recordsSnapshot() {
-                byID[record.id] = record
-            }
-        }
+    @State private var cachedSnapshotByID: [String: MemoryRecord] = [:]
+    @State private var cachedArchived: [MemoryRecord] = []
+    @State private var cachedPinnedIDs: Set<String> = []
+    @State private var snapshotToken = 0
 
+    private var allRecords: [MemoryRecord] {
         var combined: [MemoryRecord] = []
         var seenIDs = Set<String>()
         for memory in team.memories {
             seenIDs.insert(memory.id)
-            if var snapshot = byID[memory.id] {
+            if var snapshot = cachedSnapshotByID[memory.id] {
                 snapshot.text = memory.text
                 if snapshot.layer != .pinned {
                     snapshot.layer = memory.deep == true ? .deep : .surface
                 }
                 combined.append(snapshot)
-            } else if let record = team.memoryRecord(id: memory.id) {
-                combined.append(record)
+            } else {
+                let pinned = team.keeping && cachedPinnedIDs.contains(memory.id)
+                let fallbackLayer: MemoryLayer = pinned ? .pinned : (memory.deep == true ? .deep : .surface)
+                combined.append(
+                    MemoryRecord(
+                        id: memory.id,
+                        text: memory.text,
+                        layer: fallbackLayer,
+                        pinned: pinned,
+                        createdAtMs: memory.at,
+                        usedAtMs: memory.used,
+                        byBot: memory.by,
+                        automatic: memory.automatic == true,
+                        editedByUser: memory.editedByUser == true
+                    )
+                )
             }
         }
-        for archived in team.archivedMemories where seenIDs.insert(archived.id).inserted {
+        for archived in cachedArchived where seenIDs.insert(archived.id).inserted {
             combined.append(archived)
         }
         return combined.sorted { lhs, rhs in
@@ -165,30 +178,24 @@ struct MemoryPageV2: View {
         }
     }
 
-    private var filteredRecords: [MemoryRecord] {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return allRecords.filter { record in
-            if let targetLayer = filter.layer, record.layer != targetLayer {
-                return false
-            }
-            if trimmedQuery.isEmpty {
-                return true
-            }
-            if record.text.localizedCaseInsensitiveContains(trimmedQuery) {
-                return true
-            }
-            if !record.topic.isEmpty && record.topic.localizedCaseInsensitiveContains(trimmedQuery) {
-                return true
-            }
-            if MemoryV2Copy.kindTitle(record.kind).localizedCaseInsensitiveContains(trimmedQuery) {
-                return true
-            }
-            if MemoryV2Copy.provenanceText(for: record, bots: team.bots)
-                .localizedCaseInsensitiveContains(trimmedQuery) {
-                return true
-            }
-            return false
+    private func matchesQuery(_ record: MemoryRecord, trimmedQuery: String) -> Bool {
+        if trimmedQuery.isEmpty {
+            return true
         }
+        if record.text.localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if !record.topic.isEmpty && record.topic.localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if MemoryV2Copy.kindTitle(record.kind).localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        if MemoryV2Copy.provenanceText(for: record, bots: team.bots)
+            .localizedCaseInsensitiveContains(trimmedQuery) {
+            return true
+        }
+        return false
     }
 
     private func count(for layer: MemoryLayer, in records: [MemoryRecord]) -> Int {
@@ -197,61 +204,87 @@ struct MemoryPageV2: View {
 
     var body: some View {
         let recordsSnapshot = allRecords
-        let visibleRecords = filteredRecords
-        return contentScrollView(allCount: recordsSnapshot.count, visible: visibleRecords)
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
-            .background(Ink.paper.ignoresSafeArea())
-            .searchable(
-                text: $query,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: L.t("memoryV2.searchPrompt")
-            )
-            .navigationTitle(L.t("nav.memory"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbarItems }
-            .sheet(item: $editingRecord) { record in
-                MemoryDetailSheet(team: team, record: record) {
-                    refreshRevision &+= 1
-                }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let queryMatched = recordsSnapshot.filter { matchesQuery($0, trimmedQuery: trimmedQuery) }
+        let visibleRecords = queryMatched.filter { record in
+            if let targetLayer = filter.layer {
+                return record.layer == targetLayer
             }
-            .sheet(isPresented: $showingImport) {
-                MemoryImportSheet(team: team) { importedCount in
-                    refreshRevision &+= 1
-                    importFeedback = L.format("memoryV2.importedToast", importedCount)
-                }
+            return true
+        }
+
+        return contentScrollView(
+            allRecords: recordsSnapshot,
+            visible: visibleRecords,
+            otherLayerMatchCount: filter == .all ? 0 : queryMatched.count,
+            trimmedQuery: trimmedQuery
+        )
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .background(Ink.paper.ignoresSafeArea())
+        .searchable(
+            text: $query,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: L.t("memoryV2.searchPrompt")
+        )
+        .navigationTitle(L.t("nav.memory"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { toolbarItems }
+        .task {
+            await reloadSnapshots()
+        }
+        .onChange(of: team.memories) { _, _ in
+            Task { await reloadSnapshots() }
+        }
+        .onChange(of: refreshRevision) { _, _ in
+            Task { await reloadSnapshots() }
+        }
+        .sheet(item: $editingRecord) { record in
+            MemoryDetailSheet(team: team, record: record) {
+                refreshRevision &+= 1
             }
-            .sheet(isPresented: $showingMirrors) {
-                MemoryMirrorViewerSheet(team: team)
+        }
+        .sheet(isPresented: $showingImport) {
+            MemoryImportSheet(team: team) { importedCount in
+                refreshRevision &+= 1
+                importFeedback = L.format("memoryV2.importedToast", importedCount)
             }
-            .confirmationDialog(
-                L.t("memoryV2.deleteConfirmTitle"),
-                isPresented: Binding(
-                    get: { deletingRecord != nil },
-                    set: { if !$0 { deletingRecord = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button(L.t("actions.delete"), role: .destructive) {
-                    if let target = deletingRecord {
-                        withAnimation(Ink.Motion.settle) {
-                            team.deleteMemory(target.id)
-                            refreshRevision &+= 1
-                        }
+        }
+        .sheet(isPresented: $showingMirrors) {
+            MemoryMirrorViewerSheet(team: team)
+        }
+        .confirmationDialog(
+            L.t("memoryV2.deleteConfirmTitle"),
+            isPresented: Binding(
+                get: { deletingRecord != nil },
+                set: { if !$0 { deletingRecord = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L.t("actions.delete"), role: .destructive) {
+                if let target = deletingRecord {
+                    withAnimation(Ink.Motion.settle) {
+                        team.deleteMemory(target.id)
+                        refreshRevision &+= 1
                     }
-                    deletingRecord = nil
                 }
-                Button(L.t("actions.cancel"), role: .cancel) {
-                    deletingRecord = nil
-                }
-            } message: {
-                Text(L.t("errors.cannotUndo"))
+                deletingRecord = nil
             }
+            Button(L.t("actions.cancel"), role: .cancel) {
+                deletingRecord = nil
+            }
+        } message: {
+            Text(L.t("errors.cannotUndo"))
+        }
     }
 
-    private func contentScrollView(allCount: Int, visible: [MemoryRecord]) -> some View {
-        let recordsSnapshot = allRecords
-        return ScrollView {
+    private func contentScrollView(
+        allRecords recordsSnapshot: [MemoryRecord],
+        visible: [MemoryRecord],
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
+        ScrollView {
             LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
                 if team.phase == .demo {
                     noticeBanner(L.t("settings.demoData"), tint: Ink.inkSoft)
@@ -265,12 +298,48 @@ struct MemoryPageV2: View {
 
                 layerFilterSection(recordsSnapshot)
                 quickAddAndToolsSection
-                memoryListSection(allCount: allCount, visible: visible)
+                memoryListSection(
+                    allCount: recordsSnapshot.count,
+                    visible: visible,
+                    otherLayerMatchCount: otherLayerMatchCount,
+                    trimmedQuery: trimmedQuery
+                )
                 MemoryReviewHistory(records: team.memoryReviews)
             }
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.l)
         }
+    }
+
+    // MARK: - Snapshot Sync
+
+    private func reloadSnapshots() async {
+        snapshotToken &+= 1
+        let token = snapshotToken
+        guard team.keeping else {
+            cachedSnapshotByID = [:]
+            cachedArchived = []
+            cachedPinnedIDs = []
+            return
+        }
+        let all = await Task.detached(priority: .userInitiated) {
+            MemoryStoreBridge.shared.recordsSnapshot()
+        }.value
+        guard token == snapshotToken else { return }
+        var byID: [String: MemoryRecord] = [:]
+        var archived: [MemoryRecord] = []
+        var pins = Set<String>()
+        for record in all {
+            byID[record.id] = record
+            if record.layer == .archived {
+                archived.append(record)
+            } else if record.layer == .pinned {
+                pins.insert(record.id)
+            }
+        }
+        cachedSnapshotByID = byID
+        cachedArchived = archived
+        cachedPinnedIDs = pins
     }
 
     // MARK: - Toolbar & Banners
@@ -410,9 +479,18 @@ struct MemoryPageV2: View {
     // MARK: - Memory List
 
     @ViewBuilder
-    private func memoryListSection(allCount: Int, visible: [MemoryRecord]) -> some View {
+    private func memoryListSection(
+        allCount: Int,
+        visible: [MemoryRecord],
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
         if visible.isEmpty {
-            emptyStateCard(allCount: allCount)
+            emptyStateCard(
+                allCount: allCount,
+                otherLayerMatchCount: otherLayerMatchCount,
+                trimmedQuery: trimmedQuery
+            )
         } else if filter == .all {
             VStack(alignment: .leading, spacing: Ink.Space.l) {
                 ForEach(MemoryLayer.allCases, id: \.self) { layer in
@@ -449,7 +527,7 @@ struct MemoryPageV2: View {
                 .foregroundStyle(record.layer == .archived ? Ink.inkSoft : Ink.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: Ink.Space.xs) {
+            WrapLayout(spacing: Ink.Space.xs) {
                 MemoryBadgePill(
                     text: MemoryV2Copy.layerTitle(record.layer),
                     foreground: MemoryV2Copy.layerTint(record.layer),
@@ -477,8 +555,6 @@ struct MemoryPageV2: View {
                         background: Ink.rule.opacity(0.4)
                     )
                 }
-
-                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, Ink.Space.l)
@@ -542,11 +618,19 @@ struct MemoryPageV2: View {
         }
     }
 
-    private func emptyStateCard(allCount: Int) -> some View {
+    private func emptyStateCard(
+        allCount: Int,
+        otherLayerMatchCount: Int,
+        trimmedQuery: String
+    ) -> some View {
         let message: String
         let detail: String?
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            message = L.t("empty.searchNoResult")
+        if !trimmedQuery.isEmpty {
+            if otherLayerMatchCount > 0 {
+                message = L.format("memoryV2.searchFoundInOtherLayers", otherLayerMatchCount)
+            } else {
+                message = L.t("empty.searchNoResult")
+            }
             detail = nil
         } else if allCount == 0 {
             message = L.t("empty.memory")
@@ -559,7 +643,7 @@ struct MemoryPageV2: View {
             detail = nil
         }
 
-        return VStack(alignment: .leading, spacing: Ink.Space.xs) {
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
             Text(message)
                 .font(.system(size: Ink.Size.sub))
                 .foregroundStyle(Ink.inkSoft)
@@ -567,6 +651,22 @@ struct MemoryPageV2: View {
                 Text(detail)
                     .font(.system(size: Ink.Size.small))
                     .foregroundStyle(Ink.inkFaint)
+            }
+            if !trimmedQuery.isEmpty && otherLayerMatchCount > 0 {
+                Button {
+                    Haptics.light()
+                    withAnimation(Ink.Motion.settle) {
+                        filter = .all
+                    }
+                } label: {
+                    Text(L.t("memoryV2.switchToAll"))
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.xs)
+                        .background(Ink.accentWash, in: Capsule())
+                }
+                .buttonStyle(TapStyle())
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -860,6 +960,9 @@ private struct MemoryMirrorViewerSheet: View {
 
     @State private var tab: MirrorTab = .dangan
     @State private var useMonospace = true
+    @State private var content = ""
+    @State private var fileURL: URL?
+    @State private var loading = true
 
     private var currentFilename: String {
         switch tab {
@@ -868,56 +971,8 @@ private struct MemoryMirrorViewerSheet: View {
         }
     }
 
-    private var currentFileURL: URL? {
-        guard team.keeping else { return nil }
-        let url: URL
-        switch tab {
-        case .dangan: url = MemoryMarkdownMirror.danganURL
-        case .zhenzhi: url = MemoryMarkdownMirror.zhenzhiURL
-        }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-
-    private var currentText: String {
-        if team.keeping {
-            let fromDisk: String?
-            switch tab {
-            case .dangan: fromDisk = MemoryMarkdownMirror.readDangan()
-            case .zhenzhi: fromDisk = MemoryMarkdownMirror.readZhenzhi()
-            }
-            if let fromDisk, !fromDisk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return fromDisk
-            }
-        }
-
-        let records = fallbackRecords
-        let secrets = Vault.allStrings()
-        switch tab {
-        case .dangan:
-            let bots = team.bots.map {
-                MemoryMirrorBot(
-                    name: $0.name,
-                    role: $0.role,
-                    isMain: $0.id == team.mainBotId || $0.main == true
-                )
-            }
-            return MemoryMarkdownRenderer.renderDangan(records: records, bots: bots, secrets: secrets)
-        case .zhenzhi:
-            return MemoryMarkdownRenderer.renderZhenzhi(records: records, secrets: secrets)
-        }
-    }
-
-    private var fallbackRecords: [MemoryRecord] {
-        if team.keeping {
-            return MemoryStoreBridge.shared.recordsSnapshot()
-        }
-        return team.memories.compactMap { team.memoryRecord(id: $0.id) }
-    }
-
     var body: some View {
-        let content = currentText
-        let fileURL = currentFileURL
-        return NavigationStack {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     Picker(L.t("memoryV2.mirrorsTitle"), selection: $tab) {
@@ -941,7 +996,11 @@ private struct MemoryMirrorViewerSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 0) {
-                        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if loading {
+                            ProgressView(L.t("loading.generic"))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, Ink.Space.l)
+                        } else if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Text(L.t("memoryV2.mirrorEmpty"))
                                 .font(.system(size: Ink.Size.sub))
                                 .foregroundStyle(Ink.inkSoft)
@@ -972,7 +1031,7 @@ private struct MemoryMirrorViewerSheet: View {
                         ) {
                             Image(systemName: "square.and.arrow.up")
                         }
-                    } else {
+                    } else if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ShareLink(
                             item: content,
                             preview: SharePreview(currentFilename)
@@ -987,6 +1046,84 @@ private struct MemoryMirrorViewerSheet: View {
                     }
                 }
             }
+            .task(id: tab) {
+                await loadMirror()
+            }
         }
+    }
+
+    private func loadMirror() async {
+        loading = true
+        let selectedTab = tab
+        let keeping = team.keeping
+        let fallbackRecords: [MemoryRecord]
+        if keeping {
+            fallbackRecords = []
+        } else {
+            fallbackRecords = team.memories.map { mem in
+                MemoryRecord(
+                    id: mem.id,
+                    text: mem.text,
+                    layer: mem.deep == true ? .deep : .surface,
+                    createdAtMs: mem.at,
+                    usedAtMs: mem.used,
+                    byBot: mem.by,
+                    automatic: mem.automatic == true,
+                    editedByUser: mem.editedByUser == true
+                )
+            }
+        }
+        let mirrorBots = team.bots.map {
+            MemoryMirrorBot(
+                name: $0.name,
+                role: $0.role,
+                isMain: $0.id == team.mainBotId || $0.main == true
+            )
+        }
+
+        let loaded: (text: String, url: URL?) = await Task.detached(priority: .userInitiated) {
+            let secrets = Vault.allStrings()
+            if keeping {
+                MemoryStoreBridge.shared.flushSync()
+                let records = MemoryStoreBridge.shared.recordsSnapshot()
+                switch selectedTab {
+                case .dangan:
+                    let disk = MemoryMarkdownMirror.readDangan()
+                    let text: String
+                    if let disk, !disk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        text = disk
+                    } else {
+                        text = MemoryMarkdownRenderer.renderDangan(records: records, bots: mirrorBots, secrets: secrets)
+                    }
+                    let url = FileManager.default.fileExists(atPath: MemoryMarkdownMirror.danganURL.path)
+                        ? MemoryMarkdownMirror.danganURL
+                        : nil
+                    return (text, url)
+                case .zhenzhi:
+                    let disk = MemoryMarkdownMirror.readZhenzhi()
+                    let text: String
+                    if let disk, !disk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        text = disk
+                    } else {
+                        text = MemoryMarkdownRenderer.renderZhenzhi(records: records, secrets: secrets)
+                    }
+                    let url = FileManager.default.fileExists(atPath: MemoryMarkdownMirror.zhenzhiURL.path)
+                        ? MemoryMarkdownMirror.zhenzhiURL
+                        : nil
+                    return (text, url)
+                }
+            } else {
+                switch selectedTab {
+                case .dangan:
+                    return (MemoryMarkdownRenderer.renderDangan(records: fallbackRecords, bots: mirrorBots, secrets: secrets), nil)
+                case .zhenzhi:
+                    return (MemoryMarkdownRenderer.renderZhenzhi(records: fallbackRecords, secrets: secrets), nil)
+                }
+            }
+        }.value
+
+        content = loaded.text
+        fileURL = loaded.url
+        loading = false
     }
 }

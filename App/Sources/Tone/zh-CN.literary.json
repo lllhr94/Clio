@@ -1104,7 +1104,9 @@
     "mirrorEmpty": "当前还没有生成该镜像内容。",
     "mirrorLocationNote": "只读镜像保存在应用私有目录（ClioMemory/Mirrors/），不在「书案」里，也不会放入备份或直接暴露给旅伴的目录树。",
     "mirrorFontCode": "等宽",
-    "mirrorFontSerif": "衬线"
+    "mirrorFontSerif": "衬线",
+    "searchFoundInOtherLayers": "当前分层下没有匹配项，但在其他分层找到 %lld 条。",
+    "switchToAll": "查看全部拾遗"
   },
   "memoryImport": {
     "title": "导入拾遗",
@@ -1116,6 +1118,9 @@
     "clearInput": "清空",
     "loadedFile": "已读取：%@",
     "fileReadError": "读不到这个文件（请确认是 UTF-8 文本且不超过 1 MB）。",
+    "fileNotRegularError": "请选择普通文本或 Markdown 文件。",
+    "fileEncodingError": "无法识别文件编码，请确认是 UTF-8 或 UTF-16 文本文件。",
+    "secretBlockedPreview": "已拦截疑似包含密钥或敏感凭据的条目",
     "defaultLayerLabel": "默认存入",
     "defaultLayerNote": "带有 Clio 镜像分段标题的条目会保持原层级；其余普通条目默认存入所选层级。",
     "previewSection": "导入预览",
