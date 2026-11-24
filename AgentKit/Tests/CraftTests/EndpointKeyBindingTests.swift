@@ -5,85 +5,128 @@ import XCTest
 final class EndpointKeyBindingTests: XCTestCase {
     private final class FakeServiceEnvironment {
         var endpoints: [String: String]
-        var vault: [String: String]
-        var origins: [String: String]
-        var failWriteSlots: Set<String> = []
-        var failWriteCallCount = 0
-        var failOnWriteIndex: Int?
-        var failSettingsCommit = false
-        var failSettingsOnCallIndex: Int?
-        private var writeAttempts = 0
-        private var settingsAttempts = 0
+        var boundRecords: [String: Data]
+        var boundMarkers: Set<String>
+        var legacyKeys: [String: String]
 
-        init(endpoints: [String: String], vault: [String: String], origins: [String: String]) {
+        var failWriteSlots: Set<String> = []
+        var failRemove = false
+        var failSettingsCommit = false
+        var nextGeneratedIDs: [String] = []
+        private var generatedCount = 0
+
+        init(
+            endpoints: [String: String] = [:],
+            boundRecords: [String: Data] = [:],
+            boundMarkers: Set<String> = [],
+            legacyKeys: [String: String] = [:]
+        ) {
             self.endpoints = endpoints
-            self.vault = vault
-            self.origins = origins
+            self.boundRecords = boundRecords
+            self.boundMarkers = boundMarkers
+            self.legacyKeys = legacyKeys
         }
 
-        func makeStore(for id: String) -> EndpointKeyCoordinator.Store {
+        /// Seeds an endpoint with a properly bound single-record credential.
+        func seedBound(id: String, baseURL: String, key: String) {
+            endpoints[id] = baseURL
+            let origin = EndpointAddressPolicy.rawOrigin(baseURL)!
+            let saved = EndpointKeyCoordinator.saveBoundCredential(
+                endpointID: id,
+                origin: origin,
+                key: key,
+                writeBoundRecord: { slot, data in self.boundRecords[slot] = data; return true },
+                writeBoundMarker: { slot in self.boundMarkers.insert(slot); return true },
+                writeLegacyKey: { slot, value in self.legacyKeys[slot] = value; return true },
+                removeKey: { _ in }
+            )
+            XCTAssertTrue(saved)
+        }
+
+        /// Simulates an app restart by constructing a brand-new environment from persisted state only.
+        func restarted() -> FakeServiceEnvironment {
+            FakeServiceEnvironment(
+                endpoints: endpoints,
+                boundRecords: boundRecords,
+                boundMarkers: boundMarkers,
+                legacyKeys: legacyKeys
+            )
+        }
+
+        func makeStore(for currentID: String) -> EndpointKeyCoordinator.Store {
             EndpointKeyCoordinator.Store(
-                readKey: { [weak self] slot in self?.vault[slot] },
-                writeKey: { [weak self] slot, value in
-                    guard let self else { return false }
-                    self.writeAttempts += 1
-                    if self.failWriteSlots.contains(slot) || self.failOnWriteIndex == self.writeAttempts {
-                        return false
-                    }
-                    self.vault[slot] = value
+                readBoundRecord: { [weak self] slot in self?.boundRecords[slot] },
+                writeBoundRecord: { [weak self] slot, data in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.boundRecords[slot] = data
+                    return true
+                },
+                hasBoundMarker: { [weak self] slot in self?.boundMarkers.contains(slot) == true },
+                writeBoundMarker: { [weak self] slot in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.boundMarkers.insert(slot)
+                    return true
+                },
+                readLegacyKey: { [weak self] slot in self?.legacyKeys[slot] },
+                writeLegacyKey: { [weak self] slot, value in
+                    guard let self, !self.failWriteSlots.contains(slot) else { return false }
+                    self.legacyKeys[slot] = value
                     return true
                 },
                 removeKey: { [weak self] slot in
-                    self?.vault.removeValue(forKey: slot)
+                    guard let self, !self.failRemove else { return }
+                    self.boundRecords.removeValue(forKey: slot)
+                    self.boundMarkers.remove(slot)
+                    self.legacyKeys.removeValue(forKey: slot)
                 },
-                readBoundOrigin: { [weak self] endpointID in
-                    self?.origins[endpointID]
-                },
-                writeBoundOrigin: { [weak self] endpointID, origin in
-                    if let origin {
-                        self?.origins[endpointID] = origin
-                    } else {
-                        self?.origins.removeValue(forKey: endpointID)
+                makeEndpointID: { [weak self] in
+                    guard let self else { return UUID().uuidString }
+                    if !self.nextGeneratedIDs.isEmpty {
+                        return self.nextGeneratedIDs.removeFirst()
                     }
+                    self.generatedCount += 1
+                    return "\(currentID)-migrated-\(self.generatedCount)"
                 },
-                commitSettings: { [weak self] normalizedURL in
-                    guard let self else { return false }
-                    self.settingsAttempts += 1
-                    if self.failSettingsCommit || self.failSettingsOnCallIndex == self.settingsAttempts {
-                        return false
+                commitSettings: { [weak self] targetID, normalizedURL in
+                    guard let self, !self.failSettingsCommit else { return false }
+                    if targetID != currentID {
+                        self.endpoints.removeValue(forKey: currentID)
                     }
-                    self.endpoints[id] = normalizedURL
+                    self.endpoints[targetID] = normalizedURL
                     return true
                 }
             )
         }
 
-        func activeKey(for id: String) -> String? {
-            guard let baseURL = endpoints[id] else { return nil }
-            return EndpointKeyCoordinator.resolveBoundKey(
-                endpointID: id,
-                baseURL: baseURL,
-                readKey: { self.vault[$0] },
-                readBoundOrigin: { self.origins[$0] }
+        func resolveKey(endpointID: String, requestURL: String) -> String? {
+            EndpointKeyCoordinator.resolveBoundKey(
+                endpointID: endpointID,
+                requestURL: requestURL,
+                readBoundRecord: { self.boundRecords[$0] },
+                hasBoundMarker: { self.boundMarkers.contains($0) },
+                readLegacyKey: { self.legacyKeys[$0] }
             )
+        }
+
+        func activeKey(for id: String) -> String? {
+            guard let url = endpoints[id] else { return nil }
+            return resolveKey(endpointID: id, requestURL: url)
         }
     }
 
+    func testBoundCredentialUsesAccessTokenKeyForVaultRedaction() throws {
+        let cred = BoundEndpointCredential(origin: "https://api.alpha.example:443", accessToken: "sk-alpha-secret")
+        let data = try XCTUnwrap(cred.encodedData())
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["access_token"] as? String, "sk-alpha-secret")
+        XCTAssertEqual(json["origin"] as? String, "https://api.alpha.example:443")
+        XCTAssertEqual(BoundEndpointCredential.decode(from: data), cred)
+    }
+
     func testCrossHostWithoutNewKeyIsRejectedAndPreservesOriginalConfig() {
-        let env = FakeServiceEnvironment(
-            endpoints: [
-                "svc-a": "https://api.alpha.example/v1",
-                "svc-b": "https://api.beta.example/v1",
-            ],
-            vault: [
-                "key-svc-a": "sk-alpha-secret",
-                "key-svc-b": "sk-beta-secret",
-            ],
-            origins: [
-                "svc-a": "https://api.alpha.example:443",
-                "svc-b": "https://api.beta.example:443",
-            ]
-        )
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        env.seedBound(id: "svc-b", baseURL: "https://api.beta.example/v1", key: "sk-beta-secret")
 
         let outcome = EndpointKeyCoordinator.applyEdit(
             endpointID: "svc-a",
@@ -95,26 +138,14 @@ final class EndpointKeyBindingTests: XCTestCase {
 
         XCTAssertEqual(outcome, .keyRequiredForNewHost)
         XCTAssertEqual(env.endpoints["svc-a"], "https://api.alpha.example/v1")
-        XCTAssertEqual(env.vault["key-svc-a"], "sk-alpha-secret")
         XCTAssertEqual(env.activeKey(for: "svc-a"), "sk-alpha-secret")
         XCTAssertEqual(env.activeKey(for: "svc-b"), "sk-beta-secret")
     }
 
-    func testSameOriginPathAdjustmentReusesExistingKey() {
-        let env = FakeServiceEnvironment(
-            endpoints: [
-                "svc-a": "https://api.alpha.example/v1",
-                "svc-b": "https://api.beta.example/v1",
-            ],
-            vault: [
-                "key-svc-a": "sk-alpha-secret",
-                "key-svc-b": "sk-beta-secret",
-            ],
-            origins: [
-                "svc-a": "https://api.alpha.example:443",
-                "svc-b": "https://api.beta.example:443",
-            ]
-        )
+    func testSameOriginPathAdjustmentReusesExistingKeyAndID() {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        env.seedBound(id: "svc-b", baseURL: "https://api.beta.example/v1", key: "sk-beta-secret")
 
         let outcome = EndpointKeyCoordinator.applyEdit(
             endpointID: "svc-a",
@@ -124,115 +155,138 @@ final class EndpointKeyBindingTests: XCTestCase {
             store: env.makeStore(for: "svc-a")
         )
 
-        XCTAssertEqual(outcome, .saved(normalizedURL: "https://api.alpha.example/v2/openai", keyUpdated: false))
+        XCTAssertEqual(outcome, .saved(endpointID: "svc-a", normalizedURL: "https://api.alpha.example/v2/openai", keyUpdated: false))
         XCTAssertEqual(env.endpoints["svc-a"], "https://api.alpha.example/v2/openai")
         XCTAssertEqual(env.activeKey(for: "svc-a"), "sk-alpha-secret")
-    }
-
-    func testCrossHostKeyWriteFailureNeverExposesOldKeyToNewHost() {
-        // Case 1: Staging write fails before anything changes.
-        let env1 = FakeServiceEnvironment(
-            endpoints: ["svc-a": "https://api.alpha.example/v1"],
-            vault: ["key-svc-a": "sk-alpha-secret"],
-            origins: ["svc-a": "https://api.alpha.example:443"]
-        )
-        env1.failWriteSlots = [EndpointKeyCoordinator.stagingSlot(for: "svc-a")]
-
-        let outcome1 = EndpointKeyCoordinator.applyEdit(
-            endpointID: "svc-a",
-            currentBaseURL: "https://api.alpha.example/v1",
-            newBaseURL: "https://api.gamma.example/v1",
-            replacementKey: "sk-gamma-secret",
-            store: env1.makeStore(for: "svc-a")
-        )
-        XCTAssertEqual(outcome1, .keySaveFailed)
-        XCTAssertEqual(env1.endpoints["svc-a"], "https://api.alpha.example/v1")
-        XCTAssertEqual(env1.activeKey(for: "svc-a"), "sk-alpha-secret")
-
-        // Case 2: Final key write fails after settings commit, AND settings rollback fails too.
-        // The old key MUST stay removed so the new host never receives `sk-alpha-secret`.
-        let env2 = FakeServiceEnvironment(
-            endpoints: ["svc-a": "https://api.alpha.example/v1"],
-            vault: ["key-svc-a": "sk-alpha-secret"],
-            origins: ["svc-a": "https://api.alpha.example:443"]
-        )
-        env2.failWriteSlots = [EndpointKeyCoordinator.keySlot(for: "svc-a")]
-        env2.failSettingsOnCallIndex = 2 // 1st commit (new host) succeeds, 2nd commit (rollback) fails
-
-        let outcome2 = EndpointKeyCoordinator.applyEdit(
-            endpointID: "svc-a",
-            currentBaseURL: "https://api.alpha.example/v1",
-            newBaseURL: "https://api.gamma.example/v1",
-            replacementKey: "sk-gamma-secret",
-            store: env2.makeStore(for: "svc-a")
-        )
-        XCTAssertEqual(outcome2, .keySaveFailed)
-        XCTAssertEqual(env2.endpoints["svc-a"], "https://api.gamma.example/v1")
-        XCTAssertNil(env2.vault["key-svc-a"], "Old key must be cleared and never left on the new host")
-        XCTAssertNil(env2.activeKey(for: "svc-a"))
-    }
-
-    func testCrossHostSettingsCommitFailureRestoresOldHostAndOldKey() {
-        let env = FakeServiceEnvironment(
-            endpoints: ["svc-a": "https://api.alpha.example/v1"],
-            vault: ["key-svc-a": "sk-alpha-secret"],
-            origins: ["svc-a": "https://api.alpha.example:443"]
-        )
-        env.failSettingsCommit = true
-
-        let outcome = EndpointKeyCoordinator.applyEdit(
-            endpointID: "svc-a",
-            currentBaseURL: "https://api.alpha.example/v1",
-            newBaseURL: "https://api.gamma.example/v1",
-            replacementKey: "sk-gamma-secret",
-            store: env.makeStore(for: "svc-a")
-        )
-
-        XCTAssertEqual(outcome, .settingsSaveFailed)
-        XCTAssertEqual(env.endpoints["svc-a"], "https://api.alpha.example/v1")
-        XCTAssertEqual(env.activeKey(for: "svc-a"), "sk-alpha-secret")
-        XCTAssertNil(env.vault[EndpointKeyCoordinator.stagingSlot(for: "svc-a")])
-    }
-
-    func testCrossHostWithValidNewKeyRebindsOriginAndReplacesKey() {
-        let env = FakeServiceEnvironment(
-            endpoints: [
-                "svc-a": "https://api.alpha.example/v1",
-                "svc-b": "https://api.beta.example/v1",
-            ],
-            vault: [
-                "key-svc-a": "sk-alpha-secret",
-                "key-svc-b": "sk-beta-secret",
-            ],
-            origins: [
-                "svc-a": "https://api.alpha.example:443",
-                "svc-b": "https://api.beta.example:443",
-            ]
-        )
-
-        let outcome = EndpointKeyCoordinator.applyEdit(
-            endpointID: "svc-a",
-            currentBaseURL: "https://api.alpha.example/v1",
-            newBaseURL: "https://api.gamma.example/v1",
-            replacementKey: "sk-gamma-secret",
-            store: env.makeStore(for: "svc-a")
-        )
-
-        XCTAssertEqual(outcome, .saved(normalizedURL: "https://api.gamma.example/v1", keyUpdated: true))
-        XCTAssertEqual(env.endpoints["svc-a"], "https://api.gamma.example/v1")
-        XCTAssertEqual(env.origins["svc-a"], "https://api.gamma.example:443")
-        XCTAssertEqual(env.activeKey(for: "svc-a"), "sk-gamma-secret")
         XCTAssertEqual(env.activeKey(for: "svc-b"), "sk-beta-secret")
     }
 
-    func testResolveBoundKeyRefusesMismatchedOrigin() {
-        let key = EndpointKeyCoordinator.resolveBoundKey(
+    func testInterleavedReaderPausedBetweenValidationAndKeyFetchNeverReceivesWrongOriginKey() {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        env.nextGeneratedIDs = ["svc-b-new"]
+
+        // Background reader (e.g. Shortcuts) reads settings BEFORE migration and validates host A.
+        let readerEndpointID = "svc-a"
+        let readerURL = env.endpoints[readerEndpointID]!
+        let validatedOriginA = EndpointAddressPolicy.rawOrigin(readerURL)
+        XCTAssertEqual(validatedOriginA, "https://api.alpha.example:443")
+
+        // Reader PAUSES here. Meanwhile main UI migrates svc-a to host B with sk-beta-secret.
+        let outcome = EndpointKeyCoordinator.applyEdit(
             endpointID: "svc-a",
-            baseURL: "https://api.new-host.example/v1",
-            readKey: { _ in "sk-old-host" },
-            readBoundOrigin: { _ in "https://api.old-host.example:443" }
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.beta.example/v1",
+            replacementKey: "sk-beta-secret",
+            store: env.makeStore(for: "svc-a")
         )
-        XCTAssertNil(key)
+        XCTAssertEqual(outcome, .saved(endpointID: "svc-b-new", normalizedURL: "https://api.beta.example/v1", keyUpdated: true))
+
+        // Background reader RESUMES and fetches key for (svc-a, host A):
+        // Old slot was cleaned up -> returns nil (MUST NEVER receive sk-beta-secret!).
+        let staleReaderKey = env.resolveKey(endpointID: readerEndpointID, requestURL: readerURL)
+        XCTAssertNil(staleReaderKey, "Background reader for host A must never receive host B's key")
+
+        // New reader on (svc-b-new, host B) receives ONLY sk-beta-secret.
+        let newReaderKey = env.activeKey(for: "svc-b-new")
+        XCTAssertEqual(newReaderKey, "sk-beta-secret")
+
+        // Even if the paused reader resumed BEFORE old cleanup ran (simulate delete deferred/failed):
+        let envDeferred = FakeServiceEnvironment()
+        envDeferred.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        envDeferred.nextGeneratedIDs = ["svc-b-new"]
+        envDeferred.failRemove = true
+
+        let pausedID = "svc-a"
+        let pausedURL = envDeferred.endpoints[pausedID]!
+        _ = EndpointKeyCoordinator.applyEdit(
+            endpointID: "svc-a",
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.beta.example/v1",
+            replacementKey: "sk-beta-secret",
+            store: envDeferred.makeStore(for: "svc-a")
+        )
+
+        // Paused reader targeting host A gets ONLY host A's key; new reader targeting host B gets ONLY host B's key.
+        XCTAssertEqual(envDeferred.resolveKey(endpointID: pausedID, requestURL: pausedURL), "sk-alpha-secret")
+        XCTAssertEqual(envDeferred.activeKey(for: "svc-b-new"), "sk-beta-secret")
+    }
+
+    func testDeleteFailureAndRestartNeverPairsOldKeyWithNewHost() {
+        let env = FakeServiceEnvironment()
+        env.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        env.nextGeneratedIDs = ["svc-b-new"]
+        env.failRemove = true // Vault.remove silently fails
+
+        let outcome = EndpointKeyCoordinator.applyEdit(
+            endpointID: "svc-a",
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.beta.example/v1",
+            replacementKey: "sk-beta-secret",
+            store: env.makeStore(for: "svc-a")
+        )
+        XCTAssertEqual(outcome, .saved(endpointID: "svc-b-new", normalizedURL: "https://api.beta.example/v1", keyUpdated: true))
+
+        // Simulate app restart after failed old-key deletion.
+        let afterRestart = env.restarted()
+        XCTAssertNil(afterRestart.endpoints["svc-a"])
+        XCTAssertEqual(afterRestart.endpoints["svc-b-new"], "https://api.beta.example/v1")
+        XCTAssertEqual(afterRestart.activeKey(for: "svc-b-new"), "sk-beta-secret")
+        // Even if someone attempted to resolve old ID against host B, bound marker + origin check blocks it.
+        XCTAssertNil(afterRestart.resolveKey(endpointID: "svc-a", requestURL: "https://api.beta.example/v1"))
+    }
+
+    func testCrashMidMigrationAndRestartPreservesOriginIsolation() {
+        // Crash point 1: New credential written, process dies BEFORE settings.json commits (simulated via failSettingsCommit + failRemove).
+        let envCrashBeforeCommit = FakeServiceEnvironment()
+        envCrashBeforeCommit.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        envCrashBeforeCommit.nextGeneratedIDs = ["svc-b-orphan"]
+        envCrashBeforeCommit.failSettingsCommit = true
+        envCrashBeforeCommit.failRemove = true // Orphans left on disk as if process crashed mid-step
+
+        let outcome = EndpointKeyCoordinator.applyEdit(
+            endpointID: "svc-a",
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.beta.example/v1",
+            replacementKey: "sk-beta-secret",
+            store: envCrashBeforeCommit.makeStore(for: "svc-a")
+        )
+        XCTAssertEqual(outcome, .settingsSaveFailed)
+
+        let restartedBeforeCommit = envCrashBeforeCommit.restarted()
+        XCTAssertEqual(restartedBeforeCommit.endpoints["svc-a"], "https://api.alpha.example/v1")
+        XCTAssertEqual(restartedBeforeCommit.activeKey(for: "svc-a"), "sk-alpha-secret")
+
+        // Crash point 2: Key write fails on new ID before settings.json is ever touched.
+        let envKeyWriteFail = FakeServiceEnvironment()
+        envKeyWriteFail.seedBound(id: "svc-a", baseURL: "https://api.alpha.example/v1", key: "sk-alpha-secret")
+        envKeyWriteFail.nextGeneratedIDs = ["svc-b-fail"]
+        envKeyWriteFail.failWriteSlots = [EndpointKeyCoordinator.legacyKeySlot(for: "svc-b-fail")]
+
+        let failOutcome = EndpointKeyCoordinator.applyEdit(
+            endpointID: "svc-a",
+            currentBaseURL: "https://api.alpha.example/v1",
+            newBaseURL: "https://api.beta.example/v1",
+            replacementKey: "sk-beta-secret",
+            store: envKeyWriteFail.makeStore(for: "svc-a")
+        )
+        XCTAssertEqual(failOutcome, .keySaveFailed)
+
+        let restartedAfterKeyFail = envKeyWriteFail.restarted()
+        XCTAssertEqual(restartedAfterKeyFail.endpoints["svc-a"], "https://api.alpha.example/v1")
+        XCTAssertEqual(restartedAfterKeyFail.activeKey(for: "svc-a"), "sk-alpha-secret")
+    }
+
+    func testTamperedOriginInsideSingleRecordIsRejected() throws {
+        let env = FakeServiceEnvironment()
+        env.endpoints["svc-a"] = "https://api.beta.example/v1"
+        let slotB = EndpointKeyCoordinator.boundRecordSlot(for: "svc-a", origin: "https://api.beta.example:443")
+        // Deliberately write a record whose embedded origin is host A into host B's slot.
+        env.boundRecords[slotB] = try XCTUnwrap(
+            BoundEndpointCredential(origin: "https://api.alpha.example:443", accessToken: "sk-alpha-secret").encodedData()
+        )
+        env.boundMarkers.insert(EndpointKeyCoordinator.boundMarkerSlot(for: "svc-a"))
+        XCTAssertNil(env.activeKey(for: "svc-a"))
     }
 }
 

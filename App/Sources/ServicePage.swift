@@ -7,6 +7,7 @@ import UIKit
 struct ServicePage: View {
     @ObservedObject var team: TeamModel
     let id: String
+    @State private var currentID: String
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var note: String?
@@ -23,7 +24,13 @@ struct ServicePage: View {
     @State private var reading: Balance.Reading?
     @State private var balanceNote: String?
 
-    private var endpoint: Endpoint? { team.settings.endpoints.first { $0.id == id } }
+    init(team: TeamModel, id: String) {
+        self.team = team
+        self.id = id
+        _currentID = State(initialValue: id)
+    }
+
+    private var endpoint: Endpoint? { team.settings.endpoints.first { $0.id == currentID } }
     private var service: Service? { endpoint.flatMap(Service.of) }
 
     var body: some View {
@@ -60,15 +67,15 @@ struct ServicePage: View {
             style = endpoint.style
         }
         .task { await loadBalance() }
-        .task(id: id) {
-            let key = await team.readAPIKey(for: id)
-            if !Task.isCancelled, let key, key.count > 8, keySuffix == nil { keySuffix = String(key.suffix(4)) }
+        .task(id: currentID) {
+            let key = await team.readAPIKey(for: currentID)
+            if !Task.isCancelled, let key, key.count > 8 { keySuffix = String(key.suffix(4)) }
         }
         .sheet(isPresented: $managingModels) {
-            ManageModelsSheet(team: team, id: id)
+            ManageModelsSheet(team: team, id: currentID)
         }
         .sheet(item: Binding(get: { editing.map { Picked(model: $0) } }, set: { editing = $0?.model })) { picked in
-            ModelSheet(team: team, endpointId: id, model: picked.model)
+            ModelSheet(team: team, endpointId: currentID, model: picked.model)
                 .presentationDetents([.large])
         }
         // A name or address typed and left without pressing return is kept, not lost.
@@ -80,7 +87,7 @@ struct ServicePage: View {
         }
         .confirmationDialog(L.format("servicePage.removeConfirm", endpoint?.name ?? ""), isPresented: $removing, titleVisibility: .visible) {
             Button(L.t("actions.delete"), role: .destructive) {
-                team.removeEndpoint(id)
+                team.removeEndpoint(currentID)
                 dismiss()
             }
             Button(L.t("actions.cancel"), role: .cancel) {}
@@ -389,7 +396,7 @@ struct ServicePage: View {
     }
 
     @discardableResult
-    private func save(_ endpoint: Endpoint, quiet: Bool = false) -> Bool {
+    private func save(_ endpoint: Endpoint, quiet: Bool = false) -> String? {
         let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = team.editEndpoint(
             endpoint.id,
@@ -399,7 +406,8 @@ struct ServicePage: View {
             key: trimmedKey.isEmpty ? nil : trimmedKey
         )
         switch outcome {
-        case .saved(let normalizedURL, let keyUpdated):
+        case .saved(let nextID, let normalizedURL, let keyUpdated):
+            currentID = nextID
             address = normalizedURL
             if keyUpdated {
                 keySuffix = trimmedKey.count > 8 ? String(trimmedKey.suffix(4)) : nil
@@ -411,38 +419,38 @@ struct ServicePage: View {
                 || note == L.t("servicePage.settingsSaveFailed") {
                 note = nil
             }
-            return true
+            return nextID
         case .invalidAddress:
             if !quiet {
                 note = L.t("servicePage.invalidAddress")
                 Haptics.lock()
             }
-            return false
+            return nil
         case .keyRequiredForNewHost:
             if !quiet {
                 note = L.t("servicePage.keyRequiredForNewHost")
                 Haptics.lock()
             }
-            return false
+            return nil
         case .keySaveFailed:
             if !quiet {
                 note = L.t("servicePage.keySaveFailed")
                 Haptics.lock()
             }
-            return false
+            return nil
         case .settingsSaveFailed:
             if !quiet {
                 note = L.t("servicePage.settingsSaveFailed")
                 Haptics.lock()
             }
-            return false
+            return nil
         }
     }
 
     private func replaceKey(_ endpoint: Endpoint) {
         let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
-        guard save(endpoint) else { return }
+        guard save(endpoint) != nil else { return }
         Haptics.thud()
         note = L.t("servicePage.keyReplacedNotice")
     }
@@ -485,8 +493,8 @@ struct ServicePage: View {
     // MARK: Doing
 
     private func refresh(_ endpoint: Endpoint) {
-        guard save(endpoint) else { return }
-        let current = team.settings.endpoints.first { $0.id == endpoint.id } ?? endpoint
+        guard let activeID = save(endpoint) else { return }
+        let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
         working = true
         note = L.t("loading.fetchingModels")
         Task {
@@ -505,8 +513,8 @@ struct ServicePage: View {
     }
 
     private func probe(_ endpoint: Endpoint) {
-        guard save(endpoint) else { return }
-        let current = team.settings.endpoints.first { $0.id == endpoint.id } ?? endpoint
+        guard let activeID = save(endpoint) else { return }
+        let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
         guard let model = (team.resolveActive(team.settings.defaultModel).flatMap { $0.endpoint.id == current.id ? $0.model : nil }) ?? current.models.first else {
             note = L.t("servicePage.noActiveModelsForProbe")
             return
@@ -1030,7 +1038,7 @@ struct ModelSheet: View {
 extension TeamModel {
     /// Asks one model once and returns its answer. Thinking is turned off when the model allows it, to be quick.
     func quickAsk(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> String {
-        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
+        guard let key = apiKey(for: endpoint), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
         func once(_ thinking: Thinking) async throws -> String {
             let request = ModelRequest(model: model, system: "", messages: [message], outputLimit: 400, thinking: thinking)
@@ -1061,7 +1069,7 @@ extension TeamModel {
 
     /// Offers one tool and asks for something only it can give. `calls` is nil when the test itself failed.
     func probeTools(_ endpoint: Endpoint, model: String) async -> (calls: Bool?, note: String) {
-        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试工具：没有密钥。") }
+        guard let key = apiKey(for: endpoint), !key.isEmpty else { return (nil, "没试工具：没有密钥。") }
         let tool = ToolSpec(name: "lucky_number", description: "返回今天的幸运数字。用户问幸运数字时必须调用它。",
                             parameters: .object(["type": .string("object"), "properties": .object([:])]))
         let request = ModelRequest(model: model, system: "", messages: [.user("今天的幸运数字是多少？请调用工具查。")],
@@ -1082,7 +1090,7 @@ extension TeamModel {
     /// thinks less when told not to. `thinks` is nil when the test itself failed; `levels` is nil when nothing
     /// could be told.
     func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String, levels: [Thinking]?) {
-        guard let key = apiKey(for: endpoint.id), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
+        guard let key = apiKey(for: endpoint), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
         let provider = endpoint.provider(key: key)
         func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
             let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],

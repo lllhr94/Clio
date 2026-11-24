@@ -114,12 +114,7 @@ struct QuickAnswerIntent: AppIntent {
             throw TeamError(message: "Clio 里还没有可用的模型，先打开 Clio 接一家模型服务。")
         }
         let model = String(ref[ref.index(after: slash)...])
-        guard let key = EndpointKeyCoordinator.resolveBoundKey(
-            endpointID: endpoint.id,
-            baseURL: endpoint.baseURL,
-            readKey: { Vault.load(String.self, key: $0) },
-            readBoundOrigin: TeamModel.boundKeyOrigin(for:)
-        ) else {
+        guard let key = TeamModel.resolveEndpointKey(id: endpoint.id, baseURL: endpoint.baseURL) else {
             throw TeamError(message: "拿不到 \(endpoint.name) 的密钥，解锁手机后再试一次。")
         }
         let agent = Agent(provider: endpoint.provider(key: key), model: model,
