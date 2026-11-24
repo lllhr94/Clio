@@ -11,11 +11,21 @@ final class AnthropicProviderTests: XCTestCase {
         return (body, raw)
     }
 
-    func testDefaultsEnablePromptCacheWithNilPrefix() {
-        let provider = AnthropicProvider(apiKey: "fixture-key")
-        XCTAssertEqual(provider.baseURL, "https://api.anthropic.com")
-        XCTAssertTrue(provider.promptCache)
-        XCTAssertNil(provider.stableSystemPrefix)
+    func testDirectInitDefaultsFollowCachesHostAndAllowExplicitOverrides() {
+        let officialDefault = AnthropicProvider(apiKey: "fixture-key")
+        XCTAssertEqual(officialDefault.baseURL, "https://api.anthropic.com")
+        XCTAssertTrue(officialDefault.promptCache)
+        XCTAssertNil(officialDefault.stableSystemPrefix)
+
+        let relayDefault = AnthropicProvider(baseURL: "https://relay.example.com", apiKey: "fixture-key")
+        XCTAssertFalse(relayDefault.promptCache)
+        XCTAssertNil(relayDefault.stableSystemPrefix)
+
+        let relayEnabled = AnthropicProvider(baseURL: "https://relay.example.com", apiKey: "fixture-key", promptCache: true)
+        XCTAssertTrue(relayEnabled.promptCache)
+
+        let officialDisabled = AnthropicProvider(baseURL: "https://api.anthropic.com", apiKey: "fixture-key", promptCache: false)
+        XCTAssertFalse(officialDisabled.promptCache)
     }
 
     func testStablePrefixSplitsSystemIntoCachedPrefixAndUncachedVolatileTail() throws {
@@ -93,6 +103,15 @@ final class AnthropicProviderTests: XCTestCase {
         XCTAssertEqual(relayBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
         XCTAssertNil(relayBlocks[1]["cache_control"])
 
+        let relayDefault = AnthropicProvider(
+            baseURL: "https://relay.example.com/claude",
+            apiKey: "fixture-key",
+            stableSystemPrefix: prefix
+        )
+        let relayDefaultDecoded = try decodedJSON(try relayDefault.urlRequest(request))
+        XCTAssertEqual(relayDefaultDecoded.body["system"] as? String, system)
+        XCTAssertFalse(relayDefaultDecoded.raw.contains("cache_control"))
+
         for url in ["https://api.anthropic.com", "https://relay.example.com/claude"] {
             let disabled = AnthropicProvider(
                 baseURL: url,
@@ -137,10 +156,11 @@ final class AnthropicProviderTests: XCTestCase {
         XCTAssertEqual(wsPrefixBlocks[0]["text"] as? String, wsTailSystem)
     }
 
-    func testMidTurnMemoryDeletionStopsSendingDeletedMemoryEvenWithStartPrefix() throws {
+    func testPerRequestSystemCachePrefixKeepsSplitActiveAcrossMidTurnRememberAndDeletion() throws {
         let startPrefix = "你是「小克」。\n\n你记得的关于用户的事：\n- 住在上海浦东\n- 喜欢乌龙茶\n\n做事：\n规则。"
         let tail = "\n\n现在是 2026-11-24 10:00，Asia/Shanghai。"
-        let postDeleteSystem = "你是「小克」。\n\n你记得的关于用户的事：\n- 喜欢乌龙茶\n\n做事：\n规则。" + tail
+        let afterRememberPrefix = "你是「小克」。\n\n你记得的关于用户的事：\n- 住在上海浦东\n- 喜欢乌龙茶\n- 在写 Swift\n\n做事：\n规则。"
+        let afterDeletePrefix = "你是「小克」。\n\n你记得的关于用户的事：\n- 喜欢乌龙茶\n- 在写 Swift\n\n做事：\n规则。"
 
         let provider = AnthropicProvider(
             baseURL: "https://api.anthropic.com",
@@ -149,25 +169,49 @@ final class AnthropicProviderTests: XCTestCase {
             stableSystemPrefix: startPrefix
         )
 
-        let step1 = try decodedJSON(try provider.urlRequest(ModelRequest(
+        // 1. Mid-turn `remember` updates both `system` and `systemCachePrefix`: 2-block split stays active with new prefix.
+        let rememberedRequest = ModelRequest(
             model: "claude-sonnet-4-6",
-            system: startPrefix + tail,
-            messages: [.user("记住的事还在吗")]
-        )))
-        let step1Blocks = try XCTUnwrap(step1.body["system"] as? [[String: Any]])
-        XCTAssertEqual(step1Blocks.count, 2)
-        XCTAssertTrue(step1.raw.contains("住在上海浦东"))
+            system: afterRememberPrefix + tail,
+            messages: [.user("记住我在写 Swift")],
+            systemCachePrefix: afterRememberPrefix
+        )
+        let remembered = try decodedJSON(try provider.urlRequest(rememberedRequest))
+        let rememberedBlocks = try XCTUnwrap(remembered.body["system"] as? [[String: Any]])
+        XCTAssertEqual(rememberedBlocks.count, 2)
+        XCTAssertEqual(rememberedBlocks[0]["text"] as? String, afterRememberPrefix)
+        XCTAssertEqual(rememberedBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
+        XCTAssertEqual(rememberedBlocks[1]["text"] as? String, tail)
+        XCTAssertNil(rememberedBlocks[1]["cache_control"])
 
-        let step2 = try decodedJSON(try provider.urlRequest(ModelRequest(
+        // 2. Mid-turn deletion updates atomic snapshot: deleted memory disappears while remaining prefix stays split.
+        let deletedWithSnapshot = ModelRequest(
             model: "claude-sonnet-4-6",
-            system: postDeleteSystem,
-            messages: [.user("记住的事还在吗"), .assistant("等我查一下"), .user("现在呢")]
-        )))
-        let step2Blocks = try XCTUnwrap(step2.body["system"] as? [[String: Any]])
-        XCTAssertEqual(step2Blocks.count, 1)
-        XCTAssertEqual(step2Blocks[0]["text"] as? String, postDeleteSystem)
-        XCTAssertEqual(step2Blocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
-        XCTAssertFalse(step2.raw.contains("住在上海浦东"), "Deleted memory must never be re-injected from stableSystemPrefix")
-        XCTAssertTrue(step2.raw.contains("喜欢乌龙茶"))
+            system: afterDeletePrefix + tail,
+            messages: [.user("删掉上海那条")],
+            systemCachePrefix: afterDeletePrefix
+        )
+        let deleted = try decodedJSON(try provider.urlRequest(deletedWithSnapshot))
+        let deletedBlocks = try XCTUnwrap(deleted.body["system"] as? [[String: Any]])
+        XCTAssertEqual(deletedBlocks.count, 2)
+        XCTAssertEqual(deletedBlocks[0]["text"] as? String, afterDeletePrefix)
+        XCTAssertEqual(deletedBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
+        XCTAssertEqual(deletedBlocks[1]["text"] as? String, tail)
+        XCTAssertNil(deletedBlocks[1]["cache_control"])
+        XCTAssertFalse(deleted.raw.contains("住在上海浦东"), "Deleted memory must not appear in payload")
+        XCTAssertTrue(deleted.raw.contains("喜欢乌龙茶"))
+
+        // 3. Even without per-request `systemCachePrefix`, stale `stableSystemPrefix` never leaks deleted memory.
+        let deletedWithoutSnapshot = ModelRequest(
+            model: "claude-sonnet-4-6",
+            system: afterDeletePrefix + tail,
+            messages: [.user("再确认一次")]
+        )
+        let fallback = try decodedJSON(try provider.urlRequest(deletedWithoutSnapshot))
+        let fallbackBlocks = try XCTUnwrap(fallback.body["system"] as? [[String: Any]])
+        XCTAssertEqual(fallbackBlocks.count, 1)
+        XCTAssertEqual(fallbackBlocks[0]["text"] as? String, afterDeletePrefix + tail)
+        XCTAssertEqual(fallbackBlocks[0]["cache_control"] as? [String: String], ["type": "ephemeral"])
+        XCTAssertFalse(fallback.raw.contains("住在上海浦东"), "Deleted memory must never be re-injected from stableSystemPrefix")
     }
 }

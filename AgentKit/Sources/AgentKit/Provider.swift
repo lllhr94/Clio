@@ -26,8 +26,20 @@ public struct ModelRequest: Sendable {
     public var outputLimit: Int?
     /// How hard to think; `.auto` leaves it to the model.
     public var thinking: Thinking
+    /// Optional cache-stable prefix of `system` captured from the same snapshot as `system`.
+    public var systemCachePrefix: String?
 
-    public init(model: String, system: String, messages: [Message], tools: [ToolSpec] = [], maxTokens: Int = 8192, temperature: Double? = nil, outputLimit: Int? = nil, thinking: Thinking = .auto) {
+    public init(
+        model: String,
+        system: String,
+        messages: [Message],
+        tools: [ToolSpec] = [],
+        maxTokens: Int = 8192,
+        temperature: Double? = nil,
+        outputLimit: Int? = nil,
+        thinking: Thinking = .auto,
+        systemCachePrefix: String? = nil
+    ) {
         self.model = model
         self.system = system
         self.messages = messages
@@ -36,6 +48,7 @@ public struct ModelRequest: Sendable {
         self.temperature = temperature
         self.outputLimit = outputLimit
         self.thinking = thinking
+        self.systemCachePrefix = systemCachePrefix
     }
 }
 

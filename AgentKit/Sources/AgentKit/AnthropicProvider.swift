@@ -10,12 +10,12 @@ public struct AnthropicProvider: ModelProvider {
     public init(
         baseURL: String = "https://api.anthropic.com",
         apiKey: String,
-        promptCache: Bool = true,
+        promptCache: Bool? = nil,
         stableSystemPrefix: String? = nil
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
-        self.promptCache = promptCache
+        self.promptCache = promptCache ?? Self.caches(baseURL)
         self.stableSystemPrefix = stableSystemPrefix
     }
 
@@ -48,8 +48,8 @@ public struct AnthropicProvider: ModelProvider {
     }
 
     /// Anthropic's own service keeps a prompt it has seen for a few minutes and charges a tenth for reading it back.
-    /// Kept for checking official Anthropic domains; live requests follow the endpoint's `promptCache` setting.
-    static func caches(_ baseURL: String) -> Bool {
+    /// Kept for checking official Anthropic domains; explicit `promptCache` overrides this per endpoint.
+    public static func caches(_ baseURL: String) -> Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
         return host == "anthropic.com" || host.hasSuffix(".anthropic.com")
     }
@@ -127,7 +127,8 @@ public struct AnthropicProvider: ModelProvider {
         if !request.system.isEmpty {
             let canCacheSystem = cache && !request.system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if canCacheSystem {
-                body["system"] = Self.cachedSystemBlocks(request.system, stablePrefix: stableSystemPrefix)
+                let effectivePrefix = request.systemCachePrefix ?? stableSystemPrefix
+                body["system"] = Self.cachedSystemBlocks(request.system, stablePrefix: effectivePrefix)
             } else {
                 body["system"] = request.system
             }
