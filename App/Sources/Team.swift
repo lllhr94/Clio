@@ -56,6 +56,8 @@ enum TurnEvent {
     case changed
     /// This saved assistant row replaces the live reply.
     case replyCommitted(String)
+    /// The next model starts a separate reply after a failed attempt.
+    case streamReset
     /// More of the reply being written.
     case text(String)
     /// A tool started.
@@ -1344,6 +1346,9 @@ final class TeamModel: ObservableObject {
             let used = "\(endpoint.id)/\(found.model)"
             if forced == nil, let backup = settings.backupModel, backup != used, let other = resolve(backup) {
                 let advice = Explain.model(error, service: endpoint.name)
+                streamed[key] = nil
+                pulseSplitters[key] = nil
+                notify(key, .streamReset)
                 append(Entry(id: UUID().uuidString, at: Now.ms,
                              message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(other.model) 接着答。"),
                              note: true), to: key)

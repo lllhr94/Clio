@@ -460,6 +460,9 @@ final class ChatModel {
             clearThinking()
             running = label
             rebuildToolRows(team.history(key))
+        case .streamReset:
+            clearThinking()
+            resetLiveReply()
         case .changed, .replyCommitted:
             let all = team.history(key)
             if all.last?.message.role == .tool { running = nil }
@@ -473,11 +476,7 @@ final class ChatModel {
         case .finished:
             running = nil
             clearThinking()
-            pulse = ""
-            if !target.isEmpty {
-                target = ""
-                streaming = ""
-            }
+            resetLiveReply()
             rebuildToolRows(team.history(key))
         case .failed(let message):
             cancelToolRows()
@@ -488,10 +487,21 @@ final class ChatModel {
         }
     }
 
+    private func resetLiveReply() {
+        target = ""
+        if !streaming.isEmpty { streaming = "" }
+        if !pulse.isEmpty { pulse = "" }
+    }
+
     private func updateKeptRows(_ next: [ChatLine], event: TurnEvent) {
-        guard !target.isEmpty, case let .replyCommitted(id) = event,
-              let reply = next.first(where: { $0.id == id && $0.kind == .bot }) else {
+        guard !target.isEmpty, case let .replyCommitted(id) = event else {
             // A timed delivery or a status note can arrive while a different reply is still being written.
+            apply(next)
+            return
+        }
+        guard let reply = next.first(where: { $0.id == id && $0.kind == .bot }) else {
+            // A tool-only reply can have emitted whitespace without producing a visible message.
+            if target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { resetLiveReply() }
             apply(next)
             return
         }
@@ -499,9 +509,7 @@ final class ChatModel {
         finalCount = reply.text.count
         shown = min(publishedShown, finalCount)
         fresh = Fresh(id: id, shown: shown > 0 && shown < finalCount ? shown : nil)
-        target = ""
-        streaming = ""
-        pulse = ""
+        resetLiveReply()
         heldRows = nil
         lines = next
         if fresh?.shown != nil { type() }

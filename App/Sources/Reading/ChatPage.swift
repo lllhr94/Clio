@@ -371,11 +371,10 @@ struct ChatPage: View {
             .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
             // Size changes already use the bottom anchor while following. Only schedule a correction
             // when the viewport actually leaves the bottom, rather than scrolling again on every reflow.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                abs(Self.below(geometry)) > 2
-            } action: { _, needsCorrection in
-                viewport.needsEndCorrection = needsCorrection
-                if needsCorrection { followToEnd(settle: false) }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                Self.endAlignment(geometry)
+            } action: { _, alignment in
+                endAlignmentChanged(alignment)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 Self.below(geometry) >= 80
@@ -418,6 +417,8 @@ struct ChatPage: View {
                 }
                 if phase == .idle, old == .interacting || old == .decelerating {
                     following = historyPage == nil && selecting.isEmpty && Self.below(context.geometry) < 80
+                    viewport.needsEndCorrection = Self.endAlignment(context.geometry) != 0
+                    if following, viewport.needsEndCorrection { followToEnd(settle: false) }
                     lingerJumpButtons()
                 }
             }
