@@ -110,6 +110,7 @@ final class TeamModel: ObservableObject {
     let memoryPromptState = MemorySafety.PromptState()
     var memoryTaintedTurns: Set<String> = []
     var livePromptRefreshers: [UUID: MemoryRecallPromptRefresher] = [:]
+    let liveChatMemoryGate = LiveChatMemoryGate()
     var reviewingMemory = false
     var memoryReviewAttempts: [String: Date] = [:]
     var cleanReviewTails: [String: ReviewTail] = [:]

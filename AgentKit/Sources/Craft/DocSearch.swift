@@ -20,9 +20,20 @@ public enum DocSearch {
 
     /// The words of a query: split at spaces and punctuation, lower-cased.
     public static func terms(_ query: String) -> [String] {
+        let bounded = String(query.prefix(512))
         let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols)
         var seen = Set<String>()
-        return query.lowercased().components(separatedBy: separators).filter { !$0.isEmpty && seen.insert($0).inserted }
+        var result: [String] = []
+        for token in bounded.lowercased().components(separatedBy: separators) {
+            guard !token.isEmpty else { continue }
+            if seen.insert(token).inserted {
+                result.append(token)
+                if result.count >= 24 {
+                    break
+                }
+            }
+        }
+        return result
     }
 
     static func isWide(_ text: String) -> Bool {
@@ -48,9 +59,12 @@ public enum DocSearch {
         }
         for line in text.components(separatedBy: "\n") {
             let bare = line.trimmingCharacters(in: .whitespaces)
-            if bare.hasPrefix("[第 "), bare.hasSuffix(" 页]"), let number = Int(bare.dropFirst(3).dropLast(3)) {
+            if bare.hasPrefix("[第 "),
+               bare.hasSuffix(" 页]"),
+               let number = Int32(bare.dropFirst(3).dropLast(3)),
+               number > 0 {
                 close()
-                page = number
+                page = Int(number)
                 continue
             }
             if bare.isEmpty {

@@ -324,6 +324,53 @@ final class MemoryRecallTests: XCTestCase {
         XCTAssertFalse(gatedRefresher.currentPrompt().full.contains(deepFact.text))
     }
 
+    func testPerChatMemoryDisableMidTurnDropsSurfaceFactsAndDeepHintsImmediately() {
+        let state = MemorySafety.PromptState()
+        let surfaceFact = MemorySafety.Fact(id: "s-chat", text: "用户每天早上喝黑咖啡", at: 1_000)
+        let deepFact = MemorySafety.Fact(id: "d-chat", text: "十年前曾住在杭州西湖边", at: 500, isDeep: true)
+        let hit = MemoryRecall.Hit(
+            id: deepFact.id,
+            text: deepFact.text,
+            textSHA256: MemorySafety.retractionHash(deepFact.text)
+        )
+
+        let gateLock = NSLock()
+        var chatMemoryEnabled = true
+
+        let input = MemorySafety.SystemPromptInput(
+            identity: "你是「小克」。",
+            memories: [surfaceFact, deepFact],
+            memoryEnabled: true
+        )
+        let refresher = MemoryRecallPromptRefresher(
+            input: input,
+            state: state,
+            recalledHits: [hit],
+            isRecallAllowed: { true },
+            isMemoryEnabled: {
+                gateLock.lock()
+                defer { gateLock.unlock() }
+                return chatMemoryEnabled
+            }
+        )
+
+        let before = refresher.currentPrompt()
+        XCTAssertTrue(before.prefix.contains(surfaceFact.text))
+        XCTAssertTrue(before.prefix.contains("另有 1 件较早的旧事"))
+        XCTAssertTrue(before.tail.contains(deepFact.text))
+        XCTAssertFalse(before.memoryBlock.isEmpty)
+
+        gateLock.lock()
+        chatMemoryEnabled = false
+        gateLock.unlock()
+
+        let after = refresher.currentPrompt()
+        XCTAssertFalse(after.full.contains(surfaceFact.text))
+        XCTAssertFalse(after.full.contains(deepFact.text))
+        XCTAssertFalse(after.full.contains("另有 1 件较早的旧事"))
+        XCTAssertEqual(after.memoryBlock, "")
+    }
+
     func testPromptRefresherValidatesRecalledHitsAgainstLiveMemoriesInBuildSnapshot() {
         let state = MemorySafety.PromptState()
         let deepUpdated = MemorySafety.Fact(
@@ -750,5 +797,44 @@ final class MemoryRecallTests: XCTestCase {
         XCTAssertFalse(plan.promoteToSurface.contains("deep-zero-recall-manual"))
         XCTAssertFalse(plan.promoteToSurface.contains("deep-single-recall"))
         XCTAssertEqual(plan.promoteToSurface, ["deep-twice-recalled"])
+    }
+
+    func testHugeMultiTokenQueryBoundsSafelyInMemoryRecall() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let padding = (0..<2500).map { "word\($0)" }.joined(separator: " ")
+        let hugeQuery = "重庆 火锅 " + padding
+        XCTAssertGreaterThan(hugeQuery.utf8.count, 20_000)
+        XCTAssertNotNil(MemoryRecall.buildFTS5OrMatchExpression(for: hugeQuery))
+
+        let records: [MemoryRecord] = [
+            MemoryRecord(
+                id: "deep-hotpot",
+                text: "常去重庆解放碑老店吃麻辣火锅",
+                layer: .deep,
+                topic: "饮食",
+                createdAtMs: 1_000,
+                usedAtMs: 1_000
+            ),
+            MemoryRecord(
+                id: "deep-unrelated",
+                text: "周末喜欢看黑白电影",
+                layer: .deep,
+                topic: "娱乐",
+                createdAtMs: 2_000,
+                usedAtMs: 2_000
+            ),
+        ]
+
+        let inMemoryHits = MemoryRecall.searchDeep(query: hugeQuery, records: records)
+        XCTAssertEqual(inMemoryHits.map(\.id), ["deep-hotpot"])
+
+        let index = MemoryRecallIndex(databaseURL: dir.appendingPathComponent("clio-memory-recall-huge.db"))
+        defer { index.close() }
+        try index.sync(records: records)
+
+        let ftsHits = try index.searchDeep(query: hugeQuery)
+        XCTAssertEqual(ftsHits.map(\.id), ["deep-hotpot"])
     }
 }

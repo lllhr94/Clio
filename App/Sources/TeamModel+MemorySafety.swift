@@ -18,6 +18,28 @@ extension Memory {
     }
 }
 
+/// Thread-safe per-chat memory toggle ledger queried synchronously by `LivePromptProvider` closures.
+final class LiveChatMemoryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var disabledChats: Set<String> = []
+
+    func setDisabled(_ disabled: Bool, for key: String) {
+        lock.lock()
+        if disabled {
+            disabledChats.insert(key)
+        } else {
+            disabledChats.remove(key)
+        }
+        lock.unlock()
+    }
+
+    func isAllowed(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !disabledChats.contains(key)
+    }
+}
+
 /// Wraps an upstream `ModelProvider` and `ModelInputProvider` so every request inside an active turn
 /// synchronously pulls the latest memory-filtered system prompt under `NSLock`.
 struct LivePromptProvider: ModelProvider {
@@ -120,12 +142,15 @@ extension TeamModel {
             extraTail: extraTail,
             now: now
         )
-        let allowed = memory && Grant.memory.policy != .off && !Disk.frozen
+        let gate = liveChatMemoryGate
+        let gateAllowed = key.map { gate.isAllowed($0) } ?? true
+        let allowed = memory && gateAllowed && Grant.memory.policy != .off && !Disk.frozen
         let refresher = MemoryRecallPromptRefresher(
             input: input,
             state: memoryPromptState,
             recalledHits: allowed ? recalledHints : [],
-            isRecallAllowed: { Grant.memory.policy != .off && !Disk.frozen },
+            isRecallAllowed: { Grant.memory.policy != .off && !Disk.frozen && (key.map { gate.isAllowed($0) } ?? true) },
+            isMemoryEnabled: { key.map { gate.isAllowed($0) } ?? true },
             activeSecrets: { Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } }
         )
         let token = UUID()
