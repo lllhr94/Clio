@@ -40,27 +40,30 @@ struct InlineAsk: View {
                 }
             }
             HStack {
-                Button("不填") {
+                Button(L.t("actions.cancel")) {
                     Haptics.light()
                     Asker.shared.cancel(form.id)
                 }
                 .foregroundStyle(Ink.inkSoft)
                 .buttonStyle(.plain)
                 Spacer()
-                Button("递回去") {
+                Button(L.t("actions.submitForm")) {
                     Haptics.grab()
                     Asker.shared.answer(values, to: form.id)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Ink.accent)
-                .disabled(form.fields.allSatisfy { (values[$0.key] ?? "").trimmingCharacters(in: .whitespaces).isEmpty })
+                .disabled(
+                    form.fields.allSatisfy { (values[$0.key] ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+                    || form.fields.contains { !$0.choices.isEmpty && !$0.choices.contains(values[$0.key] ?? "") }
+                )
             }
             .font(.system(size: Ink.Size.sub, weight: .semibold))
         }
         .padding(Ink.Space.l)
         .paperCard()
-        .onAppear { Asker.shared.inlineSeen = true }
-        .onDisappear { Asker.shared.inlineSeen = false }
+        .onAppear { Asker.shared.inlineSeen.insert(form.id) }
+        .onDisappear { Asker.shared.inlineSeen.remove(form.id) }
     }
 
     private func binding(_ key: String) -> Binding<String> {

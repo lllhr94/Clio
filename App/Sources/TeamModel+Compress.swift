@@ -32,7 +32,7 @@ extension TeamModel {
 
     func summaryBlock(_ key: String) -> String {
         guard let summary = summary(key) else { return "" }
-        return "\n\n这段絮语较早的部分已经压缩，下面是前情提要（原文还在对话里，用户能往上翻到）：\n" + summary
+        return "\n\n" + Words.t("这段絮语较早的部分已经压缩，下面是前情提要（原文还在对话里，用户能往上翻到）：\n") + summary
     }
 
     /// How long the conversation is, in characters.
@@ -83,6 +83,7 @@ extension TeamModel {
     @discardableResult
     func compress(_ key: String) async throws -> Int {
         guard !compressing.contains(key), canAcceptInput(for: key) else { return 0 }
+        let startEpoch = epochs[key, default: 0]
         let all = Array(live(key))
         let firstCut: Int
         switch Turns.foldCut(all, keep: Pref.keepRecent) {
@@ -123,8 +124,10 @@ extension TeamModel {
         // Nothing is taken away: a line goes in before the first message kept word for word. The chat may have
         // moved on while the summary was written; a turn still running is left to finish first.
         let firstKept = all[cut].id
-        while runs[key] != nil { try? await Task.sleep(nanoseconds: 500_000_000) }
-        guard canAcceptInput(for: key) else { return 0 }
+        while runs[key] != nil {
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
         var current = history(key)
         guard let at = current.firstIndex(where: { $0.id == firstKept }) else {
             throw TeamError(message: "整理的时候聊天变了，下次再整理。")

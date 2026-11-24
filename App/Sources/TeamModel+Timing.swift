@@ -16,11 +16,12 @@ extension TeamModel {
 
     /// Messages whose time has come go into their chats.
     func deliverDue() {
-        guard keeping else { return }
+        guard keeping, phase == .ready else { return }
         let now = Date().timeIntervalSince1970
-        let due = laters.filter { $0.at <= now }.sorted { $0.at < $1.at }
+        let due = laters.filter { $0.at <= now && canAcceptInput(for: $0.chat) }.sorted { $0.at < $1.at }
         guard !due.isEmpty else { return }
-        laters.removeAll { item in due.contains { $0.id == item.id } }
+        let deliveredIds = Set(due.map(\.id))
+        laters.removeAll { deliveredIds.contains($0.id) }
         saveLaters()
         for item in due {
             let speaker = item.chat.hasPrefix("room-") ? item.botId : nil
@@ -54,15 +55,15 @@ extension TeamModel {
         for routine in routines {
             guard let due = routine.due(now: now), bots.contains(where: { $0.id == routine.botId }) else { continue }
             let key = Self.key(bot: routine.botId)
-            guard !isWorking(key) else { continue }
+            guard canAcceptInput(for: key), !isWorking(key) else { continue }
+            var words = "【定时 · \(routine.title)】\(routine.prompt)"
+            if now.timeIntervalSince(due.at) > 600 { words += "\n（本该 \(When.show(due.at)) 做，现在补上。）" }
+            if due.missed > 0 { words += "\n（之前还错过了 \(due.missed) 次，没有补。）" }
+            guard send(words, photos: [], to: key, userInitiated: false) else { continue }
             var done = routine
             done.lastRun = now.timeIntervalSince1970
             if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = done }
             saveRoutines()
-            var words = "【定时 · \(routine.title)】\(routine.prompt)"
-            if now.timeIntervalSince(due.at) > 600 { words += "\n（本该 \(When.show(due.at)) 做，现在补上。）" }
-            if due.missed > 0 { words += "\n（之前还错过了 \(due.missed) 次，没有补。）" }
-            send(words, photos: [], to: key, userInitiated: false)
             Diag.note("定时任务开始：\(routine.title)")
         }
     }
@@ -94,18 +95,26 @@ extension TeamModel {
 
     // MARK: 晨信
 
+    private static func localDayString(_ date: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
     /// Once a day, after the hour the user chose, the main companion writes a short morning letter.
     func morningIfDue() {
         guard phase == .ready, Pref.morningOn, let main = mainBotId, bots.contains(where: { $0.id == main }) else { return }
         let now = Date()
-        guard Calendar.current.component(.hour, from: now) >= Pref.morningHour else { return }
-        let today = now.formatted(.iso8601.year().month().day())
+        let calendar = Calendar.current
+        guard calendar.component(.hour, from: now) >= Pref.morningHour else { return }
+        let today = Self.localDayString(now, calendar: calendar)
         guard UserDefaults.standard.string(forKey: "morning.last") != today else { return }
         let key = Self.key(bot: main)
         // Busy (a routine, say): tried again on the next look, not marked done for the day.
-        guard !isWorking(key) else { return }
-        UserDefaults.standard.set(today, forKey: "morning.last")
-        send("早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。", photos: [], to: key, userInitiated: false)
+        guard canAcceptInput(for: key), !isWorking(key) else { return }
+        let prompt = "早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。"
+        if send(prompt, photos: [], to: key, userInitiated: false) {
+            UserDefaults.standard.set(today, forKey: "morning.last")
+        }
     }
 
     /// The daily nudge, at the hour the user chose; opening it lets the letter be written.

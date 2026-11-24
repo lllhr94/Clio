@@ -96,17 +96,19 @@ struct GrantsPage: View {
         .onChange(of: phase) { _, now in if now == .active { load() } }
     }
 
-    /// Asks the system about every ability not yet asked, one after another, and lets the reading ones go ahead.
+    /// Asks the system about every enabled ability not yet asked, without overriding the user's chosen policy.
     private func askAll() {
         asking = true
         Task {
-            for grant in Grant.allCases where grant.system == .notAsked {
+            for grant in Grant.allCases where grant.policy != .off && grant.system == .notAsked {
                 await grant.requestSystem()
                 try? await Task.sleep(nanoseconds: 350_000_000)
             }
-            await Grant.letters.requestSystem()
-            for grant in [Grant.location, .photos, .motion, .health, .device, .calendar, .reminders, .contacts] where grant.policy == .ask || grant.policy == .off {
-                if grant.system == .granted || grant.system == .limited || grant.system == .none { grant.policy = .allow }
+            if Grant.letters.policy != .off {
+                let settings = await UNUserNotificationCenter.current().notificationSettings()
+                if settings.authorizationStatus == .notDetermined {
+                    await Grant.letters.requestSystem()
+                }
             }
             load()
             asking = false
@@ -189,6 +191,11 @@ struct GrantsPage: View {
         switch systems[grant] ?? .none {
         case .none:
             EmptyView()
+        case .asked:
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            } label: { badge("已在系统健康中设置", Ink.inkSoft) }
+            .buttonStyle(PressStyle())
         case .granted:
             badge("系统已允许", Ink.ok)
         case .limited:

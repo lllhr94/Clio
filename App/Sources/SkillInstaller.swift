@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Darwin
 import Foundation
 import SwiftUI
 import UIKit
@@ -163,6 +164,28 @@ enum SkillInstaller {
     static func install(_ staged: StagedSkill) throws {
         let fm = FileManager.default
         let skillsRoot = SkillShelf.folder
+        let folderName = SkillShelf.safe(staged.folderName)
+        guard !folderName.isEmpty,
+              !folderName.hasPrefix("."),
+              folderName != ".",
+              folderName != "..",
+              !folderName.contains("/"),
+              !folderName.contains("\\") else {
+            throw Problem.message("技能目录名称无效。")
+        }
+        let finalFolder = skillsRoot.appendingPathComponent(folderName, isDirectory: true)
+        let rootStd = skillsRoot.standardizedFileURL.path
+        let rootReal = skillsRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        guard finalFolder.standardizedFileURL.path != rootStd,
+              finalFolder.resolvingSymlinksInPath().standardizedFileURL.path != rootReal,
+              Workspace.isInsideRealRoot(finalFolder, root: skillsRoot) else {
+            throw Problem.message("技能安装路径越界：\(folderName)")
+        }
+        var finalStat = stat()
+        if lstat(finalFolder.path, &finalStat) == 0, (finalStat.st_mode & S_IFMT) == S_IFLNK {
+            throw Problem.message("目标技能目录是软链接，已拒绝覆盖：\(folderName)")
+        }
+
         let tempTarget = skillsRoot.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: tempTarget, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: tempTarget) }
@@ -185,15 +208,28 @@ enum SkillInstaller {
             try data.write(to: destination, options: .atomic)
         }
 
-        let finalFolder = skillsRoot.appendingPathComponent(staged.folderName, isDirectory: true)
         if fm.fileExists(atPath: finalFolder.path) {
             _ = try fm.replaceItemAt(finalFolder, withItemAt: tempTarget)
         } else {
             try fm.moveItem(at: tempTarget, to: finalFolder)
         }
-        // If an older single-file skill had the exact same name, remove it so there are no duplicates.
-        let legacySingle = skillsRoot.appendingPathComponent(staged.folderName + ".md")
-        if fm.fileExists(atPath: legacySingle.path) {
+        // Only after the new skill is in place: remove any case-variant directories or legacy single-file skills with the same case-insensitive name.
+        if let existingEntries = try? fm.contentsOfDirectory(at: skillsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for existing in existingEntries {
+                let existingName = existing.lastPathComponent
+                let matchesFolder = existingName.localizedCaseInsensitiveCompare(folderName) == .orderedSame
+                let matchesSingle = existingName.localizedCaseInsensitiveCompare(folderName + ".md") == .orderedSame
+                guard matchesFolder || matchesSingle else { continue }
+                guard Workspace.isInsideRealRoot(existing, root: skillsRoot),
+                      existing.standardizedFileURL.path != rootStd else { continue }
+                if existing.standardizedFileURL.path != finalFolder.standardizedFileURL.path {
+                    try? fm.removeItem(at: existing)
+                }
+            }
+        }
+
+        let legacySingle = skillsRoot.appendingPathComponent(folderName + ".md")
+        if Workspace.isInsideRealRoot(legacySingle, root: skillsRoot), fm.fileExists(atPath: legacySingle.path) {
             try? fm.removeItem(at: legacySingle)
         }
         SkillShelf.invalidate()
@@ -460,6 +496,11 @@ enum SkillInstaller {
             throw Problem.message("没有在里面找到 SKILL.md，不能当成技能安装。")
         }
 
+        let existingNamesLower: Set<String> = Set(
+            ((try? fm.contentsOfDirectory(at: SkillShelf.folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [])
+                .map { $0.lastPathComponent.lowercased() }
+        )
+
         var staged: [StagedSkill] = []
         for dir in skillDirs {
             guard let manifest = skillFile(in: dir),
@@ -473,7 +514,11 @@ enum SkillInstaller {
             let folderName = SkillShelf.safe(skill.name)
             let existingFolder = SkillShelf.folder.appendingPathComponent(folderName)
             let existingFile = SkillShelf.folder.appendingPathComponent(folderName + ".md")
-            let willOverwrite = fm.fileExists(atPath: existingFolder.path) || fm.fileExists(atPath: existingFile.path)
+            let lowerFolder = folderName.lowercased()
+            let willOverwrite = fm.fileExists(atPath: existingFolder.path)
+                || fm.fileExists(atPath: existingFile.path)
+                || existingNamesLower.contains(lowerFolder)
+                || existingNamesLower.contains(lowerFolder + ".md")
             staged.append(StagedSkill(
                 id: dir.path,
                 skill: skill,
@@ -527,15 +572,35 @@ enum SkillInstaller {
     private static func isScriptFile(url: URL, relativePath: String) -> Bool {
         let ext = url.pathExtension.lowercased()
         if scriptExtensions.contains(ext) { return true }
+        let fileName = url.lastPathComponent.lowercased()
+        if fileName == "makefile" || fileName == "gnumakefile" || fileName.hasPrefix("makefile.") || fileName.hasSuffix(".mk") {
+            return true
+        }
         let lower = relativePath.lowercased()
         if lower.hasPrefix("scripts/") || lower.hasPrefix("bin/") || lower.contains("/scripts/") || lower.contains("/bin/") {
             return true
         }
-        // Check for Unix shebang `#!` at the start of the file.
+        // Check for Unix shebang `#!`, ELF (`\x7FELF`), or Mach-O / Fat Mach-O magic bytes.
         if let handle = try? FileHandle(forReadingFrom: url) {
             defer { try? handle.close() }
-            if let head = try? handle.read(upToCount: 2), head.count == 2, head[0] == 0x23, head[1] == 0x21 {
-                return true
+            if let head = try? handle.read(upToCount: 4) {
+                let bytes = [UInt8](head)
+                if bytes.count >= 2, bytes[0] == 0x23, bytes[1] == 0x21 {
+                    return true
+                }
+                if bytes.count >= 4 {
+                    if bytes[0] == 0x7F, bytes[1] == 0x45, bytes[2] == 0x4C, bytes[3] == 0x46 {
+                        return true
+                    }
+                    let magic = (UInt32(bytes[0]) << 24) | (UInt32(bytes[1]) << 16) | (UInt32(bytes[2]) << 8) | UInt32(bytes[3])
+                    switch magic {
+                    case 0xFEEDFACE, 0xCEFAEDFE, 0xFEEDFACF, 0xCFFAEDFE,
+                         0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA:
+                        return true
+                    default:
+                        break
+                    }
+                }
             }
         }
         return false

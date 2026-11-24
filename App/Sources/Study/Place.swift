@@ -353,13 +353,34 @@ struct DenHost: WorkspaceHost {
 
     /// File reads and writes are not printed line by line into 斗室's terminal (a 4 MB file is 70,000 lines of base64).
     func execQuiet(_ command: String, timeout: Double) async throws -> ExecResult {
-        let result = await Den.shared.run("cd /root/desk 2>/dev/null; " + command, timeout: timeout, shown: false)
+        let result = await Den.shared.run("cd /root/desk 2>/dev/null; " + command, timeout: timeout, keep: 6_000_000, shown: false)
         var output = result.output
         if !result.errorOutput.isEmpty { output += (output.isEmpty ? "" : "\n") + result.errorOutput }
         return ExecResult(code: Int(result.code), output: output, timedOut: result.timedOut)
     }
 
-    func isInside(_ path: String) -> Bool { WorkspacePath.isInside(path, root: "/root/desk") }
+    func isInside(_ path: String) -> Bool {
+        guard WorkspacePath.isInside(path, root: "/root/desk") else { return false }
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        let sub: String
+        if trimmed == "/root/desk" || trimmed == "/root/desk/" {
+            sub = ""
+        } else if trimmed.hasPrefix("/root/desk/") {
+            sub = String(trimmed.dropFirst("/root/desk/".count))
+        } else {
+            sub = trimmed
+        }
+        var target = Workspace.root
+        for part in sub.split(separator: "/") {
+            if part == "." { continue }
+            if part == ".." {
+                target.deleteLastPathComponent()
+            } else {
+                target.appendPathComponent(String(part))
+            }
+        }
+        return Workspace.isInsideRealRoot(target, root: Workspace.root)
+    }
 }
 
 /// A 远山 computer over SSH (one kept connection, reconnected when it drops).

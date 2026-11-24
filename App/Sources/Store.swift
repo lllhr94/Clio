@@ -118,9 +118,32 @@ enum Vault {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cached: (at: Date, values: [String])?
 
+    private static func safeFileComponent(_ key: String) -> String {
+        let legacySafe = !key.isEmpty && key != "." && key != ".." && key.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)
+            || (byte >= 0x41 && byte <= 0x5A)
+            || (byte >= 0x61 && byte <= 0x7A)
+            || byte == 0x2E || byte == 0x5F || byte == 0x2D
+        }
+        if legacySafe { return key }
+        var encoded = "enc~"
+        for byte in key.utf8 {
+            let unreserved = (byte >= 0x30 && byte <= 0x39)
+                || (byte >= 0x41 && byte <= 0x5A)
+                || (byte >= 0x61 && byte <= 0x7A)
+                || byte == 0x2E || byte == 0x5F || byte == 0x2D
+            if unreserved {
+                encoded.append(Character(UnicodeScalar(byte)))
+            } else {
+                encoded += String(format: "%%%02X", byte)
+            }
+        }
+        return encoded
+    }
+
     private static func file(_ key: String) -> URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent("link-\(key).json")
+        return folder.appendingPathComponent("link-\(safeFileComponent(key)).json")
     }
 }

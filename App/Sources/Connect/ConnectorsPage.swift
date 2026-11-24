@@ -354,13 +354,17 @@ private struct ConnectorDetail: View {
             }
         case .google:
             VStack(spacing: Ink.Space.s) {
-                if !google.connected || google.needsMoreScopes {
-                    bigButton(google.connected ? "重新登录谷歌，授权新的权限" : "先登录谷歌") { googleOpen = true }
+                if !google.connected || google.expired || google.needsMoreScopes {
+                    let buttonTitle = !google.connected ? "先登录谷歌" : (google.expired ? "登录已过期，重新登录谷歌" : "重新登录谷歌，授权新的权限")
+                    bigButton(buttonTitle) { googleOpen = true }
                 } else {
                     bigButton(L.t("actions.connect")) { go(token: nil) }
                 }
                 Text(L.t("connectors.googleOfficialNote"))
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
+            }
+            if google.account != nil {
+                googleAccountCard
             }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 SectionTitle(L.t("connectors.googleSetup"))
@@ -385,6 +389,32 @@ private struct ConnectorDetail: View {
             .padding(Ink.Space.l)
             .paperCard()
             tokenBox(title: title, placeholder: "粘贴\(title)", page: nil)
+        }
+    }
+
+    @ViewBuilder
+    private var googleAccountCard: some View {
+        if connector.auth == .google {
+            let lineText: String = {
+                if google.expired { return "谷歌登录已过期，点此重新登录" }
+                if google.needsMoreScopes { return L.t("connectors.googleReauthorize") }
+                if google.connected { return "管理谷歌账号与登录状态" }
+                return "点此配置谷歌登录"
+            }()
+            Button {
+                Haptics.light()
+                googleOpen = true
+            } label: {
+                RowLabel(
+                    google.expired ? "exclamationmark.triangle" : "person.crop.circle",
+                    tint: google.expired ? Ink.warn : Ink.Tile.dai,
+                    title: google.account ?? L.t("connectors.google"),
+                    line: lineText,
+                    end: .chevron
+                )
+                .paperCard()
+            }
+            .buttonStyle(PressStyle(haptic: false))
         }
     }
 
@@ -425,6 +455,9 @@ private struct ConnectorDetail: View {
     @ViewBuilder
     private var connectedArea: some View {
         if let server {
+            if connector.auth == .google {
+                googleAccountCard
+            }
             let tools = hills.tools(of: server)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 SectionTitle(L.format("connectors.toolCount", tools.count))
@@ -641,7 +674,12 @@ private struct CustomSheet: View {
         let typed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         hills.save(entry, token: typed.isEmpty ? nil : typed)
         result = await Connecting.connect(entry, signIn: typed.isEmpty)
-        if hills.lastError[entry.id] == nil { Haptics.grab(); dismiss() }
+        if hills.lastError[entry.id] == nil {
+            Haptics.grab()
+            dismiss()
+        } else if hills.tools(of: entry).isEmpty {
+            hills.remove(entry)
+        }
     }
 }
 
@@ -678,8 +716,12 @@ private struct GoogleSheet: View {
             Form {
                 if let account = google.account {
                     Section {
-                        Label(account, systemImage: "checkmark.circle.fill").foregroundStyle(Ink.ok)
-                        if google.needsMoreScopes {
+                        Label(account, systemImage: google.expired ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(google.expired ? Ink.warn : Ink.ok)
+                        if google.expired {
+                            Text("谷歌登录已过期，请点击下方重新登录。")
+                                .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.warn)
+                        } else if google.needsMoreScopes {
                             Text(L.t("connectors.googleReauthorize"))
                                 .font(.system(size: Ink.Size.small)).foregroundStyle(Ink.warn)
                         }
@@ -688,7 +730,12 @@ private struct GoogleSheet: View {
                         Button(L.t("actions.signInAgain")) { Task { await google.signIn() } }.disabled(google.busy)
                         Button(L.t("actions.signOutGoogle"), role: .destructive) { google.signOut() }
                     } footer: {
-                        Text(Words.t("谷歌把还在测试的应用的登录 7 天作废；到时旅伴会说登录过期，回这里点「重新登录」。"))
+                        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                            if let problem = google.problem {
+                                Text(problem).foregroundStyle(Ink.stop)
+                            }
+                            Text(Words.t("谷歌把还在测试的应用的登录 7 天作废；到时旅伴会说登录过期，回这里点「重新登录」。"))
+                        }
                     }
                 } else {
                     Section {

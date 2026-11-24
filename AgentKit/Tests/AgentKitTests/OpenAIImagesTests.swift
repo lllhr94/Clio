@@ -27,7 +27,8 @@ final class OpenAIImagesTests: XCTestCase {
     func testImageGenerationMapsProviderFailures() async {
         for (host, expected) in [
             ("quota", ImageGenerationError.insufficientQuota),
-            ("moderation", .contentRejected), ("timeout", .timeout), ("bad-url", .invalidResponse)
+            ("moderation", .contentRejected), ("timeout", .timeout), ("bad-url", .invalidResponse),
+            ("local-link", .invalidResponse),
         ] {
             do {
                 _ = try await generate(host)
@@ -66,6 +67,9 @@ private final class ImageFixtureProtocol: URLProtocol, @unchecked Sendable {
         case "download.example":
             status = request.value(forHTTPHeaderField: "Authorization") == nil && request.httpMethod == "GET" ? 200 : 400
             body = Data([4, 5, 6])
+        case "local-link.example":
+            status = 200
+            body = Data(#"{"data":[{"url":"http://192.168.1.1/router.png"}]}"#.utf8)
         case "quota.example":
             status = 429
             body = Data(#"{"error":{"code":"insufficient_quota"}}"#.utf8)

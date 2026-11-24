@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #import <mach/mach.h>
 #import <os/proc.h>
@@ -17,6 +18,7 @@
 #include "kernel/mm.h"
 #include "fs/dev.h"
 #include "fs/devices.h"
+#include "fs/fd.h"
 #include "fs/path.h"
 #include "fs/tty.h"
 #include "fs/real.h"
@@ -46,6 +48,53 @@ static void den_die(const char *message) {
     NSLog(@"斗室 kernel died: %s", message);
 }
 
+static void den_discard_unstarted_task(struct task *task) {
+    if (task == NULL)
+        return;
+    if (task->mm != NULL) {
+        lock(&task->general_lock);
+        struct mm *mm = task->mm;
+        task->mm = NULL;
+        task->mem = NULL;
+        unlock(&task->general_lock);
+        mm_release(mm);
+    }
+    if (task->files != NULL) {
+        fdtable_release(task->files);
+        task->files = NULL;
+    }
+    if (task->fs != NULL) {
+        fs_info_release(task->fs);
+        task->fs = NULL;
+    }
+    if (task->futex_pipe[0] != -1) {
+        close(task->futex_pipe[0]);
+        task->futex_pipe[0] = -1;
+    }
+    if (task->futex_pipe[1] != -1) {
+        close(task->futex_pipe[1]);
+        task->futex_pipe[1] = -1;
+    }
+    lock(&pids_lock);
+    if (task->sighand != NULL) {
+        sighand_release(task->sighand);
+        task->sighand = NULL;
+    }
+    struct tgroup *group = task->group;
+    if (group != NULL) {
+        list_remove(&task->group_links);
+        cond_destroy(&group->child_exit);
+        cond_destroy(&group->stopped_cond);
+        task_leave_session(task);
+        list_remove(&group->pgroup);
+        free(group);
+        task->group = NULL;
+        atomic_fetch_sub_explicit(&ish_live_guest_procs, 1, memory_order_relaxed);
+    }
+    task_destroy(task);
+    unlock(&pids_lock);
+}
+
 // MARK: Memory
 
 // Tells the kernel how close the app is to the system's memory line, so guests slow down instead of the app being killed.
@@ -62,24 +111,27 @@ static void den_memory_tick(bool critical) {
 }
 
 static void den_memory_start(void) {
-    size_t available = os_proc_available_memory();
-    size_t page = (size_t) getpagesize();
-    if (available > 0 && page > 0)
-        ish_set_anon_page_limit((long) ((double) available * 0.6 / (double) page));
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        size_t available = os_proc_available_memory();
+        size_t page = (size_t) getpagesize();
+        if (available > 0 && page > 0)
+            ish_set_anon_page_limit((long) ((double) available * 0.6 / (double) page));
 
-    static dispatch_source_t timer;
-    static dispatch_source_t pressure;
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
-    dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(timer, ^{ den_memory_tick(false); });
-    dispatch_resume(timer);
-    pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, queue);
-    dispatch_source_set_event_handler(pressure, ^{
-        den_memory_tick((dispatch_source_get_data(pressure) & DISPATCH_MEMORYPRESSURE_CRITICAL) != 0);
+        static dispatch_source_t timer;
+        static dispatch_source_t pressure;
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+        dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(timer, ^{ den_memory_tick(false); });
+        dispatch_resume(timer);
+        pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, queue);
+        dispatch_source_set_event_handler(pressure, ^{
+            den_memory_tick((dispatch_source_get_data(pressure) & DISPATCH_MEMORYPRESSURE_CRITICAL) != 0);
+        });
+        dispatch_resume(pressure);
+        den_memory_tick(false);
     });
-    dispatch_resume(pressure);
-    den_memory_tick(false);
 }
 
 // MARK: Files
@@ -134,6 +186,7 @@ static void den_configure_dns(void) {
 @property (nonatomic) int pid;
 @property (nonatomic) int outRead;
 @property (nonatomic) int errRead;
+@property (nonatomic) NSUInteger maxOutput;
 @property (nonatomic, copy, nullable) DenLine onLine;
 @property (nonatomic, copy) DenDone done;
 @property (nonatomic) NSMutableString *output;
@@ -217,14 +270,45 @@ static dispatch_queue_t readers;
     err = do_execve("/bin/sh", 3, argv, envp);
     if (err < 0)
         return err;
-    task_start(init);
+    err = task_start(init);
+    if (err < 0)
+        return err;
     denBooted = YES;
     return 0;
 }
 
 + (int)run:(NSString *)command environment:(NSDictionary<NSString *, NSString *> *)environment onLine:(DenLine)onLine done:(DenDone)done {
+    return [self run:command environment:environment maxOutput:400000 onLine:onLine done:done];
+}
+
++ (int)run:(NSString *)command environment:(NSDictionary<NSString *, NSString *> *)environment maxOutput:(NSUInteger)maxOutput onLine:(DenLine)onLine done:(DenDone)done {
     if (!denBooted)
         return -1;
+
+    NSArray<NSString *> *arguments = @[@"/bin/sh", @"-c", command];
+    NSMutableData *argv = [NSMutableData data];
+    for (NSString *argument in arguments)
+        [argv appendBytes:argument.UTF8String length:strlen(argument.UTF8String) + 1];
+    [argv appendBytes:"\0" length:1];
+    if (argv.length > 60000)
+        return -7; // E2BIG
+
+    NSMutableDictionary<NSString *, NSString *> *env = [@{
+        @"HOME": @"/root",
+        @"TERM": @"xterm-256color",
+        @"LANG": @"C.UTF-8",
+        @"PATH": @"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        @"PYTHONMALLOC": @"malloc",
+    } mutableCopy];
+    if (environment)
+        [env addEntriesFromDictionary:environment];
+    NSMutableData *envp = [NSMutableData data];
+    for (NSString *key in env) {
+        NSString *pair = [NSString stringWithFormat:@"%@=%@", key, env[key]];
+        [envp appendBytes:pair.UTF8String length:strlen(pair.UTF8String) + 1];
+    }
+    [envp appendBytes:"\0" length:1];
+
     int outPipe[2], errPipe[2];
     if (pipe(outPipe) < 0)
         return -1;
@@ -244,40 +328,28 @@ static dispatch_queue_t readers;
         return err;
     }
     struct task *task = current;
-    task->files->files[0] = den_null_fd(O_RDONLY);
-    task->files->files[1] = den_host_fd(outPipe[1]);
-    task->files->files[2] = den_host_fd(errPipe[1]);
-
-    NSArray<NSString *> *arguments = @[@"/bin/sh", @"-c", command];
-    NSMutableData *argv = [NSMutableData data];
-    for (NSString *argument in arguments)
-        [argv appendBytes:argument.UTF8String length:strlen(argument.UTF8String) + 1];
-    [argv appendBytes:"\0" length:1];
-
-    NSMutableDictionary<NSString *, NSString *> *env = [@{
-        @"HOME": @"/root",
-        @"TERM": @"xterm-256color",
-        @"LANG": @"C.UTF-8",
-        @"PATH": @"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        @"PYTHONMALLOC": @"malloc",
-    } mutableCopy];
-    if (environment)
-        [env addEntriesFromDictionary:environment];
-    NSMutableData *envp = [NSMutableData data];
-    for (NSString *key in env) {
-        NSString *pair = [NSString stringWithFormat:@"%@=%@", key, env[key]];
-        [envp appendBytes:pair.UTF8String length:strlen(pair.UTF8String) + 1];
-    }
-    [envp appendBytes:"\0" length:1];
-
-    if (argv.length > 60000) {
+    struct fd *inFd = den_null_fd(O_RDONLY);
+    struct fd *outFd = den_host_fd(outPipe[1]);
+    struct fd *errFd = den_host_fd(errPipe[1]);
+    task->files->files[0] = inFd;
+    task->files->files[1] = outFd;
+    task->files->files[2] = errFd;
+    if (outFd == NULL)
+        close(outPipe[1]);
+    if (errFd == NULL)
+        close(errPipe[1]);
+    if (inFd == NULL || outFd == NULL || errFd == NULL) {
         current = saved;
-        close(outPipe[0]); close(errPipe[0]);
-        return -7; // E2BIG
+        den_discard_unstarted_task(task);
+        close(outPipe[0]);
+        close(errPipe[0]);
+        return -12; // ENOMEM
     }
+
     err = do_execve("/bin/sh", arguments.count, argv.bytes, envp.bytes);
     if (err < 0) {
         current = saved;
+        den_discard_unstarted_task(task);
         close(outPipe[0]); close(errPipe[0]);
         return err;
     }
@@ -286,6 +358,7 @@ static dispatch_queue_t readers;
     run.pid = task->pid;
     run.outRead = outPipe[0];
     run.errRead = errPipe[0];
+    run.maxOutput = maxOutput > 0 ? maxOutput : 400000;
     run.onLine = onLine;
     run.done = done;
     run.output = [NSMutableString string];
@@ -294,8 +367,16 @@ static dispatch_queue_t readers;
     @synchronized (runs) {
         runs[@(run.pid)] = run;
     }
-    task_start(task);
+    err = task_start(task);
     current = saved;
+    if (err < 0) {
+        @synchronized (runs) {
+            [runs removeObjectForKey:@(run.pid)];
+        }
+        den_discard_unstarted_task(task);
+        close(outPipe[0]); close(errPipe[0]);
+        return err;
+    }
 
     [self read:run error:NO];
     [self read:run error:YES];
@@ -308,6 +389,8 @@ static dispatch_queue_t readers;
         NSMutableData *pending = [NSMutableData data];
         char buffer[8192];
         for (;;) {
+            if (run.finished)
+                break;
             ssize_t got = read(fd, buffer, sizeof(buffer));
             if (got > 0) {
                 [pending appendBytes:buffer length:got];
@@ -315,9 +398,13 @@ static dispatch_queue_t readers;
             } else if (got == 0) {
                 break;
             } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                if (run.finished)
+                    break;
                 // After the process is gone, give its last words a moment, then stop.
                 if (run.exited) {
                     usleep(150000);
+                    if (run.finished)
+                        break;
                     ssize_t last = read(fd, buffer, sizeof(buffer));
                     if (last > 0) {
                         [pending appendBytes:buffer length:last];
@@ -330,7 +417,8 @@ static dispatch_queue_t readers;
                 break;
             }
         }
-        [self flush:pending run:run error:isError final:YES];
+        if (!run.finished)
+            [self flush:pending run:run error:isError final:YES];
         close(fd);
         @synchronized (run) {
             run.readersLeft -= 1;
@@ -357,11 +445,13 @@ static dispatch_queue_t readers;
 }
 
 + (void)emit:(NSData *)data run:(DenRun *)run error:(BOOL)isError {
+    if (run.finished)
+        return;
     NSString *line = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
         ?: [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding] ?: @"";
     NSMutableString *into = isError ? run.errorOutput : run.output;
     @synchronized (into) {
-        if (into.length < 400000) {
+        if (into.length < run.maxOutput) {
             [into appendString:line];
             [into appendString:@"\n"];
         }
@@ -482,9 +572,11 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
         if (error) *error = err;
         return nil;
     }
+    struct task *task = current;
     struct tty *tty = pty_open_fake(&den_pty_driver);
     if (IS_ERR(tty)) {
         current = saved;
+        den_discard_unstarted_task(task);
         if (error) *error = (int) PTR_ERR(tty);
         return nil;
     }
@@ -496,6 +588,7 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
     err = create_stdio(stdioFile.fileSystemRepresentation, TTY_PSEUDO_SLAVE_MAJOR, tty->num);
     if (err < 0) {
         current = saved;
+        den_discard_unstarted_task(task);
         [terminal releaseTTY];
         if (error) *error = err;
         return nil;
@@ -506,15 +599,23 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
     err = do_execve("/bin/sh", 3, argv, envp);
     if (err < 0) {
         current = saved;
+        den_discard_unstarted_task(task);
         [terminal releaseTTY];
         if (error) *error = err;
         return nil;
     }
-    terminal.pid = current->pid;
-    task_start(current);
-    current = saved;
-
+    terminal.pid = task->pid;
     [NSNotificationCenter.defaultCenter addObserver:terminal selector:@selector(processExited:) name:DenExited object:nil];
+    err = task_start(task);
+    current = saved;
+    if (err < 0) {
+        [NSNotificationCenter.defaultCenter removeObserver:terminal];
+        den_discard_unstarted_task(task);
+        [terminal releaseTTY];
+        if (error) *error = err;
+        return nil;
+    }
+
     if (error) *error = 0;
     return terminal;
 }

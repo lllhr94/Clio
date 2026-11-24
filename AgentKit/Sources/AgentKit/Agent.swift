@@ -7,14 +7,17 @@ public struct ApprovalAsk: Equatable, Sendable {
     /// Why, or the thing itself: 「明天 15:00 牙医」.
     public var reason: String
     public var detail: String?
+    /// Full command or payload to show in a scrollable code box without truncation.
+    public var code: String?
     /// Must be asked even where the person said 「以后都允许」 or 「这段絮语都放行」: the turn read text from the web,
     /// which may carry instructions aimed at the model.
     public var forced: Bool
 
-    public init(title: String, reason: String, detail: String? = nil, forced: Bool = false) {
+    public init(title: String, reason: String, detail: String? = nil, code: String? = nil, forced: Bool = false) {
         self.title = title
         self.reason = reason
         self.detail = detail
+        self.code = code
         self.forced = forced
     }
 }
@@ -127,6 +130,7 @@ public struct Agent: Sendable {
         } catch let failure as ProviderError where text.isEmpty && request.thinking != .auto && (failure.status == 400 || failure.status == 422) {
             // The model does not take the thinking setting: ask once more without it.
             request.thinking = .auto
+            finished = nil
             for try await event in provider.stream(request) {
                 try Task.checkCancellation()
                 if case .text(let piece) = event { text += piece }
@@ -225,6 +229,8 @@ public struct Agent: Sendable {
                     if !cancelled, text.isEmpty, reasoning.isEmpty, images.isEmpty, calls.isEmpty, attempt < retryDelays.count, Self.passing(error) {
                         let wait = retryDelays[attempt]
                         attempt += 1
+                        signature = ""
+                        finished = nil
                         await emit(.retrying(attempt: attempt))
                         if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
                         continue
@@ -235,18 +241,35 @@ public struct Agent: Sendable {
                         await emit(.thinkingRefused(thinking, reason: failure.message))
                         thinking = .auto
                         request.thinking = .auto
+                        signature = ""
+                        finished = nil
                         continue
                     }
                     // What was written so far stays.
-                    if !text.isEmpty { await emit(.message(.assistant(text))) }
+                    if !text.isEmpty {
+                        var partial = Message.assistant(text, reasoning: reasoning.isEmpty ? nil : reasoning)
+                        if !signature.isEmpty { partial.reasoningSignature = signature }
+                        await emit(.message(partial))
+                    }
                     if cancelled { throw CancellationError() }
                     throw error
                 }
             }
             if !images.isEmpty, let renderReplyImages {
-                try Task.checkCancellation()
-                let attachments = try await renderReplyImages(images)
-                if !attachments.isEmpty { text += (text.isEmpty ? "" : "\n\n") + attachments }
+                do {
+                    try Task.checkCancellation()
+                    let attachments = try await renderReplyImages(images)
+                    if !attachments.isEmpty { text += (text.isEmpty ? "" : "\n\n") + attachments }
+                } catch {
+                    let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+                    if !text.isEmpty {
+                        var partial = Message.assistant(text, reasoning: reasoning.isEmpty ? nil : reasoning)
+                        if !signature.isEmpty { partial.reasoningSignature = signature }
+                        await emit(.message(partial))
+                    }
+                    if cancelled { throw CancellationError() }
+                    throw error
+                }
             }
             var made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
             // A stream that stopped without the service saying it was done may have cut a tool call short: its
@@ -360,13 +383,15 @@ public struct Agent: Sendable {
             await emit(.toolFinished(id: call.id, ok: !output.isError))
             var result = Message.toolResult(screen?(output.text) ?? output.text, for: call, isError: output.isError)
             result.images = output.images
-            result.detail = output.detail
+            result.detail = output.detail.map { screen?($0) ?? $0 }
             return result
         } catch {
             await emit(.toolFinished(id: call.id, ok: false))
             // A step that changes things and broke off on the way may or may not have happened.
             if asked, Self.unsure(error) {
-                return .toolResult(Self.unknownMark + "这一步可能已经做了，也可能没做（\(error.localizedDescription)）。不要直接再做一次：先查清现在的状态，查不清就问用户。", for: call, isError: true)
+                let rawBody = "这一步可能已经做了，也可能没做（\(error.localizedDescription)）。不要直接再做一次：先查清现在的状态，查不清就问用户。"
+                let safeBody = screen?(rawBody) ?? rawBody
+                return .toolResult(Self.unknownMark + safeBody, for: call, isError: true)
             }
             let words = "出错了：\(error.localizedDescription)"
             return .toolResult(screen?(words) ?? words, for: call, isError: true)

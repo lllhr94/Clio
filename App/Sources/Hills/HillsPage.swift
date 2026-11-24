@@ -14,6 +14,8 @@ struct HillsPage: View {
     @State private var fingerprints: [String: String] = [:]
     @State private var terminalHost: Hills.Host?
     @State private var browserAsk: Hills.Host?
+    @State private var hostPendingDelete: Hills.Host?
+    @State private var serverPendingDelete: Hills.Server?
     /// Host id → what the browser installation is doing now.
     @State private var installing: [String: String] = [:]
 
@@ -90,6 +92,32 @@ struct HillsPage: View {
                 Button("算了", role: .cancel) {}
             } message: {
                 Text("会装上 Node.js、Playwright 的 MCP 服务和 Chromium（大约 400 MB，要几分钟），让它只在那台电脑自己的 127.0.0.1:8931 上听，开机自启。手机经 SSH 隧道连过去，所以不用在安全组放行任何端口，网上也没人能直接连。\n\n需要 root 或免密 sudo。")
+            }
+            .confirmationDialog(
+                "删除主机「\(hostPendingDelete?.name ?? "")」？",
+                isPresented: Binding(get: { hostPendingDelete != nil }, set: { if !$0 { hostPendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    if let host = hostPendingDelete { hills.remove(host) }
+                    hostPendingDelete = nil
+                }
+                Button(L.t("actions.cancel"), role: .cancel) { hostPendingDelete = nil }
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
+            .confirmationDialog(
+                "删除服务「\(serverPendingDelete?.name ?? "")」？",
+                isPresented: Binding(get: { serverPendingDelete != nil }, set: { if !$0 { serverPendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    if let server = serverPendingDelete { hills.remove(server) }
+                    serverPendingDelete = nil
+                }
+                Button(L.t("actions.cancel"), role: .cancel) { serverPendingDelete = nil }
+            } message: {
+                Text(L.t("errors.cannotUndo"))
             }
             .task {
                 resumeInstalls()
@@ -181,7 +209,7 @@ struct HillsPage: View {
         .padding(Ink.Space.l)
         .contentShape(Rectangle())
         .onTapGesture { editingHost = host }
-        .contextMenu { Button("删掉", systemImage: "trash", role: .destructive) { hills.remove(host) } }
+        .contextMenu { Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { hostPendingDelete = host } }
     }
 
     private func serverRow(_ server: Hills.Server) -> some View {
@@ -197,7 +225,8 @@ struct HillsPage: View {
                 Button(refreshing == server.id ? "在问…" : "连接") {
                     refreshing = server.id
                     Task {
-                        await hills.refresh(server)
+                        let hasSavedToken = await Vault.readString("mcp.\(server.id)") != nil
+                        _ = await Connecting.connect(server, signIn: server.tunnelHost == nil && !hasSavedToken)
                         refreshing = nil
                     }
                 }
@@ -215,7 +244,7 @@ struct HillsPage: View {
         .padding(Ink.Space.l)
         .contentShape(Rectangle())
         .onTapGesture { editingServer = server }
-        .contextMenu { Button("删掉", systemImage: "trash", role: .destructive) { hills.remove(server) } }
+        .contextMenu { Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { serverPendingDelete = server } }
     }
 
     // MARK: A browser on the far computer
@@ -316,6 +345,18 @@ private struct HostEditor: View {
     @State private var port = ""
     @Environment(\.dismiss) private var dismiss
 
+    private var parsedPort: Int? {
+        guard let value = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...65535).contains(value) else { return nil }
+        return value
+    }
+
+    private var canSave: Bool {
+        let cleanAddress = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUser = host.user.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !cleanAddress.isEmpty && !cleanUser.isEmpty && parsedPort != nil
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -323,7 +364,7 @@ private struct HostEditor: View {
                 Section(L.t("remote.displayName")) { TextField("比如：香港 VPS", text: $host.name) }
                 Section(L.t("remote.address")) {
                     TextField("域名或 IP", text: $host.address).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    TextField("端口", text: $port).keyboardType(.numberPad)
+                    TextField("端口（1-65535）", text: $port).keyboardType(.numberPad)
                     TextField("用户名", text: $host.user).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 Section {
@@ -341,19 +382,23 @@ private struct HostEditor: View {
             }
             }
             .paperForm()
-            .navigationTitle(host.name.isEmpty ? L.t("remote.newHost") : host.name)
+            .navigationTitle(host.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.t("remote.newHost") : host.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
-                        host.port = Int(port) ?? 22
-                        if host.name.trimmingCharacters(in: .whitespaces).isEmpty { host.name = host.address }
+                        guard let validPort = parsedPort else { return }
+                        host.address = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
+                        host.user = host.user.trimmingCharacters(in: .whitespacesAndNewlines)
+                        host.name = host.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        host.port = validPort
+                        if host.name.isEmpty { host.name = host.address }
                         Hills.shared.save(host, password: password.isEmpty ? nil : password)
                         Haptics.thud()
                         dismiss()
                     }
-                    .disabled(host.address.trimmingCharacters(in: .whitespaces).isEmpty || host.user.isEmpty)
+                    .disabled(!canSave)
                 }
             }
             .onAppear { port = String(host.port) }
@@ -422,14 +467,25 @@ private struct ServerEditor: View {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
-                        if server.name.trimmingCharacters(in: .whitespaces).isEmpty { server.name = URL(string: server.url)?.host() ?? "MCP" }
-                        Hills.shared.save(server, token: token.isEmpty ? nil : token)
+                        server.url = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                        server.name = server.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if server.name.isEmpty { server.name = URL(string: server.url)?.host() ?? "MCP" }
+                        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Hills.shared.save(server, token: cleanToken.isEmpty ? nil : cleanToken)
                         let saved = server
-                        Task { await Hills.shared.refresh(saved) }
+                        Task {
+                            let hasSavedToken: Bool
+                            if !cleanToken.isEmpty {
+                                hasSavedToken = true
+                            } else {
+                                hasSavedToken = await Vault.readString("mcp.\(saved.id)") != nil
+                            }
+                            _ = await Connecting.connect(saved, signIn: saved.tunnelHost == nil && !hasSavedToken)
+                        }
                         Haptics.thud()
                         dismiss()
                     }
-                    .disabled(URL(string: server.url)?.host() == nil)
+                    .disabled(URL(string: server.url.trimmingCharacters(in: .whitespacesAndNewlines))?.host() == nil)
                 }
             }
         }

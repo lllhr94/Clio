@@ -206,7 +206,10 @@ private struct TerminalHost: UIViewRepresentable {
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         func scrolled(source: TerminalView, position: Double) {}
         func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-            if let url = URL(string: link) { UIApplication.shared.open(url) }
+            guard let url = URL(string: link),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return }
+            UIApplication.shared.open(url)
         }
         func bell(source: TerminalView) { Haptics.tick(0.4) }
         func clipboardCopy(source: TerminalView, content: Data) {

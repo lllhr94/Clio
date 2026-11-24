@@ -432,6 +432,21 @@ final class TeamModel: ObservableObject {
         return shelveCurrent(key)
     }
 
+    private func removeFoldSummaries(_ key: String, in list: [Entry]) {
+        guard keeping else { return }
+        for entry in list where entry.fold == true {
+            Disk.remove(Self.foldSummary(key, entry.id))
+        }
+        let chatsDir = Disk.root.appendingPathComponent("chats", isDirectory: true)
+        let prefix = "\(key)~fold-"
+        let suffix = "~summary.json"
+        if let items = try? FileManager.default.contentsOfDirectory(at: chatsDir, includingPropertiesForKeys: nil) {
+            for item in items where item.lastPathComponent.hasPrefix(prefix) && item.lastPathComponent.hasSuffix(suffix) {
+                try? FileManager.default.removeItem(at: item)
+            }
+        }
+    }
+
     private func shelveCurrent(_ key: String) -> Bool {
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return false }
         stop(key)
@@ -440,12 +455,23 @@ final class TeamModel: ObservableObject {
         browser.release(key)
         let current = history(key)
         guard current.contains(where: { $0.note != true }) else {
-            // Leave unsent queued messages untouched when there is no conversation to shelve.
+            // Leave unsent queued messages and thread labels untouched when there is no conversation to shelve,
+            // while cleaning any leftover note-only lines or state.
             modelInputLog.clear(key)
-            forgetThreads(key)
+            clearPlan(key)
+            trusted.remove(key)
+            Snapshots.shared.forget(key)
+            removeFoldSummaries(key, in: current)
+            setSummary(key, nil)
+            if !current.isEmpty {
+                entries[key] = []
+                if keeping { ChatDisk.save([Entry](), chat: key) }
+                clearPreview(key)
+                notify(key, .changed)
+            }
             return true
         }
-        let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? "一段絮语"
+        let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? Words.t("一段絮语")
         let named = options(key).title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
         let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
@@ -473,6 +499,10 @@ final class TeamModel: ObservableObject {
         value.title = nil
         setOptions(key, value)
         setSummary(key, nil)
+        clearPlan(key)
+        trusted.remove(key)
+        Snapshots.shared.forget(key)
+        removeFoldSummaries(key, in: current)
         objectWillChange.send()
         leafBook[key] = nextLeaves
         moveThread(key, to: leafKey)
@@ -519,10 +549,16 @@ final class TeamModel: ObservableObject {
     @discardableResult
     func clearChat(_ key: String, includingLeaves: Bool = true) -> Bool {
         guard canAcceptInput(for: key) else { return false }
+        let current = history(key)
         clearQueuedSlot(key)
         stop(key)
         epochs[key, default: 0] += 1
+        browser.release(key)
+        clearPlan(key)
+        trusted.remove(key)
         modelInputLog.clear(key)
+        Snapshots.shared.forget(key)
+        removeFoldSummaries(key, in: current)
         if includingLeaves {
             let oldLeaves = leaves(key)
             if keeping {
@@ -535,7 +571,6 @@ final class TeamModel: ObservableObject {
                 clearQueuedSlot(Self.threadKey(key, leaf: leaf.id))
             }
             setLeaves(key, [])
-            Snapshots.shared.forget(key)
         }
         if keeping { ChatDisk.save([Entry](), chat: key) }
         forgetThreads(key, includingLeaves: includingLeaves)
@@ -881,7 +916,7 @@ final class TeamModel: ObservableObject {
     }
 
     func persistQueued(_ key: String) {
-        guard keeping else { return }
+        guard keeping, !Disk.frozen else { return }
         let items = allPersistableQueued(key)
         let anchor = items.isEmpty ? nil : ConversationAnchor.from(entryIds: history(key).map(\.id))
         QueuedStore.save(items, for: key, anchor: anchor)
@@ -1076,6 +1111,7 @@ final class TeamModel: ObservableObject {
             await self?.run(key, token: token, userInitiated: userInitiated)
         }
         runs[key] = (token, task, Date(), nil)
+        WidgetFeed.publish(self)
     }
 
     /// Extra time iOS gives a turn after the app leaves the screen, by turn.
@@ -1132,12 +1168,24 @@ final class TeamModel: ObservableObject {
         endGrace(token)
     }
 
+    private func flushHelpingPartialStreams() {
+        for helperKey in helping {
+            guard let kept = streamed.removeValue(forKey: helperKey) else { continue }
+            let partial = kept.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !partial.isEmpty {
+                append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(partial + "……"), speaker: kept.speaker), to: helperKey)
+                touch(helperKey, preview: partial, speaker: kept.speaker)
+            }
+        }
+    }
+
     /// The background time is nearly gone and this chat's turn is not done: keep the reply written so far,
     /// stop cleanly, and say so; back in Clio, 「接着做」 goes on from there. A turn waiting for 候印 is left
     /// as it is: nothing is in flight, and the card is still there on return.
     func pause(_ key: String) {
         guard runs[key] != nil, pausing[key] == nil, !approvals.contains(where: { $0.chat == key }) else { return }
         // Kept now, before iOS freezes the app; the cancel below would hand the same text back only later.
+        flushHelpingPartialStreams()
         let kept = streamed.removeValue(forKey: key)
         let partial = kept?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !partial.isEmpty {
@@ -1151,6 +1199,7 @@ final class TeamModel: ObservableObject {
         }
         Diag.note("后台时间用完，\(chatName(key)) 的这一轮先停下" + (partial.isEmpty ? "" : "（存下 \(partial.count) 字）"))
         stop(key)
+        WidgetFeed.publish(self)
     }
 
     /// The note under a paused turn, with its 「接着做」 button; written once the turn has wound down, so it is the last line.
@@ -1229,6 +1278,7 @@ final class TeamModel: ObservableObject {
             }
         }
         notify(key, .finished)
+        WidgetFeed.publish(self)
         BackgroundTurn.end(chat: key, token: token, ok: ok && !cancelled && !paused)
         if runs[key] == nil {
             let reply = history(key).last { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }?.message.text
@@ -1243,9 +1293,12 @@ final class TeamModel: ObservableObject {
         endGrace(token)
         // Told in the other conversations when the user comes back to them (你不在时).
         if !cancelled { record(ok ? .done : .failed, in: key) }
-        // If a turn stopped after `takeInbox` before `hear` received its user message, return it to the queue.
+        // If a turn stopped after `takeInbox` before `hear` received its user message, return it to the queue
+        // even if `openingLeaves` or `unresolvedLeafOpenChats` temporarily blocks new input dispatch.
+        if runs[key] == nil, !Disk.frozen, !queueDispatchSuspended {
+            restoreUnemittedInterjects(for: key)
+        }
         guard canAcceptInput(for: key) else { return }
-        if runs[key] == nil { restoreUnemittedInterjects(for: key) }
         // What was written meanwhile goes out now: after a turn that went well, or at once when asked.
         // A turn that failed or was stopped leaves the queue for the user to send or take back.
         let now = sendQueuedNow.remove(key) != nil
@@ -1367,6 +1420,7 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
         PetNews.shared.post(.failed, chat: key, title: chatName(key))
+        WidgetFeed.publish(self)
         if Pref.notifyDone, UIApplication.shared.applicationState != .active {
             Notify.now("\(chatName(key))出了点问题", text.replacingOccurrences(of: "\n", with: "。"), chat: key)
         }
@@ -1375,7 +1429,7 @@ final class TeamModel: ObservableObject {
     /// What every tool result goes through before a model reads it: kept secrets hidden, and nothing past 60,000
     /// characters (an MCP service or a page can send far more than any model should be handed at once).
     nonisolated static func screen(_ text: String) -> String {
-        Shell.mask(Shell.clip(text, max: 60_000), secrets: Vault.allStrings())
+        Shell.maskedClip(text, max: 60_000, secrets: Vault.allStrings())
     }
 
     var toolTails: [String: ToolTail] = [:]
@@ -1564,6 +1618,7 @@ final class TeamModel: ObservableObject {
     func retry(_ key: String, restoring: Bool = false) {
         guard phase != .demo, canAcceptInput(for: key) else { return }
         stop(key)
+        epochs[key, default: 0] += 1
         let turns = turnsToUndo(key)
         guard let list = Turns.retried(history(key)) else { return }
         entries[key] = list
@@ -1571,11 +1626,18 @@ final class TeamModel: ObservableObject {
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
-        Task {
+        let restoreEpoch = epochs[key, default: 0]
+        doing[key] = "正在还原文件"
+        Task { [weak self] in
             let result = await Snapshots.shared.restore(key, turns: turns)
-            noteRestore(key, result)
+            guard let self else { return }
+            if self.epochs[key, default: 0] == restoreEpoch, self.doing[key] == "正在还原文件" {
+                self.doing[key] = nil
+            }
+            guard self.epochs[key, default: 0] == restoreEpoch, self.canAcceptInput(for: key) else { return }
+            self.noteRestore(key, result)
             // Files that did not come back: the user decides whether to go on (the review, #14).
-            if result.failed.isEmpty { start(key) }
+            if result.failed.isEmpty { self.start(key) }
         }
     }
 
@@ -1592,6 +1654,7 @@ final class TeamModel: ObservableObject {
     func resend(_ key: String, entry id: String, text: String, restoring: Bool = false) -> Bool {
         guard phase != .demo, canAcceptInput(for: key) else { return false }
         stop(key)
+        epochs[key, default: 0] += 1
         let turns = turnsToUndo(key, from: id)
         guard let list = Turns.edited(history(key), id: id, change: { entry in
             var edited = entry
@@ -1607,11 +1670,18 @@ final class TeamModel: ObservableObject {
             start(key)
             return true
         }
-        Task {
+        let restoreEpoch = epochs[key, default: 0]
+        doing[key] = "正在还原文件"
+        Task { [weak self] in
             let result = await Snapshots.shared.restore(key, turns: turns)
-            noteRestore(key, result)
+            guard let self else { return }
+            if self.epochs[key, default: 0] == restoreEpoch, self.doing[key] == "正在还原文件" {
+                self.doing[key] = nil
+            }
+            guard self.epochs[key, default: 0] == restoreEpoch, self.canAcceptInput(for: key) else { return }
+            self.noteRestore(key, result)
             // Files that did not come back: the user decides whether to go on (the review, #14).
-            if result.failed.isEmpty { start(key) }
+            if result.failed.isEmpty { self.start(key) }
         }
         return true
     }
@@ -1803,7 +1873,11 @@ final class TeamModel: ObservableObject {
             tail: { output.add($0) }
         )
         all += WorkspaceTools.all(host: workplace.host, kit: kit)
-        all += Workspace.tools()
+        let deskHost = WorkPlace.desk.host
+        all += Workspace.tools(
+            beforeChange: { path in await Snapshots.shared.keep(key, place: WorkPlace.desk.code, host: deskHost, path: path) },
+            recordPreRead: { path, preRead in await Snapshots.shared.keepPreRead(key, place: WorkPlace.desk.code, path: path, preRead: preRead) }
+        )
         if phase != .demo, let selected = imageModelSelection {
             all.append(GenerateImage(baseURL: selected.endpoint.baseURL, model: selected.model,
                                      apiKey: apiKey(for: selected.endpoint.id)))
@@ -1936,15 +2010,19 @@ final class TeamModel: ObservableObject {
     func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
         if !ask.forced, alwaysAllowed.contains(tool) || trusted.contains(chat) { return true }
         let id = UUID().uuidString
+        let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
+        let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
-            tool: ask.title, toolName: tool, reason: ask.reason, detail: ask.detail.map { Approval.Detail(text: $0) },
+            tool: ask.title, toolName: tool, reason: ask.reason, detail: detail,
             at: Now.ms, answerable: true, forced: ask.forced
         )
         let before = doing[chat]
         doing[chat] = "等你批准"
+        BackgroundTurn.step(chat: chat, doing: "等你批准")
         record(.waiting, in: chat)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { approvals.append(approval) }
+        WidgetFeed.publish(self)
         if let chat = approval.chat { PetNews.shared.post(.approval, chat: chat, title: chatName(chat)) }
         Haptics.tick(0.8)
         if UIApplication.shared.applicationState != .active {
@@ -1952,6 +2030,7 @@ final class TeamModel: ObservableObject {
         }
         let allowed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in waiters[id] = continuation }
         if doing[chat] == "等你批准" { doing[chat] = before }
+        WidgetFeed.publish(self)
         return allowed
     }
 
@@ -1964,14 +2043,17 @@ final class TeamModel: ObservableObject {
         if phase == .demo {
             try? await Task.sleep(nanoseconds: 250_000_000)
             approvals.removeAll { $0.id == approval.id }
+            WidgetFeed.publish(self)
             return
         }
         Notify.clear(approval.id)
         guard let waiter = waiters.removeValue(forKey: approval.id) else {
             approvals.removeAll { $0.id == approval.id }
+            WidgetFeed.publish(self)
             throw TeamError(message: "这张单子已经不在了。")
         }
         approvals.removeAll { $0.id == approval.id }
+        WidgetFeed.publish(self)
         waiter.resume(returning: allow)
     }
 
@@ -1981,10 +2063,17 @@ final class TeamModel: ObservableObject {
             Notify.now("这张单子已经过期了", Words.t("Clio 被系统收起时，等批准的事会停下。打开 Clio 让旅伴接着做。"), chat: "")
             return
         }
-        // A slip that must be asked because outside text (a web page, an email) came before it is not answered
-        // from a notification: the notification shows too little to judge it. 不同意 still works from there.
-        if allow, approval.forced == true {
-            Notify.now("这一单要打开 Clio 看清楚再批", "它是在读过网页、邮件等外部内容之后提出的。", chat: approval.chat ?? "")
+        // A slip that must be asked because outside text came before it, or that carries a command / code payload,
+        // is not answered blindly from a notification. 不同意 still works from there.
+        let requiresInspection = approval.forced == true
+            || approval.detail?.code != nil
+            || approval.toolName == "shell"
+            || (approval.toolName?.hasPrefix("ssh_") == true)
+        if allow, requiresInspection {
+            let why = approval.forced == true
+                ? "它是在读过网页、邮件等外部内容之后提出的。"
+                : "这一单带有命令或详细参数，通知里显示不全，请打开 Clio 看清楚再决定。"
+            Notify.now("这一单要打开 Clio 看清楚再批", why, chat: approval.chat ?? "")
             return
         }
         Task {
@@ -2168,7 +2257,7 @@ extension TeamModel {
         """
         let prompt = "现有记忆：\n\(existing.joined(separator: "\n"))\n\n对话资料：\n\(transcript)"
         let reply = try await memorySummary(system: system, prompt: prompt, outputLimit: MemoryReviewRules.outputTokens)
-        let proposals = try JSONDecoder().decode([MemoryReviewProposal].self, from: Data(reply.utf8))
+        let proposals = try MemoryReviewRules.decodeProposals(reply)
         try Task.checkCancellation()
         guard canReview(source.key), memories == original,
               reviewBatch(source, cutoff: cutoff, now: Date())?.lines == lines else { throw CancellationError() }

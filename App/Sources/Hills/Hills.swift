@@ -66,6 +66,7 @@ final class Hills: ObservableObject {
     }
 
     func remove(_ host: Host) {
+        Vault.remove("hill.\(host.id)")
         hosts.removeAll { $0.id == host.id }
         Disk.save(hosts, "hills.json")
         Self.forget(host)
@@ -330,9 +331,19 @@ final class Hills: ObservableObject {
     @discardableResult
     func refresh(_ server: Server) async -> Int {
         do {
-            let address = try await Self.address(server.url, through: server.tunnelHost.flatMap { id in hosts.first { $0.id == id } })
+            let tunnelHost: Host?
+            if let tunnelHostId = server.tunnelHost {
+                guard let found = hosts.first(where: { $0.id == tunnelHostId }) else {
+                    throw ProviderError(Words.t("找不到隧道依赖的远山主机，请重新选择。"))
+                }
+                tunnelHost = found
+            } else {
+                tunnelHost = nil
+            }
+            let address = try await Self.address(server.url, through: tunnelHost)
+            let isTunneled = tunnelHost != nil
             let tools = try await Self.withCredential(server.id) { token in
-                try await MCPClient(url: address, token: token).listTools()
+                try await MCPClient(url: address, token: token, tunneled: isTunneled).listTools()
             }
             borrowed.removeAll { $0.server == server.id }
             borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema, readOnly: $0.readOnly) }
@@ -351,17 +362,18 @@ final class Hills: ObservableObject {
 
     func tools() -> [AgentTool] {
         var tools: [AgentTool] = []
+        let snapshotHosts = hosts
         if !hosts.isEmpty {
             let names = hosts.map { "\($0.name)（\($0.user)@\($0.address)）" }.joined(separator: "、")
             let snapshot = hosts
-            tools.append(DeskTool(name: "ssh_run", description: "在用户的远程主机（远山）上用 SSH 跑一条命令。可用的主机：\(names)。命令要能自己结束，不要开交互程序。", parameters: ["type": "object", "properties": ["host": ["type": "string", "description": "主机名字"], "command": ["type": "string"], "timeout": ["type": "number", "description": "最多等几秒，默认 60，最多 600"]], "required": ["host", "command"]], label: { "远山：\($0["host"]?.string ?? "") · \(($0["command"]?.string ?? "").prefix(30))" }) { arguments in
+            tools.append(DeskTool(name: "ssh_run", description: Words.t("在用户的远程主机（远山）上用 SSH 跑一条命令。可用的主机：\(names)。命令要能自己结束，不要开交互程序。"), parameters: ["type": "object", "properties": ["host": ["type": "string", "description": "主机名字"], "command": ["type": "string"], "timeout": ["type": "number", "description": "最多等几秒，默认 60，最多 600"]], "required": ["host", "command"]], label: { Words.t("远山：\($0["host"]?.string ?? "") · \(($0["command"]?.string ?? "").prefix(30))") }) { arguments in
                 let wanted = (arguments["host"]?.string ?? "").lowercased()
                 guard let host = snapshot.first(where: { $0.name.lowercased() == wanted || $0.address.lowercased() == wanted }) ?? (snapshot.count == 1 ? snapshot.first : nil) else {
                     return ToolOutput("没有叫「\(arguments["host"]?.string ?? "")」的主机。可用：\(names)", isError: true)
                 }
                 do {
                     let result = try await Hills.run(arguments["command"]?.string ?? "", on: host, timeout: min(600, max(5, arguments["timeout"]?.number ?? 60)))
-                    let text = Shell.mask(Shell.clip(result.output), secrets: Vault.allStrings())
+                    let text = Shell.maskedClip(result.output, secrets: Vault.allStrings())
                     return ToolOutput((text.isEmpty ? "（没有输出）" : text) + (result.code == 0 ? "" : "\n（退出码 \(result.code)）"), isError: result.code != 0)
                 } catch {
                     return ToolOutput("连 \(host.name) 出错：\(error.localizedDescription)", isError: true)
@@ -371,7 +383,7 @@ final class Hills: ObservableObject {
                 let wanted = (arguments["host"]?.string ?? "").lowercased()
                 return snapshot.first(where: { $0.name.lowercased() == wanted || $0.address.lowercased() == wanted }) ?? (snapshot.count == 1 ? snapshot.first : nil)
             }
-            tools.append(DeskTool(name: "ssh_job_start", description: "在远山主机上把一条要跑很久的命令放到后台（编译、下载、训练、装软件）。连接断了它也接着跑。返回一个任务编号，之后用 ssh_job_check 看进度。", parameters: ["type": "object", "properties": ["host": ["type": "string", "description": "主机名字"], "command": ["type": "string"]], "required": ["host", "command"]], label: { "远山：后台跑 \(($0["command"]?.string ?? "").prefix(30))" }) { arguments in
+            tools.append(DeskTool(name: "ssh_job_start", description: Words.t("在远山主机上把一条要跑很久的命令放到后台（编译、下载、训练、装软件）。连接断了它也接着跑。返回一个任务编号，之后用 ssh_job_check 看进度。"), parameters: ["type": "object", "properties": ["host": ["type": "string", "description": "主机名字"], "command": ["type": "string"]], "required": ["host", "command"]], label: { Words.t("远山：后台跑 \(($0["command"]?.string ?? "").prefix(30))") }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
                     let id = try await Hills.startJob(arguments["command"]?.string ?? "", on: host)
@@ -380,17 +392,17 @@ final class Hills: ObservableObject {
                     return ToolOutput("没能开始：\(error.localizedDescription)", isError: true)
                 }
             })
-            tools.append(DeskTool(name: "ssh_job_check", description: "看远山后台任务的进度：还在不在跑、退出码、最后几十行输出。", parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string", "description": "ssh_job_start 给的编号"], "lines": ["type": "number", "description": "看最后几行，默认 40"]], "required": ["host", "job"]], label: { "远山：看后台任务 \($0["job"]?.string ?? "")" }) { arguments in
+            tools.append(DeskTool(name: "ssh_job_check", description: Words.t("看远山后台任务的进度：还在不在跑、退出码、最后几十行输出。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string", "description": "ssh_job_start 给的编号"], "lines": ["type": "number", "description": "看最后几行，默认 40"]], "required": ["host", "job"]], label: { Words.t("远山：看后台任务 \($0["job"]?.string ?? "")") }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
                 do {
                     let state = try await Hills.checkJob(arguments["job"]?.string ?? "", on: host, lines: min(400, max(5, (arguments["lines"]?.int ?? 40))))
                     let head = state.running ? "还在跑。" : "跑完了，退出码 \(state.exit.map(String.init) ?? "不明")。"
-                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : Shell.mask(Shell.clip(state.tail), secrets: Vault.allStrings())))
+                    return ToolOutput(head + "\n最后的输出：\n" + (state.tail.isEmpty ? "（还没有输出）" : Shell.maskedClip(state.tail, secrets: Vault.allStrings())))
                 } catch {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
             })
-            tools.append(DeskTool(name: "ssh_job_stop", description: "停掉远山上的一个后台任务。", parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }, approval: { arguments in
+            tools.append(DeskTool(name: "ssh_job_stop", description: Words.t("停掉远山上的一个后台任务。"), parameters: ["type": "object", "properties": ["host": ["type": "string"], "job": ["type": "string"]], "required": ["host", "job"]], label: { Words.t("远山：停掉后台任务 \($0["job"]?.string ?? "")") }, approval: { arguments in
                 ApprovalAsk(title: Words.t("停掉远山的后台任务"), reason: "\(arguments["host"]?.string ?? "") · \(arguments["job"]?.string ?? "")")
             }) { arguments in
                 guard let host = pick(arguments) else { return ToolOutput("没有这台主机。可用：\(names)", isError: true) }
@@ -407,30 +419,41 @@ final class Hills: ObservableObject {
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
             let named = Self.slug(server.name)
             let slug = named.contains(where: { $0.isASCII && ($0.isLetter || $0.isNumber) }) ? named : "s" + String(server.id.prefix(6)).lowercased()
-            let tunnel = server.tunnelHost.flatMap { id in hosts.first { $0.id == id } }
+            let tunnelHostId = server.tunnelHost
             for tool in borrowed where tool.server == server.id {
                 let url = server.url
                 let remote = tool.name
                 let title = server.name
                 let shown = server.connector == nil ? Words.t("远山：\(title) · \(remote)") : "\(title)：\(remote)"
-                // A connector reaches the person's own account: anything not marked read-only asks first.
-                let asks = server.connector != nil && tool.readOnly != true
+                // Every MCP service (connector or remote) asks before running any tool not marked read-only.
+                let asks = tool.readOnly != true
                 let what = String(tool.description.prefix(80))
-                let reason = what.isEmpty ? "可能会改动你在\(title)里的东西" : what
+                let reason = what.isEmpty ? "可能会改动「\(title)」里的东西" : what
                 let askTitle = "\(title)：\(remote)"
                 var ask: (@Sendable (JSONValue) -> ApprovalAsk?)?
                 if asks {
                     ask = { (arguments: JSONValue) -> ApprovalAsk? in
-                        ApprovalAsk(title: askTitle, reason: reason, detail: arguments.compact)
+                        let compact = arguments.compact
+                        return ApprovalAsk(title: askTitle, reason: reason, detail: nil, code: compact == "{}" || compact == "null" ? nil : compact)
                     }
                 }
                 let toolName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
-                let where_ = server.connector == nil ? "远山 MCP" : "连接器"
+                let where_ = server.connector == nil ? Words.t("远山 MCP") : Words.t("连接器")
                 tools.append(DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
                     do {
-                        let address = try await Hills.address(url, through: tunnel)
+                        let tunnelHost: Host?
+                        if let tunnelHostId {
+                            guard let found = snapshotHosts.first(where: { $0.id == tunnelHostId }) else {
+                                throw ProviderError(Words.t("找不到隧道依赖的远山主机，请重新选择。"))
+                            }
+                            tunnelHost = found
+                        } else {
+                            tunnelHost = nil
+                        }
+                        let address = try await Hills.address(url, through: tunnelHost)
+                        let isTunneled = tunnelHost != nil
                         return try await Hills.withCredential(serverId) { token in
-                            try await MCPClient(url: address, token: token).call(remote, arguments: arguments)
+                            try await MCPClient(url: address, token: token, tunneled: isTunneled).call(remote, arguments: arguments)
                         }
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
@@ -453,7 +476,15 @@ final class Hills: ObservableObject {
         }
         let saved = Vault.load(String.self, key: "mcp.\(id)")
         // Google's own MCP services: the token from the Google sign-in in 连接器.
-        if saved == Hills.googleToken { return try await work(try await Google.access()) }
+        if saved == Hills.googleToken {
+            let first = try await Google.accessLease()
+            do {
+                return try await work(first.token)
+            } catch MCPClient.MCPError.http(let code, _) where code == 401 {
+                let refreshed = try await Google.accessLease(stale: true, expectedEpoch: first.epoch)
+                return try await work(refreshed.token)
+            }
+        }
         return try await work(saved)
     }
 
@@ -477,6 +508,7 @@ final class Hills: ObservableObject {
 struct MCPClient: Sendable {
     let url: String
     let token: String?
+    var tunneled: Bool = false
 
     private var session: URLSession { .shared }
 
@@ -562,11 +594,33 @@ struct MCPClient: Sendable {
         try? await notify("notifications/initialized")
     }
 
-    private func request(_ body: JSONValue) throws -> URLRequest {
+    private func request(_ body: JSONValue) async throws -> (URLRequest, URLSessionTaskDelegate) {
         // A token starting with 「?」 goes into the address (高德's `?key=…`), not into a header.
         var address = url
         if let token, token.hasPrefix("?") { address += (url.contains("?") ? "&" : "?") + token.dropFirst() }
         guard let target = URL(string: address) else { throw MCPError.rpc("地址不对：\(url)") }
+        let hasCredentials = token != nil && !(token?.isEmpty ?? true)
+        if tunneled {
+            let scheme = target.scheme?.lowercased()
+            let host = target.host?.lowercased()
+            guard (scheme == "http" || scheme == "https"),
+                  (host == "127.0.0.1" || host == "localhost"),
+                  target.port != nil else {
+                throw MCPError.rpc("隧道本地地址不合法：\(url)")
+            }
+        } else {
+            guard target.scheme?.lowercased() == "https",
+                  let host = target.host, !host.isEmpty else {
+                throw MCPError.rpc(Words.t("未开启远山隧道时，MCP 服务必须使用 https 公网地址。"))
+            }
+            var isLocalTarget = LocalAddress.isLocal(target)
+            if !isLocalTarget {
+                isLocalTarget = await LocalAddress.resolvesToLocal(target)
+            }
+            if isLocalTarget {
+                throw MCPError.rpc(Words.t("MCP 服务地址指向本机或局域网，已拒绝。若在远程机器内网，请开启远山 SSH 隧道。"))
+            }
+        }
         var request = URLRequest(url: target, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -575,20 +629,26 @@ struct MCPClient: Sendable {
         if let token, !token.isEmpty, !token.hasPrefix("?") { request.setValue(token.lowercased().hasPrefix("bearer ") ? token : "Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let session = Self.sessions.get(url) { request.setValue(session, forHTTPHeaderField: "Mcp-Session-Id") }
         request.httpBody = Data(body.compact.utf8)
-        return request
+        let delegate = MCPRedirectDelegate(origin: target, tunneled: tunneled, hasCredentials: hasCredentials)
+        return (request, delegate)
     }
 
     private func notify(_ method: String) async throws {
-        _ = try await session.data(for: try request(["jsonrpc": "2.0", "method": .string(method)]))
+        let (req, delegate) = try await request(["jsonrpc": "2.0", "method": .string(method)])
+        _ = try await session.data(for: req, delegate: delegate)
     }
 
     private func send(_ method: String, _ params: JSONValue) async throws -> JSONValue {
         let id = Int.random(in: 1...999_999)
-        let (bytes, response) = try await session.bytes(for: try request(["jsonrpc": "2.0", "id": .number(Double(id)), "method": .string(method), "params": params]))
+        let (req, delegate) = try await request(["jsonrpc": "2.0", "id": .number(Double(id)), "method": .string(method), "params": params])
+        let (bytes, response) = try await session.bytes(for: req, delegate: delegate)
         let http = response as? HTTPURLResponse
         if let session = http?.value(forHTTPHeaderField: "Mcp-Session-Id") { Self.sessions.set(url, session) }
         let status = http?.statusCode ?? 0
         if status == 404, Self.sessions.get(url) != nil, method != "initialize" { throw MCPError.sessionGone }
+        if (300..<400).contains(status) {
+            throw MCPError.rpc("服务器试图跳转到不安全或其他地址，已拒绝。")
+        }
         if !(200..<300).contains(status) {
             var body = ""
             for try await line in bytes.lines { body += line; if body.count > 400 { break } }
@@ -627,6 +687,52 @@ struct MCPClient: Sendable {
     private func unwrap(_ message: JSONValue) throws -> JSONValue {
         if let error = message["error"] { throw MCPError.rpc(error["message"]?.string ?? error.compact) }
         return message["result"] ?? [:]
+    }
+}
+
+private final class MCPRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let origin: URL
+    let tunneled: Bool
+    let hasCredentials: Bool
+
+    init(origin: URL, tunneled: Bool, hasCredentials: Bool) {
+        self.origin = origin
+        self.tunneled = tunneled
+        self.hasCredentials = hasCredentials
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        guard let next = request.url, next.user == nil, next.password == nil else {
+            return nil
+        }
+        if tunneled {
+            let originScheme = origin.scheme?.lowercased() ?? "http"
+            let nextScheme = next.scheme?.lowercased() ?? ""
+            guard nextScheme == "http" || nextScheme == "https" else { return nil }
+            if originScheme == "https" && nextScheme != "https" { return nil }
+            let nextHost = next.host?.lowercased()
+            guard (nextHost == "127.0.0.1" || nextHost == "localhost"),
+                  next.port == origin.port else {
+                return nil
+            }
+            return request
+        }
+        guard next.scheme?.lowercased() == "https",
+              let nextHost = next.host?.lowercased(), !nextHost.isEmpty,
+              !LocalAddress.isLocal(next) else {
+            return nil
+        }
+        if hasCredentials {
+            guard origin.host?.lowercased() == nextHost,
+                  (origin.port ?? 443) == (next.port ?? 443) else {
+                return nil
+            }
+        }
+        if await LocalAddress.resolvesToLocal(next) {
+            return nil
+        }
+        return request
     }
 }
 
@@ -676,6 +782,8 @@ actor HillPool {
 
     /// Each kept connection with who it was made to; a host edited since gets a new one.
     private var open: [String: (client: SSHClient, used: Date, to: String)] = [:]
+    private var connecting: [String: (to: String, gen: UInt64, task: Task<SSHClient, Error>)] = [:]
+    private var generation: [String: UInt64] = [:]
 
     private static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port) key=\(host.useKey)" }
     /// A connection left alone this long is closed and made again.
@@ -683,14 +791,57 @@ actor HillPool {
 
     func client(for host: Hills.Host, fresh: Bool) async throws -> SSHClient {
         let to = Self.identity(host)
+        let currentGen = generation[host.id, default: 0]
         if !fresh, let kept = open[host.id], kept.to == to, kept.client.isConnected, Date().timeIntervalSince(kept.used) < idle {
             open[host.id] = (kept.client, Date(), to)
             return kept.client
         }
-        if let kept = open.removeValue(forKey: host.id) { try? await kept.client.close() }
-        let client = try await Hills.connect(host)
-        open[host.id] = (client, Date(), to)
+        if !fresh, let inFlight = connecting[host.id], inFlight.to == to, inFlight.gen == currentGen {
+            return try await inFlight.task.value
+        }
+        let nextGen = currentGen &+ 1
+        generation[host.id] = nextGen
+        if let oldTask = connecting.removeValue(forKey: host.id) {
+            oldTask.task.cancel()
+        }
+        if let kept = open.removeValue(forKey: host.id) {
+            let oldClient = kept.client
+            Task { try? await oldClient.close() }
+        }
+        let hostId = host.id
+        let task = Task<SSHClient, Error> {
+            do {
+                let connected = try await Hills.connect(host)
+                return try await self.finishConnect(hostId: hostId, to: to, gen: nextGen, client: connected)
+            } catch {
+                await self.clearConnecting(hostId: hostId, gen: nextGen)
+                throw error
+            }
+        }
+        connecting[host.id] = (to, nextGen, task)
+        return try await task.value
+    }
+
+    private func finishConnect(hostId: String, to: String, gen: UInt64, client: SSHClient) async throws -> SSHClient {
+        if connecting[hostId]?.gen == gen {
+            connecting.removeValue(forKey: hostId)
+        }
+        guard generation[hostId, default: 0] == gen else {
+            try? await client.close()
+            throw CancellationError()
+        }
+        if let replaced = open.removeValue(forKey: hostId), replaced.client !== client {
+            let oldClient = replaced.client
+            Task { try? await oldClient.close() }
+        }
+        open[hostId] = (client, Date(), to)
         return client
+    }
+
+    private func clearConnecting(hostId: String, gen: UInt64) {
+        if connecting[hostId]?.gen == gen {
+            connecting.removeValue(forKey: hostId)
+        }
     }
 
     func touch(_ host: Hills.Host) {
@@ -698,12 +849,28 @@ actor HillPool {
     }
 
     func drop(_ host: Hills.Host) async {
-        if let kept = open.removeValue(forKey: host.id) { try? await kept.client.close() }
+        generation[host.id] = generation[host.id, default: 0] &+ 1
+        if let inFlight = connecting.removeValue(forKey: host.id) {
+            inFlight.task.cancel()
+        }
+        if let kept = open.removeValue(forKey: host.id) {
+            try? await kept.client.close()
+        }
     }
 
     func closeAll() async {
-        for kept in open.values { try? await kept.client.close() }
+        for key in Set(open.keys).union(connecting.keys) {
+            generation[key] = generation[key, default: 0] &+ 1
+        }
+        for inFlight in connecting.values {
+            inFlight.task.cancel()
+        }
+        connecting = [:]
+        let clients = open.values.map(\.client)
         open = [:]
+        for client in clients {
+            try? await client.close()
+        }
     }
 
     var count: Int { open.count }

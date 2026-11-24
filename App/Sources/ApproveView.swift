@@ -1,3 +1,4 @@
+import Craft
 import SwiftUI
 
 /// One approval slip at a time: slide to stamp it approved, or turn it down.
@@ -221,23 +222,28 @@ struct ApproveView: View {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text(L.t("approval.requestedAction")).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
                 if let tool = current.tool, !tool.isEmpty {
-                    Text(tool).font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold)).lineLimit(largeText ? nil : 2)
+                    Text(tool)
+                        .font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if let text = current.detail?.text, !text.isEmpty {
-                    Text(text).font(.system(size: Ink.Size.sub * accessibilityScale)).lineLimit(largeText ? nil : 4)
-                }
+                detailSection
                 if let reason = current.reason, !reason.isEmpty {
-                    Text(reason).font(.system(size: Ink.Size.sub * accessibilityScale)).foregroundStyle(Ink.inkSoft).lineLimit(largeText ? nil : 4)
+                    boundedScroll(maxHeight: 96 * UIScale.factor) {
+                        Text(reason)
+                            .font(.system(size: Ink.Size.sub * accessibilityScale))
+                            .foregroundStyle(Ink.inkSoft)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 if let code = current.detail?.code, !code.isEmpty {
                     // The whole command, scrolled, never cut off: what is approved must be seen in full.
-                    ScrollView {
+                    boundedScroll(maxHeight: 140 * UIScale.factor) {
                         Text(code)
                             .font(Ink.mono(Ink.Size.small))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 88)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
                     .background(Ink.mine, in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
@@ -279,6 +285,61 @@ struct ApproveView: View {
             .padding(.bottom, Ink.Space.l)
         }
         .shadow(color: Color.black.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
+    }
+
+    @ViewBuilder
+    private var detailSection: some View {
+        if let text = current.detail?.text, !text.isEmpty {
+            let taintPrefix = Taint.reason + "\n\n"
+            if text == Taint.reason {
+                taintBanner(Taint.reason)
+            } else if text.hasPrefix(taintPrefix) {
+                taintBanner(Taint.reason)
+                let bodyText = String(text.dropFirst(taintPrefix.count))
+                if !bodyText.isEmpty {
+                    scrollableDetailText(bodyText)
+                }
+            } else {
+                scrollableDetailText(text)
+            }
+        }
+    }
+
+    private func taintBanner(_ words: String) -> some View {
+        HStack(alignment: .top, spacing: Ink.Space.xs) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.warn)
+            Text(words)
+                .font(.system(size: Ink.Size.small * accessibilityScale, weight: .medium))
+                .foregroundStyle(Ink.warn)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, Ink.Space.s)
+        .padding(.vertical, Ink.Space.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Ink.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
+    }
+
+    private func scrollableDetailText(_ words: String) -> some View {
+        boundedScroll(maxHeight: 140 * UIScale.factor) {
+            Text(words)
+                .font(.system(size: Ink.Size.sub * accessibilityScale))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func boundedScroll<Inner: View>(maxHeight: CGFloat, @ViewBuilder content: () -> Inner) -> some View {
+        let inner = content()
+        return ViewThatFits(in: .vertical) {
+            inner
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                inner
+            }
+        }
+        .frame(maxHeight: maxHeight)
     }
 
     private static func clock(_ date: Date, _ format: String) -> String {

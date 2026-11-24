@@ -59,25 +59,30 @@ enum MountedFolders {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [MountedFolder]?
 
-    static func all(fresh: Bool = false) -> [MountedFolder] {
-        lock.withLock {
-            if !fresh, let cache { return cache }
-            let loaded = Disk.load([MountedFolder].self, "mounts.json") ?? []
-            cache = loaded
-            return loaded
+    private static func allUnlocked(fresh: Bool) -> [MountedFolder] {
+        if !fresh, let cache { return cache }
+        let loaded = Disk.load([MountedFolder].self, "mounts.json") ?? []
+        cache = loaded
+        return loaded
+    }
+
+    private static func saveUnlocked(_ list: [MountedFolder]) {
+        cache = list
+        Disk.save(list, "mounts.json")
+    }
+
+    private static func notifyChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: changed, object: nil)
         }
+    }
+
+    static func all(fresh: Bool = false) -> [MountedFolder] {
+        lock.withLock { allUnlocked(fresh: fresh) }
     }
 
     static func named(_ name: String) -> MountedFolder? {
         all().first { $0.name == name }
-    }
-
-    private static func save(_ list: [MountedFolder]) {
-        lock.withLock { cache = list }
-        Disk.save(list, "mounts.json")
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: changed, object: nil)
-        }
     }
 
     private static func safeName(_ raw: String) -> String {
@@ -104,11 +109,18 @@ enum MountedFolders {
             throw WorkspaceError.cannot("请选择一个文件夹，而不是单个文件。")
         }
         let real = url.resolvingSymlinksInPath().standardizedFileURL.path
-        let deskReal = Workspace.root.resolvingSymlinksInPath().standardizedFileURL.path
-        let diskReal = Disk.root.resolvingSymlinksInPath().standardizedFileURL.path
-        if real == deskReal || real.hasPrefix(deskReal + "/") || deskReal.hasPrefix(real + "/")
-            || real == diskReal || real.hasPrefix(diskReal + "/") {
-            throw WorkspaceError.cannot(Words.t("不能把书案或 Clio 内部目录重复挂载进来。"))
+        var protectedURLs: [URL] = [Workspace.root, Disk.root]
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            protectedURLs.append(appSupport)
+        }
+        if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            protectedURLs.append(library)
+        }
+        for protected in protectedURLs {
+            let protectedReal = protected.resolvingSymlinksInPath().standardizedFileURL.path
+            if real == protectedReal || real.hasPrefix(protectedReal + "/") || protectedReal.hasPrefix(real + "/") {
+                throw WorkspaceError.cannot(Words.t("不能把书案或 Clio 内部目录重复挂载进来。"))
+            }
         }
     }
 
@@ -120,22 +132,26 @@ enum MountedFolders {
         try validateExternalFolder(url)
         let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         let pickedReal = url.resolvingSymlinksInPath().standardizedFileURL.path
-        var list = all(fresh: true)
-        // Re-picking an already-mounted folder refreshes its bookmark instead of creating a duplicate.
-        for index in list.indices {
-            var stale = false
-            if let existing = try? URL(resolvingBookmarkData: list[index].bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
-               existing.resolvingSymlinksInPath().standardizedFileURL.path == pickedReal {
-                list[index].bookmark = bookmark
-                save(list)
-                return list[index]
+        let result: MountedFolder = lock.withLock {
+            var list = allUnlocked(fresh: true)
+            // Re-picking an already-mounted folder refreshes its bookmark instead of creating a duplicate.
+            for index in list.indices {
+                var stale = false
+                if let existing = try? URL(resolvingBookmarkData: list[index].bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
+                   existing.resolvingSymlinksInPath().standardizedFileURL.path == pickedReal {
+                    list[index].bookmark = bookmark
+                    saveUnlocked(list)
+                    return list[index]
+                }
             }
+            let name = uniqueName(from: url.lastPathComponent, in: list)
+            let mount = MountedFolder(id: UUID().uuidString, name: name, bookmark: bookmark, addedAt: Date().timeIntervalSince1970)
+            list.append(mount)
+            saveUnlocked(list)
+            return mount
         }
-        let name = uniqueName(from: url.lastPathComponent, in: list)
-        let mount = MountedFolder(id: UUID().uuidString, name: name, bookmark: bookmark, addedAt: Date().timeIntervalSince1970)
-        list.append(mount)
-        save(list)
-        return mount
+        notifyChanged()
+        return result
     }
 
     /// Refreshes a stale or moved mount with a newly selected folder.
@@ -145,31 +161,43 @@ enum MountedFolders {
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         try validateExternalFolder(url)
         let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-        var list = all(fresh: true)
-        guard let index = list.firstIndex(where: { $0.id == id }) else {
-            return try add(url)
+        let updated: MountedFolder? = lock.withLock {
+            var list = allUnlocked(fresh: true)
+            guard let index = list.firstIndex(where: { $0.id == id }) else { return nil }
+            list[index].bookmark = bookmark
+            let pickedName = safeName(url.lastPathComponent)
+            if pickedName != list[index].name {
+                list[index].name = uniqueName(from: pickedName, excluding: id, in: list)
+            }
+            saveUnlocked(list)
+            return list[index]
         }
-        list[index].bookmark = bookmark
-        let pickedName = safeName(url.lastPathComponent)
-        if pickedName != list[index].name {
-            list[index].name = uniqueName(from: pickedName, excluding: id, in: list)
+        if let updated {
+            notifyChanged()
+            return updated
         }
-        save(list)
-        return list[index]
+        return try add(url)
     }
 
     /// Removes only the bookmark record. External files are never touched.
     static func remove(id: String) {
-        var list = all(fresh: true)
-        list.removeAll { $0.id == id }
-        save(list)
+        lock.withLock {
+            var list = allUnlocked(fresh: true)
+            list.removeAll { $0.id == id }
+            saveUnlocked(list)
+        }
+        notifyChanged()
     }
 
     private static func updateBookmark(id: String, data: Data) {
-        var list = all()
-        guard let index = list.firstIndex(where: { $0.id == id }) else { return }
-        list[index].bookmark = data
-        save(list)
+        let didUpdate: Bool = lock.withLock {
+            var list = allUnlocked(fresh: true)
+            guard let index = list.firstIndex(where: { $0.id == id }) else { return false }
+            list[index].bookmark = data
+            saveUnlocked(list)
+            return true
+        }
+        if didUpdate { notifyChanged() }
     }
 
     /// Checks whether a mounted folder's bookmark can currently be resolved and accessed.
@@ -288,7 +316,9 @@ enum Workspace {
     /// A path the model wrote, kept inside the local desk. Nil when it tries to step outside.
     static func resolve(_ path: String?) -> URL? {
         guard let parts = cleanParts(path) else { return nil }
-        return parts.reduce(root) { $0.appendingPathComponent($1) }
+        let url = parts.reduce(root) { $0.appendingPathComponent($1) }
+        guard isInsideRealRoot(url, root: root) else { return nil }
+        return url
     }
 
     /// Parses a desk or mounted-folder path (`书案/a.md`, `/root/desk/a.md`, `挂载/<name>/a.md`, `书案/挂载/<name>/a.md`).
@@ -462,18 +492,48 @@ enum Workspace {
         }
     }
 
+    private final class PreReadCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen: Set<String> = []
+        private var entries: [(path: String, preRead: Snapshots.PreRead)] = []
+
+        func recordOnce(path: String, capture: () -> Snapshots.PreRead) {
+            lock.withLock {
+                guard !seen.contains(path) else { return }
+                seen.insert(path)
+                entries.append((path, capture()))
+            }
+        }
+
+        func drain() -> [(path: String, preRead: Snapshots.PreRead)] {
+            lock.withLock { entries }
+        }
+    }
+
     /// Writes file bytes to either the local desk or a mounted external folder.
     static func writeBytes(_ path: String?, data: Data) throws {
         switch try parse(path) {
         case .desk(let url, let rel):
             guard rel != "/" else { throw WorkspaceError.cannot("要写到哪个文件？") }
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var st = stat()
+            if lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK {
+                throw WorkspaceError.cannot("目标路径是软链接，不能覆盖：\(rel)")
+            }
+            let parent = url.deletingLastPathComponent()
+            guard isInsideRealRoot(parent, root: root) else {
+                throw WorkspaceError.cannot(Words.t("目标路径跳出了书案，不能写入：\(rel)"))
+            }
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         case .mountsRoot:
             throw WorkspaceError.cannot("不能直接写到挂载根目录，请指定某个挂载文件夹里的文件路径。")
         case .mounted(let mount, let inner, _):
             guard !inner.isEmpty else { throw WorkspaceError.cannot("要写到挂载文件夹里的哪个文件？") }
             try MountedFolders.withAccess(mount, innerParts: inner) { rootURL, target in
+                var st = stat()
+                if lstat(target.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK {
+                    throw WorkspaceError.cannot("目标路径是软链接，不能覆盖。")
+                }
                 let parent = target.deletingLastPathComponent()
                 guard isInsideRealRoot(parent, root: rootURL) else {
                     throw WorkspaceError.cannot("这个路径通过软链接跳出了挂载文件夹「\(mount.name)」，不能写入。")
@@ -485,7 +545,10 @@ enum Workspace {
     }
 
     /// What only 书案 has: deleting, and a quick JavaScript calculator. Reading, writing and finding are the workspace tools.
-    static func tools() -> [AgentTool] {
+    static func tools(
+        beforeChange: (@Sendable (String) async -> Void)? = nil,
+        recordPreRead: (@Sendable (String, Snapshots.PreRead) async -> Void)? = nil
+    ) -> [AgentTool] {
         let pathParameter: JSONValue = ["type": "string", "description": "书案里的相对路径，比如 notes/旅行.md 或 挂载/Obsidian/笔记.md"]
         var tools: [AgentTool] = []
         tools.append(DeskTool(name: "desk_delete", description: "删掉书案（或挂载文件夹）里的文件或子文件夹。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：删 \($0["path"]?.string ?? "")" }, approval: { arguments in
@@ -500,7 +563,9 @@ enum Workspace {
             switch target {
             case .desk(let file, let rel):
                 guard rel != "/" else { return ToolOutput("不能删整个书案。", isError: true) }
-                guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个：\(rel)", isError: true) }
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir) else { return ToolOutput("没有这个：\(rel)", isError: true) }
+                if !isDir.boolValue { await beforeChange?(rel) }
                 try FileManager.default.removeItem(at: file)
                 return ToolOutput("删掉了 \(rel)")
             case .mountsRoot:
@@ -509,6 +574,19 @@ enum Workspace {
                 guard !inner.isEmpty else {
                     return ToolOutput("不能删挂载的整个文件夹「\(mount.name)」；取消挂载只会删书签，请在文件页面操作。", isError: true)
                 }
+                let existsAndIsFile: Bool
+                do {
+                    existsAndIsFile = try MountedFolders.withAccess(mount, innerParts: inner) { _, file in
+                        var isDir: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir) else {
+                            throw WorkspaceError.missing(rel)
+                        }
+                        return !isDir.boolValue
+                    }
+                } catch {
+                    return ToolOutput(error.localizedDescription, isError: true)
+                }
+                if existsAndIsFile { await beforeChange?(rel) }
                 do {
                     return try MountedFolders.withAccess(mount, innerParts: inner) { _, file in
                         guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个：\(rel)", isError: true) }
@@ -616,14 +694,53 @@ enum Workspace {
             let hits = DocSearch.find(query, in: documents)
             return ToolOutput("翻了 \(documents.count) 份资料。" + DocSearch.shown(hits, query: query))
         })
-        tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 和 writeFile(path, text) 读写书案和挂载文件夹里的文件。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
-            await Reckoner.run(
+        tools.append(DeskTool(name: "run_js", description: "跑一段 JavaScript 算东西：算数、处理文本和数据、生成表格。用 console.log 输出；最后一个表达式的值也会返回。可以用 readFile(path) 读书案和挂载文件夹里的文件，用 writeFile(path, text) 写书案本地文件（不能写挂载文件夹；写挂载文件夹请改用 write_file 或 edit_file）。没有网络，没有 DOM。最多跑 10 秒。", parameters: ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]], label: { _ in "书案：演算" }) { arguments in
+            let collector = PreReadCollector()
+            let output = await Reckoner.run(
                 arguments["code"]?.string ?? "",
                 read: { path in (try? readBytes(path)).flatMap { String(data: $0.data, encoding: .utf8) } },
-                write: { path, text in (try? writeBytes(path, data: Data(text.utf8))) != nil }
+                write: { path, text in
+                    guard let target = try? parse(path),
+                          case .desk(let url, let rel) = target,
+                          rel != "/",
+                          isInsideRealRoot(url, root: root),
+                          isInsideRealRoot(url.deletingLastPathComponent(), root: root) else {
+                        return false
+                    }
+                    var st = stat()
+                    if lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK {
+                        return false
+                    }
+                    if recordPreRead != nil {
+                        collector.recordOnce(path: rel) {
+                            var isDir: ObjCBool = false
+                            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                                return .absent
+                            }
+                            if isDir.boolValue { return .unreadable }
+                            if let oldData = try? Data(contentsOf: url) {
+                                return .bytes(oldData)
+                            }
+                            return .unreadable
+                        }
+                    }
+                    do {
+                        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try Data(text.utf8).write(to: url, options: .atomic)
+                        return true
+                    } catch {
+                        return false
+                    }
+                }
             )
+            if let recordPreRead {
+                for item in collector.drain() {
+                    await recordPreRead(item.path, item.preRead)
+                }
+            }
+            return output
         })
-        tools.append(DocMaker.tool())
+        tools.append(DocMaker.tool(beforeChange: beforeChange))
         return tools
     }
 }

@@ -2,6 +2,7 @@ import AgentKit
 import Contacts
 import CoreLocation
 import CoreMotion
+import Craft
 import EventKit
 import Foundation
 import Photos
@@ -211,7 +212,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     // MARK: The system's side
 
-    enum System: Equatable { case none, notAsked, granted, denied, limited }
+    enum System: Equatable { case none, notAsked, asked, granted, denied, limited }
 
     @MainActor
     var system: System {
@@ -245,7 +246,8 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .calendar:
             switch EKEventStore.authorizationStatus(for: .event) {
             case .notDetermined: return .notAsked
-            case .fullAccess, .writeOnly: return .granted
+            case .fullAccess: return .granted
+            case .writeOnly: return .limited
             default: return .denied
             }
         case .reminders:
@@ -257,7 +259,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         case .health:
             // iOS never tells an app whether reading was allowed; only whether it has asked.
             guard Health.available else { return .denied }
-            return Health.asked ? .granted : .notAsked
+            return Health.asked ? .asked : .notAsked
         default:
             return .none
         }
@@ -288,8 +290,18 @@ struct Asking: AgentTool {
     var spec: ToolSpec { inner.spec }
     func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
     func approval(for arguments: JSONValue) -> ApprovalAsk? {
+        if let existing = inner.approval(for: arguments) {
+            if existing.code != nil { return existing }
+            var copy = existing
+            copy.code = Taint.codePayload(tool: inner.spec.name, arguments: arguments)
+            return copy
+        }
         let title = grant.map { "用\($0.title)" } ?? "用工具「\(inner.spec.name)」"
-        return inner.approval(for: arguments) ?? ApprovalAsk(title: title, reason: inner.label(for: arguments))
+        return ApprovalAsk(
+            title: title,
+            reason: inner.label(for: arguments),
+            code: Taint.codePayload(tool: inner.spec.name, arguments: arguments)
+        )
     }
     func run(_ arguments: JSONValue) async throws -> ToolOutput { try await inner.run(arguments) }
 }

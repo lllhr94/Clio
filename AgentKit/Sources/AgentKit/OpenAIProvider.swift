@@ -61,6 +61,13 @@ public struct OpenAIProvider: ModelProvider {
                 var splitter = ThinkSplitter()
                 var images = ReplyImageText()
                 var toolHeaders: [Int: (id: String, name: String)] = [:]
+                var activeSlotByWireIndex: [Int: Int] = [:]
+                func allocateSlot(preferred: Int) -> Int {
+                    if toolHeaders[preferred] == nil { return preferred }
+                    var candidate = max(preferred + 1, (toolHeaders.keys.max() ?? 0) + 1)
+                    while toolHeaders[candidate] != nil { candidate += 1 }
+                    return candidate
+                }
                 func send(_ event: StreamEvent) {
                     if case .text(let text) = event {
                         for piece in images.feed(text) { continuation.yield(piece) }
@@ -73,12 +80,27 @@ public struct OpenAIProvider: ModelProvider {
                         switch event {
                         case .text(let piece):
                             for split in splitter.feed(piece) { send(split) }
-                        case .toolCallStart(let index, let id, let name):
-                            let existing = toolHeaders[index]
-                            let mergedId = !id.isEmpty ? id : (existing?.id ?? "call_\(index)")
+                        case .toolCallStart(let wireIndex, let id, let name):
+                            let slot: Int
+                            if let currentSlot = activeSlotByWireIndex[wireIndex], let existing = toolHeaders[currentSlot] {
+                                if !id.isEmpty, !existing.id.isEmpty, id != existing.id {
+                                    slot = allocateSlot(preferred: wireIndex + 1)
+                                    activeSlotByWireIndex[wireIndex] = slot
+                                } else {
+                                    slot = currentSlot
+                                }
+                            } else {
+                                slot = allocateSlot(preferred: wireIndex)
+                                activeSlotByWireIndex[wireIndex] = slot
+                            }
+                            let existing = toolHeaders[slot]
+                            let mergedId = !id.isEmpty ? id : (existing?.id ?? "call_\(slot)")
                             let mergedName = !name.isEmpty ? name : (existing?.name ?? "")
-                            toolHeaders[index] = (mergedId, mergedName)
-                            continuation.yield(.toolCallStart(index: index, id: mergedId, name: mergedName))
+                            toolHeaders[slot] = (mergedId, mergedName)
+                            continuation.yield(.toolCallStart(index: slot, id: mergedId, name: mergedName))
+                        case .toolCallArguments(let wireIndex, let delta):
+                            let slot = activeSlotByWireIndex[wireIndex] ?? wireIndex
+                            continuation.yield(.toolCallArguments(index: slot, delta: delta))
                         default:
                             continuation.yield(event)
                         }
@@ -133,8 +155,12 @@ public struct OpenAIProvider: ModelProvider {
                         ["id": call.id, "type": "function", "function": ["name": call.name, "arguments": call.arguments.isEmpty ? "{}" : call.arguments]]
                     }
                 }
-                if index > turnStart, let reasoning = message.reasoning, !reasoning.isEmpty {
-                    item["reasoning_content"] = reasoning
+                if index > turnStart {
+                    if let reasoning = message.reasoning, !reasoning.isEmpty {
+                        item["reasoning_content"] = reasoning
+                    } else if !message.toolCalls.isEmpty, style == .deepseek || style == .kimi {
+                        item["reasoning_content"] = ""
+                    }
                 }
                 messages.append(item)
             case .tool:
@@ -162,7 +188,7 @@ public struct OpenAIProvider: ModelProvider {
 
     static func decode(_ payload: String) throws -> [StreamEvent] {
         guard let json = JSONValue.parse(payload) else { return [] }
-        if let error = json["error"] {
+        if let error = json["error"], error != .null {
             throw ProviderError(error["message"]?.string ?? error.compact)
         }
         var events: [StreamEvent] = []

@@ -15,6 +15,10 @@ actor Tunnels {
         let listener: NWListener
         let port: Int
         var client: SSHClient?
+        var connectingClient: Task<SSHClient, Error>?
+        /// Which connect attempt `connectingClient` belongs to, so a superseded attempt never clears a newer one.
+        var connectingToken: UUID?
+        var closed = false
         init(listener: NWListener, port: Int) {
             self.listener = listener
             self.port = port
@@ -22,17 +26,23 @@ actor Tunnels {
     }
 
     private var open: [String: Open] = [:]
+    private var starting: [String: (gen: UInt64, task: Task<Int, Error>)] = [:]
+    private var generation: [String: UInt64] = [:]
 
     /// The address to use on the phone for a service at `remote` (like http://127.0.0.1:8931/mcp) on `host`.
     func url(for remote: String, through host: Hills.Host) async throws -> String {
         guard var parts = URLComponents(string: remote) else { throw ProviderError("看不懂这个远端地址：\(remote)") }
-        let remotePort = parts.port ?? (parts.scheme == "https" ? 443 : 80)
+        let remoteScheme = parts.scheme?.lowercased() ?? "http"
+        guard remoteScheme == "http" || remoteScheme == "https" else {
+            throw ProviderError("隧道只支持 http 或 https 地址：\(remote)")
+        }
+        let remotePort = parts.port ?? (remoteScheme == "https" ? 443 : 80)
         let target = parts.host ?? "127.0.0.1"
         // Who the host is now is part of the key: an edited host never reuses a tunnel to where it used to point.
         let key = "\(host.id)|\(host.user)@\(host.address):\(host.port)|\(target):\(remotePort)"
         let local = try await localPort(key: key, host: host, targetHost: target, targetPort: remotePort)
-        parts.scheme = "http"
-        parts.host = "127.0.0.1"
+        parts.scheme = remoteScheme
+        parts.host = (target.lowercased() == "localhost") ? "localhost" : "127.0.0.1"
         parts.port = local
         guard let url = parts.string else { throw ProviderError("隧道地址拼不出来") }
         return url
@@ -40,31 +50,89 @@ actor Tunnels {
 
     /// Closes every tunnel (when the app goes away or a host is removed).
     func closeAll() async {
-        for tunnel in open.values {
-            tunnel.listener.cancel()
-            try? await tunnel.client?.close()
+        for key in Set(open.keys).union(starting.keys) {
+            generation[key] = generation[key, default: 0] &+ 1
         }
+        for pending in starting.values {
+            pending.task.cancel()
+        }
+        starting = [:]
+        let tunnels = Array(open.values)
         open = [:]
+        for tunnel in tunnels {
+            tunnel.closed = true
+            tunnel.connectingClient?.cancel()
+            tunnel.connectingClient = nil
+            tunnel.listener.cancel()
+            let oldClient = tunnel.client
+            tunnel.client = nil
+            try? await oldClient?.close()
+        }
     }
 
     /// Closes the tunnels through one host (it was edited or removed).
     func close(host id: String) async {
-        for (key, tunnel) in open where key.hasPrefix(id + "|") {
+        let prefix = id + "|"
+        for (key, pending) in starting where key.hasPrefix(prefix) {
+            generation[key] = generation[key, default: 0] &+ 1
+            pending.task.cancel()
+            starting[key] = nil
+        }
+        var toClose: [Open] = []
+        for (key, tunnel) in open where key.hasPrefix(prefix) {
+            generation[key] = generation[key, default: 0] &+ 1
+            tunnel.closed = true
+            tunnel.connectingClient?.cancel()
+            tunnel.connectingClient = nil
             tunnel.listener.cancel()
-            try? await tunnel.client?.close()
             open[key] = nil
+            toClose.append(tunnel)
+        }
+        for tunnel in toClose {
+            let oldClient = tunnel.client
+            tunnel.client = nil
+            try? await oldClient?.close()
         }
     }
 
     private func localPort(key: String, host: Hills.Host, targetHost: String, targetPort: Int) async throws -> Int {
-        if let kept = open[key], kept.listener.state == .ready { return kept.port }
-        if let stale = open.removeValue(forKey: key) {
-            stale.listener.cancel()
-            try? await stale.client?.close()
+        let currentGen = generation[key, default: 0]
+        if let kept = open[key], !kept.closed, kept.listener.state == .ready { return kept.port }
+        if let inFlight = starting[key], inFlight.gen == currentGen {
+            return try await inFlight.task.value
         }
-        // The same port number as on the far side when it is free, so the service sees the Host it expects.
-        let listener = try Self.listen(preferring: targetPort)
-        let port = try await Self.ready(listener)
+        if let stale = open.removeValue(forKey: key) {
+            stale.closed = true
+            stale.connectingClient?.cancel()
+            stale.connectingClient = nil
+            stale.listener.cancel()
+            let oldClient = stale.client
+            stale.client = nil
+            Task { try? await oldClient?.close() }
+        }
+        let nextGen = currentGen &+ 1
+        generation[key] = nextGen
+        let task = Task<Int, Error> {
+            do {
+                let (listener, port) = try await Self.bindLoopback(preferring: targetPort)
+                return try await self.finishListener(key: key, gen: nextGen, listener: listener, port: port, host: host, targetHost: targetHost, targetPort: targetPort)
+            } catch {
+                await self.clearStarting(key: key, gen: nextGen)
+                throw error
+            }
+        }
+        starting[key] = (nextGen, task)
+        return try await task.value
+    }
+
+    private func finishListener(key: String, gen: UInt64, listener: NWListener, port: Int, host: Hills.Host, targetHost: String, targetPort: Int) throws -> Int {
+        if starting[key]?.gen == gen {
+            starting.removeValue(forKey: key)
+        }
+        guard generation[key, default: 0] == gen else {
+            listener.cancel()
+            throw CancellationError()
+        }
         let tunnel = Open(listener: listener, port: port)
         open[key] = tunnel
         listener.newConnectionHandler = { connection in
@@ -73,14 +141,42 @@ actor Tunnels {
         return port
     }
 
-    private static func listen(preferring port: Int) throws -> NWListener {
+    private func clearStarting(key: String, gen: UInt64) {
+        if starting[key]?.gen == gen {
+            starting.removeValue(forKey: key)
+        }
+    }
+
+    /// Binds strictly to IPv4 loopback (`127.0.0.1`) without `allowLocalEndpointReuse`.
+    /// Falls back to an ephemeral port (`127.0.0.1:0`) if the preferred port is already in use.
+    private static func bindLoopback(preferring port: Int) async throws -> (NWListener, Int) {
+        if (1...65535).contains(port), let wanted = NWEndpoint.Port(rawValue: UInt16(port)) {
+            if let preferred = try? makeLoopbackListener(port: wanted) {
+                if let boundPort = try? await ready(preferred), boundPort > 0 {
+                    return (preferred, boundPort)
+                }
+                preferred.cancel()
+            }
+        }
+        let fallback = try makeLoopbackListener(port: .any)
+        do {
+            let boundPort = try await ready(fallback)
+            guard boundPort > 0 else {
+                fallback.cancel()
+                throw ProviderError("隧道没拿到本地端口")
+            }
+            return (fallback, boundPort)
+        } catch {
+            fallback.cancel()
+            throw error
+        }
+    }
+
+    private static func makeLoopbackListener(port: NWEndpoint.Port) throws -> NWListener {
         let parameters = NWParameters.tcp
         parameters.requiredInterfaceType = .loopback
-        parameters.allowLocalEndpointReuse = true
-        if let wanted = NWEndpoint.Port(rawValue: UInt16(clamping: port)), let listener = try? NWListener(using: parameters, on: wanted) {
-            return listener
-        }
-        return try NWListener(using: parameters, on: .any)
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
+        return try NWListener(using: parameters)
     }
 
     private static func ready(_ listener: NWListener) async throws -> Int {
@@ -106,24 +202,79 @@ actor Tunnels {
     private func carry(_ connection: NWConnection, key: String, host: Hills.Host, targetHost: String, targetPort: Int) async {
         connection.start(queue: .global(qos: .userInitiated))
         do {
-            let client = try await sshClient(key: key, host: host)
+            let (client, wasCached) = try await sshClient(key: key, host: host, fresh: false)
             let settings = SSHChannelType.DirectTCPIP(targetHost: targetHost, targetPort: targetPort, originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0))
-            let channel = try await client.createDirectTCPIPChannel(using: settings) { channel in
-                channel.pipeline.addHandler(Relay(connection))
+            let channel: Channel
+            do {
+                channel = try await client.createDirectTCPIPChannel(using: settings) { ch in
+                    ch.pipeline.addHandler(Relay(connection))
+                }
+            } catch where wasCached {
+                let (reconnected, _) = try await sshClient(key: key, host: host, fresh: true)
+                channel = try await reconnected.createDirectTCPIPChannel(using: settings) { ch in
+                    ch.pipeline.addHandler(Relay(connection))
+                }
             }
             Self.pump(connection, into: channel)
         } catch {
             Diag.note("隧道连不上 \(host.name) 的 \(targetHost):\(targetPort)：\(error.localizedDescription)")
-            if let kept = open[key] { kept.client = nil }
             connection.cancel()
         }
     }
 
-    private func sshClient(key: String, host: Hills.Host) async throws -> SSHClient {
-        if let client = open[key]?.client, client.isConnected { return client }
-        let client = try await Hills.connect(host)
-        open[key]?.client = client
+    private func sshClient(key: String, host: Hills.Host, fresh: Bool) async throws -> (SSHClient, Bool) {
+        guard let tunnel = open[key], !tunnel.closed else {
+            throw ProviderError("隧道已经关闭")
+        }
+        if !fresh, let existing = tunnel.client, existing.isConnected {
+            return (existing, true)
+        }
+        if !fresh, let inFlight = tunnel.connectingClient {
+            return (try await inFlight.value, false)
+        }
+        tunnel.connectingClient?.cancel()
+        if let staleClient = tunnel.client {
+            tunnel.client = nil
+            Task { try? await staleClient.close() }
+        }
+        let token = UUID()
+        let task = Task<SSHClient, Error> {
+            do {
+                let connected = try await Hills.connect(host)
+                return try await self.finishSSHClient(key: key, tunnel: tunnel, client: connected, token: token)
+            } catch {
+                await self.clearSSHClientTask(tunnel: tunnel, token: token)
+                throw error
+            }
+        }
+        tunnel.connectingClient = task
+        tunnel.connectingToken = token
+        return (try await task.value, false)
+    }
+
+    private func finishSSHClient(key: String, tunnel: Open, client: SSHClient, token: UUID) async throws -> SSHClient {
+        guard tunnel.connectingToken == token else {
+            // A newer attempt took over; this connection is not installed and must not close the newer one.
+            try? await client.close()
+            throw CancellationError()
+        }
+        tunnel.connectingClient = nil
+        tunnel.connectingToken = nil
+        guard open[key] === tunnel, !tunnel.closed else {
+            try? await client.close()
+            throw ProviderError("隧道已经关闭")
+        }
+        if let replaced = tunnel.client, replaced !== client {
+            Task { try? await replaced.close() }
+        }
+        tunnel.client = client
         return client
+    }
+
+    private func clearSSHClientTask(tunnel: Open, token: UUID) {
+        guard tunnel.connectingToken == token else { return }
+        tunnel.connectingClient = nil
+        tunnel.connectingToken = nil
     }
 
     /// Phone → far side.

@@ -83,9 +83,13 @@ extension TeamModel {
     func forget(about words: String) -> [String] {
         let needle = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return [] }
-        let gone = memories.filter { $0.text.localizedCaseInsensitiveContains(needle) }
-        memories.removeAll { gone.contains($0) }
-        removeReviewDetails(Set(gone.map(\.id)))
+        let gone = memories.filter { memory in
+            memory.by != nil && memory.editedByUser != true && memory.text.localizedCaseInsensitiveContains(needle)
+        }
+        guard !gone.isEmpty else { return [] }
+        let goneIds = Set(gone.map(\.id))
+        memories.removeAll { goneIds.contains($0.id) }
+        removeReviewDetails(goneIds)
         saveMemory()
         return gone.map(\.text)
     }

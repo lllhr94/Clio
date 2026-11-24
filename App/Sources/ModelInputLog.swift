@@ -1,5 +1,6 @@
 import AgentKit
 import Combine
+import Craft
 import Foundation
 
 struct ModelInput: Identifiable, Sendable {
@@ -19,17 +20,34 @@ struct ModelInput: Identifiable, Sendable {
 
 /// Separates known blocks from the exact prompt, without changing what the provider receives.
 struct ModelInputSections: Sendable {
+    let memoryBlock: String
+    let skillsBlock: String
     var system: String
     var memory: String = ""
     var skills: String = ""
 
     init(base: String, extra: String, memory: String, skills: String) {
-        system = base + extra
-        guard let rules = base.range(of: "\n\n做事：\n", options: .backwards) else { return }
-        var opening = base[..<rules.lowerBound]
-        self.memory = Self.take(memory, from: &opening)
-        self.skills = Self.take(skills, from: &opening)
-        system = String(opening) + String(base[rules.lowerBound...]) + extra
+        self.memoryBlock = memory
+        self.skillsBlock = skills
+        let extracted = Self.extract(from: base + extra, memoryBlock: memory, skillsBlock: skills)
+        self.system = extracted.system
+        self.memory = extracted.memory
+        self.skills = extracted.skills
+    }
+
+    func extract(from actualSystem: String) -> (system: String, memory: String, skills: String) {
+        Self.extract(from: actualSystem, memoryBlock: memoryBlock, skillsBlock: skillsBlock)
+    }
+
+    private static func extract(from fullPrompt: String, memoryBlock: String, skillsBlock: String) -> (system: String, memory: String, skills: String) {
+        guard let rules = fullPrompt.range(of: "\n\n做事：\n") else {
+            return (fullPrompt, "", "")
+        }
+        var opening = fullPrompt[..<rules.lowerBound]
+        let foundMemory = take(memoryBlock, from: &opening)
+        let foundSkills = take(skillsBlock, from: &opening)
+        let remainingSystem = String(opening) + String(fullPrompt[rules.lowerBound...])
+        return (remainingSystem, foundMemory, foundSkills)
     }
 
     private static func take(_ block: String, from prompt: inout Substring) -> String {
@@ -41,7 +59,7 @@ struct ModelInputSections: Sendable {
 }
 
 /// Observes the actual AgentKit request, including its tool follow-ups. No HTTP headers, tool arguments,
-/// message contents, images, or provider configuration go into the log.
+/// message contents, images, or provider configuration go into the log, and any kept Vault secrets are masked.
 struct ModelInputProvider: ModelProvider {
     let upstream: any ModelProvider
     let sections: ModelInputSections
@@ -51,10 +69,18 @@ struct ModelInputProvider: ModelProvider {
         let order = ContinuousClock.now
         let at = Date()
         let stream = upstream.stream(request)
+        let secrets = Vault.allStrings()
+        let split = sections.extract(from: request.system)
         let tools = request.tools.map { "\($0.name)\n\($0.description)" }.joined(separator: "\n\n")
         record(ModelInput(
-            at: at, order: order, model: request.model, system: sections.system, memory: sections.memory,
-            skills: sections.skills, tools: tools, messages: request.messages.count,
+            at: at,
+            order: order,
+            model: request.model,
+            system: Shell.mask(split.system, secrets: secrets),
+            memory: Shell.mask(split.memory, secrets: secrets),
+            skills: Shell.mask(split.skills, secrets: secrets),
+            tools: Shell.mask(tools, secrets: secrets),
+            messages: request.messages.count,
             characters: request.messages.reduce(0) { $0 + $1.text.count }
         ))
         return stream

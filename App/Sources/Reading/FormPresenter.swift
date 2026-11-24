@@ -19,7 +19,17 @@ struct FormPresenter: ViewModifier {
         inBrowser ? placement.browser == token : placement.browser == nil
     }
 
-    private var eligible: Asker.Form? { ownsPresentation ? asker.current : nil }
+    private func matchesBrowser(_ form: Asker.Form) -> Bool {
+        guard let chat = form.chat else { return true }
+        guard let browser = RoamTools.browser else { return false }
+        return chat == browser.handoffChat || chat == browser.owner(of: browser.view)
+    }
+
+    private var eligible: Asker.Form? {
+        guard ownsPresentation, let form = asker.current else { return nil }
+        if inBrowser, !matchesBrowser(form) { return nil }
+        return form
+    }
 
     private struct Update: Equatable {
         let eligible: UUID?
@@ -39,7 +49,7 @@ struct FormPresenter: ViewModifier {
                 guard let form = eligible else { return }
                 if !inBrowser, form.inline {
                     try? await Task.sleep(for: .milliseconds(500))
-                    guard !Task.isCancelled, eligible?.id == form.id, !asker.inlineSeen else { return }
+                    guard !Task.isCancelled, eligible?.id == form.id, !asker.inlineSeen.contains(form.id) else { return }
                 }
                 presented = form.id
                 sheet = form

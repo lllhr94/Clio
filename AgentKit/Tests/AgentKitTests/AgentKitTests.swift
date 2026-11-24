@@ -1205,3 +1205,213 @@ final class ThinkingStyleMatrixTests: XCTestCase {
         XCTAssertEqual(ThinkingStyle.guess(baseURL: "https://api.openai.com/v1"), .effort)
     }
 }
+
+final class A13EngineRegressionTests: XCTestCase {
+    private func stubSession(_ body: Data, status: Int = 200, mime: String = "text/event-stream") -> URLSession {
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": mime])!
+            return (response, body)
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testOpenAIDecodeIgnoresNullErrorAndDeepSeekKimiSendEmptyReasoningOnToolCalls() throws {
+        let events = try OpenAIProvider.decode(#"{"error":null,"choices":[{"delta":{"content":"正常"}}]}"#)
+        XCTAssertEqual(events, [.text("正常")])
+
+        let toolSpec = ToolSpec(name: "echo", description: "echo", parameters: ["type": "object"])
+        let call = ToolCall(id: "call_1", name: "echo", arguments: "{}")
+        let messages: [Message] = [
+            .user("查一下"),
+            .assistant("", toolCalls: [call], reasoning: nil),
+            .toolResult("ok", for: call),
+        ]
+        let req = ModelRequest(model: "deepseek-reasoner", system: "", messages: messages, tools: [toolSpec], thinking: .high)
+        for style in [ThinkingStyle.deepseek, .kimi] {
+            let body = OpenAIProvider.body(req, style: style)
+            let wireMessages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+            XCTAssertEqual(wireMessages[1]["reasoning_content"] as? String, "", "Expected empty reasoning_content for \(style)")
+        }
+    }
+
+    func testOpenAISplittingThoughtsSeparatesCollidingToolCallIndices() async throws {
+        let raw = AsyncThrowingStream<StreamEvent, Error> { continuation in
+            for chunk in [
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_first","function":{"name":"read_file"}}]}}]}"#,
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a.txt\"}"}}]}}]}"#,
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_second","function":{"name":"write_file"}}]}}]}"#,
+                #"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"b.txt\"}"}}]}}]}"#,
+            ] {
+                for event in (try? OpenAIProvider.decode(chunk)) ?? [] {
+                    continuation.yield(event)
+                }
+            }
+            continuation.yield(.finish(reason: "tool_calls"))
+            continuation.finish()
+        }
+        var starts: [(Int, String, String)] = []
+        var argsBySlot: [Int: String] = [:]
+        for try await event in OpenAIProvider.splittingThoughts(raw) {
+            switch event {
+            case .toolCallStart(let index, let id, let name):
+                starts.append((index, id, name))
+            case .toolCallArguments(let index, let delta):
+                argsBySlot[index, default: ""] += delta
+            default:
+                break
+            }
+        }
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertNotEqual(starts[0].0, starts[1].0)
+        XCTAssertEqual(starts[0].1, "call_first")
+        XCTAssertEqual(starts[1].1, "call_second")
+        XCTAssertEqual(argsBySlot[starts[0].0], #"{"path":"a.txt"}"#)
+        XCTAssertEqual(argsBySlot[starts[1].0], #"{"path":"b.txt"}"#)
+    }
+
+    func testAnthropicCachesDomainBoundaryAndSkipsWhitespaceTextBlocks() throws {
+        XCTAssertTrue(AnthropicProvider.caches("https://api.anthropic.com/v1"))
+        XCTAssertTrue(AnthropicProvider.caches("https://anthropic.com"))
+        XCTAssertFalse(AnthropicProvider.caches("https://notanthropic.com/v1"))
+        XCTAssertFalse(AnthropicProvider.caches("https://evil-anthropic.com"))
+
+        let call = ToolCall(id: "tu_1", name: "echo", arguments: "{}")
+        let messages: [Message] = [
+            .user("你好"),
+            .assistant("   \n  ", toolCalls: [call]),
+            .toolResult("ok", for: call),
+            .assistant("   "),
+        ]
+        let req = ModelRequest(model: "claude-sonnet-4-6", system: "   ", messages: messages)
+        let body = AnthropicProvider.body(req, cache: true)
+        XCTAssertEqual(body["system"] as? String, "   ", "Whitespace-only system must not carry cache_control")
+        let turns = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let firstAssistantBlocks = try XCTUnwrap(turns[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(firstAssistantBlocks.count, 1)
+        XCTAssertEqual(firstAssistantBlocks[0]["type"] as? String, "tool_use")
+        let trailingBlocks = try XCTUnwrap(turns.last?["content"] as? [[String: Any]])
+        XCTAssertNil(trailingBlocks.last?["cache_control"], "Whitespace-only text block must not receive cache_control")
+    }
+
+    func testHTTPStreamPreservesUnicodeLineSeparatorsAndEmitsFinishForSingleJSON() async throws {
+        let contentWithSeparators = "第一段\u{2028}第二段\u{2029}第三段"
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"\(contentWithSeparators)\"}}]}\r\n\r\ndata: [DONE]\r\n"
+        let sseSession = stubSession(Data(sse.utf8), status: 200, mime: "text/event-stream")
+        defer { sseSession.invalidateAndCancel() }
+        var sseEvents: [StreamEvent] = []
+        for try await event in HTTP.stream(URLRequest(url: URL(string: "https://example.com/sse")!), session: sseSession, decode: OpenAIProvider.decode) {
+            sseEvents.append(event)
+        }
+        XCTAssertEqual(sseEvents, [.text(contentWithSeparators), .finish(reason: "done")])
+
+        let singleJSON = #"{"choices":[{"message":{"content":"整包JSON"}}]}"#
+        let jsonSession = stubSession(Data(singleJSON.utf8), status: 200, mime: "application/json")
+        defer { jsonSession.invalidateAndCancel() }
+        var jsonEvents: [StreamEvent] = []
+        for try await event in HTTP.stream(URLRequest(url: URL(string: "https://example.com/json")!), acceptsJSON: true, session: jsonSession, decode: OpenAIProvider.decode) {
+            jsonEvents.append(event)
+        }
+        XCTAssertEqual(jsonEvents, [.text("整包JSON"), .finish(reason: "done")])
+    }
+
+    func testWebTextPageLinearTimeOnUnclosedCommentsAndUnclosedBody() {
+        let manyUnclosedComments = String(repeating: "<!-- 注释片段 ", count: 2_000)
+        let html = "<html><head><title>测试</title></head><body><p>正文开头</p>" + manyUnclosedComments
+        let parsed = WebText.page(html)
+        XCTAssertEqual(parsed.title, "测试")
+        XCTAssertTrue(parsed.text.contains("正文开头"))
+    }
+
+    func testAgentResetOnRetryImageFailurePreservesTextAndScreenCoversDetailAndUnsure() async throws {
+        let ask = ApprovalAsk(title: "执行命令", reason: "跑脚本", detail: "说明", code: "echo 123", forced: true)
+        XCTAssertEqual(ask.code, "echo 123")
+
+        // 1. Retry resets signature/finished from aborted attempt.
+        final class SignatureFlakyProvider: ModelProvider, @unchecked Sendable {
+            var count = 0
+            func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+                count += 1
+                let attempt = count
+                return AsyncThrowingStream { continuation in
+                    if attempt == 1 {
+                        continuation.yield(.reasoningSignature("stale_sig_"))
+                        continuation.finish(throwing: URLError(.networkConnectionLost))
+                    } else {
+                        continuation.yield(.reasoning("新思考"))
+                        continuation.yield(.reasoningSignature("fresh_sig"))
+                        continuation.yield(.text("答好了"))
+                        continuation.yield(.finish(reason: "stop"))
+                        continuation.finish()
+                    }
+                }
+            }
+            func models() async throws -> [String] { [] }
+        }
+        let flaky = SignatureFlakyProvider()
+        var retryAgent = Agent(provider: flaky, model: "m", system: "")
+        retryAgent.retryDelays = [0]
+        var keptMessages: [Message] = []
+        try await retryAgent.run(history: [.user("测试")]) { event in
+            if case .message(let msg) = event { keptMessages.append(msg) }
+        }
+        XCTAssertEqual(keptMessages.last?.reasoningSignature, "fresh_sig")
+
+        // 2. renderReplyImages failure preserves already-streamed assistant text.
+        final class ImageReplyProvider: ModelProvider, @unchecked Sendable {
+            func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.text("先说这一段话"))
+                    continuation.yield(.image(.remote(URL(string: "https://example.com/pic.png")!)))
+                    continuation.yield(.finish(reason: "stop"))
+                    continuation.finish()
+                }
+            }
+            func models() async throws -> [String] { [] }
+        }
+        var imageAgent = Agent(provider: ImageReplyProvider(), model: "m", system: "")
+        imageAgent.renderReplyImages = { _ in throw ProviderError("图片存盘失败") }
+        var partialSaved: [Message] = []
+        do {
+            try await imageAgent.run(history: [.user("画一张")]) { event in
+                if case .message(let msg) = event { partialSaved.append(msg) }
+            }
+            XCTFail("Expected renderReplyImages error")
+        } catch {
+            XCTAssertEqual(partialSaved.last?.text, "先说这一段话")
+        }
+
+        // 3. screen masks both output.detail and unsure error while keeping unknownMark prefix.
+        struct LeakyDetailAndTimeoutTool: AgentTool {
+            let failWithTimeout: Bool
+            var spec: ToolSpec { ToolSpec(name: "leaky", description: "", parameters: ["type": "object"]) }
+            func label(for arguments: JSONValue) -> String { "测" }
+            func approval(for arguments: JSONValue) -> ApprovalAsk? { ApprovalAsk(title: "测", reason: "测") }
+            func run(_ arguments: JSONValue) async throws -> ToolOutput {
+                if failWithTimeout {
+                    throw ProviderError("请求超时 token=SECRET_999")
+                }
+                return ToolOutput("普通文本", detail: "diff 含 SECRET_999")
+            }
+        }
+        let call1: [StreamEvent] = [.toolCallStart(index: 0, id: "c1", name: "leaky"), .toolCallArguments(index: 0, delta: "{}"), .finish(reason: "tool_calls")]
+        var detailAgent = Agent(provider: ScriptedProvider([call1, [.text("完")]]), model: "m", system: "", tools: [LeakyDetailAndTimeoutTool(failWithTimeout: false)]) { _, _ in true }
+        detailAgent.screen = { $0.replacingOccurrences(of: "SECRET_999", with: "〔已隐藏〕") }
+        var toolMessages: [Message] = []
+        try await detailAgent.run(history: [.user("go")]) { event in
+            if case .message(let msg) = event, msg.role == .tool { toolMessages.append(msg) }
+        }
+        XCTAssertEqual(toolMessages.first?.detail, "diff 含 〔已隐藏〕")
+
+        var unsureAgent = Agent(provider: ScriptedProvider([call1, [.text("完")]]), model: "m", system: "", tools: [LeakyDetailAndTimeoutTool(failWithTimeout: true)]) { _, _ in true }
+        unsureAgent.screen = { $0.replacingOccurrences(of: "SECRET_999", with: "〔已隐藏〕") }
+        var unsureMessages: [Message] = []
+        try await unsureAgent.run(history: [.user("go")]) { event in
+            if case .message(let msg) = event, msg.role == .tool { unsureMessages.append(msg) }
+        }
+        let unsureText = try XCTUnwrap(unsureMessages.first?.text)
+        XCTAssertTrue(unsureText.hasPrefix(Agent.unknownMark))
+        XCTAssertFalse(unsureText.contains("SECRET_999"))
+    }
+}

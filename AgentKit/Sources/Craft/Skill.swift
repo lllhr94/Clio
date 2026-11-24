@@ -43,14 +43,19 @@ public struct Skill: Equatable, Sendable {
         body = body.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstLine = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
-        let name = fields["name"].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+        let rawName = (fields["name"].flatMap { $0.isEmpty ? nil : $0 } ?? fallback)
+            .components(separatedBy: .controlCharacters)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = rawName.isEmpty ? String(fallback.prefix(80)) : String(rawName.prefix(80))
         let description = fields["description"].flatMap { $0.isEmpty ? nil : $0 } ?? String(firstLine.prefix(100))
         return Skill(name: name, description: description, body: body)
     }
 
     /// The file a skill is kept as.
     public var text: String {
-        "---\nname: \(name)\ndescription: \(description.replacingOccurrences(of: "\n", with: " "))\n---\n\n\(body)\n"
+        let cleanName = String(name.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ").prefix(80))
+        return "---\nname: \(cleanName)\ndescription: \(description.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " "))\n---\n\n\(body)\n"
     }
 
     /// The lines every conversation carries: name and when to use it, no more.

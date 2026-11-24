@@ -39,7 +39,15 @@ enum WorkspaceImages {
         CGImageDestinationAddImage(destination, pixels, nil)
         guard CGImageDestinationFinalize(destination) else { throw Failure.writeFailed }
         do {
+            var folderStat = stat()
+            if lstat(folder.path, &folderStat) == 0, (folderStat.st_mode & S_IFMT) == S_IFLNK {
+                throw Failure.writeFailed
+            }
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard Workspace.isInsideRealRoot(folder, root: Workspace.root),
+                  Workspace.isInsideRealRoot(file, root: Workspace.root) else {
+                throw Failure.writeFailed
+            }
             try (png as Data).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
             throw Failure.writeFailed
@@ -47,7 +55,7 @@ enum WorkspaceImages {
         return "书案/图片/\(file.lastPathComponent)"
     }
 
-    /// Keep only local Markdown in history. CDN requests never use the provider's key.
+    /// Keep only local Markdown in history. CDN requests never use the provider's key and enforce public SSRF + 32 MB limits.
     static func reply(_ images: [ReplyImage]) async throws -> String {
         var lines: [String] = []
         var failures: [String] = []
@@ -57,14 +65,10 @@ enum WorkspaceImages {
                 let data: Data
                 switch image {
                 case .embedded(let part):
+                    guard part.data.count <= 32_000_000 else { throw Failure.unreadable }
                     data = part.data
                 case .remote(let url):
-                    let request = URLRequest(url: url, timeoutInterval: 45)
-                    let (received, response) = try await URLSession.shared.data(for: request)
-                    guard let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else {
-                        throw Failure.unreadable
-                    }
-                    data = received
+                    data = try await Web.publicBytes(from: url, limit: 32_000_000, timeout: 45)
                 }
                 lines.append("![](\(try save(data)))")
             } catch {
@@ -74,6 +78,7 @@ enum WorkspaceImages {
                 let key: String
                 if let failure = error as? Failure { key = failure.key }
                 else if (error as? URLError)?.code == .timedOut { key = "errors.imageTimeout" }
+                else if let providerErr = error as? ProviderError, providerErr.status == 408 || providerErr.status == 504 { key = "errors.imageTimeout" }
                 else { key = "errors.imageConnection" }
                 if !failures.contains(key) { failures.append(key) }
             }

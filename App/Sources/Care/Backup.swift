@@ -35,13 +35,22 @@ enum Backup {
         // Earlier backups left in the temporary folder (one may hold keys) go first.
         let temp = FileManager.default.temporaryDirectory
         for old in (try? FileManager.default.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)) ?? []
-        where old.lastPathComponent.hasPrefix("Clio 备份 ") {
+        where old.lastPathComponent.hasPrefix("Clio 备份 ") || old.pathExtension == "clio-backup" || old.lastPathComponent.hasSuffix(".clio-backup.part") {
             try? FileManager.default.removeItem(at: old)
         }
         let url = temp.appendingPathComponent("Clio 备份 \(stamp).clio-backup")
         let partial = url.appendingPathExtension("part")
         try? FileManager.default.removeItem(at: partial)
-        guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw TeamError(message: "没能在手机上建备份文件。") }
+        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        guard FileManager.default.createFile(atPath: partial.path, contents: nil, attributes: protection) else {
+            throw TeamError(message: "没能在手机上建备份文件。")
+        }
+        var completed = false
+        defer {
+            if !completed {
+                try? FileManager.default.removeItem(at: partial)
+            }
+        }
         let out = try FileHandle(forWritingTo: partial)
         defer { try? out.close() }
         try out.write(contentsOf: magic)
@@ -78,7 +87,6 @@ enum Backup {
             }
         }
         if !unreadable.isEmpty {
-            try? manager.removeItem(at: partial)
             throw TeamError(message: "有 \(unreadable.count) 个文件读不出来，备份没做完：\(unreadable.prefix(3).joined(separator: "、"))")
         }
         var settings: [String: Any] = [:]
@@ -96,6 +104,8 @@ enum Backup {
         try out.synchronize()
         try? manager.removeItem(at: url)
         try manager.moveItem(at: partial, to: url)
+        try? manager.setAttributes(protection, ofItemAtPath: url.path)
+        completed = true
         return (url, Summary(files: count, bytes: bytes))
     }
 

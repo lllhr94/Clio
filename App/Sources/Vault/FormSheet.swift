@@ -9,7 +9,12 @@ struct FormSheet: View {
     /// For a secret field: the 信匣 item picked instead of typing.
     @State private var picked: [String: Secrets.Item] = [:]
     @State private var shown: Set<String> = []
-    @State private var keep = true
+
+    private var hasUnpickedChoice: Bool {
+        form.fields.contains { field in
+            !field.choices.isEmpty && !field.choices.contains(values[field.key] ?? "")
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -54,7 +59,9 @@ struct FormSheet: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(L.t("actions.submitForm")) { send() }.fontWeight(.semibold)
+                    Button(L.t("actions.submitForm")) { send() }
+                        .fontWeight(.semibold)
+                        .disabled(hasUnpickedChoice)
                 }
             }
         }

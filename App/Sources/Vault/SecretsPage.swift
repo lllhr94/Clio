@@ -5,6 +5,7 @@ struct SecretsPage: View {
     @ObservedObject private var secrets = Secrets.shared
     @Environment(\.dismiss) private var dismiss
     @State private var editing: Secrets.Item?
+    @State private var pendingDelete: Secrets.Item?
     @State private var revealed: [String: String] = [:]
     @Environment(\.scenePhase) private var phase
 
@@ -43,6 +44,23 @@ struct SecretsPage: View {
                 }
             }
             .sheet(item: $editing) { item in SecretEditor(item: item) }
+            .confirmationDialog(
+                L.format("files.deleteConfirm", pendingDelete?.title ?? ""),
+                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    guard let target = pendingDelete else { return }
+                    pendingDelete = nil
+                    Task {
+                        guard await Secrets.unlock("删除「\(target.title)」") else { return }
+                        withAnimation(.smooth) { secrets.remove(target) }
+                    }
+                }
+                Button(L.t("actions.cancel"), role: .cancel) { pendingDelete = nil }
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
         }
         // A password shown stays shown only while the app is in front: never in the app switcher.
         .onChange(of: phase) { _, now in if now != .active { revealed = [:] } }
@@ -67,7 +85,12 @@ struct SecretsPage: View {
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.m)
         .contentShape(Rectangle())
-        .onTapGesture { editing = item }
+        .onTapGesture {
+            Task {
+                guard await Secrets.unlock("编辑「\(item.title)」") else { return }
+                editing = item
+            }
+        }
         .contextMenu {
             Button(revealed[item.id] == nil ? L.t("actions.showPassword") : L.t("actions.hidePassword"), systemImage: "eye") {
                 if revealed[item.id] != nil { revealed[item.id] = nil; return }
@@ -86,7 +109,13 @@ struct SecretsPage: View {
             if !item.user.isEmpty {
                 Button(L.t("actions.copyUserName"), systemImage: "person") { UIPasteboard.general.string = item.user }
             }
-            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { withAnimation(.smooth) { secrets.remove(item) } }
+            Button(L.t("actions.edit"), systemImage: "pencil") {
+                Task {
+                    guard await Secrets.unlock("编辑「\(item.title)」") else { return }
+                    editing = item
+                }
+            }
+            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { pendingDelete = item }
         }
     }
 }

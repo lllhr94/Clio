@@ -24,6 +24,12 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
             onLine:(nullable DenLine)onLine
               done:(DenDone)done;
 
++ (int)run:(NSString *)command
+       environment:(nullable NSDictionary<NSString *, NSString *> *)environment
+         maxOutput:(NSUInteger)maxOutput
+            onLine:(nullable DenLine)onLine
+              done:(DenDone)done;
+
 + (BOOL)kill:(int)pid;
 
 @end

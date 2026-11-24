@@ -7,3 +7,5 @@ App/Payload/
 xcodebuild.log
 .DS_Store
 App/Den/ish-src/
+__pycache__/
+*.py[cod]

@@ -31,9 +31,11 @@ enum RoutineTools {
         func label(for arguments: JSONValue) -> String { "定时：\(arguments["title"]?.string ?? "")" }
 
         func approval(for arguments: JSONValue) -> ApprovalAsk? {
-            let days = Routine.days(from: arguments["days"]?.string)
-            let clock = Routine.clock(arguments["time"]?.string)
-            let routine = Routine(botId: botId, title: "", prompt: "", hour: clock?.hour ?? 0, minute: clock?.minute ?? 0, days: days)
+            guard let days = Routine.days(from: arguments["days"]?.string),
+                  let clock = Routine.clock(arguments["time"]?.string) else {
+                return nil
+            }
+            let routine = Routine(botId: botId, title: "", prompt: "", hour: clock.hour, minute: clock.minute, days: days)
             // Something that will run again and again on its own: always asked, whatever the presets say.
             let next = routine.next(after: Date()).map { "，下一次 \(When.show($0))" } ?? ""
             return ApprovalAsk(title: "新建定时任务", reason: "\(routine.when)  \(arguments["title"]?.string ?? "")\(next)", detail: arguments["prompt"]?.string, forced: true)
@@ -44,7 +46,10 @@ enum RoutineTools {
             let prompt = arguments["prompt"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !title.isEmpty, !prompt.isEmpty else { return ToolOutput("要有名字和要做的事。", isError: true) }
             guard let clock = Routine.clock(arguments["time"]?.string) else { return ToolOutput("时间看不懂，写成 08:30 这样。", isError: true) }
-            let routine = Routine(botId: botId, title: String(title.prefix(20)), prompt: prompt, hour: clock.hour, minute: clock.minute, days: Routine.days(from: arguments["days"]?.string))
+            guard let days = Routine.days(from: arguments["days"]?.string) else {
+                return ToolOutput("星期格式看不懂，请写「每天」「工作日」「周末」，或者 1,3,5（周一=1，周日=7）。", isError: true)
+            }
+            let routine = Routine(botId: botId, title: String(title.prefix(20)), prompt: prompt, hour: clock.hour, minute: clock.minute, days: days)
             let center = UNUserNotificationCenter.current()
             let allowed = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) == true
             await MainActor.run { team.setRoutine(routine) }
@@ -115,7 +120,8 @@ extension Notify {
         content.body = "打开 Clio，\(name)就开始做。"
         content.sound = .default
         content.userInfo = ["chat": TeamModel.key(bot: routine.botId)]
-        for day in routine.days.isEmpty ? [0] : routine.days {
+        let validDays = routine.days.filter { (1...7).contains($0) }
+        for day in validDays.isEmpty ? [0] : validDays {
             var parts = DateComponents()
             parts.hour = routine.hour
             parts.minute = routine.minute
@@ -136,6 +142,7 @@ struct RoutinesPage: View {
     @ObservedObject var team: TeamModel
     @Environment(\.dismiss) private var dismiss
     @State private var editing: Routine?
+    @State private var pendingDelete: Routine?
 
     var body: some View {
         NavigationStack {
@@ -175,6 +182,21 @@ struct RoutinesPage: View {
                     .disabled(team.bots.isEmpty)
                 }
             }
+            .confirmationDialog(
+                "删除定时任务「\(pendingDelete?.title ?? "")」？",
+                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    if let target = pendingDelete {
+                        withAnimation(.smooth) { team.removeRoutine(target.id) }
+                    }
+                    pendingDelete = nil
+                }
+                Button(L.t("actions.cancel"), role: .cancel) { pendingDelete = nil }
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
         }
         .hitchPage("定时")
         .sheet(item: $editing) { routine in
@@ -208,7 +230,7 @@ struct RoutinesPage: View {
         .onTapGesture { editing = routine }
         .contextMenu {
             Button("改一改", systemImage: "pencil") { editing = routine }
-            Button("删掉", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { team.removeRoutine(routine.id) } }
+            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { pendingDelete = routine }
         }
     }
 }
@@ -219,6 +241,7 @@ struct RoutineEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State var routine: Routine
     @State private var time = Date()
+    @State private var confirmingDelete = false
 
     private static let names = ["一", "二", "三", "四", "五", "六", "日"]
 
@@ -267,8 +290,7 @@ struct RoutineEditor: View {
                 if !isNew {
                     Section {
                         Button("删掉这个定时任务", role: .destructive) {
-                            team.removeRoutine(routine.id)
-                            dismiss()
+                            confirmingDelete = true
                         }
                     }
                 }
@@ -278,6 +300,15 @@ struct RoutineEditor: View {
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(isNew ? L.t("routines.new") : L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("删除定时任务「\(routine.title)」？", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button(L.t("actions.delete"), role: .destructive) {
+                    team.removeRoutine(routine.id)
+                    dismiss()
+                }
+                Button(L.t("actions.cancel"), role: .cancel) {}
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {

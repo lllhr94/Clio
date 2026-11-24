@@ -129,14 +129,59 @@ public enum WebText {
         return out
     }
 
+    /// Extracts `<body ...>...</body>` in O(N) without regex backtracking when `</body>` is missing.
+    private static func extractBody(_ html: String) -> String {
+        var searchStart = html.startIndex
+        while let openTag = html.range(of: "<body", options: .caseInsensitive, range: searchStart..<html.endIndex) {
+            let afterName = openTag.upperBound
+            let boundary = afterName == html.endIndex || (!html[afterName].isLetter && !html[afterName].isNumber)
+            guard boundary else {
+                searchStart = afterName
+                continue
+            }
+            guard let openEnd = html.range(of: ">", range: afterName..<html.endIndex) else {
+                return html
+            }
+            if let closeTag = html.range(of: "</body", options: [.caseInsensitive, .backwards], range: openEnd.upperBound..<html.endIndex),
+               html.range(of: ">", range: closeTag.upperBound..<html.endIndex) != nil {
+                return String(html[openEnd.upperBound..<closeTag.lowerBound])
+            }
+            return html
+        }
+        return html
+    }
+
+    /// Removes `<!-- ... -->` comments in O(N), stopping immediately if a comment has no closing `-->`.
+    private static func stripComments(_ html: String) -> String {
+        guard html.contains("<!--") else { return html }
+        var out = ""
+        out.reserveCapacity(html.count)
+        var cursor = html.startIndex
+        while cursor < html.endIndex {
+            guard let openRange = html.range(of: "<!--", range: cursor..<html.endIndex) else {
+                out.append(contentsOf: html[cursor...])
+                break
+            }
+            out.append(contentsOf: html[cursor..<openRange.lowerBound])
+            guard let closeRange = html.range(of: "-->", range: openRange.upperBound..<html.endIndex) else {
+                // No closing `-->` exists anywhere in the remainder of `html`.
+                out.append(contentsOf: html[openRange.lowerBound...])
+                break
+            }
+            out.append(" ")
+            cursor = closeRange.upperBound
+        }
+        return out
+    }
+
     /// The readable text of a page, its paragraphs kept apart.
     public static func page(_ html: String) -> Page {
         let title = first(html, "<title[^>]*>(.*?)</title>").map(plain) ?? ""
-        var body = first(html, "<body[^>]*>(.*)</body>") ?? html
+        var body = extractBody(html)
         for tag in ["script", "style", "noscript", "svg", "template", "nav", "footer", "iframe", "form", "button", "select"] {
             body = stripBlock(body, tag: tag)
         }
-        body = replace(body, "<!--.*?-->", with: " ")
+        body = stripComments(body)
         body = replace(body, "<li\\b[^>]*>", with: "\n• ")
         body = replace(body, "<(br|hr)\\b[^>]*>", with: "\n")
         body = replace(body, "</?(p|div|section|article|h[1-6]|tr|table|ul|ol|blockquote|pre|header|main|dd|dt|figure|figcaption)\\b[^>]*>", with: "\n")
@@ -321,13 +366,77 @@ enum WebFetch {
         }
     }
 
-    private final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    fileprivate final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
-            guard let next = request.url, !LocalAddress.isLocal(next) else { return nil }
+            guard let next = request.url,
+                  let scheme = next.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  let host = next.host, !host.isEmpty,
+                  next.user == nil, next.password == nil,
+                  !LocalAddress.isLocal(next) else { return nil }
             if await LocalAddress.resolvesToLocal(next) { return nil }
-            return request
+            var sanitized = request
+            if let prevHost = response.url?.host?.lowercased(), prevHost != host.lowercased() {
+                sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+                sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+            }
+            return sanitized
         }
+    }
+}
+
+/// Public HTTP fetch helpers guarded against SSRF, private-network redirects, and unbounded downloads.
+public enum Web {
+    public static func publicBytes(
+        from url: URL,
+        limit: Int = 32_000_000,
+        timeout: TimeInterval = 45,
+        session: URLSession? = nil
+    ) async throws -> Data {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil else {
+            throw ProviderError("不安全的下载地址。")
+        }
+        var isLocalTarget = LocalAddress.isLocal(url)
+        if !isLocalTarget {
+            isLocalTarget = await LocalAddress.resolvesToLocal(url)
+        }
+        if isLocalTarget {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = "GET"
+        let activeSession = session ?? HTTP.session
+        let (bytes, response) = try await activeSession.bytes(for: request, delegate: WebFetch.StayPublic())
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        if (300..<400).contains(status) {
+            throw ProviderError(status: status, "下载地址试图跳转到本机或局域网，已拒绝。")
+        }
+        guard (200..<300).contains(status) else {
+            throw ProviderError(status: status, "下载失败（\(status)）")
+        }
+        if response.expectedContentLength > Int64(limit) {
+            throw ProviderError("文件过大（超过 \(limit / 1_000_000) MB），已拒绝下载。")
+        }
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(min(Int(response.expectedContentLength), limit))
+        }
+        for try await byte in bytes {
+            if (data.count & 0xFFF) == 0 { try Task.checkCancellation() }
+            data.append(byte)
+            if data.count > limit {
+                throw ProviderError("文件过大（超过 \(limit / 1_000_000) MB），已停止下载。")
+            }
+        }
+        if let finalURL = http?.url, LocalAddress.isLocal(finalURL) {
+            throw ProviderError(LocalAddress.refusal)
+        }
+        return data
     }
 }
 
@@ -602,10 +711,14 @@ private final class SearchConfigBox: @unchecked Sendable {
         lock.unlock()
     }
 
-    func load() async -> WebSearchConfig {
+    private func currentLoader() -> (@Sendable () async -> WebSearchConfig)? {
         lock.lock()
-        let current = loader
-        lock.unlock()
+        defer { lock.unlock() }
+        return loader
+    }
+
+    func load() async -> WebSearchConfig {
+        let current = currentLoader()
         return await current?() ?? WebSearchConfig()
     }
 }
@@ -784,11 +897,11 @@ public enum LocalAddress {
     public static let refusal = "这是本机或局域网里的地址，网页工具不去这种地方，只开公网网址。真要看，请用户自己在远游的地址栏里打开。"
 
     public static func isLocal(_ url: URL) -> Bool {
-        guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return true }
         if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         if let zone = host.firstIndex(of: "%") { host = String(host[..<zone]) }
         if host.hasSuffix(".") { host.removeLast() }
-        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") || host.hasSuffix(".lan")
+        if host.isEmpty || host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") || host.hasSuffix(".lan")
             || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || (!host.contains(".") && !host.contains(":")) {
             return true
         }
@@ -814,7 +927,7 @@ public enum LocalAddress {
     /// Resolves `url.host` via DNS and checks whether any resolved IPv4/IPv6 address is local or private.
     public static func resolvesToLocal(_ url: URL) async -> Bool {
         if isLocal(url) { return true }
-        guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return true }
         if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         if let zone = host.firstIndex(of: "%") { host = String(host[..<zone]) }
         if host.hasSuffix(".") { host.removeLast() }
@@ -855,11 +968,13 @@ public enum LocalAddress {
     }
 
     static func isLocalV4(_ b: [UInt8]) -> Bool {
+        if b[0] >= 224 { return true }
         switch (b[0], b[1]) {
         case (0, _), (10, _), (127, _): return true
         case (169, 254), (192, 168): return true
         case (172, 16...31): return true
         case (100, 64...127): return true
+        case (198, 18...19): return true
         default: return false
         }
     }
