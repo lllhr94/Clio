@@ -265,14 +265,8 @@ public enum MemorySafety {
             lock.unlock()
         }
 
-        /// Seeds persisted SHA-256 retraction hashes once per lifecycle (hashing any legacy non-hex values immediately).
-        public func seedSuppressedFlushHashesIfNeeded(_ loader: () -> [String]) {
-            lock.lock()
-            let needsLoad = !didSeedSuppressedFlushHashes
-            if needsLoad { didSeedSuppressedFlushHashes = true }
-            lock.unlock()
-            guard needsLoad else { return }
-            let hashes = loader().compactMap { entry -> String? in
+        private static func normalizedRetractionHashes(_ entries: [String]) -> [String] {
+            entries.compactMap { entry -> String? in
                 let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return nil }
                 if MemorySafety.isSHA256Hex(trimmed) {
@@ -281,9 +275,34 @@ public enum MemorySafety {
                 let hashed = MemorySafety.retractionHash(trimmed)
                 return hashed.isEmpty ? nil : hashed
             }
+        }
+
+        /// Seeds persisted SHA-256 retraction hashes once per lifecycle (hashing any legacy non-hex values immediately).
+        public func seedSuppressedFlushHashesIfNeeded(_ loader: () -> [String]) {
+            lock.lock()
+            let needsLoad = !didSeedSuppressedFlushHashes
+            if needsLoad { didSeedSuppressedFlushHashes = true }
+            lock.unlock()
+            guard needsLoad else { return }
+            let hashes = Self.normalizedRetractionHashes(loader())
             guard !hashes.isEmpty else { return }
             lock.lock()
             suppressedFlushHashes.formUnion(hashes)
+            lock.unlock()
+        }
+
+        /// Merges additional persisted/bootstrapped retraction hashes (normalizing legacy plaintext values if present).
+        public func mergeSuppressedFlushHashes(_ hashes: [String]) {
+            let clean = Self.normalizedRetractionHashes(hashes)
+            guard !clean.isEmpty else { return }
+            lock.lock()
+            let beforeCount = suppressedFlushHashes.count
+            suppressedFlushHashes.formUnion(clean)
+            if suppressedFlushHashes.count != beforeCount {
+                generation &+= 1
+                cachedKey = nil
+                cachedBlock = nil
+            }
             lock.unlock()
         }
 
@@ -321,9 +340,17 @@ public enum MemorySafety {
 
         /// Re-allows a fact text when the user explicitly adds it again, and invalidates cached prompt state.
         public func clearRetraction(text: String) {
+            clearRetraction(id: nil, text: text)
+        }
+
+        /// Re-allows a fact text and/or restored memory ID, clearing in-flight/flush suppressions and cache.
+        public func clearRetraction(id: String?, text: String) {
             let hash = MemorySafety.retractionHash(text)
             lock.lock()
             generation &+= 1
+            if let id, !id.isEmpty {
+                retractedIDs.remove(id)
+            }
             if !hash.isEmpty {
                 retractedPromptHashes.remove(hash)
                 suppressedFlushHashes.remove(hash)

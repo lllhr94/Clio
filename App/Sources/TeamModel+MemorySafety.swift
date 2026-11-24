@@ -49,10 +49,10 @@ extension TeamModel {
     private static let retractedMemoryFile = "memory-retracted.json"
 
     func ensureRetractedFlushHashesLoaded() {
-        let canLoad = keeping
+        guard keeping else { return }
         var sawPlaintextLegacy = false
         memoryPromptState.seedSuppressedFlushHashesIfNeeded {
-            guard canLoad, let stored = Disk.load([String].self, Self.retractedMemoryFile) else { return [] }
+            guard let stored = Disk.load([String].self, Self.retractedMemoryFile) else { return [] }
             if stored.contains(where: { !MemorySafety.isSHA256Hex($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
                 sawPlaintextLegacy = true
             }
@@ -64,7 +64,7 @@ extension TeamModel {
     }
 
     private func saveRetractedFlushHashes() {
-        guard keeping else { return }
+        guard keeping, !Disk.frozen, !MemoryStoreBridge.shared.isCanonicalReadOnly else { return }
         let hashes = Array(memoryPromptState.suppressedFlushHashesSnapshot()).sorted()
         if hashes.isEmpty {
             Disk.remove(Self.retractedMemoryFile)
@@ -434,10 +434,7 @@ extension TeamModel {
             )
             book.reviews = Array(book.reviews.prefix(100))
         }
-        guard (try? Disk.write(book, "memory.json")) != nil else { return }
-        memoryBook = book
-        memories = book.memories
-        memoryReviews = book.reviews
+        guard (try? commitMemoryBook(book)) != nil else { return }
         invalidateMemoryPromptCache()
     }
 }
