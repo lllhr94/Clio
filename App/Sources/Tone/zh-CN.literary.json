@@ -52,6 +52,8 @@
   "chat": {
     "planExpanded": "已展开",
     "planCollapsed": "已收起",
+    "continueTask": "接着做",
+    "continuePrompt": "接着做",
     "untitled": "没有标题的对话",
     "titleField": "对话标题",
     "deleteConversationConfirm": "删除这段对话？",
@@ -244,6 +246,9 @@
     "contextCount": "最多带 %lld 条",
     "temperature": "温度",
     "maxReply": "最长回复",
+    "maxSteps": "单轮最多步数",
+    "stepsCount": "%lld 步",
+    "maxStepsNote": "一次回复里最多连续用几轮工具。排查服务器或改多文件时，调高不容易中途停下。",
     "morningHour": "%lld 点以后第一次打开时写",
     "aboutCredits": "开源 · GPL-3.0\nLinux 环境用 iSH，终端画面用 SwiftTerm，SSH 用 Citadel",
     "lineHeight0": "紧凑",
@@ -920,5 +925,15 @@
     "sourceCatalog": "来源：模型资料库（models.dev）。",
     "sourceName": "来源：按模型名自动识别。",
     "capabilitiesFooter": "不能看图时，发来的照片会换成编号，旅伴可以用 photo_text 读图上的字；不会用工具时，旅伴只聊天，不上网也不动手。"
+  },
+  "trace": {
+    "commandsCount": "跑了 %lld 条命令",
+    "commandTitle": "命令详情",
+    "commandLabel": "命令",
+    "outputLabel": "输出",
+    "noOutput": "（没有输出）",
+    "outputTruncated": "……（输出太长，这里先显示前 %lld 字，点「复制」可拿全部）",
+    "copy": "复制",
+    "copied": "已复制"
   }
 }

@@ -232,6 +232,9 @@ extension ChatPage {
                 }
                 // The same row under every reply: copy, ⋯; the newest also 重来 and its numbers.
                 let newest = line.id == chat.lines.last(where: { $0.kind == .bot })?.id
+                if writing == nil, hitStepLimit(line) {
+                    continueStepLimitButton
+                }
                 // Only under the last words of a turn: a short 「先造钥匙。」 before the steps gets no row of its own.
                 if writing == nil, newest ? !working : endsTurn(line) {
                     footer(line, newest: newest)
@@ -260,5 +263,32 @@ extension ChatPage {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+    }
+
+    private static let stepLimitNotice = "（这件事步骤太多，我先停在这里。要我接着做就说一声。）"
+
+    private func hitStepLimit(_ line: ChatLine) -> Bool {
+        guard historyPage == nil, !working, !sendingBlocked, chat.lines.last?.id == line.id else { return false }
+        return line.text.trimmingCharacters(in: .whitespacesAndNewlines) == Self.stepLimitNotice
+    }
+
+    private var continueStepLimitButton: some View {
+        Button {
+            Haptics.light()
+            following = true
+            _ = chat.send(L.t("chat.continuePrompt"), photos: [])
+        } label: {
+            HStack(spacing: Ink.Space.xs) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                Text(L.t("chat.continueTask"))
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+            }
+            .foregroundStyle(Ink.accent)
+            .padding(.horizontal, Ink.Space.l)
+            .frame(height: 34)
+            .background(Ink.accentWash, in: .capsule)
+        }
+        .buttonStyle(PressStyle(haptic: false))
     }
 }

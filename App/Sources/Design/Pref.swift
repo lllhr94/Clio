@@ -113,6 +113,10 @@ enum Pref {
     static var temperature: Double { double("chat.temperature", -1) }
     /// 0: the model's own default.
     static var maxOutput: Int { int("chat.maxOutput", 0) }
+    /// Tool-calling steps allowed in one turn before pausing; 40 covers most debugging and multi-file runs.
+    static let defaultMaxSteps = 40
+    static let maxStepStops = [16, 24, 40, 64, 100]
+    static var maxSteps: Int { min(max(int("chat.maxSteps", defaultMaxSteps), 8), 100) }
     static var autoCompress: Bool { bool("chat.autoCompress", true) }
     /// Compress once the conversation passes this share of the model's window (always below `contextShare`).
     static var compressShare: Double { min(max(double("chat.compressShare", 0.6), 0.1), 0.9) }

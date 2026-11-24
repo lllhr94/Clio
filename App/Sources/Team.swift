@@ -1348,6 +1348,7 @@ final class TeamModel: ObservableObject {
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
+        agent.maxSteps = Pref.maxSteps
         agent.thinking = options(key).thinking ?? .auto
         agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
         agent.screen = Self.screen
@@ -1948,7 +1949,7 @@ final class TeamModel: ObservableObject {
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.thinking = options(key).thinking ?? .auto
-        agent.maxSteps = 12
+        agent.maxSteps = min(Pref.maxSteps, 24)
         let before = doing[key]
         let helperEpoch = epochs[helperKey, default: 0]
         doing[key] = "\(helper.name)在帮忙"

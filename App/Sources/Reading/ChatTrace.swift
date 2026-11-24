@@ -70,8 +70,27 @@ struct Trace: View {
         /// A changed file's whole comparison.
         var diff: String?
         var place: String?
+        /// Path without ` · −X +Y 行` so `changesCard` does not repeat or disagree with its right-side tally.
+        var cleanDetail: String?
+        /// For `.command`: true when `title` comes from the model's `step_title` rather than raw shell text.
+        var humanTitle: Bool = false
+        /// For `.command`: full untouched command and output opened when the card or row is tapped.
+        var rawCommand: String?
+        var fullOutput: String?
+        var seconds: Int?
 
         var displayDetail: String { place.map { Words.t($0) + " · " + detail } ?? detail }
+        func changesDetail(hasTally: Bool) -> String {
+            let base = hasTally ? (cleanDetail ?? detail) : detail
+            return place.map { Words.t($0) + " · " + base } ?? base
+        }
+        var commandTitle: String { humanTitle ? title : "# " + title }
+        var commandLinePreview: String {
+            let last = detail.split(separator: "\n", omittingEmptySubsequences: true)
+                .last?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? detail
+            return place.map { Words.t($0) + " · " + last } ?? last
+        }
     }
 
     /// A file change opened to its whole comparison.
@@ -83,7 +102,20 @@ struct Trace: View {
         let url: URL?
         let mount: MountedFolder?
     }
+
+    /// A terminal / SSH command opened to its full command text and full output.
+    private struct CommandShow: Identifiable {
+        let id = UUID()
+        let title: String
+        let place: String?
+        let seconds: Int?
+        let command: String
+        let output: String
+    }
+
     @State private var diffing: DiffShow?
+    @State private var inspectingCommand: CommandShow?
+    @State private var commandsOpen = false
 
     /// A file to read rather than code to review — a report, a page, a picture: a tap opens it to read, as other
     /// agents do, instead of a comparison of lines.
@@ -97,6 +129,32 @@ struct Trace: View {
 
     /// The files these steps wrote or changed.
     private var changedFiles: [Keepsake] { keepsakes.filter { $0.kind == .file || $0.kind == .remoteFile } }
+
+    /// The shell / SSH commands these steps ran.
+    private var ranCommands: [Keepsake] { keepsakes.filter { $0.kind == .command } }
+
+    /// Keepsakes rendered as standalone cards (excluding grouped multi-file and multi-command batches).
+    private var standaloneKeepsakes: [Keepsake] {
+        let groupFiles = changedFiles.count >= 2
+        let groupCommands = ranCommands.count >= 2
+        return keepsakes.filter { item in
+            if groupFiles, item.kind == .file || item.kind == .remoteFile { return false }
+            if groupCommands, item.kind == .command { return false }
+            return true
+        }
+    }
+
+    private func openCommand(_ item: Keepsake) {
+        let command = (item.rawCommand ?? item.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        let output = item.fullOutput ?? ""
+        inspectingCommand = CommandShow(
+            title: item.humanTitle ? item.title : L.t("trace.commandTitle"),
+            place: item.place.map(Words.t),
+            seconds: item.seconds,
+            command: command,
+            output: output
+        )
+    }
 
     /// Lines added and taken out, read off a comparison.
     private static func tally(_ diff: String?) -> (added: Int, removed: Int) {
@@ -124,11 +182,12 @@ struct Trace: View {
             }
             .padding(Ink.Space.l)
             ForEach(Array(files.enumerated()), id: \.element.id) { index, item in
+                let hasTally = counts[index].added > 0 || counts[index].removed > 0
                 Kit.rule(inset: Ink.Space.l)
                 Button {
                     Haptics.light()
                     if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                        diffing = DiffShow(title: item.title, place: item.displayDetail, diff: diff, url: item.url, mount: item.mount)
+                        diffing = DiffShow(title: item.title, place: item.changesDetail(hasTally: hasTally), diff: diff, url: item.url, mount: item.mount)
                     } else if let url = item.url {
                         openFile(url, item.mount)
                     }
@@ -142,7 +201,7 @@ struct Trace: View {
                                 Text(item.title).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                                 if fresh { Text("新建").font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.ok) }
                             }
-                            Text(item.displayDetail).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                            Text(item.changesDetail(hasTally: hasTally)).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                         }
                         Spacer(minLength: Ink.Space.s)
                         tallyText(counts[index].added, counts[index].removed)
@@ -156,6 +215,92 @@ struct Trace: View {
         }
         .paperCard()
         .padding(.top, Ink.Space.s)
+    }
+
+    /// Several commands run in one go: one collapsible card so long debugging turns stay scannable,
+    /// with each row tappable to inspect the full command and full output.
+    private var commandsCard: some View {
+        let commands = ranCommands
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                Haptics.light()
+                withAnimation(Ink.Motion.unfold) { commandsOpen.toggle() }
+            } label: {
+                HStack(spacing: Ink.Space.s) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: Ink.Size.sub))
+                        .foregroundStyle(Ink.inkSoft)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L.format("trace.commandsCount", commands.count))
+                            .font(.system(size: Ink.Size.sub, weight: .semibold))
+                            .foregroundStyle(Ink.ink)
+                        if !commandsOpen, let latest = commands.last {
+                            Text(latest.commandTitle)
+                                .font(latest.humanTitle ? Ink.footnote : Ink.mono(Ink.Size.micro))
+                                .foregroundStyle(Ink.inkFaint)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: Ink.Space.s)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: Ink.Size.micro, weight: .bold))
+                        .foregroundStyle(Ink.inkFaint)
+                        .rotationEffect(.degrees(commandsOpen ? -180 : 0))
+                }
+                .padding(Ink.Space.l)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            if commandsOpen {
+                ForEach(Array(commands.enumerated()), id: \.element.id) { index, item in
+                    Kit.rule(inset: Ink.Space.l)
+                    commandRow(item, index: index)
+                }
+            }
+        }
+        .paperCard()
+        .padding(.top, Ink.Space.s)
+    }
+
+    private func commandRow(_ item: Keepsake, index: Int) -> some View {
+        Button {
+            Haptics.light()
+            openCommand(item)
+        } label: {
+            HStack(alignment: .top, spacing: Ink.Space.m) {
+                Text("\(index + 1)")
+                    .font(Ink.mono(Ink.Size.micro, weight: .medium))
+                    .foregroundStyle(Ink.inkFaint)
+                    .frame(width: 20, alignment: .trailing)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.commandTitle)
+                        .font(item.humanTitle ? .system(size: Ink.Size.sub, weight: .medium) : Ink.mono(Ink.Size.small, weight: .medium))
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(item.commandLinePreview)
+                        .font(Ink.mono(Ink.Size.micro))
+                        .foregroundStyle(Ink.inkFaint)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Ink.Space.s)
+                if let seconds = item.seconds, seconds >= 2 {
+                    Text(Clock.said(seconds))
+                        .font(.system(size: Ink.Size.micro).monospacedDigit())
+                        .foregroundStyle(Ink.inkFaint)
+                        .padding(.top, 2)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                    .foregroundStyle(Ink.inkFaint)
+                    .padding(.top, 3)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
     }
 
     private func tallyText(_ added: Int, _ removed: Int) -> some View {
@@ -191,7 +336,8 @@ struct Trace: View {
                 detail: pathText + " · 改了几次，这是最后一次",
                 url: ref.url,
                 mount: ref.mount,
-                diff: full ?? out[kept].diff
+                diff: full ?? out[kept].diff,
+                cleanDetail: pathText + " · 改了几次，这是最后一次"
             )
         } else {
             out.append(Keepsake(
@@ -201,7 +347,8 @@ struct Trace: View {
                 detail: pathText + change,
                 url: ref.url,
                 mount: ref.mount,
-                diff: full
+                diff: full,
+                cleanDetail: pathText
             ))
         }
     }
@@ -250,7 +397,8 @@ struct Trace: View {
                             url: localRef?.url,
                             mount: localRef?.mount,
                             diff: full,
-                            place: head
+                            place: head,
+                            cleanDetail: rawPath
                         ))
                     } else if let ref = WorkspaceFileRef.resolve(rawPath) {
                         upsertLocalFile(into: &out, index: index, ref: ref, desk: desk, output: output, full: full)
@@ -266,30 +414,41 @@ struct Trace: View {
                     }
                 case "shell":
                     if args?["background"]?.bool == true { continue }
+                    if let job = args?["job"]?.string, !job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
                     let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    let cmdFirst = cmd.split(separator: "\n").first.map { String($0.prefix(80)) } ?? ""
-                    let titleText = !cmdFirst.isEmpty ? cmdFirst : rest
-                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    let stepTitle = (args?["step_title"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let preview = commandPreview(cmd)
+                    let isHuman = !stepTitle.isEmpty
+                    let titleText = isHuman ? stepTitle : (!preview.isEmpty ? preview : rest)
                     out.append(Keepsake(
                         id: index,
                         kind: .command,
                         title: titleText,
-                        detail: tail.isEmpty ? "（没有输出）" : tail,
-                        place: kind == "远山" ? head : nil
+                        detail: outputTail(output),
+                        place: kind == "远山" ? head : nil,
+                        humanTitle: isHuman,
+                        rawCommand: cmd.isEmpty ? rest : cmd,
+                        fullOutput: output,
+                        seconds: detail?.seconds
                     ))
                 case "ssh_run":
                     let hostName = (args?["host"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let cmd = (args?["command"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    let cmdFirst = cmd.split(separator: "\n").first.map { String($0.prefix(80)) } ?? ""
-                    let titleText = !cmdFirst.isEmpty ? cmdFirst : rest
-                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    let stepTitle = (args?["step_title"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let preview = commandPreview(cmd)
+                    let isHuman = !stepTitle.isEmpty
+                    let titleText = isHuman ? stepTitle : (!preview.isEmpty ? preview : rest)
                     let placeText = hostName.isEmpty ? head : "\(head) · \(hostName)"
                     out.append(Keepsake(
                         id: index,
                         kind: .command,
                         title: titleText,
-                        detail: tail.isEmpty ? "（没有输出）" : tail,
-                        place: placeText
+                        detail: outputTail(output),
+                        place: placeText,
+                        humanTitle: isHuman,
+                        rawCommand: cmd.isEmpty ? rest : cmd,
+                        fullOutput: output,
+                        seconds: detail?.seconds
                     ))
                 default:
                     break
@@ -316,17 +475,21 @@ struct Trace: View {
                         url: localRef?.url,
                         mount: localRef?.mount,
                         diff: full,
-                        place: head
+                        place: head,
+                        cleanDetail: rawPath
                     ))
                     continue
                 }
-                let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                let preview = commandPreview(rest)
                 out.append(Keepsake(
                     id: index,
                     kind: .command,
-                    title: rest,
-                    detail: tail.isEmpty ? "（没有输出）" : tail,
-                    place: kind == "远山" ? head : nil
+                    title: preview.isEmpty ? rest : preview,
+                    detail: outputTail(output),
+                    place: kind == "远山" ? head : nil,
+                    rawCommand: rest,
+                    fullOutput: output,
+                    seconds: detail?.seconds
                 ))
             }
         }
@@ -444,8 +607,11 @@ struct Trace: View {
         if !line.live, changedFiles.count >= 2 {
             changesCard
         }
+        if !line.live, ranCommands.count >= 2 {
+            commandsCard
+        }
         if !line.live {
-            ForEach(changedFiles.count >= 2 ? keepsakes.filter { $0.kind != .file && $0.kind != .remoteFile } : keepsakes) { item in
+            ForEach(standaloneKeepsakes) { item in
                 Button {
                     Haptics.light()
                     switch item.kind {
@@ -457,7 +623,7 @@ struct Trace: View {
                         }
                     case .event, .reminder, .health: if let url = item.url { UIApplication.shared.open(url) }
                     case .weather: break
-                    case .command: break
+                    case .command: openCommand(item)
                     }
                 } label: {
                     if item.kind == .health {
@@ -465,33 +631,10 @@ struct Trace: View {
                     } else if item.kind == .weather {
                         WeatherCard(text: item.detail)
                     } else {
-                    HStack(alignment: .top, spacing: Ink.Space.m) {
-                        Image(systemName: Self.keepsakeIcon(item.kind)).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent).frame(width: 22)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.kind == .command ? "# " + item.title : item.title)
-                                .font(item.kind == .command ? Ink.mono(Ink.Size.small, weight: .medium) : .system(size: Ink.Size.sub, weight: .medium))
-                                .foregroundStyle(Ink.ink).lineLimit(2)
-                            Text(item.displayDetail)
-                                .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
-                                .foregroundStyle(Ink.inkSoft).lineLimit(3)
-                            if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
-                                // The first few changed lines, so the card shows what changed at a glance.
-                                DiffText(hunk: DiffText.glance(diff), limit: 5)
-                                    .padding(.top, 4)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                        if item.kind != .command, item.kind != .remoteFile || item.diff != nil || item.url != nil {
-                            Image(systemName: "chevron.right").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.inkFaint)
-                        }
-                    }
-                    .padding(Ink.Space.m)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .paperCard()
+                        standaloneKeepsakeBody(item)
                     }
                 }
-                .buttonStyle(PressStyle())
+                .buttonStyle(PressStyle(haptic: false))
                 .padding(.top, Ink.Space.s)
             }
         }
@@ -534,6 +677,16 @@ struct Trace: View {
                     diffing = nil
                     openFile(url, show.mount)
                 }
+            }
+        Color.clear.frame(height: 0)
+            .sheet(item: $inspectingCommand) { show in
+                CommandSheet(
+                    title: show.title,
+                    place: show.place,
+                    seconds: show.seconds,
+                    command: show.command,
+                    output: show.output
+                )
             }
         if !pages.isEmpty {
             ScrollView(.horizontal) {
@@ -698,6 +851,209 @@ struct Trace: View {
         default: return label.hasPrefix("约好") ? "envelope" : "wrench.and.screwdriver"
         }
     }
+
+    private func standaloneKeepsakeBody(_ item: Keepsake) -> some View {
+        let titleText = item.kind == .command ? item.commandTitle : item.title
+        let titleFont: Font
+        if item.kind == .command && !item.humanTitle {
+            titleFont = Ink.mono(Ink.Size.small, weight: .medium)
+        } else {
+            titleFont = .system(size: Ink.Size.sub, weight: .medium)
+        }
+        return HStack(alignment: .top, spacing: Ink.Space.m) {
+            Image(systemName: Self.keepsakeIcon(item.kind))
+                .font(.system(size: Ink.Size.body))
+                .foregroundStyle(Ink.accent)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(titleText)
+                    .font(titleFont)
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(item.displayDetail)
+                    .font(item.kind == .command ? Ink.mono(Ink.Size.micro) : Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                if !Self.isDocument(item), let diff = item.diff, !diff.isEmpty {
+                    // The first few changed lines, so the card shows what changed at a glance.
+                    DiffText(hunk: DiffText.glance(diff), limit: 5)
+                        .padding(.top, 4)
+                        .allowsHitTesting(false)
+                }
+            }
+            Spacer(minLength: 0)
+            if item.kind != .remoteFile || item.diff != nil || item.url != nil {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                    .foregroundStyle(Ink.inkFaint)
+            }
+        }
+        .padding(Ink.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .paperCard()
+    }
+
+    nonisolated private static func outputTail(_ output: String) -> String {
+        let nonEmpty = output.split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let tail = nonEmpty.suffix(3).joined(separator: "\n")
+        return tail.isEmpty ? "（没有输出）" : tail
+    }
+
+    /// Trims leading and trailing blank lines while keeping inner indentation intact.
+    nonisolated static func trimmedEdgeBlankLines(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        while let first = lines.first, first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeFirst()
+        }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Strips routine shell wrappers (`cd /root/desk &&`, `timeout N`, verbose `ssh -i/-o` flags) for one-line scanability.
+    /// The untouched full command is always shown when tapped.
+    nonisolated static func commandPreview(_ raw: String) -> String {
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return "" }
+        let startIndex = lines.firstIndex { isMeaningfulCommandLine($0) } ?? 0
+        var current = lines[startIndex]
+        var changed = true
+        while changed {
+            changed = false
+            if let stripped = stripLeadingCD(current) {
+                current = stripped
+                changed = true
+            }
+            if let stripped = stripLeadingTimeout(current) {
+                current = stripped
+                changed = true
+            }
+        }
+        if let sshSummary = compactSSHCommand(current, followingLines: Array(lines.dropFirst(startIndex + 1))) {
+            current = sshSummary
+        }
+        if current.count > 100 {
+            return String(current.prefix(100)) + "…"
+        }
+        return current
+    }
+
+    nonisolated private static func isMeaningfulCommandLine(_ line: String) -> Bool {
+        if line.hasPrefix("#") { return false }
+        if line == "set -e" || line == "set -eu" || line == "set -euo pipefail" || line == "set -o pipefail" { return false }
+        return true
+    }
+
+    nonisolated private static func stripLeadingCD(_ text: String) -> String? {
+        let prefixes = [
+            "cd /root/desk && ", "cd /root/desk; ", "cd /root/desk &&", "cd /root/desk;",
+            "cd /root && ", "cd /root; ", "cd /root &&", "cd /root;",
+            "cd ~ && ", "cd ~; ", "cd ~ &&", "cd ~;"
+        ]
+        for prefix in prefixes where text.hasPrefix(prefix) {
+            let tail = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            if !tail.isEmpty { return tail }
+        }
+        return nil
+    }
+
+    nonisolated private static func stripLeadingTimeout(_ text: String) -> String? {
+        guard text.hasPrefix("timeout ") else { return nil }
+        var rest = text.dropFirst("timeout ".count).drop(while: { $0 == " " || $0 == "\t" })
+        while rest.hasPrefix("-") {
+            let flag = rest.prefix(while: { $0 != " " && $0 != "\t" })
+            rest = rest.dropFirst(flag.count).drop(while: { $0 == " " || $0 == "\t" })
+            if flag == "-k" || flag == "-s" {
+                let arg = rest.prefix(while: { $0 != " " && $0 != "\t" })
+                rest = rest.dropFirst(arg.count).drop(while: { $0 == " " || $0 == "\t" })
+            }
+        }
+        let duration = rest.prefix(while: { $0 != " " && $0 != "\t" })
+        guard !duration.isEmpty, duration.first?.isNumber == true else { return nil }
+        let after = rest.dropFirst(duration.count).drop(while: { $0 == " " || $0 == "\t" })
+        guard !after.isEmpty else { return nil }
+        return String(after)
+    }
+
+    nonisolated private static func compactSSHCommand(_ text: String, followingLines: [String]) -> String? {
+        guard text.hasPrefix("ssh ") else { return nil }
+        let tokens = tokenizeShell(text)
+        guard tokens.count >= 2, tokens[0] == "ssh" else { return nil }
+        let valueFlags: Set<String> = [
+            "-i", "-o", "-p", "-l", "-F", "-J", "-b", "-c", "-D", "-E",
+            "-I", "-L", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"
+        ]
+        var index = 1
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "--" {
+                index += 1
+                break
+            }
+            if token.hasPrefix("-") {
+                index += valueFlags.contains(token) ? 2 : 1
+            } else {
+                break
+            }
+        }
+        guard index < tokens.count else { return nil }
+        let host = tokens[index]
+        let restTokens = Array(tokens.dropFirst(index + 1))
+        let joined = restTokens.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let usesHeredoc = restTokens.first?.hasPrefix("<<") == true || restTokens.last?.hasPrefix("<<") == true
+        let remote: String
+        if joined.isEmpty || joined == "'" || joined == "\"" || usesHeredoc {
+            remote = followingLines.first(where: { line in
+                isMeaningfulCommandLine(line) && line != "EOF" && line != "EOS" && line != "END"
+            }) ?? ""
+        } else {
+            remote = joined
+        }
+        return remote.isEmpty ? "ssh \(host)" : "ssh \(host): \(remote)"
+    }
+
+    nonisolated private static func tokenizeShell(_ text: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaping = false
+        for ch in text {
+            if escaping {
+                current.append(ch)
+                escaping = false
+                continue
+            }
+            if let active = quote {
+                if active == "\"" && ch == "\\" {
+                    escaping = true
+                } else if ch == active {
+                    quote = nil
+                } else {
+                    current.append(ch)
+                }
+            } else if ch == "\\" {
+                escaping = true
+            } else if ch == "'" || ch == "\"" {
+                quote = ch
+            } else if ch == " " || ch == "\t" {
+                if !current.isEmpty {
+                    out.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
 }
 
 
@@ -750,6 +1106,118 @@ private struct TraceStepEvidence: View {
             }
             let ready = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
             if !Task.isCancelled { prepared = ready }
+        }
+    }
+}
+
+
+/// Full command and full output for a shell / ssh step, opened when tapping a command card or row.
+private struct CommandSheet: View {
+    let title: String
+    let place: String?
+    let seconds: Int?
+    let command: String
+    let output: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var copiedField: String?
+
+    private static let displayLimit = 40_000
+
+    private var metadata: String? {
+        var parts: [String] = []
+        if let place, !place.isEmpty { parts.append(place) }
+        if let seconds, seconds > 0 { parts.append(Clock.said(seconds)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var shownOutput: String {
+        let trimmed = Trace.trimmedEdgeBlankLines(output)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.count > Self.displayLimit {
+            return String(trimmed.prefix(Self.displayLimit))
+                + "\n\n" + L.format("trace.outputTruncated", Self.displayLimit)
+        }
+        return trimmed
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                    if let metadata {
+                        Text(metadata)
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                    codeSection(
+                        label: L.t("trace.commandLabel"),
+                        key: "cmd",
+                        shown: Trace.trimmedEdgeBlankLines(command),
+                        copyText: command
+                    )
+                    codeSection(
+                        label: L.t("trace.outputLabel"),
+                        key: "out",
+                        shown: shownOutput.isEmpty ? L.t("trace.noOutput") : shownOutput,
+                        copyText: output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : output,
+                        muted: shownOutput.isEmpty
+                    )
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func codeSection(label: String, key: String, shown: String, copyText: String?, muted: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack {
+                Text(label)
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.inkSoft)
+                Spacer()
+                if let copyText, !copyText.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = copyText
+                        Haptics.tick(0.5)
+                        withAnimation(Ink.Motion.settle) { copiedField = key }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            if copiedField == key {
+                                withAnimation(Ink.Motion.settle) { copiedField = nil }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: Ink.Space.xs) {
+                            Image(systemName: copiedField == key ? "checkmark" : "doc.on.doc")
+                            Text(copiedField == key ? L.t("trace.copied") : L.t("trace.copy"))
+                        }
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(copiedField == key ? Ink.ok : Ink.inkSoft)
+                        .padding(.horizontal, Ink.Space.s)
+                        .frame(height: 26)
+                        .background(Ink.paperRaised, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Ink.rule.opacity(0.7), lineWidth: 0.5))
+                    }
+                    .buttonStyle(PressStyle(haptic: false))
+                }
+            }
+            Text(shown)
+                .font(Ink.mono(Ink.Size.small))
+                .foregroundStyle(muted ? Ink.inkFaint : Ink.ink)
+                .lineSpacing(Ink.Size.small * 0.12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(Ink.Space.m)
+                .inkBlock()
         }
     }
 }
