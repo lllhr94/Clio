@@ -38,7 +38,9 @@ struct ChatPage: View {
     @State var viewing: String?
     /// The message being changed and sent again.
     @State var editing: String?
-    @State var scroller: ScrollViewProxy?
+    @State var scroller: ChatScroller?
+    @State var listProxy = ChatListControllerProxy()
+    @AppStorage("look.uikitChatList") var useUIKitChatList = true
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
     @State var following = true
@@ -185,7 +187,9 @@ struct ChatPage: View {
             await Task.yield()
             guard !Task.isCancelled, historyPage == nil, selecting.isEmpty, !following else { return }
             viewport.recordJump("载入更早的消息")
-            scroller?.scrollTo(anchor, anchor: .top)
+            if !useUIKitChatList {
+                scroller?.scrollTo(anchor, anchor: .top)
+            }
         }
     }
 
@@ -413,7 +417,16 @@ struct ChatPage: View {
 
     /// The conversation itself: the lines, what is arriving, and the header it scrolls under.
     /// Kept apart from `body` so the compiler checks each piece on its own.
+    @ViewBuilder
     var conversation: some View {
+        if useUIKitChatList {
+            uikitConversation
+        } else {
+            swiftUIConversation
+        }
+    }
+
+    private var swiftUIConversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 conversationContent
@@ -530,7 +543,7 @@ struct ChatPage: View {
             // reads through between the buttons, and the glass no longer picks up colours from the page.
             .scrollEdgeEffectStyle(.soft, for: .top)
             .safeAreaBar(edge: .top) { header }
-            .onAppear { scroller = proxy }
+            .onAppear { scroller = ChatScroller(proxy: proxy) }
             .task { await playShot() }
         }
     }

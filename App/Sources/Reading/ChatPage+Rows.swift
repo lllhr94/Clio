@@ -364,6 +364,81 @@ extension ChatPage {
         }
         .buttonStyle(PressStyle(haptic: false))
     }
+
+    var uikitConversation: some View {
+        let visibleSlice = historyPage == nil ? Array(chat.lines.suffix(shownCount)) : displayedRows
+        return ChatUIKitContainer(
+            chat: chat,
+            team: team,
+            bot: bot,
+            isRoom: isRoom,
+            displayedRows: displayedRows,
+            visibleRows: visibleSlice,
+            heads: openers,
+            historyPage: historyPage,
+            shownCount: shownCount,
+            lit: finding ? currentHit : nil,
+            editing: editing,
+            speakingText: speakingText,
+            headerHeight: headerHeight,
+            starters: starters,
+            reach: reach,
+            petPerch: petPerch,
+            chrome: chrome,
+            viewport: viewport,
+            followState: followState,
+            dictationSlot: dictationSlot,
+            idleMood: idleMood,
+            bridge: bridge,
+            sourcesMemo: sourcesMemo,
+            listProxy: listProxy,
+            typing: $typing,
+            following: $following,
+            touchScrolling: Binding(
+                get: { touchScrolling },
+                set: { touchScrolling = $0 }
+            ),
+            quote: $quote,
+            jumpedTo: $jumpedTo,
+            onLoadEarlier: loadEarlier,
+            onSelectionChanged: { uuid, active in
+                selectionChanged(uuid, active)
+            },
+            onSpeak: { text in
+                speak(text)
+            },
+            onSaveNote: { id, text in
+                savingNote = Noting(id: id, text: text)
+            },
+            onPickStarter: { text in
+                draft = text
+                typing = true
+            },
+            onStir: stir,
+            onDragStarted: {
+                settleJump?.cancel()
+                viewport.advanceNavigation()
+                followPending?.cancel()
+                settleEnd?.cancel()
+                jumpedTo = nil
+                hideJumps?.cancel()
+                if !chrome.jumpVisible {
+                    DiagTrail.record("开始滑")
+                    chrome.jumpVisible = true
+                }
+            },
+            onScrollEnded: {
+                lingerJumpButtons()
+            },
+            lineMeta: { line in lineMeta(for: line) },
+            endsTurn: { line in endsTurn(line) },
+            timeGap: { line in timeGap(before: line) },
+            minimap: { minimap }
+        )
+        .safeAreaInset(edge: .top, spacing: 0) { header }
+        .onAppear { scroller = ChatScroller(listProxy: listProxy) }
+        .task { await playShot() }
+    }
 }
 
 /// Isolated empty/loading header so `conversationContent` does not subscribe to `chat.hasStreaming` or `idleMood`.

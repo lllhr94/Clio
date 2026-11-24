@@ -1042,5 +1042,9 @@
     "userSpeaker": "你",
     "stampJustNow": "刚刚",
     "stampLive": "实时"
+  },
+  "lookChatList": {
+    "toggle": "新版絮语列表",
+    "note": "支持更顺滑的翻阅与跨段选字引用；若遇到排版异常，关闭即可立即切回旧版。"
   }
 }
