@@ -184,6 +184,26 @@ private enum ProseMetrics {
     static var inlineCodeCorner: CGFloat { 5 * UIScale.factor }
 }
 
+/// Shared quote container used by both `BlockView` and `ReplyProseLayout`, keeping native `ProseText` selection inside quotes.
+private struct QuoteCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, Ink.Space.m + 2.5)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Ink.accent.opacity(0.45))
+                    .frame(width: 2.5)
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, Ink.Space.m)
+            .background(Ink.paperRaised.opacity(0.75), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule.opacity(0.55), lineWidth: 0.5))
+    }
+}
+
 private struct BlockView: View {
     let block: Prose.Block
     let fading: Bool
@@ -223,24 +243,14 @@ private struct BlockView: View {
                 }
             }
         case .quote(let blocks):
-            HStack(alignment: .top, spacing: Ink.Space.m) {
-                Capsule()
-                    .fill(Ink.accent.opacity(0.45))
-                    .frame(width: 2.5)
+            QuoteCard {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
                         BlockView(block: inner, fading: fading && index == blocks.count - 1, live: live && index == blocks.count - 1)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.noteInk, noteInk ?? Ink.inkSoft)
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, Ink.Space.m)
-            .background(Ink.paperRaised.opacity(0.75), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule.opacity(0.55), lineWidth: 0.5))
-            .textSelection(.enabled)
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text, live: live)
         case .table(let table):
@@ -1141,6 +1151,9 @@ private struct ReplyProseLayout: View {
     let text: String
     let blocks: [Prose.Block]
     var streaming = false
+    var allowFade = true
+    var quoted = false
+    var cacheScope = ""
 
     enum Part {
         case words([Prose.Block])
@@ -1170,16 +1183,31 @@ private struct ReplyProseLayout: View {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(blocks)
-        let format = "\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)"
-        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
+        let format = "\(cacheScope)\(quoted ? "q-" : "")\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)"
+        VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                let live = streaming && index == parts.count - 1
+                let live = streaming && allowFade && index == parts.count - 1
                 switch part {
                 case .words(let blocks):
                     ProseText(blocks: blocks, text: text, part: index, format: format,
-                              streaming: streaming, fadeTail: live && fade && !reduceMotion)
+                              streaming: streaming, fadeTail: live && fade && !reduceMotion, quoted: quoted)
                 case .block(let block):
-                    BlockView(block: block, fading: false, live: unfinished(block, live: live))
+                    if case .quote(let inner) = block {
+                        QuoteCard {
+                            AnyView(
+                                ReplyProseLayout(
+                                    text: text,
+                                    blocks: inner,
+                                    streaming: streaming,
+                                    allowFade: live,
+                                    quoted: true,
+                                    cacheScope: "\(cacheScope)q\(index)."
+                                )
+                            )
+                        }
+                    } else {
+                        BlockView(block: block, fading: false, live: unfinished(block, live: live))
+                    }
                 }
             }
         }
@@ -1204,8 +1232,8 @@ enum ProseWords {
         }
     }
 
-    static func make(_ block: Prose.Block, first: Bool) -> NSAttributedString {
-        set(block, quoteDepth: 0, first: first)
+    static func make(_ block: Prose.Block, first: Bool, quoted: Bool = false) -> NSAttributedString {
+        set(block, quoteDepth: 0, first: first, quoted: quoted)
     }
 
     private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
@@ -1219,9 +1247,9 @@ enum ProseWords {
         return style
     }
 
-    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool) -> NSAttributedString {
+    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
         let quote = CGFloat(quoteDepth) * Pref.size * 1.1
-        let ink = quoteDepth > 0 ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
+        let ink = (quoted || quoteDepth > 0) ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
         switch block {
         case .heading(let level, let text):
             let before: CGFloat = first ? 0 : ProseMetrics.headingTop(level: level)
@@ -1391,6 +1419,7 @@ private struct ProseText: UIViewRepresentable {
     let format: String
     let streaming: Bool
     let fadeTail: Bool
+    var quoted = false
 
     private struct Length: Hashable {
         let text: String
@@ -1427,7 +1456,7 @@ private struct ProseText: UIViewRepresentable {
         context.coordinator.selectionChanged = selectionChanged
         context.coordinator.quoteSelection = quoteSelection
         context.coordinator.speakSelection = speakSelection
-        if let words = context.coordinator.words(for: blocks, fade: fadeTail) {
+        if let words = context.coordinator.words(for: blocks, fade: fadeTail, quoted: quoted) {
             let selection = view.selectedRange
             let keepsSelection = selection.length > 0 && words.string.hasPrefix(view.attributedText?.string ?? "")
             view.replaceWords(with: words)
@@ -1466,16 +1495,23 @@ private struct ProseText: UIViewRepresentable {
         private var blocks: [Prose.Block] = []
         private var spans: [NSAttributedString] = []
         private var fading = false
+        private var isQuoted = false
 
-        func words(for next: [Prose.Block], fade: Bool) -> NSAttributedString? {
-            guard next != blocks || fade != fading else { return nil }
-            let shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
+        func words(for next: [Prose.Block], fade: Bool, quoted: Bool) -> NSAttributedString? {
+            guard next != blocks || fade != fading || quoted != isQuoted else { return nil }
+            let shared: Int
+            if quoted == isQuoted {
+                shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
+            } else {
+                shared = 0
+            }
             spans.removeSubrange(shared...)
             for index in next.indices.dropFirst(shared) {
-                spans.append(ProseWords.make(next[index], first: index == 0))
+                spans.append(ProseWords.make(next[index], first: index == 0, quoted: quoted))
             }
             blocks = next
             fading = fade
+            isQuoted = quoted
 
             let words = NSMutableAttributedString()
             for (index, span) in spans.enumerated() {
