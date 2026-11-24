@@ -828,6 +828,153 @@ final class AskUserRulesTests: XCTestCase {
         XCTAssertTrue(leakedAttempt.contains("api_key：（已填）"))
     }
 
+    func testNonSecretTextAndHarmlessIdentityFieldsRejectURLCredentialsOnSubmission() throws {
+        let standaloneArgs: JSONValue = [
+            "title": "填写地址",
+            "fields": [[
+                "key": "url",
+                "label": "地址",
+                "type": "text",
+            ]],
+        ]
+        let standalonePrompt = try unwrapSuccess(AskUserRules.parse(standaloneArgs))
+        let urlQuestion = try XCTUnwrap(standalonePrompt.questions.first)
+        XCTAssertFalse(urlQuestion.secret)
+
+        for secretURL in [
+            "https://user:pass@example.com",
+            "https://:pass@example.com",
+            "https://user：pa\u{200B}ss@example.com/v1",
+        ] {
+            if case .failure(let err) = AskUserRules.validate(response: AskResponse(customText: secretURL), for: urlQuestion) {
+                XCTAssertEqual(err, .invalidField("「地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected non-secret .text field to reject URL credential: \(secretURL)")
+            }
+
+            if case .failure(let err) = AskUserRules.formatResult(prompt: standalonePrompt, rawValues: ["url": secretURL]) {
+                XCTAssertEqual(err, .invalidField("「地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected formatResult to reject URL credential: \(secretURL)")
+            }
+        }
+
+        let cleanStandalone = try unwrapSuccess(AskUserRules.formatResult(
+            prompt: standalonePrompt,
+            rawValues: ["url": "https://example.com:8443/path"]
+        ))
+        XCTAssertEqual(cleanStandalone, "用户填好了：\nurl：https://example.com:8443/path")
+
+        // Mixed secret form keeps harmless-identity `"address"`/`"地址"` non-secret, yet still blocks URL credentials on submit.
+        let mixedArgs: JSONValue = [
+            "title": "连接配置",
+            "fields": [
+                ["key": "address", "label": "地址"],
+                ["key": "password", "label": "密码", "secret": false],
+            ],
+        ]
+        let mixedPrompt = try unwrapSuccess(AskUserRules.parse(mixedArgs))
+        XCTAssertTrue(mixedPrompt.requiresVault)
+        XCTAssertFalse(mixedPrompt.questions[0].secret)
+        XCTAssertTrue(mixedPrompt.questions[1].secret)
+
+        for secretURL in ["https://user:pass@example.com", "https://:pass@example.com"] {
+            if case .failure(let err) = AskUserRules.formatResult(
+                prompt: mixedPrompt,
+                rawValues: ["address": secretURL, "password": "secret:vault1"]
+            ) {
+                XCTAssertEqual(err, .invalidField("「地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected harmless identity field to reject URL credential: \(secretURL)")
+            }
+        }
+
+        let cleanMixed = try unwrapSuccess(AskUserRules.formatResult(
+            prompt: mixedPrompt,
+            rawValues: ["address": "https://example.com:8443/path", "password": "secret:vault1"]
+        ))
+        XCTAssertTrue(cleanMixed.contains("address：https://example.com:8443/path"))
+    }
+
+    func testSingleAndMultiCustomInputsRejectURLCredentialsWhileAcceptingCleanURLs() throws {
+        let singleArgs: JSONValue = [
+            "title": "选择服务地址",
+            "fields": [[
+                "key": "endpoint",
+                "label": "服务地址",
+                "type": "single",
+                "options": ["https://default.example.com"],
+                "allowCustom": true,
+            ]],
+        ]
+        let singlePrompt = try unwrapSuccess(AskUserRules.parse(singleArgs))
+        let singleQ = try XCTUnwrap(singlePrompt.questions.first)
+        XCTAssertFalse(singleQ.secret)
+
+        for secretURL in ["https://user:pass@example.com", "https://:pass@example.com"] {
+            if case .failure(let err) = AskUserRules.formatResult(prompt: singlePrompt, rawValues: ["endpoint": secretURL]) {
+                XCTAssertEqual(err, .invalidField("「服务地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected .single customText to reject URL credential: \(secretURL)")
+            }
+
+            if case .failure(let err) = AskUserRules.validate(response: AskResponse(selected: [secretURL]), for: singleQ) {
+                XCTAssertEqual(err, .invalidField("「服务地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected .single selected custom value to reject URL credential: \(secretURL)")
+            }
+        }
+
+        let cleanSingle = try unwrapSuccess(AskUserRules.formatResult(
+            prompt: singlePrompt,
+            rawValues: ["endpoint": "https://example.com:8443/path"]
+        ))
+        XCTAssertEqual(cleanSingle, "用户填好了：\nendpoint：（自定义）https://example.com:8443/path")
+
+        let multiArgs: JSONValue = [
+            "title": "选择回调地址",
+            "fields": [[
+                "key": "webhooks",
+                "label": "回调地址",
+                "type": "multi",
+                "options": ["https://hooks.example.com/a"],
+                "allowCustom": true,
+            ]],
+        ]
+        let multiPrompt = try unwrapSuccess(AskUserRules.parse(multiArgs))
+        let multiQ = try XCTUnwrap(multiPrompt.questions.first)
+        XCTAssertFalse(multiQ.secret)
+
+        for secretURL in ["https://user:pass@example.com", "https://:pass@example.com"] {
+            let resp = AskResponse(selected: ["https://hooks.example.com/a"], customText: secretURL)
+            if case .failure(let err) = AskUserRules.validate(response: resp, for: multiQ) {
+                XCTAssertEqual(err, .invalidField("「回调地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected .multi customText to reject URL credential: \(secretURL)")
+            }
+
+            let encoded = AskUserRules.encodeResponse(resp, for: multiQ)
+            if case .failure(let err) = AskUserRules.formatResult(prompt: multiPrompt, rawValues: ["webhooks": encoded]) {
+                XCTAssertEqual(err, .invalidField("「回调地址」包含网址用户名或密码，请删掉后再提交，或改用密文字段。"))
+            } else {
+                XCTFail("Expected .multi formatResult to reject URL credential: \(secretURL)")
+            }
+        }
+
+        let cleanMultiEncoded = AskUserRules.encodeResponse(
+            AskResponse(selected: ["https://hooks.example.com/a"], customText: "https://example.com:8443/path"),
+            for: multiQ
+        )
+        let cleanMulti = try unwrapSuccess(AskUserRules.formatResult(
+            prompt: multiPrompt,
+            rawValues: ["webhooks": cleanMultiEncoded]
+        ))
+        XCTAssertEqual(
+            cleanMulti,
+            "用户填好了：\nwebhooks：[\"https://hooks.example.com/a\"]，自定义：https://example.com:8443/path"
+        )
+    }
+
     // MARK: - Helper
 
     private func unwrapSuccess<T>(_ result: Result<T, AskValidationError>, file: StaticString = #filePath, line: UInt = #line) throws -> T {

@@ -317,4 +317,38 @@ final class MemoryImporterTests: XCTestCase {
         XCTAssertEqual(preview.candidates[1].kind, "preference")
         XCTAssertEqual(preview.candidates[1].topic, "iOS / Swift")
     }
+
+    func testBlocksQuotedJSONAndYAMLSecretKeysWhileAllowingHarmlessPlaceholders() {
+        let input = #"""
+        "password": "my-secret-123"
+        'api_key': 'token-9999'
+        {"client_secret": "topsecret"}
+        {"password": "my-secret-pass", "host": "a"}
+        "password": "none"
+        {"api_key": "none"}
+        """#
+
+        let preview = MemoryImporter.parse(input, defaultLayer: .surface)
+
+        XCTAssertEqual(preview.candidates.map(\.text), [
+            "\"password\": \"none\"",
+            "{\"api_key\": \"none\"}",
+        ])
+        XCTAssertEqual(preview.skipped.count, 4)
+        XCTAssertTrue(preview.skipped.allSatisfy {
+            $0.reason == .secretDetected && $0.text == MemoryImporter.redactedSecretPreview
+        })
+
+        for item in preview.skipped {
+            XCTAssertFalse(item.text.contains("my-secret-123"))
+            XCTAssertFalse(item.text.contains("token-9999"))
+            XCTAssertFalse(item.text.contains("topsecret"))
+            XCTAssertFalse(item.text.contains("my-secret-pass"))
+            XCTAssertFalse(item.text.contains("client_secret"))
+        }
+
+        let singleJsonPlaceholder = MemoryImporter.parse(#"{"password": "none"}"#, defaultLayer: .surface)
+        XCTAssertTrue(singleJsonPlaceholder.skipped.isEmpty)
+        XCTAssertEqual(singleJsonPlaceholder.candidates.map(\.text), [#"{"password": "none"}"#])
+    }
 }
