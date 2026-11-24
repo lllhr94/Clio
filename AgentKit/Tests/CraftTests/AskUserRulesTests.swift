@@ -770,9 +770,9 @@ final class AskUserRulesTests: XCTestCase {
         let persianZWNJ = "می‌خواهم"
 
         let args: JSONValue = [
-            "question": "选择角色 \(familyEmoji)",
+            "question": .string("选择角色 \(familyEmoji)"),
             "type": "multi",
-            "choices": [engineerEmoji, persianZWNJ],
+            "choices": [.string(engineerEmoji), .string(persianZWNJ)],
             "allowCustom": true,
         ]
         let prompt = try unwrapSuccess(AskUserRules.parse(args))
