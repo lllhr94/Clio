@@ -57,7 +57,8 @@ final class MCPImageTests: XCTestCase {
 
         let output = MCPImage.toolOutput(from: result)
         XCTAssertFalse(output.isError)
-        XCTAssertEqual(output.images.count, 4)
+        XCTAssertEqual(output.images.count, 4, "Unexpected output text: \(output.text)")
+        guard output.images.count == 4 else { return }
         XCTAssertEqual(output.images[0], ImagePart(mediaType: "image/png", data: pngData))
         XCTAssertEqual(output.images[1], ImagePart(mediaType: "image/jpeg", data: jpegData))
         XCTAssertEqual(output.images[2], ImagePart(mediaType: "image/webp", data: webpData))

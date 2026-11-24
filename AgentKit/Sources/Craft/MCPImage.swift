@@ -643,8 +643,10 @@ public enum MCPImage {
         case .gif:
             return utType.conforms(to: .gif)
         case .webp:
+            if utType.conforms(to: .webP) { return true }
+            if let webp = UTType("org.webmproject.webp"), utType.conforms(to: webp) { return true }
             if let webp = UTType("org.webm.webp"), utType.conforms(to: webp) { return true }
-            return rawUTI == "org.webm.webp" || rawUTI == "public.webp"
+            return rawUTI == "org.webmproject.webp" || rawUTI == "org.webm.webp" || rawUTI == "public.webp"
         case .bmp:
             return utType.conforms(to: .bmp)
         case .tiff:
