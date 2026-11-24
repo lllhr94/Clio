@@ -303,16 +303,18 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         if let container = try? decoder.container(keyedBy: CodingKeys.self) {
-            self.memories = try container.decodeIfPresent([CanonicalMemoryItem].self, forKey: .memories) ?? []
-            self.archived = try container.decodeIfPresent([CanonicalMemoryItem].self, forKey: .archived) ?? []
-            self.reviews = try container.decodeIfPresent([CanonicalMemoryReviewLog].self, forKey: .reviews) ?? []
-            self.processed = try container.decodeIfPresent([String: Set<String>].self, forKey: .processed) ?? [:]
-            self.reviewFromDay = try container.decodeIfPresent(String.self, forKey: .reviewFromDay)
-            self.budgetDay = try container.decodeIfPresent(String.self, forKey: .budgetDay)
-            self.requests = try container.decodeIfPresent(Int.self, forKey: .requests) ?? 0
-            self.diaryRequests = try container.decodeIfPresent(Int.self, forKey: .diaryRequests) ?? 0
-            self.suppressedFlushHashes = try container.decodeIfPresent([String].self, forKey: .suppressedFlushHashes) ?? []
-            self.tombstones = try container.decodeIfPresent([MemoryTombstone].self, forKey: .tombstones) ?? []
+            self.init(
+                memories: try container.decodeIfPresent([CanonicalMemoryItem].self, forKey: .memories) ?? [],
+                archived: try container.decodeIfPresent([CanonicalMemoryItem].self, forKey: .archived) ?? [],
+                reviews: try container.decodeIfPresent([CanonicalMemoryReviewLog].self, forKey: .reviews) ?? [],
+                processed: try container.decodeIfPresent([String: Set<String>].self, forKey: .processed) ?? [:],
+                reviewFromDay: try container.decodeIfPresent(String.self, forKey: .reviewFromDay),
+                budgetDay: try container.decodeIfPresent(String.self, forKey: .budgetDay),
+                requests: try container.decodeIfPresent(Int.self, forKey: .requests) ?? 0,
+                diaryRequests: try container.decodeIfPresent(Int.self, forKey: .diaryRequests) ?? 0,
+                suppressedFlushHashes: try container.decodeIfPresent([String].self, forKey: .suppressedFlushHashes) ?? [],
+                tombstones: try container.decodeIfPresent([MemoryTombstone].self, forKey: .tombstones) ?? []
+            )
             return
         }
         let single = try decoder.singleValueContainer()
