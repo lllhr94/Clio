@@ -324,6 +324,14 @@ private enum ChatFlowTests {
             try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: tool, hasCode: true),
                       true, "A forced command with the full payload can ask inline")
         }
+        for tool in ["browser_fill_secret", "gmail_send", "schedule_task", "open_link", "browser_type", "mcp_calendar", "ssh_job_stop", "ssh_job_check"] {
+            try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: tool, hasCode: true),
+                      false, "Other forced approvals use the full slip (\(tool))")
+        }
+        try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: true, tool: nil, hasCode: true),
+                  false, "A forced approval without a tool identifier uses the full slip")
+        try check(InlineApprovalPolicy.canAnswer(answerable: true, forced: false, tool: "open_link", hasCode: false),
+                  true, "An ordinary text approval stays available in chat")
         try check(InlineApprovalPolicy.canAnswer(answerable: false, forced: true, tool: "shell", hasCode: true),
                   false, "An old approval stays read-only")
     }

@@ -4,8 +4,9 @@ import SwiftUI
 enum InlineApprovalPolicy {
     static func canAnswer(answerable: Bool, forced: Bool, tool: String?, hasCode: Bool) -> Bool {
         guard answerable else { return false }
-        if forced, let tool, ["shell", "ssh_run", "ssh_job_start", "run_js"].contains(tool) { return hasCode }
-        return true
+        guard forced else { return true }
+        guard hasCode, let tool else { return false }
+        return ["shell", "ssh_run", "ssh_job_start", "run_js"].contains(tool)
     }
 }
 
@@ -23,6 +24,13 @@ struct InlineApproval: View {
 
     private var readOutside: Bool { approval.detail?.text?.hasPrefix(Taint.reason) == true }
 
+    private var title: String {
+        if approval.tool == "这一步要你点头" {
+            return L.format("approval.inlineConfirmationTitle", name)
+        }
+        return "\(name)想\(approval.tool ?? "做一件事")，可以吗？"
+    }
+
     private var detailText: String? {
         guard let text = approval.detail?.text else { return nil }
         let words = readOutside ? String(text.dropFirst(Taint.reason.count)) : text
@@ -34,7 +42,7 @@ struct InlineApproval: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(spacing: Ink.Space.s) {
                 Image(systemName: "seal").foregroundStyle(Ink.warn)
-                Text("\(name)想\(approval.tool ?? "做一件事")，可以吗？")
+                Text(title)
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .lineLimit(2)
@@ -61,26 +69,12 @@ struct InlineApproval: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Ink.warn.opacity(0.12), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             }
-            if let reason = approval.reason, !reason.isEmpty {
-                Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(3)
-            }
-            if detailText != nil || approval.detail?.code?.isEmpty == false {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Ink.Space.s) {
-                        if let detailText {
-                            Text(detailText).font(Ink.footnote)
-                        }
-                        if let code = approval.detail?.code, !code.isEmpty {
-                            Text(code).font(Ink.mono(Ink.Size.small))
-                        }
-                    }
-                    .foregroundStyle(Ink.ink)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Ink.Space.s)
+            if approval.reason?.isEmpty == false || detailText != nil || approval.detail?.code?.isEmpty == false {
+                ViewThatFits(in: .vertical) {
+                    payload
+                    ScrollView { payload }
                 }
                 .frame(maxHeight: 108 * UIScale.factor)
-                .fixedSize(horizontal: false, vertical: true)
                 .background(Ink.mine, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
             }
             if let note {
@@ -101,7 +95,7 @@ struct InlineApproval: View {
             if approval.forced != true {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: Ink.Space.m) { permissionChoices }
-                    VStack(alignment: .leading, spacing: Ink.Space.s) { permissionChoices }
+                    VStack(alignment: .leading, spacing: 0) { permissionChoices }
                 }
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkSoft)
@@ -113,14 +107,47 @@ struct InlineApproval: View {
         .paperCard()
     }
 
+    private var payload: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            if let reason = approval.reason, !reason.isEmpty {
+                Text(reason).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            }
+            if let detailText {
+                Text(detailText).font(Ink.footnote)
+            }
+            if let code = approval.detail?.code, !code.isEmpty {
+                Text(code)
+                    .font(Ink.mono(Ink.Size.small))
+                    .lineSpacing(Ink.Size.small * 0.12)
+            }
+        }
+        .foregroundStyle(Ink.ink)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ink.Space.s)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     @ViewBuilder
     private var permissionChoices: some View {
         if approval.chat != nil {
-            Button(L.t("approval.inlineTrust")) { decide(true, trustChat: true) }
-                .accessibilityHint(L.t("approval.inlineTrustHint"))
+            Button {
+                decide(true, trustChat: true)
+            } label: {
+                Text(L.t("approval.inlineTrust"))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityHint(L.t("approval.inlineTrustHint"))
         }
         if approval.toolName != nil {
-            Button(L.t("actions.allowAlways")) { decide(true, always: true) }
+            Button {
+                decide(true, always: true)
+            } label: {
+                Text(L.t("actions.allowAlways"))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
         }
     }
 
