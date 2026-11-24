@@ -65,6 +65,7 @@ def fixture() -> str:
         "STREAM_BLOCKS": extract(READING / "ProseView.swift", r"^struct StreamBlocks \{\n.*?^\}", "stream block scanner"),
         "DRAFT_INPUT": extract(chat, r"^enum DraftInput \{\n.*?^\}", "draft rules"),
         "BELOW": chat_member("below"),
+        "RESIZE_ANCHOR": chat_member("resizeAnchor"),
         "END_ALIGNMENT": chat_member("endAlignment"),
         "END_ALIGNMENT_CHANGED": chat_member("endAlignmentChanged"),
         "SELECTION_CHANGED": chat_member("selectionChanged"),

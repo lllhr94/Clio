@@ -115,13 +115,22 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 
     var policy: Policy {
-        get { UserDefaults.standard.string(forKey: "grant.\(rawValue)").flatMap(Policy.init(rawValue:)) ?? standard }
+        get {
+            let saved = UserDefaults.standard.string(forKey: "grant.\(rawValue)").flatMap(Policy.init(rawValue:)) ?? standard
+            if saved == .smart, self != .desk {
+                return self == .web || self == .device ? .allow : .ask
+            }
+            return saved
+        }
         nonmutating set { UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)") }
     }
+
+    var availablePolicies: [Policy] { self == .desk ? Policy.allCases : [.off, .ask, .allow] }
 
     /// Set permissions together. Each item can still be changed on its own afterwards.
     enum Preset: String, CaseIterable, Identifiable {
         case careful, standard, smart, free
+        private static let preference = "grantPreset.selected"
 
         var id: String { rawValue }
 
@@ -148,7 +157,9 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             case .standard: return grant.standard
             case .smart:
                 switch grant {
-                case .web, .desk, .device: return .smart
+                case .desk: return .smart
+                case .web, .device: return .allow
+                case .memory: return grant.policy
                 default: return .ask
                 }
             case .free: return grant == .vault ? .ask : .allow
@@ -164,15 +175,20 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             for grant in Grant.allCases where self != .smart || grant.policy != .off {
                 grant.policy = policy(for: grant)
             }
+            UserDefaults.standard.set(rawValue, forKey: Self.preference)
         }
 
         /// The preset everything is set to now, if any.
         static var current: Preset? {
-            allCases.first { preset in
-                if preset == .smart, !Grant.allCases.contains(where: { $0.policy == .smart }) { return false }
-                return Grant.allCases.allSatisfy { grant in
+            func matches(_ preset: Preset) -> Bool {
+                Grant.allCases.allSatisfy { grant in
                     grant.policy == preset.policy(for: grant) || (preset == .smart && grant.policy == .off)
                 }
+            }
+            if let saved = UserDefaults.standard.string(forKey: preference).flatMap(Preset.init(rawValue:)),
+               matches(saved) { return saved }
+            return allCases.first { preset in
+                (preset != .smart || Grant.desk.policy == .smart) && matches(preset)
             }
         }
     }
@@ -212,12 +228,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     /// Only built-in queries in their actual capability. Remote workspaces use a different grant.
     static func allowsSmartQuery(_ name: String, grant: Grant) -> Bool {
-        switch grant {
-        case .web: return ["web_search", "web_read", "weather"].contains(name)
-        case .desk: return ["read_file", "list_dir", "glob", "grep"].contains(name)
-        case .device: return name == "device_status"
-        default: return false
-        }
+        grant == .desk && ["read_file", "list_dir", "glob", "grep", "read_pdf", "search_docs"].contains(name)
     }
 
     /// The tools a companion gets: switched-off abilities left out, ask-first ones wrapped so they ask.

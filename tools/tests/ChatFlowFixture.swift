@@ -30,6 +30,7 @@ private enum Grant {
 }
 
 private struct Approval: Equatable {}
+private enum UnitPoint: Equatable { case bottom }
 
 private struct Hitches {
     static let shared = Self()
@@ -231,6 +232,7 @@ private final class FlowFixture {
     }
 
 // RULE: BELOW
+// RULE: RESIZE_ANCHOR
 // RULE: END_ALIGNMENT
 // RULE: END_ALIGNMENT_CHANGED
 // RULE: SELECTION_CHANGED
@@ -303,6 +305,7 @@ private enum ChatFlowTests {
             try await approvalPausesFollowing()
             try await inlineApprovalWaitsForLayout()
             try smartApprovalQueries()
+            try passiveReadingHasNoResizeAnchor()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
@@ -338,12 +341,25 @@ private enum ChatFlowTests {
     }
 
     static func smartApprovalQueries() throws {
-        try check(Grant.allowsSmartQuery("weather", grant: .web), true, "Public query")
         try check(Grant.allowsSmartQuery("read_file", grant: .desk), true, "Read local workspace")
+        try check(Grant.allowsSmartQuery("read_pdf", grant: .desk), true, "Read a workspace PDF")
+        try check(Grant.allowsSmartQuery("search_docs", grant: .desk), true, "Search workspace documents")
         try check(Grant.allowsSmartQuery("read_file", grant: .hills), false, "The same tool on a remote host still asks")
         try check(Grant.allowsSmartQuery("shell", grant: .den), false, "Commands still ask")
         try check(Grant.allowsSmartQuery("edit_file", grant: .desk), false, "Writes still ask")
         try check(Grant.allowsSmartQuery("mcp_read", grant: .mcp), false, "An external tool cannot self-authorize")
+    }
+
+    @MainActor
+    static func passiveReadingHasNoResizeAnchor() throws {
+        try check(FlowFixture.resizeAnchor(following: true, inHistory: false, hasSelection: false), .bottom,
+                  "Readers following the latest reply stay anchored at the bottom")
+        try check(FlowFixture.resizeAnchor(following: false, inHistory: false, hasSelection: false), nil,
+                  "Layout changes while reading do not move the viewport to an edge")
+        try check(FlowFixture.resizeAnchor(following: true, inHistory: true, hasSelection: false), nil,
+                  "Looking at history does not anchor the viewport")
+        try check(FlowFixture.resizeAnchor(following: true, inHistory: false, hasSelection: true), nil,
+                  "Selecting text does not anchor the viewport")
     }
 
     @MainActor

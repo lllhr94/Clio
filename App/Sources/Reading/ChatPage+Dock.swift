@@ -444,6 +444,7 @@ extension ChatPage {
         following = false
         jumpedTo = id
         lingerJumpButtons()
+        viewport.recordJump("小地图")
         // From the 小地图 the page goes straight there: a long animated scroll through a lazy list lags behind.
         if animated {
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
@@ -467,6 +468,7 @@ extension ChatPage {
             following = false
             jumpedTo = target
             lingerJumpButtons()
+            viewport.recordJump(earlier ? "点了上一句" : "点了下一句")
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
         } label: {
             Image(systemName: symbol)
@@ -523,6 +525,10 @@ extension ChatPage {
     }
 
     static let end = "foot-of-page"
+
+    static func resizeAnchor(following: Bool, inHistory: Bool, hasSelection: Bool) -> UnitPoint? {
+        following && !inHistory && !hasSelection ? .bottom : nil
+    }
 
     /// Distance to the resting bottom offset. A short page rests at its top inset.
     static func below(_ geometry: ScrollGeometry) -> CGFloat {

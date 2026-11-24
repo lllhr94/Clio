@@ -177,7 +177,7 @@ struct GrantsPage: View {
                     }
                 }
             })) {
-                ForEach(Grant.Policy.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(grant.availablePolicies, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .padding(.leading, Kit.badge + Ink.Space.m)

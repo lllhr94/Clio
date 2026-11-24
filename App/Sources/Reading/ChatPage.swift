@@ -80,8 +80,6 @@ struct ChatPage: View {
     @State var scrolling = false
     /// The reader's own finger is moving the page (dragging, or the glide after it) — not a scroll the app made.
     @State var touchScrolling = false
-    /// Where the page was last time, to notice a jump nobody asked for (the reader saw it leap back to yesterday).
-    @State var lastOffset: CGFloat = 0
     /// How full the next request will be; worked out when the page opens and after each turn, not on every word.
     @State var context: TeamModel.ContextEstimate?
     @State var usageOpen = false
@@ -167,7 +165,7 @@ struct ChatPage: View {
         guard canLoadEarlier, earlierTask == nil, selecting.isEmpty else { return }
         let previous = chat.lines.suffix(shownCount)
         let visible = Set(viewport.ids)
-        let anchor = previous.first { visible.contains($0.id) }?.id ?? previous.first?.id
+        let anchor = previous.first { visible.contains($0.id) }?.id
         let first = previous.first?.id
         let oldCount = previous.count
         earlierTask = Task { @MainActor in
@@ -182,6 +180,7 @@ struct ChatPage: View {
             guard let anchor else { return }
             await Task.yield()
             guard !Task.isCancelled, historyPage == nil, selecting.isEmpty, !following else { return }
+            viewport.recordJump("载入更早的消息")
             scroller?.scrollTo(anchor, anchor: .top)
         }
     }
@@ -373,7 +372,8 @@ struct ChatPage: View {
             }
             .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
+            .defaultScrollAnchor(Self.resizeAnchor(following: following, inHistory: historyPage != nil,
+                                                   hasSelection: !selecting.isEmpty), for: .sizeChanges)
             // Size changes already use the bottom anchor while following. Only schedule a correction
             // when the viewport actually leaves the bottom, rather than scrolling again on every reflow.
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -394,14 +394,17 @@ struct ChatPage: View {
                 // reply arrives) must never pull in older lines above and shift the page.
                 if nearTop, touchScrolling, !following, selecting.isEmpty { loadEarlier() }
             }
-            // A jump upward of more than a screen that no finger made: noted for 养护 › 诊断, to find where it comes from.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
+            // Record large upward jumps and the layout behind them without publishing per-frame state.
+            .onScrollGeometryChange(for: ChatScrollSample.self) { geometry in
+                ChatScrollSample(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height,
+                                 viewportHeight: geometry.containerSize.height)
             } action: { old, now in
-                if !touchScrolling, historyPage == nil, old - now > 900 {
-                    Diag.note("絮语页自己往上跳了 \(Int(old - now)) 点（following=\(following)，显示 \(shownCount) 条，共 \(chat.lines.count) 条，在写=\(chat.hasStreaming)）")
+                let distance = old.offset - now.offset
+                if !touchScrolling, historyPage == nil, distance > 900, distance.isFinite,
+                   now.contentHeight.isFinite, now.viewportHeight.isFinite {
+                    let origin = viewport.recentJump.map { "最近跳转：\($0)" } ?? "无近期跳转请求"
+                    Diag.note("絮语页往上跳 \(Int(distance)) 点（\(origin)，following=\(following)，可见 \(viewport.ids.count) 条，已加载 \(min(shownCount, chat.lines.count)) 条，正文高 \(Int(now.contentHeight))，视口高 \(Int(now.viewportHeight))，在写=\(chat.hasStreaming)）")
                 }
-                lastOffset = now
             }
             .onScrollPhaseChange { old, phase, context in
                 let moving = phase != .idle
@@ -935,7 +938,8 @@ struct ChatPage: View {
                 reveal(id)
                 following = false
                 Task {
-                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+                    viewport.recordJump("点了提纲")
                     withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
                 }
             }
