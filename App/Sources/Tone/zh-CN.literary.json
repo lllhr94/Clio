@@ -928,11 +928,15 @@
   },
   "trace": {
     "commandsCount": "跑了 %lld 条命令",
+    "commandsFailedCount": "%lld 条失败",
+    "commandFailed": "失败",
+    "commandFailedDetail": "执行未成功",
     "commandTitle": "命令详情",
     "commandLabel": "命令",
     "outputLabel": "输出",
     "noOutput": "（没有输出）",
-    "outputTruncated": "……（输出太长，这里先显示前 %lld 字，点「复制」可拿全部）",
+    "outputTruncated": "……（界面先显示前 %lld 字，点「复制」可复制已保存部分）",
+    "outputTrimmedNote": "长输出已做脱敏截断保存，复制得到的是已保存的部分。",
     "copy": "复制",
     "copied": "已复制"
   }

@@ -1527,18 +1527,36 @@ final class TeamModel: ObservableObject {
             var kept = message
             let images = keeping ? message.images : []
             let toolText = message.role == .tool ? message.text : nil
+            let keepCommandDetail = message.role == .tool
+                && kept.detail == nil
+                && (message.toolName == "shell" || message.toolName == "ssh_run")
             let shots: [String]
             if toolText != nil || !images.isEmpty {
                 let prepared = await Task.detached(priority: .userInitiated) {
-                    let short = toolText.map { text in
+                    let short: String?
+                    let commandDetail: String?
+                    if let text = toolText {
                         let prefix = text.prefix(3001)
-                        return prefix.count > 3000 ? String(prefix.prefix(3000)) + "\n……" : text
+                        if prefix.count > 3000 {
+                            short = String(prefix.prefix(3000)) + "\n……"
+                            // Preserve a secret-masked head+tail copy for the command detail sheet so trailing logs and exit status are kept.
+                            commandDetail = keepCommandDetail
+                                ? Shell.maskedClip(text, max: 20_000, secrets: Vault.allStrings())
+                                : nil
+                        } else {
+                            short = text
+                            commandDetail = nil
+                        }
+                    } else {
+                        short = nil
+                        commandDetail = nil
                     }
-                    return (short, images.map { Disk.keepPhoto($0.data) })
+                    return (short, commandDetail, images.map { Disk.keepPhoto($0.data) })
                 }.value
                 guard epochs[key, default: 0] == generation else { return }
                 if let short = prepared.0 { kept.text = short }
-                shots = prepared.1
+                if let commandDetail = prepared.1 { kept.detail = commandDetail }
+                shots = prepared.2
             } else {
                 shots = []
             }
