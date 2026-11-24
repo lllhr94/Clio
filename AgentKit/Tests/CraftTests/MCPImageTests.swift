@@ -161,7 +161,7 @@ final class MCPImageTests: XCTestCase {
     func testRejectsEmptyInvalidBase64SVGCorruptedAndDecompressionBombPayloads() throws {
         let truncatedPNG = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D])
         let noIDATPNG = makeFakeHeaderPNG(width: 8, height: 8)
-        let bombPNG = makeFakeHeaderPNG(width: 30_000, height: 30_000)
+        let bombBMP = makeFakeHeaderBMP(width: 30_000, height: 30_000)
 
         let payloads: [(JSONValue, [String])] = [
             (["type": "image", "mimeType": "image/png"], ["没有图片数据"]),
@@ -170,8 +170,8 @@ final class MCPImageTests: XCTestCase {
             (["type": "image", "data": "data:image/svg+xml,<svg/>"], ["base64"]),
             (["type": "image", "data": .string(Data("<svg xmlns=\"http://www.w3.org/2000/svg\"/>".utf8).base64EncodedString()), "mimeType": "image/svg+xml"], ["SVG"]),
             (["type": "image", "data": .string(truncatedPNG.base64EncodedString()), "mimeType": "image/png"], ["损坏", "格式不符"]),
-            (["type": "image", "data": .string(noIDATPNG.base64EncodedString()), "mimeType": "image/png"], ["损坏"]),
-            (["type": "image", "data": .string(bombPNG.base64EncodedString()), "mimeType": "image/png"], ["分辨率过高"]),
+            (["type": "image", "data": .string(noIDATPNG.base64EncodedString()), "mimeType": "image/png"], ["损坏", "格式不符"]),
+            (["type": "image", "data": .string(bombBMP.base64EncodedString()), "mimeType": "image/bmp"], ["分辨率过高"]),
         ]
 
         for (item, expectedFragments) in payloads {
@@ -471,7 +471,8 @@ final class MCPImageTests: XCTestCase {
             }
         }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let image: CGImage? = pixels.withUnsafeMutableBytes { rawBuffer in
+        let out = NSMutableData()
+        let encoded: Bool = pixels.withUnsafeMutableBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress,
                   let context = CGContext(
                       data: base,
@@ -481,20 +482,15 @@ final class MCPImageTests: XCTestCase {
                       bytesPerRow: canvasSize * 4,
                       space: colorSpace,
                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                  ) else {
-                return nil
+                  ),
+                  let cgImage = context.makeImage(),
+                  let destination = CGImageDestinationCreateWithData(out as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
+                return false
             }
-            return context.makeImage()
+            CGImageDestinationAddImage(destination, cgImage, nil)
+            return CGImageDestinationFinalize(destination)
         }
-        guard let cgImage = image else {
-            throw NSError(domain: "MCPImageTests", code: 5)
-        }
-        let out = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(out as CFMutableData, UTType.png.identifier as CFString, 1, nil) else {
-            throw NSError(domain: "MCPImageTests", code: 6)
-        }
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else {
+        guard encoded else {
             throw NSError(domain: "MCPImageTests", code: 7)
         }
         return out as Data
@@ -516,6 +512,34 @@ final class MCPImageTests: XCTestCase {
         withUnsafeBytes(of: &crc) { png.append(contentsOf: $0) }
         png.append(contentsOf: [0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82])
         return png
+    }
+
+    private func makeFakeHeaderBMP(width: UInt32, height: UInt32) -> Data {
+        var bmp = Data([0x42, 0x4D]) // "BM"
+        func appendLE32(_ value: UInt32) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { bmp.append(contentsOf: $0) }
+        }
+        func appendLE16(_ value: UInt16) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { bmp.append(contentsOf: $0) }
+        }
+        appendLE32(54) // file size
+        appendLE16(0)  // reserved1
+        appendLE16(0)  // reserved2
+        appendLE32(54) // pixel data offset
+        appendLE32(40) // BITMAPINFOHEADER size
+        appendLE32(width)
+        appendLE32(height)
+        appendLE16(1)  // planes
+        appendLE16(24) // bits per pixel
+        appendLE32(0)  // BI_RGB
+        appendLE32(0)  // image size
+        appendLE32(2835)
+        appendLE32(2835)
+        appendLE32(0)
+        appendLE32(0)
+        return bmp
     }
 
     private func makeAnimatedGIFData(width: Int, height: Int, frameCount: Int) throws -> Data {

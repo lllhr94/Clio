@@ -590,7 +590,11 @@ public enum MCPImage {
             let longest = max(width, height)
             if format.isDirectlySupported, !isAnimatedGIF, data.count <= maxAllowedBytes, longest <= limits.maxUnconvertedDimension {
                 if longest <= 64 {
-                    guard CGImageSourceCreateImageAtIndex(source, 0, noCache) != nil else {
+                    let decodeNow: [CFString: Any] = [
+                        kCGImageSourceShouldCache: true,
+                        kCGImageSourceShouldCacheImmediately: true,
+                    ]
+                    guard CGImageSourceCreateImageAtIndex(source, 0, decodeNow as CFDictionary) != nil else {
                         return .rejected("图片内容损坏，无法解码")
                     }
                 } else {
@@ -640,6 +644,7 @@ public enum MCPImage {
 
     #if canImport(ImageIO)
     private static func utiMatches(_ rawUTI: String, format: MCPImageFormat) -> Bool {
+        if format == .webp, rawUTI.lowercased().contains("webp") { return true }
         guard let utType = UTType(rawUTI) else { return false }
         switch format {
         case .png:
