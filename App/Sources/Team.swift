@@ -1416,8 +1416,15 @@ final class TeamModel: ObservableObject {
                 && !$0.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         })?.message.text
         let isKeeping = keeping
-        let fallbackRecords = isKeeping ? [] : MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: [])
-        let fallbackSurfaceTexts = isKeeping ? [] : memories.filter { $0.deep != true }.map(\.text)
+        let fallbackRecords: [MemoryRecord]
+        let fallbackSurfaceTexts: [String]
+        if isKeeping {
+            fallbackRecords = []
+            fallbackSurfaceTexts = []
+        } else {
+            fallbackRecords = MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: [])
+            fallbackSurfaceTexts = memories.filter { $0.deep != true }.map(\.text)
+        }
         let recalledHints = await MemoryRecallBridge.shared.recallForTurn(
             query: lastUserPrompt,
             usesMemory: usesMemory,
@@ -1427,17 +1434,39 @@ final class TeamModel: ObservableObject {
             fallbackRecords: fallbackRecords,
             fallbackSurfaceTexts: fallbackSurfaceTexts,
             retractedIDs: memoryPromptState.retractedIDsSnapshot(),
-            suppressedHashes: memoryPromptState.suppressedFlushHashesSnapshot()
+            suppressedHashes: memoryPromptState.suppressedFlushHashesSnapshot(),
+            recordUsage: false
         )
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue)
+        let recallAllowedNow = liveUsesMemory && Grant.memory.policy != .off && !Disk.frozen
+        let liveDeepIDs = Set(memories.filter { $0.deep == true }.map(\.id))
+        let liveRetracted = memoryPromptState.retractedIDsSnapshot()
+        let liveSuppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let validatedHints: [MemoryRecall.Hit]
+        if recallAllowedNow {
+            validatedHints = recalledHints.filter { hit in
+                guard liveDeepIDs.contains(hit.id), !liveRetracted.contains(hit.id) else {
+                    return false
+                }
+                if !hit.textSHA256.isEmpty && liveSuppressed.contains(hit.textSHA256.lowercased()) {
+                    return false
+                }
+                return true
+            }
+        } else {
+            validatedHints = []
+        }
+        if isKeeping && !validatedHints.isEmpty {
+            MemoryRecallBridge.shared.recordUsageAsync(ids: validatedHints.map(\.id))
+        }
         let (refresher, refresherToken) = registerLivePromptRefresher(
             for: bot,
             in: key,
             room: room,
             workplace: workplace,
             memory: liveUsesMemory,
-            recalledHints: liveUsesMemory ? recalledHints : []
+            recalledHints: validatedHints
         )
         defer { unregisterLivePromptRefresher(refresherToken) }
         let assembled = refresher.currentPrompt()

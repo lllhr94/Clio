@@ -995,9 +995,7 @@ final class DocSearchIndexService: @unchecked Sendable {
                 let documents = try Self.collectFallbackDocuments(for: target)
                 guard !documents.isEmpty else { return (0, []) }
                 let secrets = Self.orderedSecrets(Vault.allStrings())
-                let safeDocs = secrets.isEmpty
-                    ? documents
-                    : documents.map { ($0.path, MemorySafety.redactSecrets($0.text, secrets: secrets)) }
+                let safeDocs = Self.redactDocuments(documents, secrets: secrets)
                 return (documents.count, DocSearch.find(query, in: safeDocs))
             }.value
         }
@@ -1025,12 +1023,13 @@ final class DocSearchIndexService: @unchecked Sendable {
         let scopePrefix = Self.scopePrefix(for: target)
 
         do {
-            let syncedCount = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets)
+            let syncedCount = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: false)
             guard syncedCount > 0 else { return (0, []) }
 
             var hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
             if index.consumeUnredactedSecretDetected() || index.needsRebuildFromSource {
-                _ = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets)
+                try? index.resetForSecretRotation()
+                _ = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: true)
                 hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
             }
             return (syncedCount, hits)
@@ -1040,14 +1039,12 @@ final class DocSearchIndexService: @unchecked Sendable {
             // Transparent fallback to in-memory `DocSearch.find` if SQLite index initialization/query ever fails.
             let documents = try Self.collectFallbackDocuments(for: target)
             guard !documents.isEmpty else { return (0, []) }
-            let safeDocs = secrets.isEmpty
-                ? documents
-                : documents.map { ($0.path, MemorySafety.redactSecrets($0.text, secrets: secrets)) }
+            let safeDocs = Self.redactDocuments(documents, secrets: secrets)
             return (documents.count, DocSearch.find(query, in: safeDocs))
         }
     }
 
-    private func syncTargetLocked(target: Workspace.Target, scopePrefix: String?, secrets: [String]) throws -> Int {
+    private func syncTargetLocked(target: Workspace.Target, scopePrefix: String?, secrets: [String], force: Bool) throws -> Int {
         var deskEntries: [PaperShelf.ScannedEntry] = []
         var mountTargets: [(mount: MountedFolder, inner: [String], descriptors: [DocSearchDocumentDescriptor])] = []
         var allDescriptors: [DocSearchDocumentDescriptor] = []
@@ -1095,7 +1092,7 @@ final class DocSearchIndexService: @unchecked Sendable {
             allDescriptors.append(contentsOf: mountDescs)
         }
 
-        let plan = try index.planSync(descriptors: allDescriptors, scopePrefix: scopePrefix, secrets: secrets)
+        let plan = try index.planSync(descriptors: allDescriptors, scopePrefix: scopePrefix, secrets: secrets, force: force)
         guard !plan.staleOrNewPaths.isEmpty || !plan.removedPaths.isEmpty else {
             return allDescriptors.count
         }
@@ -1187,6 +1184,18 @@ final class DocSearchIndexService: @unchecked Sendable {
             return MountedFolders.virtualFolder
         case .mounted(_, _, let rel):
             return rel
+        }
+    }
+
+    private static func redactDocuments(
+        _ documents: [(path: String, text: String)],
+        secrets: [String]
+    ) -> [(path: String, text: String)] {
+        if secrets.isEmpty {
+            return documents
+        }
+        return documents.map { document in
+            (path: document.path, text: MemorySafety.redactSecrets(document.text, secrets: secrets))
         }
     }
 

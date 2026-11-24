@@ -324,6 +324,93 @@ final class MemoryRecallTests: XCTestCase {
         XCTAssertFalse(gatedRefresher.currentPrompt().full.contains(deepFact.text))
     }
 
+    func testPromptRefresherValidatesRecalledHitsAgainstLiveMemoriesInBuildSnapshot() {
+        let state = MemorySafety.PromptState()
+        let deepUpdated = MemorySafety.Fact(
+            id: "d-live",
+            text: "项目备用口令 sk-live-secret-99 仅本地核对",
+            at: 500,
+            isDeep: true
+        )
+        let promotedToSurface = MemorySafety.Fact(
+            id: "d-promoted",
+            text: "已升入常记的工作偏好",
+            at: 600,
+            isDeep: false
+        )
+        let excludedByIDFact = MemorySafety.Fact(
+            id: "d-excluded-id",
+            text: "不应被召回的隔离事实",
+            at: 700,
+            isDeep: true
+        )
+
+        let secretLock = NSLock()
+        var currentSecrets = ["sk-live-secret-99"]
+
+        let baseInput = MemorySafety.SystemPromptInput(
+            identity: "你是「小克」。",
+            memories: [deepUpdated, promotedToSurface, excludedByIDFact],
+            memoryEnabled: true,
+            excludingMemoryIDs: [excludedByIDFact.id]
+        )
+
+        let staleHits: [MemoryRecall.Hit] = [
+            // Valid `.deep` hit whose cached hit text was pre-update / unredacted: must refresh & redact from `baseInput.memories`.
+            MemoryRecall.Hit(
+                id: deepUpdated.id,
+                text: "旧文案 sk-live-secret-99",
+                textSHA256: MemorySafety.retractionHash("旧文案 sk-live-secret-99")
+            ),
+            // Hint whose underlying fact already became `.surface` (`isDeep == false`): must be dropped from recalled tail.
+            MemoryRecall.Hit(
+                id: promotedToSurface.id,
+                text: promotedToSurface.text,
+                textSHA256: MemorySafety.retractionHash(promotedToSurface.text)
+            ),
+            // Hint whose underlying fact was deleted / archived (absent from `baseInput.memories`): must be dropped.
+            MemoryRecall.Hit(
+                id: "d-deleted-or-archived",
+                text: "已删除或入藏的记忆条目",
+                textSHA256: MemorySafety.retractionHash("已删除或入藏的记忆条目")
+            ),
+            // Hint excluded via `excludingMemoryIDs`: must be dropped.
+            MemoryRecall.Hit(
+                id: excludedByIDFact.id,
+                text: excludedByIDFact.text,
+                textSHA256: MemorySafety.retractionHash(excludedByIDFact.text)
+            ),
+        ]
+
+        let refresher = MemoryRecallPromptRefresher(
+            input: baseInput,
+            state: state,
+            recalledHits: staleHits,
+            activeSecrets: {
+                secretLock.lock()
+                defer { secretLock.unlock() }
+                return currentSecrets
+            }
+        )
+
+        let prompt = refresher.currentPrompt()
+        XCTAssertTrue(prompt.tail.contains("项目备用口令 〔隐去〕 仅本地核对"))
+        XCTAssertFalse(prompt.full.contains("sk-live-secret-99"))
+        XCTAssertFalse(prompt.full.contains("旧文案"))
+        XCTAssertTrue(prompt.prefix.contains(promotedToSurface.text))
+        XCTAssertFalse(prompt.tail.contains(promotedToSurface.text))
+        XCTAssertFalse(prompt.full.contains("已删除或入藏的记忆条目"))
+        XCTAssertFalse(prompt.full.contains(excludedByIDFact.text))
+
+        // Runtime secret addition updates `currentPrompt()` even without PromptState generation bump.
+        secretLock.lock()
+        currentSecrets.append("本地核对")
+        secretLock.unlock()
+
+        let rotatedPrompt = refresher.currentPrompt()
+        XCTAssertFalse(rotatedPrompt.tail.contains("本地核对"))
+    }
+
     // MARK: 3. MemoryStore Integration & Usage Bookkeeping
 
     func testRecallFromMemoryStoreUpdatesUsedAtMsWithoutPromotingOutOfDeep() throws {
@@ -595,5 +682,73 @@ final class MemoryRecallTests: XCTestCase {
         XCTAssertTrue(plan.promoteToSurface.isEmpty)
         // Archival budget 1 picks untouched automatic entry ahead of user-edited entry.
         XCTAssertEqual(plan.archiveIDs, ["deep-stale-auto"])
+    }
+
+    func testNightlyPromotionNeverPromotesZeroRecallOrSingleRecallUntouchedDeepEntries() {
+        let nowMs: Double = 200 * 86_400_000
+
+        let records: [MemoryRecord] = [
+            // Newly sunk via `settleMemory` / `setDeep(_:true)` (`usedAtMs > createdAtMs`, `confidence == 1.0`) with ZERO Channel-1 recalls (`stat == nil`).
+            MemoryRecord(
+                id: "deep-zero-recall-auto",
+                text: "沉降到旧事但从未在对话里被召回过的自动记忆",
+                layer: .deep,
+                confidence: 1.0,
+                createdAtMs: dayMs(2, from: nowMs),
+                usedAtMs: dayMs(0.2, from: nowMs),
+                automatic: true,
+                editedByUser: false
+            ),
+            // User explicitly marked deep (`setDeep(_:true)` bumps `usedAtMs` and sets `editedByUser`). Still ZERO Channel-1 recalls!
+            MemoryRecord(
+                id: "deep-zero-recall-manual",
+                text: "用户手动放进旧事的条目",
+                layer: .deep,
+                confidence: 1.0,
+                createdAtMs: dayMs(10, from: nowMs),
+                usedAtMs: dayMs(0.1, from: nowMs),
+                automatic: false,
+                editedByUser: true
+            ),
+            // Recalled only once (`recallCount == 1 < minRecallCountForPromotion (2)`), confidence == 1.0, untouched auto -> must NOT promote yet.
+            MemoryRecord(
+                id: "deep-single-recall",
+                text: "只被召回过一次的旧事条目",
+                layer: .deep,
+                confidence: 1.0,
+                createdAtMs: dayMs(15, from: nowMs),
+                usedAtMs: dayMs(0.1, from: nowMs),
+                automatic: true,
+                editedByUser: false
+            ),
+            // Recalled twice (`recallCount == 2 >= minRecallCountForPromotion (2)`) -> SHOULD promote.
+            MemoryRecord(
+                id: "deep-twice-recalled",
+                text: "连续两天被回忆到的旧事条目",
+                layer: .deep,
+                confidence: 1.0,
+                createdAtMs: dayMs(15, from: nowMs),
+                usedAtMs: dayMs(0.1, from: nowMs),
+                automatic: true,
+                editedByUser: false
+            ),
+        ]
+
+        let stats: [String: MemoryRecallUsageStat] = [
+            "deep-single-recall": MemoryRecallUsageStat(lastRecalledAtMs: dayMs(0.1, from: nowMs), recallCount: 1),
+            "deep-twice-recalled": MemoryRecallUsageStat(lastRecalledAtMs: dayMs(0.1, from: nowMs), recallCount: 2),
+        ]
+
+        let plan = MemoryPromotionPolicy.evaluate(
+            records: records,
+            usageStats: stats,
+            nowMs: nowMs,
+            config: .default
+        )
+
+        XCTAssertFalse(plan.promoteToSurface.contains("deep-zero-recall-auto"))
+        XCTAssertFalse(plan.promoteToSurface.contains("deep-zero-recall-manual"))
+        XCTAssertFalse(plan.promoteToSurface.contains("deep-single-recall"))
+        XCTAssertEqual(plan.promoteToSurface, ["deep-twice-recalled"])
     }
 }

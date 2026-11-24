@@ -175,6 +175,81 @@ final class DocSearchIndexTests: XCTestCase {
         XCTAssertEqual(plan.staleOrNewPaths, ["配置说明.md"])
     }
 
+    func testScopedSyncOnSecretChangePurgesOutOfScopeUnredactedRowsAndSupportsForcedRotation() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let index = DocSearchIndex(cachesRoot: dir)
+        defer { index.close() }
+
+        let docNotes = DocSearchDocumentInput(path: "notes/a.md", text: "普通日常工作笔记。")
+        let docOther = DocSearchDocumentInput(path: "other/secret.md", text: "内部网关口令 secret-token-xyz 请妥善保管。")
+
+        // Initially indexed with no Vault secrets configured.
+        try index.sync(inputs: [docNotes, docOther], secrets: [])
+        XCTAssertEqual(try index.trackedDocumentCount(), 2)
+
+        // Now `"secret-token-xyz"` is added to Vault, and ONLY `"notes"` folder is scoped-synced.
+        // Out-of-scope `"other/secret.md"` must be purged instead of having a new `secrets_digest` stamped over raw rows.
+        let rotatedSecrets = ["secret-token-xyz"]
+        let scopedDescriptor = DocSearchDocumentDescriptor(
+            path: docNotes.path,
+            byteCount: docNotes.byteCount,
+            mtimeMs: docNotes.mtimeMs,
+            contentFingerprint: docNotes.contentFingerprint
+        )
+        let scopedPlan = try index.planSync(descriptors: [scopedDescriptor], scopePrefix: "notes", secrets: rotatedSecrets)
+        XCTAssertTrue(scopedPlan.staleOrNewPaths.contains("notes/a.md"))
+        XCTAssertTrue(scopedPlan.removedPaths.contains("other/secret.md"))
+
+        try index.applyIncrementalSync(upserts: [docNotes], removedPaths: scopedPlan.removedPaths, secrets: rotatedSecrets)
+        XCTAssertEqual(try index.trackedDocumentCount(folderPrefix: "notes"), 1)
+        XCTAssertEqual(try index.trackedDocumentCount(folderPrefix: "other"), 0)
+
+        // Verify zero unredacted secret bytes remain anywhere in `doc_passages`.
+        index.close()
+        let raw = try openRawSQLite(index.databaseURL)
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(raw, "SELECT snippet_text FROM doc_passages;", -1, &stmt, nil)
+        XCTAssertEqual(rc, SQLITE_OK)
+        var rawTexts: [String] = []
+        if let stmt {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let cStr = sqlite3_column_text(stmt, 0) {
+                    rawTexts.append(String(cString: cStr))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        sqlite3_close_v2(raw)
+        XCTAssertFalse(rawTexts.joined(separator: "\n").contains("secret-token-xyz"))
+
+        // Searching `"other"` triggers fresh sync of `"other/secret.md"` with secret redacted and heals cleanly.
+        try index.sync(inputs: [docOther], scopePrefix: "other", secrets: rotatedSecrets)
+        XCTAssertEqual(try index.trackedDocumentCount(folderPrefix: "other"), 1)
+        let otherHits = try index.search(query: "内部网关口令", folderPrefix: "other", secrets: rotatedSecrets)
+        XCTAssertEqual(otherHits.map(\.path), ["other/secret.md"])
+        XCTAssertFalse(otherHits[0].snippet.contains("secret-token-xyz"))
+        XCTAssertTrue(otherHits[0].snippet.contains("〔隐去〕"))
+        XCTAssertTrue(try index.search(query: "secret-token-xyz", folderPrefix: "other", secrets: rotatedSecrets).isEmpty)
+
+        // Forced secret rotation helper clears digest so recovery re-indexes even if metadata is unchanged.
+        try index.resetForSecretRotation()
+        XCTAssertTrue(index.needsRebuildFromSource)
+        let forcedPlan = try index.planSync(
+            descriptors: [DocSearchDocumentDescriptor(
+                path: docOther.path,
+                byteCount: docOther.byteCount,
+                mtimeMs: docOther.mtimeMs,
+                contentFingerprint: docOther.contentFingerprint
+            )],
+            scopePrefix: "other",
+            secrets: rotatedSecrets,
+            force: true
+        )
+        XCTAssertTrue(forcedPlan.staleOrNewPaths.contains("other/secret.md"))
+    }
+
     // MARK: 4. Self-Healing: Corruption, Truncation, Mid-Run Deletion, Schema Mismatch
 
     func testSelfHealsAcrossCorruptionSidecarsTruncationAndMidRunDeletion() throws {

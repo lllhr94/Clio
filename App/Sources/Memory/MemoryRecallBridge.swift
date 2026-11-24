@@ -81,6 +81,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
         fallbackSurfaceTexts: [String] = [],
         retractedIDs: Set<String>,
         suppressedHashes: Set<String>,
+        recordUsage: Bool = true,
         config: MemoryRecall.Config = MemoryRecall.Config()
     ) async -> [MemoryRecall.Hit] {
         guard usesMemory, grantAllowed, !diskFrozen else { return [] }
@@ -113,6 +114,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
                     query: rawQuery,
                     retractedIDs: retractedIDs,
                     suppressedHashes: suppressedHashes,
+                    recordUsage: recordUsage,
                     config: config
                 )
                 continuation.resume(returning: hits)
@@ -182,6 +184,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
         query: String,
         retractedIDs: Set<String>,
         suppressedHashes: Set<String>,
+        recordUsage: Bool,
         config: MemoryRecall.Config
     ) -> [MemoryRecall.Hit] {
         loadStatsLockedIfNeeded()
@@ -214,7 +217,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
             )
         }
 
-        if !hits.isEmpty {
+        if recordUsage, !hits.isEmpty {
             let nowMs = Now.ms
             let hitIDs = hits.map(\.id)
             mergeUsageIntoCache(ids: hitIDs, nowMs: nowMs)

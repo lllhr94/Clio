@@ -608,7 +608,7 @@ extension TeamModel {
 
     /// Evaluates `.pinned`, `.surface`, and `.deep` memory lifecycles once per tide day after nightly review,
     /// promoting frequently/recently recalled `.deep` entries to `.surface` and demoting/archiving stale unpinned ones
-    /// strictly through `commitMemoryBook` / `MemoryStoreBridge`.
+    /// strictly through throwing `commitMemoryBook` transactions (never marking the day complete on commit failure).
     func applyNightlyPromotionIfNeeded(now: Date = Date(), force: Bool = false) {
         guard phase == .ready, keeping, canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
         guard Grant.memory.policy == .allow else { return }
@@ -636,54 +636,107 @@ extension TeamModel {
             config: MemoryPromotionPolicy.Config(surfaceLimit: Self.surfaceLimit)
         )
 
-        if !plan.promoteToSurface.isEmpty || !plan.demoteToDeep.isEmpty || !plan.refreshedUsedAtMs.isEmpty {
-            let pinnedIDs = MemoryStoreBridge.shared.pinnedIDsSnapshot()
-            let promoteSet = Set(plan.promoteToSurface)
-            let demoteSet = Set(plan.demoteToDeep)
-            var nextMemories = memories
-            var mutated = false
+        let pinnedIDs = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+        let recordsByID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let isImmune: (String) -> Bool = { id in
+            pinnedIDs.contains(id)
+                || recordsByID[id]?.pinned == true
+                || recordsByID[id]?.layer == .pinned
+                || recordsByID[id]?.deletedAtMs != nil
+        }
 
-            for index in nextMemories.indices {
-                let id = nextMemories[index].id
-                if let refreshedUsed = plan.refreshedUsedAtMs[id],
-                   refreshedUsed > (nextMemories[index].used ?? 0) {
-                    nextMemories[index].used = refreshedUsed
+        let promoteSet = Set(plan.promoteToSurface.filter { recordsByID[$0]?.deletedAtMs == nil })
+        let demoteSet = Set(plan.demoteToDeep.filter { !isImmune($0) })
+        let safeArchiveIDs = plan.archiveIDs.filter { id in
+            !isImmune(id) && (memories.contains(where: { $0.id == id }) || MemoryStoreBridge.shared.hasRecordSnapshot(id: id))
+        }
+
+        var nextMemories = memories
+        var mutated = false
+
+        for index in nextMemories.indices {
+            let id = nextMemories[index].id
+            guard recordsByID[id]?.deletedAtMs == nil else { continue }
+            if let refreshedUsed = plan.refreshedUsedAtMs[id],
+               refreshedUsed > (nextMemories[index].used ?? 0) {
+                nextMemories[index].used = refreshedUsed
+                mutated = true
+            }
+            if promoteSet.contains(id) {
+                if nextMemories[index].deep == true {
+                    nextMemories[index].deep = nil
                     mutated = true
                 }
-                if promoteSet.contains(id) {
-                    if nextMemories[index].deep == true {
-                        nextMemories[index].deep = nil
-                        mutated = true
-                    }
-                    let bumpedUsed = max(nextMemories[index].used ?? 0, plan.refreshedUsedAtMs[id] ?? nowMs)
-                    if (nextMemories[index].used ?? 0) < bumpedUsed {
-                        nextMemories[index].used = bumpedUsed
-                        mutated = true
-                    }
-                } else if demoteSet.contains(id), !pinnedIDs.contains(id) {
-                    if nextMemories[index].deep != true {
-                        nextMemories[index].deep = true
-                        mutated = true
-                    }
+                let bumpedUsed = max(nextMemories[index].used ?? 0, plan.refreshedUsedAtMs[id] ?? nowMs)
+                if (nextMemories[index].used ?? 0) < bumpedUsed {
+                    nextMemories[index].used = bumpedUsed
+                    mutated = true
+                }
+            } else if demoteSet.contains(id), !isImmune(id) {
+                if nextMemories[index].deep != true {
+                    nextMemories[index].deep = true
+                    mutated = true
                 }
             }
+        }
 
-            if mutated {
-                Self.settleMemory(&nextMemories, pinnedIDs: pinnedIDs)
+        if !promoteSet.isEmpty || !demoteSet.isEmpty {
+            Self.settleMemory(&nextMemories, pinnedIDs: pinnedIDs)
+        }
+
+        do {
+            if let firstArchiveID = safeArchiveIDs.first {
+                let firstFallback = nextMemories.first { $0.id == firstArchiveID }
+                nextMemories.removeAll { $0.id == firstArchiveID }
                 var nextBook = memoryBook
                 nextBook.memories = nextMemories
-                guard (try? commitMemoryBook(nextBook)) != nil else { return }
+                _ = try commitMemoryBook(
+                    nextBook,
+                    mutation: .layerAndMetadata(
+                        id: firstArchiveID,
+                        layer: .archived,
+                        kind: nil,
+                        topic: nil,
+                        confidence: nil,
+                        fallbackMemory: firstFallback,
+                        nowMs: nowMs
+                    )
+                )
+            } else if mutated {
+                var nextBook = memoryBook
+                nextBook.memories = nextMemories
+                _ = try commitMemoryBook(nextBook)
             }
-        }
 
-        for id in plan.archiveIDs {
-            guard canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
-            guard !isPinnedMemory(id) else { continue }
-            setMemoryLayer(id, .archived)
-        }
+            for archiveID in safeArchiveIDs.dropFirst() {
+                guard canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
+                guard !isImmune(archiveID), !isPinnedMemory(archiveID) else { continue }
+                let fallback = memories.first { $0.id == archiveID }
+                guard fallback != nil || MemoryStoreBridge.shared.hasRecordSnapshot(id: archiveID) else { continue }
+                var nextArchiveMemories = memories
+                nextArchiveMemories.removeAll { $0.id == archiveID }
+                var archiveBook = memoryBook
+                archiveBook.memories = nextArchiveMemories
+                _ = try commitMemoryBook(
+                    archiveBook,
+                    mutation: .layerAndMetadata(
+                        id: archiveID,
+                        layer: .archived,
+                        kind: nil,
+                        topic: nil,
+                        confidence: nil,
+                        fallbackMemory: fallback,
+                        nowMs: nowMs
+                    )
+                )
+            }
 
-        UserDefaults.standard.set(day, forKey: Self.nightlyPromotionDayKey)
-        MemoryRecallBridge.shared.scheduleSync()
+            UserDefaults.standard.set(day, forKey: Self.nightlyPromotionDayKey)
+            MemoryRecallBridge.shared.scheduleSync()
+        } catch {
+            // Do not stamp `nightlyPromotionDayKey` when persistence fails so the next eligible check retries.
+            return
+        }
     }
 
     func removeReviewDetails(_ ids: Set<String>) {

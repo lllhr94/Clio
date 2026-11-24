@@ -240,6 +240,16 @@ public final class DocSearchIndex: @unchecked Sendable {
         return detected
     }
 
+    /// Clears `secrets_digest` and marks the index for rebuild so recovery or secret rotation
+    /// genuinely re-indexes affected documents rather than hitting a `planSync` no-op.
+    public func resetForSecretRotation() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = try openOrRecoverLocked()
+        try runPreparedLocked("DELETE FROM build_state WHERE key = 'secrets_digest';")
+        _needsRebuildFromSource = true
+    }
+
     public func trackedDocumentCount(folderPrefix: String? = nil) throws -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -256,10 +266,13 @@ public final class DocSearchIndex: @unchecked Sendable {
 
     /// Compares live file metadata against indexed `doc_files` inside `scopePrefix` to determine
     /// which paths need reading/re-indexing and which deleted paths should be pruned.
+    /// When `secrets_digest` changes or rebuild is forced under a non-nil `scopePrefix`, out-of-scope
+    /// paths are included in `removedPaths` so unredacted rows never remain stranded on disk.
     public func planSync(
         descriptors: [DocSearchDocumentDescriptor],
         scopePrefix: String? = nil,
-        secrets: [String] = []
+        secrets: [String] = [],
+        force: Bool = false
     ) throws -> DocSearchSyncPlan {
         let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         let secretsDigest = Self.secretsFingerprint(orderedSecrets)
@@ -272,7 +285,8 @@ public final class DocSearchIndex: @unchecked Sendable {
         do {
             let stateMap = try readBuildStateMapLocked()
             let storedSecretsDigest = stateMap["secrets_digest"] ?? ""
-            let forceAll = _needsRebuildFromSource || (storedSecretsDigest != secretsDigest)
+            let secretsChanged = storedSecretsDigest != secretsDigest
+            let forceAll = force || _needsRebuildFromSource || secretsChanged
             let storedFiles = try readStoredFileStampsLocked(scopePrefix: cleanScope)
 
             var incomingByPath: [String: DocSearchDocumentDescriptor] = [:]
@@ -301,7 +315,12 @@ public final class DocSearchIndex: @unchecked Sendable {
                 }
             }
 
-            let removed = storedFiles.keys.filter { incomingByPath[$0] == nil }.sorted()
+            var removedSet = Set(storedFiles.keys.filter { incomingByPath[$0] == nil })
+            if let cleanScope, forceAll {
+                let outOfScope = try readOutOfScopePathsLocked(excludingScopePrefix: cleanScope)
+                removedSet.formUnion(outOfScope)
+            }
+            let removed = removedSet.sorted()
             return DocSearchSyncPlan(
                 staleOrNewPaths: stale,
                 removedPaths: removed,
@@ -351,6 +370,13 @@ public final class DocSearchIndex: @unchecked Sendable {
                         ? doc.text
                         : MemorySafety.redactSecrets(doc.text, secrets: orderedSecrets)
                     try insertDocumentLocked(doc, safeText: safeText)
+                }
+                if secretsChanged {
+                    let updatedPaths = Set(upserts.map(\.path))
+                    let remainingPaths = try readStoredFileStampsLocked(scopePrefix: nil).keys
+                    for path in remainingPaths where !updatedPaths.contains(path) {
+                        try deleteDocumentLocked(path: path)
+                    }
                 }
                 try setBuildStateLocked("state", "ready")
                 try setBuildStateLocked("schema_version", String(Self.schemaVersion))
@@ -1026,6 +1052,33 @@ public final class DocSearchIndex: @unchecked Sendable {
             }
         }
         return map
+    }
+
+    private func readOutOfScopePathsLocked(excludingScopePrefix scopePrefix: String) throws -> [String] {
+        guard let db else { throw DocSearchIndexError.sqlite(code: SQLITE_MISUSE, message: "database closed") }
+        let sql = """
+        SELECT path FROM doc_files
+        WHERE NOT (path = ? OR path LIKE ? ESCAPE '\\')
+        ORDER BY path ASC;
+        """
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else { throw sqliteErrorLocked(code: rc) }
+        defer { sqlite3_finalize(stmt) }
+        try bind([.text(scopePrefix), .text("\(Self.escapeLike(scopePrefix))/%")], to: stmt)
+
+        var paths: [String] = []
+        while true {
+            let stepRC = sqlite3_step(stmt)
+            if stepRC == SQLITE_ROW {
+                paths.append(Self.columnText(stmt, 0))
+            } else if stepRC == SQLITE_DONE {
+                break
+            } else {
+                throw sqliteErrorLocked(code: stepRC)
+            }
+        }
+        return paths
     }
 
     private func countLocked(table: String, pathColumn: String, folderPrefix: String?) throws -> Int {

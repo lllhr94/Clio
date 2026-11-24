@@ -1513,6 +1513,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
     private var recalledHits: [MemoryRecall.Hit]
     private var lastObservedGeneration: UInt64
     private var lastObservedRecallAllowed: Bool
+    private var lastObservedSecretsDigest: String
     private let isRecallAllowed: @Sendable () -> Bool
     private let activeSecrets: @Sendable () -> [String]
     private var snapshot: MemorySafety.AssembledSystemPrompt
@@ -1524,47 +1525,69 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         isRecallAllowed: @escaping @Sendable () -> Bool = { true },
         activeSecrets: @escaping @Sendable () -> [String] = { [] }
     ) {
-        self.baseInput = input
-        self.state = state
-        self.recalledHits = recalledHits
         let gen = state.currentGeneration
         let allowed = isRecallAllowed()
+        let orderedSecrets = Self.orderSecrets(activeSecrets())
+        let secretsDigest = Self.secretsFingerprint(orderedSecrets)
+        let retractedIDs = state.retractedIDsSnapshot()
+        let suppressedHashes = state.suppressedFlushHashesSnapshot()
+        let reconciled = Self.reconcileHits(
+            recalledHits,
+            against: input.memories,
+            retractedIDs: retractedIDs,
+            suppressedHashes: suppressedHashes,
+            excludingIDs: input.excludingMemoryIDs,
+            excludingTexts: input.excludingMemoryTexts,
+            orderedSecrets: orderedSecrets
+        )
+
+        self.baseInput = input
+        self.state = state
+        self.recalledHits = reconciled
         self.lastObservedGeneration = gen
         self.lastObservedRecallAllowed = allowed
+        self.lastObservedSecretsDigest = secretsDigest
         self.isRecallAllowed = isRecallAllowed
         self.activeSecrets = activeSecrets
         self.snapshot = Self.buildSnapshot(
             baseInput: input,
             state: state,
-            recalledHits: recalledHits,
+            recalledHits: reconciled,
             recallAllowed: allowed,
-            secrets: activeSecrets()
+            orderedSecrets: orderedSecrets
         )
     }
 
     public func currentPrompt() -> MemorySafety.AssembledSystemPrompt {
         let gen = state.currentGeneration
         let allowed = isRecallAllowed()
+        let orderedSecrets = Self.orderSecrets(activeSecrets())
+        let secretsDigest = Self.secretsFingerprint(orderedSecrets)
         lock.lock()
         defer { lock.unlock() }
-        if gen != lastObservedGeneration || allowed != lastObservedRecallAllowed {
+        if gen != lastObservedGeneration
+            || allowed != lastObservedRecallAllowed
+            || secretsDigest != lastObservedSecretsDigest {
             let retractedIDs = state.retractedIDsSnapshot()
             let suppressedHashes = state.suppressedFlushHashesSnapshot()
-            recalledHits = Self.filterHits(
+            recalledHits = Self.reconcileHits(
                 recalledHits,
+                against: baseInput.memories,
                 retractedIDs: retractedIDs,
                 suppressedHashes: suppressedHashes,
                 excludingIDs: baseInput.excludingMemoryIDs,
-                excludingTexts: baseInput.excludingMemoryTexts
+                excludingTexts: baseInput.excludingMemoryTexts,
+                orderedSecrets: orderedSecrets
             )
             lastObservedGeneration = gen
             lastObservedRecallAllowed = allowed
+            lastObservedSecretsDigest = secretsDigest
             snapshot = Self.buildSnapshot(
                 baseInput: baseInput,
                 state: state,
                 recalledHits: recalledHits,
                 recallAllowed: allowed,
-                secrets: activeSecrets()
+                orderedSecrets: orderedSecrets
             )
         }
         return snapshot
@@ -1575,39 +1598,29 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         let allowed = isRecallAllowed()
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
-        let secrets = activeSecrets()
-        let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let orderedSecrets = Self.orderSecrets(activeSecrets())
+        let secretsDigest = Self.secretsFingerprint(orderedSecrets)
 
         lock.lock()
         baseInput.memories = memories
-        let factsByID = Dictionary(memories.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-        var updatedHits: [MemoryRecall.Hit] = []
-        for var hit in recalledHits {
-            guard let liveFact = factsByID[hit.id], liveFact.isDeep else {
-                continue
-            }
-            let safeText = MemorySafety.redactSecrets(liveFact.text, secrets: orderedSecrets)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !safeText.isEmpty else { continue }
-            hit.text = safeText
-            hit.textSHA256 = MemorySafety.retractionHash(safeText)
-            updatedHits.append(hit)
-        }
-        recalledHits = Self.filterHits(
-            updatedHits,
+        recalledHits = Self.reconcileHits(
+            recalledHits,
+            against: memories,
             retractedIDs: retractedIDs,
             suppressedHashes: suppressedHashes,
             excludingIDs: baseInput.excludingMemoryIDs,
-            excludingTexts: baseInput.excludingMemoryTexts
+            excludingTexts: baseInput.excludingMemoryTexts,
+            orderedSecrets: orderedSecrets
         )
         lastObservedGeneration = gen
         lastObservedRecallAllowed = allowed
+        lastObservedSecretsDigest = secretsDigest
         snapshot = Self.buildSnapshot(
             baseInput: baseInput,
             state: state,
             recalledHits: recalledHits,
             recallAllowed: allowed,
-            secrets: orderedSecrets
+            orderedSecrets: orderedSecrets
         )
         lock.unlock()
     }
@@ -1617,49 +1630,83 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         let allowed = isRecallAllowed()
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
-        let secrets = activeSecrets()
+        let orderedSecrets = Self.orderSecrets(activeSecrets())
+        let secretsDigest = Self.secretsFingerprint(orderedSecrets)
 
         lock.lock()
-        recalledHits = Self.filterHits(
+        recalledHits = Self.reconcileHits(
             hits,
+            against: baseInput.memories,
             retractedIDs: retractedIDs,
             suppressedHashes: suppressedHashes,
             excludingIDs: baseInput.excludingMemoryIDs,
-            excludingTexts: baseInput.excludingMemoryTexts
+            excludingTexts: baseInput.excludingMemoryTexts,
+            orderedSecrets: orderedSecrets
         )
         lastObservedGeneration = gen
         lastObservedRecallAllowed = allowed
+        lastObservedSecretsDigest = secretsDigest
         snapshot = Self.buildSnapshot(
             baseInput: baseInput,
             state: state,
             recalledHits: recalledHits,
             recallAllowed: allowed,
-            secrets: secrets
+            orderedSecrets: orderedSecrets
         )
         lock.unlock()
     }
 
-    private static func filterHits(
+    /// Reconciles recalled hits against live `baseInput.memories` so entries that were deleted,
+    /// archived, promoted to `.surface`/`.pinned`, retracted, excluded, or updated mid-turn
+    /// never leak stale or unredacted content into the volatile prompt tail.
+    private static func reconcileHits(
         _ hits: [MemoryRecall.Hit],
+        against memories: [MemorySafety.Fact],
         retractedIDs: Set<String>,
         suppressedHashes: Set<String>,
         excludingIDs: Set<String>,
-        excludingTexts: Set<String>
+        excludingTexts: Set<String>,
+        orderedSecrets: [String]
     ) -> [MemoryRecall.Hit] {
+        let factsByID = Dictionary(
+            memories.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let excludedNormalized = Set(excludingTexts.map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty })
-        return hits.filter { hit in
-            guard !retractedIDs.contains(hit.id), !excludingIDs.contains(hit.id) else { return false }
-            let normKey = MemorySafety.normalizedFactKey(hit.text)
-            guard !normKey.isEmpty, !excludedNormalized.contains(normKey) else { return false }
-            let computedHash = MemorySafety.retractionHash(hit.text)
+        var valid: [MemoryRecall.Hit] = []
+        valid.reserveCapacity(hits.count)
+
+        for var hit in hits {
+            guard !retractedIDs.contains(hit.id), !excludingIDs.contains(hit.id) else {
+                continue
+            }
             if !hit.textSHA256.isEmpty && suppressedHashes.contains(hit.textSHA256.lowercased()) {
-                return false
+                continue
             }
-            if !computedHash.isEmpty && suppressedHashes.contains(computedHash) {
-                return false
+            guard let liveFact = factsByID[hit.id], liveFact.isDeep else {
+                continue
             }
-            return true
+            let rawKey = MemorySafety.normalizedFactKey(liveFact.text)
+            let safeText = MemorySafety.redactSecrets(liveFact.text, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let normKey = MemorySafety.normalizedFactKey(safeText)
+            guard !safeText.isEmpty,
+                  !normKey.isEmpty,
+                  !excludedNormalized.contains(normKey),
+                  !excludedNormalized.contains(rawKey) else {
+                continue
+            }
+            let rawHash = MemorySafety.retractionHash(liveFact.text)
+            let computedHash = MemorySafety.retractionHash(safeText)
+            if (!rawHash.isEmpty && suppressedHashes.contains(rawHash))
+                || (!computedHash.isEmpty && suppressedHashes.contains(computedHash)) {
+                continue
+            }
+            hit.text = safeText
+            hit.textSHA256 = computedHash
+            valid.append(hit)
         }
+        return valid
     }
 
     private static func buildSnapshot(
@@ -1667,24 +1714,26 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         state: MemorySafety.PromptState,
         recalledHits: [MemoryRecall.Hit],
         recallAllowed: Bool,
-        secrets: [String]
+        orderedSecrets: [String]
     ) -> MemorySafety.AssembledSystemPrompt {
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
         let effectiveHits: [MemoryRecall.Hit]
         if baseInput.memoryEnabled && recallAllowed {
-            effectiveHits = filterHits(
+            effectiveHits = reconcileHits(
                 recalledHits,
+                against: baseInput.memories,
                 retractedIDs: retractedIDs,
                 suppressedHashes: suppressedHashes,
                 excludingIDs: baseInput.excludingMemoryIDs,
-                excludingTexts: baseInput.excludingMemoryTexts
+                excludingTexts: baseInput.excludingMemoryTexts,
+                orderedSecrets: orderedSecrets
             )
         } else {
             effectiveHits = []
         }
 
-        let recallBlock = MemoryRecall.formatTailBlock(effectiveHits, secrets: secrets)
+        let recallBlock = MemoryRecall.formatTailBlock(effectiveHits, secrets: orderedSecrets)
         let baseExtra = baseInput.extraTail?.trimmingCharacters(in: .newlines) ?? ""
         let combinedTailParts = [baseExtra, recallBlock].filter {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1693,6 +1742,21 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         var effectiveInput = baseInput
         effectiveInput.extraTail = combinedTailParts.isEmpty ? nil : combinedTailParts.joined(separator: "\n\n")
         return MemorySafety.assembleSystemPrompt(effectiveInput, state: state)
+    }
+
+    private static func orderSecrets(_ secrets: [String]) -> [String] {
+        secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+    }
+
+    private static func secretsFingerprint(_ orderedSecrets: [String]) -> String {
+        guard !orderedSecrets.isEmpty else { return "" }
+        let joined = orderedSecrets.joined(separator: "\u{1F}")
+        #if canImport(CryptoKit)
+        let digest = CryptoKit.SHA256.hash(data: Data(joined.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+        #else
+        return MemorySafety.retractionHash(joined)
+        #endif
     }
 }
 
@@ -1884,23 +1948,19 @@ public enum MemoryPromotionPolicy: Sendable {
         let archiveSet = Set(archiveIDs)
 
         // Phase C: Promote frequently / recently recalled `.deep` -> `.surface`, strictly bounded by `surfaceLimit`.
+        // `.deep` entries without recorded Channel-1 recalls (`stat == nil`) or below `minRecallCountForPromotion`
+        // must never auto-promote on night 1 (prevents fighting `setDeep(_:true)` or `settleMemory`).
         var promotionCandidates = deepItems.filter { item in
             guard !archiveSet.contains(item.record.id) else { return false }
-            guard let usedAt = item.effectiveUsedAtMs else { return false }
-            let recency = nowMs - usedAt
-            guard recency >= 0, recency <= config.promoteRecencyWindowMs else { return false }
-
-            if let stat = item.stat {
-                if stat.recallCount >= config.minRecallCountForPromotion {
-                    return true
-                }
-                return stat.recallCount >= 1 && (item.record.editedByUser || item.record.confidence >= 0.85)
-            }
-            return usedAt > item.record.createdAtMs && item.record.confidence >= 0.7
+            guard let stat = item.stat else { return false }
+            guard stat.recallCount >= config.minRecallCountForPromotion else { return false }
+            guard stat.lastRecalledAtMs > 0 else { return false }
+            let recency = nowMs - stat.lastRecalledAtMs
+            return recency >= 0 && recency <= config.promoteRecencyWindowMs
         }
         promotionCandidates.sort { lhs, rhs in
-            let lCount = lhs.stat?.recallCount ?? 1
-            let rCount = rhs.stat?.recallCount ?? 1
+            let lCount = lhs.stat?.recallCount ?? 0
+            let rCount = rhs.stat?.recallCount ?? 0
             if lCount != rCount { return lCount > rCount }
             let lUsed = lhs.effectiveUsedAtMs ?? 0
             let rUsed = rhs.effectiveUsedAtMs ?? 0
