@@ -1555,13 +1555,216 @@ final class PermissionGateTests: XCTestCase {
         }
     }
 
+    private final class ScriptedProvider: ModelProvider, @unchecked Sendable {
+        private let lock = NSLock()
+        private var turns: [[StreamEvent]]
+
+        init(_ turns: [[StreamEvent]]) { self.turns = turns }
+
+        func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+            let events: [StreamEvent]
+            lock.lock()
+            events = turns.isEmpty ? [.text("done"), .finish(reason: "stop")] : turns.removeFirst()
+            lock.unlock()
+            return AsyncThrowingStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+
+        func models() async throws -> [String] { ["mock"] }
+    }
+
     @MainActor
     private final class QueueHarness {
         var decision: PendingApprovalDecision = .wait
         var enqueues = 0
         var leaves = 0
         var userApprovals = 0
+        var grantCommits = 0
+        var sawGrantAtApproval = false
         var settled: Bool?
+    }
+
+    func testApprovalReceiptRequiresExactInvocationExecutionChatAndTool() {
+        let receipts = ApprovalReceiptBook()
+        receipts.record(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run")
+
+        // Different invocation, different executionChat, or different tool must NOT consume the receipt.
+        XCTAssertFalse(receipts.consume(invocation: "inv-2", executionChat: "bot-helper", tool: "ssh_run"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-requester", tool: "ssh_run"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "shell"))
+        XCTAssertFalse(receipts.consume(invocation: "", executionChat: "bot-helper", tool: "ssh_run"))
+
+        // Exact match succeeds exactly once.
+        XCTAssertTrue(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run"))
+        XCTAssertFalse(receipts.consume(invocation: "inv-1", executionChat: "bot-helper", tool: "ssh_run"))
+
+        // Revoking an invocation or clearing an executionChat invalidates immediately without touching other chats.
+        receipts.record(invocation: "inv-a", executionChat: "bot-helper", tool: "ssh_run")
+        receipts.record(invocation: "inv-b", executionChat: "bot-other", tool: "ssh_run")
+        receipts.revoke(invocation: "inv-a")
+        XCTAssertFalse(receipts.consume(invocation: "inv-a", executionChat: "bot-helper", tool: "ssh_run"))
+        receipts.clear(executionChat: "bot-helper")
+        XCTAssertTrue(receipts.consume(invocation: "inv-b", executionChat: "bot-other", tool: "ssh_run"))
+    }
+
+    func testDelegatedHelperApprovalBindsToInvocationWithoutDoublePromptOrRequesterLeak() async throws {
+        let helperRuns = LockedBox(0)
+        let requesterRuns = LockedBox(0)
+        let helperReconfirms = LockedBox(0)
+        let requesterReconfirms = LockedBox(0)
+        let approvalLog = LockedBox<[(displayChat: String, executionChat: String, tool: String, invocation: String)]>([])
+        let receipts = ApprovalReceiptBook()
+        let queue = PendingApprovalQueue()
+
+        let helperTool = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: helperRuns),
+            executionChat: "bot-helper",
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            access: { .ask(title: "用SSH") },
+            reconfirm: { _, _ in
+                helperReconfirms.mutate { $0 += 1 }
+                return false
+            }
+        )
+
+        let requesterTool = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: requesterRuns),
+            executionChat: "bot-requester",
+            receipts: receipts,
+            policyRevision: { queue.currentRevision },
+            access: { .ask(title: "用SSH") },
+            reconfirm: { _, _ in
+                requesterReconfirms.mutate { $0 += 1 }
+                return false
+            }
+        )
+
+        // Helper makes TWO separate `ssh_run` tool calls in one delegated run.
+        let provider = ScriptedProvider([
+            [
+                .toolCallStart(index: 0, id: "call_same_id", name: "ssh_run"),
+                .toolCallArguments(index: 0, delta: #"{"command":"uname -a"}"#),
+                .finish(reason: "tool_calls"),
+            ],
+            [
+                .toolCallStart(index: 0, id: "call_same_id", name: "ssh_run"),
+                .toolCallArguments(index: 0, delta: #"{"command":"df -h"}"#),
+                .finish(reason: "tool_calls"),
+            ],
+            [
+                .text("done"),
+                .finish(reason: "stop"),
+            ],
+        ])
+
+        // Mimic `TeamModel.delegate`: approvals display in `bot-requester`, execution context is `bot-helper`.
+        // User approves ONLY the 1st call (single-shot) and rejects the 2nd call.
+        let agent = Agent(
+            provider: provider,
+            model: "mock",
+            system: "",
+            tools: [helperTool],
+            approve: { _, tool in
+                let invocation = ToolInvocation.currentID ?? ""
+                let count = approvalLog.mutate { list -> Int in
+                    list.append((displayChat: "bot-requester", executionChat: "bot-helper", tool: tool, invocation: invocation))
+                    return list.count
+                }
+                if count == 1 {
+                    receipts.record(invocation: invocation, executionChat: "bot-helper", tool: tool)
+                    return true
+                }
+                return false
+            }
+        )
+
+        try await agent.run(history: [.user("检查一下 VPS")]) { _ in }
+
+        let prompts = approvalLog.get()
+        XCTAssertEqual(prompts.count, 2, "each delegated tool call asks once; 1st call must not double-prompt and 2nd call must not inherit 1st approval")
+        XCTAssertEqual(prompts[0].displayChat, "bot-requester")
+        XCTAssertEqual(prompts[0].executionChat, "bot-helper")
+        XCTAssertFalse(prompts[0].invocation.isEmpty)
+        XCTAssertNotEqual(prompts[0].invocation, prompts[1].invocation, "even identical model tool_call ids must get distinct invocation IDs")
+        XCTAssertEqual(helperReconfirms.get(), 0, "single-shot approval for delegated helper must NOT trigger a second prompt in LiveGatedTool.run")
+        XCTAssertEqual(helperRuns.get(), 1, "only the approved 1st call executes")
+
+        // Requester's own `ssh_run` call afterwards must still prompt (cannot inherit anything from the delegated turn).
+        let reqResult = try await requesterTool.run(["command": "uptime"])
+        XCTAssertTrue(reqResult.isError)
+        XCTAssertEqual(requesterReconfirms.get(), 1)
+        XCTAssertEqual(requesterRuns.get(), 0)
+    }
+
+    func testCancelledInvocationRevokesReceiptAndDoesNotLeakToLaterCall() async throws {
+        let runs = LockedBox(0)
+        let reconfirms = LockedBox(0)
+        let receipts = ApprovalReceiptBook()
+
+        let gated = LiveGatedTool(
+            inner: CountingTool("ssh_run", runs: runs),
+            executionChat: "bot-helper",
+            receipts: receipts,
+            access: { .ask(title: "用SSH") },
+            reconfirm: { _, _ in
+                reconfirms.mutate { $0 += 1 }
+                return false
+            }
+        )
+
+        // Simulate Call 1 receiving explicit user approval and then being cancelled before `tool.run` runs.
+        receipts.record(invocation: "inv-cancelled-1", executionChat: "bot-helper", tool: "ssh_run")
+        receipts.revoke(invocation: "inv-cancelled-1")
+
+        // Even if the same invocation ID somehow reached run, the revoked receipt is gone.
+        let blockedSameID = try await ToolInvocation.$currentID.withValue("inv-cancelled-1") {
+            try await gated.run(["command": "uname -a"])
+        }
+        XCTAssertTrue(blockedSameID.isError)
+        XCTAssertEqual(reconfirms.get(), 1)
+        XCTAssertEqual(runs.get(), 0)
+
+        // Even without explicit revoke, a later invocation with a different ID (or in requester chat) cannot consume it.
+        receipts.record(invocation: "inv-unconsumed-helper", executionChat: "bot-helper", tool: "ssh_run")
+        let blockedNextCall = try await ToolInvocation.$currentID.withValue("inv-next-2") {
+            try await gated.run(["command": "uname -a"])
+        }
+        XCTAssertTrue(blockedNextCall.isError)
+        XCTAssertEqual(reconfirms.get(), 2)
+        XCTAssertEqual(runs.get(), 0)
+    }
+
+    func testTaintGuardDelegatedOptInUsesDisplayChatKey() {
+        let inside: @Sendable (String) -> Bool = { WorkspacePath.isInside($0, root: "/root/desk") }
+        let book = TaintBook()
+        book.mark("bot-helper")
+
+        let helperSSH = TaintGuard(
+            Quiet("ssh_run"),
+            key: "bot-helper",
+            optInKey: "bot-requester",
+            book: book,
+            isInside: inside
+        )
+        let helperMail = TaintGuard(
+            Quiet("gmail_send"),
+            key: "bot-helper",
+            optInKey: "bot-requester",
+            book: book,
+            isInside: inside
+        )
+
+        // Helper's own standalone opt-in must NOT relax a delegated run for requester.
+        book.allowThrough("bot-helper")
+        XCTAssertEqual(helperSSH.approval(for: ["command": "uname -a"])?.forced, true)
+
+        // Requester conversation opt-in relaxes helper's SSH during this delegated run, but never hard exits.
+        book.allowThrough("bot-requester")
+        XCTAssertNil(helperSSH.approval(for: ["command": "uname -a"]))
+        XCTAssertEqual(helperMail.approval(for: [:])?.forced, true)
     }
 
     func testLiveGatedToolTightenAllowToAskReconfirmsBeforeExecution() async throws {
@@ -1573,13 +1776,13 @@ final class PermissionGateTests: XCTestCase {
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            chat: "chat-1",
+            executionChat: "chat-1",
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, name in
                 reconfirms.mutate { $0 += 1 }
                 if allowReconfirm.get() {
-                    receipts.record(chat: "chat-1", tool: name)
+                    receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
                     return true
                 }
                 return false
@@ -1623,13 +1826,13 @@ final class PermissionGateTests: XCTestCase {
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            chat: "chat-1",
+            executionChat: "chat-1",
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, name in
                 reconfirms.mutate { $0 += 1 }
                 if allowReconfirm.get() {
-                    receipts.record(chat: "chat-1", tool: name)
+                    receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
                     return true
                 }
                 return false
@@ -1675,7 +1878,7 @@ final class PermissionGateTests: XCTestCase {
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            chat: "chat-1",
+            executionChat: "chat-1",
             receipts: receipts,
             access: { access.get() },
             reconfirm: { _, _ in
@@ -1686,17 +1889,21 @@ final class PermissionGateTests: XCTestCase {
 
         XCTAssertNotNil(gated.approval(for: ["command": "uname -a"]))
 
-        // Explicit user approval recorded by `TeamModel.ask` lets this single call run without reconfirm.
-        receipts.record(chat: "chat-1", tool: "ssh_run")
-        let ok = try await gated.run(["command": "uname -a"])
+        // Explicit user approval bound to this exact invocation lets this single call run without reconfirm.
+        let ok = try await ToolInvocation.$currentID.withValue("inv-explicit-1") {
+            receipts.record(invocation: "inv-explicit-1", executionChat: "chat-1", tool: "ssh_run")
+            return try await gated.run(["command": "uname -a"])
+        }
         XCTAssertFalse(ok.isError)
         XCTAssertEqual(reconfirms.get(), 0)
         XCTAssertEqual(runs.get(), 1)
 
         // Turning `.off` after approval still blocks execution before inner.run.
-        receipts.record(chat: "chat-1", tool: "ssh_run")
-        access.set(.off("权限已关"))
-        let blocked = try await gated.run(["command": "uname -a"])
+        let blocked = try await ToolInvocation.$currentID.withValue("inv-explicit-2") {
+            receipts.record(invocation: "inv-explicit-2", executionChat: "chat-1", tool: "ssh_run")
+            access.set(.off("权限已关"))
+            return try await gated.run(["command": "uname -a"])
+        }
         XCTAssertTrue(blocked.isError)
         XCTAssertEqual(blocked.text, "权限已关")
         XCTAssertEqual(runs.get(), 1)
@@ -1711,7 +1918,7 @@ final class PermissionGateTests: XCTestCase {
 
         let gated = LiveGatedTool(
             inner: CountingTool("ssh_run", runs: runs),
-            chat: "chat-1",
+            executionChat: "chat-1",
             receipts: receipts,
             policyRevision: { queue.currentRevision },
             access: { access.get() },
@@ -1726,8 +1933,8 @@ final class PermissionGateTests: XCTestCase {
                     queue.bumpRevision()
                     return true
                 }
-                // Second pass: explicit user tap approves it.
-                receipts.record(chat: "chat-1", tool: name)
+                // Second pass: explicit user tap approves it for this invocation.
+                receipts.record(invocation: ToolInvocation.currentID ?? "", executionChat: "chat-1", tool: name)
                 return true
             }
         )
@@ -1736,6 +1943,104 @@ final class PermissionGateTests: XCTestCase {
         XCTAssertFalse(out.isError)
         XCTAssertEqual(reconfirms.get(), 2, "revision bump during policy reconfirm must re-verify before executing")
         XCTAssertEqual(runs.get(), 1)
+    }
+
+    @MainActor
+    func testStaleOrSettledApprovalDoesNotCommitStandingGrants() async {
+        // Case 1: Settled by mid-turn settings change (`reconcile`) -> stale UI callback must NOT commit grants.
+        do {
+            let queue = PendingApprovalQueue()
+            let state = QueueHarness()
+            let id = "approval-settled-by-policy"
+
+            let task = Task { @MainActor in
+                await queue.awaitDecision(
+                    id: id,
+                    evaluate: { state.decision },
+                    onEnqueue: { state.enqueues += 1 },
+                    onLeave: { state.leaves += 1 }
+                )
+            }
+
+            for _ in 0..<20 where !queue.isWaiting(id) {
+                await Task.yield()
+            }
+            XCTAssertTrue(queue.isWaiting(id))
+
+            state.decision = .allow
+            XCTAssertEqual(queue.reconcile(decisions: [id: .allow]), [id])
+            let result = await task.value
+            XCTAssertTrue(result)
+
+            // Late UI tap arrives with standing grant options enabled: must fail without running `beforeResume`.
+            let claimed = queue.resolveByUser(id: id, allow: true) {
+                state.grantCommits += 1
+            }
+            XCTAssertFalse(claimed)
+            XCTAssertEqual(state.grantCommits, 0, "stale approval already settled by policy must not mutate standing grants")
+        }
+
+        // Case 2: Turn stopped (`cancel`) -> stale UI callback must NOT commit grants.
+        do {
+            let queue = PendingApprovalQueue()
+            let state = QueueHarness()
+            let id = "approval-stopped"
+
+            let task = Task { @MainActor in
+                await queue.awaitDecision(
+                    id: id,
+                    evaluate: { state.decision },
+                    onEnqueue: { state.enqueues += 1 },
+                    onLeave: { state.leaves += 1 }
+                )
+            }
+
+            for _ in 0..<20 where !queue.isWaiting(id) {
+                await Task.yield()
+            }
+            XCTAssertTrue(queue.isWaiting(id))
+
+            XCTAssertTrue(queue.cancel(id: id))
+            let result = await task.value
+            XCTAssertFalse(result)
+
+            let claimed = queue.resolveByUser(id: id, allow: true) {
+                state.grantCommits += 1
+            }
+            XCTAssertFalse(claimed)
+            XCTAssertEqual(state.grantCommits, 0, "stopped/expired approval must not mutate standing grants")
+        }
+
+        // Case 3: Duplicate UI tap -> only the first atomic claim commits grants, and does so before waking waiter.
+        do {
+            let queue = PendingApprovalQueue()
+            let state = QueueHarness()
+            let id = "approval-double-tap"
+
+            let task = Task { @MainActor in
+                await queue.awaitDecision(
+                    id: id,
+                    evaluate: { state.decision },
+                    onEnqueue: { state.enqueues += 1 },
+                    onLeave: { state.leaves += 1 },
+                    onUserApproved: {
+                        state.sawGrantAtApproval = (state.grantCommits == 1)
+                    }
+                )
+            }
+
+            for _ in 0..<20 where !queue.isWaiting(id) {
+                await Task.yield()
+            }
+            XCTAssertTrue(queue.isWaiting(id))
+
+            XCTAssertTrue(queue.resolveByUser(id: id, allow: true) { state.grantCommits += 1 })
+            XCTAssertFalse(queue.resolveByUser(id: id, allow: true) { state.grantCommits += 1 })
+            let result = await task.value
+            XCTAssertTrue(result)
+            XCTAssertEqual(state.grantCommits, 1, "only the claiming tap may commit standing grants")
+            XCTAssertTrue(state.sawGrantAtApproval, "standing grants must be committed before waking the continuation")
+        }
     }
 
     @MainActor

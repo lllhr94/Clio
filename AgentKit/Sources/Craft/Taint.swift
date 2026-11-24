@@ -99,6 +99,7 @@ public final class TaintBook: @unchecked Sendable {
 public struct TaintGuard: AgentTool {
     public let inner: AgentTool
     let key: String
+    let optInKey: String
     let book: TaintBook
     let isInside: @Sendable (String) -> Bool
     let allowAfterWeb: @Sendable () -> Bool
@@ -106,12 +107,14 @@ public struct TaintGuard: AgentTool {
     public init(
         _ inner: AgentTool,
         key: String,
+        optInKey: String? = nil,
         book: TaintBook,
         isInside: @escaping @Sendable (String) -> Bool,
         allowAfterWeb: @escaping @Sendable () -> Bool = { false }
     ) {
         self.inner = inner
         self.key = key
+        self.optInKey = optInKey ?? key
         self.book = book
         self.isInside = isInside
         self.allowAfterWeb = allowAfterWeb
@@ -137,7 +140,7 @@ public struct TaintGuard: AgentTool {
               own != nil || Taint.needsSeal(tool: spec.name, arguments: arguments, isInside: isInside) else {
             return own
         }
-        if allowAfterWeb() || book.isAllowedThrough(key) {
+        if allowAfterWeb() || book.isAllowedThrough(optInKey) {
             return own
         }
         var ask = own ?? ApprovalAsk(title: "这一步要你点头", reason: inner.label(for: arguments))

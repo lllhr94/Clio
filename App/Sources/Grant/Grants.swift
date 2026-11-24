@@ -287,7 +287,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     static func gate(
         _ tools: [AgentTool],
         workspace: [String: Grant] = [:],
-        chat: String = "",
+        executionChat: String = "",
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
@@ -301,7 +301,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             if grant.policy == .off { return nil }
             return LiveGatedTool(
                 inner: tool,
-                chat: chat,
+                executionChat: executionChat,
                 receipts: receipts,
                 policyRevision: policyRevision,
                 access: { grant.liveAccess(for: name) },

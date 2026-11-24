@@ -38,6 +38,8 @@ struct Approval: Identifiable, Equatable {
     var botId: String?
     var roomId: String?
     var chat: String?
+    /// Execution conversation that owns workspace grants & single-shot approval receipts (differs from display `chat` during delegation).
+    var executionChat: String? = nil
     var tool: String?
     /// The tool's own name, for 「以后都允许」.
     var toolName: String?
@@ -48,6 +50,8 @@ struct Approval: Identifiable, Equatable {
     var answerable: Bool?
     /// Asked because the turn read the web: no standing permission covers it.
     var forced: Bool?
+
+    var authChat: String? { executionChat ?? chat }
 }
 
 /// What a chat hears while its Bot works.
@@ -1082,10 +1086,14 @@ final class TeamModel: ObservableObject {
     func stop(_ key: String, keepSendNow: Bool = false) {
         if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
+        var executionChats: Set<String> = [key]
         for approval in approvals where approval.chat == key {
-            approvalQueue.resolveByUser(id: approval.id, allow: false)
+            if let authChat = approval.authChat { executionChats.insert(authChat) }
+            approvalQueue.cancel(id: approval.id)
         }
-        approvalReceipts.clear(chat: key)
+        for execChat in executionChats {
+            approvalReceipts.clear(executionChat: execChat)
+        }
         withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
         if runs[key] != nil { browser.cancelHandoff(for: key) }
         runs[key]?.task.cancel()
@@ -1097,7 +1105,7 @@ final class TeamModel: ObservableObject {
         stop(key)
         let token = UUID()
         taint.clear(key)
-        approvalReceipts.clear(chat: key)
+        approvalReceipts.clear(executionChat: key)
         SiteBook.shared.clear(key)
         streamed[key] = nil
         pulseSplitters[key] = nil
@@ -1866,8 +1874,9 @@ final class TeamModel: ObservableObject {
         return parts.joined(separator: "\n\n")
     }
 
-    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false) -> [AgentTool] {
+    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false, displayChat: String? = nil) -> [AgentTool] {
         let botId = bot.id
+        let approvalChat = displayChat ?? key
         var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
@@ -1925,6 +1934,7 @@ final class TeamModel: ObservableObject {
             TaintGuard(
                 $0,
                 key: key,
+                optInKey: approvalChat,
                 book: taintBook,
                 isInside: { host.isInside($0) },
                 allowAfterWeb: { Grant.followPolicyAfterWeb }
@@ -1933,10 +1943,10 @@ final class TeamModel: ObservableObject {
         return Grant.gate(
             guarded,
             workspace: grants,
-            chat: key,
+            executionChat: key,
             receipts: receipts,
             policyRevision: { queue.currentRevision },
-            reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key) ?? false }
+            reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key) ?? false }
         ).filter { tool in
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
@@ -1970,6 +1980,7 @@ final class TeamModel: ObservableObject {
         if taint.isTainted(key) { taint.mark(helperKey) }
         helping.insert(helperKey)
         defer {
+            approvalReceipts.clear(executionChat: helperKey)
             helping.remove(helperKey)
             flushQueue(helperKey)
         }
@@ -1983,8 +1994,8 @@ final class TeamModel: ObservableObject {
             provider: recordingProvider(found.endpoint.provider(key: apiKey), chat: helperKey, base: basePrompt, extra: extraPrompt, memory: true),
             model: found.model,
             system: basePrompt + extraPrompt,
-            tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true) : [],
-            approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key) ?? false }
+            tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true, displayChat: key) : [],
+            approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key, executionChat: helperKey) ?? false }
         )
         agent.screen = Self.screen
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
@@ -2067,7 +2078,7 @@ final class TeamModel: ObservableObject {
 
     func pendingDecision(for approval: Approval) -> PendingApprovalDecision {
         guard let tool = approval.toolName else { return .wait }
-        let grant = effectiveGrant(for: tool, in: approval.chat)
+        let grant = effectiveGrant(for: tool, in: approval.authChat)
         if grant?.policy == .off { return .reject }
         if approval.forced == true {
             let isWebOnly = approval.detail?.text?.hasPrefix(Taint.reason) == true && !Taint.hardExits.contains(tool)
@@ -2101,49 +2112,63 @@ final class TeamModel: ObservableObject {
         return .wait
     }
 
-    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String) async -> Bool {
+    func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String, executionChat: String? = nil) async -> Bool {
         let id = UUID().uuidString
+        let authChat = executionChat ?? chat
+        let invocationID = ToolInvocation.currentID ?? ""
         let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
         let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
+            executionChat: executionChat,
             tool: ask.title, toolName: tool, reason: ask.reason, detail: detail,
             at: Now.ms, answerable: true, forced: ask.forced
         )
         let before = doing[chat]
         var announced = false
-        let allowed = await approvalQueue.awaitDecision(
-            id: id,
-            evaluate: { self.pendingDecision(for: approval) },
-            onEnqueue: {
-                self.doing[chat] = "等你批准"
-                BackgroundTurn.step(chat: chat, doing: "等你批准")
-                if !announced {
-                    self.record(.waiting, in: chat)
-                    announced = true
+        let queue = approvalQueue
+        let receipts = approvalReceipts
+        let allowed = await withTaskCancellationHandler {
+            await queue.awaitDecision(
+                id: id,
+                evaluate: { self.pendingDecision(for: approval) },
+                onEnqueue: {
+                    self.doing[chat] = "等你批准"
+                    BackgroundTurn.step(chat: chat, doing: "等你批准")
+                    if !announced {
+                        self.record(.waiting, in: chat)
+                        announced = true
+                    }
+                    if !self.approvals.contains(where: { $0.id == id }) {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { self.approvals.append(approval) }
+                    }
+                    WidgetFeed.publish(self)
+                    PetNews.shared.post(.approval, chat: chat, title: self.chatName(chat))
+                    Haptics.tick(0.8)
+                    if UIApplication.shared.applicationState != .active {
+                        Notify.approval(approval, from: self.bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
+                    }
+                },
+                onLeave: {
+                    Notify.clear(id)
+                    self.approvals.removeAll { $0.id == id }
+                    WidgetFeed.publish(self)
+                },
+                onUserApproved: {
+                    guard !Task.isCancelled else { return }
+                    receipts.record(invocation: invocationID, executionChat: authChat, tool: tool)
                 }
-                if !self.approvals.contains(where: { $0.id == id }) {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { self.approvals.append(approval) }
-                }
-                WidgetFeed.publish(self)
-                PetNews.shared.post(.approval, chat: chat, title: self.chatName(chat))
-                Haptics.tick(0.8)
-                if UIApplication.shared.applicationState != .active {
-                    Notify.approval(approval, from: self.bots.first { $0.id == bot }?.name ?? L.t("nav.assistant"))
-                }
-            },
-            onLeave: {
-                Notify.clear(id)
-                self.approvals.removeAll { $0.id == id }
-                WidgetFeed.publish(self)
-            },
-            onUserApproved: {
-                self.approvalReceipts.record(chat: chat, tool: tool)
-            }
-        )
+            )
+        } onCancel: {
+            queue.cancel(id: id)
+            receipts.revoke(invocation: invocationID)
+        }
+        if Task.isCancelled {
+            receipts.revoke(invocation: invocationID)
+        }
         if doing[chat] == "等你批准" { doing[chat] = before }
         WidgetFeed.publish(self)
-        return allowed
+        return Task.isCancelled ? false : allowed
     }
 
     /// Synchronously reconciles waiting approvals against live permission state with a bumped policy revision.
@@ -2177,33 +2202,55 @@ final class TeamModel: ObservableObject {
     }
 
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
+    /// Standing permission side effects are committed ONLY after atomically claiming an active pending approval.
     func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false, throughWeb: Bool = false) async throws {
         // A step that must be asked every time can be allowed once, never for good.
         let lasting = approval.forced != true
-        if allow, always, lasting, let name = approval.toolName { allowAlways(name) }
-        if allow, trustChat, lasting, let chat = approval.chat { trust(chat, true) }
-        var grantedThroughWeb = false
-        if allow, throughWeb, let chat = approval.chat, let tool = approval.toolName,
-           approval.detail?.text?.hasPrefix(Taint.reason) == true,
-           !Taint.hardExits.contains(tool) {
-            taint.allowThrough(chat)
-            trust(chat, true)
-            grantedThroughWeb = true
+        let commitGrants: () -> Bool = {
+            guard allow else { return false }
+            if let tool = approval.toolName,
+               self.effectiveGrant(for: tool, in: approval.authChat)?.policy == .off {
+                return false
+            }
+            var changed = false
+            if always, lasting, let name = approval.toolName {
+                self.allowAlways(name)
+                changed = true
+            }
+            if trustChat, lasting, let chat = approval.chat {
+                self.trust(chat, true)
+                changed = true
+            }
+            if throughWeb, let chat = approval.chat, let tool = approval.toolName,
+               approval.detail?.text?.hasPrefix(Taint.reason) == true,
+               !Taint.hardExits.contains(tool) {
+                self.taint.allowThrough(chat)
+                self.trust(chat, true)
+                changed = true
+            }
+            return changed
         }
         if phase == .demo {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard approvals.contains(where: { $0.id == approval.id }) else {
+                throw TeamError(message: "这张单子已经不在了。")
+            }
+            _ = commitGrants()
             approvals.removeAll { $0.id == approval.id }
             WidgetFeed.publish(self)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             return
         }
         Notify.clear(approval.id)
-        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: allow)
+        var grantsChanged = false
+        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: allow) {
+            grantsChanged = commitGrants()
+        }
         approvals.removeAll { $0.id == approval.id }
         WidgetFeed.publish(self)
         guard resolved else {
             throw TeamError(message: "这张单子已经不在了。")
         }
-        if allow, (lasting && (always || trustChat)) || grantedThroughWeb {
+        if grantsChanged {
             reconcilePendingApprovals()
         }
     }

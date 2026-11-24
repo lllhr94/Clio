@@ -29,48 +29,61 @@ public enum PendingApprovalResolution: Equatable, Sendable {
     case rejectedByPolicy(revision: UInt64)
 }
 
-/// Records explicit one-shot user approvals so `LiveGatedTool.run` can distinguish an explicit tap
-/// from a policy-based bypass if the policy tightens back to `.ask` right before execution starts.
+/// Records explicit one-shot user approvals bound to one exact tool invocation and execution context
+/// so `LiveGatedTool.run` never double-prompts a delegated helper and never leaks an approval to another call or chat.
 public final class ApprovalReceiptBook: @unchecked Sendable {
+    private struct Entry {
+        let executionChat: String
+        let tool: String
+    }
+
     private let lock = NSLock()
-    private var counts: [String: Int] = [:]
+    private var entries: [String: Entry] = [:]
 
     public init() {}
 
-    public func record(chat: String, tool: String) {
-        let key = "\(chat)\u{0}\(tool)"
+    public func record(invocation: String, executionChat: String, tool: String) {
+        guard !invocation.isEmpty else { return }
         lock.lock()
-        counts[key, default: 0] += 1
+        entries[invocation] = Entry(executionChat: executionChat, tool: tool)
         lock.unlock()
     }
 
-    public func consume(chat: String, tool: String) -> Bool {
-        let key = "\(chat)\u{0}\(tool)"
+    public func consume(invocation: String, executionChat: String, tool: String) -> Bool {
+        guard !invocation.isEmpty else { return false }
         lock.lock()
         defer { lock.unlock() }
-        guard let count = counts[key], count > 0 else { return false }
-        if count == 1 {
-            counts.removeValue(forKey: key)
-        } else {
-            counts[key] = count - 1
+        guard let entry = entries[invocation],
+              entry.executionChat == executionChat,
+              entry.tool == tool else {
+            return false
         }
+        entries.removeValue(forKey: invocation)
         return true
     }
 
-    public func clear(chat: String) {
-        let prefix = "\(chat)\u{0}"
+    public func revoke(invocation: String) {
+        guard !invocation.isEmpty else { return }
         lock.lock()
-        counts = counts.filter { !$0.key.hasPrefix(prefix) }
+        entries.removeValue(forKey: invocation)
+        lock.unlock()
+    }
+
+    public func clear(executionChat: String) {
+        lock.lock()
+        entries = entries.filter { $0.value.executionChat != executionChat }
         lock.unlock()
     }
 }
 
 /// Coordinates pending approval continuations synchronously with policy revisions so rapid permission toggles
-/// (e.g. allow -> ask, or off -> ask/allow) never commit a stale decision.
+/// (e.g. allow -> ask, or off -> ask/allow) never commit a stale decision, and expired approvals never commit grants.
 public final class PendingApprovalQueue: @unchecked Sendable {
     private let lock = NSLock()
     private var revision: UInt64 = 0
     private var waiters: [String: CheckedContinuation<PendingApprovalResolution, Never>] = [:]
+    private var activeIDs: Set<String> = []
+    private var cancelledIDs: Set<String> = []
 
     public init() {}
 
@@ -91,20 +104,56 @@ public final class PendingApprovalQueue: @unchecked Sendable {
         return waiters[id] != nil
     }
 
-    private func register(_ id: String, continuation: CheckedContinuation<PendingApprovalResolution, Never>) {
+    private func beginWait(_ id: String) {
         lock.lock()
+        activeIDs.insert(id)
+        lock.unlock()
+    }
+
+    private func endWait(_ id: String) {
+        lock.lock()
+        activeIDs.remove(id)
+        cancelledIDs.remove(id)
+        lock.unlock()
+    }
+
+    private func register(_ id: String, continuation: CheckedContinuation<PendingApprovalResolution, Never>, cancelled: Bool) {
+        lock.lock()
+        if cancelled || cancelledIDs.remove(id) != nil {
+            lock.unlock()
+            continuation.resume(returning: .rejectedByUser)
+            return
+        }
         waiters[id] = continuation
         lock.unlock()
     }
 
-    /// Resolves a waiting approval from an explicit user action or turn cancellation.
+    /// Cancels a waiting (or about-to-wait) approval without risking a missed cancellation race.
     @discardableResult
-    public func resolveByUser(id: String, allow: Bool) -> Bool {
+    public func cancel(id: String) -> Bool {
+        let waiter: CheckedContinuation<PendingApprovalResolution, Never>?
+        lock.lock()
+        waiter = waiters.removeValue(forKey: id)
+        if waiter == nil, activeIDs.contains(id) {
+            cancelledIDs.insert(id)
+        }
+        lock.unlock()
+        guard let waiter else { return false }
+        waiter.resume(returning: .rejectedByUser)
+        return true
+    }
+
+    /// Atomically claims a waiting approval for an explicit user decision.
+    /// `beforeResume` runs ONLY when the approval is still actively waiting (never for expired/settled IDs)
+    /// and completes before resuming the continuation so woken callers immediately observe updated grants.
+    @discardableResult
+    public func resolveByUser(id: String, allow: Bool, beforeResume: () -> Void = {}) -> Bool {
         let waiter: CheckedContinuation<PendingApprovalResolution, Never>?
         lock.lock()
         waiter = waiters.removeValue(forKey: id)
         lock.unlock()
         guard let waiter else { return false }
+        beforeResume()
         waiter.resume(returning: allow ? .approvedByUser : .rejectedByUser)
         return true
     }
@@ -146,6 +195,8 @@ public final class PendingApprovalQueue: @unchecked Sendable {
         onLeave: @MainActor () -> Void,
         onUserApproved: @MainActor () -> Void = {}
     ) async -> Bool {
+        beginWait(id)
+        defer { endWait(id) }
         while true {
             if Task.isCancelled { return false }
             switch evaluate() {
@@ -154,8 +205,9 @@ public final class PendingApprovalQueue: @unchecked Sendable {
             case .wait: break
             }
             onEnqueue()
+            let cancelled = Task.isCancelled
             let resolution = await withCheckedContinuation { (continuation: CheckedContinuation<PendingApprovalResolution, Never>) in
-                self.register(id, continuation: continuation)
+                self.register(id, continuation: continuation, cancelled: cancelled)
             }
             onLeave()
             if Task.isCancelled { return false }
@@ -183,7 +235,7 @@ public final class PendingApprovalQueue: @unchecked Sendable {
 /// and tightening `.allow -> .ask` or recovering `.off -> .ask/.allow` before execution is checked atomically.
 public struct LiveGatedTool: AgentTool {
     public let inner: AgentTool
-    let chat: String
+    let executionChat: String
     let receipts: ApprovalReceiptBook?
     let policyRevision: (@Sendable () -> UInt64)?
     let access: @Sendable () -> LiveToolAccess
@@ -191,14 +243,14 @@ public struct LiveGatedTool: AgentTool {
 
     public init(
         inner: AgentTool,
-        chat: String = "",
+        executionChat: String = "",
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
         access: @escaping @Sendable () -> LiveToolAccess,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
     ) {
         self.inner = inner
-        self.chat = chat
+        self.executionChat = executionChat
         self.receipts = receipts
         self.policyRevision = policyRevision
         self.access = access
@@ -213,17 +265,34 @@ public struct LiveGatedTool: AgentTool {
     }
 
     public func run(_ arguments: JSONValue) async throws -> ToolOutput {
-        let userApproved = receipts?.consume(chat: chat, tool: spec.name) ?? false
+        if let activeID = ToolInvocation.currentID {
+            return try await runBound(arguments, invocationID: activeID)
+        }
+        let fallbackID = UUID().uuidString
+        return try await ToolInvocation.$currentID.withValue(fallbackID) {
+            try await runBound(arguments, invocationID: fallbackID)
+        }
+    }
+
+    private func runBound(_ arguments: JSONValue, invocationID: String) async throws -> ToolOutput {
+        defer { receipts?.revoke(invocation: invocationID) }
+        let userApproved = receipts?.consume(invocation: invocationID, executionChat: executionChat, tool: spec.name) ?? false
         if userApproved {
+            if Task.isCancelled {
+                return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
+            }
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
             }
             return try await inner.run(arguments)
         }
-        // This call was not explicitly approved by the user on the approval slip/card.
+        // This invocation was not explicitly approved by the user on the approval slip/card.
         // Re-evaluate live permissions right before executing so tightening `.allow -> .ask`
         // or recovering `.off -> .ask` prompts instead of running silently.
         while true {
+            if Task.isCancelled {
+                return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
+            }
             let current = access()
             if case .off(let refusal) = current {
                 return ToolOutput(refusal, isError: true)
@@ -238,7 +307,10 @@ public struct LiveGatedTool: AgentTool {
             guard await reconfirm(ask, spec.name) else {
                 return ToolOutput("用户没有同意这次操作，什么都没做。除非用户再次要求，不要重试。", isError: true)
             }
-            let reconfirmedByUser = receipts?.consume(chat: chat, tool: spec.name) ?? false
+            if Task.isCancelled {
+                return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
+            }
+            let reconfirmedByUser = receipts?.consume(invocation: invocationID, executionChat: executionChat, tool: spec.name) ?? false
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
             }
