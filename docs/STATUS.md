@@ -1,5 +1,23 @@
 # 现状与交接
 
+## 当前一览（11-25，Clio 0.36 Wave 1–2 + T_CACHE 集成检查点）
+
+- **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"`，`fc2f66c` 起，当前已合并 PR #67–#73）；**不动 `main` / `latest`**。
+- **CI 改进**：`0545787` 为 `.github/workflows/build.yml` 的 `AgentKit` 测试补充失败断言高亮输出（不再被 `tail -n 80` 遮盖前置套件错误）。
+- **已合入 PR（均过本地 4 项门禁、Codex 审查及 macOS CI 全绿）**：
+  - **Wave 1**
+    - `v36-1a-perf-fix`（PR #67，`239a9fa`，CI `45443323679`）：用户气泡改轻量 `glassBubble` + 1.5pt 编辑框、`Voice` 语音懒加载、`ProseView` 配置快照整合、正则预编译与 `fresh` 观测隔离。
+    - `v36-1b-memory-safety`（PR #68，`c93f37f`，CI `45449509297`）：`Entry.tainted/delegated` 隔离、SHA-256 撤回记忆哈希与轮内删除实时停发、`AssembledSystemPrompt` 前缀/动态尾切分、压缩与切走前记忆冲刷。
+    - `v36-t-mcp-image`（PR #69，`b09e4e1`，CI `45457682671`）：修好 `Hills.swift` 保留 MCP 图片到 `ToolOutput.images`，`Craft/MCPImage` 像素/体积预算控制及单轮上限，`canSee` 下沉到 `Hills.shared.tools(canSee:)`。
+  - **Wave 2 + `T_CACHE`**
+    - `v36-3-spike-uikit`（PR #70，`51d8776`，CI `45457589213`）：隔离 UIKit `ChatUIKitSpike` 原型（连点 5 下「养护 › 版本」或 Debug 下可见，含跨段选字「引用」、前文 20 条稳停与 `anchor Δ`、流式定稿零闪跳测量）。
+    - `v36-t-web-search`（PR #71，`51cf3d1`，CI `45459450988`）：修复 Bing/DDG 广告与追踪剥离、中文与非东亚多语种相关性打分、新增 HTTPS/局域网 SearXNG 与源站绑定密钥及有序回退、`speak()` 接 `NLLanguageRecognizer` 自动识别语种。
+    - `v36-t-cache`（PR #72，`50c562e`，CI `45460741559`）：`Endpoint.promptCache` 与设置页 Anthropic 缓存开关（`nil` 沿用旧版主机默认策略防旧中转报错）、`ModelRequest.systemCachePrefix` 同步原子实时前缀实现两段系统提示 `cache_control` 切分。
+    - `v36-2a-readonly-index`（PR #73，`9ca1f0a`，CI `45461880846`）：契约一可重建只读 SQLite3 + FTS5 索引 `clio-index.db`（schema v3、分槽版本、CJK 二元词与长消息分块去重、SQL 层 `MemoryAccessContext` 与 `leaf_tainted` 遮蔽、摘录前信匣脱敏、`search_history` 接 `Grant.memory`），不动任何 canonical JSON 写入。
+- **下一步**：打一次 `batch-0.36` 检查点试签包（`probe-batch-0.36`），并同步推进 Wave 3（`3a-state-split` 审查收口、`2b-memory-db`、`t-ask`）与 Wave 4。
+
+---
+
 **远程工作地点（PR #66）**：编辑或删除主机后，作废使用旧连接配置的待批准请求。已删除的远程工作地点提示重新选择，文件与命令执行都没有本地回退。引擎 `Agent.perform` 的单次授权作用域和 `Taint` 规则随本 PR 一并留待交接复核。
 
 **终端审批（PR #61，已进入 0.35 试签包）**：聊天底部可查看完整的可滚动说明。有完整命令或脚本的强制单可就地确认一次，其余强制单走大单。待真机核对长说明滚动、按钮热区和审批后正文位置。
