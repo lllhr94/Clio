@@ -38,23 +38,55 @@ extension ChatPage {
 
     var modelSpeaker: BotInfo { isRoom ? team.alwaysOnTurn(chat.key).bot ?? bot : bot }
 
-    @ViewBuilder
+    /// Strips routing prefixes (`auto/`, `anthropic/`) and trailing `-YYYYMMDD` stamps for the top-bar pill.
+    static func shortModelName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return raw }
+        var name = trimmed
+        if let slash = name.lastIndex(of: "/") {
+            let tail = String(name[name.index(after: slash)...])
+            if !tail.isEmpty { name = tail }
+        }
+        if name.count > 9 {
+            let suffix = name.suffix(9)
+            if suffix.first == "-", suffix.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) {
+                let base = String(name.dropLast(9))
+                if !base.isEmpty { name = base }
+            }
+        }
+        return name
+    }
+
+    var modelPillMaxWidth: CGFloat {
+        let width = chatViewport.width > 0 ? chatViewport.width : 390
+        let browser = team.browser.acting ? Ink.Bar.height + Ink.Space.xs : 0
+        return max(72, min(168, (width - 140 - browser) * 0.52))
+    }
+
     var modelMenu: some View {
+        modelMenu(compact: false)
+    }
+
+    @ViewBuilder
+    func modelMenu(compact: Bool) -> some View {
         let own = team.resolveActive(options.model) != nil ? options.model : nil
-        let name = team.current(chat.key, bot: modelSpeaker)?.model ?? L.t("settings.models")
+        let rawName = team.current(chat.key, bot: modelSpeaker)?.model ?? L.t("settings.models")
+        let labelName = compact ? Self.shortModelName(rawName) : rawName
         let offered = offeredThinking
         let level = offered.contains(options.thinking ?? .auto) ? (options.thinking ?? .auto) : .auto
         if isRoom && offered.count <= 1 {
             HStack(spacing: Ink.Space.xs) {
-                Text(name)
-                    .font(Ink.mono(Ink.Size.micro))
+                Text(labelName)
+                    .font(Ink.mono(Ink.Size.micro, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             .foregroundStyle(Ink.inkSoft)
-            .padding(.horizontal, Ink.Space.s)
-            .frame(minHeight: 44)
-            .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+            .padding(.leading, compact ? Ink.Space.m : Ink.Space.s)
+            .padding(.trailing, compact ? Ink.Space.s : Ink.Space.s)
+            .frame(minHeight: Ink.Bar.height)
+            .frame(maxWidth: compact ? modelPillMaxWidth : nil, alignment: .leading)
+            .accessibilityLabel("\(L.t("settings.models"))：\(rawName)")
         } else {
             Menu {
                 thinkingChoices
@@ -71,8 +103,8 @@ extension ChatPage {
                 }
             } label: {
                 HStack(spacing: Ink.Space.xs) {
-                    Text(name)
-                        .font(Ink.mono(Ink.Size.micro))
+                    Text(labelName)
+                        .font(Ink.mono(Ink.Size.micro, weight: .medium))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if level != .auto {
@@ -81,15 +113,19 @@ extension ChatPage {
                             .foregroundStyle(Ink.accent)
                     }
                     Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.inkFaint)
+                        .scaleEffect(0.82)
                 }
                 .foregroundStyle(Ink.inkSoft)
-                .padding(.horizontal, Ink.Space.s)
-                .frame(minHeight: 44)
+                .padding(.leading, compact ? Ink.Space.m : Ink.Space.s)
+                .padding(.trailing, compact ? Ink.Space.s : Ink.Space.s)
+                .frame(minHeight: Ink.Bar.height)
+                .frame(maxWidth: compact ? modelPillMaxWidth : nil, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .menuOrder(.fixed)
-            .accessibilityLabel("\(L.t("settings.models"))：\(name)")
+            .accessibilityLabel("\(L.t("settings.models"))：\(rawName)")
             .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
         }
     }

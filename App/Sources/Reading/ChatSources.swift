@@ -28,23 +28,30 @@ struct SourcesRow: View {
             Haptics.light()
             listing = true
         } label: {
+            let iconSize = 16 * UIScale.factor
             HStack(spacing: Ink.Space.s) {
-                HStack(spacing: -7) {
-                    ForEach(Array(sites.prefix(4).enumerated()), id: \.offset) { index, url in
-                        BrandIcon(domain: Self.site(url), mark: String(Self.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 20)
+                HStack(spacing: -5) {
+                    ForEach(Array(sites.prefix(3).enumerated()), id: \.offset) { index, url in
+                        BrandIcon(domain: Self.site(url), mark: String(Self.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: iconSize)
+                            .saturation(0.82)
                             .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(Ink.paper, lineWidth: 1.5))
+                            .overlay(Circle().strokeBorder(Ink.paperRaised, lineWidth: 1.5))
                             .zIndex(Double(10 - index))
                     }
                 }
                 Text("\(urls.count) 个来源")
-                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .font(.system(size: Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                    .foregroundStyle(Ink.inkFaint)
+                    .scaleEffect(0.8)
             }
-            .padding(.leading, 6)
-            .padding(.trailing, 12)
-            .frame(height: 32)
-            .background(Ink.mine, in: .capsule)
+            .padding(.leading, 6 * UIScale.factor)
+            .padding(.trailing, 10 * UIScale.factor)
+            .frame(height: 28 * UIScale.factor)
+            .background(Ink.paperRaised, in: .capsule)
+            .overlay(Capsule().strokeBorder(Ink.rule.opacity(0.85), lineWidth: 0.5))
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("\(urls.count) 个来源，点开看")
