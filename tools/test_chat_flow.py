@@ -44,6 +44,9 @@ def fixture() -> str:
     schedule, sleeps = re.subn(r"\bTask\.sleep\(", "clock.sleep(", chat_member("followToEnd"))
     if sleeps != 1:
         raise SystemExit("ChatPage.followToEnd: update the clock fixture for the changed scheduling rules")
+    jump_settle, jump_sleeps = re.subn(r"\bTask\.sleep\(", "clock.sleep(", chat_member("scheduleJumpSettle"))
+    if jump_sleeps != 1:
+        raise SystemExit("ChatPage.scheduleJumpSettle: update the clock fixture for the changed scheduling rules")
     template = (ROOT / "tools/tests/ChatFlowFixture.swift").read_text()
     model = ROOT / "App/Sources/Chat.swift"
     grants = ROOT / "App/Sources/Grant/Grants.swift"
@@ -77,6 +80,8 @@ def fixture() -> str:
         "IS_INTENTIONAL_JUMP": chat_member("isIntentionalJump"),
         "PHASE": phase_body,
         "FOLLOW": schedule,
+        "SCHEDULE_JUMP_SETTLE": jump_settle,
+        "SHOW_HIT": chat_member("showHit"),
         "CLEAR_COMPOSER": chat_member("clearComposer"),
     }
     for label, source in fragments.items():

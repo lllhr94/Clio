@@ -125,6 +125,8 @@ extension ChatPage {
     func clearComposer() {
         pasteTask?.cancel()
         invalidatePhotoSelection()
+        settleJump?.cancel()
+        viewport.advanceNavigation()
         historyPage = nil
         draft = ""
         photos = []

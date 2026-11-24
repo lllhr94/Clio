@@ -340,11 +340,14 @@ extension ChatPage {
     }
 
     func scheduleJumpSettle(to id: String, source: String, delayMs: Int) {
+        let generation = viewport.navigationGeneration
         settleJump?.cancel()
         settleJump = Task { @MainActor in
             defer { if !Task.isCancelled { settleJump = nil } }
             do { try await Task.sleep(for: .milliseconds(delayMs)) } catch { return }
-            guard !Task.isCancelled, !touchScrolling, !following, historyPage == nil,
+            guard !Task.isCancelled,
+                  generation == viewport.navigationGeneration,
+                  !touchScrolling, !viewport.isTouching, !following, historyPage == nil,
                   selecting.isEmpty, !viewport.ids.contains(id) else { return }
             viewport.recordJump("\(source)落位")
             scroller?.scrollTo(id, anchor: .top)
@@ -443,6 +446,7 @@ extension ChatPage {
         followPending?.cancel()
         settleEnd?.cancel()
         settleJump?.cancel()
+        viewport.advanceNavigation()
         typing = false
         approving = approval
     }
@@ -464,6 +468,8 @@ extension ChatPage {
             if selecting.isEmpty { DiagTrail.record("开始选字") }
             selecting.insert(id)
             followPending?.cancel()
+            settleJump?.cancel()
+            viewport.advanceNavigation()
         } else if selecting.remove(id) != nil, selecting.isEmpty {
             DiagTrail.record("结束选字")
             if viewport.needsEndCorrection {
@@ -489,6 +495,8 @@ extension ChatPage {
 
     func toEnd(animated: Bool = false) {
         guard historyPage == nil, selecting.isEmpty, let scroller else { return }
+        settleJump?.cancel()
+        viewport.advanceNavigation()
         if animated {
             withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
         } else {

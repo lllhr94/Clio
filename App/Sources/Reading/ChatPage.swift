@@ -175,6 +175,8 @@ struct ChatPage: View {
                 .map { chat.lines.count - $0 } ?? oldCount
             shownCount = min(chat.lines.count, retained + 40)
             guard let anchor else { return }
+            settleJump?.cancel()
+            viewport.advanceNavigation()
             await Task.yield()
             guard !Task.isCancelled, historyPage == nil, selecting.isEmpty, !following else { return }
             viewport.recordJump("载入更早的消息")
@@ -428,6 +430,7 @@ struct ChatPage: View {
             .onScrollPhaseChange { old, phase, context in
                 viewport.scrollPhaseLabel = Self.phaseLabel(phase)
                 let moving = phase != .idle
+                viewport.isTouching = phase == .tracking || phase == .interacting || phase == .decelerating
                 touchScrolling = phase == .interacting || phase == .decelerating
                 chat.setBrowsingHistory(phase == .interacting || phase == .decelerating)
                 if moving != chrome.scrolling {
@@ -435,12 +438,15 @@ struct ChatPage: View {
                     stir()
                     Hitches.shared.doing(moving ? Words.t("滚动絮语") : nil, as: "scroll")
                 }
+                if phase == .tracking || phase == .interacting {
+                    settleJump?.cancel()
+                    viewport.advanceNavigation()
+                }
                 // Only the reader's own scrolling decides whether the page keeps to the newest line; arriving text never does.
                 if phase == .interacting {
                     following = false
                     followPending?.cancel()
                     settleEnd?.cancel()
-                    settleJump?.cancel()
                     jumpedTo = nil
                     hideJumps?.cancel()
                     if !chrome.jumpVisible {
@@ -501,6 +507,7 @@ struct ChatPage: View {
             || source.hasPrefix("点了上一句")
             || source.hasPrefix("点了下一句")
             || source == "点了搜索结果"
+            || source == "点了提纲"
             || source == "回到最新"
     }
 
@@ -996,10 +1003,16 @@ struct ChatPage: View {
         .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
             OutlineSheet(pairs: outlinePairs) { id in
                 outlining = false
+                settleJump?.cancel()
+                viewport.advanceNavigation()
+                let generation = viewport.navigationGeneration
                 reveal(id)
                 following = false
-                Task {
+                Task { @MainActor in
                     do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+                    guard !Task.isCancelled,
+                          generation == viewport.navigationGeneration,
+                          !viewport.isTouching, !touchScrolling else { return }
                     viewport.recordJump("点了提纲")
                     withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
                 }

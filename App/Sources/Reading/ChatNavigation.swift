@@ -16,11 +16,18 @@ final class ChatViewport {
     var ids: [String] = []
     var needsEndCorrection = false
     var touchScrolling = false
+    var isTouching = false
+    var navigationGeneration: UInt64 = 0
     var lastStirAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     var scrollPhaseLabel = "静止"
     private var jump: (source: String, at: TimeInterval)?
 
+    func advanceNavigation() {
+        navigationGeneration &+= 1
+    }
+
     func recordJump(_ source: String) {
+        navigationGeneration &+= 1
         jump = (source, ProcessInfo.processInfo.systemUptime)
         DiagTrail.record(source)
     }

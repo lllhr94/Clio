@@ -32,7 +32,29 @@ private enum Grant {
 }
 
 private struct Approval: Equatable {}
-private enum UnitPoint: Equatable { case bottom }
+private enum UnitPoint: Equatable { case top, center, bottom }
+
+private enum Ink {
+    enum Motion { static let settle = 0 }
+}
+
+@discardableResult
+private func withAnimation<Result>(_ animation: Int, _ body: () -> Result) -> Result {
+    _ = animation
+    return body()
+}
+
+private struct ScrollRequest: Equatable {
+    let id: String
+    let anchor: UnitPoint
+}
+
+private final class Scroller {
+    var requests: [ScrollRequest] = []
+    func scrollTo(_ id: String, anchor: UnitPoint) {
+        requests.append(ScrollRequest(id: id, anchor: anchor))
+    }
+}
 
 private struct Hitches {
     static let shared = Self()
@@ -191,17 +213,36 @@ private final class FlowFixture {
     }
 
     final class Viewport {
+        var ids: [String] = []
         var needsEndCorrection = true
+        var isTouching = false
+        var navigationGeneration: UInt64 = 0
         var scrollPhaseLabel = "静止"
+        var jumps: [String] = []
+
+        func advanceNavigation() {
+            navigationGeneration &+= 1
+        }
+
+        func recordJump(_ source: String) {
+            navigationGeneration &+= 1
+            jumps.append(source)
+        }
     }
 
+    var finding = false
+    var hits: [String] = []
+    var findAt = 0
+    var scroller: Scroller? = Scroller()
     func stir() {}
     func lingerJumpButtons() {}
     func invalidatePhotoSelection() {}
+    func reveal(_ id: String) {}
     private(set) var scrolls: [Bool] = []
     private(set) var followPending: Task<Void, Never>?
     private var settleEnd: Task<Void, Never>?
-    private var settleJump: Task<Void, Never>?
+    private(set) var settleJump: Task<Void, Never>?
+    private(set) var findScrollTask: Task<Void, Never>?
     let clock = Clock()
     private var alignment: CGFloat = 0
 
@@ -254,6 +295,8 @@ private final class FlowFixture {
 // RULE: PHASE_LABEL
 // RULE: IS_INTENTIONAL_JUMP
 // RULE: FOLLOW
+// RULE: SCHEDULE_JUMP_SETTLE
+// RULE: SHOW_HIT
 // RULE: CLEAR_COMPOSER
 }
 
@@ -323,11 +366,90 @@ private enum ChatFlowTests {
             try passiveReadingHasNoResizeAnchor()
             try inlineApprovalRouting()
             try traceStepStatusRules()
+            try await jumpSettlePreemption()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    @MainActor
+    static func jumpSettlePreemption() async throws {
+        let flow = FlowFixture()
+        flow.following = false
+
+        // 1. Off-screen jump settles once when nothing interrupts it.
+        flow.viewport.recordJump("小地图")
+        flow.scheduleJumpSettle(to: "msg-10", source: "小地图", delayMs: 120)
+        let normal = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(120_000_000)
+        await normal?.value
+        try check(flow.scroller?.requests, [ScrollRequest(id: "msg-10", anchor: .top)],
+                  "Off-screen target settles once when uninterrupted")
+        try check(flow.viewport.jumps.last, "小地图落位", "Settle records its landing jump")
+
+        // 2. An already-visible target does not trigger a redundant second scroll.
+        flow.scroller?.requests = []
+        flow.viewport.ids = ["msg-11"]
+        flow.viewport.recordJump("小地图")
+        flow.scheduleJumpSettle(to: "msg-11", source: "小地图", delayMs: 120)
+        let visible = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(120_000_000)
+        await visible?.value
+        try check(flow.scroller?.requests, [], "Visible target skips redundant settle")
+
+        // 3. Jumping to a search hit preempts a pending prev/next question settle.
+        flow.scroller?.requests = []
+        flow.viewport.ids = []
+        flow.viewport.recordJump("点了上一句")
+        flow.scheduleJumpSettle(to: "old-question", source: "点了上一句", delayMs: 380)
+        let stale = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        flow.finding = true
+        flow.hits = ["search-hit"]
+        flow.findAt = 0
+        flow.showHit(0)
+        try check(stale?.isCancelled, true, "Jumping to a search hit cancels pending jump settle")
+        await flow.findScrollTask?.value
+        try flow.clock.advance(380_000_000)
+        await stale?.value
+        try check(flow.scroller?.requests, [ScrollRequest(id: "search-hit", anchor: .center)],
+                  "Pending jump settle cannot pull the reader back from a search result")
+
+        // 4. Advancing navigation generation blocks an older settle even without direct cancellation.
+        flow.scroller?.requests = []
+        flow.viewport.recordJump("小地图")
+        flow.scheduleJumpSettle(to: "old-minimap", source: "小地图", delayMs: 120)
+        let outdated = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        flow.viewport.recordJump("点了提纲")
+        try flow.clock.advance(120_000_000)
+        await outdated?.value
+        try check(flow.scroller?.requests, [], "Newer navigation generation invalidates older settle")
+
+        // 5. Resting a finger on the scroll view (.tracking) preempts pending jump settle.
+        flow.scroller?.requests = []
+        flow.following = false
+        flow.viewport.recordJump("小地图")
+        flow.scheduleJumpSettle(to: "old-target", source: "小地图", delayMs: 120)
+        let touched = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        flow.changePhase(from: .idle, to: .tracking, at: 200)
+        try check(flow.viewport.isTouching, true, "Touching the scroll view records contact")
+        try check(touched?.isCancelled, true, "Resting a finger in .tracking cancels pending jump settle")
+        flow.changePhase(from: .tracking, to: .idle, at: 200)
+        try check(flow.viewport.isTouching, false, "Lifting the finger clears contact")
+        try flow.clock.advance(120_000_000)
+        await touched?.value
+        try check(flow.scroller?.requests, [], "A settle cancelled by .tracking never steals scroll")
+
+        // 6. Intentional jump classification includes outline and settle sources, not load-earlier.
+        try check(FlowFixture.isIntentionalJump("点了提纲"), true, "Outline jump is intentional")
+        try check(FlowFixture.isIntentionalJump("小地图落位"), true, "Minimap settle is intentional")
+        try check(FlowFixture.isIntentionalJump("载入更早的消息"), false, "Load-earlier anchor stays observable")
     }
 
     static func traceStepStatusRules() throws {
