@@ -465,7 +465,7 @@ public enum AskUserRules {
         var out = prompt
 
         var formReason: String?
-        if containsSecretURLCredential(prompt.site) {
+        if containsSecretURLCredential(normalizeForDetection(prompt.site)) {
             formReason = "secret_url"
         }
         if formReason == nil {
@@ -480,10 +480,10 @@ public enum AskUserRules {
 
         // Redact any embedded URL credentials in prompt metadata so Vault item metadata stays credential-free.
         out.site = redactURLCredentials(in: prompt.site)
-        if containsSecretURLCredential(prompt.title) {
+        if containsSecretURLCredential(normalizeForDetection(prompt.title)) {
             out.title = redactURLCredentials(in: prompt.title)
         }
-        if containsSecretURLCredential(prompt.reason) {
+        if containsSecretURLCredential(normalizeForDetection(prompt.reason)) {
             out.reason = redactURLCredentials(in: prompt.reason)
         }
 
@@ -1186,13 +1186,20 @@ public enum AskUserRules {
 
     private static func isExplicitHarmlessIdentityField(_ question: AskQuestion) -> Bool {
         guard question.kind == .text, !question.allowCustom else { return false }
-        let keyTokens = englishTokens(from: normalizeForDetection(question.key)).map(stripTrailingDigits)
+        let cleanKey = normalizeForDetection(question.key).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanKey.unicodeScalars.contains(where: { !$0.isASCII && CharacterSet.letters.contains($0) }) else {
+            return false
+        }
+        let keyTokens = englishTokens(from: cleanKey).map(stripTrailingDigits)
         guard !keyTokens.isEmpty, keyTokens.allSatisfy({ harmlessIdentityKeys.contains($0) }) else {
             return false
         }
         let cleanLabel = normalizeForDetection(question.label).trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanLabel.isEmpty { return true }
         if harmlessIdentityChineseLabels.contains(cleanLabel) { return true }
+        guard !cleanLabel.unicodeScalars.contains(where: { !$0.isASCII && CharacterSet.letters.contains($0) }) else {
+            return false
+        }
         let labelTokens = englishTokens(from: cleanLabel).map(stripTrailingDigits)
         if !labelTokens.isEmpty && labelTokens.allSatisfy({ harmlessIdentityKeys.contains($0) }) {
             return true
@@ -1258,9 +1265,8 @@ public enum AskUserRules {
             if let atIndex = authority.lastIndex(of: "@") {
                 let userinfo = authority[..<atIndex]
                 if let colonIndex = userinfo.firstIndex(of: ":") {
-                    let userPart = userinfo[..<colonIndex]
                     let passPart = userinfo[userinfo.index(after: colonIndex)...]
-                    if !userPart.isEmpty && !passPart.isEmpty {
+                    if !passPart.isEmpty {
                         return true
                     }
                 }

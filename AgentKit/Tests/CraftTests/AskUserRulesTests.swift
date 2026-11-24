@@ -281,6 +281,19 @@ final class AskUserRulesTests: XCTestCase {
         XCTAssertFalse(prompt3.questions[1].secret)
         XCTAssertTrue(prompt3.questions[2].secret)
         XCTAssertTrue(prompt3.questions[3].secret)
+
+        // Case 4: Mixed non-ASCII + ASCII label (e.g. "请填你的取款暗语 (user)") must NOT bypass via ASCII token "user".
+        let mixedLabelBypass: JSONValue = [
+            "title": "请填写你的登录密码",
+            "fields": [
+                ["key": "user", "label": "请填你的取款暗语 (user)", "secret": false],
+                ["key": "password", "label": "密码", "secret": false],
+            ],
+        ]
+        let prompt4 = try unwrapSuccess(AskUserRules.parse(mixedLabelBypass))
+        XCTAssertTrue(prompt4.requiresVault)
+        XCTAssertTrue(prompt4.questions[0].secret)
+        XCTAssertTrue(prompt4.questions[1].secret)
     }
 
     func testRedactURLCredentialsStripsUserinfoAndProtectsPromptMetadata() throws {
@@ -308,6 +321,20 @@ final class AskUserRulesTests: XCTestCase {
         XCTAssertFalse(AskUserRules.containsSecretURLCredential(prompt.title))
         XCTAssertEqual(prompt.site, "https://portal.example.com/login")
         XCTAssertEqual(prompt.title, "登录 https://portal.example.com")
+
+        // Empty-username URL credentials (`scheme://:password@host:port/path`) must also trigger secret_url and redact.
+        let emptyUserURL: JSONValue = [
+            "title": "连接 https://:hunter2@api.example.com:8443/v1",
+            "site": "https://:hunter2@api.example.com:8443/v1",
+            "fields": [["key": "note", "label": "说明"]],
+        ]
+        let prompt2 = try unwrapSuccess(AskUserRules.parse(emptyUserURL))
+        XCTAssertTrue(prompt2.requiresVault)
+        XCTAssertEqual(prompt2.secretReason, "secret_url")
+        XCTAssertFalse(AskUserRules.containsSecretURLCredential(prompt2.site))
+        XCTAssertFalse(AskUserRules.containsSecretURLCredential(prompt2.title))
+        XCTAssertEqual(prompt2.site, "https://api.example.com:8443/v1")
+        XCTAssertEqual(prompt2.title, "连接 https://api.example.com:8443/v1")
     }
 
     func testClosedPresetAuthChoicesStaySelectableUnlessCredentialPayload() throws {
