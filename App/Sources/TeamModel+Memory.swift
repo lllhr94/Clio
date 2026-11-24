@@ -604,6 +604,88 @@ extension TeamModel {
         return true
     }
 
+    private static let nightlyPromotionDayKey = "memory.nightlyPromotion.lastDay"
+
+    /// Evaluates `.pinned`, `.surface`, and `.deep` memory lifecycles once per tide day after nightly review,
+    /// promoting frequently/recently recalled `.deep` entries to `.surface` and demoting/archiving stale unpinned ones
+    /// strictly through `commitMemoryBook` / `MemoryStoreBridge`.
+    func applyNightlyPromotionIfNeeded(now: Date = Date(), force: Bool = false) {
+        guard phase == .ready, keeping, canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
+        guard Grant.memory.policy == .allow else { return }
+
+        let day = Tide.day(of: now)
+        if !force, UserDefaults.standard.string(forKey: Self.nightlyPromotionDayKey) == day {
+            return
+        }
+
+        let records = MemoryStoreBridge.shared.recordsSnapshot()
+        guard !records.isEmpty else {
+            UserDefaults.standard.set(day, forKey: Self.nightlyPromotionDayKey)
+            return
+        }
+
+        ensureRetractedFlushHashesLoaded()
+        let usageStats = MemoryRecallBridge.shared.usageStatsSnapshot()
+        let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let nowMs = now.timeIntervalSince1970 * 1000
+        let plan = MemoryPromotionPolicy.evaluate(
+            records: records,
+            usageStats: usageStats,
+            suppressedHashes: suppressed,
+            nowMs: nowMs,
+            config: MemoryPromotionPolicy.Config(surfaceLimit: Self.surfaceLimit)
+        )
+
+        if !plan.promoteToSurface.isEmpty || !plan.demoteToDeep.isEmpty || !plan.refreshedUsedAtMs.isEmpty {
+            let pinnedIDs = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+            let promoteSet = Set(plan.promoteToSurface)
+            let demoteSet = Set(plan.demoteToDeep)
+            var nextMemories = memories
+            var mutated = false
+
+            for index in nextMemories.indices {
+                let id = nextMemories[index].id
+                if let refreshedUsed = plan.refreshedUsedAtMs[id],
+                   refreshedUsed > (nextMemories[index].used ?? 0) {
+                    nextMemories[index].used = refreshedUsed
+                    mutated = true
+                }
+                if promoteSet.contains(id) {
+                    if nextMemories[index].deep == true {
+                        nextMemories[index].deep = nil
+                        mutated = true
+                    }
+                    let bumpedUsed = max(nextMemories[index].used ?? 0, plan.refreshedUsedAtMs[id] ?? nowMs)
+                    if (nextMemories[index].used ?? 0) < bumpedUsed {
+                        nextMemories[index].used = bumpedUsed
+                        mutated = true
+                    }
+                } else if demoteSet.contains(id), !pinnedIDs.contains(id) {
+                    if nextMemories[index].deep != true {
+                        nextMemories[index].deep = true
+                        mutated = true
+                    }
+                }
+            }
+
+            if mutated {
+                Self.settleMemory(&nextMemories, pinnedIDs: pinnedIDs)
+                var nextBook = memoryBook
+                nextBook.memories = nextMemories
+                guard (try? commitMemoryBook(nextBook)) != nil else { return }
+            }
+        }
+
+        for id in plan.archiveIDs {
+            guard canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
+            guard !isPinnedMemory(id) else { continue }
+            setMemoryLayer(id, .archived)
+        }
+
+        UserDefaults.standard.set(day, forKey: Self.nightlyPromotionDayKey)
+        MemoryRecallBridge.shared.scheduleSync()
+    }
+
     func removeReviewDetails(_ ids: Set<String>) {
         memoryBook.reviews = Self.removingReviewDetails(from: memoryBook.reviews, memoryIDs: ids)
         memoryReviews = memoryBook.reviews

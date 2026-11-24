@@ -22,7 +22,7 @@ extension Memory {
 /// synchronously pulls the latest memory-filtered system prompt under `NSLock`.
 struct LivePromptProvider: ModelProvider {
     let upstream: any ModelProvider
-    let refresher: MemorySafety.LivePromptRefresher
+    let refresher: MemoryRecallPromptRefresher
     let record: @Sendable (ModelInput) -> Void
 
     func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -90,10 +90,14 @@ extension TeamModel {
     }
 
     func syncLivePromptsFromMemories() {
-        guard !livePromptRefreshers.isEmpty else { return }
-        let facts = liveMemoryFacts()
-        for refresher in livePromptRefreshers.values {
-            refresher.refresh(memories: facts)
+        if !livePromptRefreshers.isEmpty {
+            let facts = liveMemoryFacts()
+            for refresher in livePromptRefreshers.values {
+                refresher.refresh(memories: facts)
+            }
+        }
+        if keeping && !Disk.frozen {
+            MemoryRecallBridge.shared.scheduleSync()
         }
     }
 
@@ -103,9 +107,10 @@ extension TeamModel {
         room: RoomInfo?,
         workplace: WorkPlace? = nil,
         memory: Bool = true,
+        recalledHints: [MemoryRecall.Hit] = [],
         extraTail: String? = nil,
         now: Date = Date()
-    ) -> (refresher: MemorySafety.LivePromptRefresher, token: UUID) {
+    ) -> (refresher: MemoryRecallPromptRefresher, token: UUID) {
         let input = systemPromptInput(
             for: bot,
             in: key,
@@ -115,7 +120,14 @@ extension TeamModel {
             extraTail: extraTail,
             now: now
         )
-        let refresher = MemorySafety.LivePromptRefresher(input: input, state: memoryPromptState)
+        let allowed = memory && Grant.memory.policy != .off && !Disk.frozen
+        let refresher = MemoryRecallPromptRefresher(
+            input: input,
+            state: memoryPromptState,
+            recalledHits: allowed ? recalledHints : [],
+            isRecallAllowed: { Grant.memory.policy != .off && !Disk.frozen },
+            activeSecrets: { Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } }
+        )
         let token = UUID()
         livePromptRefreshers[token] = refresher
         return (refresher, token)
