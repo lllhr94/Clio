@@ -2448,7 +2448,7 @@ extension TeamModel {
         let eligible = MemorySafety.filterExtractableEntries(list).filter {
             $0.at >= recent && Self.reviewDay($0) >= cutoff
         }
-        if let last = eligible.map(\.at).max(),
+        if let last = list.filter({ $0.note != true && $0.fold != true }).map(\.at).max(),
            now.timeIntervalSince1970 - last / 1000 < MemoryReviewRules.idle { return nil }
         let byDay = Dictionary(grouping: eligible, by: Self.reviewDay)
         for day in byDay.keys.sorted() {

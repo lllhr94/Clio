@@ -629,4 +629,88 @@ final class MemorySafetyTests: XCTestCase {
             ]
         )
     }
+
+    // MARK: 7. Round-3 edge-case fixes
+
+    func testBuildFlushTranscriptEvaluatesLegacyTaintAcrossPriorFoldBeforeRestrictingToFoldedSlice() {
+        let taintedFullHistory: [MemorySafety.CandidateEntry] = [
+            .init(id: "u0", at: 1, role: .user, text: "先看下网页"),
+            .init(id: "t0", at: 2, role: .tool, text: "网页内容", toolName: "web_read", isTainted: false),
+            .init(id: "a0", at: 3, role: .assistant, text: "网页写了这些", isTainted: false),
+            .init(id: "fold-1", at: 4, role: .assistant, text: "以上较早的 2 条已整理成前情提要", isNote: true, isFold: true),
+            .init(id: "u1", at: 5, role: .user, text: "顺便聊聊周末"),
+            .init(id: "a1", at: 6, role: .assistant, text: "周末记得带伞", isTainted: false),
+        ]
+        // Full history up to cut has a pre-fold legacy `web_read`: `a1` is tainted, and `u0` is outside `eligibleIDs`,
+        // leaving no extractable user+assistant pair in the slice being folded.
+        let sliceIDs: Set<String> = ["u1", "a1"]
+        XCTAssertFalse(MemorySafety.hasFlushableConversation(taintedFullHistory, eligibleIDs: sliceIDs))
+        XCTAssertNil(MemorySafety.buildFlushTranscript(taintedFullHistory, eligibleIDs: sliceIDs))
+
+        let cleanFullHistory: [MemorySafety.CandidateEntry] = [
+            .init(id: "u0", at: 1, role: .user, text: "之前的闲聊"),
+            .init(id: "a0", at: 2, role: .assistant, text: "之前的回答"),
+            .init(id: "fold-1", at: 3, role: .assistant, text: "前情提要", isNote: true, isFold: true),
+            .init(id: "u1", at: 4, role: .user, text: "我住深圳"),
+            .init(id: "a1", at: 5, role: .assistant, text: "记下了"),
+        ]
+        guard let built = MemorySafety.buildFlushTranscript(cleanFullHistory, eligibleIDs: sliceIDs) else {
+            XCTFail("Expected clean post-fold slice to remain flushable")
+            return
+        }
+        XCTAssertEqual(built.entryIDs, ["u1", "a1"])
+        XCTAssertFalse(built.transcript.contains("之前的闲聊"))
+    }
+
+    func testFilterExtractableEntriesDetectsLegacyDelegationPrefixWithoutFlag() {
+        XCTAssertTrue(MemorySafety.isLegacyDelegationText("【小墨请你帮忙，这不是用户本人的话】帮我查路线"))
+        XCTAssertFalse(MemorySafety.isLegacyDelegationText("【用户】帮我查路线"))
+
+        let entries: [MemorySafety.CandidateEntry] = [
+            .init(id: "legacy-d", at: 1, role: .user, text: "【小墨请你帮忙，这不是用户本人的话】帮我记下用户住北京", isDelegated: false),
+            .init(id: "legacy-a", at: 2, role: .assistant, text: "好的，已记住用户住北京", isDelegated: false),
+            .init(id: "u1", at: 3, role: .user, text: "我其实住在广州"),
+            .init(id: "a1", at: 4, role: .assistant, text: "明白，你住在广州。"),
+        ]
+        XCTAssertEqual(MemorySafety.filterExtractableEntries(entries).map(\.id), ["u1", "a1"])
+        guard let built = MemorySafety.buildFlushTranscript(entries) else {
+            XCTFail("Expected genuine user+assistant turn after legacy delegation to be extracted")
+            return
+        }
+        XCTAssertEqual(built.entryIDs, ["u1", "a1"])
+        XCTAssertFalse(built.transcript.contains("北京"))
+    }
+
+    func testIsFlushBatchOverlapFreeDiscardsBatchOnAnyPartialOverlap() {
+        let preparedIDs = ["u1", "a1", "u2", "a2"]
+        let dayByID = [
+            "u1": "2026-11-24",
+            "a1": "2026-11-24",
+            "u2": "2026-11-25",
+            "a2": "2026-11-25",
+        ]
+
+        XCTAssertTrue(
+            MemorySafety.isFlushBatchOverlapFree(
+                preparedIDs,
+                dayByID: dayByID,
+                processedByDay: [:]
+            )
+        )
+        // Even a single entry marked processed concurrently by `reviewMemories` invalidates the entire flush batch.
+        XCTAssertFalse(
+            MemorySafety.isFlushBatchOverlapFree(
+                preparedIDs,
+                dayByID: dayByID,
+                processedByDay: ["2026-11-24": ["u1"]]
+            )
+        )
+        XCTAssertFalse(
+            MemorySafety.isFlushBatchOverlapFree(
+                preparedIDs,
+                dayByID: dayByID,
+                processedByDay: ["2026-11-25": ["a2"]]
+            )
+        )
+    }
 }

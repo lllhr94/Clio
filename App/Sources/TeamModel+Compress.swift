@@ -129,19 +129,24 @@ extension TeamModel {
         // Only what the model will read is marked as folded: a part too long moves the cut earlier.
         let cut = Turns.fitCut(all, cut: firstCut, name: speaker, label: \.label)
         let foldedSlice = Array(all[..<cut])
-        let previousRecord = summaryRecord(key)
-        let digestTainted = (previousRecord?.tainted ?? false) || MemorySafety.entriesContainUntrustedSource(foldedSlice)
+        let firstKept = all[cut].id
+        let fullHistory = history(key)
+        let historyCut = fullHistory.firstIndex(where: { $0.id == firstKept }) ?? fullHistory.count
+        let historyUpToCut = Array(fullHistory[..<historyCut])
         await flushMemoriesBeforeCompress(
             key: key,
-            entries: foldedSlice,
+            historyUpToCut: historyUpToCut,
+            eligibleIDs: Set(foldedSlice.map(\.id)),
             bot: bot,
             startEpoch: startEpoch,
-            firstKeptID: all[cut].id
+            firstKeptID: firstKept
         )
         try Task.checkCancellation()
         guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
+        let baseSummaryRecord = summaryRecord(key)
+        let digestTainted = (baseSummaryRecord?.tainted ?? false) || MemorySafety.entriesContainUntrustedSource(foldedSlice)
         let (transcript, folded) = Turns.transcript(foldedSlice, name: speaker, label: \.label)
-        let earlier = summary(key).map { "更早之前的前情提要：\n\($0)\n\n" } ?? ""
+        let earlier = baseSummaryRecord.map { "更早之前的前情提要：\n\($0.text)\n\n" } ?? ""
         let prompt = """
         \(earlier)下面是用户和「\(bot.name)」之前的对话。请写一份前情提要，供之后接着聊时参考。
         要保留：用户说过的关于自己的事、偏好、做过的决定、约定和待办、没解决的问题、重要的数字、名字、地址和链接。
@@ -156,18 +161,20 @@ extension TeamModel {
 
         // Nothing is taken away: a line goes in before the first message kept word for word. The chat may have
         // moved on while the summary was written; a turn still running is left to finish first.
-        let firstKept = all[cut].id
         while runs[key] != nil {
             try await Task.sleep(nanoseconds: 500_000_000)
         }
         guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
+        guard summaryRecord(key) == baseSummaryRecord else {
+            throw TeamError(message: "整理的时候前情提要变了，下次再整理。")
+        }
         var current = history(key)
         guard let at = current.firstIndex(where: { $0.id == firstKept }) else {
             throw TeamError(message: "整理的时候聊天变了，下次再整理。")
         }
         let markerId = UUID().uuidString
-        if keeping, let previousRecord {
-            Disk.save(previousRecord, Self.foldSummary(key, markerId))
+        if keeping, let baseSummaryRecord {
+            Disk.save(baseSummaryRecord, Self.foldSummary(key, markerId))
         }
         let marker = Entry(id: markerId, at: current[at].at - 1,
                            message: .assistant("以上较早的 \(folded) 条已整理成前情提要，原文都还在"), note: true, fold: true)

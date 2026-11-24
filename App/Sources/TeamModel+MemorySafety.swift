@@ -7,7 +7,9 @@ extension Entry: MemoryExtractable {
     var hasToolCalls: Bool { !message.toolCalls.isEmpty }
     var toolName: String? { message.toolName }
     var isTainted: Bool { tainted == true }
-    var isDelegated: Bool { delegated == true }
+    var isDelegated: Bool {
+        delegated == true || (message.role == .user && MemorySafety.isLegacyDelegationText(message.text))
+    }
 }
 
 extension Memory {
@@ -271,7 +273,8 @@ extension TeamModel {
     /// Lightweight, fail-open memory extraction run on untainted entries before `compress(_:)` folds them.
     func flushMemoriesBeforeCompress(
         key: String,
-        entries: [Entry],
+        historyUpToCut: [Entry],
+        eligibleIDs: Set<String>,
         bot: BotInfo,
         startEpoch: Int,
         firstKeptID: String
@@ -321,7 +324,8 @@ extension TeamModel {
         )
         let crew = bots
         guard let prepared = MemorySafety.buildFlushTranscript(
-            entries,
+            historyUpToCut,
+            eligibleIDs: eligibleIDs,
             processedIDs: processedIDs,
             secrets: secrets,
             speakerName: { entry in
@@ -372,7 +376,7 @@ extension TeamModel {
                   currentEpoch: epochs[key, default: 0]
               ) else { return }
 
-        let entryByID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let entryByID = Dictionary(historyUpToCut.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let rolesByID = Dictionary(prepared.entryIDs.compactMap { id in entryByID[id].map { (id, $0.message.role) } }, uniquingKeysWith: { first, _ in first })
         let dayByID = Dictionary(prepared.entryIDs.compactMap { id in
             entryByID[id].map { (id, Tide.day(of: Date(timeIntervalSince1970: $0.at / 1000))) }
@@ -383,7 +387,12 @@ extension TeamModel {
             dayByID: dayByID,
             processedByDay: memoryBook.processed
         )
-        guard !remainingIDs.isEmpty else { return }
+        guard remainingIDs.count == prepared.entryIDs.count,
+              MemorySafety.isFlushBatchOverlapFree(
+                  prepared.entryIDs,
+                  dayByID: dayByID,
+                  processedByDay: memoryBook.processed
+              ) else { return }
         guard let decoded = try? MemoryReviewRules.decodeProposals(reply) else { return }
 
         let currentSecrets = Vault.allStrings().sorted { $0.count > $1.count }

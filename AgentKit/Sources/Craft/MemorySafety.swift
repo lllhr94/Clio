@@ -683,10 +683,15 @@ public enum MemorySafety {
         return max(0, totalLimit - safeSystem.utf8.count - safePrefix.utf8.count)
     }
 
+    public static func isLegacyDelegationText(_ text: String) -> Bool {
+        text.hasPrefix("【") && text.contains("请你帮忙，这不是用户本人的话】")
+    }
+
     /// Filters entries eligible for automatic memory extraction.
     /// Excludes notes, compression folds, tool outputs, tool-call preambles, empty entries,
-    /// companion-delegated prompts/replies, explicitly tainted entries, and legacy assistant replies
-    /// in any conversation where a legacy untagged external-read tool occurred (sticky across later turns).
+    /// companion-delegated prompts/replies (including legacy delegation text), explicitly tainted entries,
+    /// and legacy assistant replies in any conversation where a legacy untagged external-read tool occurred
+    /// (sticky across later turns).
     public static func filterExtractableEntries<E: MemoryExtractable>(_ entries: [E]) -> [E] {
         var result: [E] = []
         var turnHasExplicitTaint = false
@@ -696,7 +701,7 @@ public enum MemorySafety {
             if entry.isNote || entry.isFold { continue }
             switch entry.role {
             case .user:
-                if entry.isDelegated {
+                if entry.isDelegated || isLegacyDelegationText(entry.text) {
                     inDelegatedTurn = true
                     if entry.isTainted { turnHasExplicitTaint = true }
                     continue
@@ -736,10 +741,12 @@ public enum MemorySafety {
         return result
     }
 
-    /// True only when the untainted, in-cutoff portion of `entries` contains both user and assistant messages
-    /// and at least one extractable user entry has not already been processed.
+    /// True only when the untainted, in-cutoff portion of `entries` (optionally restricted to `eligibleIDs`
+    /// after computing full-history taint) contains both user and assistant messages and at least one
+    /// extractable user entry has not already been processed.
     public static func hasFlushableConversation<E: MemoryExtractable>(
         _ entries: [E],
+        eligibleIDs: Set<String>? = nil,
         processedIDs: Set<String> = [],
         cutoffDay: String? = nil,
         minTimestampMs: Double? = nil,
@@ -747,6 +754,7 @@ public enum MemorySafety {
     ) -> Bool {
         let extractable = inWindowExtractableEntries(
             entries,
+            eligibleIDs: eligibleIDs,
             cutoffDay: cutoffDay,
             minTimestampMs: minTimestampMs,
             calendar: calendar
@@ -760,9 +768,11 @@ public enum MemorySafety {
     }
 
     /// Builds a bounded, secret-redacted transcript solely from untainted extractable entries before compression.
+    /// Evaluates taint across all `entries` first before optionally restricting to `eligibleIDs` (e.g. `all[..<cut]`).
     /// Guarantees every entry in `entryIDs` fits intact inside `maxTotalBytes`.
     public static func buildFlushTranscript<E: MemoryExtractable>(
         _ entries: [E],
+        eligibleIDs: Set<String>? = nil,
         processedIDs: Set<String> = [],
         secrets: [String] = [],
         speakerName: (E) -> String = { _ in "旅伴" },
@@ -776,6 +786,7 @@ public enum MemorySafety {
         guard maxTotalBytes >= 64 else { return nil }
         let extractable = inWindowExtractableEntries(
             entries,
+            eligibleIDs: eligibleIDs,
             cutoffDay: cutoffDay,
             minTimestampMs: minTimestampMs,
             calendar: calendar
@@ -818,13 +829,15 @@ public enum MemorySafety {
 
     private static func inWindowExtractableEntries<E: MemoryExtractable>(
         _ entries: [E],
+        eligibleIDs: Set<String>?,
         cutoffDay: String?,
         minTimestampMs: Double?,
         calendar: Calendar
     ) -> [E] {
         let filtered = filterExtractableEntries(entries)
-        guard cutoffDay != nil || minTimestampMs != nil else { return filtered }
+        guard eligibleIDs != nil || cutoffDay != nil || minTimestampMs != nil else { return filtered }
         return filtered.filter { entry in
+            if let eligibleIDs, !eligibleIDs.contains(entry.id) { return false }
             if let minTimestampMs, entry.at < minTimestampMs { return false }
             if let cutoffDay {
                 let day = Tide.day(of: Date(timeIntervalSince1970: entry.at / 1000), calendar: calendar)
@@ -862,6 +875,19 @@ public enum MemorySafety {
         }
         guard remaining.contains(where: { rolesByID[$0] == .user }) else { return [] }
         return remaining
+    }
+
+    /// True only when none of `preparedIDs` have been processed concurrently (`remaining.count == preparedIDs.count`).
+    public static func isFlushBatchOverlapFree(
+        _ preparedIDs: [String],
+        dayByID: [String: String],
+        processedByDay: [String: Set<String>]
+    ) -> Bool {
+        guard !preparedIDs.isEmpty else { return false }
+        return preparedIDs.allSatisfy { id in
+            guard let day = dayByID[id] else { return false }
+            return !(processedByDay[day]?.contains(id) ?? false)
+        }
     }
 
     // MARK: Sanitization, hashing & deduplication
