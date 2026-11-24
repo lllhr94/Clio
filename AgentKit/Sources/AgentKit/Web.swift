@@ -199,6 +199,144 @@ public enum WebText {
         return Page(title: title, text: lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Removes balanced `<tag ...>...</tag>` elements whose opening tag satisfies `shouldStrip` in O(N) time.
+    private static func stripBalancedContainers(_ html: String, tag: String, shouldStrip: (String) -> Bool) -> String {
+        let openToken = "<" + tag
+        let closeToken = "</" + tag
+        var out = ""
+        out.reserveCapacity(html.count)
+        var cursor = html.startIndex
+
+        while cursor < html.endIndex {
+            guard let openStart = findTagStart(in: html, token: openToken, from: cursor),
+                  let openClose = html.range(of: ">", range: openStart.upperBound..<html.endIndex) else {
+                out.append(contentsOf: html[cursor...])
+                break
+            }
+            let openTag = String(html[openStart.lowerBound..<openClose.upperBound])
+            guard shouldStrip(openTag) else {
+                out.append(contentsOf: html[cursor..<openClose.upperBound])
+                cursor = openClose.upperBound
+                continue
+            }
+
+            out.append(contentsOf: html[cursor..<openStart.lowerBound])
+            var depth = 1
+            var scan = openClose.upperBound
+            while depth > 0, scan < html.endIndex {
+                let nextOpen = findTagStart(in: html, token: openToken, from: scan)
+                let nextClose = findTagStart(in: html, token: closeToken, from: scan)
+                switch (nextOpen, nextClose) {
+                case let (o?, c?) where o.lowerBound < c.lowerBound:
+                    if let oEnd = html.range(of: ">", range: o.upperBound..<html.endIndex) {
+                        depth += 1
+                        scan = oEnd.upperBound
+                    } else {
+                        scan = html.endIndex
+                    }
+                case let (_, c?):
+                    if let cEnd = html.range(of: ">", range: c.upperBound..<html.endIndex) {
+                        depth -= 1
+                        scan = cEnd.upperBound
+                    } else {
+                        scan = html.endIndex
+                    }
+                case let (o?, nil):
+                    if let oEnd = html.range(of: ">", range: o.upperBound..<html.endIndex) {
+                        depth += 1
+                        scan = oEnd.upperBound
+                    } else {
+                        scan = html.endIndex
+                    }
+                case (nil, nil):
+                    scan = html.endIndex
+                }
+            }
+            out.append(" ")
+            cursor = scan
+        }
+        return out
+    }
+
+    private static func findTagStart(in html: String, token: String, from start: String.Index) -> Range<String.Index>? {
+        var cursor = start
+        while cursor < html.endIndex {
+            guard let found = html.range(of: token, options: .caseInsensitive, range: cursor..<html.endIndex) else {
+                return nil
+            }
+            let after = found.upperBound
+            if after == html.endIndex || html[after].isWhitespace || html[after] == ">" || html[after] == "/" {
+                return found
+            }
+            cursor = after
+        }
+        return nil
+    }
+
+    private static func isAdContainerTag(_ openTag: String) -> Bool {
+        let lower = openTag.lowercased()
+        let patterns = [
+            "\\bb_ad(?:top|bottom|last|slug|_container|s)?\\b",
+            "\\bresult--ad\\b",
+            "\\bresults_links_ad\\b",
+            "\\bad_result\\b",
+            "\\bbadge--ad\\b",
+            "\\bsponsored\\b",
+            "\\bad_sc\\b",
+            "data-ad(?:v|id|s|-)?\\s*=",
+        ]
+        return patterns.contains { first(lower, "(\($0))") != nil }
+    }
+
+    private static func containsInlineAdMarker(_ piece: String) -> Bool {
+        let lower = piece.lowercased()
+        let markers = [
+            "\\bb_adslug\\b",
+            "\\bb_ad_label\\b",
+            "\\bbadge--ad\\b",
+            "\\bresult__badge--ad\\b",
+            "\\bresult--ad\\b",
+            "\\bad[-_](?:badge|slug|label|tag)\\b",
+            "data-ad(?:v|id|s|-)?\\s*=",
+            "<(?:span|div|i|em|label)[^>]*>\\s*(?:广告|赞助|推广|sponsored|ad)\\s*</(?:span|div|i|em|label)>",
+        ]
+        return markers.contains { first(lower, "(\($0))") != nil }
+    }
+
+    private static let adTrackingHosts: Set<String> = [
+        "googleadservices.com", "doubleclick.net", "googlesyndication.com", "adservice.google.com",
+        "msads.net", "adnxs.com", "taboola.com", "outbrain.com", "criteo.com",
+        "pubmatic.com", "rubiconproject.com", "e.baidu.com", "pos.baidu.com",
+        "cpro.baidu.com", "ada.baidu.com", "s.click.taobao.com", "ai.taobao.com",
+        "union-click.jd.com", "u.jd.com", "click.linksynergy.com", "anrdoezrs.net",
+        "tkqlhce.com", "jdoqocy.com", "dpbolvw.net",
+    ]
+
+    /// True when `raw` points to a search ad click redirect, unresolved tracker wrapper, or known ad network.
+    static func isAdOrTrackingURL(_ raw: String) -> Bool {
+        let cleaned = entities(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = cleaned.hasPrefix("//") ? "https:" + cleaned : cleaned
+        guard let url = URL(string: normalized), let host = url.host?.lowercased(), !host.isEmpty else {
+            return false
+        }
+        let path = url.path.lowercased()
+        let query = url.query?.lowercased() ?? ""
+        if (host == "bing.com" || host.hasSuffix(".bing.com"))
+            && (path.hasPrefix("/aclick") || path.hasPrefix("/ck/a")) {
+            return true
+        }
+        if (host == "duckduckgo.com" || host.hasSuffix(".duckduckgo.com"))
+            && (path.hasPrefix("/y.js") || path.hasPrefix("/l/")) {
+            return true
+        }
+        if query.contains("ad_domain=") || query.contains("ad_provider=") {
+            return true
+        }
+        return adTrackingHosts.contains { adHost in
+            host == adHost || host.hasSuffix("." + adHost)
+        }
+    }
+
     /// Bing's result links point at its own redirect; the real address is in `u`, base64 after `a1`.
     public static func unwrapBing(_ link: String) -> String {
         let link = entities(link)
@@ -209,35 +347,113 @@ public enum WebText {
         return url
     }
 
+    private static func extractAnchor(in html: String) -> (href: String, titleHTML: String)? {
+        guard let match = all(html, "<a\\b([^>]*)>(.*?)</a>").first, match.count >= 3 else { return nil }
+        guard let href = first(match[1], "\\bhref\\s*=\\s*[\"']([^\"']+)[\"']") else { return nil }
+        return (href, match[2])
+    }
+
     public static func bingResults(_ html: String) -> [Result] {
+        var cleaned = stripBalancedContainers(html, tag: "li", shouldStrip: isAdContainerTag)
+        cleaned = stripBalancedContainers(cleaned, tag: "div", shouldStrip: isAdContainerTag)
+
         var results: [Result] = []
-        let chunks = html.components(separatedBy: "class=\"b_algo\"").dropFirst()
-        for chunk in chunks {
-            let piece = chunk.components(separatedBy: "</li>").first ?? chunk
-            guard let anchor = all(piece, "<h2[^>]*>\\s*<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>").first else { continue }
-            let url = unwrapBing(anchor[1])
-            let title = plain(anchor[2])
-            let snippet = plain(first(piece, "<p[^>]*>(.*?)</p>") ?? first(piece, "class=\"b_caption\"[^>]*>(.*?)</div>") ?? "")
-            guard url.hasPrefix("http"), !title.isEmpty else { continue }
+        var seen: Set<String> = []
+        let algoPattern = "<(li|div)\\b[^>]*class\\s*=\\s*[\"'][^\"']*\\bb_algo\\b[^\"']*[\"'][^>]*>"
+        let matches = regex(algoPattern).matches(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned))
+        for (idx, match) in matches.enumerated() {
+            guard let startRange = Range(match.range, in: cleaned),
+                  let tagRange = Range(match.range(at: 1), in: cleaned) else { continue }
+            let tag = String(cleaned[tagRange]).lowercased()
+            let nextStart = idx + 1 < matches.count ? Range(matches[idx + 1].range, in: cleaned)?.lowerBound : nil
+            let piece = balancedTagBody(in: cleaned, tag: tag, from: startRange.lowerBound, limit: nextStart ?? cleaned.endIndex)
+            guard !containsInlineAdMarker(piece) else { continue }
+            guard let h2HTML = first(piece, "<h2[^>]*>(.*?)</h2>"),
+                  let anchor = extractAnchor(in: h2HTML) else { continue }
+            let rawHref = entities(anchor.href)
+            if rawHref.lowercased().contains("bing.com/aclick") { continue }
+            let url = unwrapBing(rawHref)
+            guard url.hasPrefix("http"), !isAdOrTrackingURL(url) else { continue }
+            let title = plain(anchor.titleHTML)
+            guard !title.isEmpty, seen.insert(url).inserted else { continue }
+            let snippetHTML = first(piece, "<p[^>]*>(.*?)</p>")
+                ?? first(piece, "class\\s*=\\s*[\"'][^\"']*\\bb_snippet\\b[^\"']*[\"'][^>]*>(.*?)</div>")
+                ?? first(piece, "class\\s*=\\s*[\"'][^\"']*\\bb_caption\\b[^\"']*[\"'][^>]*>(.*?)</div>")
+                ?? ""
+            let snippet = plain(snippetHTML)
             results.append(Result(title: title, url: url, snippet: snippet))
         }
         return results
     }
 
     public static func duckResults(_ html: String) -> [Result] {
+        var cleaned = stripBalancedContainers(html, tag: "div", shouldStrip: isAdContainerTag)
+        cleaned = stripBalancedContainers(cleaned, tag: "tr", shouldStrip: isAdContainerTag)
+
         var results: [Result] = []
-        let chunks = html.components(separatedBy: "class=\"result__body").dropFirst()
-        for chunk in chunks {
-            guard let anchor = all(chunk, "class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>").first else { continue }
-            var url = entities(anchor[1])
+        var seen: Set<String> = []
+        let bodyPattern = "<div\\b[^>]*class\\s*=\\s*[\"'][^\"']*\\bresult__body\\b[^\"']*[\"'][^>]*>"
+        let matches = regex(bodyPattern).matches(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned))
+        for (idx, match) in matches.enumerated() {
+            guard let startRange = Range(match.range, in: cleaned) else { continue }
+            let nextStart = idx + 1 < matches.count ? Range(matches[idx + 1].range, in: cleaned)?.lowerBound : nil
+            let piece = balancedTagBody(in: cleaned, tag: "div", from: startRange.lowerBound, limit: nextStart ?? cleaned.endIndex)
+            guard !containsInlineAdMarker(piece) else { continue }
+            guard let anchorMatch = all(piece, "<a\\b([^>]*class\\s*=\\s*[\"'][^\"']*\\bresult__a\\b[^\"']*[\"'][^>]*)>(.*?)</a>").first,
+                  anchorMatch.count >= 3,
+                  let rawHref = first(anchorMatch[1], "\\bhref\\s*=\\s*[\"']([^\"']+)[\"']") else { continue }
+            var url = entities(rawHref)
+            if url.lowercased().contains("duckduckgo.com/y.js") || url.lowercased().contains("ad_domain=") { continue }
             if let wrapped = first(url, "[?&]uddg=([^&]+)"), let real = wrapped.removingPercentEncoding { url = real }
             if url.hasPrefix("//") { url = "https:" + url }
-            let snippet = plain(first(chunk, "class=\"result__snippet\"[^>]*>(.*?)</a>") ?? "")
-            let title = plain(anchor[2])
-            guard url.hasPrefix("http"), !title.isEmpty else { continue }
+            guard url.hasPrefix("http"), !isAdOrTrackingURL(url) else { continue }
+            let title = plain(anchorMatch[2])
+            guard !title.isEmpty, seen.insert(url).inserted else { continue }
+            let snippetHTML = first(piece, "class\\s*=\\s*[\"'][^\"']*\\bresult__snippet\\b[^\"']*[\"'][^>]*>(.*?)</(?:a|div|span)>") ?? ""
+            let snippet = plain(snippetHTML)
             results.append(Result(title: title, url: url, snippet: snippet))
         }
         return results
+    }
+
+    private static func balancedTagBody(in html: String, tag: String, from start: String.Index, limit: String.Index) -> String {
+        guard let openEnd = html.range(of: ">", range: start..<limit) else {
+            return String(html[start..<limit])
+        }
+        let openToken = "<" + tag
+        let closeToken = "</" + tag
+        var depth = 1
+        var scan = openEnd.upperBound
+        while depth > 0, scan < limit {
+            let nextOpen = findTagStart(in: html, token: openToken, from: scan)
+            let nextClose = findTagStart(in: html, token: closeToken, from: scan)
+            switch (nextOpen, nextClose) {
+            case let (o?, c?) where o.lowerBound < limit && o.lowerBound < c.lowerBound:
+                if let oEnd = html.range(of: ">", range: o.upperBound..<limit) {
+                    depth += 1
+                    scan = oEnd.upperBound
+                } else {
+                    return String(html[start..<limit])
+                }
+            case let (_, c?) where c.lowerBound < limit:
+                if let cEnd = html.range(of: ">", range: c.upperBound..<limit) {
+                    depth -= 1
+                    scan = cEnd.upperBound
+                } else {
+                    return String(html[start..<limit])
+                }
+            case let (o?, _) where o.lowerBound < limit:
+                if let oEnd = html.range(of: ">", range: o.upperBound..<limit) {
+                    depth += 1
+                    scan = oEnd.upperBound
+                } else {
+                    return String(html[start..<limit])
+                }
+            default:
+                return String(html[start..<limit])
+            }
+        }
+        return String(html[start..<scan])
     }
 
     /// Page bytes as text, in the page's own encoding (many Chinese sites still use GBK).
@@ -306,7 +522,7 @@ enum WebFetch {
 
     /// Performs a public HTTPS JSON API call; redirects are restricted to the exact same HTTPS origin so search queries
     /// and custom auth headers (`x-api-key`, `X-Subscription-Token`, `Authorization`) can never leak to another host or HTTP.
-    static func json(_ request: URLRequest, limit: Int = 2_000_000) async throws -> (status: Int, data: Data) {
+    static func json(_ request: URLRequest, limit: Int = 2_000_000, session: URLSession? = nil) async throws -> (status: Int, data: Data) {
         guard let url = request.url, url.scheme?.lowercased() == "https", url.host != nil else {
             throw ProviderError("搜索接口只允许使用 https 地址。")
         }
@@ -316,11 +532,40 @@ enum WebFetch {
         if await LocalAddress.resolvesToLocal(url) {
             throw ProviderError(LocalAddress.refusal)
         }
-        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: SameOriginHTTPSRedirect(origin: url))
+        let activeSession = session ?? HTTP.session
+        let (bytes, response) = try await activeSession.bytes(for: request, delegate: SameOriginHTTPSRedirect(origin: url))
+        return try await readJSONBytes(bytes: bytes, response: response, limit: limit)
+    }
+
+    /// Performs a user-configured SearXNG JSON search call.
+    /// Plain HTTP is allowed ONLY when the user explicitly configured a private/loopback LAN SearXNG base URL;
+    /// redirects are locked strictly to the exact same origin (no cross-host, cross-port, or HTTPS->HTTP downgrades).
+    static func searxngJSON(_ request: URLRequest, limit: Int = 2_000_000, session: URLSession? = nil) async throws -> (status: Int, data: Data) {
+        guard let url = request.url else {
+            throw ProviderError(SearXNGError.invalidFormat.localizedDescription)
+        }
+        let check = SearXNGEndpoint.checkRequestTransport(url)
+        guard check.allowed else {
+            throw ProviderError(check.errorMessage ?? SearXNGError.requiresHTTPS.localizedDescription)
+        }
+        if !check.isLAN {
+            if LocalAddress.isLocal(url) || await LocalAddress.resolvesToLocal(url) {
+                throw ProviderError(LocalAddress.refusal)
+            }
+        }
+        let activeSession = session ?? HTTP.session
+        let delegate: URLSessionTaskDelegate = check.isLAN
+            ? SameOriginSearXNGRedirect(origin: url)
+            : SameOriginHTTPSRedirect(origin: url)
+        let (bytes, response) = try await activeSession.bytes(for: request, delegate: delegate)
+        return try await readJSONBytes(bytes: bytes, response: response, limit: limit)
+    }
+
+    private static func readJSONBytes(bytes: URLSession.AsyncBytes, response: URLResponse, limit: Int) async throws -> (status: Int, data: Data) {
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         if (300..<400).contains(status) {
-            throw ProviderError(status: status, "搜索接口试图跳转到其他主机或非 https 地址，已中止。")
+            throw ProviderError(status: status, "搜索接口试图跳转到其他主机或非安全协议地址，已中止。")
         }
         if response.expectedContentLength > limit {
             throw ProviderError("搜索返回的内容太大了，已忽略。")
@@ -352,6 +597,34 @@ enum WebFetch {
         return true
     }
 
+    /// Redirect policy for user-configured SearXNG instances:
+    /// public hosts require exact same HTTPS origin; configured LAN/loopback hosts require exact same scheme+host+port.
+    static func allowsSameOriginSearXNGRedirect(from origin: URL, to next: URL, allowLAN: Bool) -> Bool {
+        guard allowLAN else {
+            return allowsSameHTTPSOriginRedirect(from: origin, to: next)
+        }
+        guard let originScheme = origin.scheme?.lowercased(),
+              let nextScheme = next.scheme?.lowercased(),
+              originScheme == nextScheme,
+              originScheme == "https" || originScheme == "http",
+              let originHost = origin.host?.lowercased(),
+              let nextHost = next.host?.lowercased(),
+              originHost == nextHost else {
+            return false
+        }
+        let defaultPort = originScheme == "https" ? 443 : 80
+        guard (origin.port ?? defaultPort) == (next.port ?? defaultPort),
+              next.user == nil, next.password == nil else {
+            return false
+        }
+        if let components = URLComponents(url: next, resolvingAgainstBaseURL: false),
+           (components.user != nil || components.password != nil
+            || components.percentEncodedUser != nil || components.percentEncodedPassword != nil) {
+            return false
+        }
+        return SearXNGEndpoint.isAllowedLANHost(nextHost)
+    }
+
     private final class SameOriginHTTPSRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         let origin: URL
         init(origin: URL) { self.origin = origin }
@@ -362,6 +635,20 @@ enum WebFetch {
                 return nil
             }
             if await LocalAddress.resolvesToLocal(next) { return nil }
+            return request
+        }
+    }
+
+    private final class SameOriginSearXNGRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let origin: URL
+        init(origin: URL) { self.origin = origin }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let next = request.url,
+                  WebFetch.allowsSameOriginSearXNGRedirect(from: origin, to: next, allowLAN: true) else {
+                return nil
+            }
             return request
         }
     }
@@ -440,13 +727,266 @@ public enum Web {
     }
 }
 
-/// Supported web search backends. Built-in Bing / DuckDuckGo is the default; third-party providers are opt-in.
+/// Validation errors for user-configured SearXNG instance URLs.
+public enum SearXNGError: LocalizedError, Equatable, Sendable {
+    case empty
+    case invalidFormat
+    case embeddedCredentials
+    case queryOrFragmentNotAllowed
+    case requiresHTTPS
+
+    public var errorDescription: String? {
+        switch self {
+        case .empty:
+            return "还没有填写 SearXNG 实例地址。"
+        case .invalidFormat:
+            return "SearXNG 实例地址格式不对，请填写完整的 http:// 或 https:// 地址。"
+        case .embeddedCredentials:
+            return "SearXNG 地址不能包含用户名或密码，请先移除链接中的账号信息。"
+        case .queryOrFragmentNotAllowed:
+            return "SearXNG 地址不要带 ? 查询参数或 # 片段，请只填实例根地址。"
+        case .requiresHTTPS:
+            return "公网 SearXNG 地址必须使用 https://；只有本机或局域网地址（如 localhost、127.0.0.1、192.168.x.x、10.x.x.x、172.16–31.x.x、.local）允许使用 http://。"
+        }
+    }
+}
+
+/// Validates and normalizes custom SearXNG instance base URLs and request URLs.
+public enum SearXNGEndpoint {
+    public struct Parsed: Equatable, Sendable {
+        public let baseURL: String
+        public let searchBaseURL: String
+        public let isLAN: Bool
+    }
+
+    /// Returns true if the raw text appears to embed `user[:pass]@` authority credentials.
+    public static func containsEmbeddedCredentials(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if let components = URLComponents(string: trimmed),
+           (components.user != nil || components.password != nil
+            || components.percentEncodedUser != nil || components.percentEncodedPassword != nil) {
+            return true
+        }
+        let withoutScheme: Substring
+        if let range = trimmed.range(of: "://") {
+            withoutScheme = trimmed[range.upperBound...]
+        } else {
+            withoutScheme = Substring(trimmed)
+        }
+        let authority = withoutScheme.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        return authority.contains("@")
+    }
+
+    /// Parses, validates, and strips trailing slashes from a custom SearXNG instance URL.
+    public static func parse(_ raw: String) -> Result<Parsed, SearXNGError> {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .failure(.empty) }
+        guard trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+            return .failure(.invalidFormat)
+        }
+        if containsEmbeddedCredentials(trimmed) {
+            return .failure(.embeddedCredentials)
+        }
+        if trimmed.contains("?") || trimmed.contains("#") {
+            return .failure(.queryOrFragmentNotAllowed)
+        }
+        guard trimmed.contains("://"), var components = URLComponents(string: trimmed) else {
+            return .failure(.invalidFormat)
+        }
+        if components.user != nil || components.password != nil
+            || components.percentEncodedUser != nil || components.percentEncodedPassword != nil {
+            return .failure(.embeddedCredentials)
+        }
+        if components.query != nil || components.percentEncodedQuery != nil
+            || components.fragment != nil || components.percentEncodedFragment != nil {
+            return .failure(.queryOrFragmentNotAllowed)
+        }
+        guard let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let rawHost = components.host, !rawHost.isEmpty else {
+            return .failure(.invalidFormat)
+        }
+        if let port = components.port, !(1...65535).contains(port) {
+            return .failure(.invalidFormat)
+        }
+        if isDisallowedSpecialHost(rawHost) {
+            return .failure(.invalidFormat)
+        }
+        let lan = isAllowedLANHost(rawHost)
+        if scheme == "http" && !lan {
+            return .failure(.requiresHTTPS)
+        }
+        components.scheme = scheme
+        components.host = normalizedHost(rawHost)
+
+        var cleanPath = components.path
+        while cleanPath.hasSuffix("/") {
+            cleanPath.removeLast()
+        }
+        components.path = cleanPath
+        guard let canonicalBase = components.url else {
+            return .failure(.invalidFormat)
+        }
+
+        var searchComponents = components
+        if !cleanPath.lowercased().hasSuffix("/search") {
+            searchComponents.path = cleanPath + "/search"
+        }
+        guard let searchBase = searchComponents.url else {
+            return .failure(.invalidFormat)
+        }
+        return .success(Parsed(
+            baseURL: canonicalBase.absoluteString,
+            searchBaseURL: searchBase.absoluteString,
+            isLAN: lan
+        ))
+    }
+
+    /// Convenience wrapper returning the canonical normalized base URL when valid.
+    public static func normalize(_ raw: String) -> String? {
+        try? parse(raw).get().baseURL
+    }
+
+    /// Builds `<base>/search?q=...&format=json` from a validated SearXNG base URL.
+    public static func buildSearchURL(baseURL: String, query: String) throws -> URL {
+        let parsed: Parsed
+        switch parse(baseURL) {
+        case .success(let value):
+            parsed = value
+        case .failure(let error):
+            throw ProviderError(error.localizedDescription)
+        }
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?#")
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+        guard var components = URLComponents(string: parsed.searchBaseURL) else {
+            throw ProviderError(SearXNGError.invalidFormat.localizedDescription)
+        }
+        components.percentEncodedQuery = "q=\(encoded)&format=json"
+        guard let url = components.url else {
+            throw ProviderError(SearXNGError.invalidFormat.localizedDescription)
+        }
+        return url
+    }
+
+    /// Verifies transport security for an assembled SearXNG request URL.
+    static func checkRequestTransport(_ url: URL) -> (allowed: Bool, isLAN: Bool, errorMessage: String?) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.percentEncodedUser == nil, components.percentEncodedPassword == nil else {
+            return (false, false, SearXNGError.invalidFormat.localizedDescription)
+        }
+        if isDisallowedSpecialHost(host) {
+            return (false, false, SearXNGError.invalidFormat.localizedDescription)
+        }
+        let lan = isAllowedLANHost(host)
+        if scheme == "http" && !lan {
+            return (false, false, SearXNGError.requiresHTTPS.localizedDescription)
+        }
+        return (true, lan, nil)
+    }
+
+    /// True ONLY for explicit private/loopback LAN hosts allowed over `http://` when configured for SearXNG:
+    /// `localhost`, `*.localhost`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`,
+    /// IPv4 private/loopback/CGNAT (`127/8`, `10/8`, `172.16-31/12`, `192.168/16`, `100.64-127/10`),
+    /// and IPv6 loopback/ULA/link-local (`::1`, `fc00::/7`, `fe80::/10`, `::ffff:<private-v4>`).
+    public static func isAllowedLANHost(_ rawHost: String) -> Bool {
+        let host = cleanHostToken(rawHost)
+        guard !host.isEmpty else { return false }
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local")
+            || host.hasSuffix(".lan") || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") {
+            return true
+        }
+        var addr4 = in_addr()
+        if inet_pton(AF_INET, host, &addr4) == 1 {
+            let bytes = withUnsafeBytes(of: &addr4) { Array($0) }
+            return bytes.count == 4 && isPrivateOrLoopbackV4(bytes)
+        }
+        var addr6 = in6_addr()
+        if inet_pton(AF_INET6, host, &addr6) == 1 {
+            let bytes = withUnsafeBytes(of: &addr6) { Array($0) }
+            return bytes.count == 16 && isPrivateOrLoopbackV6(bytes)
+        }
+        return false
+    }
+
+    private static func isDisallowedSpecialHost(_ rawHost: String) -> Bool {
+        let host = cleanHostToken(rawHost)
+        guard !host.isEmpty else { return true }
+        var addr4 = in_addr()
+        if inet_pton(AF_INET, host, &addr4) == 1 {
+            let b = withUnsafeBytes(of: &addr4) { Array($0) }
+            guard b.count == 4 else { return true }
+            if b[0] == 0 || b[0] >= 224 { return true }
+            if b[0] == 169 && b[1] == 254 { return true }
+            return false
+        }
+        var addr6 = in6_addr()
+        if inet_pton(AF_INET6, host, &addr6) == 1 {
+            let b = withUnsafeBytes(of: &addr6) { Array($0) }
+            guard b.count == 16 else { return true }
+            if b.allSatisfy({ $0 == 0 }) { return true }
+            if b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xff && b[11] == 0xff {
+                let mapped = Array(b[12..<16])
+                if mapped[0] == 0 || mapped[0] >= 224 || (mapped[0] == 169 && mapped[1] == 254) { return true }
+            }
+            return false
+        }
+        return false
+    }
+
+    private static func cleanHostToken(_ rawHost: String) -> String {
+        var host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if let zone = host.firstIndex(of: "%") {
+            host = String(host[..<zone])
+        }
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        return host
+    }
+
+    private static func normalizedHost(_ rawHost: String) -> String {
+        var host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        return host
+    }
+
+    private static func isPrivateOrLoopbackV4(_ b: [UInt8]) -> Bool {
+        b[0] == 127
+            || b[0] == 10
+            || (b[0] == 172 && (16...31).contains(b[1]))
+            || (b[0] == 192 && b[1] == 168)
+            || (b[0] == 100 && (64...127).contains(b[1]))
+    }
+
+    private static func isPrivateOrLoopbackV6(_ b: [UInt8]) -> Bool {
+        let isLoopback = b[0..<15].allSatisfy { $0 == 0 } && b[15] == 1
+        if isLoopback { return true }
+        if b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xff && b[11] == 0xff {
+            return isPrivateOrLoopbackV4(Array(b[12..<16]))
+        }
+        return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80)
+    }
+}
+
+/// Supported web search backends. Built-in Bing / DuckDuckGo is the default; third-party and self-hosted providers are opt-in.
 public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifiable {
     case builtin
     case anysearch
     case tavily
     case exa
     case brave
+    case searxng
 
     public var id: String { rawValue }
 
@@ -457,6 +997,7 @@ public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifi
         case .tavily: "Tavily"
         case .exa: "Exa"
         case .brave: "Brave"
+        case .searxng: "SearXNG（自建实例）"
         }
     }
 
@@ -467,6 +1008,7 @@ public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifi
         case .tavily: "Tavily"
         case .exa: "Exa"
         case .brave: "Brave"
+        case .searxng: "SearXNG"
         }
     }
 
@@ -474,12 +1016,15 @@ public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifi
     public var needsKey: Bool {
         switch self {
         case .tavily, .exa, .brave: true
-        case .anysearch, .builtin: false
+        case .anysearch, .builtin, .searxng: false
         }
     }
 
-    /// True when the user may enter an API key for this provider.
+    /// True when the user may enter an API key (or optional Bearer token) for this provider.
     public var supportsKey: Bool { self != .builtin }
+
+    /// True when this provider requires a user-configured instance base URL.
+    public var needsURL: Bool { self == .searxng }
 
     public var summary: String {
         switch self {
@@ -488,12 +1033,13 @@ public enum WebSearchProvider: String, CaseIterable, Codable, Sendable, Identifi
         case .tavily: "面向 AI 整理的搜索摘要，免费版每月 1000 次"
         case .exa: "语义搜索，查英文技术文档和论文效果好"
         case .brave: "独立网页索引，响应快、无广告追踪"
+        case .searxng: "连接自建 SearXNG 实例（支持公网 HTTPS 或局域网 HTTP）"
         }
     }
 
     public var consoleHost: String {
         switch self {
-        case .builtin: ""
+        case .builtin, .searxng: ""
         case .anysearch: "anysearch.com/console/api-keys"
         case .tavily: "app.tavily.com"
         case .exa: "dashboard.exa.ai/api-keys"
@@ -507,17 +1053,61 @@ public struct WebSearchConfig: Sendable, Equatable {
     public var primary: WebSearchProvider
     public var apiKey: String?
     public var fallbackToBuiltin: Bool
+    public var apiKeys: [WebSearchProvider: String]
+    public var searxngURL: String?
+    public var fallbackOrder: [WebSearchProvider]
 
-    public init(primary: WebSearchProvider = .builtin, apiKey: String? = nil, fallbackToBuiltin: Bool = true) {
+    public init(
+        primary: WebSearchProvider = .builtin,
+        apiKey: String? = nil,
+        fallbackToBuiltin: Bool = true,
+        apiKeys: [WebSearchProvider: String] = [:],
+        searxngURL: String? = nil,
+        fallbackOrder: [WebSearchProvider] = []
+    ) {
         self.primary = primary
         self.apiKey = apiKey
         self.fallbackToBuiltin = fallbackToBuiltin
+        self.apiKeys = apiKeys
+        self.searxngURL = searxngURL
+        self.fallbackOrder = fallbackOrder
+    }
+
+    /// Effective deduplicated provider chain: `primary`, followed by `fallbackOrder`,
+    /// then `.builtin` at the end if `fallbackToBuiltin` is true and `.builtin` is not yet included.
+    public var searchChain: [WebSearchProvider] {
+        var chain: [WebSearchProvider] = [primary]
+        var seen: Set<WebSearchProvider> = [primary]
+        for provider in fallbackOrder where seen.insert(provider).inserted {
+            chain.append(provider)
+        }
+        if fallbackToBuiltin && !seen.contains(.builtin) {
+            chain.append(.builtin)
+        }
+        return chain
+    }
+
+    /// Resolves the API key for a given provider (checking `apiKeys` first, then `apiKey` for `primary`).
+    public func key(for provider: WebSearchProvider) -> String? {
+        if let mapped = apiKeys[provider]?.trimmingCharacters(in: .whitespacesAndNewlines), !mapped.isEmpty {
+            return mapped
+        }
+        if provider == primary, let legacy = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !legacy.isEmpty {
+            return legacy
+        }
+        return nil
     }
 }
 
 /// Request builders and JSON parsers for structured search APIs.
 enum WebSearchAPI {
-    static func buildRequest(provider: WebSearchProvider, query: String, apiKey: String?, maxResults: Int = 8) throws -> URLRequest {
+    static func buildRequest(
+        provider: WebSearchProvider,
+        query: String,
+        apiKey: String?,
+        searxngURL: String? = nil,
+        maxResults: Int = 8
+    ) throws -> URLRequest {
         let trimmedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         switch provider {
         case .anysearch:
@@ -578,18 +1168,31 @@ enum WebSearchAPI {
             request.setValue(trimmedKey, forHTTPHeaderField: "X-Subscription-Token")
             return request
 
+        case .searxng:
+            let url = try SearXNGEndpoint.buildSearchURL(baseURL: searxngURL ?? "", query: query)
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(WebFetch.agent, forHTTPHeaderField: "User-Agent")
+            if !trimmedKey.isEmpty {
+                request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            }
+            return request
+
         case .builtin:
             throw ProviderError("内置网页搜索不走 JSON 接口。")
         }
     }
 
     /// Parses structured search JSON responses while redacting status-only errors (never leaking AnySearch HTTP 402 bodies).
-    static func parseResponse(provider: WebSearchProvider, status: Int, data: Data) throws -> [WebText.Result] {
+    static func parseResponse(provider: WebSearchProvider, status: Int, data: Data, maxResults: Int = 8) throws -> [WebText.Result] {
         guard (200..<300).contains(status) else {
             switch (provider, status) {
             case (.anysearch, 402):
                 // AnySearch HTTP 402 bodies can contain auto-generated credentials; never surface raw body text.
                 throw ProviderError(status: 402, "AnySearch 免费额度暂时用完（HTTP 402）")
+            case (.searxng, 403):
+                throw ProviderError(status: 403, "SearXNG 拒绝了 JSON 请求（HTTP 403），请检查令牌或是否在 settings.yml 开启 json 格式")
             case (_, 401), (_, 403):
                 throw ProviderError(status: status, "\(provider.shortName) 密钥无效或无权限（HTTP \(status)）")
             case (_, 402):
@@ -610,7 +1213,7 @@ enum WebSearchAPI {
         case .anysearch:
             let payload = root["data"] as? [String: Any]
             rawItems = (payload?["results"] as? [[String: Any]]) ?? (root["results"] as? [[String: Any]]) ?? []
-        case .tavily, .exa:
+        case .tavily, .exa, .searxng:
             rawItems = (root["results"] as? [[String: Any]]) ?? []
         case .brave:
             let web = root["web"] as? [String: Any]
@@ -622,14 +1225,17 @@ enum WebSearchAPI {
         var results: [WebText.Result] = []
         var seen: Set<String> = []
         for item in rawItems {
+            guard results.count < maxResults else { break }
             guard let rawURL = item["url"] as? String else { continue }
             let link = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let parsed = URL(string: link),
                   let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  !WebText.isAdOrTrackingURL(link),
                   seen.insert(link).inserted else { continue }
 
             let rawTitle = (item["title"] as? String) ?? ""
-            let title = cleanSnippet(rawTitle, maxChars: 160)
+            let cleanedTitleSource = provider == .searxng ? WebText.plain(rawTitle) : rawTitle
+            let title = cleanSnippet(cleanedTitleSource, maxChars: 160)
             let finalTitle = title.isEmpty ? (parsed.host ?? link) : title
 
             let snippet: String
@@ -647,6 +1253,11 @@ enum WebSearchAPI {
             case .brave:
                 let description = (item["description"] as? String) ?? ""
                 snippet = cleanSnippet(WebText.plain(description), maxChars: 360)
+            case .searxng:
+                let content = (item["content"] as? String) ?? ""
+                let fallback = (item["snippet"] as? String) ?? ""
+                let rawSnippet = content.isEmpty ? fallback : content
+                snippet = cleanSnippet(WebText.plain(rawSnippet), maxChars: 360)
             case .builtin:
                 snippet = ""
             }
@@ -662,42 +1273,339 @@ enum WebSearchAPI {
     }
 }
 
-/// Compare the query's significant words with the result title and snippet before accepting a source.
-private struct SearchRelevance {
-    private let terms: Set<String>
+/// Evaluates CJK + ASCII relevance overlap across title, snippet, and domain while filtering off-topic SEO spam.
+struct SearchRelevance {
+    private enum Term: Hashable {
+        case ascii(whole: String, parts: [String])
+        case cjk(text: String, bigrams: [String])
+    }
+
+    private let terms: [Term]
+    private let normalizedQuery: String
+
     private static let genericWords: Set<String> = [
-        "什么", "怎么", "如何", "哪里", "查询", "官网", "开放", "运营", "时间", "开放时间", "运营时间",
-        "今天", "明天", "周六", "周日",
-        "a", "an", "the", "and", "or", "for", "how", "what", "when", "where", "to", "in", "of",
+        "什么", "怎么", "怎样", "如何", "哪里", "哪儿", "哪个", "哪些", "为什么", "多少", "多少钱", "费用",
+        "价格", "售价", "查询", "查一下", "官网", "官方", "官方网站", "开放", "运营", "时间", "开放时间",
+        "运营时间", "营业时间", "今天", "明天", "昨天", "现在", "最新", "最近", "周六", "周日", "周末",
+        "请问", "帮我", "推荐", "排行", "排行榜", "怎么样", "好不好", "是什么", "是什么意思", "怎么用",
+        "教程", "攻略", "介绍", "简介", "下载", "的", "了", "吗", "呢", "吧", "啊", "呀", "和", "与", "或",
+        "在", "是", "有", "去", "到", "从", "对", "把", "被", "给", "为", "向", "关于", "以及",
+        "a", "an", "the", "and", "or", "for", "how", "what", "when", "where", "who", "which", "why",
+        "to", "in", "of", "on", "at", "by", "from", "with", "is", "are", "was", "were", "be", "can",
+        "do", "does", "did", "official", "website", "price", "time", "hours", "today", "latest", "guide", "tutorial",
+    ]
+
+    private static let suffixStopwords: [String] = [
+        "开放时间", "运营时间", "营业时间", "是什么意思", "在哪里", "多少钱", "怎么样", "是什么", "怎么用", "好不好",
+    ]
+
+    private static let synonyms: [String: [String]] = [
+        "ai": ["人工智能", "大模型", "智能"],
+        "人工智能": ["ai", "智能"],
+        "天气": ["气温", "气象", "天气预报", "降水", "晴", "多云", "小雨", "大雨", "预报"],
+        "气温": ["天气", "温度", "预报"],
+        "截屏": ["截图", "屏幕快照"],
+        "截图": ["截屏", "屏幕快照"],
+        "猫咪": ["猫", "小猫", "喵星人"],
+        "猫": ["猫咪", "小猫"],
+        "狗狗": ["狗", "小狗"],
+        "狗": ["狗狗", "小狗"],
+        "iphone": ["苹果手机"],
+        "苹果手机": ["iphone"],
+        "macbook": ["苹果笔记本"],
+        "苹果笔记本": ["macbook"],
+        "地铁": ["轨交", "轨道交通"],
+        "高铁": ["动车", "铁路"],
+        "开放": ["开馆", "营业"],
+    ]
+
+    private static let datingSpamSignals = [
+        "同城交友", "附近约会", "约会神器", "单身交友", "交友软件", "交友app", "陌陌", "探探",
+        "陪聊", "美女直播", "同城约", "一夜情", "裸聊",
+    ]
+    private static let datingQueryHints = ["交友", "约会", "陌陌", "探探", "直播", "社交", "婚恋", "相亲"]
+
+    private static let gamblingSpamSignals = [
+        "博彩", "威尼斯人", "太阳城", "开奖直播", "六合彩", "棋牌娱乐", "真人娱乐", "ag真人", "老虎机", "赌博",
+    ]
+    private static let gamblingQueryHints = ["博彩", "彩票", "开奖", "棋牌", "赌博"]
+
+    private static let mediaSpamSignals = [
+        "樱花动漫", "风车动漫", "在线观看完整版", "免费观看高清", "高清无删减", "未删减完整版",
+        "影视大全免费", "动漫全集免费", "免费看番",
+    ]
+    private static let mediaQueryHints = [
+        "动漫", "番剧", "动画", "视频", "电影", "影视", "在线观看", "樱花", "风车", "anime", "漫画",
     ]
 
     init(query: String) {
-        let words = Self.words(Self.normalized(query))
-        let significant = words.subtracting(Self.genericWords)
-        terms = significant.isEmpty ? words : significant
+        let norm = Self.normalized(query)
+        self.normalizedQuery = norm
+        let rawTerms = Self.extractTerms(from: norm)
+        var filtered: [Term] = []
+        for term in rawTerms {
+            switch term {
+            case .ascii(let whole, _):
+                if !Self.genericWords.contains(whole) {
+                    filtered.append(term)
+                }
+            case .cjk(let text, _):
+                if !Self.genericWords.contains(text) {
+                    filtered.append(term)
+                }
+            }
+        }
+        self.terms = filtered.isEmpty ? rawTerms : filtered
     }
 
     func matches(_ result: WebText.Result) -> Bool {
+        if isOffTopicSpam(result) { return false }
         guard !terms.isEmpty else { return true }
-        let text = Self.normalized(result.title + " " + result.snippet)
-        let words = Self.words(text)
-        let minimum = min(terms.count, max(2, (terms.count + 1) / 2))
-        return terms.lazy.filter { term in
-            if term.unicodeScalars.contains(where: { $0.properties.isIdeographic }) {
-                return text.contains(term)
+        let domain = Self.domainText(from: result.url)
+        let candidateAll = Self.normalized(result.title + " " + result.snippet + " " + domain)
+        let candidateASCIIWords = Self.extractASCIIWordSet(from: candidateAll)
+
+        var scores: [Double] = []
+        scores.reserveCapacity(terms.count)
+        for term in terms {
+            scores.append(score(term: term, candidateAll: candidateAll, candidateASCIIWords: candidateASCIIWords))
+        }
+
+        let avg = scores.reduce(0, +) / Double(scores.count)
+        let strongMatches = scores.filter { $0 >= 0.7 }.count
+        let anyMatches = scores.filter { $0 >= 0.5 }.count
+
+        switch terms.count {
+        case 1:
+            return avg >= 0.65
+        case 2:
+            return (anyMatches == 2 && avg >= 0.65) || (strongMatches >= 1 && avg >= 0.65)
+        default:
+            let required = min(terms.count, max(2, (terms.count + 1) / 2))
+            return anyMatches >= required && strongMatches >= 1 && avg >= 0.55
+        }
+    }
+
+    private func isOffTopicSpam(_ result: WebText.Result) -> Bool {
+        let combined = Self.normalized(result.title + " " + result.snippet + " " + result.url)
+        if !Self.datingQueryHints.contains(where: { normalizedQuery.contains($0) }),
+           Self.datingSpamSignals.contains(where: { combined.contains($0) }) {
+            return true
+        }
+        if !Self.gamblingQueryHints.contains(where: { normalizedQuery.contains($0) }),
+           Self.gamblingSpamSignals.contains(where: { combined.contains($0) }) {
+            return true
+        }
+        if !Self.mediaQueryHints.contains(where: { normalizedQuery.contains($0) }),
+           Self.mediaSpamSignals.contains(where: { combined.contains($0) }) {
+            return true
+        }
+        return false
+    }
+
+    private func score(term: Term, candidateAll: String, candidateASCIIWords: Set<String>) -> Double {
+        switch term {
+        case .ascii(let whole, let parts):
+            if candidateASCIIWords.contains(whole) { return 1.0 }
+            if !parts.isEmpty {
+                let matchedParts = parts.filter { candidateASCIIWords.contains($0) }.count
+                if matchedParts == parts.count { return 1.0 }
+                if matchedParts > 0 { return Double(matchedParts) / Double(parts.count) }
             }
-            return words.contains(term)
-        }.prefix(minimum).count == minimum
+            if whole.count >= 4, candidateASCIIWords.contains(where: { $0.contains(whole) }) {
+                return 0.85
+            }
+            if let syns = Self.synonyms[whole] {
+                for syn in syns where matchesSynonym(syn, in: candidateAll, asciiWords: candidateASCIIWords) {
+                    return 0.8
+                }
+            }
+            return 0.0
+
+        case .cjk(let text, let bigrams):
+            if candidateAll.contains(text) { return 1.0 }
+            if text.count >= 3 && !bigrams.isEmpty {
+                let hitCount = bigrams.filter { candidateAll.contains($0) }.count
+                if hitCount > 0 {
+                    return Double(hitCount) / Double(bigrams.count)
+                }
+            }
+            if let syns = Self.synonyms[text] {
+                for syn in syns where matchesSynonym(syn, in: candidateAll, asciiWords: candidateASCIIWords) {
+                    return 0.85
+                }
+            }
+            return 0.0
+        }
+    }
+
+    private func matchesSynonym(_ syn: String, in candidateAll: String, asciiWords: Set<String>) -> Bool {
+        if syn.unicodeScalars.allSatisfy({ $0.isASCII }) {
+            return asciiWords.contains(syn)
+        }
+        return candidateAll.contains(syn)
     }
 
     private static func normalized(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+        #if canImport(Darwin)
+        return folded.applyingTransform(StringTransform(rawValue: "Hant-Hans"), reverse: false) ?? folded
+        #else
+        return folded
+        #endif
     }
 
-    private static func words(_ text: String) -> Set<String> {
+    private static func domainText(from rawURL: String) -> String {
+        guard let url = URL(string: rawURL), var host = url.host?.lowercased() else { return "" }
+        if host.hasPrefix("www.") { host = String(host.dropFirst(4)) }
+        let labels = host.split(separator: ".").map(String.init)
+        let tlds: Set<String> = ["com", "org", "net", "cn", "io", "co", "gov", "edu", "me", "dev", "app", "ai", "jp", "uk", "de", "fr", "hk", "tw"]
+        let meaningful = labels.filter { !tlds.contains($0) && $0.count > 1 }
+        return ([host] + meaningful).joined(separator: " ")
+    }
+
+    private static func isCJKOrKanaOrHangul(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.isIdeographic { return true }
+        let v = scalar.value
+        return (0x3040...0x30FF).contains(v)
+            || (0x31F0...0x31FF).contains(v)
+            || (0xAC00...0xD7AF).contains(v)
+            || (0x1100...0x11FF).contains(v)
+            || (0x3130...0x318F).contains(v)
+    }
+
+    private static func isASCIITokenScalar(_ scalar: Unicode.Scalar) -> Bool {
+        let v = scalar.value
+        return (0x30...0x39).contains(v) || (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v)
+    }
+
+    private static func extractTerms(from norm: String) -> [Term] {
+        var result: [Term] = []
+        var seen: Set<Term> = []
+
+        func appendTerm(_ term: Term) {
+            if seen.insert(term).inserted {
+                result.append(term)
+            }
+        }
+
+        enum ScriptKind { case ascii, cjk, other }
+        var current = ""
+        var currentKind: ScriptKind = .other
+
+        func flush() {
+            guard !current.isEmpty else { return }
+            let token = current
+            current = ""
+            switch currentKind {
+            case .ascii:
+                let parts = splitAlphaDigitParts(token)
+                appendTerm(.ascii(whole: token, parts: parts))
+            case .cjk:
+                for word in tokenizeCJK(token) {
+                    let trimmedWord = trimSuffixStopwords(word)
+                    guard !trimmedWord.isEmpty else { continue }
+                    if trimmedWord != word && trimmedWord.count >= 4 {
+                        for sub in tokenizeCJK(trimmedWord) {
+                            appendTerm(.cjk(text: sub, bigrams: makeBigrams(sub)))
+                        }
+                    } else {
+                        appendTerm(.cjk(text: trimmedWord, bigrams: makeBigrams(trimmedWord)))
+                    }
+                }
+            case .other:
+                break
+            }
+        }
+
+        for scalar in norm.unicodeScalars {
+            let kind: ScriptKind
+            if isASCIITokenScalar(scalar) {
+                kind = .ascii
+            } else if isCJKOrKanaOrHangul(scalar) {
+                kind = .cjk
+            } else {
+                kind = .other
+            }
+            if kind != currentKind {
+                flush()
+                currentKind = kind
+            }
+            if kind != .other {
+                current.unicodeScalars.append(scalar)
+            }
+        }
+        flush()
+        return result
+    }
+
+    private static func extractASCIIWordSet(from norm: String) -> Set<String> {
+        var words: Set<String> = []
+        var current = ""
+        for scalar in norm.unicodeScalars {
+            if isASCIITokenScalar(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                words.insert(current)
+                for part in splitAlphaDigitParts(current) {
+                    words.insert(part)
+                }
+                current = ""
+            }
+        }
+        if !current.isEmpty {
+            words.insert(current)
+            for part in splitAlphaDigitParts(current) {
+                words.insert(part)
+            }
+        }
+        return words
+    }
+
+    private static func splitAlphaDigitParts(_ token: String) -> [String] {
+        var parts: [String] = []
+        var run = ""
+        var prevIsDigit: Bool?
+        for ch in token {
+            let isDigit = ch.isNumber
+            if let prev = prevIsDigit, prev != isDigit {
+                if !run.isEmpty { parts.append(run) }
+                run = String(ch)
+            } else {
+                run.append(ch)
+            }
+            prevIsDigit = isDigit
+        }
+        if !run.isEmpty { parts.append(run) }
+        guard parts.count >= 2 else { return [] }
+        let hasLongAlpha = parts.contains { $0.count >= 2 && $0.allSatisfy(\.isLetter) }
+        return hasLongAlpha ? parts : []
+    }
+
+    private static func tokenizeCJK(_ text: String) -> [String] {
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = text
-        return Set(tokenizer.tokens(for: text.startIndex..<text.endIndex).map { String(text[$0]) })
+        let tokens = tokenizer.tokens(for: text.startIndex..<text.endIndex).map { String(text[$0]) }.filter { !$0.isEmpty }
+        return tokens.isEmpty ? [text] : tokens
+    }
+
+    private static func trimSuffixStopwords(_ word: String) -> String {
+        guard word.count >= 5 else { return word }
+        for suffix in suffixStopwords where word.hasSuffix(suffix) && word.count > suffix.count {
+            return String(word.dropLast(suffix.count))
+        }
+        return word
+    }
+
+    private static func makeBigrams(_ text: String) -> [String] {
+        let chars = Array(text)
+        guard chars.count >= 2 else { return chars.isEmpty ? [] : [text] }
+        var out: [String] = []
+        out.reserveCapacity(chars.count - 1)
+        for i in 0..<(chars.count - 1) {
+            out.append(String([chars[i], chars[i + 1]]))
+        }
+        return out
     }
 }
 
@@ -723,13 +1631,18 @@ private final class SearchConfigBox: @unchecked Sendable {
     }
 }
 
-/// Searches the web using the configured provider (default: AnySearch free tier) with optional fallback to Bing / DuckDuckGo.
+/// Searches the web using the configured primary provider (default: built-in Bing / DuckDuckGo) and ordered fallback chain.
 public struct WebSearchTool: AgentTool {
     public struct ProbeResult: Sendable {
         public var ok: Bool
         public var source: String
         public var count: Int
         public var detail: String
+    }
+
+    private enum BuiltinOutcome {
+        case success(source: String, results: [WebText.Result])
+        case exhausted(failures: [String], hadUnrelated: Bool, hadHardError: Bool)
     }
 
     private static let configBox = SearchConfigBox()
@@ -741,11 +1654,13 @@ public struct WebSearchTool: AgentTool {
 
     private let loadConfig: @Sendable () async -> WebSearchConfig
     private let sendJSON: @Sendable (URLRequest) async throws -> (status: Int, data: Data)
+    private let sendSearXNG: @Sendable (URLRequest) async throws -> (status: Int, data: Data)
     private let fetchHTML: @Sendable (URL) async throws -> String
 
     public init() {
         loadConfig = { await Self.configBox.load() }
         sendJSON = { try await WebFetch.json($0) }
+        sendSearXNG = { try await WebFetch.searxngJSON($0) }
         fetchHTML = { url in
             let page = try await WebFetch.get(url, timeout: 12)
             return WebText.decode(page.data, encodingName: page.encoding)
@@ -755,6 +1670,7 @@ public struct WebSearchTool: AgentTool {
     init(fetchHTML: @escaping @Sendable (URL) async throws -> String) {
         loadConfig = { WebSearchConfig(primary: .builtin, apiKey: nil, fallbackToBuiltin: true) }
         sendJSON = { _ in throw ProviderError("测试环境未配置 JSON 搜索。") }
+        sendSearXNG = { _ in throw ProviderError("测试环境未配置 JSON 搜索。") }
         self.fetchHTML = fetchHTML
     }
 
@@ -765,16 +1681,24 @@ public struct WebSearchTool: AgentTool {
     ) {
         loadConfig = { config }
         self.sendJSON = sendJSON
+        self.sendSearXNG = sendJSON
         self.fetchHTML = fetchHTML
     }
 
     /// Runs a live single-provider probe (no fallback) for the Settings page "试搜一下" check.
     public static func probe(query: String = "Swift", config: WebSearchConfig) async -> ProbeResult {
-        var direct = config
-        direct.fallbackToBuiltin = false
+        var mutableDirect = config
+        mutableDirect.fallbackToBuiltin = false
+        mutableDirect.fallbackOrder = []
+        let direct = mutableDirect
         let tool = WebSearchTool(
             config: direct,
-            sendJSON: { try await WebFetch.json($0) },
+            sendJSON: { request in
+                if direct.primary == .searxng {
+                    return try await WebFetch.searxngJSON(request)
+                }
+                return try await WebFetch.json(request)
+            },
             fetchHTML: { url in
                 let page = try await WebFetch.get(url, timeout: 12)
                 return WebText.decode(page.data, encodingName: page.encoding)
@@ -822,38 +1746,72 @@ public struct WebSearchTool: AgentTool {
         }
         let config = await loadConfig()
         var failures: [String] = []
+        var hadHardError = false
+        var hadUnrelatedBuiltinResults = false
 
-        if config.primary != .builtin {
-            do {
-                try Task.checkCancellation()
-                let request = try WebSearchAPI.buildRequest(provider: config.primary, query: query, apiKey: config.apiKey, maxResults: 8)
-                let response = try await sendJSON(request)
-                let results = try WebSearchAPI.parseResponse(provider: config.primary, status: response.status, data: response.data)
-                if !results.isEmpty {
-                    let hasKey = !(config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                    let sourceName = (config.primary == .anysearch && !hasKey) ? "AnySearch（免费通道）" : config.primary.shortName
-                    return format(results: results, source: sourceName)
+        for provider in config.searchChain {
+            try Task.checkCancellation()
+            if provider == .builtin {
+                switch try await runBuiltin(query: query) {
+                case let .success(source, results):
+                    return format(results: results, source: source)
+                case let .exhausted(builtinFailures, hadUnrelated, builtinHardError):
+                    failures.append(contentsOf: builtinFailures)
+                    hadUnrelatedBuiltinResults = hadUnrelatedBuiltinResults || hadUnrelated
+                    hadHardError = hadHardError || builtinHardError
                 }
-                failures.append("\(config.primary.shortName) 未返回结果")
-            } catch {
-                try Task.checkCancellation()
-                failures.append(error.localizedDescription)
-            }
-            if !config.fallbackToBuiltin {
-                return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
+            } else {
+                do {
+                    let key = config.key(for: provider)
+                    let request = try WebSearchAPI.buildRequest(
+                        provider: provider,
+                        query: query,
+                        apiKey: key,
+                        searxngURL: config.searxngURL,
+                        maxResults: 8
+                    )
+                    let response: (status: Int, data: Data)
+                    if provider == .searxng {
+                        response = try await sendSearXNG(request)
+                    } else {
+                        response = try await sendJSON(request)
+                    }
+                    let results = try WebSearchAPI.parseResponse(
+                        provider: provider,
+                        status: response.status,
+                        data: response.data
+                    )
+                    if !results.isEmpty {
+                        let hasKey = !(key?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                        let sourceName = (provider == .anysearch && !hasKey) ? "AnySearch（免费通道）" : provider.shortName
+                        return format(results: results, source: sourceName)
+                    }
+                    failures.append("\(provider.shortName) 未返回结果")
+                } catch {
+                    try Task.checkCancellation()
+                    hadHardError = true
+                    failures.append(error.localizedDescription)
+                }
             }
         }
 
-        return try await runBuiltin(query: query, priorFailures: failures)
+        if hadUnrelatedBuiltinResults && !hadHardError {
+            return ToolOutput("没有找到与搜索词足够相关的结果。可以补上地点、名称或日期再搜。")
+        }
+        if hadHardError {
+            return ToolOutput("搜索失败：\(failures.joined(separator: "；"))", isError: true)
+        }
+        return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "没有搜到结果（\(failures.joined(separator: "；"))）。")
     }
 
-    private func runBuiltin(query: String, priorFailures: [String]) async throws -> ToolOutput {
+    private func runBuiltin(query: String) async throws -> BuiltinOutcome {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&+=?#")
         let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
         let relevance = SearchRelevance(query: query)
-        var failures = priorFailures
+        var failures: [String] = []
         var hadUnrelatedResults = false
+        var hadHardError = false
         for (source, address, parse) in [
             ("Bing 国际站", "https://www.bing.com/search?q=\(encoded)&setlang=zh-Hans", WebText.bingResults),
             ("Bing 中国站", "https://cn.bing.com/search?q=\(encoded)", WebText.bingResults),
@@ -868,16 +1826,14 @@ public struct WebSearchTool: AgentTool {
                     hadUnrelatedResults = hadUnrelatedResults || !raw.isEmpty
                     continue
                 }
-                return format(results: results, source: source)
+                return .success(source: source, results: results)
             } catch {
                 try Task.checkCancellation()
+                hadHardError = true
                 failures.append(error.localizedDescription)
             }
         }
-        if hadUnrelatedResults {
-            return ToolOutput("没有找到与搜索词足够相关的结果。可以补上地点、名称或日期再搜。")
-        }
-        return ToolOutput(failures.isEmpty ? "没有搜到结果。" : "搜索失败：\(failures.joined(separator: "；"))", isError: !failures.isEmpty)
+        return .exhausted(failures: failures, hadUnrelated: hadUnrelatedResults, hadHardError: hadHardError)
     }
 
     private func format(results: [WebText.Result], source: String) -> ToolOutput {

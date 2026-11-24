@@ -2,10 +2,13 @@ import AgentKit
 import SwiftUI
 import UIKit
 
-/// Stores web search provider selection and Keychain-backed API keys, and wires them into `AgentKit.WebSearchTool`.
+/// Stores web search provider selection, custom SearXNG URL, ordered fallback chain, and Keychain-backed API keys,
+/// and wires them into `AgentKit.WebSearchTool`.
 enum SearchEngine {
     static let providerKey = "search.provider"
     static let fallbackKey = "search.fallbackToBuiltin"
+    static let searxngURLKey = "search.searxngURL"
+    static let fallbackOrderKey = "search.fallbackOrder"
 
     nonisolated static var primary: WebSearchProvider {
         get {
@@ -27,6 +30,43 @@ enum SearchEngine {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: fallbackKey)
+        }
+    }
+
+    nonisolated static var searxngURL: String {
+        get {
+            UserDefaults.standard.string(forKey: searxngURLKey) ?? ""
+        }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                UserDefaults.standard.set("", forKey: searxngURLKey)
+                return
+            }
+            guard let normalized = SearXNGEndpoint.normalize(trimmed) else { return }
+            UserDefaults.standard.set(normalized, forKey: searxngURLKey)
+        }
+    }
+
+    nonisolated static var fallbackOrder: [WebSearchProvider] {
+        get {
+            let raw = UserDefaults.standard.stringArray(forKey: fallbackOrderKey) ?? []
+            var out: [WebSearchProvider] = []
+            var seen: Set<WebSearchProvider> = []
+            for item in raw {
+                if let parsed = WebSearchProvider(rawValue: item), seen.insert(parsed).inserted {
+                    out.append(parsed)
+                }
+            }
+            return out
+        }
+        set {
+            var unique: [String] = []
+            var seen: Set<WebSearchProvider> = []
+            for item in newValue where seen.insert(item).inserted {
+                unique.append(item.rawValue)
+            }
+            UserDefaults.standard.set(unique, forKey: fallbackOrderKey)
         }
     }
 
@@ -69,14 +109,24 @@ enum SearchEngine {
     nonisolated static func currentConfig() async -> WebSearchConfig {
         let selected = primary
         let fallback = fallbackToBuiltin
-        let key: String?
-        if selected.supportsKey {
-            let saved = await readKey(for: selected)
-            key = saved.isEmpty ? nil : saved
-        } else {
-            key = nil
+        let searxng = searxngURL
+        let order = fallbackOrder.filter { $0 != selected }
+
+        var keys: [WebSearchProvider: String] = [:]
+        for provider in [selected] + order where provider.supportsKey && keys[provider] == nil {
+            let saved = await readKey(for: provider)
+            if !saved.isEmpty {
+                keys[provider] = saved
+            }
         }
-        return WebSearchConfig(primary: selected, apiKey: key, fallbackToBuiltin: fallback)
+        return WebSearchConfig(
+            primary: selected,
+            apiKey: keys[selected],
+            fallbackToBuiltin: fallback,
+            apiKeys: keys,
+            searxngURL: searxng.isEmpty ? nil : searxng,
+            fallbackOrder: order
+        )
     }
 
     /// Registers the live config loader on `WebSearchTool` at app startup.
@@ -94,11 +144,15 @@ enum SearchEngine {
     }
 }
 
-/// Settings page for choosing the web search backend (built-in Bing/DDG by default, or opt-in AnySearch, Tavily, Exa, Brave).
+/// Settings page for choosing the web search backend (built-in Bing/DDG by default, or opt-in AnySearch, Tavily, Exa, Brave, SearXNG).
 struct SearchSettingsPage: View {
     @AppStorage(SearchEngine.providerKey) private var providerRaw = WebSearchProvider.builtin.rawValue
     @AppStorage(SearchEngine.fallbackKey) private var fallbackToBuiltin = true
+    @AppStorage(SearchEngine.searxngURLKey) private var savedSearxngURL = ""
 
+    @State private var searxngDraft = SearchEngine.searxngURL
+    @State private var searxngNotice: String?
+    @State private var fallbackOrder: [WebSearchProvider] = SearchEngine.fallbackOrder
     @State private var keyedProviders: Set<WebSearchProvider> = []
     @State private var savedMasked = ""
     @State private var keyInput = ""
@@ -113,10 +167,58 @@ struct SearchSettingsPage: View {
         WebSearchProvider(rawValue: providerRaw) ?? .builtin
     }
 
+    private var activeFallbackOrder: [WebSearchProvider] {
+        fallbackOrder.filter { $0 != selected }
+    }
+
+    private var availableFallbackProviders: [WebSearchProvider] {
+        WebSearchProvider.allCases.filter { candidate in
+            candidate != selected && candidate != .builtin && !activeFallbackOrder.contains(candidate)
+        }
+    }
+
+    private var showsSearxngSection: Bool {
+        selected == .searxng || activeFallbackOrder.contains(.searxng)
+    }
+
+    private var trimmedSearxngDraft: String {
+        searxngDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searxngValidation: Result<SearXNGEndpoint.Parsed, SearXNGError> {
+        SearXNGEndpoint.parse(searxngDraft)
+    }
+
+    private var hasUnsavedSearxngURL: Bool {
+        trimmedSearxngDraft != savedSearxngURL
+    }
+
+    private var canSaveSearxngDraft: Bool {
+        guard hasUnsavedSearxngURL else { return false }
+        if trimmedSearxngDraft.isEmpty { return true }
+        if case .success = searxngValidation { return true }
+        return false
+    }
+
+    private var effectiveChainNames: [String] {
+        var chain: [WebSearchProvider] = [selected]
+        var seen: Set<WebSearchProvider> = [selected]
+        for item in activeFallbackOrder where seen.insert(item).inserted {
+            chain.append(item)
+        }
+        if fallbackToBuiltin && !seen.contains(.builtin) {
+            chain.append(.builtin)
+        }
+        return chain.map(\.shortName)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Ink.Space.xl) {
                 providerSection
+                if showsSearxngSection {
+                    searxngSection
+                }
                 if selected.supportsKey {
                     keySection
                 }
@@ -132,6 +234,11 @@ struct SearchSettingsPage: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await reloadKeys() }
         .task(id: providerRaw) { await loadSelectedKey() }
+        .onChange(of: searxngDraft) { _, next in
+            if next.trimmingCharacters(in: .whitespacesAndNewlines) != savedSearxngURL {
+                searxngNotice = nil
+            }
+        }
         .onDisappear { probeTask?.cancel() }
     }
 
@@ -215,6 +322,7 @@ struct SearchSettingsPage: View {
         case .tavily: L.t("searchSettings.providerTavilyName")
         case .exa: L.t("searchSettings.providerExaName")
         case .brave: L.t("searchSettings.providerBraveName")
+        case .searxng: L.t("searchSettings.providerSearxngName")
         }
     }
 
@@ -225,6 +333,7 @@ struct SearchSettingsPage: View {
         case .tavily: L.t("searchSettings.providerTavilySummary")
         case .exa: L.t("searchSettings.providerExaSummary")
         case .brave: L.t("searchSettings.providerBraveSummary")
+        case .searxng: L.t("searchSettings.providerSearxngSummary")
         }
     }
 
@@ -234,6 +343,7 @@ struct SearchSettingsPage: View {
         case .tavily: "magnifyingglass.circle"
         case .exa: "brain.head.profile"
         case .brave: "shield"
+        case .searxng: "server.rack"
         case .builtin: "globe"
         }
     }
@@ -248,8 +358,102 @@ struct SearchSettingsPage: View {
             return hasKey
                 ? (L.t("searchSettings.badgeKeySaved"), Ink.ok)
                 : (L.t("searchSettings.badgeKeyNeeded"), Ink.warn)
+        case .searxng:
+            return savedSearxngURL.isEmpty
+                ? (L.t("searchSettings.badgeURLNeeded"), Ink.warn)
+                : (L.t("searchSettings.badgeURLSaved"), Ink.ok)
         case .builtin:
             return nil
+        }
+    }
+
+    // MARK: SearXNG instance URL editor
+
+    private var searxngSection: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("searchSettings.searxngSection"))
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(L.t("searchSettings.searxngURLLabel"))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                    TextField(L.t("searchSettings.searxngURLPlaceholder"), text: $searxngDraft)
+                        .font(Ink.mono(Ink.Size.sub))
+                        .keyboardType(.URL)
+                        .submitLabel(.done)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { saveSearxngURL() }
+                }
+                searxngValidationView
+                searxngActionRow
+            }
+            .padding(Ink.Space.l)
+            .paperCard()
+            Text(L.t("searchSettings.searxngURLFooter"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var searxngValidationView: some View {
+        if !trimmedSearxngDraft.isEmpty {
+            switch searxngValidation {
+            case .success(let parsed):
+                Text(L.format("searchSettings.searxngPreview", parsed.searchBaseURL + "?q=…&format=json"))
+                    .font(Ink.mono(Ink.Size.small))
+                    .foregroundStyle(Ink.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .failure(let err):
+                Text(err.localizedDescription)
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.stop)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var searxngActionRow: some View {
+        if hasUnsavedSearxngURL {
+            HStack(spacing: Ink.Space.m) {
+                Button(L.t("searchSettings.searxngSaveURL")) { saveSearxngURL() }
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(canSaveSearxngDraft ? Ink.accent : Ink.inkFaint)
+                    .disabled(!canSaveSearxngDraft)
+                Button(L.t("searchSettings.searxngRevertURL")) {
+                    searxngDraft = savedSearxngURL
+                    searxngNotice = nil
+                }
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                Spacer()
+            }
+        } else if !savedSearxngURL.isEmpty {
+            Kit.rule(inset: 0)
+            HStack {
+                if let searxngNotice {
+                    Text(searxngNotice)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.ok)
+                } else {
+                    Text(savedSearxngURL)
+                        .font(Ink.mono(Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button(L.t("searchSettings.searxngClearURL"), role: .destructive) { clearSearxngURL() }
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.stop)
+            }
+        } else if let searxngNotice {
+            Text(searxngNotice)
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.ok)
         }
     }
 
@@ -319,10 +523,11 @@ struct SearchSettingsPage: View {
     }
 
     private var keyFootnote: String {
-        if selected == .anysearch {
-            return L.t("searchSettings.anysearchKeyNote")
+        switch selected {
+        case .anysearch: L.t("searchSettings.anysearchKeyNote")
+        case .searxng: L.t("searchSettings.searxngKeyNote")
+        default: L.t("searchSettings.keyNote")
         }
-        return L.t("searchSettings.keyNote")
     }
 
     // MARK: Fallback & Live Test
@@ -331,6 +536,8 @@ struct SearchSettingsPage: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("searchSettings.fallbackAndTestSection"))
             VStack(alignment: .leading, spacing: 0) {
+                fallbackOrderBlock
+                Kit.rule(inset: Ink.Space.l)
                 if selected != .builtin {
                     Toggle(L.t("searchSettings.fallbackToggle"), isOn: $fallbackToBuiltin)
                         .font(.system(size: Ink.Size.body))
@@ -340,28 +547,157 @@ struct SearchSettingsPage: View {
                         .frame(minHeight: Kit.rowHeight)
                     Kit.rule(inset: Ink.Space.l)
                 }
-                VStack(alignment: .leading, spacing: Ink.Space.m) {
-                    HStack(spacing: Ink.Space.s) {
-                        TextField(L.t("searchSettings.testPlaceholder"), text: $testQuery)
-                            .font(.system(size: Ink.Size.sub))
-                            .submitLabel(.search)
-                            .onSubmit { runProbe() }
-                        if testing {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
-                    Button(testing ? L.t("searchSettings.testing") : L.t("searchSettings.runTest")) { runProbe() }
-                        .buttonStyle(WideButtonStyle())
-                        .disabled(testing || testQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if let testResult {
-                        probeResultView(testResult)
-                    }
-                }
-                .padding(Ink.Space.l)
+                probeBlock
             }
             .paperCard()
         }
+    }
+
+    private var fallbackOrderBlock: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Text(L.t("searchSettings.fallbackOrderTitle"))
+                .font(.system(size: Ink.Size.sub, weight: .medium))
+                .foregroundStyle(Ink.ink)
+            if activeFallbackOrder.isEmpty {
+                Text(L.t("searchSettings.fallbackOrderEmpty"))
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: Ink.Space.s) {
+                    ForEach(Array(activeFallbackOrder.enumerated()), id: \.element.id) { index, provider in
+                        fallbackOrderRow(provider: provider, index: index, total: activeFallbackOrder.count)
+                    }
+                }
+            }
+            if !availableFallbackProviders.isEmpty {
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(L.t("searchSettings.fallbackAddTitle"))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Ink.Space.s) {
+                            ForEach(availableFallbackProviders) { provider in
+                                Button {
+                                    addFallbackProvider(provider)
+                                } label: {
+                                    HStack(spacing: Ink.Space.xs) {
+                                        Image(systemName: "plus")
+                                            .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                        Text(provider.shortName)
+                                            .font(.system(size: Ink.Size.small, weight: .medium))
+                                    }
+                                    .foregroundStyle(Ink.accent)
+                                    .padding(.horizontal, Ink.Space.m)
+                                    .padding(.vertical, Ink.Space.xs + 2)
+                                    .background(Ink.accentWash, in: .capsule)
+                                }
+                                .buttonStyle(TapStyle())
+                            }
+                        }
+                    }
+                }
+            }
+            if effectiveChainNames.count > 1 {
+                Text(L.format("searchSettings.fallbackChainSummary", effectiveChainNames.joined(separator: " → ")))
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(Ink.Space.l)
+    }
+
+    private func fallbackOrderRow(provider: WebSearchProvider, index: Int, total: Int) -> some View {
+        let status = fallbackStatus(for: provider)
+        return HStack(spacing: Ink.Space.s) {
+            Text("\(index + 1)")
+                .font(.system(size: Ink.Size.micro, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Ink.accent)
+                .frame(width: 22, height: 22)
+                .background(Ink.accentWash, in: .capsule)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.shortName)
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(Ink.ink)
+                Text(status.text)
+                    .font(.system(size: Ink.Size.micro))
+                    .foregroundStyle(status.tint)
+            }
+            Spacer(minLength: Ink.Space.xs)
+            Button {
+                moveFallbackProvider(at: index, offset: -1)
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(index > 0 ? Ink.inkSoft : Ink.inkFaint.opacity(0.45))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(TapStyle())
+            .disabled(index == 0)
+            .accessibilityLabel(L.t("searchSettings.fallbackMoveUp"))
+
+            Button {
+                moveFallbackProvider(at: index, offset: 1)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(index + 1 < total ? Ink.inkSoft : Ink.inkFaint.opacity(0.45))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(TapStyle())
+            .disabled(index + 1 >= total)
+            .accessibilityLabel(L.t("searchSettings.fallbackMoveDown"))
+
+            Button {
+                removeFallbackProvider(provider)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.inkFaint)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(TapStyle())
+            .accessibilityLabel(L.t("searchSettings.fallbackRemove"))
+        }
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, Ink.Space.s)
+        .background(Ink.paper, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+    }
+
+    private func fallbackStatus(for provider: WebSearchProvider) -> (text: String, tint: Color) {
+        if provider.needsURL && savedSearxngURL.isEmpty {
+            return (L.t("searchSettings.fallbackNeedsURL"), Ink.warn)
+        }
+        if provider.needsKey && !keyedProviders.contains(provider) {
+            return (L.t("searchSettings.fallbackNeedsKey"), Ink.warn)
+        }
+        return (L.t("searchSettings.fallbackReady"), Ink.inkSoft)
+    }
+
+    private var probeBlock: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            HStack(spacing: Ink.Space.s) {
+                TextField(L.t("searchSettings.testPlaceholder"), text: $testQuery)
+                    .font(.system(size: Ink.Size.sub))
+                    .submitLabel(.search)
+                    .onSubmit { runProbe() }
+                if testing {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            Button(testing ? L.t("searchSettings.testing") : L.t("searchSettings.runTest")) { runProbe() }
+                .buttonStyle(WideButtonStyle())
+                .disabled(testing || testQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let testResult {
+                probeResultView(testResult)
+            }
+        }
+        .padding(Ink.Space.l)
     }
 
     private func probeResultView(_ result: WebSearchTool.ProbeResult) -> some View {
@@ -400,6 +736,56 @@ struct SearchSettingsPage: View {
         let current = await SearchEngine.readKey(for: target)
         guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
         savedMasked = SearchEngine.mask(current)
+    }
+
+    private func saveSearxngURL() {
+        let trimmed = trimmedSearxngDraft
+        if trimmed.isEmpty {
+            clearSearxngURL()
+            return
+        }
+        guard case .success(let parsed) = SearXNGEndpoint.parse(trimmed) else { return }
+        SearchEngine.searxngURL = parsed.baseURL
+        savedSearxngURL = parsed.baseURL
+        searxngDraft = parsed.baseURL
+        searxngNotice = L.t("searchSettings.searxngURLSavedNotice")
+        testResult = nil
+        Haptics.thud()
+    }
+
+    private func clearSearxngURL() {
+        SearchEngine.searxngURL = ""
+        savedSearxngURL = ""
+        searxngDraft = ""
+        searxngNotice = L.t("searchSettings.searxngURLClearedNotice")
+        testResult = nil
+        Haptics.lock()
+    }
+
+    private func addFallbackProvider(_ provider: WebSearchProvider) {
+        var next = activeFallbackOrder
+        guard provider != selected, provider != .builtin, !next.contains(provider) else { return }
+        next.append(provider)
+        fallbackOrder = next
+        SearchEngine.fallbackOrder = next
+        Haptics.tick(0.5)
+    }
+
+    private func moveFallbackProvider(at index: Int, offset: Int) {
+        var next = activeFallbackOrder
+        let dest = index + offset
+        guard next.indices.contains(index), next.indices.contains(dest) else { return }
+        next.swapAt(index, dest)
+        fallbackOrder = next
+        SearchEngine.fallbackOrder = next
+        Haptics.tick(0.4)
+    }
+
+    private func removeFallbackProvider(_ provider: WebSearchProvider) {
+        let next = activeFallbackOrder.filter { $0 != provider }
+        fallbackOrder = next
+        SearchEngine.fallbackOrder = next
+        Haptics.tick(0.4)
     }
 
     private func saveCurrentKey() {
@@ -443,6 +829,7 @@ struct SearchSettingsPage: View {
         let target = selected
         let version = selectionVersion
         let pendingInput = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingSearxng = trimmedSearxngDraft.isEmpty ? savedSearxngURL : trimmedSearxngDraft
         probeTask = Task {
             let keyToUse: String?
             if !target.supportsKey {
@@ -454,7 +841,12 @@ struct SearchSettingsPage: View {
                 keyToUse = saved.isEmpty ? nil : saved
             }
             guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
-            let config = WebSearchConfig(primary: target, apiKey: keyToUse, fallbackToBuiltin: false)
+            let config = WebSearchConfig(
+                primary: target,
+                apiKey: keyToUse,
+                fallbackToBuiltin: false,
+                searxngURL: target == .searxng ? pendingSearxng : nil
+            )
             let result = await WebSearchTool.probe(query: q, config: config)
             guard !Task.isCancelled, selected == target, selectionVersion == version else { return }
             testResult = result
