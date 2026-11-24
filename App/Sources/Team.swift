@@ -273,6 +273,7 @@ final class TeamModel: ObservableObject {
             }
         } else {
             startup = Task.detached(priority: .userInitiated) { InitialData.read() }
+            scheduleIndexWarmup(after: startup)
         }
     }
 
@@ -335,7 +336,9 @@ final class TeamModel: ObservableObject {
         let title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
         guard list[index].title != title else { return true }
         list[index].title = title
-        return writeEditedLeaves(key, list)
+        let saved = writeEditedLeaves(key, list)
+        if saved { scheduleIndexUpdateLeafTitle(key, leafID: id, title: title) }
+        return saved
     }
 
     @discardableResult
@@ -351,6 +354,7 @@ final class TeamModel: ObservableObject {
             Disk.remove(Self.leafFile(key, id))
             Disk.remove(Self.leafSummary(key, id))
         }
+        scheduleIndexDeleteChat(key, includingLeaves: false, leafID: id)
         return true
     }
 
@@ -381,6 +385,7 @@ final class TeamModel: ObservableObject {
         } else {
             setSummary(key, nil)
         }
+        scheduleIndexSync(key, entries: rest)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
     }
@@ -407,6 +412,8 @@ final class TeamModel: ObservableObject {
         Disk.remove(Self.leafFile(key, leaf.id))
         Disk.remove(Self.leafSummary(key, leaf.id))
         setLeaves(key, leaves(key).filter { $0.id != leaf.id })
+        scheduleIndexSync(key, entries: restored)
+        scheduleIndexDeleteChat(key, includingLeaves: false, leafID: leaf.id)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
     }
@@ -491,6 +498,7 @@ final class TeamModel: ObservableObject {
             if !current.isEmpty {
                 entries[key] = []
                 if keeping { ChatDisk.save([Entry](), chat: key) }
+                scheduleIndexSync(key, entries: [])
                 clearPreview(key)
                 notify(key, .changed)
             }
@@ -550,6 +558,8 @@ final class TeamModel: ObservableObject {
         persistQueued(key)
         modelInputLog.clear(key)
         if keeping { ChatDisk.save([Entry](), chat: key) }
+        scheduleIndexSync(key, leafID: leaf.id, leafTitle: leaf.title, entries: current)
+        scheduleIndexSync(key, entries: [])
         clearPreview(key)
         notify(key, .changed)
         return true
@@ -571,6 +581,7 @@ final class TeamModel: ObservableObject {
         marker.note = true
         entries[key] = restarted + [marker]
         if keeping { ChatDisk.save(entries[key] ?? [], chat: key) }
+        scheduleIndexSync(key, entries: entries[key] ?? [])
         notify(key, .changed)
     }
 
@@ -604,6 +615,7 @@ final class TeamModel: ObservableObject {
             setLeaves(key, [])
         }
         if keeping { ChatDisk.save([Entry](), chat: key) }
+        scheduleIndexDeleteChat(key, includingLeaves: includingLeaves)
         forgetThreads(key, includingLeaves: includingLeaves)
         setSummary(key, nil)
         var cleared = options(key)
@@ -776,6 +788,8 @@ final class TeamModel: ObservableObject {
             moveThread(leafKey, to: key)
             rename(key, to: leaf.title)
         }
+        scheduleIndexDeleteChat(key, includingLeaves: false, leafID: leaf.id)
+        scheduleIndexSync(key, entries: kept)
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
         touch(key, preview: last, at: leaf.at)
         notify(key, .changed)
@@ -811,6 +825,7 @@ final class TeamModel: ObservableObject {
             guard let index = list.firstIndex(where: { $0.id == id }), list[index].title == initialTitle else { return }
             list[index].title = String(clean)
             self.setLeaves(key, list)
+            self.scheduleIndexUpdateLeafTitle(key, leafID: id, title: String(clean))
         }
     }
 
@@ -824,6 +839,7 @@ final class TeamModel: ObservableObject {
         let leafKey = Self.threadKey(key, leaf: leaf.id)
         forgetThreads(leafKey)
         clearQueuedSlot(leafKey)
+        scheduleIndexDeleteChat(key, includingLeaves: false, leafID: leaf.id)
     }
 
     func clearPreview(_ key: String) {
@@ -844,6 +860,7 @@ final class TeamModel: ObservableObject {
         entries[key] = list
         if keeping {
             ChatDisk.save(list, chat: key, onSaved: onSaved)
+            scheduleIndexSync(key, entries: list)
         } else {
             onSaved?(true)
         }
@@ -933,6 +950,7 @@ final class TeamModel: ObservableObject {
         inFlightQueued.removeAll()
         queued.removeAll()
         unresolvedLeafOpenChats.removeAll()
+        scheduleIndexResetForRestore()
     }
 
     func finishBackupRestoreFailed() {
@@ -1705,6 +1723,7 @@ final class TeamModel: ObservableObject {
         guard let list = Turns.retried(history(key)) else { return }
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
+        scheduleIndexSync(key, entries: list)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else { return start(key) }
@@ -1746,6 +1765,7 @@ final class TeamModel: ObservableObject {
         }) else { return false }
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
+        scheduleIndexSync(key, entries: list)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else {
@@ -1869,6 +1889,14 @@ final class TeamModel: ObservableObject {
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
         all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
+        let searchHistoryTool = SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
+            await self?.searchHistory(query: query, chatKey: key, includeAllChats: includeAllChats, helping: helping, limit: limit)
+                ?? "当前无法检索历史记录。"
+        }
+        let searchHistoryManagedByGrants = Grant.of(tool: "search_history") != nil
+        if searchHistoryManagedByGrants {
+            all.append(searchHistoryTool)
+        }
         all.append(CalendarListTool())
         all.append(CalendarAddTool())
         all.append(RemindersListTool())
@@ -1924,7 +1952,7 @@ final class TeamModel: ObservableObject {
                 allowAfterWeb: { Grant.followPolicyAfterWeb }
             )
         }
-        return Grant.gate(
+        var gated = Grant.gate(
             guarded,
             workspace: grants,
             executionChat: key,
@@ -1937,6 +1965,35 @@ final class TeamModel: ObservableObject {
             guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
             return !off.contains(grant.rawValue)
         }
+        if !searchHistoryManagedByGrants {
+            let memoryGrant = Grant.memory
+            if memoryGrant.policy != .off && !off.contains(memoryGrant.rawValue) {
+                let guardedSearchHistory = TaintGuard(
+                    searchHistoryTool,
+                    key: key,
+                    optInKey: approvalChat,
+                    book: taintBook,
+                    isInside: { host.isInside($0) },
+                    allowAfterWeb: { Grant.followPolicyAfterWeb }
+                )
+                gated.append(
+                    LiveGatedTool(
+                        inner: guardedSearchHistory,
+                        context: ToolExecutionContext(
+                            executionChat: key,
+                            hostID: "",
+                            grantID: memoryGrant.rawValue
+                        ),
+                        receipts: receipts,
+                        policyRevision: { queue.currentRevision },
+                        isContextStillValid: nil,
+                        access: { memoryGrant.liveAccess(for: "search_history") },
+                        reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
+                    )
+                )
+            }
+        }
+        return gated
     }
 
     // MARK: 派活
