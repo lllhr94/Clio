@@ -365,7 +365,7 @@ struct CarePage: View {
         for endpoint in team.settings.endpoints {
             lines.append("模型服务 \(endpoint.name)（\(URL(string: endpoint.baseURL)?.host ?? "?")，\(endpoint.models.count) 个模型）：\(probes[endpoint.id] ?? "未测")")
         }
-        lines.append("设置：" + ["look.face", "look.size", "look.scheme", "chat.contextShare", "chat.compressShare", "chat.autoCompress", "chat.temperature", "chat.maxOutput"]
+        lines.append("设置：" + ["look.face", "look.size", "look.scheme", "chat.contextShare", "chat.compressShare", "chat.autoCompress", "chat.temperature", "chat.maxOutput", "chat.maxSteps"]
             .map { "\($0)=\(UserDefaults.standard.object(forKey: $0).map { "\($0)" } ?? "默认")" }.joined(separator: " "))
         lines.append("最近的错误：")
         lines += Diag.log.suffix(20)

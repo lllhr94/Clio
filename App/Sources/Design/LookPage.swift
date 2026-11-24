@@ -270,6 +270,7 @@ struct ChatContextPage: View {
     @AppStorage("chat.contextCount") private var contextCount = 0
     @AppStorage("chat.temperature") private var temperature = -1.0
     @AppStorage("chat.maxOutput") private var maxOutput = 0
+    @AppStorage("chat.maxSteps") private var maxSteps = Pref.defaultMaxSteps
 
     private static let shares = [0.2, 0.4, 0.6, 0.7, 0.8, 0.9]
     private static let compressShares = [0.5, 0.6, 0.7, 0.8]
@@ -312,7 +313,11 @@ struct ChatContextPage: View {
                                                                     detail: Self.temperatures[$0] < 0 ? nil : String(format: "%.1f", Self.temperatures[$0])) })
                 StopRow(title: L.t("settingsHome.maxReply"), value: Stops.snapped($maxOutput, to: Self.outputs),
                         stops: Self.outputs.map { Stop(value: $0, name: $0 == 0 ? L.t("settings.modelDefault") : Tokens.short($0) + " token") })
-            } header: { Text(L.t("settingsHome.replyGroup")) }
+                StopRow(title: L.t("settingsHome.maxSteps"), value: Stops.snapped($maxSteps, to: Pref.maxStepStops),
+                        stops: Pref.maxStepStops.map { Stop(value: $0, name: L.format("settingsHome.stepsCount", $0)) })
+            } header: { Text(L.t("settingsHome.replyGroup")) } footer: {
+                Text(L.t("settingsHome.maxStepsNote"))
+            }
         }
     }
 
@@ -338,6 +343,7 @@ struct ChatContextPage: View {
         contextCount = 0
         temperature = -1
         maxOutput = 0
+        maxSteps = Pref.defaultMaxSteps
     }
 }
 
