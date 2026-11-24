@@ -36,6 +36,7 @@ struct CarePage: View {
     @State private var probing = false
     @State private var copied = false
     @State private var copyingReport = false
+    @State private var uikitSpikeOpen = false
 
     private var backupOrRestoreBusy: Bool {
         making || restoring || restoringBusy || davBusy || !davChoices.isEmpty || restored || Disk.frozen
@@ -138,6 +139,22 @@ struct CarePage: View {
                 }
 
                 Section {
+                    Button {
+                        Haptics.light()
+                        uikitSpikeOpen = true
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                Text(L.t("careSpike.title")).foregroundStyle(Ink.ink)
+                                Text(L.t("careSpike.subtitle")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            }
+                            Spacer()
+                            Kit.chevron
+                        }
+                    }
+                } header: { Text(L.t("careSpike.section")) }
+
+                Section {
                     Button(copied ? "复制好了，贴给我就行" : (copyingReport ? "正在整理诊断…" : "复制整份诊断")) {
                         copyReport()
                     }
@@ -229,6 +246,9 @@ struct CarePage: View {
                 } else {
                     Button(L.t("actions.done"), role: .cancel) {}
                 }
+            }
+            .fullScreenCover(isPresented: $uikitSpikeOpen) {
+                SpikeChatSheet()
             }
         }
     }

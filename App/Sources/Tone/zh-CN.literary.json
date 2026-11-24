@@ -951,5 +951,10 @@
     "outputTrimmedNote": "长输出已做脱敏截断保存，复制得到的是已保存的部分。",
     "copy": "复制",
     "copied": "已复制"
+  },
+  "careSpike": {
+    "section": "渲染实验室",
+    "title": "UIKit 对话原型",
+    "subtitle": "验证跨段引用、前文锚点稳停与流式零闪跳"
   }
 }
