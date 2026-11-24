@@ -445,11 +445,7 @@ struct ChatPage: View {
             .onChange(of: showsLive) { followToEnd() }
             .onChange(of: chat.error) { followToEnd() }
             .onChange(of: waiting?.id) {
-                // The composer inset moves when the approval card arrives or leaves.
-                // Replace any jump based on the previous inset with a check after layout.
-                followPending?.cancel()
-                settleEnd?.cancel()
-                followToEnd()
+                approvalInsetChanged()
             }
             .onAppear { scroller = proxy }
             .task { await playShot() }
@@ -797,6 +793,8 @@ struct ChatPage: View {
             if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
             followPending?.cancel()
             settleEnd?.cancel()
+            approvalInsetTask?.cancel()
+            approvalInsetTask = nil
             draftState.flush()
             DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             chat.close()
@@ -1040,6 +1038,7 @@ struct ChatPage: View {
 
     @State var sourcesMemo = SourcesMemo()
     @State var followPending: Task<Void, Never>?
+    @State var approvalInsetTask: Task<Void, Never>?
     @State var settleEnd: Task<Void, Never>?
     @State var pickerShown = false
     @State var importingFile = false

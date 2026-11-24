@@ -69,6 +69,7 @@ def fixture() -> str:
         "END_ALIGNMENT_CHANGED": chat_member("endAlignmentChanged"),
         "SELECTION_CHANGED": chat_member("selectionChanged"),
         "PRESENT_APPROVAL": chat_member("presentApproval"),
+        "APPROVAL_INSET": re.sub(r"\bTask\.sleep\(", "clock.sleep(", chat_member("approvalInsetChanged")),
         "PHASE": phase_body,
         "FOLLOW": schedule,
         "CLEAR_COMPOSER": chat_member("clearComposer"),

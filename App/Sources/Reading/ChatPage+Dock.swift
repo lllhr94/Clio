@@ -549,6 +549,18 @@ extension ChatPage {
         approving = approval
     }
 
+    func approvalInsetChanged() {
+        followPending?.cancel()
+        settleEnd?.cancel()
+        approvalInsetTask?.cancel()
+        approvalInsetTask = Task { @MainActor in
+            // The system anchor follows the animated dock. Recheck only after it settles.
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            approvalInsetTask = nil
+            followToEnd(settle: false)
+        }
+    }
+
     func selectionChanged(_ id: UUID, _ started: Bool) {
         if started {
             selecting.insert(id)
@@ -560,13 +572,14 @@ extension ChatPage {
 
     /// Coalesce layout changes from the composer and a newly inserted row before moving the viewport.
     func followToEnd(settle: Bool = true) {
-        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty, approving == nil else { return }
+        guard historyPage == nil, following, !touchScrolling, selecting.isEmpty,
+              approving == nil, approvalInsetTask == nil else { return }
         followPending?.cancel()
         followPending = Task { @MainActor in
             defer { if !Task.isCancelled { followPending = nil } }
             do { try await Task.sleep(for: .milliseconds(settle ? 32 : 16)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  approving == nil, viewport.needsEndCorrection else { return }
+                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection else { return }
             toEnd()
         }
     }
@@ -585,7 +598,7 @@ extension ChatPage {
         settleEnd = Task { @MainActor in
             do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  approving == nil, viewport.needsEndCorrection else { return }
+                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection else { return }
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
     }

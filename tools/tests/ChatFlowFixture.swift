@@ -176,6 +176,7 @@ private final class FlowFixture {
     var historyPage: [String]?
     var approving: Approval?
     var typing = false
+    var approvalInsetTask: Task<Void, Never>?
     let viewport = Viewport()
 
     final class Viewport {
@@ -185,7 +186,7 @@ private final class FlowFixture {
     func lingerJumpButtons() {}
     func invalidatePhotoSelection() {}
     private(set) var scrolls: [Bool] = []
-    private var followPending: Task<Void, Never>?
+    private(set) var followPending: Task<Void, Never>?
     private var settleEnd: Task<Void, Never>?
     let clock = Clock()
     private var alignment: CGFloat = 0
@@ -234,6 +235,7 @@ private final class FlowFixture {
 // RULE: END_ALIGNMENT_CHANGED
 // RULE: SELECTION_CHANGED
 // RULE: PRESENT_APPROVAL
+// RULE: APPROVAL_INSET
 // RULE: FOLLOW
 // RULE: CLEAR_COMPOSER
 }
@@ -299,6 +301,7 @@ private enum ChatFlowTests {
             try replyBoundaries()
             try PetSurfaceFixture.checkPassThrough()
             try await approvalPausesFollowing()
+            try await inlineApprovalWaitsForLayout()
             try smartApprovalQueries()
             print("Chat flow checks passed (see known gaps, if any).")
         } catch {
@@ -341,6 +344,23 @@ private enum ChatFlowTests {
         try check(Grant.allowsSmartQuery("shell", grant: .den), false, "Commands still ask")
         try check(Grant.allowsSmartQuery("edit_file", grant: .desk), false, "Writes still ask")
         try check(Grant.allowsSmartQuery("mcp_read", grant: .mcp), false, "An external tool cannot self-authorize")
+    }
+
+    @MainActor
+    static func inlineApprovalWaitsForLayout() async throws {
+        let flow = FlowFixture()
+        flow.approvalInsetChanged()
+        let resize = flow.approvalInsetTask
+        await flow.clock.waitForSleepers(1)
+        try check(flow.measure(offset: 350) == nil, true, "The changing inset cannot trigger early scrolling")
+        try flow.clock.advance(400_000_000)
+        await resize?.value
+        let follow = flow.followPending
+        try check(follow != nil, true, "Settling schedules a new geometry check")
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(16_000_000)
+        await follow?.value
+        try check(flow.scrolls, [false], "Follow only after the approval inset settles")
     }
 
     @MainActor
