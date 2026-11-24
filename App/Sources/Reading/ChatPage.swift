@@ -327,11 +327,11 @@ struct ChatPage: View {
             }
             // The foot of the page, under the breathing room at the bottom: scrolling to it shows everything,
             // and it is exactly the end of the content, so "at the bottom" and "scrolled to the foot" agree.
-            Color.clear.frame(height: Ink.Space.xxl)
+            Color.clear.frame(height: Ink.Space.xxl + Ink.Space.l)
             Color.clear.frame(height: 1).id(Self.end)
         }
         .padding(.horizontal, Ink.Space.page)
-        .padding(.top, Ink.Space.m)
+        .padding(.top, Ink.Space.s)
     }
 
     @ViewBuilder
@@ -755,7 +755,7 @@ struct ChatPage: View {
                         roaming = true
                     }
                 }
-                .padding(.top, (headerHeight > 0 ? headerHeight : Ink.Bar.height * 2) + Ink.Space.s)
+                .padding(.top, (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s)
                 .padding(.trailing, Ink.Bar.edge)
                 .zIndex(3)
             }

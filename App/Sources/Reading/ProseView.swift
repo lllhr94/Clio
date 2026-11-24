@@ -162,20 +162,63 @@ struct StreamBlocks {
     }
 }
 
+/// Shared typographic proportions used by both `BlockView` and `ProseWords` so streaming and finished text match.
+private enum ProseMetrics {
+    static func headingSize(level: Int) -> CGFloat {
+        let base = CGFloat(Pref.size)
+        if level <= 1 { return (base * 1.24).rounded() }
+        if level == 2 { return (base * 1.13).rounded() }
+        return (base * 1.05).rounded()
+    }
+
+    static func headingTop(level: Int) -> CGFloat {
+        let base = CGFloat(Pref.size)
+        if level <= 1 { return base * 1.1 }
+        if level == 2 { return base * 0.85 }
+        return base * 0.55
+    }
+
+    static var headingBottom: CGFloat { CGFloat(Pref.size) * 0.35 }
+    static var listSpacing: CGFloat { CGFloat(Pref.size) * 0.42 }
+    static var codeLineSpacing: CGFloat { max(1.5, CGFloat(max(12, Pref.size - 3)) * 0.13) }
+    static var inlineCodeCorner: CGFloat { 5 * UIScale.factor }
+}
+
+/// Shared quote container used by both `BlockView` and `ReplyProseLayout`, keeping native `ProseText` selection inside quotes.
+private struct QuoteCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, Ink.Space.m + 2.5)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Ink.accent.opacity(0.45))
+                    .frame(width: 2.5)
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, Ink.Space.m)
+            .background(Ink.paperRaised.opacity(0.75), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule.opacity(0.55), lineWidth: 0.5))
+    }
+}
+
 private struct BlockView: View {
     let block: Prose.Block
     let fading: Bool
     /// The last block of a reply still being written, whether or not text fades in: a formula is not typeset and
     /// long code is not folded until it is complete.
     var live = false
+    @Environment(\.noteInk) private var noteInk
 
     var body: some View {
         switch block {
         case .heading(let level, let text):
-            Inline(text: text, font: Ink.body(Pref.size, bold: true), fading: fading, tight: true)
+            Inline(text: text, font: Ink.body(Double(ProseMetrics.headingSize(level: level)), bold: true), fading: fading, tight: true)
                 // Much more air above a heading than below it, so it plainly belongs to what follows.
-                .padding(.top, level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
-                .padding(.bottom, -Pref.size * 0.3)
+                .padding(.top, ProseMetrics.headingTop(level: level))
+                .padding(.bottom, min(0, ProseMetrics.headingBottom - Ink.paragraphGap))
         case .paragraph(let text):
             if let files = FileCard.links(in: text) {
                 VStack(alignment: .leading, spacing: Ink.Space.s) {
@@ -187,29 +230,27 @@ private struct BlockView: View {
                 Inline(text: text, font: Ink.reading, fading: fading)
             }
         case .list(let items):
-            // Items closer together than paragraphs, so a list reads as one thing.
-            VStack(alignment: .leading, spacing: Pref.size * 0.25) {
+            // Items closer together than paragraphs, with enough rhythm for numbered points to breathe.
+            VStack(alignment: .leading, spacing: ProseMetrics.listSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     // A hanging indent: the marker in its own column, wrapped lines start under the text.
                     HStack(alignment: .firstTextBaseline, spacing: Pref.size * 0.45) {
                         marker(item)
-                            .frame(width: item.number != nil ? Pref.size * 1.3 : Pref.size * 0.8, alignment: item.number != nil ? .trailing : .center)
+                            .frame(width: item.number != nil ? Pref.size * 1.3 : Pref.size * 0.85, alignment: item.number != nil ? .trailing : .center)
                         Inline(text: item.text, font: Ink.reading, fading: fading && index == items.count - 1)
                     }
                     .padding(.leading, CGFloat(item.depth) * Pref.size * 1.25)
                 }
             }
         case .quote(let blocks):
-            HStack(alignment: .top, spacing: Pref.size * 0.8) {
-                Capsule().fill(Ink.rule).frame(width: 3)
-                VStack(alignment: .leading, spacing: Ink.Space.m) {
+            QuoteCard {
+                VStack(alignment: .leading, spacing: Ink.Space.s) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, inner in
                         BlockView(block: inner, fading: fading && index == blocks.count - 1, live: live && index == blocks.count - 1)
                     }
                 }
-                .foregroundStyle(Ink.inkSoft)
+                .environment(\.noteInk, noteInk ?? Ink.inkSoft)
             }
-            .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text, live: live)
         case .table(let table):
@@ -217,7 +258,14 @@ private struct BlockView: View {
         case .math(let text):
             FormulaBlock(latex: text, streaming: fading || live)
         case .rule:
-            Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.vertical, Pref.size * 0.5)
+            LinearGradient(
+                colors: [Ink.rule.opacity(0), Ink.rule.opacity(0.85), Ink.rule.opacity(0)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 0.75)
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, CGFloat(Pref.size) * 0.65)
         }
     }
 
@@ -228,13 +276,14 @@ private struct BlockView: View {
                 .font(.system(size: Ink.Size.sub))
                 .foregroundStyle(checked ? Ink.accent : Ink.inkFaint)
         } else if let number = item.number {
-            // Numbers in the text's own weight and a softer ink: they lead the eye, the words carry it.
+            // Numbers in tabular figures and quiet ink: they anchor the left edge without fighting bold lead-ins.
             Text("\(number).")
-                .font(Ink.body(Pref.size, bold: false).monospacedDigit())
-                .foregroundStyle(Ink.inkSoft)
+                .font(Ink.body(Pref.size * 0.92, bold: false).monospacedDigit())
+                .foregroundStyle(Ink.inkFaint)
         } else {
-            Text(item.depth <= 1 ? "•" : "▪")
-                .font(.system(size: Pref.size * (item.depth == 0 ? 1 : 0.72), weight: .bold))
+            let glyph = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪")
+            Text(glyph)
+                .font(.system(size: CGFloat(Pref.size) * (item.depth == 0 ? 0.95 : 0.78), weight: .semibold))
                 .foregroundStyle(Ink.inkFaint)
         }
     }
@@ -296,8 +345,9 @@ struct TailFade: TextRenderer {
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         for line in layout {
             for run in line where run[InlineCodeBadge.self] != nil {
-                let rect = run.typographicBounds.rect.insetBy(dx: -1, dy: 0)
-                context.fill(Path(roundedRect: rect, cornerRadius: rect.height / 2), with: .color(Ink.mine))
+                let rect = run.typographicBounds.rect.insetBy(dx: -2.5, dy: -0.5)
+                let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
+                context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(Ink.mine.opacity(0.85)))
             }
         }
         guard on else {
@@ -362,84 +412,114 @@ private struct CodeBlock: View {
         return lines.joined(separator: "\n")
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
+    private var headerBar: some View {
+        HStack(spacing: Ink.Space.s) {
+            HStack(spacing: Ink.Space.xs) {
+                if isOutput {
+                    Image(systemName: "terminal")
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.Code.output)
+                }
                 Text(isOutput ? "输出" : (language.isEmpty ? "代码" : language.lowercased()))
-                    .font(Ink.mono(Ink.Size.small, weight: .medium))
+                    .font(Ink.mono(Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
-                Spacer()
-                Button {
-                    // As plain code: no-break and zero-width spaces some models write would break a pasted command.
-                    UIPasteboard.general.string = text
-                        .replacingOccurrences(of: "\u{00A0}", with: " ")
-                        .replacingOccurrences(of: "\u{200B}", with: "")
-                        .replacingOccurrences(of: "\u{FEFF}", with: "")
-                    Haptics.tick(0.5)
-                    withAnimation(Ink.Motion.settle) { copied = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation(Ink.Motion.settle) { copied = false } }
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: Ink.Size.small, weight: .medium))
-                        .foregroundStyle(copied ? Ink.ok : Ink.inkSoft)
-                        .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressStyle(haptic: false))
-                .accessibilityLabel("复制代码")
-            }
-            .padding(.leading, Ink.Space.l)
-            .padding(.trailing, Ink.Space.xs)
-            // A low label row with no rule under it, as Open Minis sets it (28 points): the code starts right below.
-            .frame(height: 28 * UIScale.factor)
-            // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
-            // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
-            // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
-            ScrollView(.horizontal) {
-                Text(isOutput ? Highlight.output(shown) : Highlight.code(shown, language: language))
-                    .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
-                    .font(Ink.code)
-                    // Close lines, as in a terminal: rows of output and code read as columns.
-                    .lineSpacing(4 * UIScale.factor)
-                    .padding(.horizontal, Ink.Space.l)
-                    .padding(.top, Ink.Space.xs)
-                    .padding(.bottom, Ink.Space.m)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
-            }
-            .scrollIndicators(.hidden)
-            .scrollDisabled(!overflows)
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
-            .overlay(alignment: .trailing) {
-                if overflows {
-                    LinearGradient(colors: [Ink.mine.opacity(0), Ink.mine], startPoint: .leading, endPoint: .trailing)
-                        .frame(width: Ink.Space.xl)
-                        .allowsHitTesting(false)
-                }
             }
             if folds {
-                Button {
-                    Haptics.tick(0.4)
-                    withAnimation(Ink.Motion.settle) { unfolded.toggle() }
-                } label: {
-                    Label(unfolded ? "收起" : "展开全部 \(lineCount) 行", systemImage: unfolded ? "chevron.up" : "chevron.down")
-                        .font(Ink.footnote)
-                        .foregroundStyle(Ink.accent)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 34)
-                        .contentShape(Rectangle())
+                Text("\(lineCount) 行")
+                    .font(.system(size: Ink.Size.micro).monospacedDigit())
+                    .foregroundStyle(Ink.inkFaint)
+            }
+            Spacer(minLength: Ink.Space.s)
+            Button {
+                // As plain code: no-break and zero-width spaces some models write would break a pasted command.
+                UIPasteboard.general.string = text
+                    .replacingOccurrences(of: "\u{00A0}", with: " ")
+                    .replacingOccurrences(of: "\u{200B}", with: "")
+                    .replacingOccurrences(of: "\u{FEFF}", with: "")
+                Haptics.tick(0.5)
+                withAnimation(Ink.Motion.settle) { copied = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation(Ink.Motion.settle) { copied = false } }
+            } label: {
+                HStack(spacing: Ink.Space.xs) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                    Text(copied ? "已复制" : "复制")
                 }
-                .buttonStyle(.plain)
-                .overlay(alignment: .top) { Rectangle().fill(Ink.rule).frame(height: 0.5) }
+                .font(.system(size: Ink.Size.micro, weight: .medium))
+                .foregroundStyle(copied ? Ink.ok : Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.s)
+                .frame(height: 26 * UIScale.factor)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .accessibilityLabel("复制代码")
+        }
+        .padding(.leading, Ink.Space.l)
+        .padding(.trailing, Ink.Space.s)
+        .frame(height: 32 * UIScale.factor)
+        .background(Ink.mine.opacity(0.42))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Ink.rule.opacity(0.75)).frame(height: 0.5)
+        }
+    }
+
+    private var codeBody: some View {
+        // Lines are kept whole, so long code stays short on the page instead of folding into a tall block.
+        // The block only slides sideways when a line really is wider than it; otherwise it cannot move and never
+        // takes the drag from the chat (Open Minis' rule). A soft fade at the right edge says there is more.
+        ScrollView(.horizontal) {
+            Text(isOutput ? Highlight.output(shown) : Highlight.code(shown, language: language))
+                .foregroundStyle(isOutput ? Ink.Code.output : Ink.ink)
+                .font(Ink.code)
+                // Tight column-aligned monospace rhythm (~0.13x font size) with clean vertical padding.
+                .lineSpacing(ProseMetrics.codeLineSpacing)
+                .padding(.horizontal, Ink.Space.l)
+                .padding(.vertical, Ink.Space.m)
+                .fixedSize(horizontal: true, vertical: false)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+        }
+        .scrollIndicators(.hidden)
+        .scrollDisabled(!overflows)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
+        .overlay(alignment: .leading) {
+            if isOutput {
+                Rectangle().fill(Ink.Code.output.opacity(0.65)).frame(width: 2.5)
             }
         }
-        // Set apart from the words around it: a warmer, deeper ground and a firmer edge, so what is to be copied
-        // reads as something to copy.
-        .background(Ink.mine, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.inkFaint.opacity(0.45), lineWidth: 0.8))
-        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .overlay(alignment: .trailing) {
+            if overflows {
+                LinearGradient(colors: [Ink.paperRaised.opacity(0), Ink.paperRaised], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: Ink.Space.xl)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var foldButton: some View {
+        Button {
+            Haptics.tick(0.4)
+            withAnimation(Ink.Motion.settle) { unfolded.toggle() }
+        } label: {
+            Label(unfolded ? "收起" : "展开全部 \(lineCount) 行", systemImage: unfolded ? "chevron.up" : "chevron.down")
+                .font(.system(size: Ink.Size.small, weight: .medium))
+                .foregroundStyle(Ink.accent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34 * UIScale.factor)
+                .background(Ink.mine.opacity(0.28))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .top) { Rectangle().fill(Ink.rule.opacity(0.75)).frame(height: 0.5) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerBar
+            codeBody
+            if folds { foldButton }
+        }
+        .inkBlock()
     }
 }
 
@@ -455,6 +535,8 @@ private struct TableBlock: View {
     private static let gap: CGFloat = 20
     /// How wide the block is on the page, so a narrow table can spread across it.
     @State private var room: CGFloat = 0
+    @State private var contentWidth: CGFloat = 0
+    private var overflows: Bool { room > 0 && contentWidth > room + 1 }
 
     /// Column widths planned for the width the table really has, on any phone, the way reading apps lay out tables
     /// (after Open Minis' planner, written anew): a column with more text is never narrower than one with less.
@@ -511,19 +593,28 @@ private struct TableBlock: View {
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
                 row(table.header, head: true, widths: widths)
-                // The header stands on a firmer line than the rows between themselves.
-                Rectangle().fill(Ink.inkFaint.opacity(0.6)).frame(height: 1)
+                    .background(Ink.mine.opacity(0.45))
+                Rectangle().fill(Ink.rule).frame(height: 0.75)
                 ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
-                    if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5) }
+                    if index > 0 { Rectangle().fill(Ink.rule.opacity(0.7)).frame(height: 0.5) }
                     row(cells, head: false, widths: widths)
+                        .background(index.isMultiple(of: 2) ? Color.clear : Ink.mine.opacity(0.18))
                 }
             }
-            .padding(.horizontal, Ink.Space.l)
             .fixedSize(horizontal: true, vertical: false)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
         .scrollIndicators(.hidden)
+        .scrollDisabled(!overflows)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { room = $0 }
+        .overlay(alignment: .trailing) {
+            if overflows {
+                LinearGradient(colors: [Ink.paperRaised.opacity(0), Ink.paperRaised], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: Ink.Space.xl)
+                    .allowsHitTesting(false)
+            }
+        }
         .inkBlock()
         .contextMenu {
             Button(L.t("actions.copy"), systemImage: "doc.on.doc") {
@@ -573,7 +664,8 @@ private struct TableBlock: View {
                     .frame(width: width, alignment: frameAlign(column))
             }
         }
-        .padding(.vertical, Self.cellSize * 0.65)
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Self.cellSize * 0.62)
     }
 
     private func frameAlign(_ column: Int) -> Alignment {
@@ -1059,6 +1151,9 @@ private struct ReplyProseLayout: View {
     let text: String
     let blocks: [Prose.Block]
     var streaming = false
+    var allowFade = true
+    var quoted = false
+    var cacheScope = ""
 
     enum Part {
         case words([Prose.Block])
@@ -1088,16 +1183,31 @@ private struct ReplyProseLayout: View {
     var body: some View {
         let _ = (face, code, size, leading)
         let parts = Self.parts(blocks)
-        let format = "\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(FontShelf.shared.generation)"
-        VStack(alignment: .leading, spacing: Ink.paragraphGap) {
+        let format = "\(cacheScope)\(quoted ? "q-" : "")\(face)-\(code)-\(size)-\(leading)-\(scheme == .dark)-\(Theme.shared.key)-\(Theme.shared.white)-\(Theme.shared.oled)-\(FontShelf.shared.generation)"
+        VStack(alignment: .leading, spacing: quoted ? Ink.Space.s : Ink.paragraphGap) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                let live = streaming && index == parts.count - 1
+                let live = streaming && allowFade && index == parts.count - 1
                 switch part {
                 case .words(let blocks):
                     ProseText(blocks: blocks, text: text, part: index, format: format,
-                              streaming: streaming, fadeTail: live && fade && !reduceMotion)
+                              streaming: streaming, fadeTail: live && fade && !reduceMotion, quoted: quoted)
                 case .block(let block):
-                    BlockView(block: block, fading: false, live: unfinished(block, live: live))
+                    if case .quote(let inner) = block {
+                        QuoteCard {
+                            AnyView(
+                                ReplyProseLayout(
+                                    text: text,
+                                    blocks: inner,
+                                    streaming: streaming,
+                                    allowFade: live,
+                                    quoted: true,
+                                    cacheScope: "\(cacheScope)q\(index)."
+                                )
+                            )
+                        }
+                    } else {
+                        BlockView(block: block, fading: false, live: unfinished(block, live: live))
+                    }
                 }
             }
         }
@@ -1118,13 +1228,12 @@ enum ProseWords {
         switch block {
         case .heading, .list: return true
         case .paragraph(let text): return FileCard.links(in: text) == nil && !text.contains("![")
-        case .quote(let inner): return inner.allSatisfy(isWords)
         default: return false
         }
     }
 
-    static func make(_ block: Prose.Block, first: Bool) -> NSAttributedString {
-        set(block, quoteDepth: 0, first: first)
+    static func make(_ block: Prose.Block, first: Bool, quoted: Bool = false) -> NSAttributedString {
+        set(block, quoteDepth: 0, first: first, quoted: quoted)
     }
 
     private static func style(spacing: CGFloat = Ink.paragraphGap, before: CGFloat = 0, indent: CGFloat = 0, hanging: CGFloat = 0, tight: Bool = false) -> NSParagraphStyle {
@@ -1138,34 +1247,45 @@ enum ProseWords {
         return style
     }
 
-    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool) -> NSAttributedString {
+    private static func set(_ block: Prose.Block, quoteDepth: Int, first: Bool, quoted: Bool = false) -> NSAttributedString {
         let quote = CGFloat(quoteDepth) * Pref.size * 1.1
-        let ink = quoteDepth > 0 ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
+        let ink = (quoted || quoteDepth > 0) ? UIColor(Ink.inkSoft) : UIColor(Ink.ink)
         switch block {
         case .heading(let level, let text):
-            let before: CGFloat = first ? 0 : (level <= 1 ? Pref.size * 0.9 : (level == 2 ? Pref.size * 0.7 : Pref.size * 0.35))
-            return inline(text, size: Pref.size, bold: true, ink: ink,
-                          paragraph: style(spacing: Pref.size * 0.5, before: before, indent: quote, tight: true))
+            let before: CGFloat = first ? 0 : ProseMetrics.headingTop(level: level)
+            return inline(text, size: ProseMetrics.headingSize(level: level), bold: true, ink: ink,
+                          paragraph: style(spacing: ProseMetrics.headingBottom, before: before, indent: quote, tight: true))
         case .paragraph(let text):
             return inline(text, size: Pref.size, bold: false, ink: ink, paragraph: style(indent: quote))
         case .list(let items):
             let out = NSMutableAttributedString()
+            let base = CGFloat(Pref.size)
             for (index, item) in items.enumerated() {
                 if index > 0 { out.append(NSAttributedString(string: "\n")) }
                 let marker: String
-                if let checked = item.checked { marker = checked ? "☑︎" : "☐" }
-                else if let number = item.number { marker = "\(number)." }
-                else { marker = item.depth <= 1 ? "•" : "▪" }
-                let indent = quote + CGFloat(item.depth) * Pref.size * 1.25
-                let hang = item.number != nil ? Pref.size * 1.75 : Pref.size * 1.25
+                let markerSize: CGFloat
+                let markerColor: UIColor
+                if let checked = item.checked {
+                    marker = checked ? "☑︎" : "☐"
+                    markerSize = base
+                    markerColor = UIColor(checked ? Ink.accent : Ink.inkFaint)
+                } else if let number = item.number {
+                    marker = "\(number)."
+                    markerSize = base * 0.92
+                    markerColor = UIColor(Ink.inkFaint)
+                } else {
+                    marker = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪")
+                    markerSize = base * (item.depth == 0 ? 0.95 : 0.78)
+                    markerColor = UIColor(Ink.inkFaint)
+                }
+                let indent = quote + CGFloat(item.depth) * base * 1.25
+                let hang = item.number != nil ? base * 1.75 : base * 1.25
                 let last = index == items.count - 1
-                let paragraph = style(spacing: last ? Ink.paragraphGap : Pref.size * 0.25, indent: indent, hanging: hang)
-                let smallBullet = item.depth > 0 && item.checked == nil && item.number == nil
-                let markerSize = smallBullet ? Pref.size * 0.72 : Pref.size
+                let paragraph = style(spacing: last ? Ink.paragraphGap : ProseMetrics.listSpacing, indent: indent, hanging: hang)
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
-                    .font: Ink.uiFace(markerSize), .foregroundColor: UIColor(Ink.inkSoft), .paragraphStyle: paragraph,
+                    .font: Ink.uiFace(markerSize), .foregroundColor: markerColor, .paragraphStyle: paragraph,
                 ]))
-                out.append(inline(item.text, size: Pref.size, bold: false, ink: ink, paragraph: paragraph))
+                out.append(inline(item.text, size: base, bold: false, ink: ink, paragraph: paragraph))
             }
             return out
         case .quote(let inner):
@@ -1274,8 +1394,9 @@ private final class InlineCodeTextView: UITextView {
                   let textRange = textRange(from: start, to: end) else { continue }
             for fragment in selectionRects(for: textRange) {
                 guard fragment.rect.width > 0, fragment.rect.height > 0 else { continue }
-                let rect = fragment.rect.insetBy(dx: -1, dy: fragment.rect.height * 0.1)
-                path.addRoundedRect(in: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2)
+                let rect = fragment.rect.insetBy(dx: -2.5, dy: fragment.rect.height * 0.06)
+                let radius = min(ProseMetrics.inlineCodeCorner, rect.height * 0.3)
+                path.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
             }
         }
         // The new width may arrive before TextKit has produced selection rectangles.
@@ -1284,7 +1405,7 @@ private final class InlineCodeTextView: UITextView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         codeBackground.path = path
-        codeBackground.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).cgColor
+        codeBackground.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
         if codeBackground.superlayer == nil { layer.insertSublayer(codeBackground, at: 0) }
         CATransaction.commit()
     }
@@ -1298,6 +1419,7 @@ private struct ProseText: UIViewRepresentable {
     let format: String
     let streaming: Bool
     let fadeTail: Bool
+    var quoted = false
 
     private struct Length: Hashable {
         let text: String
@@ -1334,7 +1456,7 @@ private struct ProseText: UIViewRepresentable {
         context.coordinator.selectionChanged = selectionChanged
         context.coordinator.quoteSelection = quoteSelection
         context.coordinator.speakSelection = speakSelection
-        if let words = context.coordinator.words(for: blocks, fade: fadeTail) {
+        if let words = context.coordinator.words(for: blocks, fade: fadeTail, quoted: quoted) {
             let selection = view.selectedRange
             let keepsSelection = selection.length > 0 && words.string.hasPrefix(view.attributedText?.string ?? "")
             view.replaceWords(with: words)
@@ -1373,16 +1495,23 @@ private struct ProseText: UIViewRepresentable {
         private var blocks: [Prose.Block] = []
         private var spans: [NSAttributedString] = []
         private var fading = false
+        private var isQuoted = false
 
-        func words(for next: [Prose.Block], fade: Bool) -> NSAttributedString? {
-            guard next != blocks || fade != fading else { return nil }
-            let shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
+        func words(for next: [Prose.Block], fade: Bool, quoted: Bool) -> NSAttributedString? {
+            guard next != blocks || fade != fading || quoted != isQuoted else { return nil }
+            let shared: Int
+            if quoted == isQuoted {
+                shared = zip(blocks, next).prefix { $0.0 == $0.1 }.count
+            } else {
+                shared = 0
+            }
             spans.removeSubrange(shared...)
             for index in next.indices.dropFirst(shared) {
-                spans.append(ProseWords.make(next[index], first: index == 0))
+                spans.append(ProseWords.make(next[index], first: index == 0, quoted: quoted))
             }
             blocks = next
             fading = fade
+            isQuoted = quoted
 
             let words = NSMutableAttributedString()
             for (index, span) in spans.enumerated() {

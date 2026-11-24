@@ -179,7 +179,7 @@ extension ChatPage {
                         .foregroundStyle(Ink.ink)
                         .lineSpacing(4)
                         .padding(.horizontal, Ink.Space.l)
-                        .padding(.vertical, Ink.Space.m)
+                        .padding(.vertical, 10 * UIScale.factor)
                         // Real Liquid Glass, as Open Minis does: your bubbles scroll over replies, code and pictures,
                         // so the glass has something to catch. Tinted a little with the paper, so it stays Clio's.
                         .glassEffect(.regular.tint(bubbleTint(editing: editing == line.id)),

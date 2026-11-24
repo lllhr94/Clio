@@ -261,21 +261,21 @@ struct ContextRing: View {
     var body: some View {
         HStack(spacing: Ink.Space.xs) {
             ZStack {
-                Circle().stroke(Ink.rule, lineWidth: 2.5)
+                Circle().stroke(Ink.rule.opacity(0.85), lineWidth: 2)
                 Circle()
                     .trim(from: 0, to: max(0.03, min(1, share)))
-                    .stroke(UsageSheet.color(share), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .stroke(UsageSheet.color(share), style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
-            .frame(width: 15, height: 15)
+            .frame(width: 14, height: 14)
             if showsNumber {
                 Text(UsageSheet.percent(share))
-                    .font(.system(size: Ink.Size.small, weight: .medium).monospacedDigit())
+                    .font(.system(size: Ink.Size.micro, weight: .medium).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
                     .fixedSize()
             }
         }
-        .frame(minWidth: 30, minHeight: 34)
+        .frame(minWidth: 28, minHeight: 34)
         .contentShape(Rectangle())
     }
 }

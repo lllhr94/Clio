@@ -264,7 +264,13 @@ extension ChatPage {
                         typing = false
                         attaching = true
                     } label: {
-                        chip("plus", nil, lit: !photos.isEmpty || !files.isEmpty)
+                        let lit = !photos.isEmpty || !files.isEmpty
+                        Image(systemName: "plus")
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
+                            .frame(width: 34, height: 34)
+                            .background(lit ? Ink.accentWash : Color.clear, in: .circle)
+                            .contentShape(.circle)
                     }
                     .buttonStyle(PressStyle(haptic: false))
                     .accessibilityLabel(Words.t("加照片、文件，或改这段絮语的设置"))
@@ -282,7 +288,8 @@ extension ChatPage {
                         typing = false
                         usageOpen = true
                     } label: {
-                        ContextRing(share: context?.share ?? 0, showsNumber: !composing)
+                        let share = context?.share ?? 0
+                        ContextRing(share: share, showsNumber: !composing && share >= 0.5)
                     }
                     .buttonStyle(TapStyle())
                     .accessibilityLabel("用量：下次请求约占上下文的 \(UsageSheet.percent(context?.share ?? 0))")
@@ -291,7 +298,7 @@ extension ChatPage {
             }
             .animation(Ink.Motion.settle, value: composing)
             .padding(.horizontal, Ink.Space.s)
-            .padding(.vertical, Ink.Space.s)
+            .padding(.vertical, 6 * UIScale.factor)
             .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
             if let hint {
                 Text(hint)
@@ -307,28 +314,51 @@ extension ChatPage {
         .padding(.bottom, Ink.Space.s)
         .animation(petDockMotion, value: waiting?.id)
         .overlay(alignment: .top) {
-            HStack(spacing: Ink.Space.s) {
-                jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
-                    .opacity(jumpVisible ? 1 : 0)
-                    .allowsHitTesting(jumpVisible)
-                    .accessibilityHidden(!jumpVisible)
-                jumpButton("arrow.down", title: "chat.nextQuestion", earlier: false)
-                    .opacity(jumpVisible ? 1 : 0)
-                    .allowsHitTesting(jumpVisible)
-                    .accessibilityHidden(!jumpVisible)
-                backToEnd
-                    .opacity(latestIsFloating ? 1 : 0)
-                    .allowsHitTesting(latestIsFloating)
-                    .accessibilityHidden(!latestIsFloating)
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .offset(y: -Ink.Bar.height)
-            .onChange(of: jumpVisible || latestIsFloating, initial: true) { _, shown in
-                withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = shown ? Ink.Bar.height * 3 + Ink.Space.s * 3 : 0 }
-            }
-            .animation(Ink.Motion.settle, value: jumpVisible)
-            .animation(Ink.Motion.settle, value: farFromEnd && !following)
+            floatingJumpControls
         }
+    }
+
+    var floatingJumpControls: some View {
+        let controlHeight = 32 * UIScale.factor
+        return HStack(spacing: Ink.Space.xs) {
+            HStack(spacing: 0) {
+                jumpButton("arrow.up", title: "chat.previousQuestion", earlier: true)
+                Rectangle()
+                    .fill(Ink.rule.opacity(0.7))
+                    .frame(width: 0.5, height: 14 * UIScale.factor)
+                jumpButton("arrow.down", title: "chat.nextQuestion", earlier: false)
+            }
+            .frame(height: controlHeight)
+            .glassBacking(in: Capsule())
+            .opacity(jumpVisible ? 1 : 0)
+            .allowsHitTesting(jumpVisible)
+            .accessibilityHidden(!jumpVisible)
+
+            if latestIsFloating {
+                backToEnd
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .offset(y: -(controlHeight + Ink.Space.s))
+        .onChange(of: jumpVisible, initial: true) { _, _ in updateJumpKeepOut() }
+        .onChange(of: latestIsFloating, initial: true) { _, _ in updateJumpKeepOut() }
+        .animation(Ink.Motion.settle, value: jumpVisible)
+        .animation(Ink.Motion.settle, value: latestIsFloating)
+    }
+
+    func updateJumpKeepOut() {
+        let width: CGFloat
+        if jumpVisible && latestIsFloating {
+            width = 104 * UIScale.factor + Ink.Space.xs + Ink.Space.s
+        } else if jumpVisible {
+            width = 70 * UIScale.factor + Ink.Space.s
+        } else if latestIsFloating {
+            width = 32 * UIScale.factor + Ink.Space.s
+        } else {
+            width = 0
+        }
+        withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = width }
     }
 
     /// 长对话小地图 (after Kelivo): while scrolling a long conversation, a thin strip at the right edge with a tick
@@ -346,18 +376,18 @@ extension ChatPage {
                 let place = { (index: Int) in height * CGFloat(index - first) / CGFloat(span) }
                 let nearest = { (y: CGFloat) in asked.min(by: { abs(place($0) - y) < abs(place($1) - y) }) }
                 ZStack(alignment: .top) {
-                    Capsule().fill(Ink.rule.opacity(0.5)).frame(width: 3)
+                    Capsule().fill(Ink.rule.opacity(0.28)).frame(width: 1)
                     ForEach(asked, id: \.self) { index in
                         // While sliding, the finger's question is the one lit; otherwise the ones on screen.
                         let lit = minimapScrub.map { $0 == index } ?? visible.contains(rows[index].id)
                         Capsule()
-                            .fill(lit ? Ink.accent : Ink.inkFaint)
-                            .frame(width: lit ? 12 : 7, height: lit ? 4 : 3)
-                            .offset(y: place(index) - 1.5)
+                            .fill(lit ? Ink.accent : Ink.inkFaint.opacity(0.45))
+                            .frame(width: lit ? 10 : 4, height: lit ? 2.5 : 2)
+                            .offset(y: place(index) - 1)
                     }
                 }
-                .frame(width: 24, height: height, alignment: .top)
-                .contentShape(Rectangle().inset(by: -Ink.Space.s))
+                .frame(width: 16, height: height, alignment: .top)
+                .contentShape(Rectangle().inset(by: -Ink.Space.m))
                 // Tap, or slide along it: the question under the finger lights at once (with a tick and its first
                 // words beside the strip), and letting go goes there. One gesture for the whole strip (the review, #32).
                 .gesture(
@@ -385,13 +415,13 @@ extension ChatPage {
                             .padding(.horizontal, Ink.Space.m)
                             .padding(.vertical, Ink.Space.s)
                             .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
-                            .offset(x: -32, y: min(max(0, place(index) - 18), max(0, height - 44)))
+                            .offset(x: -24, y: min(max(0, place(index) - 18), max(0, height - 44)))
                             .allowsHitTesting(false)
                             .transition(.opacity)
                     }
                 }
             }
-            .frame(width: 24)
+            .frame(width: 16)
             .padding(.vertical, Ink.Bar.height * 2)
             .padding(.trailing, 2)
             .transition(.opacity)
@@ -427,7 +457,7 @@ extension ChatPage {
     func lingerJumpButtons() {
         hideJumps?.cancel()
         hideJumps = Task {
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
             jumpVisible = false
         }
     }
@@ -441,7 +471,11 @@ extension ChatPage {
             lingerJumpButtons()
             withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
         } label: {
-            floating(symbol)
+            Image(systemName: symbol)
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.inkSoft)
+                .frame(width: 34 * UIScale.factor, height: 32 * UIScale.factor)
+                .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel(L.t(title))
@@ -460,13 +494,10 @@ extension ChatPage {
 
     func floating(_ symbol: String) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: Ink.Size.sub, weight: .semibold))
+            .font(.system(size: Ink.Size.small, weight: .semibold))
             .foregroundStyle(Ink.ink)
-            .frame(width: 36, height: 36)
-            .background(Ink.paperRaised, in: .circle)
-            .overlay(Circle().strokeBorder(Ink.rule, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-            .contentShape(.circle)
+            .frame(width: 32 * UIScale.factor, height: 32 * UIScale.factor)
+            .glassFace(in: Circle())
     }
 
     var latestIsFloating: Bool {

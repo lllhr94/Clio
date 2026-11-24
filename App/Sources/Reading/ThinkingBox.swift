@@ -46,7 +46,8 @@ struct ThinkingBox: View {
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
-                    .background(Ink.rule.opacity(0.25), in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule.opacity(0.65), lineWidth: 0.5))
                     .mask(LinearGradient(colors: [.black.opacity(0.35), .black], startPoint: .top, endPoint: .center))
                     // No animation on the text: thinking streams many times a second, and each fade stacked
                     // on the last left three blurred copies sliding about, and the chat stuttered under it.
@@ -58,7 +59,7 @@ struct ThinkingBox: View {
                     .textSelection(.enabled)
                     .padding(.leading, Ink.Space.m)
                     .overlay(alignment: .leading) {
-                        Rectangle().fill(Ink.rule).frame(width: 2)
+                        Capsule().fill(Ink.rule).frame(width: 2)
                     }
                     .transition(.opacity)
             }

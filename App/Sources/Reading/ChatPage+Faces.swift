@@ -262,8 +262,8 @@ extension ChatPage {
     }
 
     func footer(_ line: ChatLine, newest: Bool = true) -> some View {
-        HStack(spacing: 2) {
-            HStack(spacing: 2) {
+        HStack(spacing: Ink.Space.xs) {
+            HStack(spacing: Ink.Space.xs) {
                 icon("doc.on.doc", "复制") {
                     UIPasteboard.general.string = line.text
                     Haptics.tick(0.5)
@@ -281,7 +281,7 @@ extension ChatPage {
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: Ink.Size.small, weight: .medium))
-                        .foregroundStyle(Ink.inkSoft)
+                        .foregroundStyle(Ink.inkFaint)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
@@ -307,14 +307,14 @@ extension ChatPage {
             Spacer(minLength: Ink.Space.s)
             if newest, Pref.stats {
                 Text(Self.numbers(line))
-                    .font(Ink.footnote.monospacedDigit())
-                    .foregroundStyle(Ink.inkFaint)
+                    .font(.system(size: Ink.Size.micro).monospacedDigit())
+                    .foregroundStyle(Ink.inkFaint.opacity(0.85))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .layoutPriority(1)
             }
         }
-        .padding(.leading, -6)
+        .padding(.leading, -5)
     }
 
     /// 「2分31秒 · 6.4k tokens」: how long the turn took and how much was written, short enough for one line.
@@ -334,7 +334,7 @@ extension ChatPage {
         Button(action: action) {
             Image(systemName: name)
                 .font(.system(size: Ink.Size.small, weight: .regular))
-                .foregroundStyle(Ink.inkSoft)
+                .foregroundStyle(Ink.inkFaint)
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
