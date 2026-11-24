@@ -996,6 +996,9 @@ public enum AskUserRules {
             if !cleanedSelected.isEmpty {
                 return .failure(.invalidSelectionCount(question.key))
             }
+            if let custom = cleanedCustom, let urlError = validateNoSecretURLCredential(in: custom, for: question) {
+                return .failure(urlError)
+            }
             if cleanedCustom == nil, enforceRequired && question.required {
                 return .failure(.emptySelection(question.key))
             }
@@ -1009,6 +1012,9 @@ public enum AskUserRules {
                 guard cleanedSelected.isEmpty else {
                     return .failure(.invalidSelectionCount(question.key))
                 }
+                if let urlError = validateNoSecretURLCredential(in: custom, for: question) {
+                    return .failure(urlError)
+                }
                 if validOptionSet.contains(custom) {
                     return .success(AskResponse(selected: [custom], customText: nil))
                 }
@@ -1020,11 +1026,17 @@ public enum AskUserRules {
             }
             if let picked = cleanedSelected.first {
                 if validOptionSet.contains(picked) {
+                    if let urlError = validateNoSecretURLCredential(in: picked, for: question) {
+                        return .failure(urlError)
+                    }
                     return .success(AskResponse(selected: [picked], customText: nil))
                 }
                 if question.allowCustom {
                     if picked.count > maxCustomTextLength {
                         return .failure(.textTooLong(question.key, maxCustomTextLength))
+                    }
+                    if let urlError = validateNoSecretURLCredential(in: picked, for: question) {
+                        return .failure(urlError)
                     }
                     return .success(AskResponse(selected: [], customText: picked))
                 }
@@ -1038,12 +1050,20 @@ public enum AskUserRules {
             return .success(AskResponse())
 
         case .multi:
-            for item in cleanedSelected where !validOptionSet.contains(item) {
-                return .failure(.invalidOption(question.key, item))
+            for item in cleanedSelected {
+                guard validOptionSet.contains(item) else {
+                    return .failure(.invalidOption(question.key, item))
+                }
+                if let urlError = validateNoSecretURLCredential(in: item, for: question) {
+                    return .failure(urlError)
+                }
             }
             if let custom = cleanedCustom {
                 guard question.allowCustom else {
                     return .failure(.customNotAllowed(question.key))
+                }
+                if let urlError = validateNoSecretURLCredential(in: custom, for: question) {
+                    return .failure(urlError)
                 }
                 if validOptionSet.contains(custom) {
                     if seen.insert(custom).inserted {
@@ -1144,6 +1164,13 @@ public enum AskUserRules {
     }
 
     // MARK: - Helpers
+
+    private static func validateNoSecretURLCredential(in text: String, for question: AskQuestion) -> AskValidationError? {
+        guard containsSecretURLCredential(normalizeForDetection(text)) else { return nil }
+        let cleanLabel = question.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let labelText = cleanLabel.isEmpty ? question.key : cleanLabel
+        return .invalidField("「\(labelText)」包含网址用户名或密码，请删掉后再提交，或改用密文字段。")
+    }
 
     private static func normalizeForDetection(_ raw: String) -> String {
         let stripped = stripScalars(raw, allowNewlines: true, stripZeroWidth: true)

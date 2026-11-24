@@ -95,40 +95,65 @@ enum Backup {
         try? manager.removeItem(at: encryptedPartial)
 
         let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
-        guard manager.createFile(atPath: partial.path, contents: nil, attributes: protection) else {
-            throw TeamError(message: "没能在手机上建备份文件。")
-        }
 
         var completed = false
         defer {
             if !completed {
-                try? manager.removeItem(at: partial)
+                if !shouldEncrypt {
+                    try? manager.removeItem(at: partial)
+                }
                 try? manager.removeItem(at: encryptedPartial)
             }
         }
 
-        let out = try FileHandle(forWritingTo: partial)
+        // Build the archive strictly in memory when encrypting so plaintext `#keys` never touch disk.
+        var memoryPayload = Data()
+        let out: FileHandle?
+        if shouldEncrypt {
+            out = nil
+        } else {
+            guard manager.createFile(atPath: partial.path, contents: nil, attributes: protection) else {
+                throw TeamError(message: "没能在手机上建备份文件。")
+            }
+            out = try FileHandle(forWritingTo: partial)
+        }
         var outClosed = false
         defer {
             if !outClosed {
-                try? out.close()
+                try? out?.close()
             }
         }
 
-        try out.write(contentsOf: magic)
+        if let out {
+            try out.write(contentsOf: magic)
+        } else {
+            memoryPayload.append(magic)
+        }
         var count = 0
         var bytes = magic.count
         var unreadable: [String] = []
 
         func add(_ path: String, _ data: Data) throws {
             let name = Data(path.utf8)
+            let headerAndNameCount = 12 + name.count
+            guard data.count <= maxBackupFileBytes - bytes,
+                  headerAndNameCount <= maxBackupFileBytes - bytes - data.count else {
+                throw TeamError(message: "备份内容太大，超过安全体积上限，没打包成。")
+            }
             var nameLength = UInt32(name.count).bigEndian
             var dataLength = UInt64(data.count).bigEndian
-            try out.write(contentsOf: Data(bytes: &nameLength, count: 4))
-            try out.write(contentsOf: name)
-            try out.write(contentsOf: Data(bytes: &dataLength, count: 8))
-            try out.write(contentsOf: data)
-            bytes += 12 + name.count + data.count
+            if let out {
+                try out.write(contentsOf: Data(bytes: &nameLength, count: 4))
+                try out.write(contentsOf: name)
+                try out.write(contentsOf: Data(bytes: &dataLength, count: 8))
+                try out.write(contentsOf: data)
+            } else {
+                withUnsafeBytes(of: &nameLength) { memoryPayload.append(contentsOf: $0) }
+                memoryPayload.append(name)
+                withUnsafeBytes(of: &dataLength) { memoryPayload.append(contentsOf: $0) }
+                memoryPayload.append(data)
+            }
+            bytes += headerAndNameCount + data.count
             count += 1
         }
 
@@ -254,19 +279,20 @@ enum Backup {
             }
         }
 
-        try out.synchronize()
-        try out.close()
-        outClosed = true
+        if let out {
+            try out.synchronize()
+            try out.close()
+            outClosed = true
+        }
 
         if shouldEncrypt {
             guard let passphrase else { throw BackupCryptoError.passphraseRequired }
-            let plainArchive = try Data(contentsOf: partial, options: .mappedIfSafe)
-            let encryptedArchive = try BackupCrypto.encrypt(payload: plainArchive, passphrase: passphrase)
+            let encryptedArchive = try BackupCrypto.encrypt(payload: memoryPayload, passphrase: passphrase)
+            memoryPayload.removeAll(keepingCapacity: false)
             guard manager.createFile(atPath: encryptedPartial.path, contents: nil, attributes: protection) else {
                 throw TeamError(message: "没能在手机上建加密备份文件。")
             }
             try encryptedArchive.write(to: encryptedPartial, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            try? manager.removeItem(at: partial)
             try? manager.removeItem(at: url)
             try manager.moveItem(at: encryptedPartial, to: url)
             try? manager.setAttributes(protection, ofItemAtPath: url.path)
@@ -324,8 +350,9 @@ enum Backup {
             throw TeamError(message: "备份文件太大，无法安全校验并恢复。")
         }
 
+        let wasEncrypted = BackupCrypto.isEncrypted(rawData)
         let data: Data
-        if BackupCrypto.isEncrypted(rawData) {
+        if wasEncrypted {
             guard let passphrase, !passphrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw BackupCryptoError.passphraseRequired
             }
@@ -380,6 +407,10 @@ enum Backup {
                 skillTotalBytes += Int(length)
             }
             items.append(Item(path: path, range: range))
+        }
+
+        if !wasEncrypted && items.contains(where: { $0.path == "#keys" }) {
+            throw TeamError(message: "为了保护密钥安全，不能从未加密备份里导入模型密钥。请改用加密备份，或在重新导出时不勾选密钥。")
         }
 
         // 2. Stage into temporary folders off to the side.

@@ -99,7 +99,7 @@ public enum MemoryImporter {
     ]
 
     private static let assignmentSecretPattern =
-        #"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|passwd|密码|密钥|口令|令牌)\s*[:=：]\s*([^\r\n]+)"#
+        #"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|passwd|密码|密钥|口令|令牌)["']?\s*[:=：]\s*([^\r\n]+)"#
 
     private static let harmlessSecretPlaceholders: Set<String> = [
         "无", "暂无", "未知", "保密", "已设置", "未设置", "不保存", "不记住", "none", "n/a", "na", "unset", "redacted",
@@ -625,7 +625,7 @@ public enum MemoryImporter {
                 continue
             }
             let rhs = String(text[rhsRange])
-                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'`,;。；")))
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'`,;。；{}[]")))
                 .lowercased()
             if rhs.count >= 4 && !harmlessSecretPlaceholders.contains(rhs) {
                 return true
