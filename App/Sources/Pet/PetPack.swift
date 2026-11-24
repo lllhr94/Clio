@@ -226,6 +226,11 @@ private enum PetAtlasGenerations {
     }
 }
 
+@MainActor @Observable
+fileprivate final class PetAtlasSignal {
+    var revision: UInt64 = 0
+}
+
 /// Decoded sheets and cut frames, kept while they are in use.
 /// Only active pet packs retain animation frames (downscaled to display pixels when oversized);
 /// inactive packs keep only compact single-frame still thumbnails so switching or picking never spikes memory.
@@ -247,11 +252,6 @@ enum PetSheets {
         var lastUsed: UInt64
     }
 
-    @MainActor @Observable
-    private final class AtlasSignal {
-        var revision: UInt64 = 0
-    }
-
     private struct SlicedFrame: @unchecked Sendable {
         let index: Int
         let image: CGImage
@@ -271,7 +271,7 @@ enum PetSheets {
     private static let maxAtlasBatchBytes = 6 * 1024 * 1024
     private static let maxPlaceholders = 12
 
-    private static let signal = AtlasSignal()
+    private static let signal = PetAtlasSignal()
     private static let atlasDecodeQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "clio.pet-atlas-decode"

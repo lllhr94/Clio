@@ -233,7 +233,7 @@ extension ChatPage {
         if viewport.needsEndCorrection, followPending?.isCancelled != false { followToEnd(settle: false) }
     }
 
-    private func presentApproval(_ approval: Approval) {
+    func presentApproval(_ approval: Approval) {
         DiagTrail.record("开审批详情")
         followPending?.cancel()
         settleEnd?.cancel()
