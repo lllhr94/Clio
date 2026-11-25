@@ -238,8 +238,8 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         for key in cancelledKeys {
             inFlight.removeValue(forKey: key)
         }
-        lock.unlock()
         cache.removeAllObjects()
+        lock.unlock()
     }
 
     private func makeOperation(for request: ChatTextRenderRequest, generation opGen: UInt64) -> BlockOperation {
@@ -269,11 +269,11 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         let isCurrent = inFlight[key]?.op === op
         let completions = isCurrent ? (inFlight.removeValue(forKey: key)?.completions ?? []) : []
         let validGen = (generation == opGen) && !cancelled
-        lock.unlock()
-
         if validGen, let rendered {
             cache.setObject(rendered, forKey: key as NSString, cost: rendered.totalBytes)
         }
+        lock.unlock()
+
         guard !completions.isEmpty else { return }
         let delivered: ChatRenderedTiles? = validGen ? rendered : nil
         DispatchQueue.main.async {

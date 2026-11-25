@@ -386,7 +386,7 @@ private final class ChatTableCellLabel: UILabel {
 /// Native UIKit markdown table matching `ProseView.TableBlock` column planning, rich cell styling, horizontal scrolling, and copy menu.
 @MainActor
 final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
-    private static let colGap: CGFloat = 20
+    private nonisolated static let colGap: CGFloat = 20
 
     var onOpenURL: ((URL) -> Void)?
 

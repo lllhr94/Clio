@@ -278,15 +278,22 @@ final class ChatProseBuilder: @unchecked Sendable {
     private let tableSliceCache = BoundedLRUCache<TableSliceKey, ChatTableSlice>(countLimit: 256)
     private let scannerLock = NSLock()
     private var streamScanners: [String: StreamScannerEntry] = [:]
-    private let tokenLock = NSLock()
-    private var nextToken: UInt64 = 1
+    private static let tokenLock = NSLock()
+    private static var nextToken: UInt64 = 1
 
-    private func allocateRenderToken() -> UInt64 {
+    private static func nextGlobalRenderToken() -> UInt64 {
         tokenLock.lock()
         let token = nextToken
         nextToken &+= 1
+        if nextToken == 0 {
+            nextToken = 1
+        }
         tokenLock.unlock()
         return token
+    }
+
+    private func allocateRenderToken() -> UInt64 {
+        Self.nextGlobalRenderToken()
     }
 
     func clearCaches() {
@@ -1699,11 +1706,11 @@ final class ChatLayoutCache: @unchecked Sendable {
             blockHeightOverridesByOwner.removeAll(keepingCapacity: true)
             overrideVersionsByOwner.removeAll(keepingCapacity: true)
         }
-        stateLock.unlock()
         assistantFinalizedCache.removeAll()
         userCache.removeAll()
         noteCache.removeAll()
         hostingHeights.removeAll()
+        stateLock.unlock()
         builder.clearCaches()
     }
 
@@ -1712,20 +1719,20 @@ final class ChatLayoutCache: @unchecked Sendable {
         cacheGeneration &+= 1
         assistantStreamingCache.removeAll(keepingCapacity: true)
         lastLiveStreamingEntry = nil
-        stateLock.unlock()
         assistantFinalizedCache.removeAll()
         userCache.removeAll()
         noteCache.removeAll()
         hostingHeights.removeAll()
+        stateLock.unlock()
     }
 
     func invalidateMessage(id: String) {
         stateLock.lock()
         assistantStreamingCache.removeValue(forKey: id)
-        stateLock.unlock()
         assistantFinalizedCache.removeAll { $0.id == id }
         userCache.removeAll { $0.id == id }
         noteCache.removeAll { $0.id == id }
+        stateLock.unlock()
     }
 
     func overrideSnapshot(for ownerID: String) -> BlockOverrideSnapshot {
@@ -1842,10 +1849,10 @@ final class ChatLayoutCache: @unchecked Sendable {
         )
         stateLock.lock()
         let validGeneration = cacheGeneration == startGeneration
-        stateLock.unlock()
         if validGeneration {
             userCache.set(entry, for: key)
         }
+        stateLock.unlock()
         return entry
     }
 
@@ -2045,10 +2052,10 @@ final class ChatLayoutCache: @unchecked Sendable {
             stateLock.lock()
             let currentOverrideVersion = overrideVersionsByOwner[input.id] ?? 1
             let validGeneration = cacheGeneration == startGeneration
-            stateLock.unlock()
             if validGeneration && currentOverrideVersion == input.overrides.version {
                 assistantFinalizedCache.set(entry, for: key)
             }
+            stateLock.unlock()
         }
         return entry
     }
@@ -2247,7 +2254,7 @@ final class ChatLayoutCache: @unchecked Sendable {
         } else if let next = line.next {
             let parts = line.text.split(separator: "\n", maxSplits: 1).map(String.init)
             let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
-            let resolvedTitle = adviceTitle ?? advice.displayTitle
+            let resolvedTitle = adviceTitle ?? advice.title
             let innerW = max(80, contentWidth - metrics.spaceL * 2)
             let titleH = Self.measureNSStringHeight(
                 resolvedTitle,
