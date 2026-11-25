@@ -126,7 +126,6 @@ struct MemoryPageV2: View {
 
     @State private var query = ""
     @State private var filter: LayerFilter = .all
-    @State private var draft = ""
     @State private var editingRecord: MemoryRecord?
     @State private var deletingRecord: MemoryRecord?
     @State private var showingImport = false
@@ -137,13 +136,14 @@ struct MemoryPageV2: View {
     @State private var cachedSnapshotByID: [String: MemoryRecord] = [:]
     @State private var cachedArchived: [MemoryRecord] = []
     @State private var cachedPinnedIDs: Set<String> = []
+    @State private var cachedAllRecords: [MemoryRecord] = []
     @State private var snapshotToken = 0
 
     private var availableFilters: [LayerFilter] {
         team.keeping ? LayerFilter.allCases : [.all, .surface, .deep]
     }
 
-    private var allRecords: [MemoryRecord] {
+    private func computeAllRecords() -> [MemoryRecord] {
         var combined: [MemoryRecord] = []
         var seenIDs = Set<String>()
         for memory in team.memories {
@@ -210,7 +210,7 @@ struct MemoryPageV2: View {
     }
 
     var body: some View {
-        let recordsSnapshot = allRecords
+        let recordsSnapshot = cachedAllRecords
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let queryMatched = recordsSnapshot.filter { matchesQuery($0, trimmedQuery: trimmedQuery) }
         let effectiveFilter = availableFilters.contains(filter) ? filter : .all
@@ -239,10 +239,16 @@ struct MemoryPageV2: View {
         .navigationTitle(L.t("nav.memory"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarItems }
+        .onAppear {
+            if cachedAllRecords.isEmpty && !team.memories.isEmpty {
+                cachedAllRecords = computeAllRecords()
+            }
+        }
         .task {
             await reloadSnapshots()
         }
         .onChange(of: team.memories) { _, _ in
+            cachedAllRecords = computeAllRecords()
             Task { await reloadSnapshots() }
         }
         .onChange(of: refreshRevision) { _, _ in
@@ -272,9 +278,11 @@ struct MemoryPageV2: View {
         ) {
             Button(L.t("actions.delete"), role: .destructive) {
                 if let target = deletingRecord {
-                    withAnimation(Ink.Motion.settle) {
-                        team.deleteMemory(target.id)
-                        refreshRevision &+= 1
+                    Task {
+                        await team.deleteMemoryOffMain(target.id)
+                        withAnimation(Ink.Motion.settle) {
+                            refreshRevision &+= 1
+                        }
                     }
                 }
                 deletingRecord = nil
@@ -331,6 +339,7 @@ struct MemoryPageV2: View {
             cachedSnapshotByID = [:]
             cachedArchived = []
             cachedPinnedIDs = []
+            cachedAllRecords = computeAllRecords()
             return
         }
         let all = await Task.detached(priority: .userInitiated) {
@@ -351,6 +360,7 @@ struct MemoryPageV2: View {
         cachedSnapshotByID = byID
         cachedArchived = archived
         cachedPinnedIDs = pins
+        cachedAllRecords = computeAllRecords()
     }
 
     // MARK: - Toolbar & Banners
@@ -467,52 +477,12 @@ struct MemoryPageV2: View {
     }
 
     private var quickAddAndToolsSection: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Ink.Space.s) {
-                TextField(L.t("settings.memoryPlaceholder"), text: $draft)
-                    .font(.system(size: Ink.Size.sub))
-                    .foregroundStyle(Ink.ink)
-                    .submitLabel(.done)
-                    .onSubmit(addQuickMemory)
-
-                Button(L.t("actions.save"), action: addQuickMemory)
-                    .font(.system(size: Ink.Size.sub, weight: .semibold))
-                    .foregroundStyle(Ink.accent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !team.canMutateMemoryState)
-            }
-            .padding(Ink.Space.l)
-
-            Kit.rule(inset: Ink.Space.l)
-
-            Button {
-                Haptics.light()
-                showingImport = true
-            } label: {
-                RowLabel(
-                    "tray.and.arrow.down",
-                    tint: Ink.Tile.dai,
-                    title: L.t("memoryV2.importActionTitle"),
-                    line: L.t("memoryV2.importActionLine")
-                )
-            }
-            .buttonStyle(PressStyle(haptic: false))
-
-            Kit.divider
-
-            Button {
-                Haptics.light()
-                showingMirrors = true
-            } label: {
-                RowLabel(
-                    "doc.plaintext",
-                    tint: Ink.Tile.teng,
-                    title: L.t("memoryV2.mirrorsActionTitle"),
-                    line: L.t("memoryV2.mirrorsActionLine")
-                )
-            }
-            .buttonStyle(PressStyle(haptic: false))
-        }
-        .paperCard()
+        MemoryQuickAddCard(
+            canMutate: team.canMutateMemoryState,
+            onAdd: addQuickMemory,
+            onImport: { showingImport = true },
+            onMirrors: { showingMirrors = true }
+        )
     }
 
     // MARK: - Memory List
@@ -534,12 +504,10 @@ struct MemoryPageV2: View {
             )
         } else if effectiveFilter == .all {
             let layers: [MemoryLayer] = team.keeping ? MemoryLayer.allCases : [.surface, .deep]
-            VStack(alignment: .leading, spacing: Ink.Space.l) {
-                ForEach(layers, id: \.self) { layer in
-                    let bucket = visible.filter { $0.layer == layer }
-                    if !bucket.isEmpty {
-                        layerBucketCard(title: MemoryV2Copy.layerTitle(layer), records: bucket)
-                    }
+            ForEach(layers, id: \.self) { layer in
+                let bucket = visible.filter { $0.layer == layer }
+                if !bucket.isEmpty {
+                    layerBucketCard(title: MemoryV2Copy.layerTitle(layer), records: bucket)
                 }
             }
         } else if let targetLayer = effectiveFilter.layer {
@@ -550,7 +518,7 @@ struct MemoryPageV2: View {
     private func layerBucketCard(title: String, records: [MemoryRecord]) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(title)
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
                     if index > 0 {
                         Kit.rule(inset: Ink.Space.l)
@@ -626,9 +594,11 @@ struct MemoryPageV2: View {
         if record.layer != .surface {
             if record.layer == .archived {
                 Button(L.t("memoryV2.restoreToSurface"), systemImage: "arrow.uturn.backward") {
-                    withAnimation(Ink.Motion.settle) {
-                        _ = team.restoreMemory(record.id)
-                        refreshRevision &+= 1
+                    Task {
+                        _ = await team.restoreMemoryOffMain(record.id)
+                        withAnimation(Ink.Motion.settle) {
+                            refreshRevision &+= 1
+                        }
                     }
                 }
             } else {
@@ -646,10 +616,7 @@ struct MemoryPageV2: View {
 
         if team.keeping && record.layer != .archived {
             Button(L.t("memoryV2.moveToArchived"), systemImage: "archivebox") {
-                withAnimation(Ink.Motion.settle) {
-                    team.archiveMemory(record.id)
-                    refreshRevision &+= 1
-                }
+                moveRecord(record.id, to: .archived)
             }
         }
 
@@ -719,23 +686,95 @@ struct MemoryPageV2: View {
 
     // MARK: - Actions
 
-    private func addQuickMemory() {
-        let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func addQuickMemory(_ words: String) {
         guard !words.isEmpty, team.canMutateMemoryState else { return }
-        withAnimation(Ink.Motion.settle) {
-            _ = team.remember(words, by: nil)
-            refreshRevision &+= 1
+        Task {
+            _ = await team.rememberOffMain(words, by: nil)
+            withAnimation(Ink.Motion.settle) {
+                refreshRevision &+= 1
+            }
         }
-        draft = ""
         Haptics.tick(0.6)
     }
 
     private func moveRecord(_ id: String, to layer: MemoryLayer) {
-        withAnimation(Ink.Motion.settle) {
-            team.setMemoryLayer(id, layer)
-            refreshRevision &+= 1
+        Task {
+            await team.setMemoryLayerOffMain(id, layer)
+            withAnimation(Ink.Motion.settle) {
+                refreshRevision &+= 1
+            }
         }
         Haptics.tick(0.5)
+    }
+}
+
+/// Isolated quick-add card owning its own `draft` state so typing never re-evaluates/re-filters `MemoryPageV2`.
+private struct MemoryQuickAddCard: View {
+    let canMutate: Bool
+    let onAdd: (String) -> Void
+    let onImport: () -> Void
+    let onMirrors: () -> Void
+
+    @State private var draft = ""
+
+    private var trimmedDraft: String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Ink.Space.s) {
+                TextField(L.t("settings.memoryPlaceholder"), text: $draft)
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.ink)
+                    .submitLabel(.done)
+                    .onSubmit(submit)
+
+                Button(L.t("actions.save"), action: submit)
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .disabled(trimmedDraft.isEmpty || !canMutate)
+            }
+            .padding(Ink.Space.l)
+
+            Kit.rule(inset: Ink.Space.l)
+
+            Button {
+                Haptics.light()
+                onImport()
+            } label: {
+                RowLabel(
+                    "tray.and.arrow.down",
+                    tint: Ink.Tile.dai,
+                    title: L.t("memoryV2.importActionTitle"),
+                    line: L.t("memoryV2.importActionLine")
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+
+            Kit.divider
+
+            Button {
+                Haptics.light()
+                onMirrors()
+            } label: {
+                RowLabel(
+                    "doc.plaintext",
+                    tint: Ink.Tile.teng,
+                    title: L.t("memoryV2.mirrorsActionTitle"),
+                    line: L.t("memoryV2.mirrorsActionLine")
+                )
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+        .paperCard()
+    }
+
+    private func submit() {
+        let words = trimmedDraft
+        guard !words.isEmpty, canMutate else { return }
+        draft = ""
+        onAdd(words)
     }
 }
 
@@ -754,6 +793,7 @@ private struct MemoryDetailSheet: View {
     @State private var kind: String
     @State private var topic: String
     @State private var confirmingDelete = false
+    @State private var saving = false
 
     init(team: TeamModel, record: MemoryRecord, onChanged: @escaping () -> Void) {
         self.team = team
@@ -812,25 +852,32 @@ private struct MemoryDetailSheet: View {
                     Button(L.t("actions.cancel")) {
                         dismiss()
                     }
+                    .disabled(saving)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
                         save()
                     }
                     .fontWeight(.semibold)
-                    .disabled(!canSave)
+                    .disabled(saving || !canSave)
                 }
             }
+            .interactiveDismissDisabled(saving)
             .confirmationDialog(
                 L.t("memoryV2.deleteConfirmTitle"),
                 isPresented: $confirmingDelete,
                 titleVisibility: .visible
             ) {
                 Button(L.t("actions.delete"), role: .destructive) {
-                    team.deleteMemory(record.id)
-                    Haptics.thud()
-                    onChanged()
-                    dismiss()
+                    guard !saving else { return }
+                    saving = true
+                    let id = record.id
+                    Task {
+                        await team.deleteMemoryOffMain(id)
+                        Haptics.thud()
+                        onChanged()
+                        dismiss()
+                    }
                 }
                 Button(L.t("actions.cancel"), role: .cancel) {}
             } message: {
@@ -1011,16 +1058,25 @@ private struct MemoryDetailSheet: View {
     }
 
     private func save() {
-        team.updateMemoryDetail(
-            id: record.id,
-            text: text,
-            layer: layer,
-            kind: kind,
-            topic: topic
-        )
-        Haptics.tick(0.7)
-        onChanged()
-        dismiss()
+        guard !saving else { return }
+        saving = true
+        let id = record.id
+        let nextText = text
+        let nextLayer = layer
+        let nextKind = kind
+        let nextTopic = topic
+        Task {
+            await team.updateMemoryDetailOffMain(
+                id: id,
+                text: nextText,
+                layer: nextLayer,
+                kind: nextKind,
+                topic: nextTopic
+            )
+            Haptics.tick(0.7)
+            onChanged()
+            dismiss()
+        }
     }
 }
 

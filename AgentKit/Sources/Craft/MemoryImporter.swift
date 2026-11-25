@@ -85,6 +85,8 @@ public enum MemoryImporter {
 
     private static let pemBeginPattern = #"-----BEGIN [A-Z0-9 ]*-----"#
     private static let pemEndPattern = #"-----END [A-Z0-9 ]*-----"#
+    private static let pemBeginRegex = try? NSRegularExpression(pattern: pemBeginPattern, options: [])
+    private static let pemEndRegex = try? NSRegularExpression(pattern: pemEndPattern, options: [])
 
     private static let tokenSecretPatterns: [String] = [
         #"\bsk-(?:proj-|ant-api\d*-|live-|test-)?[A-Za-z0-9_-]{16,}\b"#,
@@ -97,9 +99,15 @@ public enum MemoryImporter {
         #"-----BEGIN [A-Z0-9 ]*-----"#,
         #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"#,
     ]
+    private static let tokenSecretRegexes: [NSRegularExpression] = tokenSecretPatterns.compactMap {
+        try? NSRegularExpression(pattern: $0, options: [])
+    }
 
     private static let assignmentSecretPattern =
         #"(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret|password|passwd|密码|密钥|口令|令牌)["']?\s*[:=：]\s*([^\r\n]+)"#
+    private static let assignmentSecretRegex = try? NSRegularExpression(pattern: assignmentSecretPattern, options: [])
+    private static let checkboxPrefixRegex = try? NSRegularExpression(pattern: #"^(?:[-*+•·])\s*\[[ xX]\](?:\s+|$)"#, options: [])
+    private static let bulletPrefixRegex = try? NSRegularExpression(pattern: #"^(?:[-*+]\s+|[•·▪▫◦‣●○]\s*|\d{1,3}(?:[\.\)]\s+|、\s*)|[\(（]\d{1,3}[\)）]\s*)"#, options: [])
 
     private static let harmlessSecretPlaceholders: Set<String> = [
         "无", "暂无", "未知", "保密", "已设置", "未设置", "不保存", "不记住", "none", "n/a", "na", "unset", "redacted",
@@ -189,15 +197,15 @@ public enum MemoryImporter {
 
             if inPEMBlock {
                 skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
-                if trimmed.range(of: pemEndPattern, options: .regularExpression) != nil {
+                if hasMatch(pemEndRegex, in: trimmed) {
                     inPEMBlock = false
                 }
                 continue
             }
 
-            if trimmed.range(of: pemBeginPattern, options: .regularExpression) != nil {
+            if hasMatch(pemBeginRegex, in: trimmed) {
                 skipped.append(MemoryImportSkippedItem(text: redactedSecretPreview, reason: .secretDetected))
-                inPEMBlock = trimmed.range(of: pemEndPattern, options: .regularExpression) == nil
+                inPEMBlock = !hasMatch(pemEndRegex, in: trimmed)
                 continue
             }
 
@@ -460,15 +468,9 @@ public enum MemoryImporter {
             working = String(working.dropFirst()).trimmingCharacters(in: .whitespaces)
         }
         // Task list checkbox prefixes (`- [ ] `, `- [x] `, `* [X] `)
-        if let checkboxRange = working.range(
-            of: #"^(?:[-*+•·])\s*\[[ xX]\](?:\s+|$)"#,
-            options: .regularExpression
-        ) {
+        if let checkboxRange = matchRange(checkboxPrefixRegex, in: working) {
             working = String(working[checkboxRange.upperBound...])
-        } else if let bulletRange = working.range(
-            of: #"^(?:[-*+]\s+|[•·▪▫◦‣●○]\s*|\d{1,3}(?:[\.\)]\s+|、\s*)|[\(（]\d{1,3}[\)）]\s*)"#,
-            options: .regularExpression
-        ) {
+        } else if let bulletRange = matchRange(bulletPrefixRegex, in: working) {
             working = String(working[bulletRange.upperBound...])
         }
         return working.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -596,6 +598,19 @@ public enum MemoryImporter {
 
     // MARK: - Secret Detection & Redaction
 
+    private static func hasMatch(_ regex: NSRegularExpression?, in text: String) -> Bool {
+        guard let regex else { return false }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.firstMatch(in: text, options: [], range: nsRange) != nil
+    }
+
+    private static func matchRange(_ regex: NSRegularExpression?, in text: String) -> Range<String.Index>? {
+        guard let regex else { return nil }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
+        return Range(match.range, in: text)
+    }
+
     private static func containsSecret(_ text: String, orderedSecrets: [String]) -> Bool {
         if text.contains("〔隐去〕") {
             return true
@@ -603,8 +618,8 @@ public enum MemoryImporter {
         if !orderedSecrets.isEmpty && MemorySafety.redactSecrets(text, secrets: orderedSecrets) != text {
             return true
         }
-        for pattern in tokenSecretPatterns {
-            if text.range(of: pattern, options: .regularExpression) != nil {
+        for regex in tokenSecretRegexes {
+            if hasMatch(regex, in: text) {
                 return true
             }
         }
@@ -615,7 +630,7 @@ public enum MemoryImporter {
     }
 
     private static func hasSecretAssignment(in text: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: assignmentSecretPattern, options: []) else {
+        guard let regex = assignmentSecretRegex else {
             return false
         }
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
