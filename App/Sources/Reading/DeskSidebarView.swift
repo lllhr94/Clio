@@ -252,31 +252,18 @@ struct DeskSidebarView: View {
     }
 
     private func sidebarSwipes(_ row: DeskSideConversation) -> [SwipeAction] {
-        [
-            DeskThreadHelpers.archiveSwipe(row.id, team: team, changeArchive: changeArchive),
-            SwipeAction(title: L.t("actions.delete"), symbol: "trash", tint: Ink.stop) { requestDelete(row) },
-        ]
+        DeskThreadHelpers.pastSwipes(row, team: team, changeArchive: changeArchive, requestDelete: requestDelete)
     }
 
     @ViewBuilder
     private func sidebarMenu(_ row: DeskSideConversation) -> some View {
-        let key = row.id
-        let pinned = team.pinned.contains(key)
-        Button(L.t(pinned ? "homeThreads.unpin" : "homeThreads.pin"), systemImage: pinned ? "pin.slash" : "pin") {
-            withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
-        }
-        Button(L.t("chat.rename"), systemImage: "pencil") {
-            switch row {
-            case .current: startRename(key)
-            case .past(let past): startRenamePast(past)
-            }
-        }
-        Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
-            DeskThreadHelpers.labelChoices(selected: team.threadLabels[key] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
-                team.setThreadLabel($0, for: key)
-            }
-        }
-        DeskThreadHelpers.archiveMenu(key, team: team, changeArchive: changeArchive)
-        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { requestDelete(row) }
+        DeskThreadHelpers.conversationMenu(
+            row,
+            team: team,
+            startRename: startRename,
+            startRenamePast: startRenamePast,
+            changeArchive: changeArchive,
+            requestDelete: requestDelete
+        )
     }
 }

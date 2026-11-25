@@ -2081,7 +2081,7 @@ final class ChatLayoutCache {
                 return MeasuredSlice(slice: slice, height: ceil(h), pictureHeights: [])
 
             case .fileCards(let links, let sliceIndex):
-                let key = "file|\(ownerID)|\(sliceIndex)|\(widthKey)|\(links.map(\.path).joined(separator: "|"))"
+                let key = "file|\(ownerID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(links.map(\.path).joined(separator: "|"))"
                 let h: CGFloat
                 if let overrideH = blockHeightOverrides[key] {
                     h = overrideH
@@ -2099,7 +2099,7 @@ final class ChatLayoutCache {
                 }
                 var picHeights: [CGFloat] = []
                 for (picIndex, pic) in pics.enumerated() {
-                    let key = "pic|\(ownerID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(pic.source)"
+                    let key = "pic|\(ownerID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(style.styleKey)|\(pic.source)"
                     let picH = blockHeightOverrides[key] ?? 160
                     picHeights.append(picH)
                     if picIndex > 0 { total += style.readingSize * 0.6 }

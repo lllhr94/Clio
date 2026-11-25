@@ -2105,17 +2105,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         actions.onScrollingChanged(false)
 
         if needsDeferredDynamicRefresh || needsDeferredStreamingResize {
+            let hadDynamicRefresh = needsDeferredDynamicRefresh
             let hadStreamingResize = needsDeferredStreamingResize
             needsDeferredDynamicRefresh = false
             needsDeferredStreamingResize = false
             if !isDismantled, collectionView != nil, collectionView.bounds.width > 0 {
-                if hadStreamingResize {
-                    applyStreamingResizePreservingScroll()
-                } else {
+                if hadDynamicRefresh {
                     preserveReadingAnchorDuring {
                         collectionView.collectionViewLayout.invalidateLayout()
                         collectionView.layoutIfNeeded()
                     }
+                } else if hadStreamingResize {
+                    applyStreamingResizePreservingScroll()
                 }
             }
         }

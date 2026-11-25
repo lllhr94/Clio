@@ -331,6 +331,8 @@ struct Desk: View {
                 startFresh: { startFresh(first: $0) },
                 openDrawerItem: { open($0) },
                 startRename: startRename,
+                startRenamePast: startRenamePast,
+                requestDelete: requestDelete,
                 changeArchive: changeArchive
             )
             .opacity(opened == nil ? 1 : 0)
@@ -875,6 +877,47 @@ enum DeskThreadHelpers {
         ) {
             changeArchive(key, !archived)
         }
+    }
+
+    static func pastSwipes(
+        _ row: DeskSideConversation,
+        team: TeamModel,
+        changeArchive: @escaping (String, Bool) -> Void,
+        requestDelete: @escaping (DeskSideConversation) -> Void
+    ) -> [SwipeAction] {
+        [
+            archiveSwipe(row.id, team: team, changeArchive: changeArchive),
+            SwipeAction(title: L.t("actions.delete"), symbol: "trash", tint: Ink.stop) { requestDelete(row) },
+        ]
+    }
+
+    @ViewBuilder
+    static func conversationMenu(
+        _ row: DeskSideConversation,
+        team: TeamModel,
+        startRename: @escaping (String) -> Void,
+        startRenamePast: @escaping (DeskPastLeaf) -> Void,
+        changeArchive: @escaping (String, Bool) -> Void,
+        requestDelete: @escaping (DeskSideConversation) -> Void
+    ) -> some View {
+        let key = row.id
+        let pinned = team.pinned.contains(key)
+        Button(L.t(pinned ? "homeThreads.unpin" : "homeThreads.pin"), systemImage: pinned ? "pin.slash" : "pin") {
+            withAnimation(Ink.Motion.settle) { team.pin(key, !pinned) }
+        }
+        Button(L.t("chat.rename"), systemImage: "pencil") {
+            switch row {
+            case .current: startRename(key)
+            case .past(let past): startRenamePast(past)
+            }
+        }
+        Menu(L.t("homeThreads.colorFilter"), systemImage: "tag") {
+            labelChoices(selected: team.threadLabels[key] ?? "", clearTitle: L.t("homeThreads.removeColor")) {
+                team.setThreadLabel($0, for: key)
+            }
+        }
+        archiveMenu(key, team: team, changeArchive: changeArchive)
+        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { requestDelete(row) }
     }
 }
 

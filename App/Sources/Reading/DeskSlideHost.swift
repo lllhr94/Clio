@@ -43,16 +43,17 @@ struct DeskSlideHost<Sidebar: View>: View {
                 guard pull != 0, sideWidth > 0 else { return }
                 let fling = value.predictedEndTranslation.width
                 let settleAnimation: Animation? = reduceMotion ? nil : Ink.Motion.settle
+                let transitionAnimation: Animation? = reduceMotion ? nil : Ink.Motion.unfold
                 if sideOpen {
                     if -pull > sideWidth * 0.3 || fling < -180 {
-                        pull = 0
+                        withAnimation(transitionAnimation) { pull = 0 }
                         closeSide()
                     } else {
                         withAnimation(settleAnimation) { pull = 0 }
                     }
                 } else {
                     if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 {
-                        pull = 0
+                        withAnimation(transitionAnimation) { pull = 0 }
                         openSide()
                     } else {
                         withAnimation(settleAnimation) { pull = 0 }
@@ -75,7 +76,9 @@ struct DeskSlideHost<Sidebar: View>: View {
         }
         .onChange(of: sideOpen) { _, _ in
             if pull != 0 {
-                pull = 0
+                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) {
+                    pull = 0
+                }
             }
         }
     }

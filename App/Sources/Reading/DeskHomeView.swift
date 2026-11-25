@@ -22,6 +22,8 @@ struct DeskHomeView: View {
     let startFresh: (String?) -> Void
     let openDrawerItem: (DrawerItem) -> Void
     let startRename: (String) -> Void
+    let startRenamePast: (DeskPastLeaf) -> Void
+    let requestDelete: (DeskSideConversation) -> Void
     let changeArchive: (String, Bool) -> Void
 
     private var recent: [DeskThread] {
@@ -406,9 +408,7 @@ struct DeskHomeView: View {
 
     private func pastRow(_ past: DeskPastLeaf) -> some View {
         let row = DeskSideConversation.past(past)
-        return SwipeRow(actions: [
-            DeskThreadHelpers.archiveSwipe(row.id, team: team, changeArchive: changeArchive),
-        ]) {
+        return SwipeRow(actions: DeskThreadHelpers.pastSwipes(row, team: team, changeArchive: changeArchive, requestDelete: requestDelete)) {
             Button {
                 Haptics.light()
                 opened = past.owner
@@ -429,6 +429,16 @@ struct DeskHomeView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
+            .contextMenu {
+                DeskThreadHelpers.conversationMenu(
+                    row,
+                    team: team,
+                    startRename: startRename,
+                    startRenamePast: startRenamePast,
+                    changeArchive: changeArchive,
+                    requestDelete: requestDelete
+                )
+            }
         }
     }
 
