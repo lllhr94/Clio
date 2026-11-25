@@ -175,6 +175,55 @@ struct ChatListState {
     let reach: String
     let headerHeight: CGFloat
     let reduceMotion: Bool
+
+    func isEquivalent(to other: ChatListState) -> Bool {
+        guard chatKey == other.chatKey,
+              loaded == other.loaded,
+              canLoadEarlier == other.canLoadEarlier,
+              isLoadingEarlier == other.isLoadingEarlier,
+              historyInView == other.historyInView,
+              isRoom == other.isRoom,
+              working == other.working,
+              sendingBlocked == other.sendingBlocked,
+              faces == other.faces,
+              isCompressing == other.isCompressing,
+              hasStreaming == other.hasStreaming,
+              showToolTail == other.showToolTail,
+              reduceMotion == other.reduceMotion,
+              streamGeneration == other.streamGeneration,
+              headerHeight == other.headerHeight else {
+            return false
+        }
+        guard streamText == other.streamText,
+              streamReasoning == other.streamReasoning,
+              streamPulse == other.streamPulse,
+              reach == other.reach,
+              emptyPetState == other.emptyPetState,
+              failureCardError == other.failureCardError,
+              fresh == other.fresh else {
+            return false
+        }
+        guard defaultBot == other.defaultBot,
+              streamPulseSpeaker == other.streamPulseSpeaker,
+              teamBots == other.teamBots,
+              queuedItems == other.queuedItems else {
+            return false
+        }
+        guard starters.count == other.starters.count else { return false }
+        for (lhs, rhs) in zip(starters, other.starters) {
+            if lhs.0 != rhs.0 || lhs.1 != rhs.1 || lhs.2 != rhs.2 {
+                return false
+            }
+        }
+        guard rows.count == other.rows.count else { return false }
+        let sameRowBuffer = rows.withUnsafeBufferPointer { lhs in
+            other.rows.withUnsafeBufferPointer { rhs in
+                lhs.baseAddress == rhs.baseAddress
+            }
+        }
+        if sameRowBuffer { return true }
+        return rows == other.rows
+    }
 }
 
 /// Snapshot of a tapped UIKit photo thumbnail for SwiftUI Hero zoom transition.

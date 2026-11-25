@@ -53,7 +53,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
+    private var needsDeferredDynamicRefresh = false
     private var userDefaultsObserver: NSObjectProtocol?
+    private var lastObservedUserAvatarSignature = ""
     private var keyboardObserverTokens: [NSObjectProtocol] = []
 
     private let keyboardSpacerView = UIView()
@@ -71,12 +73,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var activeKeyboardDeadline: CFTimeInterval = 0
 
     private var isTrackingUserScroll = false
+    private var isSettlingUserScrollEnd = false
     private var wasPinnedAtDragStart = false
     private var userMovedAwayFromBottomDuringDrag = false
+    private var lastScrollMetricsPublishTime: CFTimeInterval = 0
     private var lastReportedHeroTarget: ChatPhotoHeroTarget?
 
     private var isUserTouchScrolling: Bool {
-        guard collectionView != nil else { return false }
+        guard collectionView != nil, !isSettlingUserScrollEnd else { return false }
         return collectionView.isDragging || collectionView.isDecelerating || isTrackingUserScroll
     }
 
@@ -102,6 +106,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isDismantled = true
         pendingHostMetricFlush = false
         pendingDynamicRefresh = false
+        needsDeferredDynamicRefresh = false
         stopInsetDisplayLink()
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = nil
@@ -152,13 +157,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             controller.refreshTypographyAndTheme()
         }
 
+        lastObservedUserAvatarSignature = currentUserAvatarSignature()
         userDefaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.refreshVisibleUserAvatars()
+                self?.handleUserDefaultsChanged()
             }
         }
 
@@ -257,7 +263,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 return .absolute(measureAssistant(row: row, width: width).cellHeight)
             case .steps:
                 let key = traceHeightKey(row)
-                let est = layoutCache.hostingHeight(for: key) ?? 64
+                let est = layoutCache.hostingHeight(for: key) ?? 50
                 return .estimated(est)
             case .note:
                 return .absolute(layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight)
@@ -649,12 +655,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func scheduleDynamicLayoutRefresh() {
+        if isUserTouchScrolling {
+            needsDeferredDynamicRefresh = true
+            return
+        }
         guard !pendingDynamicRefresh else { return }
         pendingDynamicRefresh = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.pendingDynamicRefresh = false
             guard !self.isDismantled, self.collectionView != nil, self.collectionView.bounds.width > 0 else { return }
+            if self.isUserTouchScrolling {
+                self.needsDeferredDynamicRefresh = true
+                return
+            }
             self.preserveReadingAnchorDuring {
                 self.collectionView.collectionViewLayout.invalidateLayout()
                 self.collectionView.layoutIfNeeded()
@@ -719,6 +733,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         guard let prev else { return }
 
+        if prev.isEquivalent(to: next) {
+            return
+        }
+
         if prev.chatKey != next.chatKey {
             resetForChatSwitch(next)
             return
@@ -740,7 +758,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let nextItems = buildItemIDs(for: state)
         items = nextItems
         rebuildIndexMaps(rows: state.rows)
-        premeasureItems(nextItems)
 
         var snapshot = NSDiffableDataSourceSnapshot<ChatListItemID, ChatListItemID>()
         snapshot.appendSections(nextItems)
@@ -779,6 +796,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         animatedScrollID &+= 1
         isPinnedToBottom = true
         isTrackingUserScroll = false
+        needsDeferredDynamicRefresh = false
+        lastScrollMetricsPublishTime = 0
         wasPinnedAtDragStart = false
         userMovedAwayFromBottomDuringDrag = false
         hasPerformedInitialScroll = false
@@ -799,7 +818,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         items = buildItemIDs(for: next)
         rebuildIndexMaps(rows: next.rows)
-        premeasureItems(items)
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
@@ -984,7 +1002,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         items = nextItems
         rebuildIndexMaps(rows: next.rows)
-        premeasureItems(nextItems)
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
@@ -1091,26 +1108,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
-    private func premeasureItems(_ list: [ChatListItemID]) {
-        guard collectionView != nil else { return }
-        let width = max(240, collectionView.bounds.width > 0 ? collectionView.bounds.width : view.bounds.width)
-        guard width > 0 else { return }
-        for itemID in list {
-            if case .line(let id) = itemID, let row = rowByID[id] {
-                switch row.line.kind {
-                case .user:
-                    _ = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle)
-                case .bot:
-                    _ = measureAssistant(row: row, width: width)
-                case .note:
-                    _ = layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width)
-                case .steps:
-                    break
-                }
-            }
-        }
-    }
-
     // MARK: - Typography, Theme, Layout & Insets
 
     func refreshTypographyAndTheme() {
@@ -1126,6 +1123,25 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.layoutIfNeeded()
         }
         publishVisibleAndFooterMetrics()
+    }
+
+    private func currentUserAvatarSignature() -> String {
+        let face = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
+        let petChoice = PetLibrary.shared.choice
+        let photoID: Int
+        if face == "photo", let img = Avatars.image("me") {
+            photoID = ObjectIdentifier(img).hashValue
+        } else {
+            photoID = 0
+        }
+        return "\(face)|\(petChoice)|\(photoID)"
+    }
+
+    private func handleUserDefaultsChanged() {
+        let nextSignature = currentUserAvatarSignature()
+        guard nextSignature != lastObservedUserAvatarSignature else { return }
+        lastObservedUserAvatarSignature = nextSignature
+        refreshVisibleUserAvatars()
     }
 
     private func refreshVisibleUserAvatars() {
@@ -1218,7 +1234,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             updateCollectionInsetsIfNeeded()
 
             if !hasPerformedInitialScroll {
-                premeasureItems(items)
                 collectionView.layoutIfNeeded()
                 if let req = pendingScrollRequest, let section = itemIndexByID[.line(req.id)] {
                     pendingScrollRequest = nil
@@ -1819,10 +1834,23 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func handleUserScrollEnded(_ scrollView: UIScrollView) {
         isTrackingUserScroll = false
+        isSettlingUserScrollEnd = true
+        defer { isSettlingUserScrollEnd = false }
+
         actions.onScrollPhaseChanged("静止")
         actions.onTouchScrollingChanged(false, false)
         actions.chat.setBrowsingHistory(false)
         actions.onScrollingChanged(false)
+
+        if needsDeferredDynamicRefresh {
+            needsDeferredDynamicRefresh = false
+            if !isDismantled, collectionView != nil, collectionView.bounds.width > 0 {
+                preserveReadingAnchorDuring {
+                    collectionView.collectionViewLayout.invalidateLayout()
+                    collectionView.layoutIfNeeded()
+                }
+            }
+        }
 
         let distanceFromBottom = bottomOffsetY(for: scrollView) - scrollView.contentOffset.y
         let withinFollowThreshold = distanceFromBottom < 80
@@ -1836,7 +1864,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             scrollToBottom(animated: distanceFromBottom > 12)
         }
         actions.onScrollEnded()
-        publishVisibleAndFooterMetrics()
+        publishVisibleAndFooterMetricsNow()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -1877,7 +1905,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             requestLoadEarlier()
         }
 
-        publishVisibleAndFooterMetrics()
+        let now = CACurrentMediaTime()
+        if now - lastScrollMetricsPublishTime >= 0.10 {
+            lastScrollMetricsPublishTime = now
+            publishVisibleAndFooterMetrics()
+        }
     }
 
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
@@ -1932,6 +1964,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func publishVisibleAndFooterMetricsNow() {
         guard !isDismantled, collectionView != nil else { return }
+        lastScrollMetricsPublishTime = CACurrentMediaTime()
         let visiblePaths = collectionView.indexPathsForVisibleItems.sorted { $0.section < $1.section }
         var ids: [String] = []
         ids.reserveCapacity(visiblePaths.count)
@@ -1982,11 +2015,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             actions.onVisibleIDsChanged(ids)
         }
 
-        if latestOwner != lastReportedReplyOwner || latestRect != lastReportedReplyRect {
-            lastReportedReplyOwner = latestOwner
-            lastReportedReplyRect = latestRect
-            actions.petPerch.replyActionsOwner = latestOwner
-            actions.petPerch.replyActions = latestRect
+        if !isUserTouchScrolling {
+            if latestOwner != lastReportedReplyOwner || latestRect != lastReportedReplyRect {
+                lastReportedReplyOwner = latestOwner
+                lastReportedReplyRect = latestRect
+                actions.petPerch.replyActionsOwner = latestOwner
+                actions.petPerch.replyActions = latestRect
+            }
         }
     }
 

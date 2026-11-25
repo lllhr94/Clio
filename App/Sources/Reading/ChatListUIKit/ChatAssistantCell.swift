@@ -70,6 +70,8 @@ final class ChatAssistantCell: UICollectionViewCell {
     private var unfoldedSlices: Set<Int> = []
     private var isLiveStreamingOnly = false
     private var streamingGeneration = 0
+    private var appliedContinueButtonSignature = ""
+    private var appliedContinueThemeSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -182,7 +184,6 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     private func setupContinueButton() {
-        applyContinueButtonTypography()
         continueButton.addAction(UIAction { [weak self] _ in
             Haptics.light()
             self?.actions?.bridge.onContinueStepLimit()
@@ -191,9 +192,14 @@ final class ChatAssistantCell: UICollectionViewCell {
         contentView.addSubview(continueButton)
     }
 
-    private func applyContinueButtonTypography() {
+    private func applyContinueButtonTypographyIfNeeded(style: ChatListStyle) {
+        let title = L.t("chat.continueTask")
+        let sig = "\(title)|\(style.uiScale)|\(style.contentSizeCategory)"
+        guard appliedContinueButtonSignature != sig || continueButton.configuration == nil else { return }
+        appliedContinueButtonSignature = sig
+        appliedContinueThemeSignature = ""
         var cfg = continueButton.configuration ?? UIButton.Configuration.filled()
-        cfg.title = L.t("chat.continueTask")
+        cfg.title = title
         cfg.image = UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .semibold))
         cfg.imagePadding = Ink.Space.xs
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: Ink.Space.l, bottom: 6, trailing: Ink.Space.l)
@@ -381,7 +387,6 @@ final class ChatAssistantCell: UICollectionViewCell {
         style: ChatListStyle,
         transferredSelection: ChatProseSelectionSnapshot?
     ) {
-        applyContinueButtonTypography()
         litBackdrop.isHidden = !row.lit
 
         if entry.timeGapHeight > 0, let gap = row.timeGap {
@@ -421,7 +426,12 @@ final class ChatAssistantCell: UICollectionViewCell {
             sourcesPill.isHidden = true
         }
 
-        continueButton.isHidden = !entry.hasContinueButton
+        if entry.hasContinueButton {
+            applyContinueButtonTypographyIfNeeded(style: style)
+            continueButton.isHidden = false
+        } else {
+            continueButton.isHidden = true
+        }
 
         if entry.hasFooter {
             footerView.isHidden = false
@@ -723,10 +733,15 @@ final class ChatAssistantCell: UICollectionViewCell {
         lookbackIcon.tintColor = lookbackTint
         lookbackLabel.textColor = lookbackTint
 
-        var cfg = continueButton.configuration
-        cfg?.baseForegroundColor = UIColor(Ink.accent)
-        cfg?.baseBackgroundColor = UIColor(Ink.accentWash)
-        continueButton.configuration = cfg
+        if !continueButton.isHidden {
+            let themeSig = "\(Theme.shared.key)|\(traitCollection.userInterfaceStyle.rawValue)"
+            if appliedContinueThemeSignature != themeSig, var cfg = continueButton.configuration {
+                appliedContinueThemeSignature = themeSig
+                cfg.baseForegroundColor = UIColor(Ink.accent)
+                cfg.baseBackgroundColor = UIColor(Ink.accentWash)
+                continueButton.configuration = cfg
+            }
+        }
     }
 
     override func layoutSubviews() {

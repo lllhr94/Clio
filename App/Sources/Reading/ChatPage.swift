@@ -3,6 +3,7 @@ import AgentKit
 import CoreLocation
 import Craft
 import PhotosUI
+import Prose
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -182,7 +183,42 @@ struct ChatPage: View {
             guard !Task.isCancelled, historyPage == nil, selecting.isEmpty else { return }
             let retained = first.flatMap { id in chat.lines.firstIndex { $0.id == id } }
                 .map { chat.lines.count - $0 } ?? oldCount
-            shownCount = min(chat.lines.count, retained + 40)
+            let previewNextShown = min(chat.lines.count, retained + 40)
+            let startIndex = max(0, chat.lines.count - previewNextShown)
+            let endIndex = max(startIndex, chat.lines.count - retained)
+            if startIndex < endIndex {
+                let targetSlice = Array(chat.lines[startIndex..<endIndex])
+                let botTexts = targetSlice.compactMap { line -> String? in
+                    guard line.kind == .bot, !line.text.isEmpty else { return nil }
+                    return line.text
+                }
+                if !botTexts.isEmpty {
+                    let uiKitMode = useUIKitChatList
+                    let styleKey: ProseStyleKey? = uiKitMode ? nil : ProseStyleKey.current()
+                    await Task.detached(priority: .userInitiated) {
+                        if uiKitMode {
+                            for raw in botTexts {
+                                if Task.isCancelled { return }
+                                let rawRest = ProseTextTransforms.lookback(raw).rest
+                                ChatPage.prewarmProseText(rawRest)
+                                let trimmed = ProseTextTransforms.trimSourceList(raw)
+                                if trimmed != raw {
+                                    let trimmedRest = ProseTextTransforms.lookback(trimmed).rest
+                                    if trimmedRest != rawRest {
+                                        ChatPage.prewarmProseText(trimmedRest)
+                                    }
+                                }
+                            }
+                        } else if let styleKey {
+                            ProsePrewarm.prewarm(lines: targetSlice[...], styleKey: styleKey)
+                        }
+                    }.value
+                }
+            }
+            guard !Task.isCancelled, historyPage == nil, selecting.isEmpty else { return }
+            let finalRetained = first.flatMap { id in chat.lines.firstIndex { $0.id == id } }
+                .map { chat.lines.count - $0 } ?? oldCount
+            shownCount = min(chat.lines.count, finalRetained + 40)
             guard let anchor else { return }
             settleJump?.cancel()
             viewport.advanceNavigation()
@@ -191,6 +227,36 @@ struct ChatPage: View {
             viewport.recordJump("载入更早的消息")
             if !useUIKitChatList {
                 scroller?.scrollTo(anchor, anchor: .top)
+            }
+        }
+    }
+
+    nonisolated private static func prewarmProseText(_ rawText: String) {
+        guard !rawText.isEmpty else { return }
+        let blocks = ParsedCache.blocks(rawText)
+        prewarmCodeAndTables(in: blocks)
+    }
+
+    nonisolated private static func prewarmCodeAndTables(in blocks: [Prose.Block]) {
+        for block in blocks {
+            if Task.isCancelled { return }
+            switch block {
+            case .code(let language, let rawCode, _):
+                let trimmed = CodeTokenizer.trimmedLines(rawCode)
+                let body = trimmed.isEmpty ? " " : trimmed
+                let count = CodeTokenizer.lineCount(body)
+                let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
+                _ = CodeTokenizer.prepare(body, language: language, isOutput: isOutput)
+                if count > 20 {
+                    let folded = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+                    _ = CodeTokenizer.prepare(folded, language: language, isOutput: isOutput)
+                }
+            case .table(let table):
+                _ = TablePreparer.prepare(table)
+            case .quote(let inner):
+                prewarmCodeAndTables(in: inner)
+            default:
+                break
             }
         }
     }

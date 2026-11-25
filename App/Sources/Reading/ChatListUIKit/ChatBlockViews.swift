@@ -359,41 +359,62 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
     }
 }
 
-/// Lightweight non-scrolling cell text view supporting inline markdown styles and clickable links in tables.
+/// Lightweight pooled label supporting inline markdown styles and on-tap link activation in tables.
 @MainActor
-private final class ChatTableCellTextView: UITextView, UITextViewDelegate {
+private final class ChatTableCellLabel: UILabel {
     var onOpenURL: ((URL) -> Void)?
 
-    init() {
-        super.init(frame: .zero, textContainer: nil)
-        isEditable = false
-        isSelectable = true
-        isScrollEnabled = false
-        showsVerticalScrollIndicator = false
-        showsHorizontalScrollIndicator = false
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        numberOfLines = 0
+        lineBreakMode = .byWordWrapping
         backgroundColor = .clear
-        textContainerInset = .zero
-        textContainer.lineFragmentPadding = 0
-        linkTextAttributes = [:]
-        dataDetectorTypes = []
-        adjustsFontForContentSizeCategory = false
-        delegate = self
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tap)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func textView(
-        _ textView: UITextView,
-        primaryActionFor textItem: UITextItem,
-        defaultAction: UIAction
-    ) -> UIAction? {
-        guard case .link(let url) = textItem.content else { return defaultAction }
-        return UIAction { [weak self] _ in
-            Haptics.tick(0.4)
-            self?.onOpenURL?(url)
+    func apply(_ attr: NSAttributedString) {
+        attributedText = attr
+        var hasLinks = false
+        if attr.length > 0 {
+            attr.enumerateAttribute(.link, in: NSRange(location: 0, length: attr.length)) { value, _, stop in
+                if value != nil {
+                    hasLinks = true
+                    stop.pointee = true
+                }
+            }
         }
+        isUserInteractionEnabled = hasLinks
+    }
+
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended,
+              let attr = attributedText,
+              attr.length > 0,
+              bounds.width > 0,
+              bounds.height > 0 else { return }
+        let point = recognizer.location(in: self)
+        let storage = NSTextStorage(attributedString: attr)
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: bounds.size)
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = numberOfLines
+        container.lineBreakMode = lineBreakMode
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+
+        let glyphIndex = layoutManager.glyphIndex(for: point, in: container, fractionOfDistanceThroughGlyph: nil)
+        let glyphBounds = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: container)
+        guard glyphBounds.insetBy(dx: -4, dy: -4).contains(point) else { return }
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard charIndex < attr.length,
+              let url = attr.attribute(.link, at: charIndex, effectiveRange: nil) as? URL else { return }
+        Haptics.tick(0.4)
+        onOpenURL?(url)
     }
 }
 
@@ -401,7 +422,7 @@ private final class ChatTableCellTextView: UITextView, UITextViewDelegate {
 @MainActor
 final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private static let colGap: CGFloat = 20
-    private static let cellMeasurer = ChatTableCellTextView()
+    private static let cellMeasurer = ChatTableCellLabel()
 
     var onOpenURL: ((URL) -> Void)?
 
@@ -413,7 +434,10 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private var currentStyle: ChatListStyle?
     private var rowViews: [UIView] = []
     private var ruleViews: [UIView] = []
-    private var cellViews: [[ChatTableCellTextView]] = []
+    private var cellViews: [[ChatTableCellLabel]] = []
+    private var activeRowCount = 0
+    private var activeColCount = 0
+    private var activeRuleCount = 0
     private var lastWidth: CGFloat = 0
 
     override init(frame: CGRect) {
@@ -492,59 +516,89 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     }
 
     func configure(slice: ChatTableSlice, style: ChatListStyle) {
+        if let currentSlice, let currentStyle, currentSlice == slice && currentStyle == style {
+            return
+        }
         currentSlice = slice
         currentStyle = style
-        rebuildGrid(slice: slice, style: style)
+        applyGrid(slice: slice)
         refreshThemeColors()
         setNeedsLayout()
     }
 
     func resetForReuse() {
         currentSlice = nil
+        currentStyle = nil
         lastWidth = 0
         onOpenURL = nil
     }
 
-    private func rebuildGrid(slice: ChatTableSlice, style: ChatListStyle) {
-        rowViews.forEach { $0.removeFromSuperview() }
-        ruleViews.forEach { $0.removeFromSuperview() }
-        rowViews.removeAll(keepingCapacity: true)
-        ruleViews.removeAll(keepingCapacity: true)
-        cellViews.removeAll(keepingCapacity: true)
-
+    private func applyGrid(slice: ChatTableSlice) {
         let allRows = [slice.headerCells] + slice.rowCells
+        let rowCount = allRows.count
         let colCount = max(1, slice.naturalWidths.count)
+        let ruleCount = max(0, rowCount - 1)
 
-        for (rIdx, row) in allRows.enumerated() {
-            let isHeader = rIdx == 0
+        activeRowCount = rowCount
+        activeColCount = colCount
+        activeRuleCount = ruleCount
+
+        while rowViews.count < rowCount {
             let rowBg = UIView()
+            contentHolder.addSubview(rowBg)
+            rowViews.append(rowBg)
+            cellViews.append([])
+        }
+        while ruleViews.count < ruleCount {
+            let rule = UIView()
+            contentHolder.addSubview(rule)
+            ruleViews.append(rule)
+        }
+
+        for rIdx in rowViews.indices {
+            let rowBg = rowViews[rIdx]
+            guard rIdx < rowCount else {
+                rowBg.isHidden = true
+                continue
+            }
+            rowBg.isHidden = false
+            let isHeader = rIdx == 0
             if isHeader {
                 rowBg.backgroundColor = UIColor(Ink.mine).withAlphaComponent(0.45)
             } else {
                 let dataIdx = rIdx - 1
                 rowBg.backgroundColor = dataIdx.isMultiple(of: 2) ? .clear : UIColor(Ink.mine).withAlphaComponent(0.18)
             }
-            contentHolder.addSubview(rowBg)
-            rowViews.append(rowBg)
 
-            var views: [ChatTableCellTextView] = []
-            for col in 0..<colCount {
-                let tv = ChatTableCellTextView()
-                tv.attributedText = col < row.count ? row[col] : NSAttributedString()
-                tv.onOpenURL = { [weak self] url in
+            let rowCells = allRows[rIdx]
+            while cellViews[rIdx].count < colCount {
+                let label = ChatTableCellLabel()
+                label.onOpenURL = { [weak self] url in
                     self?.onOpenURL?(url)
                 }
-                rowBg.addSubview(tv)
-                views.append(tv)
+                rowBg.addSubview(label)
+                cellViews[rIdx].append(label)
             }
-            cellViews.append(views)
 
-            if rIdx < allRows.count - 1 {
-                let rule = UIView()
-                rule.backgroundColor = isHeader ? UIColor(Ink.rule) : UIColor(Ink.rule).withAlphaComponent(0.7)
-                contentHolder.addSubview(rule)
-                ruleViews.append(rule)
+            for col in cellViews[rIdx].indices {
+                let label = cellViews[rIdx][col]
+                if col < colCount {
+                    label.isHidden = false
+                    label.apply(col < rowCells.count ? rowCells[col] : NSAttributedString())
+                } else {
+                    label.isHidden = true
+                }
             }
+        }
+
+        for rIdx in ruleViews.indices {
+            let rule = ruleViews[rIdx]
+            guard rIdx < ruleCount else {
+                rule.isHidden = true
+                continue
+            }
+            rule.isHidden = false
+            rule.backgroundColor = rIdx == 0 ? UIColor(Ink.rule) : UIColor(Ink.rule).withAlphaComponent(0.7)
         }
     }
 
@@ -574,13 +628,15 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         let renderW = max(width, ceil(totalContentW))
 
         var y: CGFloat = 0
-        for (rIdx, rowBg) in rowViews.enumerated() {
+        for rIdx in 0..<activeRowCount {
+            let rowBg = rowViews[rIdx]
             let views = cellViews[rIdx]
             var maxCellH: CGFloat = ceil(cellSize * 1.2)
             var frames: [CGRect] = []
+            frames.reserveCapacity(activeColCount)
             var x = padH
             for (col, colW) in widths.enumerated() {
-                if col < views.count {
+                if col < activeColCount && col < views.count {
                     let fit = views[col].sizeThatFits(CGSize(width: colW, height: .greatestFiniteMagnitude))
                     let h = ceil(fit.height)
                     maxCellH = max(maxCellH, h)
@@ -592,11 +648,11 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             }
             let rowH = maxCellH + padV * 2
             rowBg.frame = CGRect(x: 0, y: y, width: renderW, height: rowH)
-            for (col, frame) in frames.enumerated() where col < views.count {
+            for (col, frame) in frames.enumerated() where col < activeColCount && col < views.count {
                 views[col].frame = frame
             }
             y += rowH
-            if rIdx < ruleViews.count {
+            if rIdx < activeRuleCount {
                 let ruleH: CGFloat = rIdx == 0 ? 0.75 : 0.5
                 ruleViews[rIdx].frame = CGRect(x: 0, y: y, width: renderW, height: ruleH)
                 y += ruleH

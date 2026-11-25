@@ -127,6 +127,7 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
     private let charLabel = UILabel()
     private let petView = ChatPetAvatarView()
     private let photoView = UIImageView()
+    private var lastRenderedSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -157,6 +158,14 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
 
         button.showsMenuAsPrimaryAction = true
         button.accessibilityLabel = "我的头像，点一下换"
+        button.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                let items = MainActor.assumeIsolated {
+                    self?.makeMenuElements() ?? []
+                }
+                completion(items)
+            }
+        ])
         addSubview(button)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatMeAvatarView, _) in
@@ -167,6 +176,16 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
 
     func refreshDisplay() {
         let face = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
+        let photoID: Int
+        if face == "photo", let img = Avatars.image("me") {
+            photoID = ObjectIdentifier(img).hashValue
+        } else {
+            photoID = 0
+        }
+        let signature = "\(face)|\(PetLibrary.shared.choice)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(Theme.shared.key)"
+        guard signature != lastRenderedSignature else { return }
+        lastRenderedSignature = signature
+
         if face == "photo", let photo = Avatars.image("me") {
             circleLayer.isHidden = true
             charLabel.isHidden = true
@@ -193,10 +212,10 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
             CATransaction.commit()
             charLabel.textColor = UIColor(Ink.paper)
         }
-        rebuildMenu(currentFace: face)
     }
 
-    private func rebuildMenu(currentFace: String) {
+    private func makeMenuElements() -> [UIMenuElement] {
+        let currentFace = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
         var actions: [UIMenuElement] = []
         actions.append(UIAction(
             title: "用一个字「我」",
@@ -225,7 +244,7 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         ) { [weak self] _ in
             self?.presentPhotoPicker()
         })
-        button.menu = UIMenu(children: actions)
+        return actions
     }
 
     private func presentPhotoPicker() {
@@ -651,6 +670,14 @@ final class ChatBotFooterView: UIView {
         }
         configureIconButton(moreButton, symbol: "ellipsis", label: "更多", action: nil)
         moreButton.showsMenuAsPrimaryAction = true
+        moreButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                let items = MainActor.assumeIsolated {
+                    self?.makeMoreMenuElements() ?? []
+                }
+                completion(items)
+            }
+        ])
 
         actionsCluster.addSubview(copyButton)
         actionsCluster.addSubview(retryButton)
@@ -693,12 +720,11 @@ final class ChatBotFooterView: UIView {
             statsLabel.text = nil
         }
 
-        rebuildMoreMenu()
         refreshColors()
         setNeedsLayout()
     }
 
-    private func rebuildMoreMenu() {
+    private func makeMoreMenuElements() -> [UIMenuElement] {
         var items: [UIMenuElement] = [
             UIAction(
                 title: isSpeaking ? "停止朗读" : "朗读",
@@ -727,7 +753,7 @@ final class ChatBotFooterView: UIView {
                 image: UIImage(systemName: "arrow.triangle.branch")
             ) { [weak self] _ in self?.onFork?() })
         }
-        moreButton.menu = UIMenu(children: items)
+        return items
     }
 
     func actionsRectInWindow() -> CGRect {
@@ -736,6 +762,10 @@ final class ChatBotFooterView: UIView {
     }
 
     func resetForReuse() {
+        showsRetry = false
+        showsStats = false
+        isRoom = false
+        isSpeaking = false
         onCopy = nil
         onRedo = nil
         onSpeak = nil
