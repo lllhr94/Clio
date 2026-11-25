@@ -310,9 +310,9 @@ extension TeamModel {
     }
 
     var keeping: Bool { phase != .demo }
-    func saveSettings() { if keeping { Disk.save(settings, "settings.json") } }
-    func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
-    func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
+    func saveSettings() { if keeping { ChatDisk.saveValue(settings, file: "settings.json") } }
+    func saveBots() { if keeping { ChatDisk.saveValue(bots, file: "bots.json") } }
+    func saveRooms() { if keeping { ChatDisk.saveValue(rooms, file: "rooms.json") } }
     func saveMemory() {
         guard keeping, !Disk.frozen, !MemoryStoreBridge.shared.isCanonicalReadOnly else { return }
         var book = memoryBook
@@ -365,8 +365,8 @@ extension TeamModel {
         syncLivePromptsFromMemories()
         MemoryStoreBridge.shared.resetAll(team: self)
     }
-    func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
-    func saveRoutines() { if keeping { Disk.save(routines, "routines.json") } }
+    func saveLaters() { if keeping { ChatDisk.saveValue(laters, file: "later.json") } }
+    func saveRoutines() { if keeping { ChatDisk.saveValue(routines, file: "routines.json") } }
 
     func sortBots() {
         let main = mainBotId
@@ -375,4 +375,18 @@ extension TeamModel {
             return (left.createdAt ?? 0) < (right.createdAt ?? 0)
         }
     }
+}
+
+/// Thin forwarding shim to `ChatDisk` so backup/restore flushes and failure reporting cover team state too.
+enum TeamDisk {
+    static func save<Value: Encodable & Sendable>(_ value: Value, _ file: String) {
+        ChatDisk.saveValue(value, file: file)
+    }
+
+    static func writeAndWait<Value: Encodable>(_ value: Value, _ file: String) throws {
+        try ChatDisk.writeValueAndWait(value, file: file)
+    }
+
+    static func finishWrites() { ChatDisk.finishWrites() }
+    static func finishWritesReportingFailures() -> Int { ChatDisk.finishWritesReportingFailures() }
 }

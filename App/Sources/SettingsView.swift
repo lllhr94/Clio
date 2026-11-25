@@ -3,7 +3,7 @@ import Craft
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     /// The destination in a `clio://settings/<page>` link.
     var startAt: String? = nil
 
@@ -123,7 +123,9 @@ struct SettingsView: View {
     private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .services:
-            subpage(page) { services }
+            subpage(page) {
+                SettingsServicesSection(team: team) { open(.add) }
+            }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -142,9 +144,13 @@ struct SettingsView: View {
         case .image:
             ImageModelPage(team: team)
         case .companions:
-            subpage(page) { companions }
+            subpage(page) {
+                SettingsCompanionsSection(team: team, editingBot: $editingBot) { open(.memory) }
+            }
         case .rooms:
-            subpage(page) { rooms }
+            subpage(page) {
+                SettingsRoomsSection(team: team, creatingRoom: $creatingRoom, editingRoom: $editingRoom)
+            }
         case .theme:
             LookPage()
         case .font:
@@ -204,8 +210,13 @@ struct SettingsView: View {
         .navigationTitle(L.t(page.titleKey))
         .navigationBarTitleDisplayMode(.inline)
     }
+}
 
-    private var services: some View {
+private struct SettingsServicesSection: View {
+    @ObservedObject var team: TeamModel
+    let openAdd: () -> Void
+
+    var body: some View {
         RowCard(note: team.phase == .demo ? L.t("settings.demoData") : nil) {
             ForEach(team.settings.endpoints) { endpoint in
                 let host = URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL
@@ -218,11 +229,23 @@ struct SettingsView: View {
                 }
                 .buttonStyle(PressStyle())
             }
-            pageRow(.add, Ink.Tile.dai)
+            Button {
+                Haptics.light()
+                openAdd()
+            } label: {
+                RowLabel(SettingsPage.add.symbol, tint: Ink.Tile.dai, title: L.t(SettingsPage.add.titleKey), line: L.t(SettingsPage.add.lineKey))
+            }
+            .buttonStyle(PressStyle(haptic: false))
         }
     }
+}
 
-    private var companions: some View {
+private struct SettingsCompanionsSection: View {
+    @ObservedObject var team: TeamModel
+    @Binding var editingBot: BotInfo?
+    let openMemory: () -> Void
+
+    var body: some View {
         RowCard {
             if team.bots.isEmpty {
                 Text(L.t("settingsHome.noCompanions"))
@@ -230,11 +253,38 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(Ink.Space.l)
             }
             ForEach(team.bots) { companionRow($0) }
-            if team.phase != .demo { pageRow(.memory, Ink.Tile.yan) }
+            if team.phase != .demo {
+                Button {
+                    Haptics.light()
+                    openMemory()
+                } label: {
+                    RowLabel(SettingsPage.memory.symbol, tint: Ink.Tile.yan, title: L.t(SettingsPage.memory.titleKey), line: L.t(SettingsPage.memory.lineKey))
+                }
+                .buttonStyle(PressStyle(haptic: false))
+            }
         }
     }
 
-    private var rooms: some View {
+    private func companionRow(_ bot: BotInfo) -> some View {
+        Button {
+            Haptics.light()
+            editingBot = bot
+        } label: {
+            RowLabel(title: bot.name, line: L.t("settingsHome.companionsLine")) {
+                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+            }
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel(L.format("settingsHome.editCompanion", bot.name))
+    }
+}
+
+private struct SettingsRoomsSection: View {
+    @ObservedObject var team: TeamModel
+    @Binding var creatingRoom: Bool
+    @Binding var editingRoom: RoomInfo?
+
+    var body: some View {
         RowCard(note: team.bots.count < 2 ? L.t("settingsHome.roomsNeedCompanions") : nil) {
             ForEach(team.rooms) { room in
                 Button {
@@ -252,19 +302,6 @@ struct SettingsView: View {
             .buttonStyle(PressStyle())
             .disabled(team.bots.count < 2)
         }
-    }
-
-    private func companionRow(_ bot: BotInfo) -> some View {
-        Button {
-            Haptics.light()
-            editingBot = bot
-        } label: {
-            RowLabel(title: bot.name, line: L.t("settingsHome.companionsLine")) {
-                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true, bot: bot)
-            }
-        }
-        .buttonStyle(PressStyle(haptic: false))
-        .accessibilityLabel(L.format("settingsHome.editCompanion", bot.name))
     }
 }
 

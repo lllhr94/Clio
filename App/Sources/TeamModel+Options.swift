@@ -8,7 +8,7 @@ extension TeamModel {
     // MARK: This conversation's own settings
 
     /// What the user set for one conversation only: abilities switched off, and a model of its own.
-    struct ChatOptions: Codable, Equatable {
+    struct ChatOptions: Codable, Equatable, Sendable {
         /// `Grant` names turned off in this conversation.
         var off: [String] = []
         /// `endpointId/modelId`; nil follows the companion.
@@ -55,7 +55,7 @@ extension TeamModel {
         liveChatMemoryGate.setDisabled(newOff, for: key)
         let newHostID = WorkPlace(code: value.place).hostID
         hostBindings.set(newHostID, for: key)
-        if keeping { Disk.save(value, Self.optionsFile(key)) }
+        if keeping { ChatDisk.saveValue(value, file: Self.optionsFile(key)) }
         if oldHostID != newHostID {
             cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: oldHostID)
         }

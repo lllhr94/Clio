@@ -12,11 +12,17 @@ struct BrandIcon: View {
     let tint: Color
     var size: CGFloat = 44
 
-    @State private var image: UIImage?
+    @State private var loaded: (domain: String, image: UIImage)?
+
+    private var shownImage: UIImage? {
+        guard let domain else { return nil }
+        if let loaded, loaded.domain == domain { return loaded.image }
+        return BrandIcons.cachedIcon(for: domain)
+    }
 
     var body: some View {
         ZStack {
-            if let image {
+            if let image = shownImage {
                 RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous)
                     .fill(Ink.Artwork.white)
                 Image(uiImage: image)
@@ -33,8 +39,10 @@ struct BrandIcon: View {
         .frame(width: size, height: size)
         .overlay(RoundedRectangle(cornerRadius: Kit.iconCorner(size), style: .continuous).strokeBorder(Ink.Artwork.black.opacity(0.08), lineWidth: 0.5))
         .task(id: domain) {
-            guard let domain else { return }
-            image = await BrandIcons.shared.icon(for: domain)
+            guard let domain, BrandIcons.cachedIcon(for: domain) == nil else { return }
+            if let fetched = await BrandIcons.shared.icon(for: domain) {
+                loaded = (domain, fetched)
+            }
         }
     }
 }
@@ -42,19 +50,50 @@ struct BrandIcon: View {
 /// Where service icons come from, and their cache (memory, then the Caches folder).
 actor BrandIcons {
     static let shared = BrandIcons()
-    private var memory: [String: UIImage] = [:]
-    private var misses: Set<String> = []
+    private static let missTTL: TimeInterval = 300
+    private static let maxMisses = 128
+
+    nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    private var misses: [String: Date] = [:]
     private var pending: [String: Task<UIImage?, Never>] = [:]
 
-    private var folder: URL {
+    nonisolated static func cachedIcon(for domain: String) -> UIImage? {
+        cache.object(forKey: domain as NSString)
+    }
+
+    private func store(_ image: UIImage, for domain: String) {
+        misses.removeValue(forKey: domain)
+        Self.cache.setObject(image, forKey: domain as NSString)
+    }
+
+    private func recordMiss(for domain: String) {
+        if misses.count >= Self.maxMisses {
+            let now = Date()
+            misses = misses.filter { now.timeIntervalSince($0.value) < Self.missTTL }
+            if misses.count >= Self.maxMisses {
+                misses.removeAll(keepingCapacity: true)
+            }
+        }
+        misses[domain] = Date()
+    }
+
+    private lazy var folder: URL = {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("brand-icons", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
-    }
+    }()
 
     func icon(for domain: String) async -> UIImage? {
-        if let hit = memory[domain] { return hit }
-        if misses.contains(domain) { return nil }
+        if let hit = Self.cache.object(forKey: domain as NSString) { return hit }
+        if let failedAt = misses[domain] {
+            if Date().timeIntervalSince(failedAt) < Self.missTTL { return nil }
+            misses.removeValue(forKey: domain)
+        }
         if let task = pending[domain] { return await task.value }
         let task = Task { await load(domain) }
         pending[domain] = task
@@ -66,7 +105,7 @@ actor BrandIcons {
     private func load(_ domain: String) async -> UIImage? {
         let file = folder.appendingPathComponent(domain.replacingOccurrences(of: "/", with: "_") + ".png")
         if let data = try? Data(contentsOf: file), let image = Self.decodedIcon(data) {
-            memory[domain] = image
+            store(image, for: domain)
             return image
         }
         // The service's own icons first: what its home page links to, then the usual places. Then favicon services,
@@ -75,10 +114,10 @@ actor BrandIcons {
         if domain.hasPrefix("https://") {
             if let url = URL(string: domain), let image = await fetch(url) {
                 try? image.pngData()?.write(to: file, options: .atomic)
-                memory[domain] = image
+                store(image, for: domain)
                 return image
             }
-            misses.insert(domain)
+            recordMiss(for: domain)
             return nil
         }
         var sources = await linked(on: domain)
@@ -94,10 +133,10 @@ actor BrandIcons {
         for source in sources {
             guard let url = URL(string: source), let image = await fetch(url) else { continue }
             try? image.pngData()?.write(to: file, options: .atomic)
-            memory[domain] = image
+            store(image, for: domain)
             return image
         }
-        misses.insert(domain)
+        recordMiss(for: domain)
         return nil
     }
 

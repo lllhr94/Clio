@@ -123,45 +123,79 @@ struct LookPage: View {
     }
 
     private func reset() {
+        Theme.shared.resetLook()
         scheme = "system"
-        Theme.shared.pick("dai")
-        Theme.shared.setOled(false)
-        Theme.shared.setWhite(false)
-        Theme.shared.setBubble("")
     }
 }
 
 struct ReadingSizePage: View {
-    @AppStorage("look.size") private var size = 17.0
-    @AppStorage("look.lineHeight") private var lineHeight = Pref.defaultLineHeight
+    @State private var pendingDensity: Double?
+    @State private var draggingDensity = false
 
     private static let sizes = [15.0, 16, 17, 19, 21, 24]
 
+    private var sizeBinding: Binding<Double> {
+        Stops.snapped(
+            Binding(get: { Theme.shared.size }, set: { Theme.shared.setSize($0) }),
+            to: Self.sizes
+        )
+    }
+
+    private var lineHeightBinding: Binding<Double> {
+        Stops.snapped(
+            Binding(get: { Theme.shared.lineHeight }, set: { Theme.shared.setLineHeight($0) }),
+            to: Pref.lineHeights
+        )
+    }
+
     private var density: Binding<Double> {
         Binding(
-            get: { Stops.nearest(UIScale.shared.value, in: UIScale.levels.map(\.factor)) },
-            set: { factor in withAnimation(Ink.Motion.settle) { UIScale.shared.value = factor } }
+            get: { pendingDensity ?? Stops.nearest(UIScale.shared.value, in: UIScale.levels.map(\.factor)) },
+            set: { factor in
+                if draggingDensity {
+                    pendingDensity = factor
+                } else {
+                    pendingDensity = nil
+                    UIScale.shared.value = factor
+                }
+            }
         )
     }
 
     var body: some View {
+        let theme = Theme.shared
         PreferenceForm(L.t("settingsHome.size"), reset: reset) {
             Section {
-                ProseView(text: L.t("settingsHome.readingSample"))
-                    .padding(.vertical, Ink.Space.s)
-                    .animation(Ink.Motion.settle, value: size)
-                StopRow(title: L.t("settingsHome.fontSize"), value: Stops.snapped($size, to: Self.sizes), stops: Self.sizes.indices.map {
+                ReadingSamplePreview(
+                    rawText: L.t("settingsHome.readingSample"),
+                    size: theme.size,
+                    lineHeight: theme.lineHeight,
+                    face: theme.face,
+                    code: theme.code
+                )
+                StopRow(title: L.t("settingsHome.fontSize"), value: sizeBinding, stops: Self.sizes.indices.map {
                     Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
                 }, opensForShot: Shots.name == "stops")
-                StopRow(title: L.t("settingsHome.lineSpacing"), value: Stops.snapped($lineHeight, to: Pref.lineHeights), stops: Pref.lineHeights.indices.map {
+                StopRow(title: L.t("settingsHome.lineSpacing"), value: lineHeightBinding, stops: Pref.lineHeights.indices.map {
                     Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
                 })
             } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
 
             Section {
-                StopRow(title: L.t("settings.uiDensity"), value: density, stops: UIScale.levels.indices.map {
-                    Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
-                })
+                StopRow(
+                    title: L.t("settings.uiDensity"),
+                    value: density,
+                    stops: UIScale.levels.indices.map {
+                        Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
+                    },
+                    onEditingChanged: { editing in
+                        draggingDensity = editing
+                        if !editing, let committed = pendingDensity {
+                            pendingDensity = nil
+                            UIScale.shared.value = committed
+                        }
+                    }
+                )
                 RowLabel("textformat.size", title: L.t("settings.densitySampleTitle"), line: L.t("settings.densitySampleLine"), end: .valueChevron(L.t("settings.sample")))
                     .padding(.horizontal, -Ink.Space.l)
                     .allowsHitTesting(false)
@@ -170,9 +204,126 @@ struct ReadingSizePage: View {
     }
 
     private func reset() {
-        size = 17
-        lineHeight = Pref.defaultLineHeight
-        UIScale.shared.value = 1
+        pendingDensity = nil
+        draggingDensity = false
+        Theme.shared.setSize(17)
+        Theme.shared.setLineHeight(Pref.defaultLineHeight)
+        if UIScale.shared.value != 1 { UIScale.shared.value = 1 }
+    }
+}
+
+/// Lightweight in-place text preview for reading size/line-height stops (avoids rebuilding Markdown AST on drag).
+private struct ReadingSamplePreview: View {
+    let rawText: String
+    let size: Double
+    let lineHeight: Double
+    let face: Pref.Face
+    let code: Pref.Code
+
+    private struct SampleKey: Hashable {
+        let rawText: String
+        let size: Double
+        let face: Pref.Face
+        let code: Pref.Code
+        let fontsArrived: Int
+    }
+
+    @MainActor private static var cache: [SampleKey: AttributedString] = [:]
+
+    var body: some View {
+        let fontsArrived = Theme.shared.fontsArrived
+        let attributed = Self.attributedSample(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
+        Text(attributed)
+            .font(Ink.face(face, size, bold: false))
+            .foregroundStyle(Ink.ink)
+            .lineSpacing(Ink.leading(size: size, lineHeight: lineHeight, face: face))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, Ink.Space.s)
+    }
+
+    @MainActor
+    private static func attributedSample(rawText: String, size: Double, face: Pref.Face, code: Pref.Code, fontsArrived: Int) -> AttributedString {
+        let key = SampleKey(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
+        if let hit = cache[key] { return hit }
+        let built = buildSample(rawText, size: size, face: face, code: code)
+        if cache.count >= 24 { cache.removeAll(keepingCapacity: true) }
+        cache[key] = built
+        return built
+    }
+
+    private static func buildSample(_ rawText: String, size: Double, face: Pref.Face, code: Pref.Code) -> AttributedString {
+        var result = AttributedString()
+        let lines = rawText.split(separator: "\n", omittingEmptySubsequences: false)
+        let headingFont = Ink.face(face, size + 2, bold: true)
+        let boldFont = Ink.face(face, size, bold: true)
+        let codeFont = Ink.mono(max(12, size - 3), preference: code)
+
+        for (index, rawLine) in lines.enumerated() {
+            if index > 0 { result.append(AttributedString("\n")) }
+            var line = String(rawLine)
+            var isHeading = false
+            if line.hasPrefix("## ") {
+                isHeading = true
+                line = String(line.dropFirst(3))
+            } else if line.hasPrefix("- ") {
+                line = "• " + String(line.dropFirst(2))
+            }
+            var segment = parseInline(line, isHeading: isHeading, headingFont: headingFont, boldFont: boldFont, codeFont: codeFont)
+            if isHeading {
+                segment.font = headingFont
+            }
+            result.append(segment)
+        }
+        return result
+    }
+
+    private static func parseInline(
+        _ line: String,
+        isHeading: Bool,
+        headingFont: Font,
+        boldFont: Font,
+        codeFont: Font
+    ) -> AttributedString {
+        var out = AttributedString()
+        var cursor = line.startIndex
+        while cursor < line.endIndex {
+            let boldRange = line[cursor...].range(of: "**")
+            let codeRange = line[cursor...].range(of: "`")
+            let nextMarker: (isBold: Bool, range: Range<String.Index>)?
+            if let b = boldRange, let c = codeRange {
+                nextMarker = b.lowerBound < c.lowerBound ? (true, b) : (false, c)
+            } else if let b = boldRange {
+                nextMarker = (true, b)
+            } else if let c = codeRange {
+                nextMarker = (false, c)
+            } else {
+                nextMarker = nil
+            }
+            guard let marker = nextMarker else {
+                out.append(AttributedString(String(line[cursor...])))
+                break
+            }
+            if cursor < marker.range.lowerBound {
+                out.append(AttributedString(String(line[cursor..<marker.range.lowerBound])))
+            }
+            let delimiter = marker.isBold ? "**" : "`"
+            let searchStart = marker.range.upperBound
+            if let closeRange = line[searchStart...].range(of: delimiter) {
+                var span = AttributedString(String(line[searchStart..<closeRange.lowerBound]))
+                if marker.isBold {
+                    span.font = isHeading ? headingFont : boldFont
+                } else {
+                    span.font = codeFont
+                    span.backgroundColor = Ink.mine
+                }
+                out.append(span)
+                cursor = closeRange.upperBound
+            } else {
+                out.append(AttributedString(String(line[marker.range.lowerBound...])))
+                break
+            }
+        }
+        return out
     }
 }
 
@@ -290,6 +441,7 @@ struct ChatContextPage: View {
     private var window: Int { TeamModel.shared.defaultWindow }
 
     var body: some View {
+        let window = self.window
         PreferenceForm(L.t("settingsHome.context"), reset: reset) {
             Section {
                 StopRow(title: L.t("settingsHome.contextShare"), value: Stops.snapped($contextShare, to: Self.shares),

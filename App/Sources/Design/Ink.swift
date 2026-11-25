@@ -17,8 +17,8 @@ final class Theme {
     private(set) var hint: Bool = UserDefaults.standard.object(forKey: "look.toneHint") as? Bool ?? true
 
     func setHint(_ value: Bool) {
-        hint = value
-        UserDefaults.standard.set(value, forKey: "look.toneHint")
+        if hint != value { hint = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.toneHint") }
     }
 
     /// Dark mode on pure black, for OLED screens. Off, dark mode is a warm ink-grey, not black.
@@ -31,23 +31,23 @@ final class Theme {
     private(set) var bubble: String = UserDefaults.standard.string(forKey: "look.bubble") ?? ""
 
     func setBubble(_ value: String) {
-        bubble = value
-        UserDefaults.standard.set(value, forKey: "look.bubble")
+        if bubble != value { bubble = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.bubble") }
     }
 
     func setWhite(_ value: Bool) {
-        white = value
-        UserDefaults.standard.set(value, forKey: "look.white")
+        if white != value { white = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.white") }
     }
 
     func setOled(_ value: Bool) {
-        oled = value
-        UserDefaults.standard.set(value, forKey: "look.oled")
+        if oled != value { oled = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.oled") }
     }
 
     func setPlain(_ value: Bool) {
-        plain = value
-        UserDefaults.standard.set(value, forKey: "look.plainNames")
+        if plain != value { plain = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.plainNames") }
     }
 
     /// The reading face, and the face of titles and inscriptions (see `Pref.Face`).
@@ -57,23 +57,64 @@ final class Theme {
     private(set) var code: Pref.Code = Pref.Code(rawValue: UserDefaults.standard.string(forKey: "look.code") ?? "") ?? .maple
 
     func setCode(_ value: Pref.Code) {
-        code = value
-        UserDefaults.standard.set(value.rawValue, forKey: "look.code")
+        if code != value { code = value }
+        writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.code") }
     }
 
     func setFace(_ value: Pref.Face) {
-        face = value
-        UserDefaults.standard.set(value.rawValue, forKey: "look.face")
+        if face != value { face = value }
+        writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.face") }
     }
 
     func setMark(_ value: Pref.Face) {
-        mark = value
-        UserDefaults.standard.set(value.rawValue, forKey: "look.mark")
+        if mark != value { mark = value }
+        writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.mark") }
     }
 
     func pick(_ key: String) {
-        self.key = key
-        UserDefaults.standard.set(key, forKey: "look.accent")
+        if self.key != key { self.key = key }
+        writeDefaults { UserDefaults.standard.set(key, forKey: "look.accent") }
+    }
+
+    func setSize(_ value: Double) {
+        if size != value { size = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.size") }
+    }
+
+    func setLineHeight(_ value: Double) {
+        if lineHeight != value { lineHeight = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.lineHeight") }
+    }
+
+    func resetLook() {
+        writeDefaults {
+            let defaults = UserDefaults.standard
+            defaults.set("system", forKey: "look.scheme")
+            defaults.set("dai", forKey: "look.accent")
+            defaults.set(false, forKey: "look.oled")
+            defaults.set(false, forKey: "look.white")
+            defaults.set("", forKey: "look.bubble")
+        }
+        if key != "dai" { key = "dai" }
+        if oled { oled = false }
+        if white { white = false }
+        if !bubble.isEmpty { bubble = "" }
+        if scheme != "system" {
+            scheme = "system"
+            applyScheme()
+        }
+    }
+
+    func resetFonts() {
+        writeDefaults {
+            let defaults = UserDefaults.standard
+            defaults.set(Pref.Face.serif.rawValue, forKey: "look.face")
+            defaults.set(Pref.Face.wenkai.rawValue, forKey: "look.mark")
+            defaults.set(Pref.Code.maple.rawValue, forKey: "look.code")
+        }
+        if face != .serif { face = .serif }
+        if mark != .wenkai { mark = .wenkai }
+        if code != .maple { code = .maple }
     }
 
     var palette: Ink.Palette { Ink.palette(for: key) }
@@ -86,14 +127,32 @@ final class Theme {
     private(set) var fade: Bool = UserDefaults.standard.object(forKey: "look.fade") as? Bool ?? true
     private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
     @ObservationIgnored private var watching: NSObjectProtocol?
+    @ObservationIgnored private var isWritingDefaults = false
     /// Bumped when 宋体 or 楷体 finishes downloading, so text already drawn in the stand-in face is drawn again in it.
     private(set) var fontsArrived = 0
     func fontArrived() { fontsArrived += 1 }
 
     init() {
-        watching = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.refresh()
+        watching = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: nil
+        ) { [weak self] _ in
+            if !Thread.isMainThread {
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh()
+                }
+                return
+            }
+            guard let self, !self.isWritingDefaults else { return }
+            self.refresh()
         }
+    }
+
+    private func writeDefaults(_ update: () -> Void) {
+        isWritingDefaults = true
+        defer { isWritingDefaults = false }
+        update()
     }
 
     private static func number(_ key: String, _ fallback: Double) -> Double {

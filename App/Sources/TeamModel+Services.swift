@@ -113,9 +113,9 @@ extension TeamModel {
         return await readAPIKey(for: found)
     }
 
-    func addEndpoint(_ endpoint: Endpoint, key: String) {
-        settings.endpoints.removeAll { $0.id == endpoint.id }
-        settings.endpoints.append(endpoint)
+    private nonisolated static let endpointEditQueue = DispatchQueue(label: "clio.endpoint-edit", qos: .userInitiated)
+
+    private nonisolated static func saveCredential(for endpoint: Endpoint, key: String) {
         if let origin = EndpointAddressPolicy.rawOrigin(endpoint.baseURL) {
             _ = EndpointKeyCoordinator.saveBoundCredential(
                 endpointID: endpoint.credentialID,
@@ -129,6 +129,28 @@ extension TeamModel {
         } else {
             Vault.save(key, as: EndpointKeyCoordinator.legacyKeySlot(for: endpoint.credentialID))
         }
+    }
+
+    func addEndpoint(_ endpoint: Endpoint, key: String) {
+        Self.saveCredential(for: endpoint, key: key)
+        applyAddedEndpoint(endpoint)
+    }
+
+    func addEndpointAsync(_ endpoint: Endpoint, key: String) async {
+        await EndpointMutationGate.run(on: self) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                Self.endpointEditQueue.async {
+                    Self.saveCredential(for: endpoint, key: key)
+                    continuation.resume()
+                }
+            }
+            self.applyAddedEndpoint(endpoint)
+        }
+    }
+
+    private func applyAddedEndpoint(_ endpoint: Endpoint) {
+        settings.endpoints.removeAll { $0.id == endpoint.id }
+        settings.endpoints.append(endpoint)
         if resolveActive(settings.defaultModel) == nil, let pick = Self.preferred(endpoint) {
             settings.defaultModel = "\(endpoint.id)/\(pick)"
         }
@@ -138,10 +160,66 @@ extension TeamModel {
     }
 
     func removeEndpoint(_ id: String) {
-        let prefix = id + "/"
         let removed = settings.endpoints.filter { $0.id == id }
+        let remaining = settings.endpoints.filter { $0.id != id }
+        Self.discardCredentials(from: removed, keeping: remaining)
+        applyRemovedEndpoint(id)
+    }
+
+    @discardableResult
+    func removeEndpointAsync(_ id: String) async -> Bool {
+        await EndpointMutationGate.run(on: self) {
+            guard let index = self.settings.endpoints.firstIndex(where: { $0.id == id }) else { return true }
+            let removed = [self.settings.endpoints[index]]
+            let snapshot = self.settings
+            var candidate = snapshot
+            candidate.endpoints.remove(at: index)
+            let prefix = id + "/"
+            if candidate.backupModel?.hasPrefix(prefix) == true { candidate.backupModel = nil }
+            if candidate.imageModel?.hasPrefix(prefix) == true { candidate.imageModel = nil }
+            if candidate.memoryModel?.hasPrefix(prefix) == true { candidate.memoryModel = nil }
+            if Self.resolveActive(candidate.defaultModel, in: candidate.endpoints) == nil {
+                candidate.defaultModel = Self.firstPreferredModel(in: candidate.endpoints)
+            }
+
+            if self.keeping {
+                let wrote: Bool = await withCheckedContinuation { continuation in
+                    Self.endpointEditQueue.async {
+                        do {
+                            try ChatDisk.writeValueAndWait(candidate, file: "settings.json")
+                            continuation.resume(returning: true)
+                        } catch {
+                            let reason = error.localizedDescription
+                            DispatchQueue.main.async {
+                                Diag.note("没存进手机：settings.json（\(reason)）")
+                            }
+                            continuation.resume(returning: false)
+                        }
+                    }
+                }
+                guard wrote else { return false }
+            }
+
+            if self.settings == snapshot {
+                self.settings = candidate
+                self.pruneUnavailableModelRefs { $0.hasPrefix(prefix) }
+            } else {
+                self.applyRemovedEndpoint(id)
+            }
+            let remaining = self.settings.endpoints
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                Self.endpointEditQueue.async {
+                    Self.discardCredentials(from: removed, keeping: remaining)
+                    continuation.resume()
+                }
+            }
+            return true
+        }
+    }
+
+    private func applyRemovedEndpoint(_ id: String) {
+        let prefix = id + "/"
         settings.endpoints.removeAll { $0.id == id }
-        Self.discardCredentials(from: removed, keeping: settings.endpoints)
         if settings.backupModel?.hasPrefix(prefix) == true { settings.backupModel = nil }
         if settings.imageModel?.hasPrefix(prefix) == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(prefix) == true { settings.memoryModel = nil }
@@ -216,15 +294,19 @@ extension TeamModel {
     /// Puts models into use or out of it.
     func setModels(_ id: String, _ models: [String]) {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
+        let oldModels = Set(settings.endpoints[index].models)
+        let removed = oldModels.subtracting(models)
         settings.endpoints[index].models = models
-        let prefix = id + "/"
-        let activeRefs = Set(models.map { prefix + $0 })
-        let removedFromService: (String) -> Bool = { ref in
-            ref.hasPrefix(prefix) && !activeRefs.contains(ref)
+        if !removed.isEmpty {
+            let prefix = id + "/"
+            let activeRefs = Set(models.map { prefix + $0 })
+            let removedFromService: @Sendable (String) -> Bool = { ref in
+                ref.hasPrefix(prefix) && !activeRefs.contains(ref)
+            }
+            if let backup = settings.backupModel, removedFromService(backup) { settings.backupModel = nil }
+            if let memory = settings.memoryModel, removedFromService(memory) { settings.memoryModel = nil }
+            pruneUnavailableModelRefs(removedFromService)
         }
-        if let backup = settings.backupModel, removedFromService(backup) { settings.backupModel = nil }
-        if let memory = settings.memoryModel, removedFromService(memory) { settings.memoryModel = nil }
-        pruneUnavailableModelRefs(removedFromService)
         if resolveActive(settings.defaultModel) == nil {
             if let pick = Self.preferred(settings.endpoints[index]) {
                 settings.defaultModel = "\(id)/\(pick)"
@@ -235,7 +317,35 @@ extension TeamModel {
         saveSettings()
     }
 
-    private func pruneUnavailableModelRefs(_ shouldClear: (String) -> Bool) {
+    private nonisolated static func optionsFilePath(_ key: String) -> String {
+        "chats/\(key)~options.json"
+    }
+
+    private struct OptionsModelProbe: Decodable {
+        let model: String?
+    }
+
+    private nonisolated static func scanOptionsMatching(
+        skipKeys: Set<String>,
+        matching: (String) -> Bool
+    ) -> [(chatKey: String, model: String)] {
+        let chatsDir = Disk.url("chats")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: chatsDir.path) else { return [] }
+        let suffix = "~options.json"
+        var matches: [(chatKey: String, model: String)] = []
+        for file in files where file.hasSuffix(suffix) {
+            let chatKey = String(file.dropLast(suffix.count))
+            if skipKeys.contains(chatKey) { continue }
+            let rel = "chats/\(file)"
+            guard let data = try? Data(contentsOf: Disk.url(rel)),
+                  let probe = try? JSONDecoder().decode(OptionsModelProbe.self, from: data),
+                  let ref = probe.model, matching(ref) else { continue }
+            matches.append((chatKey, ref))
+        }
+        return matches
+    }
+
+    private func pruneUnavailableModelRefs(_ shouldClear: @escaping @Sendable (String) -> Bool) {
         var botsChanged = false
         for idx in bots.indices {
             if let ref = bots[idx].model, shouldClear(ref) {
@@ -249,20 +359,33 @@ extension TeamModel {
             if let ref = opts.model, shouldClear(ref) {
                 opts.model = nil
                 optionBook[key] = opts
-                if keeping { Disk.save(opts, Self.optionsFile(key)) }
+                if keeping { ChatDisk.saveValue(opts, file: Self.optionsFile(key)) }
             }
         }
         guard keeping else { return }
-        let chatsDir = Disk.url("chats")
-        if let files = try? FileManager.default.contentsOfDirectory(atPath: chatsDir.path) {
-            for file in files where file.hasSuffix("~options.json") {
-                let rel = "chats/\(file)"
-                guard var stored = Disk.load(ChatOptions.self, rel),
-                      let ref = stored.model, shouldClear(ref) else { continue }
-                stored.model = nil
-                let chatKey = String(file.dropLast("~options.json".count))
-                optionBook[chatKey] = stored
-                Disk.save(stored, rel)
+        let loadedKeys = Set(optionBook.keys)
+        OptionRefSync.enqueue(for: self) { team in
+            guard team.keeping else { return }
+            let found = await Task.detached(priority: .utility) {
+                Self.scanOptionsMatching(skipKeys: loadedKeys, matching: shouldClear)
+            }.value
+            guard team.keeping, !found.isEmpty else { return }
+            for item in found {
+                guard shouldClear(item.model), team.resolveActive(item.model) == nil else { continue }
+                let file = Self.optionsFile(item.chatKey)
+                if var live = team.optionBook[item.chatKey] {
+                    guard live.model == item.model else { continue }
+                    live.model = nil
+                    team.optionBook[item.chatKey] = live
+                    ChatDisk.saveValue(live, file: file)
+                } else {
+                    let expected = item.model
+                    ChatDisk.modifyValue(ChatOptions.self, file: file) { stored in
+                        guard stored.model == expected else { return false }
+                        stored.model = nil
+                        return true
+                    }
+                }
             }
         }
     }
@@ -287,6 +410,50 @@ extension TeamModel {
         EndpointAddressPolicy.normalize(raw)
     }
 
+    private nonisolated static func makeEditedSettings(
+        base: TeamSettings,
+        id: String,
+        originalCredentialID: String,
+        givenName: String,
+        targetCredentialID: String,
+        nextURL: String,
+        style: ThinkingStyle?
+    ) -> (settings: TeamSettings, targetID: String)? {
+        guard let idx = base.endpoints.firstIndex(where: { $0.id == id }) else { return nil }
+        var candidate = base
+        let migrated = targetCredentialID != originalCredentialID
+        let targetID = migrated ? targetCredentialID : id
+        candidate.endpoints[idx].id = targetID
+        if migrated { candidate.endpoints[idx].credentialSlot = nil }
+        if !givenName.isEmpty { candidate.endpoints[idx].name = givenName }
+        let oldURL = candidate.endpoints[idx].baseURL
+        let oldStyle = candidate.endpoints[idx].style
+        candidate.endpoints[idx].baseURL = nextURL
+        candidate.endpoints[idx].style = style
+        if candidate.endpoints[idx].baseURL != oldURL || candidate.endpoints[idx].style != oldStyle,
+           var overrides = candidate.endpoints[idx].overrides {
+            for (model, var custom) in overrides where custom.levels != nil {
+                custom.levels = nil
+                let baseline = candidate.endpoints[idx].traits(model, ignoringCorrection: true)
+                overrides[model] = (custom == baseline) ? nil : custom
+            }
+            candidate.endpoints[idx].overrides = overrides.isEmpty ? nil : overrides
+        }
+        if targetID != id {
+            let oldPrefix = id + "/"
+            let newPrefix = targetID + "/"
+            func rewrite(_ ref: String?) -> String? {
+                guard let ref, ref.hasPrefix(oldPrefix) else { return ref }
+                return newPrefix + String(ref.dropFirst(oldPrefix.count))
+            }
+            candidate.defaultModel = rewrite(candidate.defaultModel)
+            candidate.backupModel = rewrite(candidate.backupModel)
+            candidate.memoryModel = rewrite(candidate.memoryModel)
+            candidate.imageModel = rewrite(candidate.imageModel)
+        }
+        return (candidate, targetID)
+    }
+
     /// Changes a service's name, address, thinking style, and optionally its API key.
     /// Same-origin path adjustments keep the endpoint ID and existing key; cross-host changes
     /// require a new key, write independent credentials under a new endpoint ID first, commit
@@ -309,48 +476,25 @@ extension TeamModel {
             makeEndpointID: { UUID().uuidString },
             commitSettings: { targetCredentialID, nextURL in
                 MainActor.assumeIsolated {
-                    guard let idx = self.settings.endpoints.firstIndex(where: { $0.id == id }) else { return false }
-                    var candidate = self.settings
-                    let migrated = targetCredentialID != original.credentialID
-                    let targetID = migrated ? targetCredentialID : id
-                    candidate.endpoints[idx].id = targetID
-                    if migrated { candidate.endpoints[idx].credentialSlot = nil }
-                    if !given.isEmpty { candidate.endpoints[idx].name = given }
-                    let oldURL = candidate.endpoints[idx].baseURL
-                    let oldStyle = candidate.endpoints[idx].style
-                    candidate.endpoints[idx].baseURL = nextURL
-                    candidate.endpoints[idx].style = style
-                    if candidate.endpoints[idx].baseURL != oldURL || candidate.endpoints[idx].style != oldStyle,
-                       var overrides = candidate.endpoints[idx].overrides {
-                        for (model, var custom) in overrides where custom.levels != nil {
-                            custom.levels = nil
-                            let baseline = candidate.endpoints[idx].traits(model, ignoringCorrection: true)
-                            overrides[model] = (custom == baseline) ? nil : custom
-                        }
-                        candidate.endpoints[idx].overrides = overrides.isEmpty ? nil : overrides
-                    }
-                    if targetID != id {
-                        let oldPrefix = id + "/"
-                        let newPrefix = targetID + "/"
-                        func rewrite(_ ref: String?) -> String? {
-                            guard let ref, ref.hasPrefix(oldPrefix) else { return ref }
-                            return newPrefix + String(ref.dropFirst(oldPrefix.count))
-                        }
-                        candidate.defaultModel = rewrite(candidate.defaultModel)
-                        candidate.backupModel = rewrite(candidate.backupModel)
-                        candidate.memoryModel = rewrite(candidate.memoryModel)
-                        candidate.imageModel = rewrite(candidate.imageModel)
-                    }
+                    guard let built = Self.makeEditedSettings(
+                        base: self.settings,
+                        id: id,
+                        originalCredentialID: original.credentialID,
+                        givenName: given,
+                        targetCredentialID: targetCredentialID,
+                        nextURL: nextURL,
+                        style: style
+                    ) else { return false }
                     if self.keeping {
                         do {
-                            try Disk.write(candidate, "settings.json")
+                            try ChatDisk.writeValueAndWait(built.settings, file: "settings.json")
                         } catch {
                             return false
                         }
                     }
-                    self.settings = candidate
-                    if targetID != id {
-                        self.rewriteMigratedEndpointRefs(from: id, to: targetID)
+                    self.settings = built.settings
+                    if built.targetID != id {
+                        self.rewriteMigratedEndpointRefs(from: id, to: built.targetID)
                     }
                     return true
                 }
@@ -373,10 +517,109 @@ extension TeamModel {
         return outcome
     }
 
+    @discardableResult
+    func editEndpointAsync(
+        _ id: String,
+        name: String,
+        baseURL: String,
+        style: ThinkingStyle?,
+        key: String? = nil
+    ) async -> EndpointKeyEditOutcome {
+        await EndpointMutationGate.run(on: self) {
+            guard let index = self.settings.endpoints.firstIndex(where: { $0.id == id }) else { return .invalidAddress }
+            let original = self.settings.endpoints[index]
+            let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let allowKeyless = Service.of(original)?.keyless == true
+
+            let outcome: EndpointKeyEditOutcome = await withCheckedContinuation { continuation in
+                Self.endpointEditQueue.async {
+                    let store = EndpointKeyCoordinator.Store(
+                        readBoundRecord: { Vault.load(Data.self, key: $0) },
+                        writeBoundRecord: Self.writeAndVerifyData,
+                        hasBoundMarker: { Vault.load(Bool.self, key: $0) == true },
+                        writeBoundMarker: { Self.writeAndVerifyBool($0, true) },
+                        readLegacyKey: { Vault.load(String.self, key: $0) },
+                        writeLegacyKey: Self.writeAndVerifyString,
+                        removeKey: { Vault.remove($0) },
+                        makeEndpointID: { UUID().uuidString },
+                        commitSettings: { targetCredentialID, nextURL in
+                            let snapshot: (settings: TeamSettings, keeping: Bool)? = DispatchQueue.main.sync {
+                                MainActor.assumeIsolated {
+                                    guard self.settings.endpoints.contains(where: { $0.id == id }) else { return nil }
+                                    return (self.settings, self.keeping)
+                                }
+                            }
+                            guard let snapshot,
+                                  let built = Self.makeEditedSettings(
+                                      base: snapshot.settings,
+                                      id: id,
+                                      originalCredentialID: original.credentialID,
+                                      givenName: given,
+                                      targetCredentialID: targetCredentialID,
+                                      nextURL: nextURL,
+                                      style: style
+                                  ) else {
+                                return false
+                            }
+                            if snapshot.keeping {
+                                do {
+                                    try ChatDisk.writeValueAndWait(built.settings, file: "settings.json")
+                                } catch {
+                                    return false
+                                }
+                            }
+                            let published: Bool = DispatchQueue.main.sync {
+                                MainActor.assumeIsolated {
+                                    if self.settings == snapshot.settings {
+                                        self.settings = built.settings
+                                    } else if let merged = Self.makeEditedSettings(
+                                        base: self.settings,
+                                        id: id,
+                                        originalCredentialID: original.credentialID,
+                                        givenName: given,
+                                        targetCredentialID: targetCredentialID,
+                                        nextURL: nextURL,
+                                        style: style
+                                    ) {
+                                        self.settings = merged.settings
+                                        self.saveSettings()
+                                    } else {
+                                        return false
+                                    }
+                                    if built.targetID != id {
+                                        self.rewriteMigratedEndpointRefs(from: id, to: built.targetID)
+                                    }
+                                    return true
+                                }
+                            }
+                            return published
+                        }
+                    )
+                    let applied = EndpointKeyCoordinator.applyEdit(
+                        endpointID: original.credentialID,
+                        currentBaseURL: original.baseURL,
+                        newBaseURL: baseURL,
+                        replacementKey: key,
+                        allowKeylessLocalReuse: allowKeyless,
+                        store: store
+                    )
+                    continuation.resume(returning: applied)
+                }
+            }
+
+            if case .saved(let credentialID, let normalizedURL, let keyUpdated) = outcome {
+                if keyUpdated { self.objectWillChange.send() }
+                let endpointID = credentialID == original.credentialID ? id : credentialID
+                return .saved(endpointID: endpointID, normalizedURL: normalizedURL, keyUpdated: keyUpdated)
+            }
+            return outcome
+        }
+    }
+
     private func rewriteMigratedEndpointRefs(from oldID: String, to newID: String) {
         let oldPrefix = oldID + "/"
         let newPrefix = newID + "/"
-        func rewrite(_ ref: String?) -> String? {
+        let rewrite: @Sendable (String?) -> String? = { ref in
             guard let ref, ref.hasPrefix(oldPrefix) else { return ref }
             return newPrefix + String(ref.dropFirst(oldPrefix.count))
         }
@@ -394,20 +637,34 @@ extension TeamModel {
             if let next = rewrite(opts.model), next != opts.model {
                 opts.model = next
                 optionBook[key] = opts
-                if keeping { Disk.save(opts, Self.optionsFile(key)) }
+                if keeping { ChatDisk.saveValue(opts, file: Self.optionsFile(key)) }
             }
         }
         guard keeping else { return }
-        let chatsDir = Disk.url("chats")
-        if let files = try? FileManager.default.contentsOfDirectory(atPath: chatsDir.path) {
-            for file in files where file.hasSuffix("~options.json") {
-                let rel = "chats/\(file)"
-                guard var stored = Disk.load(ChatOptions.self, rel),
-                      let next = rewrite(stored.model), next != stored.model else { continue }
-                stored.model = next
-                let chatKey = String(file.dropLast("~options.json".count))
-                optionBook[chatKey] = stored
-                Disk.save(stored, rel)
+        let loadedKeys = Set(optionBook.keys)
+        OptionRefSync.enqueue(for: self) { team in
+            guard team.keeping else { return }
+            let found = await Task.detached(priority: .utility) {
+                Self.scanOptionsMatching(skipKeys: loadedKeys) { $0.hasPrefix(oldPrefix) }
+            }.value
+            guard team.keeping, !found.isEmpty else { return }
+            let targetActive = team.settings.endpoints.contains { $0.id == newID }
+            for item in found {
+                let targetModel = targetActive ? rewrite(item.model) : nil
+                let file = Self.optionsFile(item.chatKey)
+                if var live = team.optionBook[item.chatKey] {
+                    guard live.model == item.model else { continue }
+                    live.model = targetModel
+                    team.optionBook[item.chatKey] = live
+                    ChatDisk.saveValue(live, file: file)
+                } else {
+                    let expected = item.model
+                    ChatDisk.modifyValue(ChatOptions.self, file: file) { stored in
+                        guard stored.model == expected else { return false }
+                        stored.model = targetModel
+                        return true
+                    }
+                }
             }
         }
     }
@@ -520,19 +777,27 @@ extension TeamModel {
         return nil
     }
 
-    /// The service and model a ref names; nil when it names none that is set up.
-    func resolve(_ ref: String?) -> (endpoint: Endpoint, model: String)? {
+    nonisolated static func resolve(_ ref: String?, in endpoints: [Endpoint]) -> (endpoint: Endpoint, model: String)? {
         guard let ref, let slash = ref.firstIndex(of: "/") else { return nil }
         let id = String(ref[..<slash])
         let model = String(ref[ref.index(after: slash)...])
-        guard let endpoint = settings.endpoints.first(where: { $0.id == id }), !model.isEmpty else { return nil }
+        guard let endpoint = endpoints.first(where: { $0.id == id }), !model.isEmpty else { return nil }
         return (endpoint, model)
+    }
+
+    nonisolated static func resolveActive(_ ref: String?, in endpoints: [Endpoint]) -> (endpoint: Endpoint, model: String)? {
+        guard let found = resolve(ref, in: endpoints), found.endpoint.models.contains(found.model) else { return nil }
+        return found
+    }
+
+    /// The service and model a ref names; nil when it names none that is set up.
+    func resolve(_ ref: String?) -> (endpoint: Endpoint, model: String)? {
+        Self.resolve(ref, in: settings.endpoints)
     }
 
     /// Resolves a model ref only when the model is currently enabled in that service's `models` list.
     func resolveActive(_ ref: String?) -> (endpoint: Endpoint, model: String)? {
-        guard let found = resolve(ref), found.endpoint.models.contains(found.model) else { return nil }
-        return found
+        Self.resolveActive(ref, in: settings.endpoints)
     }
 
     func modelTitle(_ ref: String?) -> String {
@@ -545,5 +810,47 @@ extension TeamModel {
     func modelShort(_ ref: String?) -> String {
         guard let found = resolve(ref) else { return "没有设置" }
         return found.model.split(separator: "/").last.map(String.init) ?? found.model
+    }
+}
+
+@MainActor
+private enum EndpointMutationGate {
+    private static var tails: [ObjectIdentifier: (id: UUID, task: Task<Void, Never>)] = [:]
+
+    static func run<Result: Sendable>(
+        on team: TeamModel,
+        _ work: @escaping @MainActor () async -> Result
+    ) async -> Result {
+        let key = ObjectIdentifier(team)
+        let previous = tails[key]?.task
+        let token = UUID()
+        let task = Task<Result, Never> {
+            _ = await previous?.value
+            return await work()
+        }
+        let waiter = Task<Void, Never> {
+            _ = await task.value
+            if tails[key]?.id == token {
+                tails.removeValue(forKey: key)
+            }
+        }
+        tails[key] = (token, waiter)
+        return await task.value
+    }
+}
+
+@MainActor
+private enum OptionRefSync {
+    private static var tails: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    static func enqueue(for team: TeamModel, _ work: @escaping @MainActor (TeamModel) async -> Void) {
+        let key = ObjectIdentifier(team)
+        let previous = tails[key]
+        let task = Task { [weak team] in
+            await previous?.value
+            guard let team, !Task.isCancelled else { return }
+            await work(team)
+        }
+        tails[key] = task
     }
 }

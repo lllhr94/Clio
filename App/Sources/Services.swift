@@ -37,14 +37,15 @@ struct Service: Identifiable, Equatable {
 
     var baseURL: String { addresses.first?.url ?? "" }
 
+    private static let knownDomains: [String: String] = [
+        "deepseek": "deepseek.com", "kimi": "kimi.com", "qwen": "tongyi.aliyun.com", "glm": "bigmodel.cn",
+        "doubao": "doubao.com", "siliconflow": "siliconflow.cn", "minimax": "minimaxi.com", "openai": "openai.com",
+        "claude": "claude.ai", "gemini": "gemini.google.com", "grok": "grok.com", "openrouter": "openrouter.ai",
+    ]
+
     /// The maker's site, for its icon (see `BrandIcon`).
     var domain: String? {
-        let known = [
-            "deepseek": "deepseek.com", "kimi": "kimi.com", "qwen": "tongyi.aliyun.com", "glm": "bigmodel.cn",
-            "doubao": "doubao.com", "siliconflow": "siliconflow.cn", "minimax": "minimaxi.com", "openai": "openai.com",
-            "claude": "claude.ai", "gemini": "gemini.google.com", "grok": "grok.com", "openrouter": "openrouter.ai",
-        ]
-        return known[id]
+        Self.knownDomains[id]
     }
 
     /// The tile behind a maker with no icon (自定义, the local one), or until the icon arrives.
@@ -116,19 +117,31 @@ struct Service: Identifiable, Equatable {
                 suggested: [], custom: true),
     ]
 
+    static let byID: [String: Service] = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
+
+    static let byHost: [String: Service] = {
+        var map: [String: Service] = [:]
+        for service in catalog where !service.custom {
+            for address in service.addresses {
+                if let host = URL(string: address.url)?.host()?.lowercased(), !host.isEmpty, map[host] == nil {
+                    map[host] = service
+                }
+            }
+        }
+        return map
+    }()
+
     static func named(_ id: String?) -> Service? {
         guard let id else { return nil }
-        return catalog.first { $0.id == id }
+        return byID[id]
     }
 
     /// Which listed service an endpoint came from: by its own record, or else by its address.
     static func of(_ endpoint: Endpoint) -> Service? {
         if let known = named(endpoint.service) { return known }
         if let known = named(endpoint.id), !known.custom { return known }
-        let host = URL(string: endpoint.baseURL)?.host()?.lowercased()
-        return catalog.first { service in
-            !service.custom && service.addresses.contains { URL(string: $0.url)?.host()?.lowercased() == host }
-        }
+        guard let host = URL(string: endpoint.baseURL)?.host()?.lowercased(), !host.isEmpty else { return nil }
+        return byHost[host]
     }
 
     /// Keeps the models worth showing from what a service listed.
