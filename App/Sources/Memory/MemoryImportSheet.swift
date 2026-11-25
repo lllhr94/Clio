@@ -579,17 +579,24 @@ struct MemoryImportSheet: View {
         guard !payload.isEmpty else { return }
 
         committing = true
+        commitNotice = nil
         Task {
-            let count = await team.importMemoryCandidatesOffMain(payload)
-            committing = false
-            if count > 0 {
-                Haptics.tick(0.8)
-                onImported?(count)
-                dismiss()
-            } else {
-                Haptics.thud()
-                commitNotice = L.t("memoryImport.noneCommitted")
-                await loadImportContext()
+            do {
+                let count = try await team.importMemoryCandidatesOffMain(payload)
+                committing = false
+                if count > 0 {
+                    Haptics.tick(0.8)
+                    onImported?(count)
+                    dismiss()
+                } else {
+                    Haptics.thud()
+                    commitNotice = L.t("memoryImport.noneCommitted")
+                    await loadImportContext()
+                }
+            } catch {
+                committing = false
+                Haptics.lock()
+                commitNotice = error.localizedDescription
             }
         }
     }

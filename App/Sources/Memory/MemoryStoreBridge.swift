@@ -11,7 +11,7 @@ struct MemoryImportBatchEntry: Sendable {
     let topic: String
 }
 
-enum MemoryCommitMutation {
+enum MemoryCommitMutation: Sendable {
     case none
     case remember(memory: Memory, explicitUserAction: Bool, nowMs: Double)
     case recall(ids: Set<String>, nowMs: Double)
@@ -66,6 +66,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private let store: MemoryStore
     private let teamRoot: URL
     private let mirrorRoot: URL
+    private let commitQueue = DispatchQueue(label: "clio.memory-store.commit", qos: .userInitiated)
     private let queue = DispatchQueue(label: "clio.memory-store", qos: .userInitiated)
 
     private let stateLock = NSLock()
@@ -410,17 +411,21 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     // MARK: - Unified Canonical Book Commit (Throws on disk failure before mutating caller or SQLite state)
 
-    @discardableResult
-    @MainActor
-    func commitAppBook(
+    private struct CommitPromptPayload: Sendable {
+        let sanitizedAppBook: MemoryBook
+        let retractItems: [(id: String, textForInFlightGuard: String?)]
+        let clearRetractions: [(id: String?, text: String)]
+        let shouldInvalidatePromptCache: Bool
+    }
+
+    private func performSerializedCommitOnCommitQueue(
         _ book: MemoryBook,
-        mutation: MemoryCommitMutation = .none,
+        mutation: MemoryCommitMutation,
         suppressedHashes: Set<String>,
-        promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
         mainBotId: String?,
         secrets: [String]
-    ) throws -> (book: MemoryBook, editedTexts: [String]) {
+    ) throws -> CommitPromptPayload {
         guard !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
         }
@@ -442,85 +447,148 @@ final class MemoryStoreBridge: @unchecked Sendable {
             nowMs: nowMs
         )
 
-        applyCommittedShadow(prepared.shadowUpdate)
-
-        if let promptState {
-            for item in prepared.retractItems {
-                promptState.retract(id: item.id, textForInFlightGuard: item.textForInFlightGuard)
-            }
-            for clear in prepared.clearRetractions {
-                promptState.clearRetraction(id: clear.id, text: clear.text)
-            }
-            if prepared.shouldInvalidatePromptCache && prepared.retractItems.isEmpty && prepared.clearRetractions.isEmpty {
-                promptState.invalidate()
-            }
-        }
-
         let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
+        let writtenDigest = try writeCanonicalBookToDisk(prepared.canonical, at: memoryURL)
+
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
-        let suppressedHashSet = Set(prepared.canonical.suppressedFlushHashes)
+        let existingRetracted = loadRetractedHashes(at: retractedURL)
+        syncRetractedHashesFileIfNeeded(
+            Set(prepared.canonical.suppressedFlushHashes),
+            existing: existingRetracted,
+            at: retractedURL
+        )
+
+        applyCommittedShadow(prepared.shadowUpdate)
 
         queue.async { [weak self] in
             guard let self, !Disk.frozen else { return }
-            let loadStillBlocked = self.stateLock.withLock { self.canonicalLoadFailed }
-            guard !loadStillBlocked else { return }
-            do {
-                let writtenDigest = try self.writeCanonicalBookToDisk(prepared.canonical, at: memoryURL)
-                let existingRetracted = self.loadRetractedHashes(at: retractedURL)
-                self.syncRetractedHashesFileIfNeeded(
-                    suppressedHashSet,
-                    existing: existingRetracted,
-                    at: retractedURL
-                )
-                self.applyBackgroundPersist(
-                    canonical: prepared.canonical,
-                    liveRecords: prepared.liveRecords,
-                    bots: summaries,
-                    secrets: orderedSecrets,
-                    jsonDigest: writtenDigest,
-                    sequence: prepared.shadowUpdate.seq,
-                    sqliteActions: prepared.sqliteActions,
-                    nowMs: nowMs
-                )
-            } catch {
-                if !Disk.frozen {
-                    Diag.note("没存进手机：memory.json（\(error.localizedDescription)）")
+            self.applyBackgroundPersist(
+                canonical: prepared.canonical,
+                liveRecords: prepared.liveRecords,
+                bots: summaries,
+                secrets: orderedSecrets,
+                jsonDigest: writtenDigest,
+                sequence: prepared.shadowUpdate.seq,
+                sqliteActions: prepared.sqliteActions,
+                nowMs: nowMs
+            )
+        }
+
+        return CommitPromptPayload(
+            sanitizedAppBook: prepared.sanitizedAppBook,
+            retractItems: prepared.retractItems,
+            clearRetractions: prepared.clearRetractions,
+            shouldInvalidatePromptCache: prepared.shouldInvalidatePromptCache
+        )
+    }
+
+    @MainActor
+    private func applyPromptState(_ payload: CommitPromptPayload, to promptState: MemorySafety.PromptState?) {
+        guard let promptState else { return }
+        for item in payload.retractItems {
+            promptState.retract(id: item.id, textForInFlightGuard: item.textForInFlightGuard)
+        }
+        for clear in payload.clearRetractions {
+            promptState.clearRetraction(id: clear.id, text: clear.text)
+        }
+        if payload.shouldInvalidatePromptCache && payload.retractItems.isEmpty && payload.clearRetractions.isEmpty {
+            promptState.invalidate()
+        }
+    }
+
+    @discardableResult
+    @MainActor
+    func commitAppBook(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        suppressedHashes: Set<String>,
+        promptState: MemorySafety.PromptState? = nil,
+        bots: [BotInfo],
+        mainBotId: String?,
+        secrets: [String]
+    ) throws -> (book: MemoryBook, editedTexts: [String]) {
+        let payload = try commitQueue.sync {
+            try performSerializedCommitOnCommitQueue(
+                book,
+                mutation: mutation,
+                suppressedHashes: suppressedHashes,
+                bots: bots,
+                mainBotId: mainBotId,
+                secrets: secrets
+            )
+        }
+        applyPromptState(payload, to: promptState)
+        return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
+    }
+
+    @discardableResult
+    @MainActor
+    func commitAppBookAsync(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        suppressedHashes: Set<String>,
+        promptState: MemorySafety.PromptState? = nil,
+        bots: [BotInfo],
+        mainBotId: String?,
+        secrets: [String]
+    ) async throws -> (book: MemoryBook, editedTexts: [String]) {
+        let payload: CommitPromptPayload = try await withCheckedThrowingContinuation { continuation in
+            commitQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: TeamError(message: "记忆保存已取消。"))
+                    return
+                }
+                do {
+                    let result = try self.performSerializedCommitOnCommitQueue(
+                        book,
+                        mutation: mutation,
+                        suppressedHashes: suppressedHashes,
+                        bots: bots,
+                        mainBotId: mainBotId,
+                        secrets: secrets
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
         }
-
-        return (prepared.sanitizedAppBook, prepared.clearRetractions.map(\.text))
+        applyPromptState(payload, to: promptState)
+        return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
     @MainActor
     func resetAll(team: TeamModel) {
         let summaries = Self.makeBotSummaries(bots: team.bots, mainBotId: team.mainBotId)
-        stateLock.withLock {
-            pinnedIDs.removeAll()
-            archivedRecords.removeAll()
-            tombstoneShadow.removeAll()
-            recordShadowByID.removeAll()
-            lastSyncedMemories = []
-            lastSyncedBookDigest = Self.bookDigest(MemoryBook())
-            botSummaries = summaries
-            canonicalLoadFailed = false
-            syncSequence &+= 1
-        }
-        guard !Disk.frozen else { return }
         let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            let secrets = Self.orderedSecrets(Vault.allStrings())
+        commitQueue.sync {
+            stateLock.withLock {
+                pinnedIDs.removeAll()
+                archivedRecords.removeAll()
+                tombstoneShadow.removeAll()
+                recordShadowByID.removeAll()
+                lastSyncedMemories = []
+                lastSyncedBookDigest = Self.bookDigest(MemoryBook())
+                botSummaries = summaries
+                canonicalLoadFailed = false
+                syncSequence &+= 1
+            }
+            guard !Disk.frozen else { return }
             let emptyBook = CanonicalMemoryBook()
-            _ = try? self.writeCanonicalBookToDisk(emptyBook, at: memoryURL)
+            _ = try? writeCanonicalBookToDisk(emptyBook, at: memoryURL)
             try? FileManager.default.removeItem(at: retractedURL)
-            try? self.store.resetAll(clearTombstones: true)
-            MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
+            queue.async { [weak self] in
+                guard let self, !Disk.frozen else { return }
+                let secrets = Self.orderedSecrets(Vault.allStrings())
+                try? self.store.resetAll(clearTombstones: true)
+                MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
+            }
         }
     }
 
     func flushSync() {
+        commitQueue.sync {}
         queue.sync {}
     }
 

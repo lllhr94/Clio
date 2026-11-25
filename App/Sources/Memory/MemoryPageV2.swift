@@ -138,6 +138,7 @@ struct MemoryPageV2: View {
     @State private var cachedPinnedIDs: Set<String> = []
     @State private var cachedAllRecords: [MemoryRecord] = []
     @State private var snapshotToken = 0
+    @State private var mutationError: String?
 
     private var availableFilters: [LayerFilter] {
         team.keeping ? LayerFilter.allCases : [.all, .surface, .deep]
@@ -150,8 +151,12 @@ struct MemoryPageV2: View {
             seenIDs.insert(memory.id)
             if var snapshot = cachedSnapshotByID[memory.id] {
                 snapshot.text = memory.text
-                if snapshot.layer != .pinned {
+                if team.keeping && cachedPinnedIDs.contains(memory.id) {
+                    snapshot.layer = .pinned
+                    snapshot.pinned = true
+                } else {
                     snapshot.layer = memory.deep == true ? .deep : .surface
+                    snapshot.pinned = false
                 }
                 combined.append(snapshot)
             } else {
@@ -255,8 +260,18 @@ struct MemoryPageV2: View {
             Task { await reloadSnapshots() }
         }
         .sheet(item: $editingRecord) { record in
-            MemoryDetailSheet(team: team, record: record) {
-                refreshRevision &+= 1
+            MemoryDetailSheet(team: team, record: record) { targetLayer in
+                withAnimation(Ink.Motion.settle) {
+                    if let targetLayer {
+                        applyLocalLayerTransition(id: record.id, to: targetLayer)
+                    } else {
+                        cachedPinnedIDs.remove(record.id)
+                        cachedSnapshotByID.removeValue(forKey: record.id)
+                        cachedArchived.removeAll { $0.id == record.id }
+                        cachedAllRecords = computeAllRecords()
+                    }
+                    refreshRevision &+= 1
+                }
             }
         }
         .sheet(isPresented: $showingImport) {
@@ -278,10 +293,26 @@ struct MemoryPageV2: View {
         ) {
             Button(L.t("actions.delete"), role: .destructive) {
                 if let target = deletingRecord {
+                    let targetID = target.id
                     Task {
-                        await team.deleteMemoryOffMain(target.id)
-                        withAnimation(Ink.Motion.settle) {
-                            refreshRevision &+= 1
+                        do {
+                            let ok = try await team.deleteMemoryOffMain(targetID)
+                            guard ok else {
+                                Haptics.lock()
+                                return
+                            }
+                            mutationError = nil
+                            withAnimation(Ink.Motion.settle) {
+                                cachedPinnedIDs.remove(targetID)
+                                cachedSnapshotByID.removeValue(forKey: targetID)
+                                cachedArchived.removeAll { $0.id == targetID }
+                                cachedAllRecords = computeAllRecords()
+                                refreshRevision &+= 1
+                            }
+                            Haptics.thud()
+                        } catch {
+                            Haptics.lock()
+                            mutationError = error.localizedDescription
                         }
                     }
                 }
@@ -308,6 +339,10 @@ struct MemoryPageV2: View {
                     noticeBanner(L.t("settings.demoData"), tint: Ink.inkSoft)
                 } else if !team.canMutateMemoryState {
                     noticeBanner(L.t("memoryV2.readOnlyNotice"), tint: Ink.warn)
+                }
+
+                if let mutationError {
+                    noticeBanner(mutationError, tint: Ink.stop)
                 }
 
                 if let importFeedback {
@@ -589,22 +624,20 @@ struct MemoryPageV2: View {
             Button(L.t("memoryV2.moveToPinned"), systemImage: "pin") {
                 moveRecord(record.id, to: .pinned)
             }
+            .disabled(!team.canMutateMemoryState)
         }
 
         if record.layer != .surface {
             if record.layer == .archived {
                 Button(L.t("memoryV2.restoreToSurface"), systemImage: "arrow.uturn.backward") {
-                    Task {
-                        _ = await team.restoreMemoryOffMain(record.id)
-                        withAnimation(Ink.Motion.settle) {
-                            refreshRevision &+= 1
-                        }
-                    }
+                    restoreRecord(record.id)
                 }
+                .disabled(!team.canMutateMemoryState)
             } else {
                 Button(L.t("memoryV2.moveToSurface"), systemImage: "tray") {
                     moveRecord(record.id, to: .surface)
                 }
+                .disabled(!team.canMutateMemoryState)
             }
         }
 
@@ -612,12 +645,14 @@ struct MemoryPageV2: View {
             Button(L.t("memoryV2.moveToDeep"), systemImage: "clock.arrow.circlepath") {
                 moveRecord(record.id, to: .deep)
             }
+            .disabled(!team.canMutateMemoryState)
         }
 
         if team.keeping && record.layer != .archived {
             Button(L.t("memoryV2.moveToArchived"), systemImage: "archivebox") {
                 moveRecord(record.id, to: .archived)
             }
+            .disabled(!team.canMutateMemoryState)
         }
 
         Divider()
@@ -625,6 +660,7 @@ struct MemoryPageV2: View {
         Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) {
             deletingRecord = record
         }
+        .disabled(!team.canMutateMemoryState)
     }
 
     private func emptyStateCard(
@@ -686,36 +722,102 @@ struct MemoryPageV2: View {
 
     // MARK: - Actions
 
-    private func addQuickMemory(_ words: String) {
-        guard !words.isEmpty, team.canMutateMemoryState else { return }
-        Task {
-            _ = await team.rememberOffMain(words, by: nil)
+    private func addQuickMemory(_ words: String) async -> Bool {
+        guard !words.isEmpty, team.canMutateMemoryState else { return false }
+        do {
+            _ = try await team.rememberOffMain(words, by: nil)
+            mutationError = nil
             withAnimation(Ink.Motion.settle) {
+                cachedAllRecords = computeAllRecords()
                 refreshRevision &+= 1
             }
+            Haptics.tick(0.6)
+            return true
+        } catch {
+            Haptics.lock()
+            mutationError = error.localizedDescription
+            return false
         }
-        Haptics.tick(0.6)
     }
 
     private func moveRecord(_ id: String, to layer: MemoryLayer) {
+        guard team.canMutateMemoryState else { return }
         Task {
-            await team.setMemoryLayerOffMain(id, layer)
-            withAnimation(Ink.Motion.settle) {
-                refreshRevision &+= 1
+            do {
+                let ok = try await team.setMemoryLayerOffMain(id, layer)
+                guard ok else {
+                    Haptics.lock()
+                    return
+                }
+                mutationError = nil
+                withAnimation(Ink.Motion.settle) {
+                    applyLocalLayerTransition(id: id, to: layer)
+                    refreshRevision &+= 1
+                }
+                Haptics.tick(0.5)
+            } catch {
+                Haptics.lock()
+                mutationError = error.localizedDescription
             }
         }
-        Haptics.tick(0.5)
+    }
+
+    private func restoreRecord(_ id: String) {
+        guard team.canMutateMemoryState else { return }
+        Task {
+            do {
+                let ok = try await team.restoreMemoryOffMain(id)
+                guard ok else {
+                    Haptics.lock()
+                    return
+                }
+                mutationError = nil
+                withAnimation(Ink.Motion.settle) {
+                    applyLocalLayerTransition(id: id, to: .surface)
+                    refreshRevision &+= 1
+                }
+                Haptics.tick(0.6)
+            } catch {
+                Haptics.lock()
+                mutationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func applyLocalLayerTransition(id: String, to layer: MemoryLayer) {
+        if layer == .pinned {
+            cachedPinnedIDs.insert(id)
+        } else {
+            cachedPinnedIDs.remove(id)
+        }
+        var updated = cachedSnapshotByID[id] ?? cachedArchived.first(where: { $0.id == id })
+        if var record = updated {
+            record.layer = layer
+            record.pinned = (layer == .pinned)
+            cachedSnapshotByID[id] = record
+            updated = record
+        }
+        if layer == .archived {
+            if let archived = updated {
+                cachedArchived.removeAll { $0.id == id }
+                cachedArchived.insert(archived, at: 0)
+            }
+        } else {
+            cachedArchived.removeAll { $0.id == id }
+        }
+        cachedAllRecords = computeAllRecords()
     }
 }
 
 /// Isolated quick-add card owning its own `draft` state so typing never re-evaluates/re-filters `MemoryPageV2`.
 private struct MemoryQuickAddCard: View {
     let canMutate: Bool
-    let onAdd: (String) -> Void
+    let onAdd: (String) async -> Bool
     let onImport: () -> Void
     let onMirrors: () -> Void
 
     @State private var draft = ""
+    @State private var saving = false
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -733,7 +835,7 @@ private struct MemoryQuickAddCard: View {
                 Button(L.t("actions.save"), action: submit)
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.accent)
-                    .disabled(trimmedDraft.isEmpty || !canMutate)
+                    .disabled(saving || trimmedDraft.isEmpty || !canMutate)
             }
             .padding(Ink.Space.l)
 
@@ -772,9 +874,16 @@ private struct MemoryQuickAddCard: View {
 
     private func submit() {
         let words = trimmedDraft
-        guard !words.isEmpty, canMutate else { return }
+        guard !saving, !words.isEmpty, canMutate else { return }
+        saving = true
         draft = ""
-        onAdd(words)
+        Task {
+            let ok = await onAdd(words)
+            saving = false
+            if !ok && draft.isEmpty {
+                draft = words
+            }
+        }
     }
 }
 
@@ -783,7 +892,7 @@ private struct MemoryQuickAddCard: View {
 private struct MemoryDetailSheet: View {
     @ObservedObject var team: TeamModel
     let record: MemoryRecord
-    var onChanged: () -> Void
+    var onChanged: (MemoryLayer?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -794,8 +903,9 @@ private struct MemoryDetailSheet: View {
     @State private var topic: String
     @State private var confirmingDelete = false
     @State private var saving = false
+    @State private var actionError: String?
 
-    init(team: TeamModel, record: MemoryRecord, onChanged: @escaping () -> Void) {
+    init(team: TeamModel, record: MemoryRecord, onChanged: @escaping (MemoryLayer?) -> Void) {
         self.team = team
         self.record = record
         self.onChanged = onChanged
@@ -831,6 +941,15 @@ private struct MemoryDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    if let actionError {
+                        Text(actionError)
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.stop)
+                            .padding(.horizontal, Ink.Space.l)
+                            .padding(.vertical, Ink.Space.m)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .paperCard()
+                    }
                     contentSection
                     layerSection
                     if team.keeping {
@@ -871,12 +990,24 @@ private struct MemoryDetailSheet: View {
                 Button(L.t("actions.delete"), role: .destructive) {
                     guard !saving else { return }
                     saving = true
+                    actionError = nil
                     let id = record.id
                     Task {
-                        await team.deleteMemoryOffMain(id)
-                        Haptics.thud()
-                        onChanged()
-                        dismiss()
+                        do {
+                            let ok = try await team.deleteMemoryOffMain(id)
+                            guard ok else {
+                                saving = false
+                                Haptics.lock()
+                                return
+                            }
+                            Haptics.thud()
+                            onChanged(nil)
+                            dismiss()
+                        } catch {
+                            saving = false
+                            Haptics.lock()
+                            actionError = error.localizedDescription
+                        }
                     }
                 }
                 Button(L.t("actions.cancel"), role: .cancel) {}
@@ -1060,22 +1191,34 @@ private struct MemoryDetailSheet: View {
     private func save() {
         guard !saving else { return }
         saving = true
+        actionError = nil
         let id = record.id
         let nextText = text
         let nextLayer = layer
         let nextKind = kind
         let nextTopic = topic
         Task {
-            await team.updateMemoryDetailOffMain(
-                id: id,
-                text: nextText,
-                layer: nextLayer,
-                kind: nextKind,
-                topic: nextTopic
-            )
-            Haptics.tick(0.7)
-            onChanged()
-            dismiss()
+            do {
+                let ok = try await team.updateMemoryDetailOffMain(
+                    id: id,
+                    text: nextText,
+                    layer: nextLayer,
+                    kind: nextKind,
+                    topic: nextTopic
+                )
+                guard ok else {
+                    saving = false
+                    Haptics.lock()
+                    return
+                }
+                Haptics.tick(0.7)
+                onChanged(nextLayer)
+                dismiss()
+            } catch {
+                saving = false
+                Haptics.lock()
+                actionError = error.localizedDescription
+            }
         }
     }
 }

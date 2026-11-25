@@ -119,6 +119,25 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     nonisolated(unsafe) private static var cachedPreset: Preset?
     nonisolated(unsafe) private static var hasCachedPreset = false
     nonisolated(unsafe) private static var cachedFreeRunning: Bool?
+    nonisolated(unsafe) private static var observerInstalled = false
+    nonisolated(unsafe) private static var defaultsObserver: NSObjectProtocol?
+
+    private static func installDefaultsObserverLocked() {
+        guard !observerInstalled else { return }
+        observerInstalled = true
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: nil
+        ) { _ in
+            cacheLock.withLock {
+                policyCache.removeAll()
+                cachedPreset = nil
+                hasCachedPreset = false
+                cachedFreeRunning = nil
+            }
+        }
+    }
 
     private static func normalize(_ saved: Policy, for grant: Grant) -> Policy {
         if saved == .smart, grant != .desk {
@@ -128,6 +147,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 
     private static func lockedPolicy(for grant: Grant) -> Policy {
+        installDefaultsObserverLocked()
         if let cached = policyCache[grant] { return cached }
         let raw = UserDefaults.standard.string(forKey: "grant.\(grant.rawValue)").flatMap(Policy.init(rawValue:)) ?? grant.standard
         let resolved = normalize(raw, for: grant)
@@ -137,6 +157,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     private static func invalidatePresetCache() {
         cacheLock.withLock {
+            installDefaultsObserverLocked()
             hasCachedPreset = false
             cachedPreset = nil
             cachedFreeRunning = nil
@@ -150,6 +171,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         nonmutating set {
             UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)")
             Self.cacheLock.withLock {
+                Self.installDefaultsObserverLocked()
                 Self.policyCache[self] = Self.normalize(newValue, for: self)
                 Self.hasCachedPreset = false
                 Self.cachedPreset = nil
@@ -248,6 +270,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         /// The preset everything is set to now, if any.
         static var current: Preset? {
             Grant.cacheLock.withLock {
+                Grant.installDefaultsObserverLocked()
                 if Grant.hasCachedPreset { return Grant.cachedPreset }
                 let resolved = computeCurrentPresetLocked()
                 Grant.cachedPreset = resolved
@@ -303,6 +326,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Whether the user chose 「放手」 and has kept every enabled non-vault ability on `.allow`.
     static var isFreeRunning: Bool {
         cacheLock.withLock {
+            installDefaultsObserverLocked()
             if let cached = cachedFreeRunning { return cached }
             let currentPreset: Preset?
             if hasCachedPreset {

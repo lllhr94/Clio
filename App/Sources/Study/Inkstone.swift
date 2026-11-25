@@ -181,10 +181,12 @@ private struct TerminalHost: UIViewRepresentable {
                     buffer.append(data)
                 }, ended: { [weak self] problem in
                     DispatchQueue.main.async {
-                        self?.outputBuffer?.flush()
-                        self?.why = problem
-                        self?.ended = true
-                        if let problem { self?.view?.feed(text: "\r\n\u{1B}[31m\(problem)\u{1B}[0m\r\n") }
+                        MainActor.assumeIsolated {
+                            self?.outputBuffer?.flush()
+                            self?.why = problem
+                            self?.ended = true
+                            if let problem { self?.view?.feed(text: "\r\n\u{1B}[31m\(problem)\u{1B}[0m\r\n") }
+                        }
                     }
                 })
                 return
@@ -194,8 +196,10 @@ private struct TerminalHost: UIViewRepresentable {
                 buffer.append(data)
             }, exited: { [weak self] in
                 DispatchQueue.main.async {
-                    self?.outputBuffer?.flush()
-                    self?.ended = true
+                    MainActor.assumeIsolated {
+                        self?.outputBuffer?.flush()
+                        self?.ended = true
+                    }
                 }
             }, error: &error)
             if shell == nil {
@@ -376,11 +380,15 @@ private final class OutputBuffer: @unchecked Sendable {
 
         if scheduleImmediate {
             DispatchQueue.main.async { [weak self] in
-                self?.flush()
+                MainActor.assumeIsolated {
+                    self?.flush()
+                }
             }
         } else if scheduleTimer {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self] in
-                self?.flush()
+                MainActor.assumeIsolated {
+                    self?.flush()
+                }
             }
         }
     }

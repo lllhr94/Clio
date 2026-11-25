@@ -35,7 +35,6 @@ struct CarePage: View {
     @State private var davPasswordLoaded = false
     @State private var davPasswordDirty = false
     @State private var lastSavedDavPassword = ""
-    @State private var pendingDavPasswordSave: Task<Void, Never>?
     @State private var davBusy = false
     /// The drive's backups, newest first, while the person picks which one to bring back.
     @State private var davChoices: [String] = []
@@ -116,7 +115,7 @@ struct CarePage: View {
             }
             .task {
                 guard !davPasswordLoaded else { return }
-                let loaded = await Task.detached(priority: .userInitiated) { WebDAV.password }.value
+                let loaded = await CareWebDAVCoordinator.loadPassword()
                 guard !Task.isCancelled else { return }
                 lastSavedDavPassword = loaded
                 davPassword = loaded
@@ -129,12 +128,13 @@ struct CarePage: View {
             }
             .onDisappear {
                 cleanTask?.cancel()
-                persistDavPasswordIfNeeded(priority: .utility)
+                persistDavPasswordIfNeeded()
                 pendingSetupAction = nil
                 deferredNoticeAfterUnlock = nil
                 if !restoringBusy {
+                    let pendingURL = pendingRestore?.url
                     pendingRestore = nil
-                    Task.detached(priority: .utility) { WebDAV.cleanupRestoreInbox() }
+                    CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
                 }
             }
             .task {
@@ -230,7 +230,7 @@ struct CarePage: View {
             TextField(L.t("settings.davUser"), text: $davUser)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
             SecureField(L.t("settings.davPassword"), text: $davPassword)
-                .onSubmit { persistDavPasswordIfNeeded(priority: .userInitiated) }
+                .onSubmit { persistDavPasswordIfNeeded() }
             if let problem = WebDAV.addressProblem(davURL) {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
             }
@@ -535,23 +535,19 @@ struct CarePage: View {
         }
     }
 
-    private func persistDavPasswordIfNeeded(priority: TaskPriority) {
+    private func persistDavPasswordIfNeeded() {
         guard davPasswordLoaded, davPasswordDirty else { return }
         let value = davPassword
         lastSavedDavPassword = value
         davPasswordDirty = false
-        let previous = pendingDavPasswordSave
-        pendingDavPasswordSave = Task.detached(priority: priority) {
-            await previous?.value
-            WebDAV.setPassword(value)
-        }
+        CareWebDAVCoordinator.enqueuePasswordSave(value)
     }
 
     private func davUpload() {
         guard !davBusy, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
             return
         }
-        persistDavPasswordIfNeeded(priority: .userInitiated)
+        persistDavPasswordIfNeeded()
         if davEncrypt {
             passphraseSetup = PassphraseSetupRequest(purpose: .webdavUpload)
         } else {
@@ -599,10 +595,9 @@ struct CarePage: View {
         guard !davBusy, !restoringBusy, !restored, !Disk.frozen else { return }
         davBusy = true
         let ids = team.settings.endpoints.map(\.id)
-        let pendingSave = pendingDavPasswordSave
         Task {
             do {
-                await pendingSave?.value
+                await CareWebDAVCoordinator.flushPasswordWrites()
                 await stopCleanBeforeRestore()
                 // Never include model API keys in WebDAV backups: remote drives sit outside the phone's keychain (review #4).
                 let (url, summary) = try await StorageMaintenance.runThrowing {
@@ -624,9 +619,11 @@ struct CarePage: View {
         guard !davBusy, !cleaningCache, !restoringBusy, !making, !restored, !Disk.frozen, pendingRestore == nil else {
             return
         }
+        persistDavPasswordIfNeeded()
         davBusy = true
         Task {
             do {
+                await CareWebDAVCoordinator.flushPasswordWrites()
                 let names = try await WebDAV.list()
                 guard !names.isEmpty else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
                 davChoices = names
@@ -640,10 +637,14 @@ struct CarePage: View {
     private func davRestore(_ name: String) {
         davChoices = []
         guard !davBusy, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
+        persistDavPasswordIfNeeded()
+        CareWebDAVCoordinator.beginRestoreSession()
         davBusy = true
         restoringBusy = true
         Task {
             do {
+                await CareWebDAVCoordinator.flushPasswordWrites()
+                await CareWebDAVCoordinator.awaitPendingInboxCleanup()
                 let file = try await WebDAV.download(name)
                 let encrypted = await Task.detached(priority: .userInitiated) {
                     Backup.isEncryptedBackup(at: file)
@@ -666,12 +667,13 @@ struct CarePage: View {
 
     private func prepareLocalRestore(from pickedURL: URL) {
         guard !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
+        CareWebDAVCoordinator.beginRestoreSession()
         restoringBusy = true
         Task {
             do {
-                let stagedFile = try await Task.detached(priority: .userInitiated) {
-                    try Self.copySecurityScopedBackupToInbox(pickedURL)
-                }.value
+                let stagedFile = try await CareWebDAVCoordinator.stageLocalRestore(from: pickedURL) {
+                    try Self.copySecurityScopedBackupToInbox($0)
+                }
                 let encrypted = await Task.detached(priority: .userInitiated) {
                     Backup.isEncryptedBackup(at: stagedFile)
                 }.value
@@ -790,15 +792,12 @@ struct CarePage: View {
         let pendingURL = pendingRestore?.url
         deferredNoticeAfterUnlock = nil
         pendingRestore = nil
-        Task.detached(priority: .utility) {
-            if let pendingURL { try? FileManager.default.removeItem(at: pendingURL) }
-            WebDAV.cleanupRestoreInbox()
-        }
+        CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
     }
 
     private func handleUnlockSheetDismissed() {
         if !restoringBusy && pendingRestore == nil {
-            Task.detached(priority: .utility) { WebDAV.cleanupRestoreInbox() }
+            CareWebDAVCoordinator.scheduleInboxCleanup()
         }
         if let deferred = deferredNoticeAfterUnlock {
             deferredNoticeAfterUnlock = nil
@@ -1509,6 +1508,76 @@ private struct CareConnectivitySection: View {
         }
         .onReceive(team.$settings) { updated in
             if endpoints != updated.endpoints { endpoints = updated.endpoints }
+        }
+    }
+}
+
+private enum CareWebDAVCoordinator {
+    private static let passwordQueue = DispatchQueue(label: "clio.care.webdav.password", qos: .userInitiated)
+    private static let inboxQueue = DispatchQueue(label: "clio.care.webdav.inbox", qos: .userInitiated)
+    private static let stateLock = NSLock()
+    nonisolated(unsafe) private static var inboxGeneration: UInt64 = 0
+
+    static func loadPassword() async -> String {
+        await withCheckedContinuation { continuation in
+            passwordQueue.async {
+                continuation.resume(returning: WebDAV.password)
+            }
+        }
+    }
+
+    static func enqueuePasswordSave(_ value: String) {
+        passwordQueue.async {
+            WebDAV.setPassword(value)
+        }
+    }
+
+    static func flushPasswordWrites() async {
+        await withCheckedContinuation { continuation in
+            passwordQueue.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    static func scheduleInboxCleanup(removing pendingURL: URL? = nil) {
+        let token = stateLock.withLock { inboxGeneration }
+        inboxQueue.async {
+            let current = stateLock.withLock { inboxGeneration }
+            guard current == token else { return }
+            if let pendingURL {
+                try? FileManager.default.removeItem(at: pendingURL)
+            }
+            WebDAV.cleanupRestoreInbox()
+        }
+    }
+
+    static func beginRestoreSession() {
+        stateLock.withLock {
+            inboxGeneration &+= 1
+        }
+    }
+
+    static func awaitPendingInboxCleanup() async {
+        await withCheckedContinuation { continuation in
+            inboxQueue.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    static func stageLocalRestore(
+        from pickedURL: URL,
+        copy: @escaping @Sendable (URL) throws -> URL
+    ) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            inboxQueue.async {
+                do {
+                    continuation.resume(returning: try copy(pickedURL))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 }
