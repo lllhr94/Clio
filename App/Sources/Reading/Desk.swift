@@ -386,26 +386,26 @@ struct Desk: View {
     }
 
     var body: some View {
-        deskContent
-            .animation(sideMotion, value: opened)
-            .onAppear {
-                sideControl.open = { openSide() }
-                sideControl.fresh = { startFresh(first: $0) }
-            }
+        withDeskRouteHandlers(
+            withDeskSheets(
+                withThreadActionDialogs(
+                    deskContent
+                        .animation(sideMotion, value: opened)
+                        .onAppear {
+                            sideControl.open = { openSide() }
+                            sideControl.fresh = { startFresh(first: $0) }
+                        }
+                )
+            )
+        )
+    }
+
+    private func withThreadActionDialogs<Content: View>(_ content: Content) -> some View {
+        content
             .alert(L.t("chat.rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField(L.t("chat.titleField"), text: $renameText)
                 Button(L.t("actions.cancel"), role: .cancel) { renaming = nil }
-                Button(L.t("actions.save")) {
-                    switch renaming {
-                    case .current(let key): team.rename(key, to: renameText)
-                    case .past(let past):
-                        if !team.renameLeaf(past.owner.id, id: past.leaf.id, to: renameText) {
-                            notice = L.t("errors.saveConversation")
-                        }
-                    case nil: break
-                    }
-                    renaming = nil
-                }
+                Button(L.t("actions.save")) { commitRename() }
             }
             .confirmationDialog(
                 L.t("chat.deleteConversationConfirm"),
@@ -413,23 +413,24 @@ struct Desk: View {
                 titleVisibility: .visible,
                 presenting: deletingThread
             ) { row in
-                Button(L.t("actions.delete"), role: .destructive) {
-                    let deleted: Bool
-                    switch row {
-                    case .current(let thread):
-                        deleted = team.epochs[row.id, default: 0] == deletingEpoch
-                            && team.clearChat(thread.id.id, includingLeaves: false)
-                    case .past(let past):
-                        deleted = team.deleteLeaf(past.owner.id, id: past.leaf.id)
-                    }
-                    if deleted { Haptics.thud() }
-                    else { notice = L.t("errors.saveConversation") }
-                    deletingThread = nil
-                }
+                Button(L.t("actions.delete"), role: .destructive) { confirmDeleteThread(row) }
                 Button(L.t("actions.cancel"), role: .cancel) { deletingThread = nil }
             } message: { _ in
                 Text(L.t("errors.cannotUndo"))
             }
+            .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+                Button("好", role: .cancel) { notice = nil }
+            }
+            .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
+                Button(clearingIsRoom ? "散了" : "清空", role: .destructive) { confirmClearThread() }
+                Button("算了", role: .cancel) { clearing = nil }
+            } message: {
+                Text(clearingIsRoom ? Words.t("雅集和里面的话都会删掉，旅伴们还在。") : Words.t("这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。"))
+            }
+    }
+
+    private func withDeskSheets<Content: View>(_ content: Content) -> some View {
+        content
             .sheet(isPresented: $drawer, onDismiss: {
                 // Open what was picked once the drawer is out of the way.
                 if let item = picked {
@@ -451,28 +452,15 @@ struct Desk: View {
             .sheet(isPresented: $vaulting) { SecretsPage() }
             .sheet(isPresented: $caring) { CarePage(team: team, openRestore: team.phase == .setup) }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { receiveCard($0) }
-            .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
-                Button("好", role: .cancel) { notice = nil }
-            }
             .fullScreenCover(isPresented: $tuning, onDismiss: {
                 settingsPage = nil
             }) {
                 SettingsView(team: team, startAt: settingsPage)
             }
-            .confirmationDialog(clearingTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }), titleVisibility: .visible) {
-                Button(clearingIsRoom ? "散了" : "清空", role: .destructive) {
-                    guard let target = clearing else { return }
-                    switch target {
-                    case .gathering(let id): team.deleteRoom(id)
-                    case .companion: team.clearChat(target.id)
-                    }
-                    Haptics.thud()
-                    clearing = nil
-                }
-                Button("算了", role: .cancel) { clearing = nil }
-            } message: {
-                Text(clearingIsRoom ? Words.t("雅集和里面的话都会删掉，旅伴们还在。") : Words.t("这段絮语和收起的旧叶都会删掉，删了找不回来。旅伴和拾遗都还在。"))
-            }
+    }
+
+    private func withDeskRouteHandlers<Content: View>(_ content: Content) -> some View {
+        content
             .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
                 if let chat = ShortcutDoor.pendingChat ?? (note.object as? String) {
                     ShortcutDoor.pendingChat = nil
@@ -489,6 +477,42 @@ struct Desk: View {
                 takePendingRoutes()
                 answerShortcut()
             }
+    }
+
+    private func commitRename() {
+        switch renaming {
+        case .current(let key): team.rename(key, to: renameText)
+        case .past(let past):
+            if !team.renameLeaf(past.owner.id, id: past.leaf.id, to: renameText) {
+                notice = L.t("errors.saveConversation")
+            }
+        case nil: break
+        }
+        renaming = nil
+    }
+
+    private func confirmDeleteThread(_ row: DeskSideConversation) {
+        let deleted: Bool
+        switch row {
+        case .current(let thread):
+            deleted = team.epochs[row.id, default: 0] == deletingEpoch
+                && team.clearChat(thread.id.id, includingLeaves: false)
+        case .past(let past):
+            deleted = team.deleteLeaf(past.owner.id, id: past.leaf.id)
+        }
+        if deleted { Haptics.thud() }
+        else { notice = L.t("errors.saveConversation") }
+        deletingThread = nil
+    }
+
+    private func confirmClearThread() {
+        guard let target = clearing else { return }
+        switch target {
+        case .gathering(let id): team.deleteRoom(id)
+        case .companion: team.clearChat(target.id)
+        }
+        Haptics.thud()
+        clearing = nil
     }
 
     /// 收名帖: a card file picked from Files becomes a new companion, with its 性格, 风格, seal and face.
