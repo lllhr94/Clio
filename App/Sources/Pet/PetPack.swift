@@ -454,15 +454,21 @@ enum PetSheets {
     }
 
     static func cell(_ pack: PetPack, _ anim: PetPack.Anim, _ index: Int) -> CGImage? {
-        cell(pack, anim, index, maxPixelSize: nil, forPlayback: false)
+        cell(pack, anim, index, maxPixelSize: nil, forPlayback: false, deferLargeSheet: false)
+    }
+
+    static func isDecodingLargeSheet(_ pack: PetPack, _ anim: PetPack.Anim) -> Bool {
+        let prefix = "\(pack.id)/\(anim.sheet)@"
+        return inFlightAtlases.contains { $0.hasPrefix(prefix) }
     }
 
     static func cell(
         _ pack: PetPack,
         _ anim: PetPack.Anim,
         _ index: Int,
-        maxPixelSize: Int?,
-        forPlayback: Bool
+        maxPixelSize: Int? = nil,
+        forPlayback: Bool,
+        deferLargeSheet: Bool = false
     ) -> CGImage? {
         _ = observersInstalled
         if forPlayback, playbackPackID != pack.id {
@@ -493,10 +499,10 @@ enum PetSheets {
         }
 
         let sheetKey = pack.id + "/" + anim.sheet
-        // During live sprite playback, avoid decoding >4 MiB sheets synchronously on MainActor:
-        // schedule a single serialized background batch while returning the nearest cached frame.
-        // One-shot callers (`forPlayback == false`, e.g. LiveFace / PetStill) always decode the exact requested frame.
-        if forPlayback, sheets[sheetKey] == nil && isOversizedSheet(pack, anim.sheet) {
+        // Avoid decoding >4 MiB sprite sheets synchronously on MainActor for live playback or SwiftUI stills (`deferLargeSheet`):
+        // schedule a single serialized background batch while returning any nearest cached frame.
+        // Non-SwiftUI synchronous callers (e.g. LiveFace / UIKit accessories) keep `deferLargeSheet == false`.
+        if (forPlayback || deferLargeSheet), sheets[sheetKey] == nil && isOversizedSheet(pack, anim.sheet) {
             _ = signal.revision
             let placeholderKey = "\(sheetKey)@\(targetDims.width)x\(targetDims.height)"
             scheduleLargeAtlasBatch(

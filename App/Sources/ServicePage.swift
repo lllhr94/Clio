@@ -16,6 +16,7 @@ struct ServicePage: View {
     @State private var showAdvanced = false
     @State private var editing: String?
     @State private var removing = false
+    @State private var deleted = false
     @State private var name = ""
     @State private var address = ""
     @State private var style: ThinkingStyle?
@@ -23,6 +24,14 @@ struct ServicePage: View {
     @State private var keySuffix: String?
     @State private var reading: Balance.Reading?
     @State private var balanceNote: String?
+    @State private var inFlightSave: Task<String?, Never>?
+    @State private var pendingSavedFields: EndpointDraftFields?
+
+    private struct EndpointDraftFields: Equatable {
+        let name: String
+        let address: String
+        let style: ThinkingStyle?
+    }
 
     init(team: TeamModel, id: String) {
         self.team = team
@@ -69,7 +78,12 @@ struct ServicePage: View {
         .task { await loadBalance() }
         .task(id: currentID) {
             let key = await team.readAPIKey(for: currentID)
-            if !Task.isCancelled, let key, key.count > 8 { keySuffix = String(key.suffix(4)) }
+            guard !Task.isCancelled else { return }
+            if let key, key.count > 8 {
+                keySuffix = String(key.suffix(4))
+            } else {
+                keySuffix = nil
+            }
         }
         .sheet(isPresented: $managingModels) {
             ManageModelsSheet(team: team, id: currentID)
@@ -80,15 +94,37 @@ struct ServicePage: View {
         }
         // A name or address typed and left without pressing return is kept, not lost.
         .onDisappear {
-            if let endpoint, !removing,
+            if let endpoint, !removing, !deleted,
                name != endpoint.name || address != endpoint.baseURL || style != endpoint.style {
-                _ = save(endpoint, quiet: true)
+                let currentFields = EndpointDraftFields(name: name, address: address, style: style)
+                if let pendingSavedFields, pendingSavedFields == currentFields {
+                    return
+                }
+                let targetID = endpoint.id
+                let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let previousSave = inFlightSave
+                let modelTeam = team
+                Task {
+                    let prevID = await previousSave?.value
+                    let activeID = prevID ?? targetID
+                    _ = await modelTeam.editEndpointAsync(
+                        activeID,
+                        name: currentFields.name,
+                        baseURL: currentFields.address,
+                        style: currentFields.style,
+                        key: trimmedKey.isEmpty ? nil : trimmedKey
+                    )
+                }
             }
         }
         .confirmationDialog(L.format("servicePage.removeConfirm", endpoint?.name ?? ""), isPresented: $removing, titleVisibility: .visible) {
             Button(L.t("actions.delete"), role: .destructive) {
-                team.removeEndpoint(currentID)
-                dismiss()
+                deleted = true
+                Task {
+                    _ = await inFlightSave?.value
+                    await team.removeEndpointAsync(currentID)
+                    dismiss()
+                }
             }
             Button(L.t("actions.cancel"), role: .cancel) {}
         }
@@ -118,74 +154,17 @@ struct ServicePage: View {
     // MARK: 1. Enabled models
 
     private func inUse(_ endpoint: Endpoint) -> some View {
-        let restCount = (endpoint.listed ?? []).filter { !endpoint.models.contains($0) }.count
-        let manageLine = restCount > 0
-            ? L.format("settings.manageModelsMoreLine", restCount)
-            : L.t("settings.manageModelsLine")
-        return VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle(L.t("settings.activeModels"))
-            VStack(spacing: 0) {
-                ForEach(endpoint.models, id: \.self) { model in
-                    modelRow(endpoint, model)
-                    Kit.rule(inset: Ink.Space.l)
+        ServiceActiveModelsSection(
+            endpoint: endpoint,
+            defaultModelRef: team.settings.defaultModel,
+            onEdit: { editing = $0 },
+            onManage: { managingModels = true },
+            onRemove: { model in
+                withAnimation(.smooth) {
+                    team.setModels(endpoint.id, endpoint.models.filter { $0 != model })
                 }
-                Button {
-                    Haptics.light()
-                    managingModels = true
-                } label: {
-                    RowLabel("plus", tint: Ink.Tile.dai, title: L.t("settings.manageModels"), line: manageLine)
-                }
-                .buttonStyle(TapStyle())
             }
-            .paperCard()
-            Text(L.t("servicePage.activeModelsNote"))
-                .font(.system(size: Ink.Size.small))
-                .foregroundStyle(Ink.inkSoft)
-                .padding(.horizontal, Ink.Space.l)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func modelRow(_ endpoint: Endpoint, _ model: String) -> some View {
-        let traits = endpoint.traits(model)
-        let isDefault = team.settings.defaultModel == "\(endpoint.id)/\(model)"
-        let gone = endpoint.listed.map { !$0.contains(model) } ?? false
-        return Button {
-            Haptics.light()
-            editing = model
-        } label: {
-            HStack(alignment: .center, spacing: Ink.Space.m) {
-                ModelIcon(model: model, service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
-                VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    HStack(spacing: Ink.Space.s) {
-                        Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
-                        if isDefault {
-                            Text(L.t("settings.defaultModelBadge"))
-                                .font(.system(size: Ink.Size.micro, weight: .semibold))
-                                .foregroundStyle(Ink.accent)
-                                .padding(.horizontal, Ink.Space.s)
-                                .padding(.vertical, Ink.Space.xs / 4)
-                                .background(Ink.accentWash, in: .capsule)
-                        }
-                    }
-                    TraitChips(traits: traits, corrected: endpoint.corrected(model))
-                    if gone {
-                        Text(L.t("settings.modelUnavailable")).font(Ink.footnote).foregroundStyle(Ink.warn)
-                    }
-                }
-                Spacer(minLength: 0)
-                Kit.chevron
-            }
-            .padding(.horizontal, Ink.Space.l)
-            .padding(.vertical, Ink.Space.m)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(TapStyle())
-        .contextMenu {
-            Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
-                withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models.filter { $0 != model }) }
-            }
-        }
+        )
     }
 
     // MARK: 2. Connection and key
@@ -197,7 +176,7 @@ struct ServicePage: View {
                 labeled(L.t("servicePage.nameLabel")) {
                     TextField(L.t("servicePage.nameLabel"), text: $name)
                         .font(.system(size: Ink.Size.sub))
-                        .onSubmit { _ = save(endpoint) }
+                        .onSubmit { Task { await save(endpoint) } }
                 }
                 Kit.rule(inset: 0)
                 labeled(L.t("servicePage.addressLabel")) {
@@ -206,7 +185,7 @@ struct ServicePage: View {
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onSubmit { _ = save(endpoint) }
+                        .onSubmit { Task { await save(endpoint) } }
                 }
                 if let service, service.addresses.count > 1 {
                     HStack(spacing: Ink.Space.s) {
@@ -214,7 +193,7 @@ struct ServicePage: View {
                             Button(option.label) {
                                 Haptics.tick(0.5)
                                 address = option.url
-                                _ = save(endpoint)
+                                Task { await save(endpoint) }
                             }
                             .font(.system(size: Ink.Size.small, weight: .medium))
                             .foregroundStyle(address == option.url ? Ink.accent : Ink.inkSoft)
@@ -354,7 +333,7 @@ struct ServicePage: View {
             Menu {
                 Button {
                     style = nil
-                    _ = save(endpoint)
+                    Task { await save(endpoint) }
                 } label: {
                     if style == nil {
                         Label(followLabel, systemImage: "checkmark")
@@ -365,7 +344,7 @@ struct ServicePage: View {
                 ForEach(ThinkingStyle.allCases, id: \.self) { option in
                     Button {
                         style = option
-                        _ = save(endpoint)
+                        Task { await save(endpoint) }
                     } label: {
                         if style == option {
                             Label(option.title, systemImage: "checkmark")
@@ -419,15 +398,34 @@ struct ServicePage: View {
     }
 
     @discardableResult
-    private func save(_ endpoint: Endpoint, quiet: Bool = false) -> String? {
-        let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let outcome = team.editEndpoint(
-            endpoint.id,
-            name: name,
-            baseURL: address,
-            style: style,
-            key: trimmedKey.isEmpty ? nil : trimmedKey
-        )
+    private func save(_ endpoint: Endpoint, quiet: Bool = false) async -> String? {
+        let previous = inFlightSave
+        let targetFields = EndpointDraftFields(name: name, address: address, style: style)
+        pendingSavedFields = targetFields
+        let task = Task<String?, Never> {
+            let prevID = await previous?.value
+            let activeEndpoint = prevID.flatMap { id in team.settings.endpoints.first { $0.id == id } }
+                ?? team.settings.endpoints.first { $0.id == endpoint.id }
+                ?? endpoint
+            let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let outcome = await team.editEndpointAsync(
+                activeEndpoint.id,
+                name: targetFields.name,
+                baseURL: targetFields.address,
+                style: targetFields.style,
+                key: trimmedKey.isEmpty ? nil : trimmedKey
+            )
+            return handleEditOutcome(outcome, trimmedKey: trimmedKey, quiet: quiet)
+        }
+        inFlightSave = task
+        let result = await task.value
+        if let pendingSavedFields, pendingSavedFields == targetFields {
+            self.pendingSavedFields = nil
+        }
+        return result
+    }
+
+    private func handleEditOutcome(_ outcome: EndpointKeyEditOutcome, trimmedKey: String, quiet: Bool) -> String? {
         switch outcome {
         case .saved(let nextID, let normalizedURL, let keyUpdated):
             currentID = nextID
@@ -473,9 +471,11 @@ struct ServicePage: View {
     private func replaceKey(_ endpoint: Endpoint) {
         let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
-        guard save(endpoint) != nil else { return }
-        Haptics.thud()
-        note = L.t("servicePage.keyReplacedNotice")
+        Task {
+            guard await save(endpoint) != nil else { return }
+            Haptics.thud()
+            note = L.t("servicePage.keyReplacedNotice")
+        }
     }
 
     // MARK: Balance
@@ -516,39 +516,126 @@ struct ServicePage: View {
     // MARK: Doing
 
     private func refresh(_ endpoint: Endpoint) {
-        guard let activeID = save(endpoint) else { return }
-        let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
+        guard !working else { return }
         working = true
-        note = L.t("loading.fetchingModels")
         Task {
+            defer { working = false }
+            guard let activeID = await save(endpoint) else { return }
+            let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
+            note = L.t("loading.fetchingModels")
             do {
                 let count = try await team.refreshModels(current.id)
                 let fresh = team.settings.endpoints.first { $0.id == current.id }
-                let waiting = (fresh?.listed ?? []).filter { !(fresh?.models ?? []).contains($0) }.count
+                let active = Set(fresh?.models ?? [])
+                let waiting = (fresh?.listed ?? []).filter { !active.contains($0) }.count
                 note = waiting > 0
                     ? L.format("servicePage.modelsFetchedMore", count, waiting)
                     : L.format("servicePage.modelsFetchedSummary", count)
             } catch {
                 note = Explain.model(error, service: current.name).displayTitle
             }
-            working = false
         }
     }
 
     private func probe(_ endpoint: Endpoint) {
-        guard let activeID = save(endpoint) else { return }
-        let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
-        guard let model = (team.resolveActive(team.settings.defaultModel).flatMap { $0.endpoint.id == current.id ? $0.model : nil }) ?? current.models.first else {
-            note = L.t("servicePage.noActiveModelsForProbe")
-            return
-        }
+        guard !working else { return }
         working = true
-        note = L.format("servicePage.probingModel", model)
         Task {
+            defer { working = false }
+            guard let activeID = await save(endpoint) else { return }
+            let current = team.settings.endpoints.first { $0.id == activeID } ?? endpoint
+            guard let model = (team.resolveActive(team.settings.defaultModel).flatMap { $0.endpoint.id == current.id ? $0.model : nil }) ?? current.models.first else {
+                note = L.t("servicePage.noActiveModelsForProbe")
+                return
+            }
+            note = L.format("servicePage.probingModel", model)
             let result = await team.probe(current, model: model)
             note = result.note
             if result.ok { Haptics.thud() } else { Haptics.lock() }
-            working = false
+        }
+    }
+}
+
+private struct ServiceActiveModelsSection: View {
+    let endpoint: Endpoint
+    let defaultModelRef: String?
+    let onEdit: (String) -> Void
+    let onManage: () -> Void
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        let activeSet = Set(endpoint.models)
+        let restCount = (endpoint.listed ?? []).filter { !activeSet.contains($0) }.count
+        let manageLine = restCount > 0
+            ? L.format("settings.manageModelsMoreLine", restCount)
+            : L.t("settings.manageModelsLine")
+        let service = Service.of(endpoint)
+        let listedSet = endpoint.listed.map(Set.init)
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.activeModels"))
+            LazyVStack(spacing: 0) {
+                ForEach(endpoint.models, id: \.self) { model in
+                    VStack(spacing: 0) {
+                        modelRow(endpoint, service: service, listedSet: listedSet, model)
+                        Kit.rule(inset: Ink.Space.l)
+                    }
+                }
+                Button {
+                    Haptics.light()
+                    onManage()
+                } label: {
+                    RowLabel("plus", tint: Ink.Tile.dai, title: L.t("settings.manageModels"), line: manageLine)
+                }
+                .buttonStyle(TapStyle())
+            }
+            .paperCard()
+            Text(L.t("servicePage.activeModelsNote"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func modelRow(_ endpoint: Endpoint, service: Service?, listedSet: Set<String>?, _ model: String) -> some View {
+        let traits = endpoint.traits(model)
+        let isDefault = defaultModelRef == "\(endpoint.id)/\(model)"
+        let gone = listedSet.map { !$0.contains(model) } ?? false
+        return Button {
+            Haptics.light()
+            onEdit(model)
+        } label: {
+            HStack(alignment: .center, spacing: Ink.Space.m) {
+                ModelIcon(model: model, service: service, size: Kit.badge, name: endpoint.name)
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    HStack(spacing: Ink.Space.s) {
+                        Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                        if isDefault {
+                            Text(L.t("settings.defaultModelBadge"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                                .padding(.horizontal, Ink.Space.s)
+                                .padding(.vertical, Ink.Space.xs / 4)
+                                .background(Ink.accentWash, in: .capsule)
+                        }
+                    }
+                    TraitChips(traits: traits, corrected: endpoint.corrected(model))
+                    if gone {
+                        Text(L.t("settings.modelUnavailable")).font(Ink.footnote).foregroundStyle(Ink.warn)
+                    }
+                }
+                Spacer(minLength: 0)
+                Kit.chevron
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(TapStyle())
+        .contextMenu {
+            Button(L.t("actions.removeModel"), systemImage: "minus.circle", role: .destructive) {
+                onRemove(model)
+            }
         }
     }
 }
@@ -559,7 +646,6 @@ private struct ManageModelsSheet: View {
     let id: String
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
-    @State private var typed = ""
     @State private var refreshing = false
     @State private var note: String?
 
@@ -571,7 +657,9 @@ private struct ManageModelsSheet: View {
             ScrollView {
                 if let endpoint {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        manualCard(endpoint)
+                        ManualModelEntryCard(hint: service?.modelHint ?? L.t("servicePage.manualModelHint")) { model in
+                            addTyped(endpoint, model: model)
+                        }
                         if let note {
                             Text(note)
                                 .font(Ink.footnote)
@@ -615,35 +703,16 @@ private struct ManageModelsSheet: View {
         }
     }
 
-    private func manualCard(_ endpoint: Endpoint) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle(L.t("settings.imageModelManual"))
-            HStack(spacing: Ink.Space.s) {
-                TextField(service?.modelHint ?? L.t("servicePage.manualModelHint"), text: $typed)
-                    .font(Ink.mono(Ink.Size.sub))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.done)
-                    .onSubmit { addTyped(endpoint) }
-                Button(L.t("actions.add")) { addTyped(endpoint) }
-                    .font(.system(size: Ink.Size.sub, weight: .semibold))
-                    .foregroundStyle(typed.trimmingCharacters(in: .whitespaces).isEmpty ? Ink.inkFaint : Ink.accent)
-                    .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            .padding(.horizontal, Ink.Space.l)
-            .frame(minHeight: Kit.rowHeight)
-            .paperCard()
-        }
-    }
-
     private func catalogCard(_ endpoint: Endpoint) -> some View {
         let all = endpoint.allModels
         let words = search.trimmingCharacters(in: .whitespaces).lowercased()
         let found = words.isEmpty ? all : all.filter { $0.lowercased().contains(words) }
         let shown = Array(found.prefix(100))
+        let firstModel = shown.first
+        let activeSet = Set(endpoint.models)
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(all.isEmpty ? L.t("settings.imageModelAvailable") : L.format("servicePage.catalogSummary", all.count, endpoint.models.count))
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 if all.isEmpty {
                     VStack(alignment: .leading, spacing: Ink.Space.s) {
                         Text(L.t("servicePage.catalogEmpty"))
@@ -663,9 +732,11 @@ private struct ManageModelsSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(Ink.Space.l)
                 } else {
-                    ForEach(Array(shown.enumerated()), id: \.element) { index, model in
-                        if index > 0 { Kit.rule(inset: Ink.Space.l) }
-                        catalogRow(endpoint, model)
+                    ForEach(shown, id: \.self) { model in
+                        VStack(spacing: 0) {
+                            if model != firstModel { Kit.rule(inset: Ink.Space.l) }
+                            catalogRow(endpoint, model, enabled: activeSet.contains(model))
+                        }
                     }
                     if found.count > shown.count {
                         Kit.rule(inset: Ink.Space.l)
@@ -681,9 +752,8 @@ private struct ManageModelsSheet: View {
         }
     }
 
-    private func catalogRow(_ endpoint: Endpoint, _ model: String) -> some View {
-        let enabled = endpoint.models.contains(model)
-        return Button {
+    private func catalogRow(_ endpoint: Endpoint, _ model: String, enabled: Bool) -> some View {
+        Button {
             Haptics.tick(0.5)
             withAnimation(.smooth) {
                 if enabled {
@@ -717,10 +787,7 @@ private struct ManageModelsSheet: View {
         .accessibilityAddTraits(enabled ? .isSelected : [])
     }
 
-    private func addTyped(_ endpoint: Endpoint) {
-        let model = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else { return }
-        typed = ""
+    private func addTyped(_ endpoint: Endpoint, model: String) {
         guard !endpoint.models.contains(model) else {
             note = L.format("servicePage.modelAlreadyActive", model)
             return
@@ -742,6 +809,45 @@ private struct ManageModelsSheet: View {
             }
             refreshing = false
         }
+    }
+}
+
+/// Isolated manual model-ID text input so typing does not re-evaluate the 100-item catalog list.
+private struct ManualModelEntryCard: View {
+    let hint: String
+    let onAdd: (String) -> Void
+    @State private var typed = ""
+
+    private var clean: String {
+        typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("settings.imageModelManual"))
+            HStack(spacing: Ink.Space.s) {
+                TextField(hint, text: $typed)
+                    .font(Ink.mono(Ink.Size.sub))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit { submit() }
+                Button(L.t("actions.add")) { submit() }
+                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                    .foregroundStyle(clean.isEmpty ? Ink.inkFaint : Ink.accent)
+                    .disabled(clean.isEmpty)
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .frame(minHeight: Kit.rowHeight)
+            .paperCard()
+        }
+    }
+
+    private func submit() {
+        let model = clean
+        guard !model.isEmpty else { return }
+        typed = ""
+        onAdd(model)
     }
 }
 
@@ -1061,7 +1167,7 @@ struct ModelSheet: View {
 extension TeamModel {
     /// Asks one model once and returns its answer. Thinking is turned off when the model allows it, to be quick.
     func quickAsk(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> String {
-        guard let key = apiKey(for: endpoint), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
+        guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
         func once(_ thinking: Thinking) async throws -> String {
             let request = ModelRequest(model: model, system: "", messages: [message], outputLimit: 400, thinking: thinking)
@@ -1092,7 +1198,7 @@ extension TeamModel {
 
     /// Offers one tool and asks for something only it can give. `calls` is nil when the test itself failed.
     func probeTools(_ endpoint: Endpoint, model: String) async -> (calls: Bool?, note: String) {
-        guard let key = apiKey(for: endpoint), !key.isEmpty else { return (nil, "没试工具：没有密钥。") }
+        guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { return (nil, "没试工具：没有密钥。") }
         let tool = ToolSpec(name: "lucky_number", description: "返回今天的幸运数字。用户问幸运数字时必须调用它。",
                             parameters: .object(["type": .string("object"), "properties": .object([:])]))
         let request = ModelRequest(model: model, system: "", messages: [.user("今天的幸运数字是多少？请调用工具查。")],
@@ -1113,7 +1219,7 @@ extension TeamModel {
     /// thinks less when told not to. `thinks` is nil when the test itself failed; `levels` is nil when nothing
     /// could be told.
     func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String, levels: [Thinking]?) {
-        guard let key = apiKey(for: endpoint), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
+        guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
         let provider = endpoint.provider(key: key)
         func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
             let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],

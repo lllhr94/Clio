@@ -271,19 +271,23 @@ private struct ModelPickerSheet: View {
     }
 
     private func endpointCard(_ endpoint: Endpoint, models: [String]) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
+        let firstModel = models.first
+        let service = Service.of(endpoint)
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(endpoint.name)
-            VStack(spacing: 0) {
-                ForEach(Array(models.enumerated()), id: \.element) { index, model in
-                    if index > 0 { Kit.rule(inset: Ink.Space.l) }
-                    modelRow(endpoint, model)
+            LazyVStack(spacing: 0) {
+                ForEach(models, id: \.self) { model in
+                    VStack(spacing: 0) {
+                        if model != firstModel { Kit.rule(inset: Ink.Space.l) }
+                        modelRow(endpoint, service: service, model)
+                    }
                 }
             }
             .paperCard()
         }
     }
 
-    private func modelRow(_ endpoint: Endpoint, _ model: String) -> some View {
+    private func modelRow(_ endpoint: Endpoint, service: Service?, _ model: String) -> some View {
         let ref = "\(endpoint.id)/\(model)"
         let selected = current == ref
         return Button {
@@ -292,7 +296,7 @@ private struct ModelPickerSheet: View {
             dismiss()
         } label: {
             HStack(spacing: Ink.Space.m) {
-                ModelIcon(model: model, service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
+                ModelIcon(model: model, service: service, size: Kit.badge, name: endpoint.name)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     Text(model)
                         .font(Ink.mono(Ink.Size.sub, weight: selected ? .semibold : .medium))

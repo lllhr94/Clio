@@ -149,7 +149,11 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// Every model it knows of: in use first, then the rest of the list.
-    var allModels: [String] { models + (listed ?? []).filter { !models.contains($0) } }
+    var allModels: [String] {
+        guard let listed, !listed.isEmpty else { return models }
+        let active = Set(models)
+        return models + listed.filter { !active.contains($0) }
+    }
 
     static func looksLikeImageModel(_ model: String) -> Bool {
         let name = model.lowercased()

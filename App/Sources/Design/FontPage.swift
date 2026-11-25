@@ -1,5 +1,6 @@
 import CoreText
 import SwiftUI
+import Synchronization
 
 /// Apple's own 宋体 and 楷体 are not on a phone until asked for: this fetches them once, with progress,
 /// and asks for them again at launch so a picked one is there (a quick look-up once fetched).
@@ -40,29 +41,44 @@ final class FontShelf {
 
     nonisolated private static func download(_ names: [String], face: Pref.Face) {
         let descriptors = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, 0) } as CFArray
+        let progressGate = Mutex(-1.0)
         CTFontDescriptorMatchFontDescriptorsWithProgressHandler(descriptors, nil) { state, info in
-            let values = info as NSDictionary
-            let percent = (values[kCTFontDescriptorMatchingPercentage] as? Double) ?? 0
-            Task { @MainActor in
-                let shelf = FontShelf.shared
-                switch state {
-                case .downloading:
-                    shelf.loading[face] = percent / 100
-                case .didFailWithError:
+            switch state {
+            case .downloading:
+                let values = info as NSDictionary
+                let percent = (values[kCTFontDescriptorMatchingPercentage] as? Double) ?? 0
+                let progress = min(1, max(0, percent / 100))
+                let shouldEmit = progressGate.withLock { last -> Bool in
+                    guard last < 0 || abs(progress - last) >= 0.02 || (progress >= 1 && last < 1) else { return false }
+                    last = progress
+                    return true
+                }
+                guard shouldEmit else { return true }
+                Task { @MainActor in
+                    let shelf = FontShelf.shared
+                    guard shelf.loading[face] != nil else { return }
+                    shelf.loading[face] = progress
+                }
+            case .didFailWithError:
+                Task { @MainActor in
+                    let shelf = FontShelf.shared
                     Ink.recheckFonts()
                     shelf.loading[face] = nil
                     shelf.failed.insert(face)
                     shelf.generation += 1
                     Theme.shared.fontArrived()
-                case .didFinish:
+                }
+            case .didFinish:
+                Task { @MainActor in
+                    let shelf = FontShelf.shared
                     Ink.recheckFonts()
                     shelf.loading[face] = nil
                     if !Ink.has(names[0]) { shelf.failed.insert(face) }
                     shelf.generation += 1
                     Theme.shared.fontArrived()
-                default:
-                    break
                 }
+            default:
+                break
             }
             return true
         }
@@ -115,9 +131,7 @@ struct FontPage: View {
 
                 Section {
                     Button(L.t("actions.resetDefaults"), role: .destructive) {
-                        Theme.shared.setFace(.serif)
-                        Theme.shared.setMark(.wenkai)
-                        Theme.shared.setCode(.maple)
+                        Theme.shared.resetFonts()
                         Haptics.thud()
                     }
                 }

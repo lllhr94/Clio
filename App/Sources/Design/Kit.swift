@@ -136,8 +136,9 @@ struct RowCard<Content: View>: View {
             if let title { SectionTitle(title) }
             VStack(spacing: 0) {
                 Group(subviews: content) { rows in
-                    ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                        if index > 0 { Kit.divider }
+                    let firstID = rows.first?.id
+                    ForEach(rows) { row in
+                        if let firstID, row.id != firstID { Kit.divider }
                         row
                     }
                 }
@@ -196,25 +197,41 @@ final class UIScale {
     static let levels: [(title: String, factor: Double)] = [("紧凑", 0.88), ("偏小", 0.94), ("标准", 1.0), ("偏大", 1.08)]
 
     @ObservationIgnored private var watching: NSObjectProtocol?
+    @ObservationIgnored private var isWritingDefaults = false
 
     var value: Double = {
         let stored = UserDefaults.standard.double(forKey: UIScale.key)
         return stored > 0 ? stored : 1.0
     }() {
         didSet {
-            if UserDefaults.standard.double(forKey: Self.key) != value {
-                UserDefaults.standard.set(value, forKey: Self.key)
-            }
+            guard UserDefaults.standard.double(forKey: Self.key) != value else { return }
+            isWritingDefaults = true
+            defer { isWritingDefaults = false }
+            UserDefaults.standard.set(value, forKey: Self.key)
         }
     }
 
     init() {
-        watching = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            let stored = UserDefaults.standard.double(forKey: Self.key)
-            let next = stored > 0 ? stored : 1.0
-            if next != self.value { self.value = next }
+        watching = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: nil
+        ) { [weak self] _ in
+            if !Thread.isMainThread {
+                DispatchQueue.main.async { [weak self] in
+                    self?.syncFromDefaults()
+                }
+                return
+            }
+            guard let self, !self.isWritingDefaults else { return }
+            self.syncFromDefaults()
         }
+    }
+
+    private func syncFromDefaults() {
+        let stored = UserDefaults.standard.double(forKey: Self.key)
+        let next = stored > 0 ? stored : 1.0
+        if next != value { value = next }
     }
 
     static var factor: CGFloat { CGFloat(shared.value) }
@@ -247,12 +264,28 @@ struct ClioSeal: View {
         return bot.name.trimmingCharacters(in: .whitespaces).first.map(String.init) ?? "克"
     }
 
+    private static let brushLock = NSLock()
+    nonisolated(unsafe) private static let brushFont: CTFont? = UIFont(name: "ClioSeal-Regular", size: 12).map { $0 as CTFont }
+    nonisolated(unsafe) private static var brushCache: [String: Bool] = [:]
+
     /// The brush font has the 3755 common characters; others are cut in 文楷.
     private static func brushHas(_ character: String) -> Bool {
-        guard let font = UIFont(name: "ClioSeal-Regular", size: 12) else { return false }
-        let units = Array(character.utf16)
-        var glyphs = [CGGlyph](repeating: 0, count: units.count)
-        return CTFontGetGlyphsForCharacters(font as CTFont, units, &glyphs, units.count)
+        brushLock.withLock {
+            if let cached = brushCache[character] { return cached }
+            let found: Bool
+            if let font = brushFont {
+                let units = Array(character.utf16)
+                var glyphs = [CGGlyph](repeating: 0, count: units.count)
+                found = CTFontGetGlyphsForCharacters(font, units, &glyphs, units.count)
+            } else {
+                found = false
+            }
+            if brushCache.count >= 256 {
+                brushCache.removeAll(keepingCapacity: true)
+            }
+            brushCache[character] = found
+            return found
+        }
     }
 
     private var face: Font {

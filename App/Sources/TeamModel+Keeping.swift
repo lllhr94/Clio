@@ -310,9 +310,9 @@ extension TeamModel {
     }
 
     var keeping: Bool { phase != .demo }
-    func saveSettings() { if keeping { Disk.save(settings, "settings.json") } }
-    func saveBots() { if keeping { Disk.save(bots, "bots.json") } }
-    func saveRooms() { if keeping { Disk.save(rooms, "rooms.json") } }
+    func saveSettings() { if keeping { TeamDisk.save(settings, "settings.json") } }
+    func saveBots() { if keeping { TeamDisk.save(bots, "bots.json") } }
+    func saveRooms() { if keeping { TeamDisk.save(rooms, "rooms.json") } }
     func saveMemory() {
         guard keeping, !Disk.frozen, !MemoryStoreBridge.shared.isCanonicalReadOnly else { return }
         var book = memoryBook
@@ -365,14 +365,81 @@ extension TeamModel {
         syncLivePromptsFromMemories()
         MemoryStoreBridge.shared.resetAll(team: self)
     }
-    func saveLaters() { if keeping { Disk.save(laters, "later.json") } }
-    func saveRoutines() { if keeping { Disk.save(routines, "routines.json") } }
+    func saveLaters() { if keeping { TeamDisk.save(laters, "later.json") } }
+    func saveRoutines() { if keeping { TeamDisk.save(routines, "routines.json") } }
 
     func sortBots() {
         let main = mainBotId
         bots.sort { left, right in
             if (left.id == main) != (right.id == main) { return left.id == main }
             return (left.createdAt ?? 0) < (right.createdAt ?? 0)
+        }
+    }
+}
+
+/// Keeps team settings and metadata JSON writes off MainActor on a serial `.utility` queue.
+/// Rapid successive edits supersede queued snapshots for the same file so older writes can never
+/// overtake newer state.
+enum TeamDisk {
+    private static let writer = DispatchQueue(label: "clio.team-storage", qos: .utility)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var pending: [String: UUID] = [:]
+
+    private static let backgroundObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: UIApplication.didEnterBackgroundNotification,
+        object: nil,
+        queue: .main
+    ) { _ in
+        MainActor.assumeIsolated {
+            finishBeforeSuspension()
+        }
+    }
+
+    static func save<Value: Encodable & Sendable>(_ value: Value, _ file: String) {
+        _ = backgroundObserver
+        let id = UUID()
+        lock.withLock { pending[file] = id }
+        writer.async {
+            let isLatest = lock.withLock { pending[file] == id }
+            guard isLatest else { return }
+            Disk.save(value, file)
+            lock.withLock { if pending[file] == id { pending[file] = nil } }
+        }
+    }
+
+    /// Writes synchronously through the serial writer queue, superseding earlier queued snapshots
+    /// so a two-phase atomic commit (such as `EndpointKeyCoordinator.applyEdit`) cannot be overwritten.
+    static func writeAndWait<Value: Encodable>(_ value: Value, _ file: String) throws {
+        _ = backgroundObserver
+        let id = UUID()
+        lock.withLock { pending[file] = id }
+        var failure: Error?
+        writer.sync {
+            do {
+                try Disk.write(value, file)
+            } catch {
+                failure = error
+            }
+            lock.withLock { if pending[file] == id { pending[file] = nil } }
+        }
+        if let failure { throw failure }
+    }
+
+    static func finishWrites() { writer.sync {} }
+
+    @MainActor
+    static func finishBeforeSuspension() {
+        guard lock.withLock({ !pending.isEmpty }) else { return }
+        let app = UIApplication.shared
+        var token = UIBackgroundTaskIdentifier.invalid
+        func end() {
+            guard token != .invalid else { return }
+            app.endBackgroundTask(token)
+            token = .invalid
+        }
+        token = app.beginBackgroundTask(withName: "clio-team-storage") { end() }
+        writer.async {
+            DispatchQueue.main.async { end() }
         }
     }
 }

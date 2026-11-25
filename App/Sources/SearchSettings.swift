@@ -127,15 +127,37 @@ enum SearchEngine {
         }.value
     }
 
+    /// Reads all configured provider keys in a single detached task to avoid redundant Keychain IPC.
+    static func keySnapshot(searxngURL: String? = nil) async -> [WebSearchProvider: String] {
+        let resolvedSearxng = searxngURL ?? self.searxngURL
+        let searxngOrigin: String?
+        if case .success(let parsed) = SearXNGEndpoint.parse(resolvedSearxng),
+           parsed.baseURL.lowercased().hasPrefix("https://") {
+            searxngOrigin = parsed.originKey
+        } else {
+            searxngOrigin = nil
+        }
+        var keyNames: [(WebSearchProvider, String)] = []
+        for provider in WebSearchProvider.allCases where provider.supportsKey {
+            if let keyName = vaultKey(for: provider, searxngOrigin: provider == .searxng ? searxngOrigin : nil) {
+                keyNames.append((provider, keyName))
+            }
+        }
+        return await Task.detached(priority: .userInitiated) {
+            var present: [WebSearchProvider: String] = [:]
+            for (provider, keyName) in keyNames {
+                if let raw = Vault.load(String.self, key: keyName) {
+                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { present[provider] = trimmed }
+                }
+            }
+            return present
+        }.value
+    }
+
     /// Snapshot of all configured key statuses (checking `.searxng` against `searxngURL`'s exact origin).
     static func keyPresence(searxngURL: String? = nil) async -> Set<WebSearchProvider> {
-        let resolvedSearxng = searxngURL ?? self.searxngURL
-        var present: Set<WebSearchProvider> = []
-        for provider in WebSearchProvider.allCases where provider.supportsKey {
-            let key = await readKey(for: provider, searxngURL: provider == .searxng ? resolvedSearxng : nil)
-            if !key.isEmpty { present.insert(provider) }
-        }
-        return present
+        Set(await keySnapshot(searxngURL: searxngURL).keys)
     }
 
     /// Builds the live `WebSearchConfig` for `WebSearchTool`.
@@ -191,6 +213,7 @@ struct SearchSettingsPage: View {
     @State private var originVersion = UUID()
     @State private var fallbackOrder: [WebSearchProvider] = SearchEngine.fallbackOrder
     @State private var keyedProviders: Set<WebSearchProvider> = []
+    @State private var loadedInitialKeys = false
     @State private var savedMasked = ""
     @State private var keyInput = ""
     @State private var keyNotice: String?
@@ -285,8 +308,13 @@ struct SearchSettingsPage: View {
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(L.t("settingsHome.searchEngine"))
         .navigationBarTitleDisplayMode(.inline)
-        .task { await reloadKeys() }
-        .task(id: "\(providerRaw)|\(savedSearxngURL)") { await loadSelectedKey() }
+        .task(id: "\(providerRaw)|\(savedSearxngURL)") {
+            if !loadedInitialKeys {
+                await reloadKeys()
+            } else {
+                await loadSelectedKey()
+            }
+        }
         .onChange(of: searxngDraft) { _, next in
             invalidateProbe()
             if next.trimmingCharacters(in: .whitespacesAndNewlines) != savedSearxngURL {
@@ -835,28 +863,49 @@ struct SearchSettingsPage: View {
     }
 
     private func reloadKeys() async {
-        keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
-        await loadSelectedKey()
+        let target = selected
+        let version = selectionVersion
+        let expectedURL = savedSearxngURL
+        let expectedOrigin = target == .searxng ? savedSearxngOrigin : nil
+        let expectedOriginVersion = originVersion
+        let snapshot = await SearchEngine.keySnapshot(searxngURL: expectedURL)
+        guard !Task.isCancelled else { return }
+        loadedInitialKeys = true
+        keyedProviders = Set(snapshot.keys)
+        guard selected == target, selectionVersion == version else { return }
+        if target == .searxng {
+            guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+        }
+        savedMasked = SearchEngine.mask(snapshot[target] ?? "")
     }
 
     private func loadSelectedKey() async {
         let target = selected
         let version = selectionVersion
+        let expectedURL = savedSearxngURL
         let expectedOrigin = target == .searxng ? savedSearxngOrigin : nil
         let expectedOriginVersion = originVersion
         if target == .searxng && expectedOrigin == nil {
             savedMasked = ""
+            keyedProviders.remove(.searxng)
             return
         }
         let current = await SearchEngine.readKey(
             for: target,
-            searxngURL: target == .searxng ? savedSearxngURL : nil
+            searxngURL: target == .searxng ? expectedURL : nil
         )
         guard !Task.isCancelled,
               selected == target,
               selectionVersion == version else { return }
         if target == .searxng {
             guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+        }
+        if target.supportsKey {
+            if current.isEmpty {
+                keyedProviders.remove(target)
+            } else {
+                keyedProviders.insert(target)
+            }
         }
         savedMasked = SearchEngine.mask(current)
     }
@@ -868,6 +917,7 @@ struct SearchSettingsPage: View {
             return
         }
         guard case .success(let parsed) = SearXNGEndpoint.parse(trimmed) else { return }
+        let urlChanged = savedSearxngURL != parsed.baseURL
         SearchEngine.searxngURL = parsed.baseURL
         savedSearxngURL = parsed.baseURL
         searxngDraft = parsed.baseURL
@@ -875,10 +925,21 @@ struct SearchSettingsPage: View {
         invalidateProbe()
         let originChanged = syncSearxngOrigin(parsed.originKey)
         Haptics.thud()
-        Task {
-            keyedProviders = await SearchEngine.keyPresence(searxngURL: parsed.baseURL)
-            if originChanged || selected == .searxng {
-                await loadSelectedKey()
+        // When `selected == .searxng` and `savedSearxngURL` changed, `.task(id:)` invokes `loadSelectedKey()`.
+        if selected != .searxng || !urlChanged {
+            let expectedOrigin = parsed.originKey
+            let expectedOriginVersion = originVersion
+            Task {
+                let key = await SearchEngine.readKey(for: .searxng, searxngURL: parsed.baseURL)
+                guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
+                if key.isEmpty {
+                    keyedProviders.remove(.searxng)
+                } else {
+                    keyedProviders.insert(.searxng)
+                }
+                if selected == .searxng && originChanged {
+                    savedMasked = SearchEngine.mask(key)
+                }
             }
         }
     }
@@ -937,12 +998,17 @@ struct SearchSettingsPage: View {
         keyInput = ""
         Task {
             await SearchEngine.saveKey(value, for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
-            keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
+            let stored = await SearchEngine.readKey(for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
             guard selected == target, selectionVersion == version else { return }
             if target == .searxng {
                 guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
             }
-            savedMasked = SearchEngine.mask(value)
+            if stored.isEmpty {
+                keyedProviders.remove(target)
+            } else {
+                keyedProviders.insert(target)
+            }
+            savedMasked = SearchEngine.mask(stored)
             keyNotice = L.t("searchSettings.keySavedNotice")
             testResult = nil
             Haptics.thud()
@@ -960,12 +1026,17 @@ struct SearchSettingsPage: View {
         keyInput = ""
         Task {
             await SearchEngine.saveKey("", for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
-            keyedProviders = await SearchEngine.keyPresence(searxngURL: savedSearxngURL)
+            let stored = await SearchEngine.readKey(for: target, searxngURL: target == .searxng ? targetSearxngURL : nil)
             guard selected == target, selectionVersion == version else { return }
             if target == .searxng {
                 guard activeSearxngOrigin == expectedOrigin, originVersion == expectedOriginVersion else { return }
             }
-            savedMasked = ""
+            if stored.isEmpty {
+                keyedProviders.remove(target)
+            } else {
+                keyedProviders.insert(target)
+            }
+            savedMasked = SearchEngine.mask(stored)
             keyNotice = L.format("searchSettings.keyClearedNotice", target.shortName)
             testResult = nil
             Haptics.lock()

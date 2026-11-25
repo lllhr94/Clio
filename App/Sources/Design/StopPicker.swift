@@ -18,6 +18,7 @@ struct StopRow<Value: Hashable>: View {
     /// The detail under the current value in the row, when it helps (like how much that 档位 is for this model).
     var line: String? = nil
     var opensForShot = false
+    var onEditingChanged: ((Bool) -> Void)? = nil
     @State private var open = false
 
     var body: some View {
@@ -55,10 +56,10 @@ struct StopRow<Value: Hashable>: View {
             // No title inside: the row it opens from already says what it is, and the card stays short enough
             // to fit above or below the row (the system picks the side with room).
             ViewThatFits(in: .vertical) {
-                StopRuler(value: $value, stops: stops, name: title)
+                StopRuler(value: $value, stops: stops, name: title, onEditingChanged: onEditingChanged)
                     .fixedSize()
                 ScrollView(.vertical, showsIndicators: false) {
-                    StopRuler(value: $value, stops: stops, name: title)
+                    StopRuler(value: $value, stops: stops, name: title, onEditingChanged: onEditingChanged)
                 }
                 .frame(maxHeight: 340)
             }
@@ -76,11 +77,16 @@ struct StopRuler<Value: Hashable>: View {
     let stops: [Stop<Value>]
     /// What VoiceOver calls it when no title is shown.
     var name: String? = nil
+    var onEditingChanged: ((Bool) -> Void)? = nil
+
+    @State private var lockedGeometry: (step: CGFloat, width: CGFloat)?
 
     /// Long rulers (a pet's ten sizes, a model's eight windows) use shorter stops so the card stays on screen.
-    private var step: CGFloat { (stops.count > 6 ? 28 : 32) * UIScale.factor }
+    private var liveStep: CGFloat { (stops.count > 6 ? 28 : 32) * UIScale.factor }
     /// A slim bar: the names do the telling, the bar is what the thumb runs along.
-    private var width: CGFloat { 26 * UIScale.factor }
+    private var liveWidth: CGFloat { 26 * UIScale.factor }
+    private var step: CGFloat { lockedGeometry?.step ?? liveStep }
+    private var width: CGFloat { lockedGeometry?.width ?? liveWidth }
     private var index: Int { stops.firstIndex { $0.value == value } ?? 0 }
 
     // 主人定: names on the left, the bar on the right where the right thumb is; a small card with room around the
@@ -107,6 +113,12 @@ struct StopRuler<Value: Hashable>: View {
             }
         }
         .padding(Ink.Space.l)
+        .onDisappear {
+            if lockedGeometry != nil {
+                lockedGeometry = nil
+                onEditingChanged?(false)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title ?? name ?? "")
         .accessibilityValue(stops.indices.contains(index) ? stops[index].name : "")
@@ -139,8 +151,21 @@ struct StopRuler<Value: Hashable>: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { drag in
-                    let fromTop = Int((drag.location.y / step).rounded(.down))
+                    let activeStep: CGFloat
+                    if let locked = lockedGeometry {
+                        activeStep = locked.step
+                    } else {
+                        let snapshot = (step: liveStep, width: liveWidth)
+                        lockedGeometry = snapshot
+                        activeStep = snapshot.step
+                        onEditingChanged?(true)
+                    }
+                    let fromTop = Int((drag.location.y / activeStep).rounded(.down))
                     pick(stops.count - 1 - fromTop)
+                }
+                .onEnded { _ in
+                    lockedGeometry = nil
+                    onEditingChanged?(false)
                 }
         )
     }

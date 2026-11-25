@@ -117,19 +117,40 @@ extension TeamModel {
         }
     }
 
+    private static var morningScheduleTask: Task<Void, Never>?
+
     /// The daily nudge, at the hour the user chose; opening it lets the letter be written.
+    /// Debounced so rapid StopRow / toggle interactions do not thrash `UNUserNotificationCenter`.
     static func scheduleMorning() {
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ["clio.morning"])
-        guard Pref.morningOn else { return }
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-        let content = UNMutableNotificationContent()
-        content.title = L.t("agent.morningBrief")
-        content.body = Words.t("新的一天，打开看看旅伴给你写了什么。")
-        content.sound = .default
-        var parts = DateComponents()
-        parts.hour = Pref.morningHour
-        parts.minute = 0
-        center.add(UNNotificationRequest(identifier: "clio.morning", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
+        morningScheduleTask?.cancel()
+        morningScheduleTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+            applyMorningSchedule()
+        }
+    }
+
+    private static func applyMorningSchedule() {
+        let enabled = Pref.morningOn
+        let hour = Pref.morningHour
+        let title = L.t("agent.morningBrief")
+        let body = Words.t("新的一天，打开看看旅伴给你写了什么。")
+        Task.detached(priority: .utility) {
+            let center = UNUserNotificationCenter.current()
+            center.removePendingNotificationRequests(withIdentifiers: ["clio.morning"])
+            guard enabled else { return }
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            var parts = DateComponents()
+            parts.hour = hour
+            parts.minute = 0
+            center.add(UNNotificationRequest(identifier: "clio.morning", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
+        }
     }
 }
