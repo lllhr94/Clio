@@ -87,7 +87,7 @@ struct PetPerchAnchor: UIViewRepresentable {
         private var window: Surface?
         private var link: CADisplayLink?
         private lazy var sheetPan: UIPanGestureRecognizer = {
-            let pan = UIPanGestureRecognizer(target: self, action: #selector(sheetMoved))
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(sheetMoved(_:)))
             pan.delegate = self
             pan.cancelsTouchesInView = false
             pan.delaysTouchesBegan = false
@@ -106,13 +106,17 @@ struct PetPerchAnchor: UIViewRepresentable {
         private var keyboardDuration: CFTimeInterval = 0.24
         private var keyboardUntil: CFTimeInterval = 0
         private var wasMenuActive = false
+        private weak var activeSheetHost: UIView?
+        private var lastSheetHostY: CGFloat?
+        private var sheetDragActive = false
+        private var systemAlertWindowByClass: [ObjectIdentifier: Bool] = [:]
 
         init(_ perch: PetPerch) {
             self.perch = perch
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(keyboard),
                                                    name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-            for event in [UIWindow.didBecomeKeyNotification, UIWindow.didResignKeyNotification] {
+            for event in [UIWindow.didBecomeKeyNotification, UIWindow.didResignKeyNotification, UIWindow.didBecomeHiddenNotification] {
                 NotificationCenter.default.addObserver(self, selector: #selector(windowChanged), name: event, object: nil)
             }
         }
@@ -154,7 +158,7 @@ struct PetPerchAnchor: UIViewRepresentable {
             }
             if link == nil {
                 let clock = CADisplayLink(target: Clock(self), selector: #selector(Clock.beat(_:)))
-                clock.preferredFramesPerSecond = 60
+                clock.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
                 clock.add(to: .main, forMode: .common)
                 link = clock
                 wake()
@@ -173,6 +177,10 @@ struct PetPerchAnchor: UIViewRepresentable {
             travelStart = nil
             catchUp = nil
             wasMenuActive = false
+            activeSheetHost = nil
+            lastSheetHostY = nil
+            sheetDragActive = false
+            awakeUntil = 0
         }
 
         private func wake() {
@@ -200,10 +208,46 @@ struct PetPerchAnchor: UIViewRepresentable {
 
         @objc private func windowChanged() { wake() }
 
-        @objc private func sheetMoved() { wake() }
+        @objc private func sheetMoved(_ pan: UIPanGestureRecognizer) {
+            guard let source = marker?.window,
+                  let host = activeSheetHost,
+                  host.window === source else { return }
+            let currentY = origin(of: host, in: source).y
+            let moved = lastSheetHostY.map { abs(currentY - $0) > 0.25 } ?? false
+            switch pan.state {
+            case .began:
+                sheetDragActive = moved
+                if moved { wake() }
+            case .changed:
+                if moved {
+                    sheetDragActive = true
+                    wake()
+                }
+            case .ended, .cancelled, .failed:
+                if sheetDragActive || moved {
+                    sheetDragActive = false
+                    wake()
+                }
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            activeSheetHost != nil
+        }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+            activeSheetHost != nil
+        }
+
+        private func isSystemAlertWindow(_ other: UIWindow) -> Bool {
+            let typeID = ObjectIdentifier(type(of: other))
+            if let cached = systemAlertWindowByClass[typeID] { return cached }
+            let name = NSStringFromClass(type(of: other))
+            let isSystem = name.contains("Keyboard") || name.contains("TextEffects")
+            systemAlertWindowByClass[typeID] = isSystem
+            return isSystem
         }
 
         private func watchSheetDrag(in source: UIWindow, active: Bool) {
@@ -239,15 +283,36 @@ struct PetPerchAnchor: UIViewRepresentable {
                 isBottomSheet = showingSheet
             }
             let blocked = covered || (presented != nil && !isBottomSheet)
-            watchSheetDrag(in: source, active: host != nil && isBottomSheet && !blocked)
+            let watchSheet = host != nil && isBottomSheet && !blocked
+            watchSheetDrag(in: source, active: watchSheet)
+            if watchSheet, let host {
+                activeSheetHost = host
+                lastSheetHostY = origin(of: host, in: source).y
+            } else {
+                activeSheetHost = nil
+                lastSheetHostY = nil
+                sheetDragActive = false
+            }
             if perch.suppressed != (quiet || blocked) { perch.suppressed = quiet || blocked }
+
+            if blocked {
+                window.isHidden = true
+                previousTop = nil
+                travelStart = nil
+                catchUp = nil
+                wasMenuActive = false
+                if perch.rising { perch.rising = false }
+                if perch.travelling { perch.travelling = false }
+                awakeUntil = 0
+                clock.isPaused = true
+                return
+            }
 
             let sceneWindows = source.windowScene?.windows ?? []
             // Only Clio's own covers (lock curtain, always-on) count; the system keyboard windows also sit above .alert.
             let alertCovering = sceneWindows.contains { other in
                 guard other !== window, !other.isHidden, other.alpha > 0.01, other.windowLevel >= .alert else { return false }
-                let kind = String(describing: type(of: other))
-                return !kind.contains("Keyboard") && !kind.contains("TextEffects")
+                return !isSystemAlertWindow(other)
             }
             let menuOpen = window.hasContextMenu
             let menuActive = menuOpen || window.isKeyWindow
@@ -262,7 +327,7 @@ struct PetPerchAnchor: UIViewRepresentable {
             let composer = markerOrigin.y
             let top = min(composer, isBottomSheet ? host.map { self.origin(of: $0, in: source).y } ?? composer : composer)
             if perch.chatOffset != markerOrigin.x { perch.chatOffset = markerOrigin.x }
-            if sourceActive, composer > 0, !blocked {
+            if sourceActive, composer > 0 {
                 move(to: max(0, top), at: now, calm: UIAccessibility.isReduceMotionEnabled)
                 if window.isHidden { window.isHidden = false }
             } else {
@@ -271,6 +336,12 @@ struct PetPerchAnchor: UIViewRepresentable {
                 travelStart = nil
                 catchUp = nil
                 if perch.rising { perch.rising = false }
+                if perch.travelling { perch.travelling = false }
+                if alertCovering || (!sourceActive && presented != nil) {
+                    awakeUntil = 0
+                    clock.isPaused = true
+                    return
+                }
             }
             // A new drag, keyboard notification or layout change wakes the sampler from rest.
             if now > awakeUntil, catchUp == nil, travelStart == nil, !menuOpen {

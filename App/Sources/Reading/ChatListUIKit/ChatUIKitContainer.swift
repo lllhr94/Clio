@@ -399,12 +399,9 @@ struct ChatUIKitContainer<Minimap: View>: View {
     }
 
     private var styleSignal: String {
-        let theme = Theme.shared
-        let scale = UIScale.shared.value
-        let fontGen = FontShelf.shared.generation
         let darkFlag = colorScheme == .dark ? 1 : 0
         let motionFlag = reduceMotion ? 1 : 0
-        return "\(theme.key)|\(theme.face.rawValue)|\(theme.code.rawValue)|\(theme.size)|\(theme.lineHeight)|\(theme.white)|\(theme.oled)|\(theme.bubble)|\(theme.fontsArrived)|\(scale)|\(fontGen)|\(darkFlag)|\(motionFlag)|\(dynamicTypeSize)"
+        return "\(darkFlag)|\(motionFlag)|\(dynamicTypeSize)"
     }
 
     private var doing: String? {
@@ -470,7 +467,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 }
                 .overlay(alignment: .trailing) { minimap() }
 
-            topPaperFade
+            ChatTopPaperFadeView(safeTopInset: safeTopInset, headerHeight: headerHeight)
         }
         .onChange(of: followState.following, initial: true) { _, resting in
             petPerch.avoidsReplies = resting
@@ -482,9 +479,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         if let photoZoomNamespace, !reduceMotion, fullFrame.height > 0 {
             let localRect = resolvedHeroLocalRect
             let heroID = photoHero?.id ?? "__clio-photo-hero-idle__"
-            photoHeroPreviewContent
-                .frame(width: localRect.width, height: localRect.height)
-                .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            ChatPhotoHeroPreviewView(image: photoHero?.image, size: localRect.size)
                 .modifier(PhotoZoomSourceModifier(id: heroID, namespace: photoZoomNamespace, enabled: true))
                 .position(x: localRect.midX, y: localRect.midY)
                 .ignoresSafeArea()
@@ -503,39 +498,6 @@ struct ChatUIKitContainer<Minimap: View>: View {
             width: max(1, hero.globalRect.width),
             height: max(1, hero.globalRect.height)
         )
-    }
-
-    @ViewBuilder
-    private var photoHeroPreviewContent: some View {
-        if let thumb = photoHero?.image {
-            Image(uiImage: thumb)
-                .resizable()
-                .scaledToFill()
-        } else {
-            Ink.paperRaised.opacity(0.7)
-        }
-    }
-
-    private var topPaperFade: some View {
-        let topBarExtent = max(safeTopInset, headerHeight)
-        let fadeTail = Ink.Space.l
-        let totalHeight = topBarExtent + fadeTail
-        let holdStop = totalHeight > 0 ? min(0.95, topBarExtent / totalHeight) : 0
-        return VStack(spacing: 0) {
-            LinearGradient(
-                stops: [
-                    .init(color: Ink.paper, location: 0),
-                    .init(color: Ink.paper, location: holdStop),
-                    .init(color: Ink.paper.opacity(0), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: totalHeight)
-            Spacer(minLength: 0)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
     }
 
     private func makeEmptyStatusAnyView() -> AnyView {
@@ -927,5 +889,53 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             self.lastStyleSignal = lastStyleSignal
             self.lastSyncedFollowing = lastSyncedFollowing
         }
+    }
+}
+
+/// Isolated top paper gradient so `ChatUIKitContainer.body` does not subscribe to `Theme.shared` or `UIScale.shared`.
+private struct ChatTopPaperFadeView: View {
+    let safeTopInset: CGFloat
+    let headerHeight: CGFloat
+
+    var body: some View {
+        let topBarExtent = max(safeTopInset, headerHeight)
+        let fadeTail = Ink.Space.l
+        let totalHeight = topBarExtent + fadeTail
+        let holdStop = totalHeight > 0 ? min(0.95, topBarExtent / totalHeight) : 0
+        VStack(spacing: 0) {
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper, location: 0),
+                    .init(color: Ink.paper, location: holdStop),
+                    .init(color: Ink.paper.opacity(0), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: totalHeight)
+            Spacer(minLength: 0)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
+/// Isolated hero fallback view so `ChatUIKitContainer.body` does not read `Ink.paperRaised` or `Ink.Radius.small`.
+private struct ChatPhotoHeroPreviewView: View {
+    let image: UIImage?
+    let size: CGSize
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Ink.paperRaised.opacity(0.7)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 }

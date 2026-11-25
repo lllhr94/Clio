@@ -1295,7 +1295,7 @@ struct Desk: View {
                     .buttonStyle(PressStyle(haptic: false))
                     .contextMenu {
                         Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardBot = bot }
-                        ShareLink(item: NameCard.file(for: bot)) { Label(Words.t("递名帖"), systemImage: "square.and.arrow.up") }
+                        ShareLink(item: NameCardTransfer(bot: bot), preview: SharePreview(bot.name)) { Label(Words.t("递名帖"), systemImage: "square.and.arrow.up") }
                     }
                 }
                 Button {

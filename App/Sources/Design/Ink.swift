@@ -598,9 +598,12 @@ struct PressStyle: ButtonStyle {
 extension View {
     /// A card that reads as paper: a raised sheet with a hairline edge.
     func paperCard(radius: CGFloat = Ink.Radius.card) -> some View {
-        background(Ink.paperRaised, in: .rect(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Ink.rule.opacity(0.7), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
+        background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Ink.paperRaised)
+                .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
+        }
+        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Ink.rule.opacity(0.7), lineWidth: 0.5))
     }
 
     /// A small glass capsule: only for controls that float above content.

@@ -2,8 +2,8 @@ import Foundation
 import Security
 
 /// What the home-screen widget shows: one companion, what it is doing, the last thing it said.
-struct WidgetSnapshot: Codable, Equatable {
-    enum Kind: String, Codable, Equatable {
+struct WidgetSnapshot: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Equatable, Sendable {
         case idle, working, waiting
     }
 
@@ -40,8 +40,8 @@ struct WidgetSnapshot: Codable, Equatable {
 enum Shelf {
     private static let account = "widget.snapshot"
 
-    /// The team prefix this copy was signed with (TEAMID.), read off a keychain item in the default group.
-    private static var prefix: String? {
+    /// The team prefix this copy was signed with (TEAMID.), probed once per process and cached thread-safely.
+    private static let cachedPrefix: String? = {
         let probe: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: "shelf.probe",
@@ -61,7 +61,9 @@ enum Shelf {
         guard status == errSecSuccess, let attributes = found as? [String: Any],
               let group = attributes[kSecAttrAccessGroup as String] as? String, let dot = group.firstIndex(of: ".") else { return nil }
         return String(group[...dot])
-    }
+    }()
+
+    private static var prefix: String? { cachedPrefix }
 
     private static var group: String? { prefix.map { $0 + "io.github.lllhr94.clio.shared" } }
 
