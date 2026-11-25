@@ -16,6 +16,7 @@ struct FormSheet: View {
     @State private var customOpenKeys: Set<String> = []
     @State private var limitWarningKey: String?
     @State private var submitError: String?
+    @State private var isSubmitting = false
 
     private var activeValidationError: String? {
         AskSheetLogic.activeInputError(for: form.fields) { field in
@@ -70,11 +71,12 @@ struct FormSheet: View {
                         Haptics.light()
                         Asker.shared.cancel(form.id)
                     }
+                    .disabled(isSubmitting)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.submitForm")) { send() }
                         .fontWeight(.semibold)
-                        .disabled(!canSubmit)
+                        .disabled(isSubmitting || !canSubmit)
                 }
             }
         }
@@ -320,6 +322,7 @@ struct FormSheet: View {
     /// Plain values go back as typed; secrets are kept in 信匣 and go back as `secret:<id>`.
     /// Validates ALL non-secret fields BEFORE saving any secret into Vault/Keychain.
     private func send() {
+        guard !isSubmitting else { return }
         if let error = AskSheetLogic.validateAllNonSecretFields(fields: form.fields, responseProvider: validationResponseForSend) {
             submitError = error.userMessage
             Haptics.light()
@@ -328,6 +331,7 @@ struct FormSheet: View {
         submitError = nil
 
         var out: [String: String] = [:]
+        var pendingSecrets: [(item: Secrets.Item, secret: String)] = []
         let rawUser = plainMetadataValue(forKeys: ["user", "username", "account"])
         let rawAddress = plainMetadataValue(forKeys: ["address"])
         let cleanFormSite = AskUserRules.redactURLCredentials(in: form.site)
@@ -354,7 +358,7 @@ struct FormSheet: View {
                         user: safeUser,
                         note: "由\(form.from)请你填写时存下"
                     )
-                    Secrets.shared.save(item, secret: value)
+                    pendingSecrets.append((item: item, secret: value))
                     out[field.key] = "secret:\(item.id)"
                 } else {
                     out[field.key] = ""
@@ -369,7 +373,26 @@ struct FormSheet: View {
                 out[field.key] = AskSheetLogic.encodedNonSecretField(field, response: response)
             }
         }
-        Haptics.thud()
-        Asker.shared.answer(out, to: form.id)
+        let finalOut = out
+        let formID = form.id
+        guard !pendingSecrets.isEmpty else {
+            Haptics.thud()
+            Asker.shared.answer(finalOut, to: formID)
+            return
+        }
+        isSubmitting = true
+        let entriesToWrite = pendingSecrets
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                for entry in entriesToWrite {
+                    Vault.save(entry.secret, as: "secret.\(entry.item.id)")
+                }
+            }.value
+            for entry in entriesToWrite {
+                secrets.save(entry.item, secret: nil)
+            }
+            Haptics.thud()
+            Asker.shared.answer(finalOut, to: formID)
+        }
     }
 }

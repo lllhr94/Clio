@@ -21,7 +21,7 @@ struct SecretsPage: View {
                         if secrets.items.isEmpty {
                             EmptyNote(symbol: "lock.rectangle.stack", words: L.t("empty.vault"))
                         } else {
-                            VStack(spacing: 0) {
+                            LazyVStack(spacing: 0) {
                                 ForEach(secrets.items) { item in
                                     row(item)
                                     if item.id != secrets.items.last?.id { Kit.divider }
@@ -52,10 +52,7 @@ struct SecretsPage: View {
                 Button(L.t("actions.delete"), role: .destructive) {
                     guard let target = pendingDelete else { return }
                     pendingDelete = nil
-                    Task {
-                        guard await Secrets.unlock("删除「\(target.title)」") else { return }
-                        withAnimation(.smooth) { secrets.remove(target) }
-                    }
+                    deleteSecret(target)
                 }
                 Button(L.t("actions.cancel"), role: .cancel) { pendingDelete = nil }
             } message: {
@@ -93,18 +90,10 @@ struct SecretsPage: View {
         }
         .contextMenu {
             Button(revealed[item.id] == nil ? L.t("actions.showPassword") : L.t("actions.hidePassword"), systemImage: "eye") {
-                if revealed[item.id] != nil { revealed[item.id] = nil; return }
-                Task {
-                    guard await Secrets.unlock("看「\(item.title)」的密码") else { return }
-                    revealed[item.id] = Secrets.secret(item.id) ?? "（没存密码）"
-                }
+                toggleReveal(for: item)
             }
             Button(L.t("actions.copyPassword"), systemImage: "doc.on.doc") {
-                Task {
-                    guard await Secrets.unlock("复制「\(item.title)」的密码"), let secret = Secrets.secret(item.id) else { return }
-                    UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: secret]], options: [.expirationDate: Date().addingTimeInterval(90), .localOnly: true])
-                    Haptics.tick(0.6)
-                }
+                copySecret(for: item)
             }
             if !item.user.isEmpty {
                 Button(L.t("actions.copyUserName"), systemImage: "person") { UIPasteboard.general.string = item.user }
@@ -118,6 +107,54 @@ struct SecretsPage: View {
             Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { pendingDelete = item }
         }
     }
+
+    private func deleteSecret(_ target: Secrets.Item) {
+        let id = target.id
+        let title = target.title
+        Task {
+            guard await Secrets.unlock("删除「\(title)」") else { return }
+            await Task.detached(priority: .userInitiated) {
+                Vault.remove("secret.\(id)")
+            }.value
+            withAnimation(.smooth) {
+                revealed.removeValue(forKey: id)
+                secrets.remove(target)
+            }
+        }
+    }
+
+    private func toggleReveal(for item: Secrets.Item) {
+        if revealed[item.id] != nil {
+            revealed[item.id] = nil
+            return
+        }
+        let id = item.id
+        let title = item.title
+        Task {
+            guard await Secrets.unlock("看「\(title)」的密码") else { return }
+            let value = await Task.detached(priority: .userInitiated) {
+                Secrets.secret(id)
+            }.value
+            revealed[id] = value ?? "（没存密码）"
+        }
+    }
+
+    private func copySecret(for item: Secrets.Item) {
+        let id = item.id
+        let title = item.title
+        Task {
+            guard await Secrets.unlock("复制「\(title)」的密码") else { return }
+            let secret = await Task.detached(priority: .userInitiated) {
+                Secrets.secret(id)
+            }.value
+            guard let secret else { return }
+            UIPasteboard.general.setItems(
+                [[UIPasteboard.typeAutomatic: secret]],
+                options: [.expirationDate: Date().addingTimeInterval(90), .localOnly: true]
+            )
+            Haptics.tick(0.6)
+        }
+    }
 }
 
 private extension String {
@@ -128,6 +165,8 @@ private struct SecretEditor: View {
     @State var item: Secrets.Item
     @State private var secret = ""
     @State private var showing = false
+    @State private var hasStoredSecret: Bool?
+    @State private var saving = false
     @Environment(\.dismiss) private var dismiss
 
     private var isNew: Bool { !Secrets.shared.items.contains { $0.id == item.id } }
@@ -162,20 +201,52 @@ private struct SecretEditor: View {
             .navigationTitle(isNew ? L.t("vault.newItem") : item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                        .disabled(saving)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(L.t("actions.save")) {
-                        Secrets.shared.save(item, secret: secret.isEmpty ? nil : secret)
-                        Haptics.thud()
-                        dismiss()
-                    }
-                    .disabled(item.title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button(L.t("actions.save")) { save() }
+                        .disabled(saving || item.title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+        }
+        .interactiveDismissDisabled(saving)
+        .task(id: item.id) {
+            if isNew {
+                hasStoredSecret = false
+                return
+            }
+            let exists = await Self.storedSecretExists(id: item.id)
+            guard !Task.isCancelled else { return }
+            hasStoredSecret = exists
         }
     }
 
     private var placeholder: String {
-        isNew || Secrets.secret(item.id) == nil ? "密码 / 令牌" : "密码（已存，不改就留空）"
+        (isNew || hasStoredSecret != true) ? "密码 / 令牌" : "密码（已存，不改就留空）"
+    }
+
+    private func save() {
+        guard !saving else { return }
+        saving = true
+        let itemToSave = item
+        let secretToSave = secret.isEmpty ? nil : secret
+        Task {
+            if let secretToSave {
+                await Task.detached(priority: .userInitiated) {
+                    Vault.save(secretToSave, as: "secret.\(itemToSave.id)")
+                }.value
+            }
+            Secrets.shared.save(itemToSave, secret: nil)
+            Haptics.thud()
+            dismiss()
+        }
+    }
+
+    private nonisolated static func storedSecretExists(id: String) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            Secrets.secret(id) != nil
+        }.value
     }
 }
