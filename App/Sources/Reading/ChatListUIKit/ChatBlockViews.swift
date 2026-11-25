@@ -1606,7 +1606,7 @@ final class ChatFileCardsBlockView: UIView {
             setNeedsLayout()
         }
         if let vc = presentedViewerVC {
-            let mountRevoked = presentedViewerMount.map { !$0.isCurrent } ?? false
+            let mountRevoked = presentedViewerMount.map { !MountedFolders.isCurrent($0) } ?? false
             let activeMissing = presentedViewerPath.map { path in
                 !cardViews.prefix(currentLinks.count).contains { $0.link.path == path && $0.activeResolved != nil }
             } ?? true
@@ -2099,7 +2099,7 @@ final class ChatProsePictureView: UIView {
             }
         }
         if let vc = presentedViewerVC {
-            let mountRevoked = presentedViewerMount.map { !$0.isCurrent } ?? false
+            let mountRevoked = presentedViewerMount.map { !MountedFolders.isCurrent($0) } ?? false
             let becameInvalid = presentedViewerMount != nil && activeWorkspaceRef == nil
             if mountRevoked || becameInvalid {
                 if vc.presentingViewController != nil {

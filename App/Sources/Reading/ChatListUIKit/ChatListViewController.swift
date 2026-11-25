@@ -2941,10 +2941,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }.value
             guard let self else { return }
             self.tracePrewarmTasks.removeValue(forKey: taskID)
+            guard !Task.isCancelled, !self.isDismantled else { return }
             for line in lines {
                 self.inFlightTracePrewarmIDs.remove(line.id)
             }
-            guard !Task.isCancelled, !self.isDismantled else { return }
             guard (self.currentState?.chatKey ?? self.actions.chat.key) == expectedChatKey else { return }
             var becameEligibleIDs: [ChatListItemID] = []
             for (line, payload) in payloads {
