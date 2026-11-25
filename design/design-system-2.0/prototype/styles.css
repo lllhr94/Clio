@@ -1131,11 +1131,11 @@ html, body {
 }
 .plan-card.open .plan-body { max-height: 170px; padding-bottom: 10px; }
 
-/* Pet Stage sitting strictly on composer top edge */
+/* Pet Stage sitting strictly on top edge of topmost dock bar (PlanCard / Composer) */
 .pet-stage-band {
   position: relative;
   height: 44px;
-  margin-bottom: -4px;
+  margin-bottom: -8px;
   pointer-events: none;
   z-index: 28;
 }

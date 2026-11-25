@@ -3630,6 +3630,24 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     const showDenInput = state.scene === "roam_den" && state.roamSub === "den" && state.viewState === "normal";
 
     let html = "";
+    if (showComposer && isPetVisibleNow()) {
+      const petSide = Math.round(44 * state.petSizeFactor);
+      const pxLeft = `calc(22px + (100% - ${petSide + 40}px) * ${state.petX})`;
+      const bubbleLeft = `clamp(112px, ${pxLeft}, calc(100% - 112px))`;
+      const petVisual = (state.petActiveId === "custom" && state.petCustomPhoto)
+        ? `<img src="${state.petCustomPhoto}" alt="${escHtml(activePetDisplayName())}" style="width:${petSide}px;height:${petSide}px;object-fit:cover;border-radius:12px;display:block;border:1px solid var(--rule);" />`
+        : `<canvas class="pet-canvas" id="petMainCanvas" data-pet-canvas="1" data-pet-id="${escHtml(state.petActiveId)}" width="48" height="48" style="width:${petSide}px;height:${petSide}px;"></canvas>`;
+      const breatheCls = (state.petActiveId === "custom" && state.petCustomBreathe) ? "breathe-custom" : "";
+      html += `
+        <div class="pet-stage-band" id="petStageBand" style="height:${petSide}px;">
+          ${state.petBubble ? `<div class="pet-bubble" id="petBubble" style="left:${bubbleLeft}; bottom:${petSide + 4}px;"><span class="pet-bubble-link" id="petBubbleLink">${escHtml(state.petBubble.text)} ›</span><button type="button" class="pet-bubble-close" id="petBubbleClose" aria-label="关闭">✕</button></div>` : ""}
+          <div class="pet-actor ${breatheCls}" id="petActor" data-pet-side="${petSide}" style="left:${pxLeft}; width:${petSide}px; height:${petSide}px;" title="${escHtml(activePetDisplayName())}：只可水平拽，轻点或三连戳">
+            ${petVisual}
+          </div>
+        </div>
+      `;
+    }
+
     if (showPlan) {
       html += `
         <div class="plan-card ${state.planOpen ? "open" : ""}" id="planCard">
@@ -3646,24 +3664,6 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
               <div style="color:var(--accent); font-weight:600;">◉ 等待 InlineAsk 提交范围并生成批准单</div>
               <div style="color:var(--ink-secondary);">○ 打包发布至 probe 分支真机验收</div>
             </div>
-          </div>
-        </div>
-      `;
-    }
-
-    if (showComposer && isPetVisibleNow()) {
-      const petSide = Math.round(44 * state.petSizeFactor);
-      const pxLeft = `calc(22px + (100% - ${petSide + 40}px) * ${state.petX})`;
-      const bubbleLeft = `clamp(112px, ${pxLeft}, calc(100% - 112px))`;
-      const petVisual = (state.petActiveId === "custom" && state.petCustomPhoto)
-        ? `<img src="${state.petCustomPhoto}" alt="${escHtml(activePetDisplayName())}" style="width:${petSide}px;height:${petSide}px;object-fit:cover;border-radius:12px;display:block;border:1px solid var(--rule);" />`
-        : `<canvas class="pet-canvas" id="petMainCanvas" data-pet-canvas="1" data-pet-id="${escHtml(state.petActiveId)}" width="48" height="48" style="width:${petSide}px;height:${petSide}px;"></canvas>`;
-      const breatheCls = (state.petActiveId === "custom" && state.petCustomBreathe) ? "breathe-custom" : "";
-      html += `
-        <div class="pet-stage-band" id="petStageBand" style="height:${petSide}px;">
-          ${state.petBubble ? `<div class="pet-bubble" id="petBubble" style="left:${bubbleLeft}; bottom:${petSide + 4}px;"><span class="pet-bubble-link" id="petBubbleLink">${escHtml(state.petBubble.text)} ›</span><button type="button" class="pet-bubble-close" id="petBubbleClose" aria-label="关闭">✕</button></div>` : ""}
-          <div class="pet-actor ${breatheCls}" id="petActor" data-pet-side="${petSide}" style="left:${pxLeft}; width:${petSide}px; height:${petSide}px;" title="${escHtml(activePetDisplayName())}：只可水平拽，轻点或三连戳">
-            ${petVisual}
           </div>
         </div>
       `;
