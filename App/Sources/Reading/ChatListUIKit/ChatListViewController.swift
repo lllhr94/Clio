@@ -37,6 +37,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private let prewarmGate = ChatPrewarmGate()
     private var prewarmTask: Task<Void, Never>?
     private var prewarmToken: ChatPrefetchToken?
+    private struct JumpPrewarmKey: Equatable {
+        let section: Int
+        let itemID: ChatListItemID
+        let itemCount: Int
+        let widthKey: Int
+        let styleKey: String
+        let chatKey: String
+    }
+    private var jumpPrewarmGeneration: UInt64 = 0
+    private let jumpPrewarmGate = ChatPrewarmGate()
+    private var jumpPrewarmTask: Task<Void, Never>?
+    private var jumpPrewarmToken: ChatPrefetchToken?
+    private var lastJumpPrewarmKey: JumpPrewarmKey?
     private var scrollDirection: Int = -1
     private var pendingDynamicOwnerIDs: Set<String> = []
 
@@ -195,6 +208,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         prewarmTask?.cancel()
         if let prewarmToken {
             ChatTextTileRenderer.shared.cancelPrefetch(token: prewarmToken)
+        }
+        jumpPrewarmTask?.cancel()
+        if let jumpPrewarmToken {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: jumpPrewarmToken)
         }
         for task in tracePrewarmTasks.values {
             task.cancel()
@@ -1117,6 +1134,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         rowByID = nextRowMap
         if prev.rows != next.rows {
             rebuildTurnUserIndex()
+            lastJumpPrewarmKey = nil
         }
         let width = max(240, collectionView.bounds.width)
         var layoutMayHaveChanged = false
@@ -2221,6 +2239,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func performScrollToRow(section: Int, anchor: UnitPoint, animated: Bool) {
+        prewarmAroundSection(section)
         let indexPath = IndexPath(item: 0, section: section)
         collectionView.layoutIfNeeded()
         guard let attrs = resolvedLayoutAttributes(at: indexPath) else { return }
@@ -2854,6 +2873,97 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         launchPrewarm(prioritySections: prioritySections, secondarySections: secondarySections, width: width, style: style)
     }
 
+    func prewarmAroundRow(id: String) {
+        guard !isDismantled,
+              isViewLoaded,
+              collectionView != nil,
+              collectionView.bounds.width > 0,
+              let section = itemIndexByID[.line(id)] else {
+            return
+        }
+        prewarmAroundSection(section)
+    }
+
+    private func prewarmAroundSection(_ centerSection: Int) {
+        guard !isDismantled,
+              isViewLoaded,
+              collectionView != nil,
+              collectionView.bounds.width > 0,
+              let style = currentStyle,
+              centerSection >= 0,
+              centerSection < items.count else {
+            return
+        }
+        let width = max(240, collectionView.bounds.width)
+        let key = JumpPrewarmKey(
+            section: centerSection,
+            itemID: items[centerSection],
+            itemCount: items.count,
+            widthKey: Int(width.rounded()),
+            styleKey: style.styleKey,
+            chatKey: currentState?.chatKey ?? actions.chat.key
+        )
+        if key == lastJumpPrewarmKey {
+            return
+        }
+
+        cancelJumpPrewarm()
+        lastJumpPrewarmKey = key
+
+        let lower = max(0, centerSection - 6)
+        let upper = min(items.count - 1, centerSection + 10)
+        var orderedSections: [Int] = []
+        orderedSections.reserveCapacity(upper - lower + 1)
+        orderedSections.append(centerSection)
+        let maxOffset = max(centerSection - lower, upper - centerSection)
+        if maxOffset > 0 {
+            for offset in 1...maxOffset {
+                let forward = centerSection + offset
+                if forward <= upper {
+                    orderedSections.append(forward)
+                }
+                let backward = centerSection - offset
+                if backward >= lower {
+                    orderedSections.append(backward)
+                }
+            }
+        }
+
+        prewarmTraceRows(in: orderedSections)
+
+        var jobs: [ChatPrefetchWorker.Job] = []
+        jobs.reserveCapacity(orderedSections.count)
+        for section in orderedSections {
+            if let job = makeBackgroundJob(forSection: section, width: width, style: style) {
+                jobs.append(job)
+            }
+        }
+        guard !jobs.isEmpty else { return }
+
+        let generation = jumpPrewarmGeneration
+        let gate = jumpPrewarmGate
+        let token = ChatPrefetchToken()
+        jumpPrewarmToken = token
+        let cache = layoutCache
+        let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
+        let palette = ChatTextRenderPalette.make(style: style)
+
+        jumpPrewarmTask = Task.detached(priority: .userInitiated) {
+            ChatPrefetchWorker.runPrewarm(
+                priorityJobs: jobs,
+                secondaryTileJobs: [],
+                secondaryLayoutOnlyJobs: [],
+                layoutCache: cache,
+                scale: scale,
+                palette: palette,
+                token: token,
+                gate: gate,
+                generation: generation,
+                priorityTileQueuePriority: .high
+            )
+        }
+    }
+
     private func launchPrewarm(
         prioritySections: [Int],
         secondarySections: [Int],
@@ -2975,6 +3085,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         prewarmGeneration = prewarmGate.advance()
         prewarmTask?.cancel()
         prewarmTask = nil
+        cancelJumpPrewarm()
         for task in tracePrewarmTasks.values {
             task.cancel()
         }
@@ -2984,6 +3095,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ChatTextTileRenderer.shared.cancelPrefetch(token: token)
             prewarmToken = nil
         }
+    }
+
+    private func cancelJumpPrewarm() {
+        jumpPrewarmGeneration = jumpPrewarmGate.advance()
+        jumpPrewarmTask?.cancel()
+        jumpPrewarmTask = nil
+        if let token = jumpPrewarmToken {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: token)
+            jumpPrewarmToken = nil
+        }
+        lastJumpPrewarmKey = nil
     }
 
     private func cancelAllPrefetches() {
@@ -3085,12 +3207,13 @@ private enum ChatPrefetchWorker {
         palette: ChatTextRenderPalette,
         token: ChatPrefetchToken,
         gate: ChatPrewarmGate,
-        generation: UInt64
+        generation: UInt64,
+        priorityTileQueuePriority: Operation.QueuePriority = .normal
     ) {
         processBatch(
             priorityJobs,
             generateTiles: true,
-            tilePriority: .normal,
+            tilePriority: priorityTileQueuePriority,
             layoutCache: layoutCache,
             scale: scale,
             palette: palette,

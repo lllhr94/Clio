@@ -788,6 +788,10 @@ final class ChatListControllerProxy {
     func scrollToBottom(animated: Bool) {
         controller?.scrollToBottomFromHost(animated: animated)
     }
+
+    func prewarmAround(id: String) {
+        controller?.prewarmAroundRow(id: id)
+    }
 }
 
 /// Shared layout constants matching Clio's SwiftUI chat rows.

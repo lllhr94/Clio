@@ -127,7 +127,8 @@ extension ChatPage {
             shownCount: shownCount,
             onCancelHide: { hideJumps?.cancel() },
             onJump: { id, animated, label in jump(to: id, animated: animated, source: label) },
-            onStepQuestion: { earlier in stepQuestion(earlier: earlier) }
+            onStepQuestion: { earlier in stepQuestion(earlier: earlier) },
+            onPrewarm: { id in scroller?.prewarm(id) }
         )
     }
 
