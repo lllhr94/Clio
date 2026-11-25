@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.2.0",
+  "schemaVersion": "2.3.0",
   "name": "Clio Design System 2.0 Tokens",
   "finalizedDirection": "AC",
   "platforms": ["iOS 26", "iPadOS 26"],
@@ -83,6 +83,12 @@
     },
     "fontOpticalCalibration": {
       "safeLineBoxEngine": true,
+      "singleTruthSpacing": {
+        "lineSpacing": 0,
+        "maximumLineHeight": 0,
+        "lhOffset": 0,
+        "unconditionalFallbackSafePadPt": 0
+      },
       "internalOnly": true,
       "replacesFormula": "extraSpacing = max(0, size * m - natural)",
       "profiles": {
@@ -90,51 +96,51 @@
           "ttfPath": "App/Fonts/ClioKai-Medium.ttf",
           "upm": 1000, "hheaAscent": 928, "hheaDescent": -256, "naturalRatio": 1.184,
           "os2TypoRatio": 1.000, "winRatio": 1.317, "xHeight": 468, "capHeight": 695,
-          "opticalScale": 1.045, "trackingEm": 0.004, "latinBaselineOffset": 0.0,
-          "boldStrokeWidth": -2.2, "tableBoldStrokeWidth": -1.8, "fallbackSafePadPt": 2.0,
-          "calibrationStatus": "binary_measured_pending_coretext_device"
+          "opticalScale": 1.045, "trackingEm": 0.002, "lhOffset": 0, "latinBaselineOffset": 0.0,
+          "boldStrokeWidth": -2.2, "tableBoldStrokeWidth": -1.8, "fallbackSafePadPt": 0.0,
+          "calibrationStatus": "browser_loaded_ttf_verified_pending_coretext_device"
         },
         "ClioKai-Regular": {
           "ttfPath": "App/Fonts/ClioKai-Regular.ttf",
           "upm": 1000, "hheaAscent": 928, "hheaDescent": -256, "naturalRatio": 1.184,
           "os2TypoRatio": 1.000, "winRatio": 1.317, "xHeight": 468, "capHeight": 695,
           "note": "Bundled on disk; phone reading uses ClioKai-Medium per Pref.swift",
-          "calibrationStatus": "binary_measured"
+          "calibrationStatus": "binary_measured_browser_loaded"
         },
         "NewYork+PingFang": {
           "postScriptLatin": "UI serif design (New York)", "postScriptCJK": "PingFang SC",
-          "opticalScale": 1.00, "latinOpticalScale": 1.02, "latinBaselineOffset": 0.25,
-          "boldWeight": "semibold", "fallbackSafePadPt": 2.0,
+          "opticalScale": 1.00, "lhOffset": 0, "latinOpticalScale": 1.02, "latinBaselineOffset": 0.25,
+          "boldWeight": "semibold", "fallbackSafePadPt": 0.0,
           "calibrationStatus": "pending_coretext_device"
         },
         "PingFangSC": {
           "postScript": "PingFang SC (System)",
-          "opticalScale": 1.00, "latinBaselineOffset": 0.0,
-          "boldWeight": "semibold", "fallbackSafePadPt": 2.0,
+          "opticalScale": 1.00, "lhOffset": 0, "latinBaselineOffset": 0.0,
+          "boldWeight": "semibold", "fallbackSafePadPt": 0.0,
           "calibrationStatus": "pending_coretext_device"
         },
         "STSongti-SC": {
           "postScriptRegular": "STSongti-SC-Regular", "postScriptBold": "STSongti-SC-Bold",
-          "opticalScale": 1.03, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 2.0,
+          "opticalScale": 1.03, "trackingEm": 0.002, "lhOffset": 0, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 0.0,
           "calibrationStatus": "on_demand_download_pending_device"
         },
         "STKaiti-SC": {
           "postScriptRegular": "STKaiti-SC-Regular", "postScriptBold": "STKaiti-SC-Bold",
-          "opticalScale": 1.045, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 2.0,
+          "opticalScale": 1.045, "lhOffset": 0, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 0.0,
           "calibrationStatus": "on_demand_download_pending_device"
         },
         "MapleMono+ClioMonoCN": {
           "ttfPaths": ["App/Fonts/MapleMono-Regular.ttf", "App/Fonts/MapleMono-SemiBold.ttf", "App/Fonts/ClioMonoCN-Regular.ttf"],
           "mapleAscent": 1020, "mapleDescent": -300, "mapleNaturalRatio": 1.320, "mapleXHeight": 550, "mapleCapHeight": 730,
           "cjkAscent": 990, "cjkDescent": -270, "cjkNaturalRatio": 1.260, "gridRatio": "1:2",
-          "calibrationStatus": "binary_measured"
+          "calibrationStatus": "binary_measured_browser_loaded"
         },
         "ClioSeal-Regular": {
           "ttfPath": "App/Fonts/ClioSeal-Regular.ttf",
           "upm": 1000, "hheaAscent": 880, "hheaDescent": -120, "naturalRatio": 1.000,
           "winRatio": 1.373, "xHeight": 506, "capHeight": 760,
           "sealOnly": true,
-          "calibrationStatus": "binary_measured"
+          "calibrationStatus": "binary_measured_browser_loaded"
         }
       }
     },
@@ -504,5 +510,42 @@
         }
       }
     }
-  }
+  },
+  "streamingReveal": {
+    "planSelected": "C",
+    "upstreamInspiration": "TelegramMessenger/Telegram-iOS @ 24638bc69bd083981b178dd1e7f921eebbf7fc46 (GPL-2.0-or-later clean-room independent design)",
+    "gateSettingKey": "Pref.fade",
+    "gapEwmaAlpha": 0.4,
+    "initialGap": 0.5,
+    "velocityTau": 0.12,
+    "stallFloor": 0.10,
+    "finalizeTime": 0.28,
+    "frameDtCap": 0.05,
+    "initialInputRate": 40.0,
+    "burstBlurCutoffCharsPerSec": 80,
+    "edgeFadeDurationMs": 200
+  },
+  "scrollAwareChrome": {
+    "enterDeltaPx": 44,
+    "exitDeltaPx": 56,
+    "nearBottomPx": 80,
+    "restoreBottomPx": 48,
+    "fastVelocityPxPerSec": 280,
+    "transitionMs": 220,
+    "programmaticGuardMs": 140,
+    "locks9": [
+      "keyboard_open", "composer_focused", "selection_active",
+      "voice_recording", "voiceover_active", "quote_editing",
+      "pending_approval", "pending_ask", "browser_handoff"
+    ]
+  },
+  "shortModelAliases": {
+    "anthropic/claude-sonnet-4-20250514": "Sonnet 4",
+    "deepseek/deepseek-reasoner": "DeepSeek R1",
+    "openai/gpt-4o-mini-2024-07-18": "GPT-4o mini",
+    "google/imagen-3.0-generate-002": "Imagen 3"
+  },
+  "toolStatuses7": [
+    "pending", "running", "succeeded", "partial", "failed", "cancelled", "waiting_approval"
+  ]
 }

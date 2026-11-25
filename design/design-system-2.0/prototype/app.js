@@ -139,15 +139,57 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       code: `# SSH 远山主机 + 2:1 中文表对齐实测\n环境        | 延迟    | 密钥策略 | 状 态\nProd-CN2   | 24 ms  | Ed25519  | 就 绪 ✓`,
       plainText: "MapleMono + ClioMonoCN 维持 1:2 中西字符宽比；香港 VPS Prod-CN2 Ed25519 公钥状态就绪。",
       sources: null
+    },
+    {
+      id: 3,
+      user: "联网搜一下昨天刚发布的新协议细节，顺便试试向上滑动进入沉浸阅读。",
+      aiTitle: "工具执行 7 态与沉浸式阅读示例",
+      metrics: "1.34s · 212 tok",
+      toolAggregate: { status: "failed", label: "联网搜索失败 (0/2)", detail: "Bing / DDG 请求全部失败 · Fake-IP 环境另案追踪" },
+      aiBody: `
+        <p class="prose-p">本次联网搜索两次尝试均未拿到有效正文，因此上方步骤摘要如实标红为 <strong>「✕ 全部失败 (0/2)」</strong>（不再用绿色 ✓ 误报成功）。</p>
+        <p class="prose-p">向上滑动历史消息时，顶栏收起为轻巧会话胶囊，输入框与小克平滑退场；点击顶部恢复胶囊、反向明显下滑、或回到底部即可随时唤回完整控件。</p>
+      `,
+      code: "",
+      plainText: "本次联网搜索两次尝试均未拿到有效正文，上方步骤摘要如实标红为全部失败（不再误显示绿色完成）。",
+      sources: null
     }
   ];
 
   const MODEL_CATALOG = [
-    { vendor: "DeepSeek", code: "deepseek-r1", sub: "硅", thinking: "高", role: "默认聊天", note: "深度推理 · 缓存命中 · 128k" },
-    { vendor: "Anthropic", code: "claude-sonnet-4", sub: "直", thinking: "中", role: "复杂写代码", note: "长文编辑与多工具协同 · 200k" },
-    { vendor: "OpenAI", code: "gpt-4o-mini", sub: "中", thinking: "自动", role: "记忆整理", note: "夜间批整理与分类 · 极省费" },
-    { vendor: "Google", code: "imagen-3", sub: "官", thinking: "关闭", role: "图像生成", note: "插画配图与名帖背景" }
+    { vendor: "DeepSeek", code: "deepseek/deepseek-reasoner", shortName: "DeepSeek R1", sub: "硅", thinking: "高", role: "默认聊天", note: "深度推理 · 缓存命中 · 128k" },
+    { vendor: "Anthropic", code: "anthropic/claude-sonnet-4-20250514", shortName: "Sonnet 4", sub: "直", thinking: "中", role: "复杂写代码", note: "长文编辑与多工具协同 · 200k" },
+    { vendor: "OpenAI", code: "openai/gpt-4o-mini-2024-07-18", shortName: "GPT-4o mini", sub: "中", thinking: "自动", role: "记忆整理", note: "夜间批整理与分类 · 极省费" },
+    { vendor: "Google", code: "google/imagen-3.0-generate-002", shortName: "Imagen 3", sub: "官", thinking: "关闭", role: "图像生成", note: "插画配图与名帖背景" }
   ];
+
+  function resolveShortModelName(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "Model";
+    const aliases = TOKENS.shortModelAliases || {};
+    if (aliases[s]) return aliases[s];
+    const found = MODEL_CATALOG.find((m) => m.code === s || m.shortName === s);
+    if (found && found.shortName) return found.shortName;
+    let out = s.includes("/") ? s.slice(s.lastIndexOf("/") + 1) : s;
+    out = out.replace(/-\d{8}$/, "").replace(/-generate-\d+$/, "");
+    if (aliases[out]) return aliases[out];
+    return out.length > 16 ? out.slice(0, 15) + "…" : out;
+  }
+
+  function resolveToolAggregateStatus(steps, opts = {}) {
+    if (opts.waitingApproval) return "waiting_approval";
+    const list = Array.isArray(steps) ? steps : [];
+    if (!list.length) return "pending";
+    if (list.some((s) => s.status === "running")) return "running";
+    if (list.every((s) => s.status === "pending")) return "pending";
+    if (list.some((s) => s.status === "cancelled") && !list.some((s) => s.status === "failed")) return "cancelled";
+    const okCount = list.filter((s) => s.status === "succeeded" || s.status === "ok").length;
+    const failCount = list.filter((s) => s.status === "failed" || s.status === "unknown").length;
+    if (okCount === list.length) return "succeeded";
+    if (okCount === 0 && failCount > 0) return "failed";
+    if (okCount > 0 && failCount > 0) return "partial";
+    return failCount > 0 ? "failed" : "running";
+  }
 
   const SEARCH_CORPUS = [
     { type: "chat", title: "0.36 发布前体检与长文排版", owner: "小克 · 今天 21:42", snippet: "已完成对 UIKit 聊天管线与 clio-memory.db 的交叉核验… SSH nginx -t", target: "chat" },
@@ -300,12 +342,19 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     sourcesSheetOpen: false,
     selectionMenuText: null,
 
-    // Interactive chat
+    // Interactive chat & Scroll-aware Chrome
     chatTurns: INITIAL_TURNS.map((item) => ({ ...item })),
     activeTurn: 1,
     streaming: false,
     streamingTurnId: null,
+    streamingRevealOn: true,
     chatFollowBottom: true,
+    chromeMode: "full", // full | immersive
+    chatKeyboardOpen: false,
+    composerFocused: false,
+    selectionActive: false,
+    simVoiceOver: false,
+    toolDemoState: "partial", // pending | running | succeeded | partial | failed | cancelled | waiting_approval
     voiceRecording: false,
     pendingQuote: null,
     pendingAttachments: ["WCAG-audit.json (12KB)"],
@@ -418,20 +467,22 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     petBubble: null,
     petFlipped: false,
 
-    // Motion Lab
+    // Motion & Streaming Lab
     motionTierDemo: "standard",
     keyboardSyncLocked: true,
     keyboardDemoRaised: true,
     naiveStreamComparing: false,
+    streamLabTrace: "jitter", // slow | fast | jitter | stall | burst | error
+    streamLabFont: "editorial",
     interruptPos: 0, // 0..100
     interruptTarget: 0
   };
 
   // ==================== Haptics Waveform Monitor (Enforces Section 15 Restraint) ====================
   const hapticWaves = [];
-  const hapticCanvas = document.getElementById("hapticCanvas");
-  const hapticCtx = hapticCanvas.getContext("2d");
-  const hapticLogEl = document.getElementById("hapticLog");
+  const hapticCanvas = typeof document !== "undefined" ? document.getElementById("hapticCanvas") : null;
+  const hapticCtx = (hapticCanvas && typeof hapticCanvas.getContext === "function") ? hapticCanvas.getContext("2d") : null;
+  const hapticLogEl = typeof document !== "undefined" ? document.getElementById("hapticLog") : null;
 
   function emitHaptic(kind, label) {
     const langCfg = TOKENS.languages[state.lang] || TOKENS.languages.A;
@@ -514,6 +565,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
   }
 
   function appendHapticLog(msg, color) {
+    if (!hapticLogEl) return;
     const line = document.createElement("div");
     line.style.color = color || "#A7B0C2";
     line.textContent = `[${new Date().toLocaleTimeString("zh-CN", { hour12: false })}] ${msg}`;
@@ -523,6 +575,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
   }
 
   function renderHapticCanvas() {
+    if (!hapticCanvas || !hapticCtx) return;
     const w = hapticCanvas.width;
     const h = hapticCanvas.height;
     hapticCtx.clearRect(0, 0, w, h);
@@ -645,6 +698,111 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     toastTimer = setTimeout(() => { host.innerHTML = ""; }, 1800);
   }
 
+  let fontEnvReport = {
+    bundled: [
+      { id: "ClioKaiWeb", label: "ClioKai (霞鹜文楷)", status: "checking" },
+      { id: "MapleMonoWeb", label: "MapleMono (代码)", status: "checking" },
+      { id: "ClioMonoCNWeb", label: "ClioMonoCN (2:1 中文)", status: "checking" },
+      { id: "ClioSealWeb", label: "ClioSeal (朱印)", status: "checking" }
+    ],
+    system: [
+      { id: "New York", label: "New York (英数衬线)", status: "unknown" },
+      { id: "PingFang SC", label: "PingFang SC (苹果黑体)", status: "unknown" },
+      { id: "STSongti-SC", label: "STSongti-SC (随选宋体)", status: "unknown" }
+    ]
+  };
+
+  function probeCanvasFontAvailable(familyName, fallbackGeneric) {
+    if (typeof document === "undefined") return false;
+    try {
+      const c = document.createElement("canvas");
+      const ctx = c.getContext("2d");
+      if (!ctx) return false;
+      const sample = "纸墨之间 Clio 0123456789 永国门";
+      ctx.font = `17px ${fallbackGeneric}`;
+      const baseW = ctx.measureText(sample).width;
+      ctx.font = `17px "${familyName}", ${fallbackGeneric}`;
+      const testW = ctx.measureText(sample).width;
+      return Math.abs(testW - baseW) > 0.4;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function detectFontEnvironment() {
+    if (typeof document === "undefined") return fontEnvReport;
+    const loadedFamilies = new Set();
+    if (document.fonts && typeof document.fonts.forEach === "function") {
+      document.fonts.forEach((f) => {
+        if (f.status === "loaded") {
+          const clean = String(f.family || "").replace(/["']/g, "");
+          loadedFamilies.add(clean);
+        }
+      });
+    }
+    const bundled = [
+      { id: "ClioKaiWeb", label: "ClioKai (App/Fonts)", status: loadedFamilies.has("ClioKaiWeb") ? "loaded" : "pending" },
+      { id: "MapleMonoWeb", label: "MapleMono (App/Fonts)", status: loadedFamilies.has("MapleMonoWeb") ? "loaded" : "pending" },
+      { id: "ClioMonoCNWeb", label: "ClioMonoCN (2:1)", status: loadedFamilies.has("ClioMonoCNWeb") ? "loaded" : "pending" },
+      { id: "ClioSealWeb", label: "ClioSeal (朱印)", status: loadedFamilies.has("ClioSealWeb") ? "loaded" : "pending" }
+    ];
+    const system = [
+      { id: "New York", label: "New York", status: probeCanvasFontAvailable("New York", "serif") ? "loaded" : "fallback" },
+      { id: "PingFang SC", label: "PingFang SC", status: probeCanvasFontAvailable("PingFang SC", "sans-serif") ? "loaded" : "fallback" },
+      { id: "STSongti-SC", label: "STSongti-SC", status: probeCanvasFontAvailable("STSongti-SC", "serif") ? "loaded" : "fallback" }
+    ];
+    fontEnvReport = { bundled, system };
+    return fontEnvReport;
+  }
+
+  function renderFontStatusStripHtml() {
+    const rep = detectFontEnvironment();
+    const bPills = rep.bundled.map((b) => `<span class="font-status-pill ${b.status === "loaded" ? "loaded" : ""}">${b.status === "loaded" ? "✓" : "◌"} ${escHtml(b.label)}</span>`).join("");
+    const anyMissingSys = rep.system.some((s) => s.status !== "loaded");
+    const sPill = anyMissingSys
+      ? `<span class="font-status-pill fallback">⚠ New York / 苹方 / 宋体 非 Apple 平台已回退 · 待 iOS 真机核验</span>`
+      : `<span class="font-status-pill loaded">✓ Apple 系统字体可用</span>`;
+    return `<div class="font-status-strip" id="fontStatusStrip">${bPills}${sPill}</div>`;
+  }
+
+  function computeSafeLineBox(sizePt, lineHeightMult, faceKey, metrics) {
+    const profile = (TOKENS.fontOpticalProfiles && TOKENS.fontOpticalProfiles[faceKey]) || TOKENS.fontOpticalProfiles.editorial;
+    const scale = Number(profile.opticalScale || 1.0);
+    const effectiveSizePt = Math.round(sizePt * scale * 2) / 2;
+    const asc = Number(metrics?.ascent ?? effectiveSizePt * 0.88);
+    const desc = Number(metrics?.descent ?? effectiveSizePt * 0.24);
+    const naturalBoxPt = Math.ceil(asc + desc);
+    const targetPt = sizePt * lineHeightMult;
+    const minimumLineHeight = Math.max(targetPt, naturalBoxPt);
+    return {
+      effectiveSizePt,
+      naturalBoxPt,
+      targetPt,
+      minimumLineHeight,
+      maximumLineHeight: 0,
+      lineSpacing: 0
+    };
+  }
+
+  function resolveReadingTypography(faceKey, sizePt, lineHeightMult, axEnabled) {
+    const profile = (TOKENS.fontOpticalProfiles && TOKENS.fontOpticalProfiles[faceKey]) || TOKENS.fontOpticalProfiles.editorial;
+    const baseSizePx = sizePt * (axEnabled ? 1.15 : 1);
+    const safeBox = computeSafeLineBox(baseSizePx, lineHeightMult, faceKey);
+    const userBubbleLh = Math.min(1.68, Math.max(1.32, lineHeightMult - 0.12));
+    return {
+      faceKey,
+      fontCss: profile.fontCss,
+      opticalScale: profile.opticalScale || 1,
+      trackingEm: profile.trackingEm || "0em",
+      boldWeight: profile.boldWeight || 600,
+      baseSizePx,
+      effectiveSizePx: safeBox.effectiveSizePt,
+      lineHeight: lineHeightMult,
+      userBubbleLineHeight: Number(userBubbleLh.toFixed(2)),
+      safeBox
+    };
+  }
+
   function switchScene(nextScene) {
     state.scene = nextScene;
     state.activeGroup = findGroupForScene(nextScene);
@@ -656,9 +814,13 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     state.attachMenuOpen = false;
     state.stopPickerKind = null;
     state.previewFile = null;
-    state.fullApprovalOpen = false;
     state.identityEditor = null;
     state.identityDraft = null;
+    if (nextScene !== "chat" && nextScene !== "pet") {
+      state.chromeMode = "full";
+      state.chatKeyboardOpen = false;
+      state.composerFocused = false;
+    }
     if (nextScene !== "settings") {
       state.settingsSub = null;
     }
@@ -678,6 +840,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
 
   function applyThemeVariables() {
     const screen = document.getElementById("iphoneScreen");
+    if (!screen) return;
     const langCfg = TOKENS.languages[state.lang];
     const c = getColors();
 
@@ -687,6 +850,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     screen.dataset.ax = String(state.ax);
     screen.dataset.reduceMotion = String(state.reduceMotion);
     screen.dataset.reduceTransparency = String(state.reduceTransparency);
+    screen.dataset.chrome = (state.scene === "chat" || state.scene === "pet") ? state.chromeMode : "full";
 
     const style = screen.style;
     screen.dataset.palette = state.acPalette;
@@ -721,13 +885,15 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     style.setProperty("--ui-scale", String(state.uiScale));
     style.setProperty("--ax-mult", state.ax ? "1.18" : "1");
     const resolvedFace = (state.lang === "B" && state.readingFace === "editorial") ? "sans" : (state.readingFace || "editorial");
-    const optical = (TOKENS.fontOpticalProfiles && TOKENS.fontOpticalProfiles[resolvedFace]) || TOKENS.fontOpticalProfiles.editorial;
-    const baseSizePx = state.readingSize * (state.ax ? 1.15 : 1);
-    style.setProperty("--reading-size", baseSizePx.toFixed(1) + "px");
-    style.setProperty("--font-optical-scale", String(optical.opticalScale || 1));
-    style.setProperty("--font-tracking", optical.trackingEm || "0em");
-    style.setProperty("--bold-weight", String(optical.boldWeight || 600));
-    style.setProperty("--reading-lh", String(Math.min(1.9, (state.lineHeight + (optical.lhOffset || 0))).toFixed(2)));
+    const typo = resolveReadingTypography(resolvedFace, state.readingSize, state.lineHeight, state.ax);
+    style.setProperty("--reading-font-family", typo.fontCss);
+    style.setProperty("--reading-size", typo.baseSizePx.toFixed(1) + "px");
+    style.setProperty("--font-optical-scale", String(typo.opticalScale));
+    style.setProperty("--effective-reading-size", typo.effectiveSizePx.toFixed(1) + "px");
+    style.setProperty("--font-tracking", typo.trackingEm);
+    style.setProperty("--bold-weight", String(typo.boldWeight));
+    style.setProperty("--reading-lh", String(typo.lineHeight));
+    style.setProperty("--user-bubble-lh", String(typo.userBubbleLineHeight));
     style.setProperty("--para-gap", state.paragraphGap + "px");
     style.setProperty("--reading-width", state.readingWidth + "px");
     style.setProperty("--motion-dur", langCfg.motionTiers.standard.ms + "ms");
@@ -739,23 +905,29 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     if (state.viewState === "error") { glowColor = c.danger; glowAlpha = 22; }
     else if (state.scene === "approval" && state.inlineApprovalStatus === "pending") { glowColor = c.seal; glowAlpha = 20; }
     else if (state.streaming || state.petState === "thinking" || state.petState === "working") { glowColor = c.warn; glowAlpha = 18; }
-    glow.style.display = state.ambientGlowOn ? "" : "none";
-    glow.style.background = `radial-gradient(ellipse at 50% 0%, color-mix(in srgb, ${glowColor} ${glowAlpha}%, transparent), transparent 68%)`;
-    glow.style.setProperty("--ambient-line", glowColor);
+    if (glow) {
+      glow.style.display = state.ambientGlowOn ? "" : "none";
+      glow.style.background = `radial-gradient(ellipse at 50% 0%, color-mix(in srgb, ${glowColor} ${glowAlpha}%, transparent), transparent 68%)`;
+      glow.style.setProperty("--ambient-line", glowColor);
+    }
 
     const netEl = document.getElementById("networkStatusChip");
     if (netEl) netEl.textContent = state.viewState === "error" ? "无服务 · SOS" : "5G · 94%";
 
     const palName = state.lang === "AC" ? ` · ${TOKENS.languages.AC.palettes[state.acPalette].name}` : "";
-    document.getElementById("langBadge").textContent = `${state.lang} · ${langCfg.name}${palName}`;
-    document.getElementById("langDesc").textContent = `${langCfg.subtitle} — ${langCfg.desc}`;
-    document.getElementById("hapticProfileTag").textContent = `${langCfg.haptics.profile} · ${langCfg.haptics.confirmDesc}`;
+    const langBadgeEl = document.getElementById("langBadge");
+    if (langBadgeEl) langBadgeEl.textContent = `${state.lang} · ${langCfg.name}${palName}`;
+    const langDescEl = document.getElementById("langDesc");
+    if (langDescEl) langDescEl.textContent = `${langCfg.subtitle} — ${langCfg.desc}`;
+    const hapEl = document.getElementById("hapticProfileTag");
+    if (hapEl) hapEl.textContent = `${langCfg.haptics.profile} · ${langCfg.haptics.confirmDesc}`;
   }
 
   // ==================== Multi-Pet & Procedural Pixel-Art Engine ====================
-  const PET_PACKS = window.CLIO_PET_PACKS || { xiaoke: PET };
+  const PET_PACKS = window.CLIO_PET_PACKS || (typeof PET !== "undefined" ? { xiaoke: PET } : {});
   const spriteImgCache = {};
   Object.entries(PET_PACKS).forEach(([packId, packData]) => {
+    if (!packData) return;
     spriteImgCache[packId] = {};
     Object.entries(packData.sheets || {}).forEach(([sheetName, dataUri]) => {
       const img = new Image();
@@ -996,17 +1168,66 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     label.textContent = text;
   }
 
+  function syncImmersiveOverlays() {
+    const screen = document.getElementById("iphoneScreen");
+    if (!screen) return;
+    screen.dataset.chrome = (state.scene === "chat" || state.scene === "pet") ? state.chromeMode : "full";
+    let topPill = document.getElementById("immersiveTopPill");
+    if (!topPill) {
+      topPill = document.createElement("button");
+      topPill.type = "button";
+      topPill.className = "immersive-top-pill";
+      topPill.id = "immersiveTopPill";
+      screen.appendChild(topPill);
+      topPill.onclick = () => {
+        restoreFullChrome("点击顶部恢复控件");
+      };
+    }
+    const stText = state.streaming ? t("replying") : (state.inlineApprovalStatus === "pending" && state.scene === "approval" ? t("waiting") : "阅读历史中");
+    topPill.innerHTML = `<span class="status-dot ${state.streaming ? "busy" : ""}"></span><span>${escHtml(state.assistant.name)} · ${stText}</span><span style="color:var(--accent); font-weight:600;">恢复控件 ▾</span>`;
+
+    let botBar = document.getElementById("immersiveBottomBar");
+    if (!botBar) {
+      botBar = document.createElement("div");
+      botBar.className = "immersive-bottom-bar";
+      botBar.id = "immersiveBottomBar";
+      botBar.innerHTML = `<button type="button" class="immersive-stop-pill" id="btnImmersiveStop" style="display:none;">■ 停止生成</button><button type="button" class="immersive-restore-pill" id="btnImmersiveLatest">↓ 回到最新</button>`;
+      screen.appendChild(botBar);
+      botBar.querySelector("#btnImmersiveStop").onclick = () => {
+        stopStreaming("沉浸模式停止生成");
+      };
+      botBar.querySelector("#btnImmersiveLatest").onclick = () => {
+        state.chatFollowBottom = true;
+        restoreFullChrome("回到最新消息");
+        const sc = document.getElementById("mainScroller");
+        if (sc) {
+          ScrollChromeController.markProgrammaticScroll();
+          sc.scrollTop = sc.scrollHeight;
+        }
+      };
+    }
+    const inChat = state.scene === "chat" || state.scene === "pet";
+    const isImm = inChat && state.chromeMode === "immersive";
+    botBar.classList.toggle("active", isImm);
+    const stopBtn = botBar.querySelector("#btnImmersiveStop");
+    const latestBtn = botBar.querySelector("#btnImmersiveLatest");
+    if (stopBtn) stopBtn.style.display = state.streaming ? "inline-flex" : "none";
+    if (latestBtn) latestBtn.textContent = state.streaming ? "↓ 回到最新（生成中）" : "↓ 回到最新";
+  }
+
   function renderTopBar() {
     const bar = document.getElementById("appTopBar");
+    if (!bar) return;
     const working = state.streaming || state.petState === "working" || state.petState === "thinking";
     const statusMap = {
       files: t("files"), memory: t("memory"), roam_den: "工作台", settings: t("settings"),
       search: "全局搜索", onboarding_home: t("home"), models: t("modelsTitle"),
-      ext: "连接与技能", care: "备份与诊断", motion_lab: "动效实验室",
-      approval: state.inlineApprovalStatus === "pending" ? t("waiting") : "审批已处理"
+      ext: "连接技能", care: "备份诊断", motion_lab: "动效测试",
+      approval: state.inlineApprovalStatus === "pending" ? t("waiting") : "已处理"
     };
-    const statusText = state.voiceRecording ? "正在听写" : (state.streaming ? t("replying") : (statusMap[state.scene] || t("idle")));
+    const statusText = state.voiceRecording ? "听写中" : (state.streaming ? t("replying") : (statusMap[state.scene] || t("idle")));
     const vendorChar = state.activeModel.vendor.slice(0, 1);
+    const shortModel = resolveShortModelName(state.activeModel.code);
 
     bar.innerHTML = `
       <button type="button" class="glass-circle pressable" id="btnSidebar" aria-label="打开侧边栏">
@@ -1017,20 +1238,21 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
           ${renderAvatarMarkup("assistant", 22, "live")}
         </div>
         <div class="topbar-identity">
-          <span class="topbar-name">${escHtml(state.assistant.name)} · ${t("assistant")}</span>
-          <span class="topbar-status"><span class="status-dot ${working ? "busy" : (state.scene === "approval" && state.inlineApprovalStatus === "pending" ? "warn" : "")}"></span>${statusText}</span>
+          <span class="topbar-name">${escHtml(state.assistant.name)}</span>
+          <span class="topbar-status"><span class="status-dot ${working ? "busy" : (state.scene === "approval" && state.inlineApprovalStatus === "pending" ? "warn" : "")}"></span><span class="topbar-status-text">${escHtml(statusText)}</span></span>
         </div>
       </button>
       <div class="glass-pill topbar-right-group">
-        <button type="button" class="model-chip-btn pressable" id="btnModelMenu">
+        <button type="button" class="model-chip-btn pressable" id="btnModelMenu" title="${escHtml(state.activeModel.code)}">
           <span class="vendor-badge">${vendorChar}<span class="vendor-sub">${state.activeModel.sub}</span></span>
-          <span class="font-mono" style="font-size:11px; max-width:74px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${state.activeModel.code}</span>
+          <span class="font-mono" style="font-size:11px; max-width:86px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(shortModel)}</span>
           <span style="font-size:9px; opacity:0.6;">▾</span>
         </button>
         <span class="topbar-sep"></span>
         <button type="button" class="more-btn pressable" id="btnMoreMenu" aria-label="更多操作">⋯</button>
       </div>
     `;
+    syncImmersiveOverlays();
 
     document.getElementById("btnSidebar").onclick = () => {
       emitHaptic("silent", "打开侧边栏");
@@ -1173,54 +1395,74 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     });
   }
 
+  function updateFloatingSelectionToolbar(vp) {
+    const host = vp || document.getElementById("appViewport");
+    if (!host) return;
+    const existing = host.querySelector(".selection-toolbar");
+    if (existing) existing.remove();
+    if (!state.selectionMenuText) return;
+
+    const bar = document.createElement("div");
+    bar.className = "selection-toolbar";
+    bar.innerHTML = `
+      <button type="button" id="selCopy">拷贝</button>
+      <button type="button" id="selQuote">引用追问</button>
+      <button type="button" id="selMem">存入拾遗</button>
+      <button type="button" id="selSpeak">朗读</button>
+      <button type="button" id="selClose" style="opacity:0.6;">✕</button>
+    `;
+    host.appendChild(bar);
+    bar.querySelector("#selCopy").onclick = () => {
+      emitHaptic("light", "拷贝选中文本");
+      try { navigator.clipboard?.writeText(state.selectionMenuText); } catch (_) {}
+      showToast("已拷贝纯净原文（选区与排版未破坏）");
+      state.selectionMenuText = null;
+      state.selectionActive = false;
+      try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+      updateFloatingSelectionToolbar(host);
+    };
+    bar.querySelector("#selQuote").onclick = () => {
+      emitHaptic("silent", "引用追问");
+      state.pendingQuote = state.selectionMenuText;
+      state.selectionMenuText = null;
+      state.selectionActive = false;
+      try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+      restoreFullChrome("引用追问");
+      switchScene("chat");
+      const inp = document.getElementById("composerInput");
+      if (inp) inp.focus();
+    };
+    bar.querySelector("#selMem").onclick = () => {
+      emitHaptic("confirm", "选字存入记忆");
+      state.memories.unshift({ id: "m" + Date.now(), layer: "surface", kind: "note", text: state.selectionMenuText, source: "user", date: "刚刚" });
+      showToast("已存入手写记忆");
+      state.selectionMenuText = null;
+      state.selectionActive = false;
+      updateFloatingSelectionToolbar(host);
+    };
+    bar.querySelector("#selSpeak").onclick = () => {
+      emitHaptic("silent", "AVSpeechSynthesizer 朗读");
+      showToast("正在调用系统中文语音朗读…");
+      state.selectionMenuText = null;
+      state.selectionActive = false;
+      updateFloatingSelectionToolbar(host);
+    };
+    bar.querySelector("#selClose").onclick = () => {
+      state.selectionMenuText = null;
+      state.selectionActive = false;
+      try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+      updateFloatingSelectionToolbar(host);
+    };
+  }
+
   function renderViewport(opts = {}) {
     const vp = document.getElementById("appViewport");
+    if (!vp) return;
     const prevScroller = document.getElementById("mainScroller");
     const prevScrollTop = (!opts.resetScroll && prevScroller) ? prevScroller.scrollTop : 0;
 
     vp.innerHTML = "";
-
-    if (state.selectionMenuText) {
-      const bar = document.createElement("div");
-      bar.className = "selection-toolbar";
-      bar.innerHTML = `
-        <button type="button" id="selCopy">拷贝</button>
-        <button type="button" id="selQuote">引用追问</button>
-        <button type="button" id="selMem">存入拾遗</button>
-        <button type="button" id="selSpeak">朗读</button>
-        <button type="button" id="selClose" style="opacity:0.6;">✕</button>
-      `;
-      vp.appendChild(bar);
-      bar.querySelector("#selCopy").onclick = () => {
-        emitHaptic("light", "拷贝选中文本");
-        try { navigator.clipboard?.writeText(state.selectionMenuText); } catch (_) {}
-        showToast("已拷贝纯净原文（无视排空格污染）");
-        state.selectionMenuText = null;
-        renderViewport();
-      };
-      bar.querySelector("#selQuote").onclick = () => {
-        emitHaptic("silent", "引用追问");
-        state.pendingQuote = state.selectionMenuText;
-        state.selectionMenuText = null;
-        switchScene("chat");
-        const inp = document.getElementById("composerInput");
-        if (inp) inp.focus();
-      };
-      bar.querySelector("#selMem").onclick = () => {
-        emitHaptic("confirm", "选字存入记忆");
-        state.memories.unshift({ id: "m" + Date.now(), layer: "surface", kind: "note", text: state.selectionMenuText, source: "user", date: "刚刚" });
-        showToast("已存入手写记忆");
-        state.selectionMenuText = null;
-        renderViewport();
-      };
-      bar.querySelector("#selSpeak").onclick = () => {
-        emitHaptic("silent", "AVSpeechSynthesizer 朗读");
-        showToast("正在调用系统中文语音朗读…");
-        state.selectionMenuText = null;
-        renderViewport();
-      };
-      bar.querySelector("#selClose").onclick = () => { state.selectionMenuText = null; renderViewport(); };
-    }
+    updateFloatingSelectionToolbar(vp);
 
     const scroller = document.createElement("div");
     scroller.className = "scroll-content";
@@ -1245,6 +1487,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       else if (state.scene === "motion_lab") renderMotionLabScene(scroller);
     }
 
+    ScrollChromeController.markProgrammaticScroll();
     if (opts.scrollToBottom) scroller.scrollTop = scroller.scrollHeight;
     else if (prevScrollTop > 0) scroller.scrollTop = prevScrollTop;
   }
@@ -1268,6 +1511,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
           <strong style="font-size:13px;">4.6 同一复杂样本 · 5 组字体光学对照</strong>
           <button type="button" class="reply-action-btn" id="btnCloseFontCompare" style="font-size:11.5px;">收起</button>
         </div>
+        ${renderFontStatusStripHtml()}
         <div style="display:flex; gap:5px; flex-wrap:wrap; margin-bottom:7px;">${buttons}</div>
         <div style="font-size:11.5px; color:var(--ink-secondary); margin-bottom:8px; line-height:1.45;">
           <strong style="color:var(--accent);">${combo.title}</strong>：${combo.desc}
@@ -1278,7 +1522,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
           </div>
         </div>
         <div style="font-size:10.5px; color:var(--ink-tertiary); margin-top:6px;">
-          注：Web 原型仅供参考节奏；真实 CoreText 自然行高/描边参数均以实机 iPhone 渲染裁决。
+          注：ClioKai / MapleMono 已从仓库 App/Fonts 直载；Apple 系统字体非 Apple 平台已标记回退，最终 CoreText 行框度量为 iPhone 真机裁决基准。
         </div>
       </div>
     `;
@@ -1415,7 +1659,8 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
         <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
           <button type="button" class="filter-pill" id="btnDemoSelection">✎ ${t("selectDemo")}</button>
           <button type="button" class="filter-pill ${state.fontCompareOpen ? "active" : ""}" id="btnToggleFontCompare">Aa 5字体对照</button>
-          <button type="button" class="filter-pill ${state.showChatFaces ? "active" : ""}" id="btnToggleChatFaces">👤 正文头像：${state.showChatFaces ? "开" : "关"}</button>
+          <button type="button" class="filter-pill ${state.showChatFaces ? "active" : ""}" id="btnToggleChatFaces">👤 头像:${state.showChatFaces ? "开" : "关"}</button>
+          <button type="button" class="filter-pill ${state.chatKeyboardOpen ? "active" : ""}" id="btnToggleSimKeyboard">⌨ ${state.chatKeyboardOpen ? "收起键盘" : "模拟键盘"}</button>
         </div>
         <div style="display:flex; gap:5px; align-items:center;">
           ${state.compressedNotice ? `<span class="font-mono" style="font-size:10.5px; color:var(--ok);">已收卷 38%</span>` : ""}
@@ -1432,7 +1677,18 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       const thinkingHtml = turn.thinking ? `
         <div class="thinking-box">
           <div class="thinking-toggle">${turn.streaming ? "✦ 正在思考 · 推演中" : "✦ 已思考 1.8s · 48 字"}</div>
-          ${turn.streaming ? `<div class="thinking-live-window">检查 UIKit 瓦片缓存命中……<br>锁定 anchorOffset Δ = 0.0pt……<br>流式文本禁用淡入避免叠影……</div>` : ""}
+          ${turn.streaming ? `<div class="thinking-live-window">检查 UIKit 瓦片缓存命中……<br>锁定 anchorOffset Δ = 0.0pt……<br>Telegram 级渐显平滑推进……</div>` : ""}
+        </div>` : "";
+
+      const toolBadgeInfo = turn.toolAggregate
+        ? (TOKENS.toolStatuses7?.find((x) => x.key === turn.toolAggregate.status) || { icon: "!", label: turn.toolAggregate.label })
+        : null;
+      const turnToolHtml = turn.toolAggregate ? `
+        <div class="trace-card" style="padding:8px 11px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span class="tool-state-badge ${escHtml(turn.toolAggregate.status)}">${escHtml(toolBadgeInfo.icon)} ${escHtml(turn.toolAggregate.label || toolBadgeInfo.label)}</span>
+            <span style="font-size:11px; color:var(--ink-secondary);">${escHtml(turn.toolAggregate.detail || "")}</span>
+          </div>
         </div>` : "";
 
       const codeHtml = turn.code ? `
@@ -1462,7 +1718,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
         </button>` : "";
 
       const liveProseBody = turn.streaming
-        ? renderStreamingMarkdown(turn.plainText || "", true)
+        ? renderStreamingMarkdown(turn.renderedRevealText ?? (turn.plainText || ""), true)
         : (turn.aiBody || renderStreamingMarkdown(turn.plainText || "……", false));
 
       html += `
@@ -1472,9 +1728,10 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
             <div class="msg-user-bubble">${quotePillHtml}${escHtml(turn.user)}</div>
             ${meAvatarHtml}
           </div>
-          <div class="msg-assistant ${turn.id > 2 ? "entering" : ""}">
+          <div class="msg-assistant ${turn.id > 3 ? "entering" : ""}">
             ${speakerHeadHtml}
             ${thinkingHtml}
+            ${turnToolHtml}
             <div class="font-reading reading-measure" data-turn-prose="${turn.id}">
               ${liveProseBody}
             </div>
@@ -1493,25 +1750,46 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
 
     scroller.innerHTML = html;
 
-    // Floating Jump-to-Latest Pill (shown when user scrolls up during streaming or reading history)
+    // Floating Jump-to-Latest Pill (shown in full chrome when user scrolls up)
     const jumpPill = document.createElement("button");
     jumpPill.type = "button";
-    jumpPill.className = "jump-latest-pill pressable" + ((state.streaming && !state.chatFollowBottom) ? " visible" : "");
+    jumpPill.className = "jump-latest-pill pressable" + ((!state.chatFollowBottom && state.chromeMode !== "immersive") ? " visible" : "");
     jumpPill.id = "btnJumpLatest";
     jumpPill.innerHTML = `<span>↓</span><span>回到最新${state.streaming ? "（生成中）" : ""}</span>`;
     vp.appendChild(jumpPill);
 
     jumpPill.onclick = () => {
       state.chatFollowBottom = true;
+      restoreFullChrome("回到最新");
+      ScrollChromeController.markProgrammaticScroll();
       scroller.scrollTop = scroller.scrollHeight;
       jumpPill.classList.remove("visible");
       emitHaptic("silent", "回到底部并恢复跟底");
     };
 
+    const chromeCtrl = new ScrollChromeController(TOKENS.scrollAwareChrome);
+    let lastScrollTop = scroller.scrollTop;
     scroller.onscroll = () => {
       const distBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      const isScrollable = scroller.scrollHeight > scroller.clientHeight + 28;
       state.chatFollowBottom = distBottom <= 36;
-      jumpPill.classList.toggle("visible", Boolean(state.streaming && !state.chatFollowBottom));
+      if (!ScrollChromeController.isProgrammaticScroll()) {
+        const deltaY = scroller.scrollTop - lastScrollTop;
+        const lockReason = getChromeLockReason(state);
+        const nextMode = chromeCtrl.handleScroll({
+          scrollTop: scroller.scrollTop,
+          deltaY,
+          distBottom,
+          isScrollable,
+          locked: Boolean(lockReason)
+        });
+        if (nextMode !== state.chromeMode) {
+          applyChromeModeTransition(nextMode, scroller);
+        }
+      }
+      lastScrollTop = scroller.scrollTop;
+      const showFullJump = !state.chatFollowBottom && state.chromeMode !== "immersive" && isScrollable;
+      jumpPill.classList.toggle("visible", Boolean(showFullJump));
     };
 
     // Minimap
@@ -1527,22 +1805,29 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
         state.activeTurn = turn.id;
         state.chatFollowBottom = false;
         const target = document.getElementById(`turn-${turn.id}`);
-        if (target) target.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "start" });
+        if (target) {
+          ScrollChromeController.markProgrammaticScroll();
+          target.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "start" });
+        }
         minimap.querySelectorAll(".minimap-tick").forEach((el, idx2) => el.classList.toggle("active", state.chatTurns[idx2]?.id === state.activeTurn));
       };
       minimap.appendChild(tick);
     });
     vp.appendChild(minimap);
 
+    // Non-destructive selection toolbar (NEVER clears selection or wipes #mainScroller DOM!)
     scroller.onmouseup = () => {
-      const sel = window.getSelection();
+      const sel = window.getSelection ? window.getSelection() : null;
       const picked = sel ? sel.toString().trim() : "";
       if (picked.length >= 2) {
         state.chatFollowBottom = false;
-        emitHaptic("selection", "选中正文片段（已暂停跟底滚动）");
-        state.selectionMenuText = picked.slice(0, 34) + (picked.length > 34 ? "…" : "");
-        try { sel.removeAllRanges(); } catch (_) {}
-        renderViewport();
+        state.selectionActive = true;
+        restoreFullChrome("选字保护锁定");
+        emitHaptic("selection", "选中正文片段（选区已保护，跟底与自动收起已暂停）");
+        state.selectionMenuText = picked.slice(0, 40) + (picked.length > 40 ? "…" : "");
+        updateFloatingSelectionToolbar(vp);
+      } else if (state.selectionActive && !picked) {
+        state.selectionActive = false;
       }
     };
 
@@ -1565,6 +1850,13 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     if (btnFaces) btnFaces.onclick = () => {
       state.showChatFaces = !state.showChatFaces;
       emitHaptic("selection", `正文双方头像 → ${state.showChatFaces ? "开启" : "关闭"}`);
+      renderAll();
+    };
+    const btnSimKb = document.getElementById("btnToggleSimKeyboard");
+    if (btnSimKb) btnSimKb.onclick = () => {
+      state.chatKeyboardOpen = !state.chatKeyboardOpen;
+      if (state.chatKeyboardOpen) restoreFullChrome("键盘弹出锁定控件");
+      emitHaptic("silent", state.chatKeyboardOpen ? "弹出模拟键盘" : "收起模拟键盘");
       renderAll();
     };
     scroller.querySelectorAll("[data-edit-identity]").forEach((btn) => {
@@ -1842,37 +2134,60 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     });
   }
 
-  // ==================== Scene 4: Tools (0.36 Concurrency + Thinking + PlanCard) ====================
+  // ==================== Scene 4: Tools (0.36 Concurrency + 7-State Semantics + PlanCard) ====================
   function renderToolsScene(scroller) {
-    const traceSummary = (state.lang === "C" || state.lang === "AC")
-      ? "正在温和并行为你翻阅 3 份资料并校验合约 · 0.62s"
-      : `${t("steps")} · 0.36 并发只读组 (3 项) + 1 项验证`;
+    const scenarios = {
+      pending: { steps: [{ name: "web_search", status: "pending", ms: "排队中" }, { name: "read_file", status: "pending", ms: "排队中" }], note: "尚未开始执行" },
+      running: { steps: [{ name: "web_search", status: "running", ms: "进行中" }, { name: "read_file", status: "succeeded", ms: "0.08s" }], note: "顶栏仅示「沉吟」，此处显真实步骤，底栏不重复挂状态卡" },
+      succeeded: { steps: [{ name: "read_file", status: "succeeded", ms: "0.08s" }, { name: "pdf_fts_search", status: "succeeded", ms: "0.21s" }, { name: "webdav_probe", status: "succeeded", ms: "0.33s" }], note: "全部步骤真实成功才显示绿色 ✓" },
+      partial: { steps: [{ name: "read_file", status: "succeeded", ms: "0.08s" }, { name: "pdf_fts_search", status: "succeeded", ms: "0.21s" }, { name: "web_search", status: "failed", ms: "超时" }], note: "3 项中 1 项失败 → 聚合标黄 △「部分成功」" },
+      failed: { steps: [{ name: "web_search · Bing", status: "failed", ms: "拦截/超时" }, { name: "web_search · DDG", status: "failed", ms: "1.80s 失败" }], note: "修复旧 BUG：搜索失败时绝不能亮绿色 ✓ 完成" },
+      cancelled: { steps: [{ name: "shell · npm test", status: "cancelled", ms: "已停下" }], note: "用户主动停止，保留已输出日志" },
+      waiting_approval: { steps: [{ name: "web_read", status: "succeeded", ms: "0.42s" }, { name: "ssh_run", status: "pending", ms: "候印中" }], note: "读过外网触发写操作 → 高优抬升到批准单" }
+    };
+    const cur = scenarios[state.toolDemoState] || scenarios.partial;
+    const aggKey = resolveToolAggregateStatus(cur.steps, { waitingApproval: state.toolDemoState === "waiting_approval" });
+    const meta = (TOKENS.toolStatuses7 || []).find((x) => x.key === aggKey) || { key: aggKey, icon: "●", label: aggKey };
+    const statusPills = (TOKENS.toolStatuses7 || []).map((st) => `
+      <button type="button" class="filter-pill ${state.toolDemoState === st.key ? "active" : ""}" style="font-size:11px; padding:3px 9px;" data-tool-demo="${st.key}">${st.icon} ${st.label}</button>
+    `).join("");
+
+    const stepBadgeChar = (s) => s === "succeeded" ? "✓" : (s === "failed" ? "✕" : (s === "running" ? "◐" : (s === "cancelled" ? "■" : "○")));
+    const stepBadgeCls = (s) => s === "succeeded" ? "ok" : (s === "failed" ? "fail" : "doing");
     const railBorder = (color) => ((state.lang === "B" || state.lang === "AC") ? `border-left: 2.5px solid ${color};` : "");
 
     scroller.innerHTML = `
-      <div class="msg-user-wrap"><div class="msg-user-bubble">并发检查 Design System 2.0 规范与 WebDAV 配置健康度</div></div>
+      <div class="msg-user-wrap"><div class="msg-user-bubble">演示 7 态工具执行语义（修复搜索失败却误亮绿色完成 ✓ 的缺陷）</div></div>
       <div class="msg-assistant">
+        <div class="clio-card" style="padding:10px 12px; margin-bottom:4px;">
+          <div style="font-size:11.5px; color:var(--ink-secondary); margin-bottom:6px;">切换工具执行终态对照（禁止把“跑完了”直接画成绿色成功）：</div>
+          <div style="display:flex; gap:5px; flex-wrap:wrap;">${statusPills}</div>
+        </div>
+
         <div class="thinking-box" style="${railBorder("var(--ink-tertiary)")}">
           <button type="button" class="thinking-toggle" id="btnToggleThink">
             <span>✦ 已${t("thinking")} <span class="font-mono">2.4s</span> · 148 字</span>
             <span>${state.thinkingOpen ? "▾" : "▸"}</span>
           </button>
-          ${state.thinkingOpen ? `<div class="thinking-body">1. 并发发起 3 个只读查证（WCAG token、PDF 索引与 WebDAV 端点）。<br>2. 对照 0.36 规则检查无跨线程主队列堵塞。<br>3. 产出汇总结论与清单卡片。</div>` : ""}
+          ${state.thinkingOpen ? `<div class="thinking-body">1. 按「顶栏只示会话状态 / 正文示步骤详情 / 输入框保发送停止 / Dock 只抬待审批或接管」分工去重。<br>2. ${escHtml(cur.note)}</div>` : ""}
         </div>
 
         <div class="trace-card" style="${state.lang === "C" ? "border-radius:22px; background:color-mix(in srgb, var(--accent-wash) 42%, var(--surface));" : ""}">
           <button type="button" class="trace-summary" id="btnToggleTrace">
-            <span class="step-badge ok">✓</span>
-            <span>${traceSummary}</span>
-            <span style="margin-left:auto; font-size:11px; color:var(--ink-tertiary);" class="font-mono">0.62s ${state.traceOpen ? "▾" : "▸"}</span>
+            <span class="tool-state-badge ${escHtml(aggKey)}">${escHtml(meta.icon)} ${escHtml(meta.label)}</span>
+            <span style="font-size:12px; color:var(--ink-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(cur.note)}</span>
+            <span style="margin-left:auto; font-size:11px; color:var(--ink-tertiary);" class="font-mono">${state.traceOpen ? "▾" : "▸"}</span>
           </button>
           ${state.traceOpen ? `
             <div class="trace-steps">
-              <div class="concurrency-tag">⚡ 0.36 只读工具并发完成 · 比串行节省 61% 等待</div>
-              <div class="trace-step-row"><span class="step-badge ok">✓</span><span>read_file · <span class="inline-code">tokens.v2.json</span> (WCAG)</span><span class="font-mono" style="font-size:11px; color:var(--ink-tertiary);">0.08s</span></div>
-              <div class="trace-step-row"><span class="step-badge ok">✓</span><span>pdf_fts_search · 查 <span class="inline-code">Materials.pdf</span></span><span class="font-mono" style="font-size:11px; color:var(--ink-tertiary);">0.21s</span></div>
-              <div class="trace-step-row"><span class="step-badge ok">✓</span><span>webdav_probe · 校验加密快照头</span><span class="font-mono" style="font-size:11px; color:var(--ink-tertiary);">0.33s</span></div>
-              <div class="trace-step-row"><span class="step-badge fail">!</span><span style="color:var(--danger);">fetch_web · 外部超时（安全降级跳过）</span><span class="font-mono" style="font-size:11px; color:var(--danger);">1.80s</span></div>
+              <div class="concurrency-tag">⚡ 0.36 只读并发组 · 状态严格由子步骤失败数/待批状态推导</div>
+              ${cur.steps.map((s) => `
+                <div class="trace-step-row">
+                  <span class="step-badge ${stepBadgeCls(s.status)}">${stepBadgeChar(s.status)}</span>
+                  <span style="${s.status === "failed" ? "color:var(--danger);" : ""}">${escHtml(s.name)}</span>
+                  <span class="font-mono" style="font-size:11px; color:${s.status === "failed" ? "var(--danger)" : "var(--ink-tertiary)"};">${escHtml(s.ms)}</span>
+                </div>
+              `).join("")}
               <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap;">
                 <button type="button" class="filter-pill" id="btnOpenDiffFile">查看 Diff 改动卡</button>
                 <button type="button" class="filter-pill" id="btnGoAskScene">回答主动提问 (InlineAsk) ›</button>
@@ -1880,9 +2195,12 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
             </div>
           ` : ""}
         </div>
-        <div class="font-reading"><p class="prose-p">Flighty 式轻量结构分组将并发工具聚合在一张卡中，下方 <span class="inline-code">PlanCard</span> 采用高度裁剪不挤跳正文。</p></div>
+        <div class="font-reading"><p class="prose-p">另外：真机截图中 <span class="inline-code">198.18.0.0/15</span> 代理环境下的 Fake-IP 冲突已独立登记在工程排障栏（不削弱公网 SSRF 防护），不阻塞本次排版与交互定稿。</p></div>
       </div>
     `;
+    scroller.querySelectorAll("[data-tool-demo]").forEach((b) => {
+      b.onclick = () => { state.toolDemoState = b.dataset.toolDemo; emitHaptic("selection", `工具终态对照 → ${state.toolDemoState}`); renderViewport(); };
+    });
     scroller.querySelector("#btnToggleThink").onclick = () => { emitHaptic("silent", "折展思考块"); state.thinkingOpen = !state.thinkingOpen; renderViewport(); };
     scroller.querySelector("#btnToggleTrace").onclick = () => { emitHaptic("silent", "折展工具轨迹"); state.traceOpen = !state.traceOpen; renderViewport(); };
     const bDiff = scroller.querySelector("#btnOpenDiffFile");
@@ -2101,7 +2419,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
   function renderModelsScene(scroller) {
     scroller.innerHTML = `
       <div style="font-size:20px; font-weight:700; margin-bottom:9px;" class="font-mark">${t("modelsTitle")}</div>
-      <div class="section-title">即时切换当前会话模型 · Role 角色配属（无需离开聊天）</div>
+      <div class="section-title">即时切换当前会话模型 · 顶栏示简称，此页与选单示完整 Model ID</div>
       <div class="row-card">
         ${MODEL_CATALOG.map((m) => {
           const picked = state.activeModel.code === m.code;
@@ -2109,8 +2427,9 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
             <button type="button" class="row-item pressable" data-pick-model="${m.code}">
               <span class="vendor-badge" style="width:28px;height:28px;font-size:12px;">${m.vendor[0]}<span class="vendor-sub">${m.sub}</span></span>
               <div style="flex:1; min-width:0;">
-                <div style="display:flex; gap:6px; align-items:center;"><span class="font-mono" style="font-size:13.5px; font-weight:600;">${m.code}</span><span class="filter-pill" style="font-size:10px; padding:1px 6px;">${m.role}</span></div>
-                <div style="font-size:11.5px; color:var(--ink-secondary);">${m.note}</div>
+                <div style="display:flex; gap:6px; align-items:center;"><strong style="font-size:13.5px;">${escHtml(m.shortName || resolveShortModelName(m.code))}</strong><span class="filter-pill" style="font-size:10px; padding:1px 6px;">${m.role}</span></div>
+                <div class="font-mono" style="font-size:11px; color:var(--ink-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(m.code)}</div>
+                <div style="font-size:11px; color:var(--ink-tertiary);">${m.note}</div>
               </div>
               <span style="font-size:12px; font-weight:600; color:${picked ? "var(--accent)" : "var(--ink-tertiary)"};">${picked ? "✓ 当前" : "切换"}</span>
             </button>
@@ -2615,13 +2934,14 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       body = `
         <div class="clio-card" style="padding:12px 13px; margin-bottom:12px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-            <span style="font-size:11px; color:var(--ink-tertiary);">实时排版小样（与聊天正文共引擎）</span>
+            <span style="font-size:11px; color:var(--ink-tertiary);">实时排版小样（与用户气泡 / AI 正文 / 长文共引擎）</span>
             <button type="button" class="filter-pill" id="btnSubOpenFontCompare" style="font-size:10.5px; padding:2px 8px;">Aa 5字体对照</button>
           </div>
+          ${renderFontStatusStripHtml()}
           <div class="font-reading" id="typoLiveSample">
             <div class="prose-h3" style="margin:0 0 4px;">Clio 使用 SQLite FTS5 优化长对话</div>
             <p class="prose-p">支持 <span class="inline-code">120 Hz</span> ProMotion（8.33 ms），累计 12,840 Tokens；「中文引号」、“英文混排”、🐱 ≈ ± √。</p>
-            <p class="prose-p" style="font-size:calc(var(--effective-reading-size) - 1px); color:var(--ink-secondary);">主题色彩与正文字体彼此独立；文楷与宋体内部已自动光学校准。</p>
+            <p class="prose-p" style="font-size:calc(var(--effective-reading-size) - 1px); color:var(--ink-secondary);">单一 SafeLineBox（lineSpacing=0）确保切文楷↔苹方基线节奏稳定。</p>
           </div>
         </div>
 
@@ -2689,8 +3009,12 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     } else if (subId === "motion_haptics") {
       body = `
         <div class="row-card" style="margin-bottom:14px;">
+          <button type="button" class="switch-row" id="swSubStreamReveal">
+            <div style="flex:1; min-width:0;"><div style="font-weight:500;">流式文字渐显</div><div style="font-size:11.5px; color:var(--ink-tertiary);">自适应速率与墨韵局部渐显；开启减弱动态时自动降级为直接追平</div></div>
+            <span class="ios-switch ${state.streamingRevealOn ? "on" : ""}"></span>
+          </button>
           <button type="button" class="switch-row" id="swSubRm">
-            <div style="flex:1; min-width:0;"><div style="font-weight:500;">减弱动态效果</div><div style="font-size:11.5px; color:var(--ink-tertiary);">将弹簧位移动画收敛为 120ms 轻柔淡入</div></div>
+            <div style="flex:1; min-width:0;"><div style="font-weight:500;">减弱动态效果</div><div style="font-size:11.5px; color:var(--ink-tertiary);">将弹簧与渐显动画收敛为极简切换</div></div>
             <span class="ios-switch ${state.reduceMotion ? "on" : ""}"></span>
           </button>
           <div class="row-item" style="flex-direction:column; align-items:stretch; gap:7px;">
@@ -3105,6 +3429,8 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     const swCl = scroller.querySelector("#swClreq");
     if (swCl) swCl.onclick = () => { state.clreqSqueeze = !state.clreqSqueeze; emitHaptic("selection", "切标点挤压"); renderViewport(); };
 
+    const swRev = scroller.querySelector("#swSubStreamReveal");
+    if (swRev) swRev.onclick = () => { state.streamingRevealOn = !state.streamingRevealOn; emitHaptic("selection", `流式渐显 → ${state.streamingRevealOn ? "开" : "关"}`); renderViewport(); };
     const swRm = scroller.querySelector("#swSubRm");
     if (swRm) swRm.onclick = () => { state.reduceMotion = !state.reduceMotion; emitHaptic("selection", "切减弱动态"); renderAll(); };
     scroller.querySelectorAll("[data-pick-hap]").forEach((b) => { b.onclick = () => { state.hapticIntensity = b.dataset.pickHap; emitHaptic("detent", `触觉强度 → ${state.hapticIntensity}`); renderViewport(); }; });
@@ -3235,17 +3561,54 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       </div>
 
       <div class="clio-card" style="padding:12px 13px; margin-bottom:10px;">
-        <div style="font-size:12.5px; font-weight:700; margin-bottom:6px;">③ 键盘联动锚点 &amp; 15Hz 流式零闪烁对照</div>
+        <div style="font-size:12.5px; font-weight:700; margin-bottom:6px;">③ 键盘联动锚点 &amp; 沉浸控件协调</div>
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
           <button type="button" class="filter-pill ${state.keyboardSyncLocked ? "active" : ""}" id="btnToggleKbMode">${state.keyboardSyncLocked ? "DS 2.0：键盘 1:1 锚点锁定" : "旧BUG：失步遮挡对照"}</button>
           <button type="button" class="filter-pill" id="btnToggleKbRaise">${state.keyboardDemoRaised ? "收起演示键盘" : "弹出演示键盘"}</button>
         </div>
         <div style="border:0.5px solid var(--rule); border-radius:var(--r-inner); padding:8px; background:var(--bg); height:98px; display:flex; flex-direction:column; justify-content:space-between; overflow:hidden;">
           <div style="font-size:11.5px; transform:translateY(${!state.keyboardSyncLocked && state.keyboardDemoRaised ? "22px" : "0px"}); transition:transform 260ms ease; color:var(--ink);">
-            末尾消息：「已验证 keyboardSpacerView 同步……」
+            末尾消息：「已验证 keyboardSpacerView 同步 + Paper Scrim 无穿透……」
           </div>
           <div style="height:${state.keyboardDemoRaised ? "42px" : "16px"}; background:var(--surface-subtle); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:10.5px; color:var(--ink-secondary); transition:height 260ms ease;">
             ${state.keyboardDemoRaised ? "模拟系统键盘占高（42px）" : "键盘已收起"}
+          </div>
+        </div>
+      </div>
+
+      <div class="clio-card stream-lab-card" style="padding:12px 13px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+          <strong style="font-size:12.5px;">⑤ Telegram 级流式揭示 A / B / C 同源对照实验室</strong>
+          <span class="font-mono" style="font-size:10.5px; color:var(--ok);" id="streamLabSelStatus">定稿块重建: 0 · 选区稳</span>
+        </div>
+        <div style="display:flex; gap:4px; flex-wrap:wrap;" id="streamLabTraceRow">
+          ${[
+            ["slow", "慢速稳定"], ["fast", "高速稳定"], ["jitter", "抖动不均"],
+            ["stall", "网络停顿 1.2s"], ["burst", "大块突增"], ["error", "中途出错保字"]
+          ].map(([k, lbl]) => `<button type="button" class="filter-pill ${state.streamLabTrace === k ? "active" : ""}" style="font-size:10.5px; padding:2px 8px;" data-sl-trace="${k}">${lbl}</button>`).join("")}
+        </div>
+        <div style="display:flex; gap:5px; flex-wrap:wrap;">
+          <button type="button" class="filter-pill active" id="btnSlRunAll">▶ 同步跑 A / B / C 对照</button>
+          <button type="button" class="filter-pill" id="btnSlStop">■ 中途停止</button>
+          <button type="button" class="filter-pill" id="btnSlToggleFont">切换文楷↔苹方 (${state.streamLabFont === "wenkai" ? "文楷" : "书卷"})</button>
+        </div>
+        <div class="stream-lab-metrics">
+          <div class="stream-lab-metric"><span>首字 / 策略</span><strong id="slMetricTtft">就绪</strong></div>
+          <div class="stream-lab-metric"><span>积压(A / B / C)</span><strong id="slMetricBacklog">0 / 0 / 0</strong></div>
+          <div class="stream-lab-metric"><span>解析耗时</span><strong id="slMetricParse">0.0 ms</strong></div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr; gap:7px;">
+          <div class="stream-lab-pane font-reading" style="font-family:${state.streamLabFont === "wenkai" ? "var(--font-wenkai)" : "var(--font-editorial)"};">
+            <div style="font-size:10.5px; color:var(--ink-tertiary); margin-bottom:4px; font-family:var(--font-ui);">A · 旧固定 66ms 批次（网络抖动停顿+突增重绘）</div>
+            <div id="slPaneA"></div>
+          </div>
+          <div class="stream-lab-pane font-reading" style="font-family:${state.streamLabFont === "wenkai" ? "var(--font-wenkai)" : "var(--font-editorial)"};">
+            <div style="font-size:10.5px; color:var(--ink-tertiary); margin-bottom:4px; font-family:var(--font-ui);">B · EWMA 自适应平滑追加（增量块，无渐变边）</div>
+            <div id="slPaneB"></div>
+          </div>
+          <div class="stream-lab-pane font-reading" style="font-family:${state.streamLabFont === "wenkai" ? "var(--font-wenkai)" : "var(--font-editorial)"}; border-color:var(--accent);">
+            <div style="font-size:10.5px; color:var(--accent); font-weight:600; margin-bottom:4px; font-family:var(--font-ui);">C · 定稿方案：Telegram 级 EWMA + 墨韵渐显（高速/减动效自动降级）</div>
+            <div id="slPaneC"></div>
           </div>
         </div>
       </div>
@@ -3343,88 +3706,236 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     scroller.querySelectorAll("[data-ml-haptic]").forEach((b) => {
       b.onclick = () => emitHaptic(b.dataset.mlHaptic, `实验室触发: ${b.textContent}`);
     });
+
+    scroller.querySelectorAll("[data-sl-trace]").forEach((b) => {
+      b.onclick = () => { state.streamLabTrace = b.dataset.slTrace; emitHaptic("selection", `切换压测序列 ${state.streamLabTrace}`); renderViewport(); };
+    });
+    const slRun = scroller.querySelector("#btnSlRunAll");
+    if (slRun) slRun.onclick = () => runStreamComparisonLab();
+    const slStop = scroller.querySelector("#btnSlStop");
+    if (slStop) slStop.onclick = () => stopStreamComparisonLab();
+    const slFont = scroller.querySelector("#btnSlToggleFont");
+    if (slFont) slFont.onclick = () => { state.streamLabFont = state.streamLabFont === "wenkai" ? "editorial" : "wenkai"; emitHaptic("selection", "对照实验室切字体"); renderViewport(); };
   }
 
-  // ==================== Incremental Complex Markdown Stream Engine, Terminal & Dock ====================
-  function renderInlineMd(raw, isStreaming) {
-    let s = String(raw || "");
-    if (isStreaming) {
-      if ((s.match(/\*\*/g) || []).length % 2 === 1) s += "**";
-      if ((s.match(/`/g) || []).length % 2 === 1) s += "`";
+  // ==================== P0 Hardened Incremental Markdown Engine ====================
+  const graphemeSegmenter = (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function")
+    ? new Intl.Segmenter("zh-Hans", { granularity: "grapheme" })
+    : null;
+
+  function splitGraphemes(text) {
+    const s = String(text || "");
+    if (!s) return [];
+    if (graphemeSegmenter) {
+      const out = [];
+      for (const seg of graphemeSegmenter.segment(s)) {
+        out.push(seg.segment);
+      }
+      return out;
     }
+    return Array.from(s);
+  }
+
+  function matchFenceStart(t) { return t.match(/^(`{3,}|~{3,})(.*)$/); }
+  function isMathStart(t) { return t.startsWith("$$"); }
+  function matchHeadingStart(t) { return t.match(/^(#{1,6})\s+(.*)$/); }
+  function isHrLine(t) { return /^([-*_])(?:\s*\1){2,}$/.test(t); }
+  function isTableStart(t) { return t.startsWith("|"); }
+  function isTableHeaderAt(lines, idx) {
+    if (!lines || idx < 0 || idx + 1 >= lines.length) return false;
+    const head = lines[idx].trim();
+    const delim = lines[idx + 1].trim();
+    return head.startsWith("|") && delim.startsWith("|") && /^\|[\s|:-]*-+[\s|:-]*$/.test(delim);
+  }
+  function matchOrderedListStart(t) { return t.match(/^\d+\.\s+(.*)$/); }
+  function matchUnorderedListStart(t) { return t.match(/^[-*+]\s+(.*)$/); }
+  function isQuoteStart(t) { return t.startsWith(">"); }
+
+  function canStartNonParagraphBlock(trimmedLine, lines, idx) {
+    if (!trimmedLine) return false;
+    return Boolean(
+      matchFenceStart(trimmedLine)
+      || isMathStart(trimmedLine)
+      || matchHeadingStart(trimmedLine)
+      || isHrLine(trimmedLine)
+      || isTableHeaderAt(lines, idx)
+      || matchOrderedListStart(trimmedLine)
+      || matchUnorderedListStart(trimmedLine)
+      || isQuoteStart(trimmedLine)
+    );
+  }
+
+  function renderInlineMd(raw, isStreaming) {
+    let s = String(raw ?? "");
     const tokens = [];
-    s = s.replace(/`([^`\n]+)`/g, (_, code) => {
+    const stash = (htmlStr) => {
       const idx = tokens.length;
-      tokens.push(`<span class="inline-code">${escHtml(code)}</span>`);
-      return `\u0000CODE${idx}\u0000`;
+      tokens.push(htmlStr);
+      return `\u0000TOK${idx}\u0000`;
+    };
+
+    // Extract complete inline code spans first so URLs/underscores/stars inside code are untouched.
+    s = s.replace(/`([^`\n]+)`/g, (_, code) => stash(`<span class="inline-code">${escHtml(code)}</span>`));
+
+    // During streaming, only style an unclosed inline code span if non-empty code text follows; never delete backticks!
+    if (isStreaming) {
+      const lastBt = s.lastIndexOf("`");
+      if (lastBt !== -1) {
+        const before = s.slice(0, lastBt);
+        const after = s.slice(lastBt + 1);
+        if (after.length > 0 && !after.includes("\n")) {
+          s = before + stash(`<span class="inline-code">${escHtml(after)}</span>`);
+        }
+      }
+    }
+
+    // Extract completed safe http/https markdown links [label](https://...) before emphasis passes.
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+      return stash(`<a href="javascript:void(0)" class="prose-link" data-url="${escHtml(url)}">${escHtml(label)}</a>`);
     });
+
+    // Extract bare URLs before emphasis so '*' inside URLs cannot mangle tags.
+    s = s.replace(/https?:\/\/[^\s<]+/g, (url) => {
+      return stash(`<a href="javascript:void(0)" class="prose-link" data-url="${escHtml(url)}">${escHtml(url)}</a>`);
+    });
+
     s = escHtml(s);
-    s = s.replace(/https?:\/\/[^\s<]+/g, (url) => `<a href="javascript:void(0)" class="prose-link">${url}</a>`);
+    s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    if (isStreaming) {
+      s = s.replace(/\*\*([^*\n]+)$/, "<strong>$1</strong>");
+    }
     s = s.replace(/(^|[^\*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-    s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, idx) => tokens[Number(idx)] || "");
+    s = s.replace(/\u0000TOK(\d+)\u0000/g, (_, idx) => tokens[Number(idx)] || "");
     return s;
   }
 
-  function renderStreamingMarkdown(rawMd, isStreaming) {
-    const lines = String(rawMd || "").replace(/\r\n/g, "\n").split("\n");
-    let out = "";
+  function parseStreamingMarkdownBlocks(rawMd, isStreaming) {
+    const lines = String(rawMd ?? "").replace(/\r\n?/g, "\n").split("\n");
+    const blocks = [];
     let i = 0;
+    const maxLoops = lines.length + 8;
+    let steps = 0;
 
     while (i < lines.length) {
+      steps += 1;
+      if (steps > maxLoops) break; // Defense-in-depth invariant guard
+      const prevI = i;
       const line = lines[i];
       const trim = line.trim();
-      if (!trim) { i++; continue; }
+      if (!trim) {
+        i++;
+        continue;
+      }
 
-      // Fenced Code Block (gracefully auto-closes when unclosed mid-stream)
-      if (trim.startsWith("```")) {
-        const lang = trim.slice(3).trim() || "text";
+      // 1. Fenced Code Block
+      const fm = matchFenceStart(trim);
+      if (fm) {
+        const fenceChar = fm[1][0];
+        const fenceLen = fm[1].length;
+        const lang = fm[2].trim() || "text";
+        const rawLines = [line];
         const codeLines = [];
         i++;
         let closed = false;
         while (i < lines.length) {
-          if (lines[i].trim().startsWith("```")) { closed = true; i++; break; }
-          codeLines.push(lines[i]);
+          const cur = lines[i];
+          const curTrim = cur.trim();
+          rawLines.push(cur);
+          if (curTrim.startsWith(fenceChar.repeat(fenceLen)) && curTrim.slice(fenceLen).replace(new RegExp(`^${fenceChar}*`), "").trim() === "") {
+            closed = true;
+            i++;
+            break;
+          }
+          codeLines.push(cur);
           i++;
         }
         const badge = (!closed && isStreaming) ? " · 生成中" : "";
-        out += `<div class="clio-inner-block" style="margin:6px 0 8px;"><div class="code-header"><span class="font-mono">${escHtml(lang)} · 2:1 grid${badge}</span><span style="font-size:10.5px; color:var(--ink-tertiary);">只读预览</span></div><pre class="code-pre">${escHtml(codeLines.join("\n") || " ")}</pre></div>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "code",
+          raw: rawLines.join("\n"),
+          closed,
+          html: `<div class="clio-inner-block" style="margin:6px 0 8px;"><div class="code-header"><span class="font-mono">${escHtml(lang)} · 2:1 grid${badge}</span><span style="font-size:10.5px; color:var(--ink-tertiary);">只读预览</span></div><pre class="code-pre">${escHtml(codeLines.join("\n") || " ")}</pre></div>`
+        });
         continue;
       }
 
-      // Math Display Block ($$ ... $$)
-      if (trim.startsWith("$$")) {
+      // 2. Math Display Block ($$ ... $$)
+      if (isMathStart(trim)) {
+        const rawLines = [line];
         const mathLines = [];
         const restAfter = trim.slice(2).trim();
-        if (restAfter && restAfter.endsWith("$$") && restAfter.length > 2) {
+        let closed = false;
+        if (restAfter && restAfter.endsWith("$$") && restAfter.length >= 2) {
           mathLines.push(restAfter.slice(0, -2).trim());
+          closed = true;
           i++;
         } else {
           if (restAfter) mathLines.push(restAfter);
           i++;
           while (i < lines.length) {
-            if (lines[i].trim().startsWith("$$")) { i++; break; }
-            mathLines.push(lines[i].trim());
+            const cur = lines[i];
+            const curTrim = cur.trim();
+            rawLines.push(cur);
+            if (curTrim.startsWith("$$") || curTrim.endsWith("$$")) {
+              const stripped = curTrim.replace(/^\$\$|\$\$$/g, "").trim();
+              if (stripped) mathLines.push(stripped);
+              closed = true;
+              i++;
+              break;
+            }
+            mathLines.push(curTrim);
             i++;
           }
         }
-        out += `<div class="prose-math"><div class="math-label">公式渲染</div><div class="math-expr">${escHtml(mathLines.join(" ") || "…")}</div></div>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "math",
+          raw: rawLines.join("\n"),
+          closed,
+          html: `<div class="prose-math"><div class="math-label">公式渲染${!closed && isStreaming ? " · 输入中" : ""}</div><div class="math-expr">${escHtml(mathLines.join(" ") || trim)}</div></div>`
+        });
         continue;
       }
 
-      // Headings
-      const hm = trim.match(/^(#{1,4})\s+(.*)$/);
+      // 3. Headings (# .. ###### + whitespace + text, clamped visually to H1..H4)
+      const hm = matchHeadingStart(trim);
       if (hm) {
         const lvl = Math.min(4, hm[1].length);
-        out += `<h${lvl} class="prose-h${lvl}">${renderInlineMd(hm[2], isStreaming)}</h${lvl}>`;
+        const body = hm[2];
         i++;
+        blocks.push({
+          idx: blocks.length,
+          type: `h${lvl}`,
+          raw: line,
+          closed: true,
+          html: body
+            ? `<h${lvl} class="prose-h${lvl}">${renderInlineMd(body, isStreaming)}</h${lvl}>`
+            : `<p class="prose-p">${escHtml(trim)}</p>`
+        });
         continue;
       }
 
-      // Markdown Table (incremental live table)
-      if (trim.startsWith("|")) {
+      // 4. Horizontal Rule
+      if (isHrLine(trim)) {
+        i++;
+        blocks.push({
+          idx: blocks.length,
+          type: "hr",
+          raw: line,
+          closed: true,
+          html: `<hr class="prose-hr" />`
+        });
+        continue;
+      }
+
+      // 5. Markdown Table (incremental safe: only upgrade once header + delimiter dash row exist)
+      if (isTableHeaderAt(lines, i)) {
         const tLines = [];
-        while (i < lines.length && lines[i].trim().startsWith("|")) {
+        const rawLines = [];
+        while (i < lines.length && isTableStart(lines[i].trim())) {
+          rawLines.push(lines[i]);
           tLines.push(lines[i].trim());
           i++;
         }
@@ -3438,81 +3949,703 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
           startRow = 2;
         }
         const bodyRows = tLines.slice(startRow).map(parseCells);
-        out += `<div class="prose-table-wrap has-scroll" style="margin:6px 0 8px;"><table class="prose-table"><thead><tr>${headers.map((h, ci) => `<th class="${aligns[ci] === "num" ? "num" : ""}">${renderInlineMd(h, isStreaming)}</th>`).join("")}</tr></thead><tbody>${bodyRows.map((r) => `<tr>${headers.map((_, ci) => {
-          const val = r[ci] || "";
-          const isNumCol = aligns[ci] === "num" || /^\d[\d,.*×]*$/.test(val);
-          return `<td class="${isNumCol ? "num font-mono" : ""}">${renderInlineMd(val, isStreaming)}</td>`;
-        }).join("")}</tr>`).join("")}</tbody></table></div>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "table",
+          raw: rawLines.join("\n"),
+          closed: bodyRows.length > 0,
+          html: `<div class="prose-table-wrap has-scroll" style="margin:6px 0 8px;"><table class="prose-table"><thead><tr>${headers.map((h, ci) => `<th class="${aligns[ci] === "num" ? "num" : ""}">${renderInlineMd(h, isStreaming)}</th>`).join("")}</tr></thead><tbody>${bodyRows.map((r) => `<tr>${headers.map((_, ci) => {
+            const val = r[ci] || "";
+            const isNumCol = aligns[ci] === "num" || /^\d[\d,.*×]*$/.test(val);
+            return `<td class="${isNumCol ? "num font-mono" : ""}">${renderInlineMd(val, isStreaming)}</td>`;
+          }).join("")}</tr>`).join("")}</tbody></table></div>`
+        });
         continue;
       }
 
-      // Ordered + nested unordered list
-      if (/^\d+\.\s+/.test(trim)) {
-        out += `<ol class="prose-ol">`;
+      // 6. Ordered List + nested Unordered List
+      if (matchOrderedListStart(trim)) {
+        const rawLines = [];
+        let liHtml = "";
         while (i < lines.length) {
           const curT = lines[i].trim();
-          const om = curT.match(/^\d+\.\s+(.*)$/);
+          const om = matchOrderedListStart(curT);
           if (!om) break;
+          rawLines.push(lines[i]);
           i++;
           let subUl = "";
-          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-            subUl += `<li>${renderInlineMd(lines[i].trim().slice(2), isStreaming)}</li>`;
+          while (i < lines.length) {
+            const subT = lines[i].trim();
+            const subM = /^\s+[-*+]\s+(.*)$/.test(lines[i]) ? subT.match(/^[-*+]\s+(.*)$/) : null;
+            if (!subM) break;
+            rawLines.push(lines[i]);
+            subUl += `<li>${renderInlineMd(subM[1], isStreaming)}</li>`;
             i++;
           }
-          out += `<li>${renderInlineMd(om[1], isStreaming)}${subUl ? `<ul class="prose-list">${subUl}</ul>` : ""}</li>`;
+          liHtml += `<li>${renderInlineMd(om[1], isStreaming)}${subUl ? `<ul class="prose-list">${subUl}</ul>` : ""}</li>`;
         }
-        out += `</ol>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "ol",
+          raw: rawLines.join("\n"),
+          closed: true,
+          html: `<ol class="prose-ol">${liHtml}</ol>`
+        });
         continue;
       }
 
-      if (/^[-*]\s+/.test(trim)) {
-        out += `<ul class="prose-list">`;
-        while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-          out += `<li>${renderInlineMd(lines[i].trim().slice(2), isStreaming)}</li>`;
+      // 7. Unordered List
+      if (matchUnorderedListStart(trim)) {
+        const rawLines = [];
+        let liHtml = "";
+        while (i < lines.length) {
+          const um = matchUnorderedListStart(lines[i].trim());
+          if (!um) break;
+          rawLines.push(lines[i]);
+          liHtml += `<li>${renderInlineMd(um[1], isStreaming)}</li>`;
           i++;
         }
-        out += `</ul>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "ul",
+          raw: rawLines.join("\n"),
+          closed: true,
+          html: `<ul class="prose-list">${liHtml}</ul>`
+        });
         continue;
       }
 
-      if (trim.startsWith(">")) {
+      // 8. Blockquote
+      if (isQuoteStart(trim)) {
+        const rawLines = [];
         const qLines = [];
-        while (i < lines.length && lines[i].trim().startsWith(">")) {
+        while (i < lines.length && isQuoteStart(lines[i].trim())) {
+          rawLines.push(lines[i]);
           qLines.push(lines[i].trim().replace(/^>\s?/, ""));
           i++;
         }
-        out += `<blockquote class="prose-quote">${renderInlineMd(qLines.join(" "), isStreaming)}</blockquote>`;
+        blocks.push({
+          idx: blocks.length,
+          type: "quote",
+          raw: rawLines.join("\n"),
+          closed: true,
+          html: `<blockquote class="prose-quote">${renderInlineMd(qLines.join(" ") || ">", isStreaming)}</blockquote>`
+        });
         continue;
       }
 
-      // Paragraph
+      // 9. Paragraph (strictly guaranteed to consume >= 1 line; handles standalone #, #tag, -, 1. safely)
+      const pRaw = [];
       const pLines = [];
       while (i < lines.length) {
-        const pt = lines[i].trim();
-        if (!pt || pt.startsWith("#") || pt.startsWith("```") || pt.startsWith("$$") || pt.startsWith("|") || pt.startsWith(">") || /^\d+\.\s+/.test(pt) || /^[-*]\s+/.test(pt)) break;
+        const cur = lines[i];
+        const pt = cur.trim();
+        if (!pt) break;
+        if (pLines.length > 0 && canStartNonParagraphBlock(pt, lines, i)) break;
+        pRaw.push(cur);
         pLines.push(pt);
         i++;
       }
-      out += `<p class="prose-p">${renderInlineMd(pLines.join(" "), isStreaming)}</p>`;
+      if (pLines.length > 0) {
+        blocks.push({
+          idx: blocks.length,
+          type: "paragraph",
+          raw: pRaw.join("\n"),
+          closed: true,
+          html: `<p class="prose-p">${renderInlineMd(pLines.join(" "), isStreaming)}</p>`
+        });
+      }
+
+      // Mathematical forward-progress guarantee: never allow i to stall!
+      if (i <= prevI) {
+        blocks.push({
+          idx: blocks.length,
+          type: "paragraph",
+          raw: line,
+          closed: true,
+          html: `<p class="prose-p">${escHtml(line)}</p>`
+        });
+        i = prevI + 1;
+      }
+    }
+
+    return blocks;
+  }
+
+  function renderStreamingMarkdown(rawMd, isStreaming) {
+    const blocks = parseStreamingMarkdownBlocks(rawMd, isStreaming);
+    if (!blocks.length) {
+      return isStreaming
+        ? `<p class="prose-p"><span class="streaming-caret" aria-hidden="true"></span></p>`
+        : `<p class="prose-p">……</p>`;
+    }
+    const html = blocks.map((b, k) => `<div class="md-block" data-block-idx="${k}">${b.html}</div>`).join("");
+    return isStreaming ? html + `<span class="streaming-caret" aria-hidden="true"></span>` : html;
+  }
+
+  // ==================== Scroll-Aware Chrome Controller ====================
+  class ScrollChromeController {
+    constructor(cfg = {}) {
+      const defaults = (typeof TOKENS !== "undefined" && TOKENS.scrollAwareChrome) || {};
+      this.enterDeltaPx = cfg.enterDeltaPx ?? defaults.enterDeltaPx ?? 44;
+      this.exitDeltaPx = cfg.exitDeltaPx ?? defaults.exitDeltaPx ?? 56;
+      this.nearBottomPx = cfg.nearBottomPx ?? defaults.nearBottomPx ?? 80;
+      this.restoreBottomPx = cfg.restoreBottomPx ?? defaults.restoreBottomPx ?? 48;
+      this.mode = "full";
+      this.upAccum = 0;
+      this.downAccum = 0;
+    }
+
+    handleScroll({ deltaY, distBottom, isScrollable, locked }) {
+      if (locked || !isScrollable) {
+        this.mode = "full";
+        this.upAccum = 0;
+        this.downAccum = 0;
+        return this.mode;
+      }
+      if (distBottom <= this.restoreBottomPx) {
+        this.mode = "full";
+        this.upAccum = 0;
+        this.downAccum = 0;
+        return this.mode;
+      }
+      if (deltaY < 0) {
+        this.downAccum = 0;
+        if (distBottom <= this.nearBottomPx) {
+          this.upAccum = 0;
+          return this.mode;
+        }
+        this.upAccum += -deltaY;
+        if (this.mode === "full" && this.upAccum >= this.enterDeltaPx) {
+          this.mode = "immersive";
+          this.upAccum = 0;
+        }
+      } else if (deltaY > 0) {
+        this.downAccum += deltaY;
+        this.upAccum = 0;
+        if (this.mode === "immersive" && this.downAccum >= this.exitDeltaPx) {
+          this.mode = "full";
+          this.downAccum = 0;
+        }
+      }
+      return this.mode;
+    }
+  }
+  ScrollChromeController.programmaticUntil = 0;
+  ScrollChromeController.markProgrammaticScroll = function (ms = 140) {
+    ScrollChromeController.programmaticUntil = Date.now() + ms;
+  };
+  ScrollChromeController.isProgrammaticScroll = function () {
+    return Date.now() <= ScrollChromeController.programmaticUntil;
+  };
+
+  function getChromeLockReason(st = state) {
+    if (st.chatKeyboardOpen) return "keyboard_open";
+    if (st.composerFocused) return "composer_focused";
+    if (st.selectionActive) return "selection_active";
+    if (st.voiceRecording) return "voice_recording";
+    if (st.simVoiceOver) return "voiceover_active";
+    if (st.pendingQuote) return "quote_editing";
+    if (st.scene === "approval" && st.inlineApprovalStatus === "pending") return "pending_approval";
+    if (st.scene === "ask" && !st.askSubmitted) return "pending_ask";
+    if (st.scene === "roam_den" && st.roamSub === "roam" && st.roamHandoffActive) return "browser_handoff";
+    return null;
+  }
+
+  function applyChromeModeTransition(nextMode, scroller) {
+    if (state.chromeMode === nextMode) return;
+    const beforeBottomDist = scroller ? (scroller.scrollHeight - scroller.scrollTop) : null;
+    state.chromeMode = nextMode;
+    syncImmersiveOverlays();
+    const dock = document.getElementById("bottomDockArea");
+    if (dock) {
+      const canHideDock = (nextMode === "immersive") && !getChromeLockReason(state) && (state.scene === "chat" || state.scene === "pet");
+      dock.classList.toggle("can-hide", canHideDock);
+    }
+    if (scroller && beforeBottomDist !== null) {
+      ScrollChromeController.markProgrammaticScroll();
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - beforeBottomDist);
+    }
+  }
+
+  function restoreFullChrome(reasonLabel) {
+    if (state.chromeMode !== "full") {
+      applyChromeModeTransition("full", typeof document !== "undefined" ? document.getElementById("mainScroller") : null);
+      if (reasonLabel) appendHapticLog?.(`[沉浸阅读 → 恢复控件] ${reasonLabel}`, "#94A3B8");
+    } else if (typeof document !== "undefined") {
+      syncImmersiveOverlays();
+    }
+  }
+
+  // ==================== Clean-Room Telegram-Inspired Adaptive Reveal Controller ====================
+  class ClioRevealController {
+    constructor(opts = {}) {
+      const cfg = (typeof TOKENS !== "undefined" && TOKENS.streamingReveal) || {};
+      this.velocityTau = opts.velocityTau ?? cfg.velocityTau ?? 0.12;
+      this.gapEwmaAlpha = opts.gapEwmaAlpha ?? cfg.gapEwmaAlpha ?? 0.4;
+      this.initialGap = opts.initialGap ?? cfg.initialGap ?? 0.5;
+      this.stallFloor = opts.stallFloor ?? cfg.stallFloor ?? 0.10;
+      this.finalizeTime = opts.finalizeTime ?? cfg.finalizeTime ?? 0.28;
+      this.frameDtCap = opts.frameDtCap ?? cfg.frameDtCap ?? 0.05;
+      this.initialInputRate = opts.initialInputRate ?? cfg.initialInputRate ?? 40.0;
+      this.burstBlurCutoff = opts.burstBlurCutoff ?? cfg.burstBlurCutoffCharsPerSec ?? 80;
+
+      this.receivedText = "";
+      this.graphemes = [];
+      this.latestLength = 0;
+      this.revealedCount = 0;
+      this.velocity = 0;
+      this.avgInterArrival = this.initialGap;
+      this.lastSampleTime = null;
+      this.lastSampleLength = null;
+      this.predictedNextArrivalTime = null;
+      this.chunkCount = 0;
+      this.isFinalizing = false;
+      this.stopped = false;
+      this.errorMessage = null;
+      this.lastFrameTime = null;
+      this.firstTokenAt = null;
+      this.startedAt = null;
+      this.ttftMs = null;
+    }
+
+    get currentRevealedText() {
+      const count = Math.max(0, Math.min(this.graphemes.length, Math.floor(this.revealedCount)));
+      return this.graphemes.slice(0, count).join("");
+    }
+
+    get lifecycle() {
+      if (this.errorMessage) return "error";
+      if (this.stopped) return "stopped";
+      if (this.isFinalizing && this.revealedCount >= this.latestLength) return "completed";
+      if (this.isFinalizing) return "finalizing";
+      if (this.latestLength === 0) return "waiting_first_token";
+      if (this.velocity > this.burstBlurCutoff) return "burst_catchup";
+      if (this.predictedNextArrivalTime !== null && this.lastFrameTime !== null && this.lastFrameTime > this.predictedNextArrivalTime && this.revealedCount >= this.latestLength) {
+        return "stalled";
+      }
+      return "streaming";
+    }
+
+    observeUpdate(latestText, nowSec) {
+      if (this.stopped) return;
+      if (this.startedAt === null) this.startedAt = nowSec;
+      const nextText = String(latestText ?? "");
+      this.receivedText = nextText;
+      this.graphemes = splitGraphemes(nextText);
+      const latestLen = this.graphemes.length;
+
+      if (latestLen > 0 && this.firstTokenAt === null) {
+        this.firstTokenAt = nowSec;
+        this.ttftMs = Math.max(0, Math.round((this.firstTokenAt - this.startedAt) * 1000));
+      }
+
+      if (this.lastSampleLength !== null) {
+        if (latestLen > this.lastSampleLength) {
+          if (this.lastSampleTime !== null) {
+            const interArrival = Math.max(nowSec - this.lastSampleTime, 0.001);
+            this.avgInterArrival = this.gapEwmaAlpha * interArrival + (1 - this.gapEwmaAlpha) * this.avgInterArrival;
+          }
+          this.lastSampleTime = nowSec;
+          this.lastSampleLength = latestLen;
+          this.predictedNextArrivalTime = nowSec + this.avgInterArrival;
+          this.chunkCount += 1;
+        } else if (latestLen < this.lastSampleLength) {
+          this.lastSampleLength = latestLen;
+        }
+      } else {
+        this.lastSampleTime = nowSec;
+        this.lastSampleLength = latestLen;
+        this.predictedNextArrivalTime = nowSec + this.avgInterArrival;
+        this.chunkCount += 1;
+      }
+
+      this.latestLength = latestLen;
+      if (this.revealedCount > latestLen) {
+        this.revealedCount = latestLen;
+      }
+    }
+
+    finalize(finalText) {
+      if (typeof finalText === "string") {
+        this.receivedText = finalText;
+        this.graphemes = splitGraphemes(finalText);
+        this.latestLength = this.graphemes.length;
+      }
+      this.isFinalizing = true;
+      if (this.revealedCount > this.latestLength) {
+        this.revealedCount = this.latestLength;
+      }
+    }
+
+    stop() {
+      this.stopped = true;
+      this.isFinalizing = false;
+      this.revealedCount = this.latestLength;
+      this.velocity = 0;
+    }
+
+    fail(errorMsg) {
+      this.errorMessage = String(errorMsg || "流式传输中断");
+      this.stopped = true;
+      this.isFinalizing = false;
+      this.revealedCount = this.latestLength;
+      this.velocity = 0;
+    }
+
+    tick(nowSec, opts = {}) {
+      const prevCount = Math.floor(this.revealedCount);
+      if (opts.hidden) {
+        this.lastFrameTime = nowSec;
+        return {
+          revealedCount: prevCount,
+          prevRevealedCount: prevCount,
+          deltaCount: 0,
+          velocity: 0,
+          backlog: Math.max(0, this.latestLength - prevCount),
+          useBlur: false,
+          isComplete: false,
+          lifecycle: "background_paused"
+        };
+      }
+      if (opts.reduceMotion || opts.instantReveal) {
+        this.revealedCount = this.latestLength;
+        this.lastFrameTime = nowSec;
+        const cur = Math.floor(this.revealedCount);
+        return {
+          revealedCount: cur,
+          prevRevealedCount: prevCount,
+          deltaCount: Math.max(0, cur - prevCount),
+          velocity: 0,
+          backlog: 0,
+          useBlur: false,
+          isComplete: this.isFinalizing || this.stopped,
+          lifecycle: opts.reduceMotion ? "reduce_motion" : this.lifecycle
+        };
+      }
+
+      const dt = Math.max(0, Math.min(nowSec - (this.lastFrameTime ?? nowSec), this.frameDtCap));
+      const lag = Math.max(0, this.latestLength - this.revealedCount);
+      let targetVelocity = 0;
+      if (this.isFinalizing) {
+        targetVelocity = lag > 0 ? Math.max(this.velocity, lag / this.finalizeTime) : 0;
+      } else if (this.chunkCount < 2) {
+        targetVelocity = lag > 0 ? this.initialInputRate : 0;
+      } else if (this.predictedNextArrivalTime !== null) {
+        const timeToNext = Math.max(this.stallFloor, this.predictedNextArrivalTime - nowSec);
+        targetVelocity = lag / timeToNext;
+      } else {
+        targetVelocity = lag > 0 ? this.initialInputRate : 0;
+      }
+
+      const smoothing = dt > 0 ? Math.min(1, dt / this.velocityTau) : 0;
+      this.velocity += (targetVelocity - this.velocity) * smoothing;
+      this.revealedCount = Math.min(this.latestLength, this.revealedCount + this.velocity * dt);
+      this.lastFrameTime = nowSec;
+
+      const curCount = Math.floor(this.revealedCount);
+      const isComplete = (this.isFinalizing && curCount >= this.latestLength) || this.stopped;
+      return {
+        revealedCount: curCount,
+        prevRevealedCount: prevCount,
+        deltaCount: Math.max(0, curCount - prevCount),
+        velocity: this.velocity,
+        backlog: Math.max(0, this.latestLength - curCount),
+        useBlur: this.velocity <= this.burstBlurCutoff,
+        isComplete,
+        lifecycle: this.lifecycle
+      };
+    }
+  }
+
+  function selectionIntersectsNode(node, sel) {
+    if (!node || !sel || !sel.rangeCount || !String(sel.toString() || "").trim()) return false;
+    try {
+      for (let r = 0; r < sel.rangeCount; r++) {
+        const range = sel.getRangeAt(r);
+        if (typeof range.intersectsNode === "function") {
+          if (range.intersectsNode(node)) return true;
+        }
+        if (typeof node.contains === "function") {
+          if (node.contains(range.startContainer) || node.contains(range.endContainer)) return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function wrapTrailingTextGraphemes(rootEl, deltaCount, useBlur) {
+    if (!rootEl || deltaCount <= 0 || typeof document === "undefined") return;
+    const textNodes = [];
+    const collect = (node) => {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        if (node.nodeValue && node.nodeValue.length > 0) textNodes.push(node);
+        return;
+      }
+      const children = node.childNodes || [];
+      for (let k = 0; k < children.length; k++) collect(children[k]);
+    };
+    collect(rootEl);
+    if (!textNodes.length) return;
+
+    let rem = deltaCount;
+    for (let idx = textNodes.length - 1; idx >= 0 && rem > 0; idx--) {
+      const tn = textNodes[idx];
+      const clusters = splitGraphemes(tn.nodeValue || "");
+      if (!clusters.length) continue;
+      const take = Math.min(clusters.length, rem);
+      rem -= take;
+      const head = clusters.slice(0, clusters.length - take).join("");
+      const tail = clusters.slice(clusters.length - take).join("");
+      const parent = tn.parentNode;
+      if (!parent || typeof parent.insertBefore !== "function") continue;
+      const span = document.createElement("span");
+      span.className = `reveal-chunk${useBlur ? " reveal-blur" : ""}`;
+      span.textContent = tail;
+      if (head) {
+        tn.nodeValue = head;
+        if (tn.nextSibling) parent.insertBefore(span, tn.nextSibling);
+        else parent.appendChild(span);
+      } else {
+        parent.replaceChild(span, tn);
+      }
+    }
+  }
+
+  // Incremental Block DOM Reconciler: settled prior blocks are NEVER replaced; selected blocks are protected!
+  function patchStreamingProseDom(containerEl, revealedText, isStreaming, opts = {}) {
+    if (!containerEl) return { settledRebuilds: 0, deferredSelection: false, blockCount: 0 };
+    const blocks = parseStreamingMarkdownBlocks(revealedText, isStreaming);
+    const sel = opts.selection ?? (typeof window !== "undefined" && window.getSelection ? window.getSelection() : null);
+    let settledRebuilds = 0;
+    let deferredSelection = false;
+
+    const existingBlocks = Array.from(containerEl.querySelectorAll ? containerEl.querySelectorAll(".md-block") : []);
+    while (existingBlocks.length > blocks.length) {
+      const extra = existingBlocks.pop();
+      if (selectionIntersectsNode(extra, sel)) {
+        deferredSelection = true;
+        break;
+      }
+      extra.remove();
+    }
+
+    const oldCaret = containerEl.querySelector ? containerEl.querySelector(".streaming-caret") : null;
+    if (oldCaret && !isStreaming) oldCaret.remove();
+
+    for (let k = 0; k < blocks.length; k++) {
+      const b = blocks[k];
+      let el = existingBlocks[k];
+      const isFrontier = (k === blocks.length - 1);
+      if (el) {
+        if (el.dataset?.blockRaw === b.raw) {
+          continue; // Settled unchanged block: zero DOM mutation!
+        }
+        if (selectionIntersectsNode(el, sel)) {
+          if (el.dataset) el.dataset.deferredPending = "1";
+          deferredSelection = true;
+          continue; // Protect user selection inside this block!
+        }
+        if (!isFrontier) settledRebuilds += 1;
+        if (el.dataset) el.dataset.blockRaw = b.raw;
+        el.innerHTML = b.html;
+      } else {
+        el = document.createElement("div");
+        el.className = "md-block";
+        if (el.dataset) {
+          el.dataset.blockIdx = String(k);
+          el.dataset.blockRaw = b.raw;
+        } else {
+          el.setAttribute("data-block-idx", String(k));
+        }
+        el.innerHTML = b.html;
+        if (oldCaret && oldCaret.parentNode === containerEl) containerEl.insertBefore(el, oldCaret);
+        else containerEl.appendChild(el);
+      }
+
+      if (isFrontier && isStreaming && opts.animateEdge && (opts.deltaCount || 0) > 0) {
+        wrapTrailingTextGraphemes(el, opts.deltaCount, Boolean(opts.useBlur));
+      }
     }
 
     if (isStreaming) {
-      out += `<span class="streaming-caret" aria-hidden="true"></span>`;
+      let caret = containerEl.querySelector ? containerEl.querySelector(".streaming-caret") : null;
+      if (!caret) {
+        caret = document.createElement("span");
+        caret.className = "streaming-caret";
+        caret.setAttribute("aria-hidden", "true");
+        containerEl.appendChild(caret);
+      }
     }
-    return out || `<p class="prose-p">……</p>`;
+
+    return { settledRebuilds, deferredSelection, blockCount: blocks.length };
+  }
+
+  const STREAM_TRACES = {
+    slow: [
+      { dtMs: 120, chars: 8 }, { dtMs: 120, chars: 8 }, { dtMs: 120, chars: 9 }, { dtMs: 120, chars: 8 }
+    ],
+    fast: [
+      { dtMs: 35, chars: 26 }, { dtMs: 35, chars: 28 }, { dtMs: 35, chars: 30 }
+    ],
+    jitter: [
+      { dtMs: 45, chars: 14 }, { dtMs: 190, chars: 22 }, { dtMs: 40, chars: 9 }, { dtMs: 220, chars: 26 }, { dtMs: 65, chars: 18 }
+    ],
+    stall: [
+      { dtMs: 60, chars: 18 }, { dtMs: 60, chars: 18 }, { dtMs: 1200, chars: 48 }, { dtMs: 50, chars: 24 }
+    ],
+    burst: [
+      { dtMs: 80, chars: 12 }, { dtMs: 260, chars: 240 }, { dtMs: 90, chars: 180 }
+    ],
+    error: [
+      { dtMs: 70, chars: 22 }, { dtMs: 90, chars: 24 }, { dtMs: 120, chars: 22, error: "连接中断：已保留前序成功正文" }
+    ]
+  };
+
+  let labTimer = null;
+  let labRaf = null;
+  function stopStreamComparisonLab() {
+    clearTimeout(labTimer);
+    if (labRaf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(labRaf);
+    labTimer = null;
+    labRaf = null;
+  }
+
+  function runStreamComparisonLab() {
+    stopStreamComparisonLab();
+    const paneA = document.getElementById("slPaneA");
+    const paneB = document.getElementById("slPaneB");
+    const paneC = document.getElementById("slPaneC");
+    if (!paneA || !paneB || !paneC) return;
+
+    paneA.innerHTML = "";
+    paneB.innerHTML = "";
+    paneC.innerHTML = "";
+
+    const sample = SECTION46_SAMPLE.fullMarkdown;
+    const gAll = splitGraphemes(sample);
+    const trace = STREAM_TRACES[state.streamLabTrace] || STREAM_TRACES.jitter;
+    const ctrlB = new ClioRevealController();
+    const ctrlC = new ClioRevealController();
+
+    let emitted = 0;
+    let traceIdx = 0;
+    let totalRebuildsB = 0;
+    let totalRebuildsC = 0;
+    let lastShownA = "";
+    let stepNum = 0;
+    const startSec = performance.now() / 1000;
+    let ended = false;
+
+    function pushNextChunk() {
+      if (ended) return;
+      const step = trace[traceIdx % trace.length];
+      traceIdx++;
+      labTimer = setTimeout(() => {
+        stepNum++;
+        if (step.error && stepNum >= 3) {
+          ctrlB.fail(step.error);
+          ctrlC.fail(step.error);
+          ended = true;
+          return;
+        }
+        emitted = Math.min(gAll.length, emitted + step.chars);
+        const partial = gAll.slice(0, emitted).join("");
+        const nowS = performance.now() / 1000;
+        ctrlB.observeUpdate(partial, nowS);
+        ctrlC.observeUpdate(partial, nowS);
+        if (stepNum % 2 === 0 || emitted >= gAll.length) {
+          lastShownA = partial;
+          paneA.innerHTML = renderStreamingMarkdown(lastShownA, emitted < gAll.length);
+        }
+        if (emitted >= gAll.length) {
+          ctrlB.finalize(sample);
+          ctrlC.finalize(sample);
+          ended = true;
+        } else {
+          pushNextChunk();
+        }
+      }, step.dtMs);
+    }
+
+    function tickLab() {
+      const nowS = performance.now() / 1000;
+      const t0 = performance.now();
+      const stepB = ctrlB.tick(nowS, { reduceMotion: state.reduceMotion, hidden: false });
+      const stepC = ctrlC.tick(nowS, { reduceMotion: state.reduceMotion, hidden: false });
+
+      if (stepB.deltaCount > 0 || (stepB.isComplete && ctrlB.receivedText)) {
+        const resB = patchStreamingProseDom(paneB, ctrlB.currentRevealedText, !stepB.isComplete, { animateEdge: false });
+        totalRebuildsB += resB.settledRebuilds;
+      }
+      if (stepC.deltaCount > 0 || (stepC.isComplete && ctrlC.receivedText)) {
+        const resC = patchStreamingProseDom(paneC, ctrlC.currentRevealedText, !stepC.isComplete, {
+          animateEdge: !state.reduceMotion,
+          deltaCount: stepC.deltaCount,
+          useBlur: stepC.useBlur
+        });
+        totalRebuildsC += resC.settledRebuilds;
+      }
+      const parseMs = (performance.now() - t0).toFixed(2);
+
+      const mTtft = document.getElementById("slMetricTtft");
+      const mBk = document.getElementById("slMetricBacklog");
+      const mPs = document.getElementById("slMetricParse");
+      const mSel = document.getElementById("streamLabSelStatus");
+      const lifecycleLabels = {
+        waiting_first_token: "等首字",
+        streaming: "平滑推进",
+        burst_catchup: "突发加速",
+        stalled: "微停等待",
+        finalizing: "尾字收口",
+        completed: "已定稿",
+        stopped: "已停止",
+        error: "保字降级"
+      };
+      if (mTtft) mTtft.textContent = `${ctrlC.ttftMs ?? Math.round((nowS - startSec) * 1000)}ms·${lifecycleLabels[ctrlC.lifecycle] || ctrlC.lifecycle}`;
+      if (mBk) mBk.textContent = `${Math.max(0, emitted - splitGraphemes(lastShownA).length)}/${stepB.backlog}/${stepC.backlog}`;
+      if (mPs) mPs.textContent = `${parseMs} ms`;
+      if (mSel) mSel.textContent = `定稿重建 B:${totalRebuildsB} C:${totalRebuildsC}`;
+
+      if (!stepB.isComplete || !stepC.isComplete || !ended) {
+        labRaf = requestAnimationFrame(tickLab);
+      }
+    }
+
+    pushNextChunk();
+    labRaf = requestAnimationFrame(tickLab);
   }
 
   let streamTimer = null;
-  function stopStreaming(reasonLabel = "手动停止流式输出") {
-    clearInterval(streamTimer);
+  let streamRaf = null;
+  let activeRevealCtrl = null;
+  let activeStreamMeta = null;
+
+  function pauseOrCancelStreamTimers() {
+    clearTimeout(streamTimer);
+    if (streamRaf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(streamRaf);
     streamTimer = null;
+    streamRaf = null;
+  }
+
+  function stopStreaming(reasonLabel = "手动停止流式输出") {
+    pauseOrCancelStreamTimers();
+    if (activeRevealCtrl) {
+      activeRevealCtrl.stop();
+    }
     if (state.streamingTurnId) {
       const turn = state.chatTurns.find((x) => x.id === state.streamingTurnId);
       if (turn) {
         turn.streaming = false;
-        turn.aiBody = renderStreamingMarkdown(turn.plainText || "（已手动停止生成）", false);
+        const kept = (activeRevealCtrl && activeRevealCtrl.receivedText) ? activeRevealCtrl.receivedText : (turn.plainText || "（已手动停止生成）");
+        turn.plainText = kept;
+        turn.renderedRevealText = kept;
+        turn.aiBody = renderStreamingMarkdown(kept, false);
       }
     }
+    activeRevealCtrl = null;
+    activeStreamMeta = null;
     state.streaming = false;
     state.streamingTurnId = null;
     setPetMood("idle");
@@ -3520,62 +4653,123 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     renderAll();
   }
 
-  function startStreamIntoTurn(turn, fullMarkdown, metricsText) {
-    clearInterval(streamTimer);
-    state.streaming = true;
-    state.streamingTurnId = turn.id;
-    state.activeTurn = turn.id;
-    state.chatFollowBottom = true;
-    turn.streaming = true;
-    turn.thinking = true;
-    turn.aiBody = "";
-    turn.plainText = "";
-    setPetMood("working");
-    renderAll({ scrollToBottom: true });
+  function runActiveRevealLoop() {
+    if (!activeRevealCtrl || !activeStreamMeta) return;
+    const { turn, fullMarkdown, metricsText } = activeStreamMeta;
 
-    let idx = 0;
-    streamTimer = setInterval(() => {
-      idx += 10;
-      const chunk = fullMarkdown.slice(0, idx);
-      turn.plainText = chunk;
+    function frame() {
+      if (!activeRevealCtrl || !state.streaming || state.streamingTurnId !== turn.id) return;
+      const nowSec = performance.now() / 1000;
+      const isHidden = typeof document !== "undefined" && Boolean(document.hidden);
+      const step = activeRevealCtrl.tick(nowSec, {
+        reduceMotion: state.reduceMotion,
+        instantReveal: !state.streamingRevealOn,
+        hidden: isHidden
+      });
+      const revealedStr = activeRevealCtrl.currentRevealedText;
+      turn.renderedRevealText = revealedStr;
 
-      if (state.scene === "chat") {
+      if (state.scene === "chat" && !isHidden) {
         const proseEl = document.querySelector(`[data-turn-prose="${turn.id}"]`);
-        if (proseEl) proseEl.innerHTML = renderStreamingMarkdown(chunk, true);
+        if (proseEl && (step.deltaCount > 0 || step.isComplete)) {
+          patchStreamingProseDom(proseEl, revealedStr, !step.isComplete, {
+            animateEdge: state.streamingRevealOn && !state.reduceMotion,
+            deltaCount: step.deltaCount,
+            useBlur: step.useBlur
+          });
+        }
         const sc = document.getElementById("mainScroller");
-        const hasSel = Boolean(window.getSelection && window.getSelection().toString().trim());
+        const hasSel = state.selectionActive || Boolean(window.getSelection && window.getSelection().toString().trim());
         const jumpPill = document.getElementById("btnJumpLatest");
-        if (sc && turn.id === state.chatTurns[state.chatTurns.length - 1].id) {
-          if (state.chatFollowBottom && !hasSel) {
+        if (sc && turn.id === state.chatTurns[state.chatTurns.length - 1]?.id) {
+          // NEVER force scroll down if user is reading history or selecting text, and NEVER wake hidden immersive chrome!
+          if (state.chatFollowBottom && !hasSel && state.chromeMode !== "immersive") {
+            ScrollChromeController.markProgrammaticScroll();
             sc.scrollTop = sc.scrollHeight;
             if (jumpPill) jumpPill.classList.remove("visible");
-          } else {
+          } else if (state.chromeMode !== "immersive") {
             if (jumpPill) jumpPill.classList.add("visible");
           }
         }
       }
 
-      if (idx >= fullMarkdown.length) {
-        clearInterval(streamTimer);
-        streamTimer = null;
+      if (step.isComplete) {
+        pauseOrCancelStreamTimers();
         turn.streaming = false;
-        turn.aiBody = renderStreamingMarkdown(fullMarkdown, false);
+        turn.plainText = activeRevealCtrl.receivedText || fullMarkdown;
+        turn.renderedRevealText = turn.plainText;
+        turn.aiBody = renderStreamingMarkdown(turn.plainText, false);
         turn.metrics = metricsText;
+        activeRevealCtrl = null;
+        activeStreamMeta = null;
         state.streaming = false;
         state.streamingTurnId = null;
         setPetMood("attention", 2200);
         emitHaptic("confirm", "流式定稿完成");
-        if (state.scene === "chat") renderAll({ scrollToBottom: state.chatFollowBottom });
+        if (state.scene === "chat" || state.scene === "pet") renderAll({ scrollToBottom: state.chatFollowBottom && !state.selectionActive });
         else { updateDynamicIsland(); showToast("后台流式回复已生成完毕 ✓"); }
+        return;
       }
-    }, 66);
+
+      streamRaf = requestAnimationFrame(frame);
+    }
+
+    if (typeof requestAnimationFrame === "function") {
+      streamRaf = requestAnimationFrame(frame);
+    }
+  }
+
+  function startStreamIntoTurn(turn, fullMarkdown, metricsText) {
+    pauseOrCancelStreamTimers();
+    state.streaming = true;
+    state.streamingTurnId = turn.id;
+    state.activeTurn = turn.id;
+    state.chatFollowBottom = true;
+    restoreFullChrome("开始流式输出");
+    turn.streaming = true;
+    turn.thinking = true;
+    turn.aiBody = "";
+    turn.plainText = "";
+    turn.renderedRevealText = "";
+    setPetMood("working");
+
+    const graphemes = splitGraphemes(fullMarkdown);
+    const ctrl = new ClioRevealController();
+    activeRevealCtrl = ctrl;
+    activeStreamMeta = { turn, fullMarkdown, metricsText };
+    ctrl.observeUpdate("", performance.now() / 1000);
+    renderAll({ scrollToBottom: true });
+
+    let emitted = 0;
+    const chunks = STREAM_TRACES.jitter;
+    let cIdx = 0;
+    function pump() {
+      if (!state.streaming || state.streamingTurnId !== turn.id) return;
+      const spec = chunks[cIdx % chunks.length];
+      cIdx++;
+      streamTimer = setTimeout(() => {
+        if (!state.streaming || state.streamingTurnId !== turn.id) return;
+        emitted = Math.min(graphemes.length, emitted + spec.chars);
+        const partial = graphemes.slice(0, emitted).join("");
+        turn.plainText = partial;
+        ctrl.observeUpdate(partial, performance.now() / 1000);
+        if (emitted >= graphemes.length) {
+          ctrl.finalize(fullMarkdown);
+        } else {
+          pump();
+        }
+      }, spec.dtMs);
+    }
+
+    pump();
+    runActiveRevealLoop();
   }
 
   function toggleStreamDemo() {
     if (state.streaming) { stopStreaming(); return; }
-    emitHaptic("light", "开始复杂 Markdown 15Hz 流式");
+    emitHaptic("light", "开始 Telegram 级流式墨韵渐显");
     const newId = Math.max(0, ...state.chatTurns.map((x) => x.id)) + 1;
-    const demoTurn = { id: newId, user: "演示复杂 Markdown 流式渲染：含未闭合代码围栏、增量表格、公式与自定义字体", metrics: "1.18s · 342 tok", aiBody: "", plainText: "", sources: null };
+    const demoTurn = { id: newId, user: "演示 Telegram 级渐进揭示 + 安全增量 Markdown：含未闭合代码围栏、表格、公式与自定义字体", metrics: "1.18s · 342 tok", aiBody: "", plainText: "", sources: null };
     state.chatTurns.push(demoTurn);
     startStreamIntoTurn(demoTurn, SECTION46_SAMPLE.fullMarkdown, "1.18s · 342 tok");
   }
@@ -3706,7 +4900,26 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       `;
     }
 
+    const showKeyboard = showComposer && state.chatKeyboardOpen && state.scene === "chat";
+    dock.classList.toggle("can-hide", (state.scene === "chat" || state.scene === "pet") && state.chromeMode === "immersive" && !getChromeLockReason(state));
+
+    if (showKeyboard) {
+      html += `
+        <div class="chat-sim-keyboard" id="chatSimKeyboard">
+          <div class="chat-sim-keyrow">${"QWERTYUIOP".split("").map((k) => `<span class="chat-sim-key">${k}</span>`).join("")}</div>
+          <div class="chat-sim-keyrow">${"ASDFGHJKL".split("").map((k) => `<span class="chat-sim-key">${k}</span>`).join("")}</div>
+          <div class="chat-sim-keyrow">
+            <span class="chat-sim-key" style="max-width:44px;">⇧</span>
+            ${"ZXCVBNM".split("").map((k) => `<span class="chat-sim-key">${k}</span>`).join("")}
+            <button type="button" class="chat-sim-key" id="btnDismissSimKb" style="max-width:56px; color:var(--accent); cursor:pointer;">完成</button>
+          </div>
+        </div>`;
+    }
+
     dock.innerHTML = html;
+
+    const disKb = document.getElementById("btnDismissSimKb");
+    if (disKb) disKb.onclick = () => { state.chatKeyboardOpen = false; state.composerFocused = false; renderAll(); };
 
     dock.querySelectorAll("[data-rm-att]").forEach((b) => {
       b.onclick = () => { state.pendingAttachments.splice(Number(b.dataset.rmAtt), 1); renderBottomDock(); };
@@ -3726,6 +4939,8 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     const inp = document.getElementById("composerInput");
     if (inp) {
       let cComposing = false;
+      inp.addEventListener("focus", () => { state.composerFocused = true; restoreFullChrome("输入框聚焦"); });
+      inp.addEventListener("blur", () => { state.composerFocused = false; });
       inp.addEventListener("compositionstart", () => { cComposing = true; });
       inp.addEventListener("compositionend", () => { cComposing = false; });
       inp.oninput = () => { inp.style.height = "auto"; inp.style.height = Math.min(76, inp.scrollHeight) + "px"; };
@@ -3832,6 +5047,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
   // ==================== Modal Sheets & Popovers ====================
   function renderModalLayer() {
     const layer = document.getElementById("phoneModalLayer");
+    if (!layer) return;
     layer.innerHTML = "";
 
     if (state.alwaysOnOpen) {
@@ -3903,7 +5119,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     if (state.modelMenuOpen) {
       const bd = document.createElement("div");
       bd.className = "popover-backdrop";
-      bd.innerHTML = `<div class="floating-popover" style="top:92px; right:12px; width:262px;" onclick="event.stopPropagation()"><div style="padding:10px 13px 6px; font-size:11.5px; font-weight:600; color:var(--ink-secondary);">思考深度</div><div style="padding:0 12px 10px; display:flex; gap:6px; flex-wrap:wrap; border-bottom:0.5px solid var(--rule);">${["关闭", "低", "中", "高", "自动"].map((lvl) => `<button type="button" class="filter-pill ${state.activeModel.thinking === lvl ? "active" : ""}" data-qm-think="${lvl}">${lvl}</button>`).join("")}</div><div style="padding:8px 13px 4px; font-size:11.5px; font-weight:600; color:var(--ink-secondary);">就地切换模型</div>${MODEL_CATALOG.map((m) => `<button type="button" class="row-item" style="min-height:40px; padding:7px 13px;" data-qm-model="${m.code}"><span class="vendor-badge" style="width:18px;height:18px;font-size:9.5px;">${m.vendor[0]}</span><span class="font-mono" style="font-size:12px; flex:1;">${m.code}</span><span style="font-size:11.5px; color:var(--accent);">${state.activeModel.code === m.code ? "✓" : ""}</span></button>`).join("")}<button type="button" class="row-item" style="min-height:42px; color:var(--accent); font-weight:600; font-size:13px;" id="btnOpenModelFull">模型角色设置 ›</button></div>`;
+      bd.innerHTML = `<div class="floating-popover" style="top:92px; right:12px; width:268px;" onclick="event.stopPropagation()"><div style="padding:10px 13px 6px; font-size:11.5px; font-weight:600; color:var(--ink-secondary);">思考深度</div><div style="padding:0 12px 10px; display:flex; gap:6px; flex-wrap:wrap; border-bottom:0.5px solid var(--rule);">${["关闭", "低", "中", "高", "自动"].map((lvl) => `<button type="button" class="filter-pill ${state.activeModel.thinking === lvl ? "active" : ""}" data-qm-think="${lvl}">${lvl}</button>`).join("")}</div><div style="padding:8px 13px 4px; font-size:11.5px; font-weight:600; color:var(--ink-secondary);">就地切换模型（含完整 Model ID）</div>${MODEL_CATALOG.map((m) => `<button type="button" class="row-item" style="min-height:42px; padding:6px 13px;" data-qm-model="${m.code}"><span class="vendor-badge" style="width:18px;height:18px;font-size:9.5px;">${m.vendor[0]}</span><div style="flex:1; min-width:0;"><div style="font-size:12.5px; font-weight:600;">${escHtml(m.shortName || resolveShortModelName(m.code))}</div><div class="font-mono" style="font-size:10px; color:var(--ink-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(m.code)}</div></div><span style="font-size:11.5px; color:var(--accent);">${state.activeModel.code === m.code ? "✓" : ""}</span></button>`).join("")}<button type="button" class="row-item" style="min-height:42px; color:var(--accent); font-weight:600; font-size:13px;" id="btnOpenModelFull">模型角色设置 ›</button></div>`;
       bd.onclick = () => { state.modelMenuOpen = false; renderModalLayer(); };
       layer.appendChild(bd);
       bd.querySelectorAll("[data-qm-think]").forEach((b) => { b.onclick = () => { state.activeModel.thinking = b.dataset.qmThink; state.modelMenuOpen = false; emitHaptic("selection", `切思考档: ${b.dataset.qmThink}`); renderAll(); }; });
@@ -4088,7 +5304,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     } else if (state.previewFile === "diff") {
       body = `<div class="clio-inner-block" style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; line-height:1.55;"><div style="color:var(--ink-secondary);">--- a/App/Sources/Haptics.swift</div><div style="color:var(--ink-secondary); margin-bottom:6px;">+++ b/App/Sources/Haptics.swift</div><div style="background:color-mix(in srgb, var(--danger) 14%, transparent); color:var(--danger);">- struct PressStyle { var haptic = true }</div><div style="background:color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok);">+ struct PressStyle { var haptic = false } // Sec 15</div></div>`;
     } else {
-      body = `<div class="font-reading"><h2 class="prose-h2">${escHtml(state.previewFile === "pdf" ? "iOS26-HIG-Materials.pdf · FTS5" : "设计系统 2.0 总结")}</h2><p class="prose-p">全 21 项交付文档与 iOS 26 UIKit 混合方案已校验完备，等待正式方向拍板。</p></div>`;
+      body = `<div class="font-reading">${state.previewFile === "pdf" ? `<h2 class="prose-h2">iOS26-HIG-Materials.pdf · FTS5</h2><p class="prose-p">与聊天正文及用户气泡共用同一个 FontOpticalProfile + SafeLineBox 排版度量（此处演示书案长文阅读一致性）。</p>` : renderStreamingMarkdown(SECTION46_SAMPLE.fullMarkdown, false)}</div>`;
     }
     sh.innerHTML = `<div class="sheet-bar"><strong style="font-size:15px;">文件预览</strong><button type="button" class="glass-pill pressable" id="btnClosePreview" style="min-height:30px; padding:3px 12px; font-size:12.5px; font-weight:600;">完成</button></div><div style="padding:14px 16px; overflow-y:auto; flex:1;">${body}</div>`;
     layer.appendChild(sh);
@@ -4490,9 +5706,66 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     });
   }
 
-  // Boot
-  bindStudioControls();
-  renderAll();
-  startPetLoop();
-  requestAnimationFrame(renderHapticCanvas);
+  const exportedEngineApi = {
+    parseStreamingMarkdownBlocks,
+    renderInlineMd,
+    renderStreamingMarkdown,
+    splitGraphemes,
+    ClioRevealController,
+    ScrollChromeController,
+    computeSafeLineBox,
+    resolveToolAggregateStatus,
+    resolveShortModelName,
+    resolveReadingTypography,
+    patchStreamingProseDom,
+    detectFontEnvironment,
+    getChromeLockReason,
+    bindSlideTrack,
+    attachImeSafeInput,
+    STREAM_TRACES,
+    SECTION46_SAMPLE,
+    getState: () => state,
+    setState: (patch) => Object.assign(state, patch),
+    renderAll
+  };
+  if (typeof window !== "undefined") window.CLIO_STREAM_ENGINE = exportedEngineApi;
+  if (typeof globalThis !== "undefined") globalThis.CLIO_STREAM_ENGINE = exportedEngineApi;
+
+  // Boot (skipped automatically when loaded inside headless Node unit test sandbox)
+  if (!globalThis.__CLIO_TEST_MODE__) {
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && state.streaming && activeRevealCtrl) {
+          runActiveRevealLoop();
+        }
+      });
+      if (document.fonts) {
+        const refreshFontStrip = () => {
+          detectFontEnvironment();
+          const strip = document.getElementById("fontStatusStrip");
+          if (strip) strip.outerHTML = renderFontStatusStripHtml();
+        };
+        if (typeof document.fonts.load === "function") {
+          Promise.allSettled([
+            document.fonts.load("400 17px ClioKaiWeb", "克"),
+            document.fonts.load("500 17px ClioKaiWeb", "克"),
+            document.fonts.load("400 14px MapleMonoWeb", "0"),
+            document.fonts.load("600 14px MapleMonoWeb", "0"),
+            document.fonts.load("400 14px ClioMonoCNWeb", "文"),
+            document.fonts.load("400 20px ClioSealWeb", "克")
+          ]).then(refreshFontStrip).catch(() => {});
+        }
+        if (typeof document.fonts.addEventListener === "function") {
+          document.fonts.addEventListener("loadingdone", refreshFontStrip);
+        }
+        if (document.fonts.ready) {
+          document.fonts.ready.then(refreshFontStrip).catch(() => {});
+        }
+      }
+    }
+    bindStudioControls();
+    renderAll();
+    startPetLoop();
+    requestAnimationFrame(renderHapticCanvas);
+  }
 })();

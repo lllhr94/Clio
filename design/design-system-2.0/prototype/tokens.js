@@ -29,7 +29,8 @@ window.CLIO_TOKENS_V2 = {
       trackingEm: "0em",
       lhOffset: 0,
       boldWeight: 600,
-      note: "Clio AC 默认搭配：中文极清耐读，数字与英文呈出版衬线气质，文楷仅留作字标与落款。"
+      requiresAppleSystem: true,
+      note: "Clio AC 默认搭配：中文极清耐读，数字与英文呈出版衬线气质；非 Apple 平台已标记回退，待 iOS 真机核验。"
     },
     sans: {
       label: "苹方 / 无衬线（PingFang SC + SF Pro）",
@@ -38,6 +39,7 @@ window.CLIO_TOKENS_V2 = {
       trackingEm: "-0.004em",
       lhOffset: 0,
       boldWeight: 600,
+      requiresAppleSystem: true,
       note: "极清现代黑体，长段技术对比与代码混排最快扫读。"
     },
     serif: {
@@ -45,19 +47,37 @@ window.CLIO_TOKENS_V2 = {
       fontCss: '"New York", "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif',
       opticalScale: 1.03,
       trackingEm: "0.002em",
-      lhOffset: 0.03,
+      lhOffset: 0,
       boldWeight: 600,
-      note: "传统出版宋体风格，内部 +3% 字面光学微补。"
+      requiresAppleSystem: true,
+      note: "传统出版宋体风格，内部 +3% 字面光学微补；与 SafeLineBox 共用基准行高不额外抬高。"
     },
     wenkai: {
       label: "Clio Kai（霞鹜文楷 Medium）",
-      fontCss: '"ClioKai-Medium", "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", "FangSong", serif',
+      fontCss: '"ClioKaiWeb", "ClioKai-Medium", sans-serif',
       opticalScale: 1.045,
-      trackingEm: "0.004em",
-      lhOffset: 0.04,
-      boldWeight: 600,
-      note: "实测 xH=468、字面略小且无原生粗体：内部 +4.5% 视觉字号补偿并收柔粗体字重。"
+      trackingEm: "0.002em",
+      lhOffset: 0,
+      boldWeight: 500,
+      bundledFontFamily: "ClioKaiWeb",
+      boldStrokeWidth: -2.2,
+      tableBoldStrokeWidth: -1.8,
+      note: "原型直载仓库 App/Fonts/ClioKai-Medium.ttf（实测 xH=468、hhea 1.184×）：内部 +4.5% 字面补偿 + 0.002em 微距，并禁用系统楷体伪装。"
     }
+  },
+  streamingReveal: {
+    velocityTau: 0.12,
+    gapEwmaAlpha: 0.4,
+    initialGap: 0.5,
+    stallFloor: 0.10,
+    finalizeTime: 0.28,
+    frameDtCap: 0.05,
+    initialInputRate: 40,
+    edgeDurationMs: 160,
+    blurRadiusPx: 1.4,
+    translateYPx: 1.5,
+    scale: 1.0,
+    burstBlurCutoffCharsPerSec: 80
   },
   fontCombos: [
     { id: "A", title: "A · 无衬线 + 无衬线", face: "sans", hStyle: "sans", desc: "标题与正文全用系统无衬线；最冷静理性，略少书卷温度。" },
@@ -432,5 +452,30 @@ window.CLIO_TOKENS_V2 = {
       moreMenuTitle: "卷边拾零",
       hintSuffix: "旁注已开"
     }
-  }
+  },
+  scrollAwareChrome: {
+    enterDeltaPx: 44,
+    exitDeltaPx: 56,
+    nearBottomPx: 80,
+    restoreBottomPx: 48,
+    fastVelocityPxPerSec: 280,
+    transitionMs: 220
+  },
+  shortModelAliases: {
+    "deepseek-r1": "DeepSeek R1",
+    "claude-sonnet-4": "Sonnet 4",
+    "gpt-4o-mini": "GPT-4o mini",
+    "imagen-3": "Imagen 3",
+    "anthropic/claude-sonnet-4-20250514": "Sonnet 4",
+    "deepseek/deepseek-reasoner": "DeepSeek R1"
+  },
+  toolStatuses7: [
+    { key: "pending", icon: "○", label: "等待执行", tone: "neutral" },
+    { key: "running", icon: "◐", label: "正在执行", tone: "accent" },
+    { key: "succeeded", icon: "✓", label: "全部成功", tone: "ok" },
+    { key: "partial", icon: "△", label: "部分成功", tone: "warn" },
+    { key: "failed", icon: "✕", label: "全部失败", tone: "danger" },
+    { key: "cancelled", icon: "■", label: "用户取消", tone: "muted" },
+    { key: "waiting_approval", icon: "⛨", label: "等待审批", tone: "seal" }
+  ]
 };

@@ -60,3 +60,22 @@ $$R_{\text{inner}} = \max\bigl(8,\ R_{\text{outer}} - \text{padding}\bigr)$$
    - **我的行**：`32×32pt` 圆形头像（[MeAvatar.swift](../../../App/Sources/Pet/MeAvatar.swift)）贴于右对齐气泡外侧；用户气泡最大宽度严格扣减 `faceSize + 8pt`，保证 AX3 大字下右侧零裁切。
    - **连续归并 & 时间戳**：同一说话人连续多段仅首段展示头像；跨 30 分钟对话自动在段间居中插入 `.tabularNums` 时间戳。
    - **正文即入口**：直接点击正文中的助手头像/名字或我的头像，就地唤起对应身份编辑面板。
+
+---
+
+## 六、12 项悬浮控件协调 (`ChatChromeCoordinator`) 与 Scroll-Aware 沉浸式阅读
+
+### 1. 统一浮层协调（禁止各控件独立算位置互相打架）
+由单一协调器 `ChatChromeCoordinator` 统筹管理以下 **12 个浮层与安全区**：
+`顶部导航栏 (TopBar)` · `模型选择菜单` · `底部输入栏 (Composer)` · `任务状态条 / PlanCard` · `就地审批条 (InlineApproval)` · `InlineAsk 提问卡` · `浏览器接管提示` · `回到最新胶囊` · `选字/消息共享浮条` · `陪伴宠物 (PetStage)` · `系统键盘高度` · `系统安全区 (SafeArea)`。
+
+- **底部内容区动态内距与抗透字垫层**：`UICollectionView.contentInset.bottom` 必须等于「当前底栏栈实测高度 + 宠物立沿余量 + 键盘或安全区 + 12pt 呼吸」；`.bottom-dock-area` 铺设纸色底 + 顶沿 `18pt` `bg -> transparent` 渐隐遮罩（Paper Scrim），高不透明度玻璃（≈92% 纸色基底 + Blur），彻底消灭键盘弹出后正文文字透过输入栏干扰提示词的缺陷。
+- **顶部导航栏单行布局优先级**：左圆钮固定 -> 中间身份胶囊（短态 ≤4 字，超宽稳态截断，禁止状态切换抖动整栏宽）-> 右侧合并模型短名（`ModelChip` + `⋯`），小屏与 AX 大字按优先级协调而不溢出。
+
+### 2. Scroll-Aware Chrome（上滑沉浸阅读状态机，与流式渐显共用正文锚点）
+
+| 状态 / 事件 | 触发阈值与行为契约 | 安全锁与零跳位保护 |
+|---|---|---|
+| **`full` → `immersive`** | 仅当列表可滚动、`distBottom > 80pt`，且连续向上滑动累积 `>= 44pt` 时收起顶栏/底栏/宠物，`contentInset` 平滑让出完整阅读视窗 | **9 种强锁定条件任一命中即锁定 `full` 禁止收起**：键盘开启 / 输入框聚焦 / 选字模式 (`selectionActive`) / 语音听写 / VoiceOver / 引用编辑 / 待审批 (`pending_approval`) / 待提问 (`pending_ask`) / 浏览器接管 |
+| **沉浸态必备可达操作** | 顶部显轻量化可恢复胶囊（`助手名 · 态 · 恢复控件 ▾`）；底部保留轻量「`↓ 回到最新`」，流式期间强制并列保留「`■ 停止生成`」 | **绝不允许**因沉浸收起而无法打断正在生成的回答 |
+| **`immersive` → `full`** | 向下滑累积 `>= 56pt`、距底 `<= 48pt`（`restoreBottomPx`）、点按恢复胶囊或触发任意锁定动作立即展开 | **程序性滚动免疫 (`programmaticUntil 140ms`)**；状态切换前后锁住 `scrollHeight - scrollTop` 距离，确保正文阅读锚点 `Δ = 0.0pt` 不因顶底栏高度变化而跳动 |

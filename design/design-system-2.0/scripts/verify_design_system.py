@@ -43,8 +43,9 @@ REQUIRED_FILES = [
     DS / "engineering" / "02-swiftui-uikit-implementation.md",
     DS / "engineering" / "03-phased-refactoring-roadmap.md",
     DS / "engineering" / "04-device-qa-and-acceptance-rubric.md",
-    # Scripts & Prototype v5 (Deliverables 9-10)
+    # Scripts & Prototype v14 (Deliverables 9-10)
     DS / "scripts" / "build_pet_sprites.py",
+    DS / "scripts" / "test_prototype_behavior.mjs",
     DS / "scripts" / "verify_design_system.py",
     DS / "prototype" / "index.html",
     DS / "prototype" / "styles.css",
@@ -243,6 +244,43 @@ def main() -> int:
         )
         if chk.returncode != 0:
             errors.append(f"node --check failed on prototype/{js_file}: {chk.stderr.strip()}")
+
+    # Verify @font-face bundled App/Fonts/*.ttf references exist on disk
+    styles_css = (DS / "prototype" / "styles.css").read_text(encoding="utf-8")
+    expected_ttfs = (
+        "App/Fonts/ClioKai-Regular.ttf",
+        "App/Fonts/ClioKai-Medium.ttf",
+        "App/Fonts/MapleMono-Regular.ttf",
+        "App/Fonts/MapleMono-SemiBold.ttf",
+        "App/Fonts/ClioMonoCN-Regular.ttf",
+        "App/Fonts/ClioSeal-Regular.ttf",
+    )
+    for rel_ttf in expected_ttfs:
+        if rel_ttf not in styles_css:
+            errors.append(f"prototype/styles.css missing @font-face reference: {rel_ttf}")
+        elif not (ROOT / rel_ttf).is_file():
+            errors.append(f"Missing real font target on disk: {rel_ttf}")
+
+    # Verify DS 2.0 v2.3.0 structural invariants in tokens.v2.json
+    tokens_v2 = json.loads((DS / "specs" / "tokens.v2.json").read_text(encoding="utf-8"))
+    if tokens_v2.get("schemaVersion") != "2.3.0":
+        errors.append(f"Expected tokens.v2.json schemaVersion 2.3.0, got {tokens_v2.get('schemaVersion')}")
+    if tokens_v2.get("streamingReveal", {}).get("planSelected") != "C":
+        errors.append("tokens.v2.json streamingReveal.planSelected must be 'C'")
+    single_truth = tokens_v2.get("typography", {}).get("fontOpticalCalibration", {}).get("singleTruthSpacing", {})
+    if single_truth.get("lineSpacing") != 0 or single_truth.get("maximumLineHeight") != 0:
+        errors.append("tokens.v2.json fontOpticalCalibration.singleTruthSpacing must enforce lineSpacing=0 & maximumLineHeight=0")
+
+    # Execute comprehensive Node behavioral regression test suite
+    beh = subprocess.run(
+        ["node", str(DS / "scripts" / "test_prototype_behavior.mjs")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if beh.returncode != 0:
+        errors.append(f"test_prototype_behavior.mjs failed:\n{beh.stdout}\n{beh.stderr}")
 
     diff_res = subprocess.run(
         ["git", "diff", "--name-only", "--", ":!design/design-system-2.0"],

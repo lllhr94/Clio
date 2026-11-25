@@ -1,7 +1,13 @@
 # Clio DS 2.0 真机测试与设计验收清单（Deliverable #21）
 
-> 严格执行任务书第二十节加权评分表、**11 项一票否决红线**，以及 **60Hz 标准屏 vs 120Hz ProMotion 高刷屏** 双机型独立真机实测规程。
-> **严正说明**：在真实 iPhone 打包跑完下列实测前，所有性能帧率与物理震感一律标记为 `[待真机实录补全]`，绝不拿模拟器或网页原型当作真机实测结果。
+> 严格执行任务书第二十节加权评分表、**11 项一票否决红线**、**生产真机缺陷回归基线**，以及 **60Hz 标准屏 vs 120Hz ProMotion 高刷屏** 双机型独立真机实测规程。
+>
+> **五层验证严格分级红线**：
+> 1. `已通过静态校验`：脚本静态检查（WCAG、相对路径、`App/Fonts/*.ttf` 引用、JS 语法、零生产文件修改）。
+> 2. `已通过自动化行为测试`：`scripts/test_prototype_behavior.mjs` 10 项全量回归（解析前缀全切、600 次模糊测试、EWMA 6 Trace 渐显、增量块零重建、ScrollChrome 滞回/9 锁、7 态汇总、审批与 IME 运行态）。
+> 3. `已完成浏览器视觉对照`：Chrome Headless CDP 实载 6 个 `App/Fonts/*.ttf`、5 字号对比、模拟键盘抗透字、Scroll-Aware 沉浸收放、Plan C 实机渐显与 A/B/C 对照。
+> 4. `待 Swift 原生实现`：SwiftUI / UIKit / CoreText / `ChatChromeCoordinator` / `ClioRevealController` / `Web.swift` Fake-IP 工单代码改造（当前零改动 Swift 源码）。
+> 5. `待 iPhone 真机验证`：`New York` / 苹方 / 宋体真机 CoreText 测量、60Hz/120Hz `CADisplayLink` 实帧率、Core Haptics 实体手感与真机 UI 缺陷最终闭环（未到真机前严禁宣称已实测过真机性能）。
 
 ---
 
@@ -49,3 +55,25 @@
 - [ ] 聊天列表全速惯性甩动下，验证 `.glassFace` 顶底悬浮栏 + `glassBubble` 对话流的 `FrameMeter` 稳定运行在 120fps（`Hitches` 记录零 Red Hitch）；
 - [ ] `DeskSlideHost` 抽屉跟指速率与离手速度继承在 120Hz 下平滑无撕裂；
 - [ ] `Core Haptics` 真机实体感受验收：确认普通按钮彻底静默、`StopRuler` 越过推荐基准档（`17pt` / `1.65×` / `100%`）的 `detent` 手感清晰不粘连、朱印三段 `thud()` 干脆有力、开启语音听写期间零震动噪声干扰。
+
+---
+
+## 四、真实生产版本 UI 缺陷与 15 项端到端验收矩阵 *(DS 2.0 补充回归基线)*
+
+| # | 问题 / 场景类别 | 旧生产版真实缺陷 | DS 2.0 验收条件 & 目标状态 | 当前验证分层 |
+|---|---|---|---|---|
+| **D1** | **顶栏状态溢出 (P0)** | `Team.swift:1513` 长句「已递出，等它开口」挤压撑溢胶囊 | 短态 ≤4 字，不引起顶栏宽抖动，AX 大字安全截断 | 原型+Chrome 已核 / Swift 待改 |
+| **D2** | **键盘透字 (P0)** | 键盘弹出后正文穿透输入栏玻璃与提示词重叠 | 纸色高不透明玻璃 + 18pt 顶部渐隐 Paper Scrim 零可辨透字 | 原型+Chrome 已核 / Swift 待改 |
+| **D3** | **浮层互相遮挡 (P0)** | 回到底部、宠物、任务条与输入栏独立算位重叠 | 统一 `ChatChromeCoordinator` 协调 12 要素 + 动态 `contentInset` | 原型+Chrome 已核 / Swift 待改 |
+| **D4** | **运行状态四处重复 (P1)** | 顶栏、思考框、任务条、输入栏同屏重复报状态 | 职责清晰切分；普通运行与输入控制合流，仅审批/接管/提问升格 | 原型+文档已定 / Swift 待改 |
+| **D5** | **模型名长 ID 截断 (P1)** | 长厂商 ID 霸占顶栏胶囊 | `shortModelName` 首显简称 (`Sonnet 4`)，全名收进菜单 | 单测+Chrome 已核 / Swift 待改 |
+| **D6** | **失败搜索显绿勾 (P1)** | `ChatTrace.swift:999` 检索零命中/失败仍呈绿 ✓ | 严格 7 态 (`succeeded/partial/failed/...`) 绝不以绿勾欺骗用户 | 单测+Chrome 已核 / Swift 待改 |
+| **D7** | **玻璃过度叠加 & 垂直噪点 (P1)** | 多层玻璃叠灰雾 + 时间戳/头像等占据首屏正文 | 克制玻璃收敛，隐藏多余辅噪，默认突出首屏正文阅读比例 | 规范+原型已定 / Swift 待改 |
+| **D8** | **SafeLineBox 与气泡一致性 (P1)** | `userBody` 硬编码系统字体，`minimumLineHeight + lineSpacing` 双倍累加 | 消除 `lineSpacing` / 无条件 `+2pt`，7 处阅读面与用户气泡完全对齐 | 单测+Chrome 已核 / Swift 待改 |
+| **D9** | **Markdown 流式不死循环 (P0)** | 孤立 `#`、`#标签`、`\|`、截断 token 可能卡死或吞字符 | 100% 前缀扫测 + 600 次 Unicode/Emoji 模糊测试通过，零吞字 | Node 自动化测试已核 / Swift 待改 |
+| **D10** | **Telegram 级方案 C 渐显** | 旧固定批次抖动/整块重排破坏选区或闪跳 | EWMA + 图素切片 + 已定稿零重建 + 选区锁 + 200ms 微糊；>80/s 与减动效自动降级 | Node + Chrome 实验室已核 / Swift 待改 |
+| **D11** | **Scroll-Aware Chrome** | 历史长文阅读时顶底始终占空间；收起后又难找停钮 | 上滑 `>=44pt` 收起，9 锁永保护，保留恢复胶囊与流式停止钮，切换 `Δ=0pt` | 单测+Chrome 已核 / Swift 待改 |
+| **D12** | **审批中断防误批 (P0)** | `pointercancel` / 来电 / 切后台可能导致意外批准 | 滑超 84% 遇 `pointercancel`/失焦必回弹，`pointerup` 方可批准 + 无障碍钮 | Node 运行态单测已核 / Swift 待改 |
+| **D13** | **中文 IME & 全局搜** | 输入拼音未上屏即重建焦点丢字 | 全搜索框强制 `compositionstart/end` 无损保护 | Node 运行态单测已核 / Swift 待改 |
+| **D14** | **真实字体光学校验** | 原型靠系统回退字体冒充文楷 | `App/Fonts/*.ttf` 全加载，实测 `ClioKai-Medium`；苹果字体待真机 | Chrome 已核文楷/等宽 / 真机待核苹果字 |
+| **D15** | **Fake-IP SSRF 冲突** | TUN 代理 `198.18.0.0/15` 被 `LocalAddress.isLocalV4` 误阻断 | **独立网络兼容工单**跟进提示与受控例外，严禁削弱私网 SSRF 屏障 | 已定独立工单方案 / 网络修复待排 |

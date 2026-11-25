@@ -117,25 +117,25 @@
 
 ---
 
-### 4.3 内部 7 维光学校准表（只内部消化，不暴露任何额外设置给用户）
+### 4.3 内部光学校准表（只内部消化，不暴露任何额外设置给用户）
 
 ```text
 FontOpticalProfile {
-  opticalScale       // 视觉字面大小补偿（如 ClioKai-Medium = 1.045×，避免 17pt 下显小；NewYork 英数 = 1.02×）
-  lineHeightOffset   // 基于实测 naturalRatio 对基线节奏的微小补偿，不改变用户选择的 1.35~1.80 倍意图
-  trackingEm         // 仅针对特定偏紧字体做 ≤ 0.005em 呼吸字距（严禁影响 code/URL/数学）
-  latinBaselineShift // 中英基线对齐补偿（New York + PingFang 上抬 +0.25pt，避免英文字脚略沉）
-  boldStrategy       // 原生有粗体则用 Semibold(600)；仅单字重文楷在正文描边 -2.2、表格内降为 -1.8 防糊
-  fallbackSafePadPt  // Emoji / 生僻字 / 数学符号回退字框安全边距 (+2.0pt)，只保护不强制裁剪
-  paragraphScale     // 换大字面/紧凑字体时按比例保持段落间白，确保呼吸节奏不断
+  opticalScale       // 视觉字面大小补偿（如 ClioKai-Medium = 1.045×；STSongti-SC = 1.03×；NewYork+PingFang = 1.00×）
+  lhOffset           // 统一归 0：不得再叠额外全局行距偏移，保留用户 1.35~1.80× 倍率本意
+  trackingEm         // 实测调校：ClioKai-Medium = 0.002em 微呼吸（较旧 0.004em 更紧致自然）；PingFang = -0.004em；STSongti = 0.002em（严禁影响 code/URL/数学）
+  boldStrategy       // 原生有粗体用 Semibold(600)；仅单字重文楷在正文描边 -2.2、表格降为 -1.8 防糊
+  organicLineBox     // 单行含超高 Emoji/数学/回退字时，依靠 maximumLineHeight = 0 让 CoreText 按该行实需自然撑高，严禁对普通中文行无条件加 fallbackSafePadPt (+2pt)
 }
 ```
 
+> **浏览器真实字体与 iOS 验证分层记录**：已在 Chrome Headless CDP 中通过 `@font-face` 直接加载仓库 `App/Fonts/ClioKai-Regular.ttf` (400)、`ClioKai-Medium.ttf` (500)、`MapleMono-Regular.ttf` (400)、`MapleMono-SemiBold.ttf` (600)、`ClioMonoCN-Regular.ttf` (400) 与 `ClioSeal-Regular.ttf` (400)（6 个字体面均达到 `status: "loaded"`，无系统楷体伪装），实测 `17pt -> 18.0px`（`1.045×` 半点取整）、`0.002em`、`29.7px` 行高（用户气泡同步 `18.0px / 27.54px`）清晰平衡。`New York` / `PingFang SC` / `STSongti-SC` / `STKaiti-SC` 为 Apple 系统/按需字体，非 Apple 平台明确回退并标记 **`[待 iPhone CoreText 真机核验]`**。
+
 ---
 
-### 4.4 替换旧 `extraSpacing`：统一 `SafeLineBox` 安全行框计算器
+### 4.4 替换旧 `extraSpacing`：统一无重复计算 `SafeLineBox` 解析器
 
-**直接替换** [Pref.swift:81](../../../App/Sources/Design/Pref.swift#L81) 与 [Ink.swift:573](../../../App/Sources/Design/Ink.swift#L573) 的 `max(0, size * m - natural)`（禁止同时保留两套职责相同的排版计算引擎）：
+**直接替换** [Pref.swift:81](../../../App/Sources/Design/Pref.swift#L81) 与 [Ink.swift:573](../../../App/Sources/Design/Ink.swift#L573) 的 `max(0, size * m - natural)`（消除 `minimumLineHeight + lineSpacing` 双重叠加与无条件 `fallbackSafePadPt` 膨胀；禁止并存两套计算引擎）：
 
 ```swift
 // 单一真理排版行框解析器（伪代码契约，正式工程合入时直接替换 Pref.leading / Ink.leading）
@@ -143,21 +143,21 @@ let profile = FontOpticalProfile.resolve(for: face)
 let effectivePt = (userReadingSize * profile.opticalScale * 2).rounded() / 2   // 半点步进锁定清晰栅格
 let resolvedFont = Ink.uiFace(effectivePt, face: face)
 
-let naturalBox = ceil(resolvedFont.ascender - resolvedFont.descender)          // 实测字面物理安全下限
-let targetLineHeight = userReadingSize * contentMultiplier + profile.lineHeightOffset
-let safeMinimumLineHeight = max(targetLineHeight, naturalBox + profile.fallbackSafePadPt)
+let naturalBox = ceil(resolvedFont.ascender - resolvedFont.descender)          // 实测字面物理安全下限（不含额外无条件 +2pt padding）
+let targetLineHeight = userReadingSize * contentMultiplier                     // profile.lhOffset == 0，不扭曲用户倍距
+let safeMinimumLineHeight = max(targetLineHeight, naturalBox)
 
 paragraphStyle.minimumLineHeight = safeMinimumLineHeight
-paragraphStyle.maximumLineHeight = 0   // 严禁设小额 maximumLineHeight！允许个别复杂数学/Emoji自然撑开绝不裁切头脚
-paragraphStyle.lineSpacing = max(0, (safeMinimumLineHeight - resolvedFont.lineHeight) * 0.35)
+paragraphStyle.maximumLineHeight = 0   // 核心安全机制：仅在个别含 Emoji/数学分式/高阶回退字形的单行由 CoreText 自然撑开，绝不裁切
+paragraphStyle.lineSpacing = 0         // 严禁再叠 * 0.35 额外 lineSpacing，防止双倍行距漂移！
 ```
 
 ---
 
 ### 4.5 全场景渲染一致性与缓存失效铁律
 
-以下 **9 处全部共用同一个 `ChatResolvedMetrics + FontOpticalProfile` 解析结果**：
-`CoreText 瓦片正文` · `ChatProseBuilder` · `ChatResolvedMetrics` · `ProseView (SwiftUI)` · `用户消息气泡 (userBody)` · `正文长按选字模式` · `流式 Markdown 渲染` · `定稿态 Markdown` · `设置 › 字体与版式实时小样`。
+以下 **7 处核心阅读面全部共用同一个 `ChatResolvedMetrics + FontOpticalProfile + SafeLineBox` 解析结果**（并明确消除 [ChatListModels.swift:300](../../../App/Sources/Reading/ChatListUIKit/ChatListModels.swift#L300) `userBody` 的系统字号硬编码脱节）：
+`CoreText 瓦片正文` · `ChatProseBuilder` · `ProseView (SwiftUI)` · `用户消息气泡 (userBody)` · `正文长按选字与引用` · `流式与定稿 Markdown（含书案预览）` · `设置 › 外观与字号实况样张`。
 
 **硬性禁止与缓存失效规则**：
 1. 严禁流式阶段用系统字体、定稿再切自定义字体导致高度/字重跳变；

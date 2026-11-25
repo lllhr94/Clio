@@ -47,9 +47,27 @@
 - **跟底滚动状态保护 (`ChatFollowState`)**：流式输出绝不允许无条件强制 `scrollTop = bottom`；当用户主动向上浏览历史或开启长按选字时，立刻暂停自动跟底并在输入框上方亮出「↓ 回到最新（生成中）」胶囊，点按再恢复跟底锁定。
 - **审批手势取消护栏 & 无障碍等效路径 (`ApproveView`)**：使用 `@GestureState`（系统手势被通知中心/来电中断时自动回弹归零）搭配 `.onChange(of: scenePhase)` 中断校验，**仅当同一活跃拖动手势在 `onEnded` 超过 `84%` 阈值且应用处于 `.active` 前台时方可执行批准**；同时保留完整 Taint/命令展示的无障碍等效点按确认按钮供 VoiceOver 与全键盘操作使用。
 
-### 6. `FontOpticalProfile` + `SafeLineBox` 单一排版引擎落地契约
-- 直接替换 [Pref.swift:81](../../../App/Sources/Design/Pref.swift#L81) 与 [Ink.swift:573](../../../App/Sources/Design/Ink.swift#L573) 的旧 `leading` 算法（不并存两套实现）：
-  1. `ChatResolvedMetrics` 与 `ProseView` 共同消费 `FontOpticalProfile`（依据实测 `App/Fonts/*.ttf`：`ClioKai-Medium` 内置 `opticalScale = 1.045`、描边粗体 `-2.2`/`-1.8`）和 `SafeLineBox`（`minimumLineHeight = max(target, ascender - descender + safePad)`，且 `maximumLineHeight = 0` 不裁切 Emoji 与数学公式）；
-  2. 将 `ChatResolvedMetrics.headingSize(level:)` 收敛至克制阶梯（H1 `1.26×`，H2 `1.12×`，H3 `1.00× Semibold`），将 `ChatListModels.swift:300` 的 `userBody` 并入同套阅读字号与字体；
-  3. 收敛 `codeBlockFonts` 至 `Ink.mapleWithChinese` 单一 `1:2` 对齐方案；
-  4. `FontShelf` 随选字体（宋体/楷体）加载成功、切换字体/字号/行距/AX 字号时，递增 `fontEpoch` 并清理预排版高度与瓦片缓存（缓存键含 `(face, fontEpoch, readingSize, lineHeight, widthKey, axSize)`），确保流式、定稿、选字与设置预览 `100%` 一致且零滚动主线程重排。
+### 6. `FontOpticalProfile` + 无重复计算 `SafeLineBox` 单一排版引擎
+- 直接替换 [Pref.swift:81](../../../App/Sources/Design/Pref.swift#L81) 与 [Ink.swift:573](../../../App/Sources/Design/Ink.swift#L573) 的旧 `leading` 算法（严禁并存两套计算引擎）：
+  1. `SafeLineBox` 严格令 `lineSpacing = 0`、`maximumLineHeight = 0`、`lhOffset = 0`，普通文本行高 `= max(readingSize * contentMultiplier, ceil(ascender - descender))`，绝不对普通中文无条件叠 `+2pt fallbackSafePadPt` 或 `*0.35` 双倍行距，仅靠 `maximumLineHeight = 0` 让含 Emoji/数学分式的单行自然撑开；
+  2. 将 `ChatResolvedMetrics.headingSize(level:)` 收敛至克制阶梯（H1 `21.5pt`、H2 `19pt`、H3 `17pt Semibold`、H4 `17pt Medium`），并修复 [ChatListModels.swift:300](../../../App/Sources/Reading/ChatListUIKit/ChatListModels.swift#L300) `userBody` 使 7 处阅读面字号/字体/行框比例完全同步；
+  3. 收敛 `codeBlockFonts` 至 `Ink.mapleWithChinese` 单一 `1:2` 对齐方案；`ClioKai-Medium` 保留内部 `1.045×`、`0.002em`、描边粗体 `-2.2`（表格 `-1.8`）；
+  4. `FontShelf` 随选字体（宋体/楷体）加载成功或阅读配置切换时递增 `fontEpoch` 全量清缓存。
+
+### 7. Clean-Room Telegram 级流式渐显与 `ChatChromeCoordinator` / Scroll-Aware Chrome
+- **Clean-Room 渐显管线（GPL-3.0 原创 Swift 实现，仅借鉴构思、零抄代码）**：
+  - `ClioRevealController` 独立维护 EWMA 到词间隔（`gapEwmaAlpha = 0.4`, `velocityTau = 0.12s`, `finalizeTime = 0.28s`, `frameDtCap = 0.05s`）与图素安全计数；
+  - 底层以**宽容增量块协调**（已闭合前序块保持对象恒定零重排，当前活跃选区块延迟替换）配合 CoreText 行矩形 + `CALayer` 前沿线性遮罩实现平滑推进，严格受 `Pref.fade`、`UIAccessibility.isReduceMotionEnabled`、后台退避与 `velocity > 80` 图素/秒突发直出护栏控制。
+- **`ChatChromeCoordinator` 与 `UICollectionView.contentInset` 协调**：
+  - 统一协调 `TopBar / ModelMenu / BottomDock / PlanCard / InlineApproval / InlineAsk / RoamSlip / JumpLatest / SelectionToolbar / PetStage / Keyboard / SafeArea` 共 12 个表面；
+  - `BottomDock` 顶部配纸色 Paper Scrim + ≈92% 纸色玻璃防透字；`Scroll-Aware Chrome` 上滑历史超滞回阈值平滑收起、保留「恢复控件」与生成期「停止生成」，触碰输入/选字/审批/提问/接管/VoiceOver/程序性滚动立刻锁定为 `full` 且保持 `scrollHeight - scrollTop` 阅读锚点 `Δ = 0.0pt`。
+
+---
+
+## 三、独立网络兼容工程工单：Fake-IP TUN 代理环境下的 SSRF 检测冲突（单独立案，不改设计系统范围）
+
+> **发现背景**：真机诊断发现网页检索在开启 Surge / Clash / Shadowrocket TUN Fake-IP 代理时误判阻断，经只读排查定位至 [Web.swift:753-759](../../../AgentKit/Sources/AgentKit/Web.swift#L753-L759) 与 [Web.swift:2054-2106](../../../AgentKit/Sources/AgentKit/Web.swift#L2054-L2106)。
+>
+> - **根因**：`LocalAddress.isLocalV4`（`Web.swift:2103`）将 RFC 2544 基准网段 `198.18.0.0/15` 列为内网禁用 IP；而在 iOS VPN/TUN Fake-IP 模式下，系统 DNS 为公网域名分配的虚构映射地址正落在 `198.18.0.0/15`。
+> - **安全红线**：**绝不允许简单移除或整体放宽 SSRF 校验！** 私网（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`127.0.0.0/8`、`169.254.0.0/16`、`fc00::/7` 等）及 `Taint` 边界必须保持默认拦截。
+> - **单列改造方向（纳入独立网络工单，不占用 UI 重构波次）**：① 明确诊断提示（识别 `198.18.0.0/15` + 检测到 utun 接口时，向用户明确解释可能为代理 Fake-IP 映射，而非泛报错）；② 由用户**显式在网络/代理高级开关中确认**或结合 DoH / 系统解析真实公网验证，仅对「高概率 Fake-IP 映射且通过外网协议校验」提供独立受控白名单策略并保留审计日志，与 SSRF 本地内网访问隔离完全分离。

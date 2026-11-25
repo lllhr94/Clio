@@ -1,7 +1,57 @@
 /* Clio Design System 2.0 Interactive Prototype Stylesheet
- * Zero external dependencies. Supports 3 strongly differentiated Design Languages (A/B/C)
- * × 3 Modes (light/dark/oled) × UIScale × AX3 Accessibility × Reduce Motion × Reduce Transparency.
+ * Zero external dependencies. Loads real bundled Clio TTF fonts directly from ../../../App/Fonts/
+ * (with ./fonts/ fallback for standalone Magpie artifact bundles).
+ * Supports 3 Design Languages (A/B/C) + AC Final × 3 Modes (light/dark/oled) × UIScale × AX3 × Reduce Motion/Transparency.
  */
+
+@font-face {
+  font-family: "ClioKaiWeb";
+  src: url("../../../App/Fonts/ClioKai-Regular.ttf") format("truetype"),
+       url("fonts/ClioKai-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ClioKaiWeb";
+  src: url("../../../App/Fonts/ClioKai-Medium.ttf") format("truetype"),
+       url("fonts/ClioKai-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MapleMonoWeb";
+  src: url("../../../App/Fonts/MapleMono-Regular.ttf") format("truetype"),
+       url("fonts/MapleMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MapleMonoWeb";
+  src: url("../../../App/Fonts/MapleMono-SemiBold.ttf") format("truetype"),
+       url("fonts/MapleMono-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ClioMonoCNWeb";
+  src: url("../../../App/Fonts/ClioMonoCN-Regular.ttf") format("truetype"),
+       url("fonts/ClioMonoCN-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "ClioSealWeb";
+  src: url("../../../App/Fonts/ClioSeal-Regular.ttf") format("truetype"),
+       url("fonts/ClioSeal-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   --bg: #F8F5EE;
@@ -33,6 +83,7 @@
   --font-optical-scale: 1;
   --effective-reading-size: calc(var(--reading-size) * var(--font-optical-scale));
   --reading-lh: 1.65;
+  --user-bubble-lh: clamp(1.32, calc(var(--reading-lh) - 0.12), 1.68);
   --font-tracking: 0em;
   --bold-weight: 600;
   --para-gap: 13px;
@@ -45,10 +96,12 @@
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-editorial: "New York", -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
   --font-serif: "New York", "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
-  --font-mark: "ClioKai-Medium", "Kaiti SC", "STKaiti", "LXGW WenKai", "PingFang SC", serif;
-  --font-wenkai: "ClioKai-Medium", "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", serif;
+  --font-mark: "ClioKaiWeb", "ClioKai-Medium", sans-serif;
+  --font-wenkai: "ClioKaiWeb", "ClioKai-Medium", sans-serif;
+  --font-seal: "ClioSealWeb", "ClioKaiWeb", serif;
   --font-rounded: ui-rounded, "SF Pro Rounded", "PingFang SC", sans-serif;
-  --font-mono: "Maple Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-mono: "MapleMonoWeb", "ClioMonoCNWeb", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --reading-font-family: var(--font-editorial);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -220,8 +273,19 @@ html, body {
   align-items: center;
   gap: 6px;
   background: var(--bg);
+  transition: transform 220ms var(--motion-ease), opacity 180ms ease, max-height 220ms var(--motion-ease), padding 220ms ease;
+  max-height: 86px;
 }
-.iphone-screen[data-ax="true"] .app-topbar { flex-wrap: wrap; }
+.iphone-screen[data-ax="true"] .app-topbar { flex-wrap: wrap; max-height: 132px; }
+.iphone-screen[data-chrome="immersive"] .app-topbar {
+  transform: translateY(-10px);
+  opacity: 0;
+  pointer-events: none;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
 
 .app-topbar::after {
   content: "";
@@ -284,8 +348,9 @@ html, body {
 }
 
 #btnIdentity {
-  min-width: 0;
-  flex-shrink: 1;
+  flex: 1 1 auto;
+  min-width: 96px;
+  max-width: 100%;
   overflow: hidden;
   border: 0.5px solid var(--rule);
 }
@@ -324,6 +389,7 @@ html, body {
   flex-direction: column;
   line-height: 1.15;
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 .topbar-name {
@@ -340,6 +406,14 @@ html, body {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.topbar-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .status-dot { width: 5.5px; height: 5.5px; border-radius: 50%; background: var(--ok); display: inline-block; flex-shrink: 0; }
@@ -353,7 +427,8 @@ html, body {
   gap: 0;
   padding: 0;
   overflow: hidden;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  max-width: 48%;
 }
 
 .model-chip-btn {
@@ -456,6 +531,7 @@ html, body {
 
 /* Language-specific typography helpers (Calibrated Single-Engine Reading Styles) */
 .font-reading {
+  font-family: var(--reading-font-family);
   font-size: var(--effective-reading-size);
   line-height: var(--reading-lh);
   letter-spacing: var(--font-tracking);
@@ -463,25 +539,34 @@ html, body {
   user-select: text;
 }
 .font-reading strong { font-weight: var(--bold-weight); }
-.iphone-screen[data-lang="A"] .font-reading,
-.iphone-screen[data-lang="AC"] .font-reading { font-family: var(--font-editorial); }
-.iphone-screen[data-lang="B"] .font-reading { font-family: var(--font-ui); letter-spacing: -0.004em; }
-.iphone-screen[data-lang="C"] .font-reading { font-family: var(--font-editorial); }
-.iphone-screen[data-reading-face="editorial"] .font-reading { font-family: var(--font-editorial); }
-.iphone-screen[data-reading-face="serif"] .font-reading { font-family: var(--font-serif); }
-.iphone-screen[data-reading-face="sans"] .font-reading { font-family: var(--font-ui); }
-.iphone-screen[data-reading-face="wenkai"] .font-reading { font-family: var(--font-wenkai); }
+.iphone-screen[data-lang="B"][data-reading-face="editorial"] .font-reading,
+.iphone-screen[data-lang="B"][data-reading-face="editorial"] .msg-user-bubble {
+  font-family: var(--font-ui);
+  letter-spacing: -0.004em;
+}
+.iphone-screen[data-reading-face="wenkai"] .font-reading,
+.iphone-screen[data-reading-face="wenkai"] .msg-user-bubble,
+.combo-sample[data-combo="D"] {
+  font-weight: 500;
+  font-synthesis-weight: none;
+}
+.iphone-screen[data-reading-face="wenkai"] .font-reading strong,
+.iphone-screen[data-reading-face="wenkai"] .msg-user-bubble strong,
+.combo-sample[data-combo="D"] strong {
+  font-weight: 500;
+  -webkit-text-stroke: 0.38px currentColor;
+}
 
 /* 5-Combo Font Comparator (Section 4.2 A-E) overrides inside preview card & live reading */
-.combo-sample[data-combo="A"] { font-family: var(--font-ui); --effective-reading-size: var(--reading-size); }
+.combo-sample[data-combo="A"] { font-family: var(--font-ui); --effective-reading-size: var(--reading-size); letter-spacing: -0.004em; }
 .combo-sample[data-combo="A"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-ui); }
-.combo-sample[data-combo="B"] { font-family: var(--font-ui); --effective-reading-size: var(--reading-size); }
+.combo-sample[data-combo="B"] { font-family: var(--font-ui); --effective-reading-size: var(--reading-size); letter-spacing: -0.004em; }
 .combo-sample[data-combo="B"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-serif); }
-.combo-sample[data-combo="C"] { font-family: var(--font-serif); --effective-reading-size: calc(var(--reading-size) * 1.03); }
+.combo-sample[data-combo="C"] { font-family: var(--font-serif); --effective-reading-size: calc(var(--reading-size) * 1.03); letter-spacing: 0.002em; }
 .combo-sample[data-combo="C"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-serif); }
-.combo-sample[data-combo="D"] { font-family: var(--font-wenkai); --effective-reading-size: calc(var(--reading-size) * 1.045); letter-spacing: 0.004em; }
-.combo-sample[data-combo="D"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-wenkai); }
-.combo-sample[data-combo="E"] { font-family: var(--font-editorial); --effective-reading-size: var(--reading-size); }
+.combo-sample[data-combo="D"] { font-family: var(--font-wenkai); --effective-reading-size: calc(var(--reading-size) * 1.045); letter-spacing: 0.002em; }
+.combo-sample[data-combo="D"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-wenkai); font-weight: 500; -webkit-text-stroke: 0.42px currentColor; }
+.combo-sample[data-combo="E"] { font-family: var(--font-editorial); --effective-reading-size: var(--reading-size); letter-spacing: 0em; }
 .combo-sample[data-combo="E"] :is(.prose-h1,.prose-h2,.prose-h3) { font-family: var(--font-editorial); }
 
 .iphone-screen[data-heading-weight="medium"] :is(.prose-h1, .prose-h2, .prose-h3) { font-weight: 500; }
@@ -593,8 +678,10 @@ html, body {
   border: 0.75px solid color-mix(in srgb, var(--rule) 75%, white 18%);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.04);
   color: var(--ink);
-  font-size: var(--reading-size);
-  line-height: 1.5;
+  font-family: var(--reading-font-family);
+  font-size: var(--effective-reading-size);
+  line-height: var(--user-bubble-lh);
+  letter-spacing: var(--font-tracking);
   user-select: text;
   overflow-wrap: anywhere;
 }
@@ -911,7 +998,7 @@ html, body {
   padding: 5px 12px 10px;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: calc(max(11.5px, var(--reading-size) - 3.5px));
+  font-size: clamp(12px, calc(var(--effective-reading-size) - 3.5px), 21px);
   line-height: 1.30;
   letter-spacing: 0;
   color: var(--ink);
@@ -1085,12 +1172,32 @@ html, body {
 .bottom-dock-area {
   position: relative;
   z-index: 26;
-  padding: 0 10px 15px;
+  padding: 4px 10px 15px;
   background: var(--bg);
   display: flex;
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
+  transition: transform 220ms var(--motion-ease), opacity 180ms ease;
+}
+.bottom-dock-area::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -18px;
+  height: 18px;
+  background: linear-gradient(to top, var(--bg) 0%, transparent 100%);
+  pointer-events: none;
+}
+.iphone-screen[data-chrome="immersive"] .bottom-dock-area.can-hide {
+  transform: translateY(10px);
+  opacity: 0;
+  pointer-events: none;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
 }
 
 .plan-card {
@@ -1230,7 +1337,7 @@ html, body {
   color: var(--ink-secondary);
 }
 
-/* Composer */
+/* Composer (High-Opacity Paper-Frosted Glass prevents background prose bleed-through) */
 .composer-shell {
   border-radius: 24px;
   padding: 5px 8px 5px 10px;
@@ -1238,8 +1345,17 @@ html, body {
   align-items: center;
   gap: 7px;
   min-height: 44px;
+  background: color-mix(in srgb, var(--surface-elevated) 92%, var(--bg));
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.06);
 }
-.iphone-screen[data-lang="B"] .composer-shell { border-radius: 16px; }
+.iphone-screen[data-lang="B"] .composer-shell { border-radius: 16px; box-shadow: none; }
+.iphone-screen[data-reduce-transparency="true"] .composer-shell {
+  background: var(--surface-elevated);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 
 .composer-input {
   flex: 1;
@@ -1401,7 +1517,7 @@ html, body {
   border-radius: 6px;
   background: var(--seal-fill);
   color: var(--on-seal);
-  font-family: var(--font-mark);
+  font-family: var(--font-seal);
   font-size: 26px;
   display: flex;
   align-items: center;
@@ -2561,3 +2677,235 @@ html, body {
   animation: caretBlink 0.9s steps(2) infinite;
 }
 @keyframes caretBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* Telegram-Grade Progressive Ink Reveal & Incremental Markdown Blocks */
+.md-block {
+  min-width: 0;
+}
+.md-block + .md-block > :is(.prose-h1,.prose-h2,.prose-h3,.prose-h4):first-child {
+  margin-top: inherit;
+}
+.reveal-chunk {
+  display: inline;
+  animation: clioInkReveal 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.reveal-chunk.reveal-blur {
+  animation: clioInkRevealBlur 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.iphone-screen[data-reduce-motion="true"] .reveal-chunk,
+.reveal-chunk.reveal-no-anim {
+  animation: none !important;
+  opacity: 1 !important;
+  filter: none !important;
+  transform: none !important;
+}
+@keyframes clioInkReveal {
+  from { opacity: 0.08; }
+  to { opacity: 1; }
+}
+@keyframes clioInkRevealBlur {
+  from {
+    opacity: 0.04;
+    filter: blur(1.4px);
+    transform: translateY(1.5px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0px);
+    transform: translateY(0px);
+  }
+}
+
+.font-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.font-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 0.5px solid var(--rule);
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+}
+.font-status-pill.loaded {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--rule));
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 9%, var(--surface));
+}
+.font-status-pill.fallback {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--rule));
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+}
+
+.stream-lab-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stream-lab-pane {
+  border: 0.5px solid var(--rule);
+  border-radius: var(--r-inner);
+  background: var(--bg);
+  padding: 9px 11px;
+  max-height: 220px;
+  overflow-y: auto;
+  min-width: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+.stream-lab-pane::-webkit-scrollbar { width: 4px; }
+.stream-lab-pane::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+.stream-lab-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.stream-lab-metric {
+  background: var(--surface-subtle);
+  border-radius: 9px;
+  padding: 5px 7px;
+  font-size: 10px;
+  min-width: 0;
+}
+.stream-lab-metric strong {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==================== Scroll-Aware Immersive Chrome & Simulated Keyboard & Tool 7 States ==================== */
+.immersive-top-pill {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  z-index: 33;
+  border: 0.5px solid var(--rule);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: color-mix(in srgb, var(--surface-elevated) 90%, var(--bg));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  transition: opacity 180ms ease, transform 200ms var(--motion-ease);
+  white-space: nowrap;
+  max-width: calc(100% - 28px);
+}
+.iphone-screen[data-chrome="immersive"] .immersive-top-pill {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+.immersive-bottom-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translate(-50%, 10px);
+  z-index: 36;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 200ms var(--motion-ease);
+}
+.iphone-screen[data-chrome="immersive"] .immersive-bottom-bar.active {
+  display: inline-flex;
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+.immersive-stop-pill {
+  border: 0.5px solid color-mix(in srgb, var(--danger) 45%, var(--rule));
+  background: var(--stop-wash);
+  color: var(--danger);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.immersive-restore-pill {
+  border: 0.5px solid var(--rule);
+  background: color-mix(in srgb, var(--surface-elevated) 94%, var(--bg));
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  white-space: nowrap;
+}
+
+.chat-sim-keyboard {
+  background: color-mix(in srgb, var(--surface-subtle) 94%, var(--bg));
+  border-top: 0.5px solid var(--rule);
+  padding: 7px 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+  z-index: 27;
+}
+.chat-sim-keyrow {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+.chat-sim-key {
+  flex: 1;
+  max-width: 31px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  border: 0.5px solid var(--rule);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+/* Tool 7-State Semantic Badges (AAA/AA Safe) */
+.tool-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 0.5px solid var(--rule);
+  white-space: nowrap;
+}
+.tool-state-badge.pending { background: var(--surface-subtle); color: var(--ink-secondary); }
+.tool-state-badge.running { background: var(--accent-wash); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--rule)); }
+.tool-state-badge.succeeded { background: color-mix(in srgb, var(--ok) 12%, var(--surface)); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--rule)); }
+.tool-state-badge.partial { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 38%, var(--rule)); }
+.tool-state-badge.failed { background: var(--stop-wash); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--rule)); }
+.tool-state-badge.cancelled { background: var(--surface-subtle); color: var(--ink-tertiary); }
+.tool-state-badge.waiting_approval { background: color-mix(in srgb, var(--seal) 13%, var(--surface)); color: var(--seal); border-color: color-mix(in srgb, var(--seal) 38%, var(--rule)); }
