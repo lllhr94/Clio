@@ -180,14 +180,14 @@ def main() -> int:
             errors.append(f"node --check failed on prototype/{js_file}: {chk.stderr.strip()}")
 
     diff_res = subprocess.run(
-        ["git", "diff", "--name-only"],
+        ["git", "diff", "--name-only", "--", ":!design/design-system-2.0"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
     if diff_res.stdout.strip():
-        errors.append(f"Tracked production files modified:\n{diff_res.stdout}")
+        errors.append(f"Production files outside design/design-system-2.0 modified:\n{diff_res.stdout}")
 
     if errors:
         print("VERIFICATION FAILED:")

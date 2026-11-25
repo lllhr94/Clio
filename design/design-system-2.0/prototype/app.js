@@ -2286,7 +2286,7 @@
             <span class="chat-avatar-btn" style="width:38px;height:38px;">${renderAvatarMarkup("assistant", 38)}</span>
             <div style="flex:1; min-width:0;">
               <div style="font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(state.assistant.name)}</div>
-              <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">助手 · 印「${escHtml((state.assistant.sealChar || "克").slice(0, 1))}」</div>
+              <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">助手 · 「${escHtml((state.assistant.sealChar || "克").slice(0, 1))}」</div>
             </div>
             <span class="settings-chevron">${sfIcon("chevronRight", 12)}</span>
           </button>
