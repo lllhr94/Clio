@@ -1,6 +1,18 @@
 import CoreText
 import SwiftUI
-import Synchronization
+
+private final class ProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last: Double = -1.0
+
+    func shouldEmit(_ progress: Double) -> Bool {
+        lock.withLock {
+            guard last < 0 || abs(progress - last) >= 0.02 || (progress >= 1 && last < 1) else { return false }
+            last = progress
+            return true
+        }
+    }
+}
 
 /// Apple's own 宋体 and 楷体 are not on a phone until asked for: this fetches them once, with progress,
 /// and asks for them again at launch so a picked one is there (a quick look-up once fetched).
@@ -41,19 +53,14 @@ final class FontShelf {
 
     nonisolated private static func download(_ names: [String], face: Pref.Face) {
         let descriptors = names.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, 0) } as CFArray
-        let progressGate = Mutex(-1.0)
+        let progressGate = ProgressGate()
         CTFontDescriptorMatchFontDescriptorsWithProgressHandler(descriptors, nil) { state, info in
             switch state {
             case .downloading:
                 let values = info as NSDictionary
                 let percent = (values[kCTFontDescriptorMatchingPercentage] as? Double) ?? 0
                 let progress = min(1, max(0, percent / 100))
-                let shouldEmit = progressGate.withLock { last -> Bool in
-                    guard last < 0 || abs(progress - last) >= 0.02 || (progress >= 1 && last < 1) else { return false }
-                    last = progress
-                    return true
-                }
-                guard shouldEmit else { return true }
+                guard progressGate.shouldEmit(progress) else { return true }
                 Task { @MainActor in
                     let shelf = FontShelf.shared
                     guard shelf.loading[face] != nil else { return }

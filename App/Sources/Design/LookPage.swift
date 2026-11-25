@@ -225,15 +225,16 @@ private struct ReadingSamplePreview: View {
         let size: Double
         let face: Pref.Face
         let code: Pref.Code
+        let fontsArrived: Int
     }
 
     @MainActor private static var cache: [SampleKey: AttributedString] = [:]
 
     var body: some View {
-        let _ = Theme.shared.fontsArrived
-        let attributed = Self.attributedSample(rawText: rawText, size: size, face: face, code: code)
+        let fontsArrived = Theme.shared.fontsArrived
+        let attributed = Self.attributedSample(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
         Text(attributed)
-            .font(Ink.body(size, bold: false))
+            .font(Ink.face(face, size, bold: false))
             .foregroundStyle(Ink.ink)
             .lineSpacing(Ink.leading(size: size, lineHeight: lineHeight, face: face))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -241,8 +242,8 @@ private struct ReadingSamplePreview: View {
     }
 
     @MainActor
-    private static func attributedSample(rawText: String, size: Double, face: Pref.Face, code: Pref.Code) -> AttributedString {
-        let key = SampleKey(rawText: rawText, size: size, face: face, code: code)
+    private static func attributedSample(rawText: String, size: Double, face: Pref.Face, code: Pref.Code, fontsArrived: Int) -> AttributedString {
+        let key = SampleKey(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
         if let hit = cache[key] { return hit }
         let built = buildSample(rawText, size: size, face: face, code: code)
         if cache.count >= 24 { cache.removeAll(keepingCapacity: true) }
@@ -253,8 +254,8 @@ private struct ReadingSamplePreview: View {
     private static func buildSample(_ rawText: String, size: Double, face: Pref.Face, code: Pref.Code) -> AttributedString {
         var result = AttributedString()
         let lines = rawText.split(separator: "\n", omittingEmptySubsequences: false)
-        let headingFont = Ink.body(size + 2, bold: true)
-        let boldFont = Ink.body(size, bold: true)
+        let headingFont = Ink.face(face, size + 2, bold: true)
+        let boldFont = Ink.face(face, size, bold: true)
         let codeFont = Ink.mono(max(12, size - 3), preference: code)
 
         for (index, rawLine) in lines.enumerated() {

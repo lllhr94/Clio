@@ -122,8 +122,13 @@ struct ServicePage: View {
                 deleted = true
                 Task {
                     _ = await inFlightSave?.value
-                    await team.removeEndpointAsync(currentID)
-                    dismiss()
+                    if await team.removeEndpointAsync(currentID) {
+                        dismiss()
+                    } else {
+                        deleted = false
+                        note = L.t("servicePage.settingsSaveFailed")
+                        Haptics.lock()
+                    }
                 }
             }
             Button(L.t("actions.cancel"), role: .cancel) {}

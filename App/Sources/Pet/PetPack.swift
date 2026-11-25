@@ -286,6 +286,7 @@ enum PetSheets {
     private static var totalSheetBytes = 0
     private static var sheetByteEstimates: [String: Int] = [:]
     private static var inFlightAtlases: Set<String> = []
+    private static var failedAtlases: Set<String> = []
     private static var placeholders: [String: PlaceholderEntry] = [:]
 
     private static let activeCells: NSCache<NSString, ImageBox> = {
@@ -354,6 +355,7 @@ enum PetSheets {
         activeCells.removeAllObjects()
         inactiveStills.removeAllObjects()
         placeholders.removeAll()
+        failedAtlases.removeAll()
         sheetByteEstimates.removeAll()
     }
 
@@ -584,7 +586,7 @@ enum PetSheets {
         let packID = pack.id
         let gen = currentGeneration(for: packID)
         let batchKey = "\(placeholderKey)#\(active ? 1 : 0)#g\(gen)"
-        guard !inFlightAtlases.contains(batchKey) else { return }
+        guard !failedAtlases.contains(batchKey), !inFlightAtlases.contains(batchKey) else { return }
         inFlightAtlases.insert(batchKey)
 
         var indices: [Int] = [requestedIndex]
@@ -611,7 +613,10 @@ enum PetSheets {
 
         atlasDecodeQueue.addOperation {
             guard PetAtlasGenerations.matches(packID, expected: gen) else {
-                Task { @MainActor in PetSheets.inFlightAtlases.remove(batchKey) }
+                Task { @MainActor in
+                    PetSheets.inFlightAtlases.remove(batchKey)
+                    PetSheets.signal.revision &+= 1
+                }
                 return
             }
             let sliced: [SlicedFrame] = autoreleasepool {
@@ -638,8 +643,18 @@ enum PetSheets {
 
             Task { @MainActor in
                 PetSheets.inFlightAtlases.remove(batchKey)
-                guard !sliced.isEmpty else { return }
-                guard PetAtlasGenerations.matches(packID, expected: gen) else { return }
+                guard !sliced.isEmpty else {
+                    if PetAtlasGenerations.matches(packID, expected: gen) {
+                        if PetSheets.failedAtlases.count >= 64 { PetSheets.failedAtlases.removeAll() }
+                        PetSheets.failedAtlases.insert(batchKey)
+                    }
+                    PetSheets.signal.revision &+= 1
+                    return
+                }
+                guard PetAtlasGenerations.matches(packID, expected: gen) else {
+                    PetSheets.signal.revision &+= 1
+                    return
+                }
                 if active && !PetSheets.isActivePack(packID) { return }
                 for item in sliced {
                     let itemKey = "\(packID)/\(sheetName)#\(item.index)@\(targetWidth)x\(targetHeight)" as NSString

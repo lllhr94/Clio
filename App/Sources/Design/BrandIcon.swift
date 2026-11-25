@@ -50,20 +50,36 @@ struct BrandIcon: View {
 /// Where service icons come from, and their cache (memory, then the Caches folder).
 actor BrandIcons {
     static let shared = BrandIcons()
-    private static let syncLock = NSLock()
-    nonisolated(unsafe) private static var syncMemory: [String: UIImage] = [:]
+    private static let missTTL: TimeInterval = 300
+    private static let maxMisses = 128
 
-    private var memory: [String: UIImage] = [:]
-    private var misses: Set<String> = []
+    nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    private var misses: [String: Date] = [:]
     private var pending: [String: Task<UIImage?, Never>] = [:]
 
     nonisolated static func cachedIcon(for domain: String) -> UIImage? {
-        syncLock.withLock { syncMemory[domain] }
+        cache.object(forKey: domain as NSString)
     }
 
     private func store(_ image: UIImage, for domain: String) {
-        memory[domain] = image
-        Self.syncLock.withLock { Self.syncMemory[domain] = image }
+        misses.removeValue(forKey: domain)
+        Self.cache.setObject(image, forKey: domain as NSString)
+    }
+
+    private func recordMiss(for domain: String) {
+        if misses.count >= Self.maxMisses {
+            let now = Date()
+            misses = misses.filter { now.timeIntervalSince($0.value) < Self.missTTL }
+            if misses.count >= Self.maxMisses {
+                misses.removeAll(keepingCapacity: true)
+            }
+        }
+        misses[domain] = Date()
     }
 
     private lazy var folder: URL = {
@@ -73,8 +89,11 @@ actor BrandIcons {
     }()
 
     func icon(for domain: String) async -> UIImage? {
-        if let hit = memory[domain] { return hit }
-        if misses.contains(domain) { return nil }
+        if let hit = Self.cache.object(forKey: domain as NSString) { return hit }
+        if let failedAt = misses[domain] {
+            if Date().timeIntervalSince(failedAt) < Self.missTTL { return nil }
+            misses.removeValue(forKey: domain)
+        }
         if let task = pending[domain] { return await task.value }
         let task = Task { await load(domain) }
         pending[domain] = task
@@ -98,7 +117,7 @@ actor BrandIcons {
                 store(image, for: domain)
                 return image
             }
-            misses.insert(domain)
+            recordMiss(for: domain)
             return nil
         }
         var sources = await linked(on: domain)
@@ -117,7 +136,7 @@ actor BrandIcons {
             store(image, for: domain)
             return image
         }
-        misses.insert(domain)
+        recordMiss(for: domain)
         return nil
     }
 

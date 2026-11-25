@@ -114,13 +114,13 @@ struct PetStill: View {
 
 
 /// Companions' photos, kept on this phone only (never in the repository, never sent anywhere): a square JPEG each.
-enum Avatars {
-    @MainActor @Observable
-    private final class Signal {
-        var revision: UInt64 = 0
-    }
+@MainActor @Observable
+fileprivate final class AvatarsSignal {
+    var revision: UInt64 = 0
+}
 
-    @MainActor private static let signal = Signal()
+enum Avatars {
+    @MainActor private static let signal = AvatarsSignal()
     @MainActor static var revision: UInt64 { signal.revision }
 
     private static let cache = NSCache<NSString, UIImage>()
