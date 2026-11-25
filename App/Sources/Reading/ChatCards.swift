@@ -188,13 +188,27 @@ struct WeatherCard: View {
         return (day, parts.count > 1 ? parts[1] : "", zone)
     }
 
-    /// The place's date right now.
-    private func today(in zone: TimeZone?) -> String {
+    private static let formatterLock = NSLock()
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = zone ?? .current
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter
+    }()
+    private static let utcDayParser: DateFormatter = {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(identifier: "UTC")
+        parser.dateFormat = "yyyy-MM-dd"
+        return parser
+    }()
+
+    /// The place's date right now.
+    private func today(in zone: TimeZone?) -> String {
+        Self.formatterLock.lock()
+        defer { Self.formatterLock.unlock() }
+        Self.dayFormatter.timeZone = zone ?? .current
+        return Self.dayFormatter.string(from: Date())
     }
 
     /// Fetched today, there: the card is live and may say 「今天」「明天」.
@@ -220,11 +234,9 @@ struct WeatherCard: View {
     }
 
     private static func parse(_ text: String) -> Date? {
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.timeZone = TimeZone(identifier: "UTC")
-        parser.dateFormat = "yyyy-MM-dd"
-        return parser.date(from: text)
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        return utcDayParser.date(from: text)
     }
 
     private static func shortDate(_ text: String) -> String? {

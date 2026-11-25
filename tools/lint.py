@@ -297,7 +297,6 @@ def has_perf_exemption(raw_lines, lineno):
 
 def perf_checks():
     perf_errors = []
-    perf_warnings = []
 
     for full_path in sorted((ROOT / "App/Sources").rglob("*.swift")):
         path = full_path.relative_to(ROOT)
@@ -324,7 +323,7 @@ def perf_checks():
                     static_depth = 0
                     prev_continues = False
                 if not in_static_let and PERF_ALLOC.search(line) and not has_perf_exemption(raw_lines, lineno):
-                    perf_warnings.append((
+                    perf_errors.append((
                         path,
                         lineno,
                         "non-static formatter/regex allocation in View file; hoist to static let (or // lint:perf-ok)",
@@ -342,7 +341,7 @@ def perf_checks():
                     else:
                         prev_continues = False
 
-        # 2. Direct NameCard.file( (error) or Secrets.secret( (warning) inside `some View` scopes.
+        # 2. Direct NameCard.file( or Secrets.secret( inside `some View` scopes.
         view_depth = 0
         awaiting_view_brace = False
         for lineno, line in enumerate(stripped_lines, 1):
@@ -360,7 +359,7 @@ def perf_checks():
                         "direct NameCard.file( inside View body; use lazy NameCardTransfer (or // lint:perf-ok)",
                     ))
                 if SECRETS_SECRET_CALL.search(line):
-                    perf_warnings.append((
+                    perf_errors.append((
                         path,
                         lineno,
                         "direct Secrets.secret( inside View body; move keychain lookup out of body (or // lint:perf-ok)",
@@ -391,7 +390,7 @@ def perf_checks():
                 overlay_line = stripped.count("\n", 0, match.start()) + 1
                 shadow_line = stripped.count("\n", 0, shadow_match.start() + (len(shadow_match.group(0)) - len(shadow_match.group(0).lstrip()))) + 1
                 if not has_perf_exemption(raw_lines, overlay_line) and not has_perf_exemption(raw_lines, shadow_line):
-                    perf_warnings.append((
+                    perf_errors.append((
                         path,
                         shadow_line,
                         "chained .overlay(...).shadow( causes offscreen pass; move .shadow inside .background shape (or // lint:perf-ok)",
@@ -412,7 +411,7 @@ def perf_checks():
                     lineno = stripped.count("\n", 0, u_match.start()) + 1
                     if lineno not in flagged_uuid_lines and not has_perf_exemption(raw_lines, lineno):
                         flagged_uuid_lines.add(lineno)
-                        perf_warnings.append((
+                        perf_errors.append((
                             path,
                             lineno,
                             "UUID() inside SwipeAction causes identity churn on every render (or // lint:perf-ok)",
@@ -429,26 +428,25 @@ def perf_checks():
                 lineno = stripped.count("\n", 0, u_match.start()) + 1
                 if lineno not in flagged_uuid_lines and not has_perf_exemption(raw_lines, lineno):
                     flagged_uuid_lines.add(lineno)
-                    perf_warnings.append((
+                    perf_errors.append((
                         path,
                         lineno,
                         "UUID() inside ForEach(..., id:) causes view identity churn (or // lint:perf-ok)",
                     ))
 
-    return perf_errors, perf_warnings
+    return perf_errors
 
 
 def main():
-    perf_errors, perf_warnings = perf_checks()
+    perf_errors = perf_checks()
     errors = [*dictionaries(), *swift_sources(), *perf_errors]
-    lit_warnings = list(literary_warnings())
-    warnings = [*lit_warnings, *perf_warnings]
+    warnings = list(literary_warnings())
     for path, line, message in warnings:
         print(f"warning: {path}:{line}: {message}", file=sys.stderr)
     for path, line, message in errors:
         print(f"{path}:{line}: {message}", file=sys.stderr)
     if not errors:
-        print(f"Clio lint passed ({len(lit_warnings)} literary warnings, {len(perf_warnings)} perf warnings).")
+        print(f"Clio lint passed ({len(warnings)} literary warnings, 0 perf errors).")
     return int(bool(errors))
 
 

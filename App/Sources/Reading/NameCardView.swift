@@ -28,10 +28,13 @@ struct NameCardView: View {
             footer
         }
         .frame(width: width, height: width * 1.5)
-        .background(Ink.paperRaised)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(Ink.paperRaised)
+                .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
+        }
         .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
-        .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Words.t("\(bot.name)的名帖"))
     }
@@ -153,8 +156,12 @@ struct NameCardBack: View {
         }
         .frame(width: width, height: width * 1.5)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(Ink.paperRaised)
+                .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
+        }
         .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Ink.rule, lineWidth: 1))
-        .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
         .accessibilityHidden(true)
     }
 }

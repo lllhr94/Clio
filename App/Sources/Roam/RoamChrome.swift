@@ -121,10 +121,13 @@ struct RoamThumb: View {
             }
             // As wide as the shrunk page: without this the title row's spacer stretched it across the chat.
             .frame(width: page.width * scale)
-            .background(Ink.paperRaised)
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
+                    .fill(Ink.paperRaised)
+                    .shadow(color: Color.black.opacity(0.12), radius: 10, y: 4)
+            }
             .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(browser.handoff != nil ? Ink.warn : Ink.rule, lineWidth: browser.handoff != nil ? 2 : 1))
-            .shadow(color: Color.black.opacity(0.12), radius: 10, y: 4)
             .contentShape(.rect)
             .onTapGesture {
                 Haptics.light()
