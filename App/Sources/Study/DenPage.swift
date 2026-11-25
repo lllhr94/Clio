@@ -4,10 +4,6 @@ import SwiftUI
 struct DenPage: View {
     @ObservedObject var den = Den.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var command = ""
-    @State private var history: [String] = []
-    @State private var back = 0
-    @FocusState private var typing: Bool
     /// Commands typed while one is still running wait their turn, so output never interleaves.
     @State private var line: Task<Void, Never>?
     @State private var inkstone = false
@@ -38,7 +34,9 @@ struct DenPage: View {
                         withAnimation(.linear(duration: 0.12)) { proxy.scrollTo("end", anchor: .bottom) }
                     }
                 }
-                composer
+                DenCommandComposer { typed in
+                    queue(typed)
+                }
             }
         }
         .task { _ = await den.wake() }
@@ -154,7 +152,30 @@ struct DenPage: View {
         .padding(.top, line.kind == .command ? Ink.Space.s : 0)
     }
 
-    private var composer: some View {
+    private func queue(_ typed: String) {
+        let before = self.line
+        self.line = Task {
+            await withTaskCancellationHandler {
+                await before?.value
+            } onCancel: {
+                before?.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            _ = await den.run(typed, timeout: 900)
+        }
+    }
+}
+
+/// Isolated terminal command input bar owning its own draft & history state so keystrokes never re-diff `den.log`.
+private struct DenCommandComposer: View {
+    let onSubmit: (String) -> Void
+
+    @State private var command = ""
+    @State private var history: [String] = []
+    @State private var back = 0
+    @FocusState private var typing: Bool
+
+    var body: some View {
         HStack(spacing: Ink.Space.s) {
             Text("#").font(Ink.mono(Ink.Size.body, weight: .semibold)).foregroundStyle(Ink.accent)
             TextField(L.t("terminal.command"), text: $command)
@@ -197,19 +218,6 @@ struct DenPage: View {
         history.append(typed)
         back = 0
         command = ""
-        queue(typed)
-    }
-
-    private func queue(_ typed: String) {
-        let before = self.line
-        self.line = Task {
-            await withTaskCancellationHandler {
-                await before?.value
-            } onCancel: {
-                before?.cancel()
-            }
-            guard !Task.isCancelled else { return }
-            _ = await den.run(typed, timeout: 900)
-        }
+        onSubmit(typed)
     }
 }

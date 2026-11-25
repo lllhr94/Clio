@@ -124,6 +124,7 @@ private struct TerminalHost: UIViewRepresentable {
         view.terminalDelegate = context.coordinator
         view.font = Ink.uiMono(Ink.Size.small)
         paint(view)
+        context.coordinator.appliedColorScheme = scheme
         context.coordinator.attach(view)
         DispatchQueue.main.async { _ = view.becomeFirstResponder() }
         return view
@@ -132,12 +133,14 @@ private struct TerminalHost: UIViewRepresentable {
     func updateUIView(_ view: TerminalView, context: Context) {
         let font = Ink.uiMono(Ink.Size.small)
         if view.font != font { view.font = font }
-        paint(view)
+        if context.coordinator.appliedColorScheme != scheme {
+            paint(view)
+            context.coordinator.appliedColorScheme = scheme
+        }
     }
 
     static func dismantleUIView(_ view: TerminalView, coordinator: Coordinator) {
-        coordinator.shell?.close()
-        coordinator.far?.close()
+        coordinator.shutdown()
     }
 
     private func paint(_ view: TerminalView) {
@@ -154,6 +157,8 @@ private struct TerminalHost: UIViewRepresentable {
         var shell: DenTerminal?
         var far: HillShell?
         weak var view: TerminalView?
+        var appliedColorScheme: ColorScheme?
+        private var outputBuffer: OutputBuffer?
 
         init(ended: Binding<Bool>, why: Binding<String?>, hill: Hills.Host?) {
             _ended = ended
@@ -163,15 +168,20 @@ private struct TerminalHost: UIViewRepresentable {
 
         func attach(_ view: TerminalView) {
             self.view = view
+            let buffer = OutputBuffer { [weak view] chunk in
+                view?.feed(byteArray: chunk[...])
+            }
+            self.outputBuffer = buffer
             let terminal = view.getTerminal()
             if let hill {
                 view.feed(text: "正在连 \(hill.name)（\(hill.user)@\(hill.address)）…\r\n")
                 let far = HillShell()
                 self.far = far
-                far.start(hill, columns: terminal.cols, rows: terminal.rows, output: { [weak view] data in
-                    DispatchQueue.main.async { view?.feed(byteArray: ArraySlice([UInt8](data))) }
+                far.start(hill, columns: terminal.cols, rows: terminal.rows, output: { data in
+                    buffer.append(data)
                 }, ended: { [weak self] problem in
                     DispatchQueue.main.async {
+                        self?.outputBuffer?.flush()
                         self?.why = problem
                         self?.ended = true
                         if let problem { self?.view?.feed(text: "\r\n\u{1B}[31m\(problem)\u{1B}[0m\r\n") }
@@ -180,16 +190,28 @@ private struct TerminalHost: UIViewRepresentable {
                 return
             }
             var error: Int32 = 0
-            shell = DenTerminal.open(output: { [weak view] data in
-                view?.feed(byteArray: ArraySlice([UInt8](data)))
+            shell = DenTerminal.open(output: { data in
+                buffer.append(data)
             }, exited: { [weak self] in
-                self?.ended = true
+                DispatchQueue.main.async {
+                    self?.outputBuffer?.flush()
+                    self?.ended = true
+                }
             }, error: &error)
             if shell == nil {
                 view.feed(text: "终端没能打开（错误 \(error)）\r\n")
             } else {
                 shell?.resize(columns: Int32(terminal.cols), rows: Int32(terminal.rows))
             }
+        }
+
+        func shutdown() {
+            outputBuffer?.close()
+            outputBuffer = nil
+            shell?.close()
+            shell = nil
+            far?.close()
+            far = nil
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -316,5 +338,73 @@ final class HillShell: @unchecked Sendable {
     func close() {
         feed.finish()
         task?.cancel()
+    }
+}
+
+/// Coalesces high-frequency PTY output chunks (~10ms window, 32KB cap) before feeding `TerminalView` on MainActor.
+private final class OutputBuffer: @unchecked Sendable {
+    private static let maxBufferedBytes = 32_768
+    private let lock = NSLock()
+    private var bytes: [UInt8] = []
+    private var timerScheduled = false
+    private var immediateScheduled = false
+    private var closed = false
+    private let onFlush: @MainActor ([UInt8]) -> Void
+
+    init(onFlush: @escaping @MainActor ([UInt8]) -> Void) {
+        self.onFlush = onFlush
+    }
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        var scheduleTimer = false
+        var scheduleImmediate = false
+        lock.lock()
+        if !closed {
+            bytes.append(contentsOf: data)
+            if bytes.count >= Self.maxBufferedBytes {
+                if !immediateScheduled {
+                    immediateScheduled = true
+                    scheduleImmediate = true
+                }
+            } else if !timerScheduled {
+                timerScheduled = true
+                scheduleTimer = true
+            }
+        }
+        lock.unlock()
+
+        if scheduleImmediate {
+            DispatchQueue.main.async { [weak self] in
+                self?.flush()
+            }
+        } else if scheduleTimer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self] in
+                self?.flush()
+            }
+        }
+    }
+
+    @MainActor
+    func flush() {
+        let chunk: [UInt8] = lock.withLock {
+            timerScheduled = false
+            immediateScheduled = false
+            guard !closed, !bytes.isEmpty else { return [] }
+            let drained = bytes
+            bytes.removeAll(keepingCapacity: true)
+            return drained
+        }
+        guard !chunk.isEmpty else { return }
+        onFlush(chunk)
+    }
+
+    func close() {
+        lock.withLock {
+            closed = true
+            timerScheduled = false
+            immediateScheduled = false
+            bytes.removeAll()
+        }
     }
 }
