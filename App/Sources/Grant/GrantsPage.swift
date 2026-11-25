@@ -2,12 +2,13 @@ import SwiftUI
 
 /// 应许: every ability on one page, with the user's say and the system's say side by side.
 struct GrantsPage: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     @Environment(\.dismiss) private var dismiss
     @State private var asking = false
     @Environment(\.scenePhase) private var phase
     @State private var policies: [Grant: Grant.Policy] = [:]
     @State private var systems: [Grant: Grant.System] = [:]
+    @State private var alwaysAllowed: [String] = []
     @AppStorage(Grant.followAfterWebKey) private var followAfterWeb = false
 
     private var groups: [(String, [Grant])] { [
@@ -23,7 +24,7 @@ struct GrantsPage: View {
             ZStack {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
                         presets
                         webGuardCard
                         Button {
@@ -46,7 +47,7 @@ struct GrantsPage: View {
                         ForEach(groups, id: \.0) { group in
                             VStack(alignment: .leading, spacing: Ink.Space.s) {
                                 SectionTitle(group.0)
-                                VStack(spacing: 0) {
+                                LazyVStack(spacing: 0) {
                                     ForEach(group.1) { grant in
                                         row(grant)
                                         if grant != group.1.last { Kit.divider }
@@ -55,23 +56,8 @@ struct GrantsPage: View {
                                 .paperCard()
                             }
                         }
-                        if !team.alwaysAllowed.isEmpty {
-                            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                SectionTitle(L.t("permissions.alwaysAllowed"))
-                                VStack(spacing: 0) {
-                                    ForEach(team.alwaysAllowed.sorted(), id: \.self) { tool in
-                                        HStack {
-                                            Text(tool).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
-                                            Spacer()
-                                            Button(L.t("actions.revokePermission")) { withAnimation(.smooth) { team.revokeAlways(tool) } }
-                                                .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.stop)
-                                        }
-                                        .padding(.horizontal, Ink.Space.l)
-                                        .padding(.vertical, Ink.Space.m)
-                                    }
-                                }
-                                .paperCard()
-                            }
+                        if !alwaysAllowed.isEmpty {
+                            AlwaysAllowedSection(team: team, tools: alwaysAllowed)
                         }
                         Button {
                             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -94,15 +80,31 @@ struct GrantsPage: View {
                 ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
-        .onAppear(perform: load)
-        .onChange(of: phase) { _, now in if now == .active { load() } }
+        .onAppear {
+            loadPolicies()
+            let sorted = team.alwaysAllowed.sorted()
+            if alwaysAllowed != sorted { alwaysAllowed = sorted }
+        }
+        .onReceive(team.$alwaysAllowed.removeDuplicates()) { updated in
+            let sorted = updated.sorted()
+            if alwaysAllowed != sorted { alwaysAllowed = sorted }
+        }
+        .task { await loadSystems() }
+        .onChange(of: phase) { _, now in
+            if now == .active {
+                loadPolicies()
+                Task { await loadSystems() }
+            }
+        }
     }
 
     /// Asks the system about every enabled ability not yet asked, without overriding the user's chosen policy.
     private func askAll() {
         asking = true
         Task {
-            for grant in Grant.allCases where grant.policy != .off && grant.system == .notAsked {
+            let currentSystems = await Grant.readSystemStatuses()
+            systems = currentSystems
+            for grant in Grant.allCases where grant.policy != .off && currentSystems[grant] == .notAsked {
                 await grant.requestSystem()
                 try? await Task.sleep(nanoseconds: 350_000_000)
             }
@@ -112,17 +114,23 @@ struct GrantsPage: View {
                     await Grant.letters.requestSystem()
                 }
             }
-            load()
+            loadPolicies()
+            await loadSystems()
             asking = false
             Haptics.thud()
         }
     }
 
-    private func load() {
+    private func loadPolicies() {
         for grant in Grant.allCases {
             policies[grant] = grant.policy
-            systems[grant] = grant.system
         }
+    }
+
+    private func loadSystems() async {
+        let fetched = await Grant.readSystemStatuses()
+        guard !Task.isCancelled else { return }
+        systems = fetched
     }
 
     /// Presets for the abilities below, which can also be set one by one.
@@ -203,7 +211,7 @@ struct GrantsPage: View {
                 if value != .off, systems[grant] == .notAsked {
                     Task {
                         await grant.requestSystem()
-                        systems[grant] = grant.system
+                        systems[grant] = await grant.readSystem()
                     }
                 }
             })) {
@@ -234,7 +242,7 @@ struct GrantsPage: View {
             Button {
                 Task {
                     await grant.requestSystem()
-                    systems[grant] = grant.system
+                    systems[grant] = await grant.readSystem()
                 }
             } label: { badge("向系统请求", Ink.accent) }
             .buttonStyle(PressStyle())
@@ -253,5 +261,29 @@ struct GrantsPage: View {
             .padding(.horizontal, Ink.Space.s)
             .padding(.vertical, Ink.Space.xs / 2)
             .background(color.opacity(0.12), in: .capsule)
+    }
+}
+
+private struct AlwaysAllowedSection: View {
+    let team: TeamModel
+    let tools: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("permissions.alwaysAllowed"))
+            LazyVStack(spacing: 0) {
+                ForEach(tools, id: \.self) { tool in
+                    HStack {
+                        Text(tool).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
+                        Spacer()
+                        Button(L.t("actions.revokePermission")) { withAnimation(.smooth) { team.revokeAlways(tool) } }
+                            .font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.stop)
+                    }
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.vertical, Ink.Space.m)
+                }
+            }
+            .paperCard()
+        }
     }
 }

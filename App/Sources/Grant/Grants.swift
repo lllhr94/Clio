@@ -114,15 +114,48 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var policyCache: [Grant: Policy] = [:]
+    nonisolated(unsafe) private static var cachedPreset: Preset?
+    nonisolated(unsafe) private static var hasCachedPreset = false
+    nonisolated(unsafe) private static var cachedFreeRunning: Bool?
+
+    private static func normalize(_ saved: Policy, for grant: Grant) -> Policy {
+        if saved == .smart, grant != .desk {
+            return grant == .web || grant == .device ? .allow : .ask
+        }
+        return saved
+    }
+
+    private static func lockedPolicy(for grant: Grant) -> Policy {
+        if let cached = policyCache[grant] { return cached }
+        let raw = UserDefaults.standard.string(forKey: "grant.\(grant.rawValue)").flatMap(Policy.init(rawValue:)) ?? grant.standard
+        let resolved = normalize(raw, for: grant)
+        policyCache[grant] = resolved
+        return resolved
+    }
+
+    private static func invalidatePresetCache() {
+        cacheLock.withLock {
+            hasCachedPreset = false
+            cachedPreset = nil
+            cachedFreeRunning = nil
+        }
+    }
+
     var policy: Policy {
         get {
-            let saved = UserDefaults.standard.string(forKey: "grant.\(rawValue)").flatMap(Policy.init(rawValue:)) ?? standard
-            if saved == .smart, self != .desk {
-                return self == .web || self == .device ? .allow : .ask
-            }
-            return saved
+            Self.cacheLock.withLock { Self.lockedPolicy(for: self) }
         }
-        nonmutating set { UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)") }
+        nonmutating set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "grant.\(rawValue)")
+            Self.cacheLock.withLock {
+                Self.policyCache[self] = Self.normalize(newValue, for: self)
+                Self.hasCachedPreset = false
+                Self.cachedPreset = nil
+                Self.cachedFreeRunning = nil
+            }
+        }
     }
 
     var availablePolicies: [Policy] { self == .desk ? Policy.allCases : [.off, .ask, .allow] }
@@ -130,7 +163,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// Set permissions together. Each item can still be changed on its own afterwards.
     enum Preset: String, CaseIterable, Identifiable {
         case careful, standard, smart, free
-        private static let preference = "grantPreset.selected"
+        fileprivate static let preference = "grantPreset.selected"
 
         var id: String { rawValue }
 
@@ -171,24 +204,55 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             }
         }
 
+        private func lockedPolicy(for grant: Grant) -> Policy {
+            switch self {
+            case .standard: return grant.standard
+            case .smart:
+                switch grant {
+                case .desk: return .smart
+                case .web, .device: return .allow
+                case .memory: return Grant.lockedPolicy(for: grant)
+                default: return .ask
+                }
+            case .free: return grant == .vault ? .ask : .allow
+            case .careful:
+                switch grant {
+                case .web, .desk, .memory, .device: return .allow
+                default: return .ask
+                }
+            }
+        }
+
         func apply() {
             for grant in Grant.allCases where self != .smart || grant.policy != .off {
                 grant.policy = policy(for: grant)
             }
             UserDefaults.standard.set(rawValue, forKey: Self.preference)
+            Grant.invalidatePresetCache()
         }
 
-        /// The preset everything is set to now, if any.
-        static var current: Preset? {
+        fileprivate static func computeCurrentPresetLocked() -> Preset? {
             func matches(_ preset: Preset) -> Bool {
                 Grant.allCases.allSatisfy { grant in
-                    grant.policy == preset.policy(for: grant) || (preset == .smart && grant.policy == .off)
+                    let p = Grant.lockedPolicy(for: grant)
+                    return p == preset.lockedPolicy(for: grant) || (preset == .smart && p == .off)
                 }
             }
             if let saved = UserDefaults.standard.string(forKey: preference).flatMap(Preset.init(rawValue:)),
                matches(saved) { return saved }
             return allCases.first { preset in
-                (preset != .smart || Grant.desk.policy == .smart) && matches(preset)
+                (preset != .smart || Grant.lockedPolicy(for: .desk) == .smart) && matches(preset)
+            }
+        }
+
+        /// The preset everything is set to now, if any.
+        static var current: Preset? {
+            Grant.cacheLock.withLock {
+                if Grant.hasCachedPreset { return Grant.cachedPreset }
+                let resolved = computeCurrentPresetLocked()
+                Grant.cachedPreset = resolved
+                Grant.hasCachedPreset = true
+                return resolved
             }
         }
     }
@@ -238,17 +302,38 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     /// Whether the user chose 「放手」 and has kept every enabled non-vault ability on `.allow`.
     static var isFreeRunning: Bool {
-        if Preset.current == .free { return true }
-        guard UserDefaults.standard.string(forKey: "grantPreset.selected") == Preset.free.rawValue else { return false }
-        var hasAllowed = false
-        for grant in Grant.allCases where grant != .vault {
-            switch grant.policy {
-            case .allow: hasAllowed = true
-            case .off: continue
-            case .ask, .smart: return false
+        cacheLock.withLock {
+            if let cached = cachedFreeRunning { return cached }
+            let currentPreset: Preset?
+            if hasCachedPreset {
+                currentPreset = cachedPreset
+            } else {
+                let computed = Preset.computeCurrentPresetLocked()
+                cachedPreset = computed
+                hasCachedPreset = true
+                currentPreset = computed
             }
+            let result: Bool
+            if currentPreset == .free {
+                result = true
+            } else if UserDefaults.standard.string(forKey: Preset.preference) == Preset.free.rawValue {
+                var hasAllowed = false
+                var valid = true
+                for grant in Grant.allCases where grant != .vault {
+                    switch lockedPolicy(for: grant) {
+                    case .allow: hasAllowed = true
+                    case .off: continue
+                    case .ask, .smart: valid = false
+                    }
+                    if !valid { break }
+                }
+                result = valid && hasAllowed
+            } else {
+                result = false
+            }
+            cachedFreeRunning = result
+            return result
         }
-        return hasAllowed
     }
 
     /// Tools that ask for their own non-forced confirmation even when their grant is `.allow` (outside 「放手」).
@@ -328,17 +413,13 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
 
     // MARK: The system's side
 
-    enum System: Equatable { case none, notAsked, asked, granted, denied, limited }
+    enum System: Equatable, Sendable { case none, notAsked, asked, granted, denied, limited }
 
-    @MainActor
-    var system: System {
+    @MainActor private static let locationProbe = CLLocationManager()
+    private static let backgroundSystemGrants: [Grant] = [.contacts, .photos, .motion, .calendar, .reminders, .health]
+
+    nonisolated private func readBackgroundSystemStatus() -> System {
         switch self {
-        case .location:
-            switch CLLocationManager().authorizationStatus {
-            case .notDetermined: return .notAsked
-            case .authorizedAlways, .authorizedWhenInUse: return .granted
-            default: return .denied
-            }
         case .contacts:
             switch CNContactStore.authorizationStatus(for: .contacts) {
             case .notDetermined: return .notAsked
@@ -379,6 +460,44 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         default:
             return .none
         }
+    }
+
+    @MainActor
+    var system: System {
+        if self == .location {
+            switch Self.locationProbe.authorizationStatus {
+            case .notDetermined: return .notAsked
+            case .authorizedAlways, .authorizedWhenInUse: return .granted
+            default: return .denied
+            }
+        }
+        return readBackgroundSystemStatus()
+    }
+
+    @MainActor
+    func readSystem() async -> System {
+        if self == .location { return system }
+        let target = self
+        return await Task.detached(priority: .userInitiated) {
+            target.readBackgroundSystemStatus()
+        }.value
+    }
+
+    @MainActor
+    static func readSystemStatuses() async -> [Grant: System] {
+        let bgGrants = backgroundSystemGrants
+        var result = await Task.detached(priority: .userInitiated) {
+            var map: [Grant: System] = [:]
+            for grant in bgGrants {
+                map[grant] = grant.readBackgroundSystemStatus()
+            }
+            return map
+        }.value
+        result[.location] = Grant.location.system
+        for grant in Grant.allCases where result[grant] == nil {
+            result[grant] = .none
+        }
+        return result
     }
 
     /// Shows the system's own question for this ability.
