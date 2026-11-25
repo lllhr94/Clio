@@ -386,8 +386,7 @@ private final class ChatTableCellLabel: UILabel {
 /// Native UIKit markdown table matching `ProseView.TableBlock` column planning, rich cell styling, horizontal scrolling, and copy menu.
 @MainActor
 final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
-    private static let colGap: CGFloat = 20
-    private static let cellMeasurer = ChatTableCellLabel()
+    private nonisolated static let colGap: CGFloat = 20
 
     var onOpenURL: ((URL) -> Void)?
 
@@ -437,10 +436,10 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         refreshThemeColors()
     }
 
-    static func spreadWidths(_ natural: [CGFloat], availableRoom: CGFloat) -> [CGFloat] {
+    nonisolated static func spreadWidths(_ natural: [CGFloat], availableRoom: CGFloat, padH: CGFloat) -> [CGFloat] {
         guard !natural.isEmpty, availableRoom > 0 else { return natural }
         let count = CGFloat(natural.count)
-        let available = availableRoom - colGap * (count - 1) - Ink.Space.l * 2
+        let available = availableRoom - colGap * (count - 1) - padH * 2
         guard available > 0 else { return natural }
         let floor = min(80, available / count)
         let total = natural.reduce(0, +)
@@ -459,8 +458,8 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         return natural.map { max(floor, min($0, available * 0.7)) }
     }
 
-    static func measureHeight(slice: ChatTableSlice, maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
-        let widths = spreadWidths(slice.naturalWidths, availableRoom: maxWidth)
+    nonisolated static func measureHeight(slice: ChatTableSlice, maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
+        let widths = spreadWidths(slice.naturalWidths, availableRoom: maxWidth, padH: style.metrics.spaceL)
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
         let minRowTextH = ceil(cellSize * 1.2)
@@ -468,8 +467,13 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         func rowHeight(_ cells: [NSAttributedString]) -> CGFloat {
             var tallest: CGFloat = minRowTextH
             for (col, colW) in widths.enumerated() where col < cells.count {
-                cellMeasurer.attributedText = cells[col]
-                let fit = cellMeasurer.sizeThatFits(CGSize(width: colW, height: .greatestFiniteMagnitude))
+                let cell = cells[col]
+                guard cell.length > 0 else { continue }
+                let fit = cell.boundingRect(
+                    with: CGSize(width: colW, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    context: nil
+                )
                 tallest = max(tallest, ceil(fit.height))
             }
             return tallest + padV * 2
@@ -605,10 +609,10 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         }
         scrollView.frame = bounds
 
-        let widths = Self.spreadWidths(slice.naturalWidths, availableRoom: width)
+        let padH = style.metrics.spaceL
+        let widths = Self.spreadWidths(slice.naturalWidths, availableRoom: width, padH: padH)
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
-        let padH = Ink.Space.l
         let totalContentW = widths.reduce(0, +) + Self.colGap * CGFloat(max(0, widths.count - 1)) + padH * 2
         let renderW = max(width, ceil(totalContentW))
 
@@ -705,10 +709,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     }
 }
 
-/// Native UIKit math formula view backed by `SwiftMath` `MTMathUILabel` with horizontal scroll & copy menu.
-@MainActor
-final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
-    private struct FormulaHeightKey: Hashable {
+/// Thread-safe formula height cache and deterministic estimator usable from background layout workers and `@MainActor`.
+enum ChatFormulaHeightCache {
+    private struct FormulaHeightKey: Hashable, Sendable {
         let size: Double
         let uiScale: Double
         let latex: String
@@ -716,6 +719,33 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
 
     private static let formulaHeights = BoundedLRUCache<FormulaHeightKey, CGFloat>(countLimit: 400)
 
+    nonisolated static func cachedHeight(latex: String, style: ChatListStyle) -> CGFloat? {
+        let key = FormulaHeightKey(size: style.size, uiScale: style.uiScale, latex: latex)
+        return formulaHeights.get(key)
+    }
+
+    nonisolated static func storeHeight(_ height: CGFloat, latex: String, style: ChatListStyle) {
+        let key = FormulaHeightKey(size: style.size, uiScale: style.uiScale, latex: latex)
+        formulaHeights.set(ceil(height), for: key)
+    }
+
+    nonisolated static func estimateHeight(latex: String, maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
+        let font = style.fonts.codePlainRegular
+        let pad = style.metrics.spaceM
+        let textW = max(40, maxWidth - pad * 2)
+        let rect = (latex as NSString).boundingRect(
+            with: CGSize(width: textW, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        return max(44, ceil(rect.height + pad * 2))
+    }
+}
+
+/// Native UIKit math formula view backed by `SwiftMath` `MTMathUILabel` with horizontal scroll & copy menu.
+@MainActor
+final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
     private static let measurer: MTMathUILabel = {
         let label = MTMathUILabel()
         label.displayErrorInline = false
@@ -723,6 +753,8 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
         label.textAlignment = .center
         return label
     }()
+
+    var onFormulaHeightResolved: ((CGFloat) -> Void)?
 
     private let scrollView = UIScrollView()
     private let mathLabel = MTMathUILabel()
@@ -732,6 +764,8 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
     private var currentLatex = ""
     private var currentStreaming = false
     private var currentStyle: ChatListStyle?
+    private var expectedHeight: CGFloat = 0
+    private var lastReportedResolutionSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -769,56 +803,104 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
         refreshThemeColors()
     }
 
-    static func measureHeight(latex: String, maxWidth: CGFloat, style: ChatListStyle, streaming: Bool) -> CGFloat {
+    nonisolated static func measureHeightInfo(
+        latex: String,
+        maxWidth: CGFloat,
+        style: ChatListStyle,
+        streaming: Bool,
+        allowMainThreadMathMeasure: Bool = false
+    ) -> (height: CGFloat, isEstimated: Bool) {
         if !streaming {
-            let key = FormulaHeightKey(size: style.size, uiScale: style.uiScale, latex: latex)
-            if let hit = formulaHeights.get(key) {
-                return hit
+            if let hit = ChatFormulaHeightCache.cachedHeight(latex: latex, style: style) {
+                return (hit, false)
             }
-            measurer.fontSize = style.readingSize + 2
-            measurer.latex = latex
-            let size = measurer.intrinsicContentSize
-            if measurer.error == nil, size.height > 0 {
-                let total = ceil(size.height + Ink.Space.m * 2)
-                formulaHeights.set(total, for: key)
-                return total
+            if allowMainThreadMathMeasure, Thread.isMainThread {
+                let exact: CGFloat? = MainActor.assumeIsolated {
+                    measureExactOnMainThread(latex: latex, style: style)
+                }
+                if let exact {
+                    return (exact, false)
+                }
             }
         }
-        let font = Ink.uiMono(style.codeSize, preference: style.code)
-        let textW = max(40, maxWidth - Ink.Space.m * 2)
-        let rect = (latex as NSString).boundingRect(
-            with: CGSize(width: textW, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font],
-            context: nil
-        )
-        return max(44, ceil(rect.height + Ink.Space.m * 2))
+        return (ChatFormulaHeightCache.estimateHeight(latex: latex, maxWidth: maxWidth, style: style), true)
     }
 
-    func configure(latex: String, style: ChatListStyle, streaming: Bool) {
-        if currentLatex == latex && currentStreaming == streaming && currentStyle == style {
+    nonisolated static func measureHeight(latex: String, maxWidth: CGFloat, style: ChatListStyle, streaming: Bool) -> CGFloat {
+        measureHeightInfo(latex: latex, maxWidth: maxWidth, style: style, streaming: streaming).height
+    }
+
+    @MainActor
+    private static func measureExactOnMainThread(latex: String, style: ChatListStyle) -> CGFloat? {
+        measurer.fontSize = style.readingSize + 2
+        measurer.latex = latex
+        let size = measurer.intrinsicContentSize
+        guard measurer.error == nil, size.height > 0 else { return nil }
+        let total = ceil(size.height + style.metrics.spaceM * 2)
+        ChatFormulaHeightCache.storeHeight(total, latex: latex, style: style)
+        return total
+    }
+
+    func resetForReuse() {
+        currentLatex = ""
+        currentStreaming = false
+        currentStyle = nil
+        expectedHeight = 0
+        lastReportedResolutionSignature = ""
+        onFormulaHeightResolved = nil
+    }
+
+    func configure(
+        latex: String,
+        style: ChatListStyle,
+        streaming: Bool,
+        expectedHeight: CGFloat = 0,
+        onFormulaHeightResolved: ((CGFloat) -> Void)? = nil
+    ) {
+        self.onFormulaHeightResolved = onFormulaHeightResolved
+        let sameContent = currentLatex == latex && currentStreaming == streaming && currentStyle == style
+        let expectedChanged = abs(self.expectedHeight - expectedHeight) > 0.5
+        self.expectedHeight = expectedHeight
+        if sameContent && !expectedChanged {
             return
         }
         currentLatex = latex
         currentStreaming = streaming
         currentStyle = style
 
-        fallbackLabel.font = Ink.uiMono(style.codeSize, preference: style.code)
-        fallbackLabel.text = latex
+        if !sameContent {
+            fallbackLabel.font = style.fonts.codePlainRegular
+            fallbackLabel.text = latex
 
-        if streaming {
-            scrollView.isHidden = true
-            fallbackLabel.isHidden = false
-            trailingFade.isHidden = true
-        } else {
-            mathLabel.fontSize = style.readingSize + 2
-            if mathLabel.latex != latex { mathLabel.latex = latex }
-            let failed = mathLabel.error != nil
-            scrollView.isHidden = failed
-            fallbackLabel.isHidden = !failed
+            if streaming {
+                scrollView.isHidden = true
+                fallbackLabel.isHidden = false
+                trailingFade.isHidden = true
+            } else {
+                mathLabel.fontSize = style.readingSize + 2
+                if mathLabel.latex != latex { mathLabel.latex = latex }
+                let failed = mathLabel.error != nil
+                scrollView.isHidden = failed
+                fallbackLabel.isHidden = !failed
+            }
+            refreshThemeColors()
+            setNeedsLayout()
         }
-        refreshThemeColors()
-        setNeedsLayout()
+
+        if !streaming, mathLabel.error == nil {
+            let size = mathLabel.intrinsicContentSize
+            if size.height > 0 {
+                let exact = ceil(size.height + style.metrics.spaceM * 2)
+                ChatFormulaHeightCache.storeHeight(exact, latex: latex, style: style)
+                if expectedHeight > 0, abs(exact - expectedHeight) > 1.0 {
+                    let sig = "\(latex)|\(style.styleKey)|\(Int(expectedHeight.rounded()))|\(Int(exact.rounded()))"
+                    if lastReportedResolutionSignature != sig {
+                        lastReportedResolutionSignature = sig
+                        onFormulaHeightResolved?(exact)
+                    }
+                }
+            }
+        }
     }
 
     private func refreshThemeColors() {

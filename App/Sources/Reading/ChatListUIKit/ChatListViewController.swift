@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import Observation
 import QuartzCore
 import SwiftUI
@@ -29,7 +30,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var expandedPulseIDs: Set<String> = []
     private var expandedLookbackIDs: Set<String> = []
     private var unfoldedCodeSlices: [String: Set<Int>] = [:]
-    private var prefetchedKeysBySection: [Int: [String]] = [:]
+    private var prefetchTasksBySection: [Int: Task<Void, Never>] = [:]
+    private var prefetchTokensBySection: [Int: ChatPrefetchToken] = [:]
+    private var prefetchedSectionIDs: [Int: ChatListItemID] = [:]
+    private var prewarmGeneration: UInt64 = 0
+    private let prewarmGate = ChatPrewarmGate()
+    private var prewarmTask: Task<Void, Never>?
+    private var prewarmToken: ChatPrefetchToken?
+    private var scrollDirection: Int = -1
+    private var pendingDynamicOwnerIDs: Set<String> = []
 
     private var selectingOwnerIDs: Set<UUID> = []
     private var hasPerformedInitialScroll = false
@@ -126,6 +135,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         pendingDynamicRefresh = false
         needsDeferredDynamicRefresh = false
         needsDeferredStreamingResize = false
+        pendingDynamicOwnerIDs.removeAll()
         lastMeasuredItemHeights.removeAll()
         stopInsetDisplayLink()
         loadEarlierResetTask?.cancel()
@@ -139,6 +149,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         keyboardObserverTokens.removeAll()
         cancelAllPrefetches()
+        cancelPrewarm()
         let owner = lastReportedReplyOwner
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
@@ -159,6 +170,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     deinit {
         insetDisplayLink?.invalidate()
         loadEarlierResetTask?.cancel()
+        prewarmTask?.cancel()
+        if let prewarmToken {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: prewarmToken)
+        }
+        for task in prefetchTasksBySection.values {
+            task.cancel()
+        }
+        for token in prefetchTokensBySection.values {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: token)
+        }
         if let observer = userDefaultsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -314,7 +335,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 let est = layoutCache.hostingHeight(for: key) ?? 50
                 return .estimated(est)
             case .note:
-                let h = layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight
+                let h = measureNoteEntry(row, width: width).cellHeight
                 lastMeasuredItemHeights[itemID] = h
                 return .absolute(h)
             }
@@ -349,13 +370,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         case .liveFailure:
             let err = currentState?.failureCardError ?? ""
             let working = currentState?.working ?? false
-            let h = layoutCache.measureFailure(error: err, working: working, collectionWidth: width)
+            let h = layoutCache.measureFailure(error: err, working: working, collectionWidth: width, style: currentStyle)
             lastMeasuredItemHeights[itemID] = h
             return .absolute(h)
 
         case .queued(let id):
             if let item = currentState?.queuedItems.first(where: { $0.id == id }) {
-                let h = layoutCache.measureQueued(item, collectionWidth: width).cellHeight
+                let h = layoutCache.measureQueued(item, collectionWidth: width, style: currentStyle).cellHeight
                 lastMeasuredItemHeights[itemID] = h
                 return .absolute(h)
             }
@@ -377,6 +398,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             expandedPulse: expandedPulseIDs.contains(row.line.id),
             expandedLookback: expandedLookbackIDs.contains(row.line.id),
             unfoldedSlices: unfoldedCodeSlices[row.line.id] ?? []
+        )
+    }
+
+    private func measureNoteEntry(_ row: ChatListRowItem, width: CGFloat) -> ChatLayoutCache.NoteLayoutEntry {
+        var adviceTitle: String?
+        if !row.line.fold, let next = row.line.next {
+            let parts = row.line.text.split(separator: "\n", maxSplits: 1).map(String.init)
+            let advice = Explain.Advice(title: parts.first ?? row.line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
+            adviceTitle = advice.displayTitle
+        }
+        return layoutCache.measureNote(
+            line: row.line,
+            isLatestNote: row.isLatestNote,
+            collectionWidth: width,
+            style: currentStyle,
+            adviceTitle: adviceTitle
         )
     }
 
@@ -491,7 +528,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                   let item = currentState?.queuedItems.first(where: { $0.id == id }) else {
                 return UICollectionViewCell()
             }
-            let entry = layoutCache.measureQueued(item, collectionWidth: width)
+            let entry = layoutCache.measureQueued(item, collectionWidth: width, style: currentStyle)
             cell.configure(
                 item: item,
                 entry: entry,
@@ -572,7 +609,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 withReuseIdentifier: ChatNoteCell.reuseID,
                 for: indexPath
             ) as? ChatNoteCell else { return UICollectionViewCell() }
-            let entry = layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width)
+            let entry = measureNoteEntry(row, width: width)
             cell.configure(row: row, entry: entry, actions: actions)
             return cell
         }
@@ -612,6 +649,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 self?.toggleCodeFold(for: lineID, sliceIndex: sliceIndex)
             },
             onBlockHeightChanged: { [weak self] ownerID, blockKey, h in
+                self?.handleDynamicBlockHeight(ownerID: ownerID, key: blockKey, height: h)
+            },
+            onFormulaHeightResolved: { [weak self] ownerID, blockKey, h in
                 self?.handleDynamicBlockHeight(ownerID: ownerID, key: blockKey, height: h)
             },
             onSelectionChanged: { [weak self] uuid, active in
@@ -708,12 +748,53 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func handleDynamicBlockHeight(ownerID: String, key: String, height: CGFloat) {
         guard layoutCache.setBlockHeightOverride(height, key: key, ownerID: ownerID) else { return }
+        pendingDynamicOwnerIDs.insert(ownerID)
         scheduleDynamicLayoutRefresh()
     }
 
     private func handleDynamicHostHeight(key: String, height: CGFloat) {
         guard layoutCache.setHostingHeight(height, for: key) else { return }
         scheduleDynamicLayoutRefresh()
+    }
+
+    private func applyPendingDynamicCellReconfigurations() {
+        guard !pendingDynamicOwnerIDs.isEmpty, collectionView != nil else { return }
+        let ownerIDs = pendingDynamicOwnerIDs
+        pendingDynamicOwnerIDs.removeAll()
+        let width = max(240, collectionView.bounds.width)
+        for indexPath in collectionView.indexPathsForVisibleItems where indexPath.section < items.count {
+            switch items[indexPath.section] {
+            case .line(let lineID) where ownerIDs.contains(lineID):
+                if let row = rowByID[lineID], row.line.kind == .bot {
+                    let entry = measureAssistant(row: row, width: width)
+                    if let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
+                        cell.updateSettledInPlace(
+                            row: row,
+                            entry: entry,
+                            style: currentStyle,
+                            expandedThinking: expandedThinkingIDs.contains(lineID),
+                            expandedPulse: expandedPulseIDs.contains(lineID),
+                            expandedLookback: expandedLookbackIDs.contains(lineID),
+                            unfoldedSlices: unfoldedCodeSlices[lineID] ?? []
+                        )
+                    }
+                }
+            case .liveProse(let gen):
+                let liveOwner = "streaming-\(gen)"
+                if ownerIDs.contains(liveOwner),
+                   let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
+                    let entry = layoutCache.measureLiveStreamingProse(
+                        text: currentState?.streamText ?? "",
+                        generation: gen,
+                        collectionWidth: width,
+                        style: currentStyle
+                    )
+                    cell.updateLiveStreamingInPlace(entry: entry, style: currentStyle)
+                }
+            default:
+                break
+            }
+        }
     }
 
     private func scheduleDynamicLayoutRefresh() {
@@ -732,6 +813,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 return
             }
             self.preserveReadingAnchorDuring {
+                self.applyPendingDynamicCellReconfigurations()
                 self.collectionView.collectionViewLayout.invalidateLayout()
                 self.collectionView.layoutIfNeeded()
             }
@@ -842,13 +924,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
             }
-            prewarmTailWindow()
+            prewarmInitialWindow()
             publishVisibleAndFooterMetrics()
         }
     }
 
     private func resetForChatSwitch(_ next: ChatListState) {
         cancelAllPrefetches()
+        cancelPrewarm()
+        pendingDynamicOwnerIDs.removeAll()
         expandedThinkingIDs.removeAll()
         expandedPulseIDs.removeAll()
         expandedLookbackIDs.removeAll()
@@ -859,7 +943,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = nil
         clearAllSelections()
-        layoutCache.invalidateAll()
+        layoutCache.invalidateAll(clearOverrides: true)
         stopInsetDisplayLink()
         animatedScrollID &+= 1
         isPinnedToBottom = true
@@ -918,7 +1002,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 scrollToBottom(animated: false)
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
-                prewarmTailWindow()
+                prewarmInitialWindow()
             }
 
             isProgrammaticScroll = false
@@ -1009,7 +1093,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             case .queued(let qid):
                 if let qItem = next.queuedItems.first(where: { $0.id == qid }),
                    let cell = collectionView.cellForItem(at: indexPath) as? ChatQueuedCell {
-                    let entry = layoutCache.measureQueued(qItem, collectionWidth: width)
+                    let entry = layoutCache.measureQueued(qItem, collectionWidth: width, style: currentStyle)
                     cell.configure(
                         item: qItem,
                         entry: entry,
@@ -1113,7 +1197,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         case .steps:
             return nil
         case .note:
-            return layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight
+            return measureNoteEntry(row, width: width).cellHeight
         }
     }
 
@@ -1146,7 +1230,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
             return nil
         case .note:
-            let entry = layoutCache.measureNote(line: newRow.line, isLatestNote: newRow.isLatestNote, collectionWidth: width)
+            let entry = measureNoteEntry(newRow, width: width)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatNoteCell {
                 cell.configure(row: newRow, entry: entry, actions: actions)
             }
@@ -1161,6 +1245,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         nextRowMap: [String: ChatListRowItem]
     ) {
         let oldRowMap = rowByID
+        let prependedCount: Int
+        if let oldFirstID = prev.rows.first?.line.id,
+           let oldFirstInNext = next.rows.firstIndex(where: { $0.line.id == oldFirstID }),
+           oldFirstInNext > 0 {
+            prependedCount = oldFirstInNext
+        } else {
+            prependedCount = 0
+        }
+        let loadedInitialRows = (prev.rows.isEmpty && !next.rows.isEmpty)
+            || (!prev.loaded && next.loaded && !next.rows.isEmpty)
 
         // Transfer active text selection seamlessly if live stream just handed off to a committed bot reply.
         if prev.hasStreaming && !next.hasStreaming,
@@ -1237,6 +1331,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         lastScrollOffsetY = collectionView.contentOffset.y
         updateCollectionInsetsIfNeeded()
+        if collectionView.bounds.width > 0 {
+            if loadedInitialRows || switchedHistoryView {
+                prewarmInitialWindow()
+            } else if prependedCount > 0 {
+                prewarmPrependedRows(prependedRowCount: prependedCount)
+            }
+        }
         publishVisibleAndFooterMetrics()
     }
 
@@ -1336,6 +1437,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard nextStyle != currentStyle else { return }
         currentStyle = nextStyle
         cancelAllPrefetches()
+        cancelPrewarm()
+        pendingDynamicOwnerIDs.removeAll()
         lastMeasuredItemHeights.removeAll()
         layoutCache.invalidateAll()
         ChatTextTileRenderer.shared.invalidateAll()
@@ -1345,6 +1448,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.collectionViewLayout.invalidateLayout()
             collectionView.layoutIfNeeded()
         }
+        prewarmInitialWindow()
         publishVisibleAndFooterMetrics()
     }
 
@@ -1419,7 +1523,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             case .queued(let qid):
                 if let qItem = currentState?.queuedItems.first(where: { $0.id == qid }),
                    let cell = collectionView.cellForItem(at: indexPath) as? ChatQueuedCell {
-                    let entry = layoutCache.measureQueued(qItem, collectionWidth: width)
+                    let entry = layoutCache.measureQueued(qItem, collectionWidth: width, style: currentStyle)
                     cell.configure(
                         item: qItem,
                         entry: entry,
@@ -1475,11 +1579,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
                 lastScrollOffsetY = collectionView.contentOffset.y
-                prewarmTailWindow()
+                prewarmInitialWindow()
                 scheduleHostMetricsFlush()
             } else if abs(collectionView.bounds.width - lastKnownContentWidth) > 0.5 {
                 lastKnownContentWidth = collectionView.bounds.width
                 cancelAllPrefetches()
+                cancelPrewarm()
+                pendingDynamicOwnerIDs.removeAll()
                 lastMeasuredItemHeights.removeAll()
                 layoutCache.invalidateHeightsOnly()
                 preserveReadingAnchorDuring {
@@ -1487,6 +1593,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     collectionView.collectionViewLayout.invalidateLayout()
                     collectionView.layoutIfNeeded()
                 }
+                prewarmInitialWindow()
                 scheduleHostMetricsFlush()
             }
         }
@@ -2112,6 +2219,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             if !isDismantled, collectionView != nil, collectionView.bounds.width > 0 {
                 if hadDynamicRefresh {
                     preserveReadingAnchorDuring {
+                        applyPendingDynamicCellReconfigurations()
                         collectionView.collectionViewLayout.invalidateLayout()
                         collectionView.layoutIfNeeded()
                     }
@@ -2146,6 +2254,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let bottomY = bottomOffsetY(for: scrollView)
         let touching = scrollView.isDragging || scrollView.isDecelerating
         if !isProgrammaticScroll && !isInHostUpdate {
+            if currentY < prevY - 0.5 {
+                scrollDirection = -1
+            } else if currentY > prevY + 0.5 {
+                scrollDirection = 1
+            }
             let userMoving = scrollView.isTracking || touching
             let movedUp = currentY < prevY - 0.5 || (scrollView.isDragging && currentY < dragStartOffsetY - 0.5)
             if userMoving && movedUp && currentY < bottomY - 4 {
@@ -2366,86 +2479,437 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     // MARK: - UICollectionViewDataSourcePrefetching & Tile Prewarm
 
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-        guard !isDismantled, collectionView.bounds.width > 0 else { return }
+        guard !isDismantled, isViewLoaded, collectionView.bounds.width > 0, let style = currentStyle else { return }
         let width = max(240, collectionView.bounds.width)
         let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
-        let palette = ChatTextRenderPalette.make(style: currentStyle)
-        var requests: [ChatTextRenderRequest] = []
+        let palette = ChatTextRenderPalette.make(style: style)
+
+        var requestedSections: [Int] = []
+        var seenRequested: Set<Int> = []
         for indexPath in indexPaths {
             let section = indexPath.section
             guard section >= 0, section < items.count else { continue }
-            let itemRequests = buildRenderRequests(forSection: section, width: width, scale: scale, palette: palette)
-            if !itemRequests.isEmpty {
-                prefetchedKeysBySection[section] = itemRequests.map(\.cacheKey)
-                requests.append(contentsOf: itemRequests)
+            if seenRequested.insert(section).inserted {
+                requestedSections.append(section)
             }
         }
-        if !requests.isEmpty {
-            ChatTextTileRenderer.shared.prefetch(requests)
+        guard !requestedSections.isEmpty else { return }
+
+        let visibleSections = collectionView.indexPathsForVisibleItems
+            .map(\.section)
+            .filter { $0 >= 0 && $0 < items.count }
+
+        var targetSections = requestedSections
+        var seenTarget = seenRequested
+        let lookaheadCount = 16
+        if scrollDirection < 0 {
+            let seed = min(requestedSections.min() ?? Int.max, visibleSections.min() ?? Int.max)
+            if seed < items.count {
+                var section = seed - 1
+                var added = 0
+                while section >= 0 && added < lookaheadCount {
+                    if case .line = items[section], seenTarget.insert(section).inserted {
+                        targetSections.append(section)
+                        added += 1
+                    }
+                    section -= 1
+                }
+            }
+        } else {
+            let seed = max(requestedSections.max() ?? -1, visibleSections.max() ?? -1)
+            if seed >= 0 {
+                var section = seed + 1
+                var added = 0
+                while section < items.count && added < lookaheadCount {
+                    if case .line = items[section], seenTarget.insert(section).inserted {
+                        targetSections.append(section)
+                        added += 1
+                    }
+                    section += 1
+                }
+            }
+        }
+
+        if let minTarget = targetSections.min(), let maxTarget = targetSections.max() {
+            let visMin = visibleSections.min() ?? minTarget
+            let visMax = visibleSections.max() ?? maxTarget
+            let keepMin = min(minTarget, visMin) - 8
+            let keepMax = max(maxTarget, visMax) + 8
+            for existingSection in Array(prefetchTasksBySection.keys) where existingSection < keepMin || existingSection > keepMax {
+                prefetchTasksBySection.removeValue(forKey: existingSection)?.cancel()
+                if let token = prefetchTokensBySection.removeValue(forKey: existingSection) {
+                    ChatTextTileRenderer.shared.cancelPrefetch(token: token)
+                }
+                prefetchedSectionIDs.removeValue(forKey: existingSection)
+            }
+        }
+
+        let cache = layoutCache
+        for section in targetSections {
+            guard section >= 0, section < items.count else { continue }
+            let itemID = items[section]
+            if prefetchedSectionIDs[section] == itemID {
+                continue
+            }
+            guard let job = makeBackgroundJob(forSection: section, width: width, style: style) else { continue }
+            let token = ChatPrefetchToken()
+            prefetchedSectionIDs[section] = itemID
+            prefetchTokensBySection[section] = token
+            let task = Task.detached(priority: .userInitiated) {
+                ChatPrefetchWorker.runSection(
+                    job: job,
+                    layoutCache: cache,
+                    scale: scale,
+                    palette: palette,
+                    token: token
+                )
+            }
+            prefetchTasksBySection[section] = task
         }
     }
 
     func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-        var keysToCancel: [String] = []
         for indexPath in indexPaths {
-            if let keys = prefetchedKeysBySection.removeValue(forKey: indexPath.section) {
-                keysToCancel.append(contentsOf: keys)
+            let section = indexPath.section
+            prefetchTasksBySection.removeValue(forKey: section)?.cancel()
+            if let token = prefetchTokensBySection.removeValue(forKey: section) {
+                ChatTextTileRenderer.shared.cancelPrefetch(token: token)
             }
-        }
-        if !keysToCancel.isEmpty {
-            ChatTextTileRenderer.shared.cancelPrefetch(keys: keysToCancel)
+            prefetchedSectionIDs.removeValue(forKey: section)
         }
     }
 
-    private func prewarmTailWindow(limit: Int = 8) {
-        guard !isDismantled, isViewLoaded, collectionView != nil, collectionView.bounds.width > 0 else { return }
+    private func prewarmInitialWindow() {
+        guard !isDismantled, isViewLoaded, collectionView != nil, collectionView.bounds.width > 0, let style = currentStyle else {
+            return
+        }
         let width = max(240, collectionView.bounds.width)
-        let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
-        let palette = ChatTextRenderPalette.make(style: currentStyle)
-        var requests: [ChatTextRenderRequest] = []
-        var warmedRows = 0
-        for section in items.indices.reversed() {
-            guard warmedRows < limit else { break }
-            guard case .line = items[section] else { continue }
-            warmedRows += 1
-            let itemRequests = buildRenderRequests(forSection: section, width: width, scale: scale, palette: palette)
-            if !itemRequests.isEmpty {
-                requests.append(contentsOf: itemRequests)
+        var prioritySections: [Int] = []
+        var seenSections: Set<Int> = []
+
+        for path in collectionView.indexPathsForVisibleItems.sorted(by: { $0.section < $1.section }) {
+            let section = path.section
+            guard section >= 0, section < items.count, case .line = items[section] else { continue }
+            if seenSections.insert(section).inserted {
+                prioritySections.append(section)
             }
         }
-        if !requests.isEmpty {
-            ChatTextTileRenderer.shared.prefetch(requests)
+
+        for section in items.indices.reversed() {
+            guard prioritySections.count < 15 else { break }
+            guard case .line = items[section] else { continue }
+            if seenSections.insert(section).inserted {
+                prioritySections.append(section)
+            }
+        }
+
+        var secondarySections: [Int] = []
+        secondarySections.reserveCapacity(85)
+        for section in items.indices.reversed() {
+            guard secondarySections.count < 85 else { break }
+            guard case .line = items[section] else { continue }
+            if seenSections.insert(section).inserted {
+                secondarySections.append(section)
+            }
+        }
+
+        launchPrewarm(prioritySections: prioritySections, secondarySections: secondarySections, width: width, style: style)
+    }
+
+    private func prewarmPrependedRows(prependedRowCount: Int) {
+        guard !isDismantled,
+              isViewLoaded,
+              collectionView != nil,
+              collectionView.bounds.width > 0,
+              let style = currentStyle,
+              let rows = currentState?.rows,
+              prependedRowCount > 0 else {
+            return
+        }
+        let boundedCount = min(prependedRowCount, rows.count)
+        let width = max(240, collectionView.bounds.width)
+        var prioritySections: [Int] = []
+        var secondarySections: [Int] = []
+        prioritySections.reserveCapacity(15)
+        secondarySections.reserveCapacity(85)
+
+        for idx in (0..<boundedCount).reversed() {
+            let row = rows[idx]
+            guard let section = itemIndexByID[.line(row.line.id)] else { continue }
+            if prioritySections.count < 15 {
+                prioritySections.append(section)
+            } else if secondarySections.count < 85 {
+                secondarySections.append(section)
+            } else {
+                break
+            }
+        }
+
+        launchPrewarm(prioritySections: prioritySections, secondarySections: secondarySections, width: width, style: style)
+    }
+
+    private func launchPrewarm(
+        prioritySections: [Int],
+        secondarySections: [Int],
+        width: CGFloat,
+        style: ChatListStyle
+    ) {
+        var priorityJobs: [ChatPrefetchWorker.Job] = []
+        priorityJobs.reserveCapacity(prioritySections.count)
+        for section in prioritySections {
+            if let job = makeBackgroundJob(forSection: section, width: width, style: style) {
+                priorityJobs.append(job)
+            }
+        }
+
+        var secondaryTileJobs: [ChatPrefetchWorker.Job] = []
+        var secondaryLayoutOnlyJobs: [ChatPrefetchWorker.Job] = []
+        for section in secondarySections {
+            guard let job = makeBackgroundJob(forSection: section, width: width, style: style) else { continue }
+            if secondaryTileJobs.count < 25 {
+                secondaryTileJobs.append(job)
+            } else {
+                secondaryLayoutOnlyJobs.append(job)
+            }
+        }
+
+        cancelPrewarm()
+        guard !priorityJobs.isEmpty || !secondaryTileJobs.isEmpty || !secondaryLayoutOnlyJobs.isEmpty else {
+            return
+        }
+        let generation = prewarmGeneration
+        let gate = prewarmGate
+        let token = ChatPrefetchToken()
+        prewarmToken = token
+        let cache = layoutCache
+        let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
+        let palette = ChatTextRenderPalette.make(style: style)
+
+        prewarmTask = Task.detached(priority: .userInitiated) {
+            ChatPrefetchWorker.runPrewarm(
+                priorityJobs: priorityJobs,
+                secondaryTileJobs: secondaryTileJobs,
+                secondaryLayoutOnlyJobs: secondaryLayoutOnlyJobs,
+                layoutCache: cache,
+                scale: scale,
+                palette: palette,
+                token: token,
+                gate: gate,
+                generation: generation
+            )
+        }
+    }
+
+    private func cancelPrewarm() {
+        prewarmGeneration = prewarmGate.advance()
+        prewarmTask?.cancel()
+        prewarmTask = nil
+        if let token = prewarmToken {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: token)
+            prewarmToken = nil
         }
     }
 
     private func cancelAllPrefetches() {
-        guard !prefetchedKeysBySection.isEmpty else { return }
-        var allKeys: [String] = []
-        for keys in prefetchedKeysBySection.values {
-            allKeys.append(contentsOf: keys)
+        for task in prefetchTasksBySection.values {
+            task.cancel()
         }
-        prefetchedKeysBySection.removeAll()
-        if !allKeys.isEmpty {
-            ChatTextTileRenderer.shared.cancelPrefetch(keys: allKeys)
+        prefetchTasksBySection.removeAll()
+        for token in prefetchTokensBySection.values {
+            ChatTextTileRenderer.shared.cancelPrefetch(token: token)
         }
+        prefetchTokensBySection.removeAll()
+        prefetchedSectionIDs.removeAll()
     }
 
-    private func buildRenderRequests(
+    private func makeBackgroundJob(
         forSection section: Int,
         width: CGFloat,
-        scale: CGFloat,
-        palette: ChatTextRenderPalette
-    ) -> [ChatTextRenderRequest] {
+        style: ChatListStyle
+    ) -> ChatPrefetchWorker.Job? {
         guard section >= 0, section < items.count,
               case .line(let id) = items[section],
               let row = rowByID[id] else {
-            return []
+            return nil
         }
 
         switch row.line.kind {
         case .user:
-            guard !row.line.text.isEmpty else { return [] }
-            let entry = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle)
+            return .user(UserMeasureInput(row: row, collectionWidth: width, style: style))
+
+        case .bot:
+            guard !row.isFreshWriting else { return nil }
+            let input = AssistantMeasureInput(
+                row: row,
+                collectionWidth: width,
+                style: style,
+                expandedThinking: expandedThinkingIDs.contains(row.line.id),
+                expandedPulse: expandedPulseIDs.contains(row.line.id),
+                expandedLookback: expandedLookbackIDs.contains(row.line.id),
+                unfoldedSlices: unfoldedCodeSlices[row.line.id] ?? [],
+                overrides: layoutCache.overrideSnapshot(for: row.line.id)
+            )
+            return .assistant(input)
+
+        case .steps, .note:
+            return nil
+        }
+    }
+
+    private func traceHeightKey(_ row: ChatListRowItem) -> String {
+        "trace|\(row.line.id)|\(row.line.tools.count)|\(row.line.live ? 1 : 0)|\(row.opens ? 1 : 0)|\(row.faces ? 1 : 0)|\(row.lit ? 1 : 0)"
+    }
+}
+
+private final class ChatPrewarmGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+
+    func advance() -> UInt64 {
+        lock.lock()
+        generation &+= 1
+        let next = generation
+        lock.unlock()
+        return next
+    }
+
+    func isCurrent(_ expected: UInt64) -> Bool {
+        lock.lock()
+        let match = generation == expected
+        lock.unlock()
+        return match
+    }
+}
+
+private enum ChatPrefetchWorker {
+    enum Job: Sendable {
+        case user(UserMeasureInput)
+        case assistant(AssistantMeasureInput)
+    }
+
+    nonisolated static func runSection(
+        job: Job,
+        layoutCache: ChatLayoutCache,
+        scale: CGFloat,
+        palette: ChatTextRenderPalette,
+        token: ChatPrefetchToken
+    ) {
+        guard !Task.isCancelled, !ChatTextTileRenderer.shared.isCancelled(token) else { return }
+        let requests = buildRequests(job: job, layoutCache: layoutCache, scale: scale, palette: palette)
+        guard !Task.isCancelled, !ChatTextTileRenderer.shared.isCancelled(token), !requests.isEmpty else { return }
+        ChatTextTileRenderer.shared.prefetch(requests, token: token, queuePriority: .normal)
+    }
+
+    nonisolated static func runPrewarm(
+        priorityJobs: [Job],
+        secondaryTileJobs: [Job],
+        secondaryLayoutOnlyJobs: [Job],
+        layoutCache: ChatLayoutCache,
+        scale: CGFloat,
+        palette: ChatTextRenderPalette,
+        token: ChatPrefetchToken,
+        gate: ChatPrewarmGate,
+        generation: UInt64
+    ) {
+        processBatch(
+            priorityJobs,
+            generateTiles: true,
+            tilePriority: .normal,
+            layoutCache: layoutCache,
+            scale: scale,
+            palette: palette,
+            token: token,
+            gate: gate,
+            generation: generation
+        )
+        processBatch(
+            secondaryTileJobs,
+            generateTiles: true,
+            tilePriority: .low,
+            layoutCache: layoutCache,
+            scale: scale,
+            palette: palette,
+            token: token,
+            gate: gate,
+            generation: generation
+        )
+        processBatch(
+            secondaryLayoutOnlyJobs,
+            generateTiles: false,
+            tilePriority: .low,
+            layoutCache: layoutCache,
+            scale: scale,
+            palette: palette,
+            token: token,
+            gate: gate,
+            generation: generation
+        )
+    }
+
+    private nonisolated static func processBatch(
+        _ jobs: [Job],
+        generateTiles: Bool,
+        tilePriority: Operation.QueuePriority,
+        layoutCache: ChatLayoutCache,
+        scale: CGFloat,
+        palette: ChatTextRenderPalette,
+        token: ChatPrefetchToken,
+        gate: ChatPrewarmGate,
+        generation: UInt64
+    ) {
+        guard !jobs.isEmpty else { return }
+        var pendingRequests: [ChatTextRenderRequest] = []
+        var rowCountInChunk = 0
+
+        for job in jobs {
+            if Task.isCancelled || ChatTextTileRenderer.shared.isCancelled(token) || !gate.isCurrent(generation) {
+                return
+            }
+            if generateTiles {
+                let rowRequests = buildRequests(job: job, layoutCache: layoutCache, scale: scale, palette: palette)
+                if !rowRequests.isEmpty {
+                    pendingRequests.append(contentsOf: rowRequests)
+                }
+                rowCountInChunk += 1
+                if rowCountInChunk >= 6 && !pendingRequests.isEmpty {
+                    guard gate.isCurrent(generation) else { return }
+                    ChatTextTileRenderer.shared.prefetch(pendingRequests, token: token, queuePriority: tilePriority)
+                    pendingRequests.removeAll(keepingCapacity: true)
+                    rowCountInChunk = 0
+                }
+            } else {
+                measureLayoutOnly(job: job, layoutCache: layoutCache)
+            }
+        }
+
+        if generateTiles,
+           !pendingRequests.isEmpty,
+           !Task.isCancelled,
+           !ChatTextTileRenderer.shared.isCancelled(token),
+           gate.isCurrent(generation) {
+            ChatTextTileRenderer.shared.prefetch(pendingRequests, token: token, queuePriority: tilePriority)
+        }
+    }
+
+    private nonisolated static func measureLayoutOnly(job: Job, layoutCache: ChatLayoutCache) {
+        switch job {
+        case .user(let input):
+            _ = layoutCache.measureUser(input: input)
+        case .assistant(let input):
+            _ = layoutCache.measureAssistant(input: input, allowMainThreadMathMeasure: false)
+        }
+    }
+
+    private nonisolated static func buildRequests(
+        job: Job,
+        layoutCache: ChatLayoutCache,
+        scale: CGFloat,
+        palette: ChatTextRenderPalette
+    ) -> [ChatTextRenderRequest] {
+        switch job {
+        case .user(let input):
+            guard !input.text.isEmpty else { return [] }
+            let entry = layoutCache.measureUser(input: input)
             guard entry.bubbleHeight > 0, entry.textWidth > 0, entry.textHeight > 0, !entry.rendered.isEmpty else {
                 return []
             }
@@ -2453,7 +2917,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 token: entry.rendered.renderToken,
                 width: entry.textWidth,
                 height: entry.textHeight,
-                styleKey: currentStyle.styleKey,
+                styleKey: input.style.styleKey,
                 scale: scale
             )
             return [ChatTextRenderRequest(
@@ -2468,11 +2932,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 palette: palette
             )]
 
-        case .bot:
-            guard !row.isFreshWriting else { return [] }
-            let entry = measureAssistant(row: row, width: width)
+        case .assistant(let input):
+            guard !input.isFresh else { return [] }
+            let entry = layoutCache.measureAssistant(input: input, allowMainThreadMathMeasure: false)
             let contentWidth = entry.contentWidth
-            let unfoldedSet = unfoldedCodeSlices[row.line.id] ?? []
+            let style = input.style
+            let spaceL = style.metrics.spaceL
+            let readingSize = style.readingSize
+            let unfoldedSet = input.unfoldedSlices
             var requests: [ChatTextRenderRequest] = []
 
             for measured in entry.slices {
@@ -2483,7 +2950,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                         token: rendered.renderToken,
                         width: contentWidth,
                         height: measured.height,
-                        styleKey: currentStyle.styleKey,
+                        styleKey: style.styleKey,
                         scale: scale
                     )
                     requests.append(ChatTextRenderRequest(
@@ -2505,14 +2972,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     let activeAttr = resolved.attributed
                     let activeToken = resolved.token
                     let textSize = resolved.size
-                    let codeW = max(contentWidth - Ink.Space.l * 2, textSize.width)
+                    let codeW = max(contentWidth - spaceL * 2, textSize.width)
                     let codeH = max(16, textSize.height)
                     guard activeAttr.length > 0, codeW > 0, codeH > 0 else { continue }
                     let key = ChatTextTileRenderer.cacheKey(
                         token: activeToken,
                         width: codeW,
                         height: codeH,
-                        styleKey: currentStyle.styleKey,
+                        styleKey: style.styleKey,
                         scale: scale
                     )
                     requests.append(ChatTextRenderRequest(
@@ -2529,13 +2996,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
                 case .pictures(let words, let pics, _):
                     guard let words, !words.isEmpty else { continue }
-                    let wordsH = max(18, measured.height - measured.pictureHeights.reduce(0, +) - CGFloat(pics.count) * currentStyle.readingSize * 0.6)
+                    let wordsH = max(18, measured.height - measured.pictureHeights.reduce(0, +) - CGFloat(pics.count) * readingSize * 0.6)
                     guard contentWidth > 0, wordsH > 0 else { continue }
                     let key = ChatTextTileRenderer.cacheKey(
                         token: words.renderToken,
                         width: contentWidth,
                         height: wordsH,
-                        styleKey: currentStyle.styleKey,
+                        styleKey: style.styleKey,
                         scale: scale
                     )
                     requests.append(ChatTextRenderRequest(
@@ -2555,13 +3022,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 }
             }
             return requests
-
-        case .steps, .note:
-            return []
         }
-    }
-
-    private func traceHeightKey(_ row: ChatListRowItem) -> String {
-        "trace|\(row.line.id)|\(row.line.tools.count)|\(row.line.live ? 1 : 0)|\(row.opens ? 1 : 0)|\(row.faces ? 1 : 0)|\(row.lit ? 1 : 0)"
     }
 }

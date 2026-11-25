@@ -16,22 +16,27 @@ struct ChatTextRenderPalette: @unchecked Sendable {
     let quoteStripeX: CGFloat
     let quoteStripeWidth: CGFloat
 
-    @MainActor
-    static func make(style: ChatListStyle) -> ChatTextRenderPalette {
+    nonisolated static func make(style: ChatListStyle) -> ChatTextRenderPalette {
         ChatTextRenderPalette(
-            inlineCodeFill: style.resolveColor(Ink.mine, alpha: 0.85).cgColor,
-            ruleFill: style.resolveColor(Ink.rule, alpha: 0.85).cgColor,
-            quoteBg: style.resolveColor(Ink.paperRaised, alpha: 0.75).cgColor,
-            quoteBorder: style.resolveColor(Ink.rule, alpha: 0.55).cgColor,
-            quoteStripe: style.resolveColor(Ink.accent, alpha: 0.52).cgColor,
-            inlineCodeCorner: style.inlineCodeCorner,
-            ruleInset: Ink.Space.l,
-            quoteRadius: Ink.Radius.small,
-            quotePadV: Ink.Space.m,
-            quoteStripeX: Ink.Space.m,
+            inlineCodeFill: style.colors.inlineCodeFill.cgColor,
+            ruleFill: style.colors.ruleFill.cgColor,
+            quoteBg: style.colors.quoteBackground.cgColor,
+            quoteBorder: style.colors.quoteBorder.cgColor,
+            quoteStripe: style.colors.quoteStripe.cgColor,
+            inlineCodeCorner: style.metrics.inlineCodeCorner,
+            ruleInset: style.metrics.spaceL,
+            quoteRadius: style.metrics.radiusSmall,
+            quotePadV: style.metrics.spaceM,
+            quoteStripeX: style.metrics.spaceM,
             quoteStripeWidth: 2.5
         )
     }
+}
+
+/// Cancellable group token shared between background layout prefetchers and `ChatTextTileRenderer`.
+final class ChatPrefetchToken: @unchecked Sendable {
+    fileprivate var isCancelled = false
+    fileprivate var keys: [String] = []
 }
 
 /// Immutable request describing one attributed prose or code slice to rasterize into vertical tiles.
@@ -153,20 +158,41 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         queue.addOperation(op)
     }
 
-    func prefetch(_ requests: [ChatTextRenderRequest]) {
+    func isCancelled(_ token: ChatPrefetchToken) -> Bool {
+        lock.lock()
+        let cancelled = token.isCancelled
+        lock.unlock()
+        return cancelled
+    }
+
+    func prefetch(
+        _ requests: [ChatTextRenderRequest],
+        token: ChatPrefetchToken? = nil,
+        queuePriority: Operation.QueuePriority = .low
+    ) {
         guard !requests.isEmpty else { return }
         var opsToAdd: [Operation] = []
 
         lock.lock()
+        if token?.isCancelled == true {
+            lock.unlock()
+            return
+        }
         let opGen = generation
         for request in requests {
             guard request.width > 0, request.height > 0, request.attributed.length > 0 else { continue }
             if cache.object(forKey: request.cacheKey as NSString) != nil { continue }
-            if inFlight[request.cacheKey] != nil { continue }
+            if let existing = inFlight[request.cacheKey] {
+                if existing.completions.isEmpty && existing.op.queuePriority.rawValue < queuePriority.rawValue {
+                    existing.op.queuePriority = queuePriority
+                }
+                continue
+            }
 
             let op = makeOperation(for: request, generation: opGen)
-            op.queuePriority = .low
+            op.queuePriority = queuePriority
             inFlight[request.cacheKey] = (op: op, completions: [])
+            token?.keys.append(request.cacheKey)
             opsToAdd.append(op)
         }
         lock.unlock()
@@ -174,6 +200,19 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         if !opsToAdd.isEmpty {
             queue.addOperations(opsToAdd, waitUntilFinished: false)
         }
+    }
+
+    func cancelPrefetch(token: ChatPrefetchToken) {
+        lock.lock()
+        token.isCancelled = true
+        for key in token.keys {
+            if let entry = inFlight[key], entry.completions.isEmpty {
+                entry.op.cancel()
+                inFlight.removeValue(forKey: key)
+            }
+        }
+        token.keys.removeAll(keepingCapacity: false)
+        lock.unlock()
     }
 
     func cancelPrefetch(keys: [String]) {
@@ -199,8 +238,8 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         for key in cancelledKeys {
             inFlight.removeValue(forKey: key)
         }
-        lock.unlock()
         cache.removeAllObjects()
+        lock.unlock()
     }
 
     private func makeOperation(for request: ChatTextRenderRequest, generation opGen: UInt64) -> BlockOperation {
@@ -230,11 +269,11 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         let isCurrent = inFlight[key]?.op === op
         let completions = isCurrent ? (inFlight.removeValue(forKey: key)?.completions ?? []) : []
         let validGen = (generation == opGen) && !cancelled
-        lock.unlock()
-
         if validGen, let rendered {
             cache.setObject(rendered, forKey: key as NSString, cost: rendered.totalBytes)
         }
+        lock.unlock()
+
         guard !completions.isEmpty else { return }
         let delivered: ChatRenderedTiles? = validGen ? rendered : nil
         DispatchQueue.main.async {
