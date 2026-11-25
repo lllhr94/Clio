@@ -16,7 +16,11 @@ struct ChatPage: View {
     @State var dictationSlot = ChatDictationSlot()
     let asker = Asker.shared
     @State var petPerch = PetPerch()
-    @State var chatViewport = CGSize.zero
+    @State var viewportMetrics = ChatViewportMetrics()
+    var chatViewport: CGSize {
+        get { viewportMetrics.size }
+        nonmutating set { viewportMetrics.size = newValue }
+    }
     @Environment(\.accessibilityReduceMotion) var calmPetMotion
     @Environment(\.scenePhase) var scenePhase
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
@@ -31,6 +35,9 @@ struct ChatPage: View {
     @State var headerHeight: CGFloat = 0
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
+    @State var draftAttachmentsLoaded = false
+    @State var draftAttachmentsEdited = false
+    @State var isApplyingLoadedAttachments = false
     @State var picks: [PhotosPickerItem] = []
     @State var attachmentRevision = UUID()
     @State var pasteTask: Task<Void, Never>?
@@ -46,7 +53,10 @@ struct ChatPage: View {
     @AppStorage("look.uikitChatList") var useUIKitChatList = true
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
-    @State var following = true
+    var following: Bool {
+        get { followState.following }
+        nonmutating set { followState.following = newValue }
+    }
     /// 聊天里显示头像: off unless turned on (设置 › 对话 › 对话显示与反馈).
     @AppStorage("chat.faces") var faces = false
     /// The stop button asks first (as Open Minis does): a long task lost to a thumb that slipped is worse than one more tap.
@@ -69,7 +79,10 @@ struct ChatPage: View {
     /// A reply opened to pick any words from it.
     @State var picking: ChatLine?
     /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
-    @State var jumpedTo: String?
+    var jumpedTo: String? {
+        get { viewport.jumpedTo }
+        nonmutating set { viewport.jumpedTo = newValue }
+    }
     @State var hideJumps: Task<Void, Never>?
     @State var chrome = ChatChrome()
     @State var viewport = ChatViewport()
@@ -237,33 +250,7 @@ struct ChatPage: View {
     }
 
     nonisolated private static func prewarmProseText(_ rawText: String) {
-        guard !rawText.isEmpty else { return }
-        let blocks = ParsedCache.blocks(rawText)
-        prewarmCodeAndTables(in: blocks)
-    }
-
-    nonisolated private static func prewarmCodeAndTables(in blocks: [Prose.Block]) {
-        for block in blocks {
-            if Task.isCancelled { return }
-            switch block {
-            case .code(let language, let rawCode, _):
-                let trimmed = CodeTokenizer.trimmedLines(rawCode)
-                let body = trimmed.isEmpty ? " " : trimmed
-                let count = CodeTokenizer.lineCount(body)
-                let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
-                _ = CodeTokenizer.prepare(body, language: language, isOutput: isOutput)
-                if count > 20 {
-                    let folded = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
-                    _ = CodeTokenizer.prepare(folded, language: language, isOutput: isOutput)
-                }
-            case .table(let table):
-                _ = TablePreparer.prepare(table)
-            case .quote(let inner):
-                prewarmCodeAndTables(in: inner)
-            default:
-                break
-            }
-        }
+        ProsePrewarm.prewarmUIKitText(rawText)
     }
 
     @State var earlierTask: Task<Void, Never>?
@@ -864,7 +851,7 @@ struct ChatPage: View {
             largeText: largeText,
             confirmStop: confirmStop,
             calmPetMotion: calmPetMotion,
-            chatViewport: chatViewport,
+            viewportMetrics: viewportMetrics,
             coveredByPage: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
             baseSheetOpen: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil,
             typing: $typing,
@@ -882,7 +869,6 @@ struct ChatPage: View {
             quote: $quote,
             photos: $photos,
             files: $files,
-            following: $following,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() },
             onPreviousQuestion: { stepQuestion(earlier: true) },
@@ -913,7 +899,6 @@ struct ChatPage: View {
             contextMetrics: contextMetrics,
             followState: followState,
             workTimer: workTimer,
-            following: following,
             usageOpen: usageOpen,
             typing: $typing,
             onStir: stir,
@@ -944,7 +929,8 @@ struct ChatPage: View {
         let leafingBinding = $leafing
         let savingNoteBinding = $savingNote
         let notingBinding = $noting
-        let followingBinding = $following
+        let followRef = followState
+        let followingBinding = Binding(get: { followRef.following }, set: { followRef.following = $0 })
         let undoAskBinding = $undoAsk
         let tuningOpenBinding = $tuningOpen
         let careOpenBinding = $careOpen
@@ -1037,6 +1023,20 @@ struct ChatPage: View {
     }
 
     var body: some View {
+        withPhotoAndCoverModifiers(
+            withAlertAndDialogModifiers(
+                withComposerAndOutlineModifiers(
+                    withWorkspaceSheetModifiers(
+                        withNoteAndDetailSheetModifiers(
+                            withLifecycleModifiers(coreContent)
+                        )
+                    )
+                )
+            )
+        )
+    }
+
+    private var coreContent: some View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
             conversation
@@ -1054,283 +1054,360 @@ struct ChatPage: View {
             }
         }
         .background { observers }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { chatViewport = $0 }
         .safeAreaInset(edge: .bottom) { bottomStack }
-        .sheet(isPresented: $petSettingsOpen) { PetPage() }
-        .sheet(isPresented: $usageOpen) {
-            UsageSheet(team: team, key: chat.key)
-                .presentationDetents([.medium, .large])
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            if chatViewport != newSize { chatViewport = newSize }
         }
-        .onAppear {
-            syncBridge()
-            DiagTrail.record("开对话(\(chat.lines.count)条)")
-            chat.open()
-            PetNews.shared.focused = chat.key
-            draftState.load(chat.key)
-            if photos.isEmpty, files.isEmpty {
-                let kept = DraftAttachments.load(chat.key)
-                photos = kept.photos
-                files = kept.files
-                draftAttachmentQueuedIds = kept.queuedIds
+    }
+
+    private func withLifecycleModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .onAppear { handleAppear() }
+            .task(id: chat.key) { await loadDraftAsync(for: chat.key) }
+            .onChange(of: photos) { _, _ in
+                if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
             }
-        }
-        .onChange(of: scenePhase) { _, next in
-            if next == .background {
-                DiagTrail.record("退后台")
-                dictationSlot.cancelIfActive()
-                _ = voice.stopSpeaking(at: .immediate)
-                speakingText = nil
-            } else if next == .active {
-                DiagTrail.record("回前台")
+            .onChange(of: files) { _, _ in
+                if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
             }
-            if next != .active {
-                draftState.flush()
-                DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+            .onChange(of: scenePhase) { _, next in handleScenePhaseChange(next) }
+            .hitchPage(isRoom ? "雅集" : "絮语")
+            .onDisappear { handleDisappear() }
+            .onChange(of: finding) { _, now in
+                DiagTrail.record(now ? "开查找" : "关查找")
             }
-        }
-        .hitchPage(isRoom ? "雅集" : "絮语")
-        .onDisappear {
-            DiagTrail.record("关对话")
-            if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
-            followPending?.cancel()
-            settleEnd?.cancel()
-            settleJump?.cancel()
-            approvalInsetTask?.cancel()
-            approvalInsetTask = nil
-            draftState.flush()
-            DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
-            chat.close()
-            team.markSeen(chat.key)
-            hideJumps?.cancel()
-            earlierTask?.cancel()
-            cancelFindTasks()
-            pasteTask?.cancel()
-            selecting.removeAll()
-            dictationSlot.cancelIfActive()
-            _ = voice.stopSpeaking(at: .immediate)
-            speakingText = nil
-            bridge.unbind()
-        }
-        .sheet(item: $noting) { note in
-            NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
-                      bot: isRoom ? nil : bot)
-        }
-        .sheet(item: $savingNote) { note in
-            SaveNoteSheet(
-                text: note.text,
-                question: askedBefore(note.id),
-                sender: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name
-            ) { savedPath in
-                say(Words.t("已存成笔记：书案/\(savedPath)"))
+    }
+
+    private func withNoteAndDetailSheetModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .sheet(isPresented: $petSettingsOpen) { PetPage() }
+            .sheet(isPresented: $usageOpen) {
+                UsageSheet(team: team, key: chat.key)
+                    .presentationDetents([.medium, .large])
             }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $quoting) { item in
-            QuoteSheet(text: item.text) { picked in
-                quoting = nil
-                guard let picked else { return }
-                withAnimation(Ink.Motion.settle) { quote = picked }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
+            .sheet(item: $noting) { note in
+                NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
+                          bot: isRoom ? nil : bot)
             }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $cardOpen) { NameCardSheet(team: team, bot: bot) }
-        .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
-            Button(L.t("actions.done"), role: .cancel) {}
-        }
-        .alert("重命名对话", isPresented: $renaming) {
-            TextField("对话标题", text: $renameText)
-            Button(L.t("actions.cancel"), role: .cancel) {}
-            Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
-        }
-        .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) }
-        .sheet(isPresented: $careOpen) { CarePage(team: team) }
-        .sheet(isPresented: $filesOpen) { StudyPage() }
-        .sheet(item: $sharing) { file in ChatShareSheet(url: file.url) }
-        .fullScreenCover(isPresented: $terminalOpen) { InkstonePage() }
-        .sheet(isPresented: $chatSkillsOpen) { SkillsPage() }
-        .sheet(isPresented: $chatConnectorsOpen) { ConnectorsPage() }
-        .confirmationDialog(L.t("chat.clearConfirm"), isPresented: $clearingChat, titleVisibility: .visible) {
-            Button(L.t("actions.clear"), role: .destructive) {
-                team.clearChat(chat.key)
-                jumpedTo = nil
-            }
-            Button(L.t("actions.cancel"), role: .cancel) {}
-        } message: {
-            Text(L.t("errors.cannotUndo"))
-        }
-        .sheet(isPresented: $detailOpen, onDismiss: {
-            // Open what was asked for from the detail page once it is out of the way.
-            if afterDetail == "card" { cardOpen = true }
-            if afterDetail == "leaves" { leafing = true }
-            afterDetail = nil
-        }) {
-            ChatDetail(team: team, chat: chat, title: team.title(of: chat.key) ?? bot.name,
-                       bot: isRoom ? nil : bot,
-                       openCard: isRoom ? nil : { afterDetail = "card" },
-                       openLeaves: { afterDetail = "leaves" })
-        }
-        .sheet(isPresented: $attaching, onDismiss: {
-            // The sheet is out of the way; now open what was picked.
-            if let kind = attachPicked {
-                attachPicked = nil
-                bring(kind)
-            }
-        }) {
-            let revision = attachmentRevision
-            PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
-                await addPhoto(data, revision: revision)
-            }, removePhoto: { data in
-                if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
-            }, pick: { attachPicked = $0 })
-            // Half open: photos, camera and files at hand; pull up for the rest.
-            .presentationDetents([.medium, .large])
-            .presentationBackgroundInteraction(.disabled)
-            .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $deskPicking) {
-            DeskPicker { picked in
-                deskPicking = false
-                if !picked.isEmpty {
-                    withAnimation(Ink.Motion.settle) { files += picked.filter { !files.contains($0) } }
-                    say(Words.t("带上了书案里的 \(picked.count) 个文件。"))
+            .sheet(item: $savingNote) { note in
+                SaveNoteSheet(
+                    text: note.text,
+                    question: askedBefore(note.id),
+                    sender: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name
+                ) { savedPath in
+                    say(Words.t("已存成笔记：书案/\(savedPath)"))
                 }
+                .presentationDetents([.medium, .large])
             }
-        }
-        .fullScreenCover(isPresented: $scanning) {
-            ScannerView { pages in
-                scanning = false
-                guard !pages.isEmpty else { return }
-                say(L.t("loading.recognizingScan"))
-                Task {
-                    if let kept = await Scan.keep(pages) {
-                        withAnimation(Ink.Motion.settle) { files.append(kept.text) }
-                        say(Words.t("扫了 \(pages.count) 页，认出 \(kept.count) 个字，图和文字都放进了书案。"))
+            .sheet(item: $quoting) { item in
+                QuoteSheet(text: item.text) { picked in
+                    quoting = nil
+                    guard let picked else { return }
+                    withAnimation(Ink.Motion.settle) { quote = picked }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
+                }
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $cardOpen) { NameCardSheet(team: team, bot: bot) }
+            .sheet(isPresented: $detailOpen, onDismiss: {
+                // Open what was asked for from the detail page once it is out of the way.
+                if afterDetail == "card" { cardOpen = true }
+                if afterDetail == "leaves" { leafing = true }
+                afterDetail = nil
+            }) {
+                ChatDetail(team: team, chat: chat, title: team.title(of: chat.key) ?? bot.name,
+                           bot: isRoom ? nil : bot,
+                           openCard: isRoom ? nil : { afterDetail = "card" },
+                           openLeaves: { afterDetail = "leaves" })
+            }
+    }
+
+    private func withWorkspaceSheetModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .sheet(isPresented: $careOpen) { CarePage(team: team) }
+            .sheet(isPresented: $filesOpen) { StudyPage() }
+            .sheet(item: $sharing) { file in ChatShareSheet(url: file.url) }
+            .sheet(isPresented: $chatSkillsOpen) { SkillsPage() }
+            .sheet(isPresented: $chatConnectorsOpen) { ConnectorsPage() }
+            .sheet(isPresented: $abilities) {
+                AbilitiesSheet(team: team, key: chat.key, name: bot.name)
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $reading) { file in
+                NavigationStack { StudyFile(url: file.url, mount: file.mount, showsDone: true) }
+            }
+    }
+
+    private func withComposerAndOutlineModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .sheet(isPresented: $attaching, onDismiss: {
+                // The sheet is out of the way; now open what was picked.
+                if let kind = attachPicked {
+                    attachPicked = nil
+                    bring(kind)
+                }
+            }) {
+                plusAttachmentSheet
+            }
+            .sheet(isPresented: $deskPicking) {
+                DeskPicker { picked in
+                    deskPicking = false
+                    if !picked.isEmpty {
+                        withAnimation(Ink.Motion.settle) { files += picked.filter { !files.contains($0) } }
+                        say(Words.t("带上了书案里的 \(picked.count) 个文件。"))
                     }
                 }
             }
-            .ignoresSafeArea()
-        }
-        .alert(Words.t("请旅伴读一个网页"), isPresented: $linkAsking) {
-            TextField("https://…", text: $linkDraft)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-            Button("带上") {
-                let link = linkDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !link.isEmpty { draft += (draft.isEmpty ? "" : "\n") + "请读一下这个网页：\(link)" }
-                linkDraft = ""
-                typing = true
-            }
-            Button("算了", role: .cancel) { linkDraft = "" }
-        } message: {
-            Text(Words.t("旅伴会去读，读不出来时会用远游打开。"))
-        }
-        .sheet(isPresented: $abilities) {
-            AbilitiesSheet(team: team, key: chat.key, name: bot.name)
+            .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
+                OutlineSheet(pairs: outlinePairs) { id in
+                    jumpToOutlineItem(id)
+                }
                 .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $reading) { file in
-            NavigationStack { StudyFile(url: file.url, mount: file.mount, showsDone: true) }
-        }
-        .sheet(isPresented: $outlining, onDismiss: { lookupRows = [] }) {
-            OutlineSheet(pairs: outlinePairs) { id in
-                outlining = false
-                settleJump?.cancel()
-                viewport.advanceNavigation()
-                let generation = viewport.navigationGeneration
-                reveal(id)
-                following = false
-                Task { @MainActor in
-                    do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
-                    guard !Task.isCancelled,
-                          generation == viewport.navigationGeneration,
-                          !viewport.isTouching, !touchScrolling else { return }
-                    viewport.recordJump("点了提纲")
-                    withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+            }
+            .sheet(item: $picking) { line in
+                PickWords(text: line.text)
+            }
+            .sheet(isPresented: $leafing) {
+                LeavesSheet(team: team, key: chat.key, name: bot.name)
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $approving, onDismiss: { followToEnd() }) { approval in
+                ApproveView(approval: approval, team: team)
+                    .presentationDetents([.large])
+            }
+    }
+
+    private func withAlertAndDialogModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
+                Button(L.t("actions.done"), role: .cancel) {}
+            }
+            .alert("重命名对话", isPresented: $renaming) {
+                TextField("对话标题", text: $renameText)
+                Button(L.t("actions.cancel"), role: .cancel) {}
+                Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
+            }
+            .confirmationDialog(L.t("chat.clearConfirm"), isPresented: $clearingChat, titleVisibility: .visible) {
+                Button(L.t("actions.clear"), role: .destructive) {
+                    team.clearChat(chat.key)
+                    jumpedTo = nil
                 }
+                Button(L.t("actions.cancel"), role: .cancel) {}
+            } message: {
+                Text(L.t("errors.cannotUndo"))
             }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $picking) { line in
-            PickWords(text: line.text)
-        }
-        .sheet(isPresented: $leafing) {
-            LeavesSheet(team: team, key: chat.key, name: bot.name)
-                .presentationDetents([.medium, .large])
-        }
-        .confirmationDialog(
-            undoAsk.map { "这一轮改过 \($0.files.count) 个文件" } ?? "",
-            isPresented: Binding(get: { undoAsk != nil }, set: { if !$0 { undoAsk = nil } }),
-            titleVisibility: .visible,
-            presenting: undoAsk
-        ) { ask in
-            Button("文件也还原，再来") { finishRedo(ask, restoring: true) }
-            Button("只重来，文件留着") { finishRedo(ask, restoring: false) }
-            Button("算了", role: .cancel) {}
-        } message: { ask in
-            Text(ask.files.prefix(6).joined(separator: "\n") + (ask.files.count > 6 ? "\n……" : "") + "\n\n还原就是放回这一轮动手之前的样子；新建的文件会删掉。")
-        }
-        .fullScreenCover(isPresented: $roaming) {
-            RoamPage(browser: team.browser)
-        }
-        .sheet(item: $approving, onDismiss: { followToEnd() }) { approval in
-            ApproveView(approval: approval, team: team)
-                .presentationDetents([.large])
-        }
-        .fullScreenCover(isPresented: $takingPhoto) {
-            let revision = attachmentRevision
-            CameraPicker { image in
-                guard let image else { return }
-                Task {
-                    let photo = await Task.detached(priority: .userInitiated) {
-                        image.jpegData(compressionQuality: 0.9)
-                    }.value
-                    if let photo { _ = await addPhoto(photo, revision: revision) }
+            .alert(Words.t("请旅伴读一个网页"), isPresented: $linkAsking) {
+                TextField("https://…", text: $linkDraft)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                Button("带上") {
+                    let link = linkDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !link.isEmpty { draft += (draft.isEmpty ? "" : "\n") + "请读一下这个网页：\(link)" }
+                    linkDraft = ""
+                    typing = true
                 }
+                Button("算了", role: .cancel) { linkDraft = "" }
+            } message: {
+                Text(Words.t("旅伴会去读，读不出来时会用远游打开。"))
             }
-            .ignoresSafeArea()
-        }
-        .onChange(of: viewing) { _, next in
-            if let next {
-                bridge.activeViewingPhotoID = next
-                if presentedViewing?.id != next {
-                    presentedViewing = Viewing(id: next, canZoom: !calmPetMotion && canZoomPhoto(next))
+            .confirmationDialog(
+                undoAsk.map { "这一轮改过 \($0.files.count) 个文件" } ?? "",
+                isPresented: Binding(get: { undoAsk != nil }, set: { if !$0 { undoAsk = nil } }),
+                titleVisibility: .visible,
+                presenting: undoAsk
+            ) { ask in
+                Button("文件也还原，再来") { finishRedo(ask, restoring: true) }
+                Button("只重来，文件留着") { finishRedo(ask, restoring: false) }
+                Button("算了", role: .cancel) {}
+            } message: { ask in
+                Text(ask.files.prefix(6).joined(separator: "\n") + (ask.files.count > 6 ? "\n……" : "") + "\n\n还原就是放回这一轮动手之前的样子；新建的文件会删掉。")
+            }
+    }
+
+    private func withPhotoAndCoverModifiers<Content: View>(_ content: Content) -> some View {
+        content
+            .fullScreenCover(isPresented: $tuningOpen) { SettingsView(team: team) }
+            .fullScreenCover(isPresented: $terminalOpen) { InkstonePage() }
+            .fullScreenCover(isPresented: $scanning) {
+                ScannerView { pages in
+                    handleScannedPages(pages)
                 }
-            } else {
-                presentedViewing = nil
+                .ignoresSafeArea()
+            }
+            .fullScreenCover(isPresented: $roaming) {
+                RoamPage(browser: team.browser)
+            }
+            .fullScreenCover(isPresented: $takingPhoto) {
+                takePhotoCover
+            }
+            .onChange(of: viewing) { _, next in handleViewingChange(next) }
+            .fullScreenCover(item: $presentedViewing, onDismiss: { handlePhotoViewerDismiss() }) { item in
+                PhotoViewer(chat: chat, attachmentId: item.id)
+                    .presentationBackground(.clear)
+                    .modifier(PhotoZoomDestinationModifier(
+                        id: item.id,
+                        namespace: photoZoom,
+                        enabled: item.canZoom
+                    ))
+            }
+            .task(id: picks) { await loadPickedPhotos(picks) }
+    }
+
+    private var plusAttachmentSheet: some View {
+        let revision = attachmentRevision
+        return PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
+            await addPhoto(data, revision: revision)
+        }, removePhoto: { data in
+            if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
+        }, pick: { attachPicked = $0 })
+        // Half open: photos, camera and files at hand; pull up for the rest.
+        .presentationDetents([.medium, .large])
+        .presentationBackgroundInteraction(.disabled)
+        .presentationDragIndicator(.visible)
+    }
+
+    private var takePhotoCover: some View {
+        let revision = attachmentRevision
+        return CameraPicker { image in
+            guard let image else { return }
+            Task {
+                let photo = await Task.detached(priority: .userInitiated) {
+                    image.jpegData(compressionQuality: 0.9)
+                }.value
+                if let photo { _ = await addPhoto(photo, revision: revision) }
             }
         }
-        .fullScreenCover(item: $presentedViewing, onDismiss: {
-            let dismissedID = bridge.activeViewingPhotoID
-            bridge.activeViewingPhotoID = nil
-            viewing = nil
-            if let dismissedID {
-                bridge.onDismissPhotoHero?(dismissedID)
+        .ignoresSafeArea()
+    }
+
+    private func handleAppear() {
+        syncBridge()
+        DiagTrail.record("开对话(\(chat.lines.count)条)")
+        chat.open()
+        PetNews.shared.focused = chat.key
+        draftState.bind(chat.key)
+    }
+
+    private func loadDraftAsync(for targetKey: String) async {
+        let startRevision = attachmentRevision
+        async let loadedText = DraftTextStore.loadAsync(for: targetKey)
+        async let loadedAttachments = DraftAttachments.loadAsync(targetKey)
+        let (textDraft, keptAttachments) = await (loadedText, loadedAttachments)
+        guard !Task.isCancelled, chat.key == targetKey else { return }
+        draftState.applyLoaded(textDraft, for: targetKey)
+        if !draftAttachmentsEdited, photos.isEmpty, files.isEmpty, attachmentRevision == startRevision {
+            if !keptAttachments.photos.isEmpty || !keptAttachments.files.isEmpty || !keptAttachments.queuedIds.isEmpty {
+                isApplyingLoadedAttachments = true
+                photos = keptAttachments.photos
+                files = keptAttachments.files
+                draftAttachmentQueuedIds = keptAttachments.queuedIds
+                isApplyingLoadedAttachments = false
             }
-        }) { item in
-            PhotoViewer(chat: chat, attachmentId: item.id)
-                .presentationBackground(.clear)
-                .modifier(PhotoZoomDestinationModifier(
-                    id: item.id,
-                    namespace: photoZoom,
-                    enabled: item.canZoom
-                ))
         }
-        .onChange(of: finding) { _, now in
-            DiagTrail.record(now ? "开查找" : "关查找")
+        draftAttachmentsLoaded = true
+    }
+
+    private func handleScenePhaseChange(_ next: ScenePhase) {
+        if next == .background {
+            DiagTrail.record("退后台")
+            dictationSlot.cancelIfActive()
+            _ = voice.stopSpeaking(at: .immediate)
+            speakingText = nil
+        } else if next == .active {
+            DiagTrail.record("回前台")
         }
-        .task(id: picks) {
-            let items = picks
-            let revision = attachmentRevision
-            guard !items.isEmpty else { return }
-            for item in items {
-                guard !Task.isCancelled, revision == attachmentRevision, picks == items, photos.count < 4 else { return }
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    _ = await addPhoto(data, revision: revision, selection: items)
-                }
+        if next != .active {
+            draftState.flush()
+            if draftAttachmentsLoaded || draftAttachmentsEdited || !photos.isEmpty || !files.isEmpty {
+                DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
             }
-            if !Task.isCancelled, revision == attachmentRevision, picks == items { picks = [] }
         }
+    }
+
+    private func handleDisappear() {
+        DiagTrail.record("关对话")
+        if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
+        followPending?.cancel()
+        settleEnd?.cancel()
+        settleJump?.cancel()
+        approvalInsetTask?.cancel()
+        approvalInsetTask = nil
+        draftState.flush()
+        if draftAttachmentsLoaded || draftAttachmentsEdited || !photos.isEmpty || !files.isEmpty {
+            DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+        }
+        chat.close()
+        team.markSeen(chat.key)
+        hideJumps?.cancel()
+        earlierTask?.cancel()
+        cancelFindTasks()
+        pasteTask?.cancel()
+        selecting.removeAll()
+        dictationSlot.cancelIfActive()
+        _ = voice.stopSpeaking(at: .immediate)
+        speakingText = nil
+        bridge.unbind()
+    }
+
+    private func jumpToOutlineItem(_ id: String) {
+        outlining = false
+        settleJump?.cancel()
+        viewport.advanceNavigation()
+        let generation = viewport.navigationGeneration
+        reveal(id)
+        following = false
+        Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+            guard !Task.isCancelled,
+                  generation == viewport.navigationGeneration,
+                  !viewport.isTouching, !touchScrolling else { return }
+            viewport.recordJump("点了提纲")
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+        }
+    }
+
+    private func handleScannedPages(_ pages: [UIImage]) {
+        scanning = false
+        guard !pages.isEmpty else { return }
+        say(L.t("loading.recognizingScan"))
+        Task {
+            if let kept = await Scan.keep(pages) {
+                withAnimation(Ink.Motion.settle) { files.append(kept.text) }
+                say(Words.t("扫了 \(pages.count) 页，认出 \(kept.count) 个字，图和文字都放进了书案。"))
+            }
+        }
+    }
+
+    private func handleViewingChange(_ next: String?) {
+        if let next {
+            bridge.activeViewingPhotoID = next
+            if presentedViewing?.id != next {
+                presentedViewing = Viewing(id: next, canZoom: !calmPetMotion && canZoomPhoto(next))
+            }
+        } else {
+            presentedViewing = nil
+        }
+    }
+
+    private func handlePhotoViewerDismiss() {
+        let dismissedID = bridge.activeViewingPhotoID
+        bridge.activeViewingPhotoID = nil
+        viewing = nil
+        if let dismissedID {
+            bridge.onDismissPhotoHero?(dismissedID)
+        }
+    }
+
+    private func loadPickedPhotos(_ items: [PhotosPickerItem]) async {
+        let revision = attachmentRevision
+        guard !items.isEmpty else { return }
+        for item in items {
+            guard !Task.isCancelled, revision == attachmentRevision, picks == items, photos.count < 4 else { return }
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                _ = await addPhoto(data, revision: revision, selection: items)
+            }
+        }
+        if !Task.isCancelled, revision == attachmentRevision, picks == items { picks = [] }
     }
 
     @State var exportFailed = false
@@ -1426,6 +1503,11 @@ final class ChatContextMetrics {
 @MainActor @Observable
 final class ChatFollowState {
     var following = true
+}
+
+@MainActor @Observable
+final class ChatViewportMetrics {
+    var size = CGSize.zero
 }
 
 @MainActor @Observable
@@ -1672,7 +1754,6 @@ struct ChatConversationObservers: View {
     let followState: ChatFollowState
     let workTimer: ChatWorkTimer
 
-    let following: Bool
     let usageOpen: Bool
     let typing: FocusState<Bool>.Binding
 
@@ -1697,9 +1778,6 @@ struct ChatConversationObservers: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .onChange(of: following, initial: true) { _, now in
-                if followState.following != now { followState.following = now }
-            }
             .onChange(of: working, initial: true) { _, now in
                 workTimer.since = now ? (workTimer.since ?? Date()) : nil
             }
@@ -1821,6 +1899,13 @@ final class ChatDraft {
             let hasSendableText = text.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
             if self.hasText != hasText { self.hasText = hasText }
             if self.hasSendableText != hasSendableText { self.hasSendableText = hasSendableText }
+            guard !isApplyingLoaded else { return }
+            if !loaded {
+                userEditedBeforeLoad = true
+                if key == nil, let chatKey {
+                    key = "draft." + chatKey
+                }
+            }
             guard key != nil else { return }
             if text.isEmpty {
                 flush()
@@ -1840,14 +1925,36 @@ final class ChatDraft {
     @ObservationIgnored private var chatKey: String?
     @ObservationIgnored private var queuedIds: [UUID] = []
     @ObservationIgnored private var save: Task<Void, Never>?
+    @ObservationIgnored private var loaded = false
+    @ObservationIgnored private var userEditedBeforeLoad = false
+    @ObservationIgnored private var isApplyingLoaded = false
+
+    func bind(_ chat: String) {
+        if chatKey == nil {
+            chatKey = chat
+        }
+    }
 
     func load(_ chat: String) {
-        guard key == nil else { return }
+        bind(chat)
+        guard !loaded else { return }
+        let fetched = DraftTextStore.load(for: chat)
+        applyLoaded(fetched, for: chat)
+    }
+
+    func applyLoaded(_ fetched: StoredTextDraft, for chat: String) {
+        guard !loaded else { return }
         chatKey = chat
-        let loaded = DraftTextStore.load(for: chat)
-        text = loaded.text
-        queuedIds = loaded.queuedIds
+        loaded = true
         key = "draft." + chat
+        if !userEditedBeforeLoad && text.isEmpty {
+            isApplyingLoaded = true
+            text = fetched.text
+            isApplyingLoaded = false
+            queuedIds = fetched.queuedIds
+        } else if queuedIds.isEmpty, !fetched.queuedIds.isEmpty {
+            queuedIds = fetched.queuedIds
+        }
     }
 
     func recordQueuedId(_ id: UUID) {
@@ -1868,7 +1975,7 @@ final class ChatDraft {
     func flush() {
         save?.cancel()
         save = nil
-        guard let chatKey else { return }
+        guard let chatKey, loaded || userEditedBeforeLoad else { return }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             queuedIds.removeAll()
             DraftTextStore.save(StoredTextDraft(text: "", queuedIds: []), for: chatKey)
@@ -1927,7 +2034,18 @@ enum DraftTextStore {
     }
 
     static func load(for chat: String) -> StoredTextDraft {
-        queue.sync {}
+        queue.sync { readSync(for: chat) }
+    }
+
+    static func loadAsync(for chat: String) async -> StoredTextDraft {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: readSync(for: chat))
+            }
+        }
+    }
+
+    private static func readSync(for chat: String) -> StoredTextDraft {
         if let saved = QueuedMessageStore.loadTextDraft(for: chat, under: root) {
             return saved
         }
@@ -2093,7 +2211,18 @@ enum DraftAttachments {
     }
 
     static func load(_ chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID]) {
-        queue.sync {}
+        queue.sync { readSync(chat) }
+    }
+
+    static func loadAsync(_ chat: String) async -> (photos: [Data], files: [String], queuedIds: [UUID]) {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: readSync(chat))
+            }
+        }
+    }
+
+    private static func readSync(_ chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID]) {
         let primary = folder(chat)
         if let loaded = loadFrom(dir: primary, chat: chat) {
             return loaded

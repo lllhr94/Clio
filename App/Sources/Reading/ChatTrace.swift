@@ -36,15 +36,31 @@ private final class TraceKeepsakeKey: NSObject {
 
 private final class TraceKeepsakeBox {
     let items: [Trace.Keepsake]
+    let remembered: [Trace.Remembered]
+    let pages: [URL]
     let mountRevision: UInt64
-    init(_ items: [Trace.Keepsake], mountRevision: UInt64) {
+
+    init(
+        items: [Trace.Keepsake],
+        remembered: [Trace.Remembered],
+        pages: [URL],
+        mountRevision: UInt64
+    ) {
         self.items = items
+        self.remembered = remembered
+        self.pages = pages
         self.mountRevision = mountRevision
     }
 }
 
 @MainActor
 private enum TraceKeepsakeCache {
+    struct Snapshot {
+        let items: [Trace.Keepsake]
+        let remembered: [Trace.Remembered]
+        let pages: [URL]
+    }
+
     private static let cache: NSCache<TraceKeepsakeKey, TraceKeepsakeBox> = {
         let cache = NSCache<TraceKeepsakeKey, TraceKeepsakeBox>()
         cache.countLimit = 200
@@ -58,19 +74,27 @@ private enum TraceKeepsakeCache {
         cache.removeAllObjects()
     }
 
-    static func get(line: ChatLine, desk: String) -> [Trace.Keepsake]? {
+    static func get(line: ChatLine, desk: String) -> Snapshot? {
         let key = TraceKeepsakeKey(line: line, desk: desk)
         guard let box = cache.object(forKey: key) else { return nil }
         if box.mountRevision != MountedFolders.revision {
             cache.removeObject(forKey: key)
             return nil
         }
-        return box.items
+        return Snapshot(items: box.items, remembered: box.remembered, pages: box.pages)
     }
 
-    static func set(_ items: [Trace.Keepsake], line: ChatLine, desk: String, mountRevision: UInt64 = MountedFolders.revision) {
+    static func set(
+        _ items: [Trace.Keepsake],
+        remembered: [Trace.Remembered],
+        pages: [URL],
+        line: ChatLine,
+        desk: String,
+        mountRevision: UInt64 = MountedFolders.revision
+    ) {
         guard mountRevision == MountedFolders.revision else { return }
-        cache.setObject(TraceKeepsakeBox(items, mountRevision: mountRevision), forKey: TraceKeepsakeKey(line: line, desk: desk))
+        let box = TraceKeepsakeBox(items: items, remembered: remembered, pages: pages, mountRevision: mountRevision)
+        cache.setObject(box, forKey: TraceKeepsakeKey(line: line, desk: desk))
     }
 }
 
@@ -111,6 +135,9 @@ struct Trace: View {
     var unremember: ((String, String) -> Bool)?
     @State private var undone: Set<String> = []
     @State private var keepsakes: [Keepsake]
+    @State private var rememberedItems: [Remembered]
+    @State private var openedPages: [URL]
+    @State private var hasCachedData: Bool
     @State private var mountRevision = MountedFolders.revision
 
     @MainActor
@@ -125,9 +152,15 @@ struct Trace: View {
         self.openFile = openFile
         self.unremember = unremember
         if !line.live, let cached = TraceKeepsakeCache.get(line: line, desk: Words.t("书案/")) {
-            _keepsakes = State(initialValue: cached)
+            _keepsakes = State(initialValue: cached.items)
+            _rememberedItems = State(initialValue: cached.remembered)
+            _openedPages = State(initialValue: cached.pages)
+            _hasCachedData = State(initialValue: true)
         } else {
             _keepsakes = State(initialValue: [])
+            _rememberedItems = State(initialValue: [])
+            _openedPages = State(initialValue: [])
+            _hasCachedData = State(initialValue: false)
         }
     }
 
@@ -156,13 +189,17 @@ struct Trace: View {
     }
 
     /// What these steps wrote into 拾遗, as the model wrote it.
-    private struct Remembered: Identifiable {
+    fileprivate struct Remembered: Identifiable, Equatable, Sendable {
         let id: Int
         let memoryID: String?
         let fact: String
     }
 
     private var remembered: [Remembered] {
+        hasCachedData ? rememberedItems : Self.buildRemembered(line)
+    }
+
+    nonisolated private static func buildRemembered(_ line: ChatLine) -> [Remembered] {
         line.tools.enumerated().compactMap { index, tool in
             guard tool.hasPrefix("记住："), !tool.hasSuffix("（没成功）"), index < line.details.count,
                   line.details[index].output.hasPrefix("记下了"),
@@ -705,6 +742,10 @@ struct Trace: View {
 
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
     private var pages: [URL] {
+        hasCachedData ? openedPages : Self.buildPages(line)
+    }
+
+    nonisolated private static func buildPages(_ line: ChatLine) -> [URL] {
         var seen: [URL] = []
         for (index, tool) in line.tools.enumerated() where !tool.hasSuffix("（没成功）") {
             let detail = index < line.details.count ? line.details[index] : nil
@@ -783,20 +824,48 @@ struct Trace: View {
         .task(id: line.live ? nil : KeepsakeInput(line: line, desk: Words.t("书案/"), mountRevision: mountRevision)) {
             guard !line.live else {
                 if !keepsakes.isEmpty { keepsakes = [] }
+                if hasCachedData {
+                    rememberedItems = []
+                    openedPages = []
+                    hasCachedData = false
+                }
                 return
             }
             let input = KeepsakeInput(line: line, desk: Words.t("书案/"), mountRevision: mountRevision)
+            if let cached = TraceKeepsakeCache.get(line: input.line, desk: input.desk) {
+                if keepsakes != cached.items { keepsakes = cached.items }
+                if rememberedItems != cached.remembered { rememberedItems = cached.remembered }
+                if openedPages != cached.pages { openedPages = cached.pages }
+                hasCachedData = true
+                return
+            }
             let startMountRevision = MountedFolders.revision
-            let job = Task.detached(priority: .utility) { Self.buildKeepsakes(input.line, desk: input.desk) }
+            let job = Task.detached(priority: .utility) {
+                (
+                    keepsakes: Self.buildKeepsakes(input.line, desk: input.desk),
+                    remembered: Self.buildRemembered(input.line),
+                    pages: Self.buildPages(input.line)
+                )
+            }
             let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
             if !Task.isCancelled {
-                let currentOnly = result.filter { item in
+                let currentOnly = result.keepsakes.filter { item in
                     item.mount.map(MountedFolders.isCurrent) ?? true
                 }
                 if startMountRevision == MountedFolders.revision {
-                    TraceKeepsakeCache.set(currentOnly, line: input.line, desk: input.desk, mountRevision: startMountRevision)
+                    TraceKeepsakeCache.set(
+                        currentOnly,
+                        remembered: result.remembered,
+                        pages: result.pages,
+                        line: input.line,
+                        desk: input.desk,
+                        mountRevision: startMountRevision
+                    )
                 }
                 if keepsakes != currentOnly { keepsakes = currentOnly }
+                if rememberedItems != result.remembered { rememberedItems = result.remembered }
+                if openedPages != result.pages { openedPages = result.pages }
+                hasCachedData = true
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in

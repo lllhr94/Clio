@@ -66,13 +66,12 @@ extension ChatPage {
 
     /// The pages the steps right before this reply read or found, for a row of sources under it.
     /// A reply without the 「来源：」 (or 参考 / Sources) list of links some models write at the very end.
-    @MainActor static var trimmedCache: [String: String] = [:]
+    @MainActor private static let trimmedCache = BoundedLRUCache<String, String>(countLimit: 400)
 
     @MainActor static func withoutSourceList(_ text: String) -> String {
-        if let known = trimmedCache[text] { return known }
+        if let known = trimmedCache.get(text) { return known }
         let trimmed = trimSourceList(text)
-        if trimmedCache.count > 400 { trimmedCache.removeAll() }
-        trimmedCache[text] = trimmed
+        trimmedCache.set(trimmed, for: text)
         return trimmed
     }
 
@@ -88,7 +87,8 @@ extension ChatPage {
             let trimmedText: String
         }
 
-        var meta: [String: LineMeta] = [:]
+        let meta = BoundedLRUCache<String, LineMeta>(countLimit: 600)
+        var timeGaps: [String: String] = [:]
 
         private var cachedRows: [ChatLine] = []
         private var cachedBotId: String = ""
@@ -111,6 +111,7 @@ extension ChatPage {
             indexById.removeAll(keepingCapacity: true)
             openers.removeAll(keepingCapacity: true)
             turnEnds.removeAll(keepingCapacity: true)
+            timeGaps.removeAll(keepingCapacity: true)
             newestBotId = nil
 
             var lastVoice: String?
@@ -153,7 +154,7 @@ extension ChatPage {
 
     func lineMeta(for line: ChatLine) -> SourcesMemo.LineMeta {
         let memoKey = line.id + "|\(line.text.utf8.count)"
-        if let known = sourcesMemo.meta[memoKey] { return known }
+        if let known = sourcesMemo.meta.get(memoKey) { return known }
         let rows = displayedRows
         sourcesMemo.sync(rows: rows, defaultBotId: bot.id)
         let cited = SourcesRow.cited(in: line.text)
@@ -180,8 +181,7 @@ extension ChatPage {
         let titles = Dictionary(cited.map { ($0.url, $0.title) }, uniquingKeysWith: { first, _ in first })
         let trimmed = found.isEmpty ? line.text : Self.trimSourceList(line.text)
         let computed = SourcesMemo.LineMeta(urls: found, titles: titles, trimmedText: trimmed)
-        if sourcesMemo.meta.count > 600 { sourcesMemo.meta.removeAll() }
-        sourcesMemo.meta[memoKey] = computed
+        sourcesMemo.meta.set(computed, for: memoKey)
         return computed
     }
 
@@ -394,13 +394,11 @@ extension ChatPage {
             sourcesMemo: sourcesMemo,
             listProxy: listProxy,
             typing: $typing,
-            following: $following,
             touchScrolling: Binding(
                 get: { touchScrolling },
                 set: { touchScrolling = $0 }
             ),
             quote: $quote,
-            jumpedTo: $jumpedTo,
             onLoadEarlier: loadEarlier,
             onSelectionChanged: { uuid, active in
                 selectionChanged(uuid, active)

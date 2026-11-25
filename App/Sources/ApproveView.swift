@@ -24,8 +24,7 @@ struct ApproveView: View {
     @State private var note: String?
     /// 0...1: how far the stamp is pressing the slip down.
     @State private var press: CGFloat = 0
-    @State private var slide: CGFloat = 0
-    @State private var lastTick = 0
+    @State private var slideResetToken: UInt64 = 0
     @State private var shown = false
     @State private var viewport = CGSize.zero
 
@@ -167,7 +166,7 @@ struct ApproveView: View {
     private var controls: some View {
         if verdict == nil && answerable {
             VStack(spacing: Ink.Space.s) {
-                SlideTrack(progress: $slide, onTick: tick) { answer(allow: true) }
+                SlideTrack(resetToken: slideResetToken) { answer(allow: true) }
                     .disabled(busy)
                 if current.forced == true {
                     // Standing permission would not cover this step anyway: say why instead of offering it.
@@ -273,7 +272,11 @@ struct ApproveView: View {
         .foregroundStyle(Ink.ink)
         .padding(.init(top: 26, leading: 20, bottom: 22, trailing: 20))
         .frame(width: slipWidth, alignment: .leading)
-        .background(SlipShape().fill(Ink.paperRaised))
+        .background(
+            SlipShape()
+                .fill(Ink.paperRaised)
+                .shadow(color: Color.black.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
+        )
         .overlay(alignment: .bottomTrailing) {
             Group {
                 if verdict == .rejected {
@@ -294,7 +297,6 @@ struct ApproveView: View {
             .padding(.trailing, Ink.Space.l)
             .padding(.bottom, Ink.Space.l)
         }
-        .shadow(color: Color.black.opacity(0.18 - 0.06 * Double(press)), radius: 24 - 10 * press, y: 24 - 12 * press)
     }
 
     @ViewBuilder
@@ -352,20 +354,23 @@ struct ApproveView: View {
         .frame(maxHeight: maxHeight)
     }
 
-    private static func clock(_ date: Date, _ format: String) -> String {
+    private static let stampClockLock = NSLock()
+    private static let stampClockFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = format
-        return formatter.string(from: date)
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
+    private static func clock(_ date: Date, _ format: String) -> String {
+        stampClockLock.withLock {
+            if stampClockFormatter.dateFormat != format {
+                stampClockFormatter.dateFormat = format
+            }
+            return stampClockFormatter.string(from: date)
+        }
     }
 
     // MARK: Answering
-
-    private func tick(_ step: Int) {
-        if step != lastTick {
-            lastTick = step
-            Haptics.tick(0.45 + 0.07 * CGFloat(step))
-        }
-    }
 
     /// The stamp only falls once the computer has taken the answer.
     private func choice(_ title: String, on: Binding<Bool>, tint: Color? = nil) -> some View {
@@ -403,9 +408,8 @@ struct ApproveView: View {
                 stamp(allow ? .allowed : .rejected)
             } catch {
                 Haptics.lock()
-                lastTick = 0
+                slideResetToken &+= 1
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) {
-                    slide = 0
                     note = "这张单子已经不在了。"
                 }
                 handled.insert(asked.id)
@@ -434,11 +438,10 @@ struct ApproveView: View {
             dismiss()
             return
         }
-        lastTick = 0
+        slideResetToken &+= 1
         withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) {
             current = next
             verdict = nil
-            slide = 0
             note = nil
             busy = false
             always = false
@@ -488,12 +491,21 @@ private struct Stamp: View {
 
 /// Slide to approve: a glass track with a knob that springs back unless it reaches the end.
 private struct SlideTrack: View {
-    @Binding var progress: CGFloat
-    let onTick: (Int) -> Void
+    let resetToken: UInt64
     let onDone: () -> Void
+
+    @State private var progress: CGFloat = 0
+    @State private var lastTick = 0
 
     private let height: CGFloat = 62
     private let knob: CGFloat = 52
+
+    private func tickIfNeeded(_ step: Int) {
+        if step != lastTick {
+            lastTick = step
+            Haptics.tick(0.45 + 0.07 * CGFloat(step))
+        }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -523,7 +535,7 @@ private struct SlideTrack: View {
                             .onChanged { value in
                                 let next = max(0, min(1, value.translation.width / travel))
                                 progress = next
-                                onTick(Int(next * 8))
+                                tickIfNeeded(Int(next * 8))
                             }
                             .onEnded { _ in
                                 if progress > 0.86 {
@@ -532,6 +544,7 @@ private struct SlideTrack: View {
                                     onDone()
                                 } else {
                                     Haptics.tick(0.5)
+                                    lastTick = 0
                                     withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) { progress = 0 }
                                 }
                             }
@@ -544,6 +557,10 @@ private struct SlideTrack: View {
             .glassBacking(in: Capsule())
         }
         .frame(height: height)
+        .onChange(of: resetToken) { _, _ in
+            lastTick = 0
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) { progress = 0 }
+        }
     }
 }
 

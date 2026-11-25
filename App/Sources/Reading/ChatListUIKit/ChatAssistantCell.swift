@@ -207,7 +207,10 @@ final class ChatAssistantCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         continueButton.configuration = cfg
+        CATransaction.commit()
     }
 
     override func prepareForReuse() {
@@ -691,7 +694,7 @@ final class ChatAssistantCell: UICollectionViewCell {
             case .fileCards(let links, let sliceIndex):
                 let hb = ensureHostedBlockView(at: hbIndex)
                 hb.isHidden = false
-                let heightKey = "file|\(lineID)|\(sliceIndex)|\(widthKey)|\(links.map(\.path).joined(separator: "|"))"
+                let heightKey = "file|\(lineID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(links.map(\.path).joined(separator: "|"))"
                 hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
                     self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                 }) {
@@ -714,7 +717,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                 for (picIndex, pic) in pics.enumerated() {
                     let hb = ensureHostedBlockView(at: hbIndex)
                     hb.isHidden = false
-                    let heightKey = "pic|\(lineID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(pic.source)"
+                    let heightKey = "pic|\(lineID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(style.styleKey)|\(pic.source)"
                     hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
                         self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                     }) {
@@ -780,7 +783,10 @@ final class ChatAssistantCell: UICollectionViewCell {
                 appliedContinueThemeSignature = themeSig
                 cfg.baseForegroundColor = UIColor(Ink.accent)
                 cfg.baseBackgroundColor = UIColor(Ink.accentWash)
-                continueButton.configuration = cfg
+                CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        continueButton.configuration = cfg
+        CATransaction.commit()
             }
         }
     }

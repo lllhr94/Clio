@@ -248,6 +248,13 @@ private struct ExportedChat: Identifiable {
 }
 
 extension TeamModel {
+    private nonisolated static let exportClockLock = NSLock()
+    private nonisolated static let exportClockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
     /// Only called on an export tap. Keep the current log and speaker names, then format and write them off the UI thread.
     func exportChat(_ key: String, title: String) async -> URL? {
         let entries = history(key)
@@ -257,12 +264,14 @@ extension TeamModel {
             let safe = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             let url = folder.appendingPathComponent("\(safe.isEmpty ? "对话" : safe).md")
-            let when = DateFormatter()
-            when.dateFormat = "yyyy-MM-dd HH:mm"
             var out = "# \(title)\n\n"
             for entry in entries where entry.note != true {
                 let message = entry.message
-                let time = when.string(from: Date(timeIntervalSince1970: entry.at / 1000))
+                let time: String = {
+                    Self.exportClockLock.lock()
+                    defer { Self.exportClockLock.unlock() }
+                    return Self.exportClockFormatter.string(from: Date(timeIntervalSince1970: entry.at / 1000))
+                }()
                 switch message.role {
                 case .user:
                     guard !message.text.isEmpty else { continue }

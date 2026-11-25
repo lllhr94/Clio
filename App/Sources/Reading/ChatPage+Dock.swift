@@ -2,6 +2,7 @@ import AVFoundation
 import AgentKit
 import CoreLocation
 import Craft
+import ImageIO
 import PhotosUI
 import Observation
 import SwiftUI
@@ -46,7 +47,7 @@ extension ChatPage {
             dockOpen: $dockOpen,
             typing: $typing,
             roaming: $roaming,
-            following: $following,
+            followState: followState,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() }
         )
@@ -87,7 +88,7 @@ extension ChatPage {
             largeText: largeText,
             confirmStop: confirmStop,
             calmPetMotion: calmPetMotion,
-            chatViewportHeight: chatViewport.height,
+            viewportMetrics: viewportMetrics,
             typing: $typing,
             usageOpen: $usageOpen,
             pickerShown: $pickerShown,
@@ -102,7 +103,6 @@ extension ChatPage {
             quote: $quote,
             photos: $photos,
             files: $files,
-            following: $following,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() },
             onPreviousQuestion: { stepQuestion(earlier: true) },
@@ -365,7 +365,7 @@ struct ChatBottomStackView<FindBar: View>: View {
     let largeText: Bool
     let confirmStop: Bool
     let calmPetMotion: Bool
-    let chatViewport: CGSize
+    let viewportMetrics: ChatViewportMetrics
     let coveredByPage: Bool
     let baseSheetOpen: Bool
     let typing: FocusState<Bool>.Binding
@@ -384,7 +384,6 @@ struct ChatBottomStackView<FindBar: View>: View {
     @Binding var quote: String?
     @Binding var photos: [Data]
     @Binding var files: [String]
-    @Binding var following: Bool
 
     let onPresentApproval: (Approval) -> Void
     let onToEnd: () -> Void
@@ -407,11 +406,11 @@ struct ChatBottomStackView<FindBar: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: chatViewport)
+            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
             VStack(spacing: 0) {
                 ChatDockedFormSlot(
                     chatKey: chat.key,
-                    viewportHeight: chatViewport.height,
+                    viewportMetrics: viewportMetrics,
                     calmPetMotion: calmPetMotion,
                     team: team,
                     asker: asker
@@ -436,7 +435,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                         largeText: largeText,
                         confirmStop: confirmStop,
                         calmPetMotion: calmPetMotion,
-                        chatViewportHeight: chatViewport.height,
+                        viewportMetrics: viewportMetrics,
                         typing: typing,
                         usageOpen: $usageOpen,
                         pickerShown: $pickerShown,
@@ -451,7 +450,6 @@ struct ChatBottomStackView<FindBar: View>: View {
                         quote: $quote,
                         photos: $photos,
                         files: $files,
-                        following: $following,
                         onPresentApproval: onPresentApproval,
                         onToEnd: onToEnd,
                         onPreviousQuestion: onPreviousQuestion,
@@ -497,7 +495,7 @@ struct ChatBottomStackView<FindBar: View>: View {
 
 private struct ChatDockedFormSlot: View {
     let chatKey: String
-    let viewportHeight: CGFloat
+    let viewportMetrics: ChatViewportMetrics
     let calmPetMotion: Bool
     @ObservedObject var team: TeamModel
     @ObservedObject var asker: Asker
@@ -516,7 +514,7 @@ private struct ChatDockedFormSlot: View {
     var body: some View {
         Group {
             if let form {
-                PetDockSlip(availableHeight: viewportHeight) { InlineAsk(form: form).id(form.id) }
+                PetDockSlip(availableHeight: viewportMetrics.size.height) { InlineAsk(form: form).id(form.id) }
                     .padding(.horizontal, Ink.Bar.edge)
                     .padding(.bottom, Ink.Space.s)
                     .transition(.opacity)
@@ -628,7 +626,7 @@ struct ChatComposerBarView: View {
     let largeText: Bool
     let confirmStop: Bool
     let calmPetMotion: Bool
-    let chatViewportHeight: CGFloat
+    let viewportMetrics: ChatViewportMetrics
     let typing: FocusState<Bool>.Binding
 
     @Binding var usageOpen: Bool
@@ -644,7 +642,6 @@ struct ChatComposerBarView: View {
     @Binding var quote: String?
     @Binding var photos: [Data]
     @Binding var files: [String]
-    @Binding var following: Bool
 
     let onPresentApproval: (Approval) -> Void
     let onToEnd: () -> Void
@@ -668,11 +665,11 @@ struct ChatComposerBarView: View {
                 awayState: awayState,
                 workTimer: workTimer,
                 calmPetMotion: calmPetMotion,
-                chatViewportHeight: chatViewportHeight,
+                viewportMetrics: viewportMetrics,
                 dockOpen: $dockOpen,
                 typing: typing,
                 roaming: $roaming,
-                following: $following,
+                followState: followState,
                 onPresentApproval: onPresentApproval,
                 onToEnd: onToEnd
             )
@@ -732,15 +729,19 @@ private struct ChatDockAreaView: View {
     let awayState: ChatAwayState
     let workTimer: ChatWorkTimer
     let calmPetMotion: Bool
-    var chatViewportHeight: CGFloat = 0
+    var viewportMetrics: ChatViewportMetrics? = nil
 
     @Binding var dockOpen: Bool
     let typing: FocusState<Bool>.Binding
     @Binding var roaming: Bool
-    @Binding var following: Bool
+    let followState: ChatFollowState
 
     let onPresentApproval: (Approval) -> Void
     let onToEnd: () -> Void
+
+    private var chatViewportHeight: CGFloat {
+        viewportMetrics?.size.height ?? 0
+    }
 
     private var doing: String? { team.workDetail(for: chat.key).words }
     private var working: Bool { doing != nil || chat.hasStreaming }
@@ -894,7 +895,7 @@ private struct ChatDockAreaView: View {
                     since: workTimer.since ?? Date(),
                     free: Grant.Preset.current == .free
                 ) {
-                    following = true
+                    followState.following = true
                     onToEnd()
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1080,11 +1081,7 @@ private struct ChatComposerPhotosRow: View {
                 HStack(spacing: Ink.Space.s) {
                     ForEach(Array(photos.enumerated()), id: \.offset) { index, data in
                         ZStack(alignment: .topTrailing) {
-                            if let image = UIImage(data: data) {
-                                Image(uiImage: image).resizable().scaledToFill()
-                                    .frame(width: 56, height: 56)
-                                    .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
-                            }
+                            ChatComposerPhotoThumb(data: data)
                             Button {
                                 withAnimation(Ink.Motion.settle) { _ = photos.remove(at: index) }
                             } label: {
@@ -1101,6 +1098,92 @@ private struct ChatComposerPhotosRow: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+private struct ComposerPhotoThumbKey: Hashable, Sendable {
+    let byteCount: Int
+    let sampleHash: UInt64
+    let pixelLimit: Int
+
+    init(data: Data, pixelLimit: Int) {
+        self.byteCount = data.count
+        var hash: UInt64 = 14695981039346656037
+        for byte in data.prefix(128) {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        for byte in data.suffix(128) {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        self.sampleHash = hash
+        self.pixelLimit = pixelLimit
+    }
+}
+
+private enum ComposerPhotoThumbCache {
+    static let cache = BoundedLRUCache<ComposerPhotoThumbKey, UIImage>(countLimit: 32)
+}
+
+private struct ChatComposerPhotoThumb: View {
+    let data: Data
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: UIImage?
+
+    private var pixelLimit: Int {
+        max(1, Int((56 * max(1, displayScale)).rounded()))
+    }
+
+    private var cacheKey: ComposerPhotoThumbKey {
+        ComposerPhotoThumbKey(data: data, pixelLimit: pixelLimit)
+    }
+
+    var body: some View {
+        let shown = image ?? ComposerPhotoThumbCache.cache.get(cacheKey)
+        Group {
+            if let shown {
+                Image(uiImage: shown).resizable().scaledToFill()
+            } else {
+                Ink.mine
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .task(id: cacheKey) {
+            let key = cacheKey
+            if let hit = ComposerPhotoThumbCache.cache.get(key) {
+                if image !== hit { image = hit }
+                return
+            }
+            let payload = data
+            let maxPixel = key.pixelLimit
+            let decoded: UIImage? = await Task.detached(priority: .userInitiated) {
+                guard !Task.isCancelled else { return nil }
+                return Self.decodeThumbnail(from: payload, maxPixelSize: maxPixel)
+            }.value
+            guard !Task.isCancelled, let decoded else { return }
+            ComposerPhotoThumbCache.cache.set(decoded, for: key)
+            image = decoded
+        }
+    }
+
+    nonisolated private static func decodeThumbnail(from data: Data, maxPixelSize: Int) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) {
+            let thumbOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
+                let raw = UIImage(cgImage: cgImage)
+                return raw.preparingForDisplay() ?? raw
+            }
+        }
+        guard let fallback = UIImage(data: data) else { return nil }
+        return fallback.preparingForDisplay() ?? fallback
     }
 }
 

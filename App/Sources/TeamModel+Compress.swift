@@ -118,9 +118,11 @@ extension TeamModel {
             return nil
         }()
         guard let bot = speakerBot, let found = resolve(bot.model ?? settings.defaultModel) ?? resolve(settings.defaultModel),
-              let apiKey = apiKey(for: found.endpoint.id), !apiKey.isEmpty else {
+              let apiKey = await readAPIKey(for: found.endpoint.id), !apiKey.isEmpty else {
             throw TeamError(message: "没有能用的模型来写前情提要。")
         }
+        try Task.checkCancellation()
+        guard !compressing.contains(key), canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
         compressing.insert(key)
         defer { compressing.remove(key) }
 

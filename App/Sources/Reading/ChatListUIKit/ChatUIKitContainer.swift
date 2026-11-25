@@ -1,4 +1,5 @@
 import AgentKit
+import Combine
 import Craft
 import Observation
 import SwiftUI
@@ -182,11 +183,12 @@ final class ChatTraceHostingCell: UICollectionViewCell {
 final class ChatRowsMemo {
     private struct CacheKey: Equatable {
         let chatKey: String
-        let rows: [ChatLine]
+        let linesVersion: UInt64
+        let visibleCount: Int
+        let historyRows: [ChatLine]?
         let heads: Set<String>
         let lit: String?
         let freshWritingID: String?
-        let freshShown: Int?
         let editing: String?
         let faces: Bool
         let isRoom: Bool
@@ -204,6 +206,7 @@ final class ChatRowsMemo {
     }
 
     private var lastKey: CacheKey?
+    private var lastFreshShown: Int?
     private var lastItems: [ChatListRowItem] = []
 
     func buildRows(
@@ -243,11 +246,12 @@ final class ChatRowsMemo {
 
         let key = CacheKey(
             chatKey: chat.key,
-            rows: visibleRows,
+            linesVersion: chat.linesVersion,
+            visibleCount: visibleRows.count,
+            historyRows: historyInView ? visibleRows : nil,
             heads: heads,
             lit: lit,
             freshWritingID: freshWritingID,
-            freshShown: freshShown,
             editing: editing,
             faces: faces,
             isRoom: isRoom,
@@ -265,6 +269,13 @@ final class ChatRowsMemo {
         )
 
         if let lastKey, lastKey == key {
+            if lastFreshShown != freshShown {
+                lastFreshShown = freshShown
+                if let freshID = freshWritingID,
+                   let idx = lastItems.lastIndex(where: { $0.line.id == freshID }) {
+                    lastItems[idx].freshShown = freshShown
+                }
+            }
             return lastItems
         }
 
@@ -323,8 +334,110 @@ final class ChatRowsMemo {
         }
 
         lastKey = key
+        lastFreshShown = freshShown
         lastItems = result
         return result
+    }
+}
+
+private struct SafeVerticalMetrics: Equatable {
+    let minY: CGFloat
+    let maxY: CGFloat
+    let height: CGFloat
+}
+
+@MainActor @Observable
+private final class ChatTeamSliceObserver {
+    var phase: TeamModel.Phase
+    var bots: [BotInfo]
+    var waiting: Approval?
+    var queuedItems: [TeamModel.Queued]
+    var isCompressing: Bool
+    var canAcceptInput: Bool
+    var workDetail: TeamModel.WorkDetail
+
+    @ObservationIgnored private weak var boundTeam: TeamModel?
+    @ObservationIgnored private var boundKey = ""
+    @ObservationIgnored private var cancellables: Set<AnyCancellable> = []
+
+    init(team: TeamModel, chatKey: String) {
+        self.phase = team.phase
+        self.bots = team.bots
+        self.waiting = team.approvals.first { $0.chat == chatKey }
+        self.queuedItems = team.queued[chatKey] ?? []
+        self.isCompressing = team.compressing.contains(chatKey)
+        self.canAcceptInput = team.canAcceptInput(for: chatKey)
+        self.workDetail = team.workDetail(for: chatKey)
+        bind(team: team, chatKey: chatKey)
+    }
+
+    func bind(team: TeamModel, chatKey: String) {
+        guard boundTeam !== team || boundKey != chatKey else { return }
+        boundTeam = team
+        boundKey = chatKey
+        cancellables.removeAll()
+
+        let detail = team.workDetail(for: chatKey)
+        if workDetail !== detail { workDetail = detail }
+        let nextPhase = team.phase
+        if phase != nextPhase { phase = nextPhase }
+        let nextBots = team.bots
+        if bots != nextBots { bots = nextBots }
+        let nextWaiting = team.approvals.first { $0.chat == chatKey }
+        if waiting != nextWaiting { waiting = nextWaiting }
+        let nextQueued = team.queued[chatKey] ?? []
+        if queuedItems != nextQueued { queuedItems = nextQueued }
+        let nextCompressing = team.compressing.contains(chatKey)
+        if isCompressing != nextCompressing { isCompressing = nextCompressing }
+        let nextAccept = team.canAcceptInput(for: chatKey)
+        if canAcceptInput != nextAccept { canAcceptInput = nextAccept }
+
+        team.$phase
+            .sink { [weak self] next in
+                guard let self, self.phase != next else { return }
+                self.phase = next
+            }
+            .store(in: &cancellables)
+
+        team.$bots
+            .sink { [weak self] next in
+                guard let self, self.bots != next else { return }
+                self.bots = next
+            }
+            .store(in: &cancellables)
+
+        team.$approvals
+            .sink { [weak self] all in
+                guard let self else { return }
+                let match = all.first { $0.chat == chatKey }
+                if self.waiting != match { self.waiting = match }
+            }
+            .store(in: &cancellables)
+
+        team.$queued
+            .sink { [weak self] all in
+                guard let self else { return }
+                let next = all[chatKey] ?? []
+                if self.queuedItems != next { self.queuedItems = next }
+            }
+            .store(in: &cancellables)
+
+        team.$compressing
+            .sink { [weak self] all in
+                guard let self else { return }
+                let next = all.contains(chatKey)
+                if self.isCompressing != next { self.isCompressing = next }
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest3(team.$openingLeaves, team.$unresolvedLeafOpenChats, team.$queueDispatchSuspended)
+            .sink { [weak self] opening, unresolved, suspended in
+                guard let self else { return }
+                let canDispatch = QueuedMessageStore.canDispatchQueue(isFrozen: Disk.frozen, isRestoring: suspended)
+                let next = canDispatch && !opening.contains(chatKey) && !unresolved.contains(chatKey)
+                if self.canAcceptInput != next { self.canAcceptInput = next }
+            }
+            .store(in: &cancellables)
     }
 }
 
@@ -332,7 +445,7 @@ final class ChatRowsMemo {
 /// while preserving safe-area alignment for `minimap` and automatic keyboard/dock inset tracking.
 struct ChatUIKitContainer<Minimap: View>: View {
     let chat: ChatModel
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     let bot: BotInfo
     let isRoom: Bool
     let displayedRows: [ChatLine]
@@ -357,10 +470,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let sourcesMemo: ChatPage.SourcesMemo
     let listProxy: ChatListControllerProxy
     let typing: FocusState<Bool>.Binding
-    @Binding var following: Bool
     @Binding var touchScrolling: Bool
     @Binding var quote: String?
-    @Binding var jumpedTo: String?
     let onLoadEarlier: () -> Void
     let onSelectionChanged: (UUID, Bool) -> Void
     let onSpeak: (String) -> Void
@@ -383,19 +494,105 @@ struct ChatUIKitContainer<Minimap: View>: View {
     @AppStorage("look.thinking") private var showThinking = true
     @AppStorage("look.stats") private var showStats = true
 
-    @State private var fullFrame: CGRect = .zero
-    @State private var safeFrame: CGRect = .zero
+    @State private var fullVertical = SafeVerticalMetrics(minY: 0, maxY: 0, height: 0)
+    @State private var safeVertical = SafeVerticalMetrics(minY: 0, maxY: 0, height: 0)
     @State private var rowsMemo = ChatRowsMemo()
     @State private var photoHero: ChatPhotoHeroTarget?
+    @State private var teamSlice: ChatTeamSliceObserver
+
+    init(
+        chat: ChatModel,
+        team: TeamModel,
+        bot: BotInfo,
+        isRoom: Bool,
+        displayedRows: [ChatLine],
+        visibleRows: [ChatLine],
+        heads: Set<String>,
+        historyPage: [ChatLine]?,
+        shownCount: Int,
+        isLoadingEarlier: Bool,
+        lit: String?,
+        editing: String?,
+        speakingText: String?,
+        headerHeight: CGFloat,
+        starters: [(String, String, String)],
+        reach: String,
+        petPerch: PetPerch,
+        chrome: ChatChrome,
+        viewport: ChatViewport,
+        followState: ChatFollowState,
+        dictationSlot: ChatDictationSlot,
+        idleMood: ChatIdleMood,
+        bridge: ChatRowBridge,
+        sourcesMemo: ChatPage.SourcesMemo,
+        listProxy: ChatListControllerProxy,
+        typing: FocusState<Bool>.Binding,
+        touchScrolling: Binding<Bool>,
+        quote: Binding<String?>,
+        onLoadEarlier: @escaping () -> Void,
+        onSelectionChanged: @escaping (UUID, Bool) -> Void,
+        onSpeak: @escaping (String) -> Void,
+        onSaveNote: @escaping (String, String) -> Void,
+        onPickStarter: @escaping (String) -> Void,
+        onStir: @escaping () -> Void,
+        onDragStarted: @escaping () -> Void,
+        onScrollEnded: @escaping () -> Void,
+        lineMeta: @escaping (ChatLine) -> ChatPage.SourcesMemo.LineMeta,
+        endsTurn: @escaping (ChatLine) -> Bool,
+        timeGap: @escaping (ChatLine) -> String?,
+        @ViewBuilder minimap: @escaping () -> Minimap
+    ) {
+        self.chat = chat
+        self.team = team
+        self.bot = bot
+        self.isRoom = isRoom
+        self.displayedRows = displayedRows
+        self.visibleRows = visibleRows
+        self.heads = heads
+        self.historyPage = historyPage
+        self.shownCount = shownCount
+        self.isLoadingEarlier = isLoadingEarlier
+        self.lit = lit
+        self.editing = editing
+        self.speakingText = speakingText
+        self.headerHeight = headerHeight
+        self.starters = starters
+        self.reach = reach
+        self.petPerch = petPerch
+        self.chrome = chrome
+        self.viewport = viewport
+        self.followState = followState
+        self.dictationSlot = dictationSlot
+        self.idleMood = idleMood
+        self.bridge = bridge
+        self.sourcesMemo = sourcesMemo
+        self.listProxy = listProxy
+        self.typing = typing
+        self._touchScrolling = touchScrolling
+        self._quote = quote
+        self.onLoadEarlier = onLoadEarlier
+        self.onSelectionChanged = onSelectionChanged
+        self.onSpeak = onSpeak
+        self.onSaveNote = onSaveNote
+        self.onPickStarter = onPickStarter
+        self.onStir = onStir
+        self.onDragStarted = onDragStarted
+        self.onScrollEnded = onScrollEnded
+        self.lineMeta = lineMeta
+        self.endsTurn = endsTurn
+        self.timeGap = timeGap
+        self.minimap = minimap
+        self._teamSlice = State(initialValue: ChatTeamSliceObserver(team: team, chatKey: chat.key))
+    }
 
     private var safeTopInset: CGFloat {
-        guard fullFrame.height > 0, safeFrame.height > 0 else { return 0 }
-        return max(0, safeFrame.minY - fullFrame.minY)
+        guard fullVertical.height > 0, safeVertical.height > 0 else { return 0 }
+        return max(0, safeVertical.minY - fullVertical.minY)
     }
 
     private var safeBottomInset: CGFloat {
-        guard fullFrame.height > 0, safeFrame.height > 0 else { return 0 }
-        return max(0, fullFrame.maxY - safeFrame.maxY)
+        guard fullVertical.height > 0, safeVertical.height > 0 else { return 0 }
+        return max(0, fullVertical.maxY - safeVertical.maxY)
     }
 
     private var styleSignal: String {
@@ -405,7 +602,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
     }
 
     private var doing: String? {
-        team.workDetail(for: chat.key).words
+        teamSlice.workDetail.words
     }
 
     private var working: Bool {
@@ -413,11 +610,11 @@ struct ChatUIKitContainer<Minimap: View>: View {
     }
 
     private var sendingBlocked: Bool {
-        team.phase != .demo && !team.canAcceptInput(for: chat.key)
+        teamSlice.phase != .demo && !teamSlice.canAcceptInput
     }
 
     private var waiting: Approval? {
-        team.approvals.first { $0.chat == chat.key }
+        teamSlice.waiting
     }
 
     var body: some View {
@@ -425,18 +622,19 @@ struct ChatUIKitContainer<Minimap: View>: View {
         ZStack {
             photoHeroProxy
 
+            ChatFollowHostSyncView(followState: followState, listProxy: listProxy, petPerch: petPerch)
+
             ChatListUIKitRepresentable(
                 state: state,
                 styleSignal: styleSignal,
                 safeTopInset: safeTopInset,
                 safeBottomInset: safeBottomInset,
-                following: $following,
                 touchScrolling: $touchScrolling,
                 quote: $quote,
-                jumpedTo: $jumpedTo,
                 photoHero: $photoHero,
                 chrome: chrome,
                 viewport: viewport,
+                followState: followState,
                 petPerch: petPerch,
                 chat: chat,
                 team: team,
@@ -456,28 +654,45 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 makeEmptyView: { makeEmptyStatusAnyView() }
             )
             .ignoresSafeArea()
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { rect in
-                fullFrame = rect
+            .onGeometryChange(for: SafeVerticalMetrics.self) { proxy in
+                let rect = proxy.frame(in: .global)
+                return SafeVerticalMetrics(
+                    minY: rect.minY.rounded(),
+                    maxY: rect.maxY.rounded(),
+                    height: rect.height.rounded()
+                )
+            } action: { metrics in
+                fullVertical = metrics
             }
 
             Color.clear
                 .allowsHitTesting(false)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { rect in
-                    safeFrame = rect
+                .onGeometryChange(for: SafeVerticalMetrics.self) { proxy in
+                    let rect = proxy.frame(in: .global)
+                    return SafeVerticalMetrics(
+                        minY: rect.minY.rounded(),
+                        maxY: rect.maxY.rounded(),
+                        height: rect.height.rounded()
+                    )
+                } action: { metrics in
+                    safeVertical = metrics
                 }
                 .overlay(alignment: .trailing) { minimap() }
 
             ChatTopPaperFadeView(safeTopInset: safeTopInset, headerHeight: headerHeight)
         }
-        .onChange(of: followState.following, initial: true) { _, resting in
-            petPerch.avoidsReplies = resting
+        .onAppear {
+            teamSlice.bind(team: team, chatKey: chat.key)
+        }
+        .onChange(of: chat.key) { _, newKey in
+            teamSlice.bind(team: team, chatKey: newKey)
         }
     }
 
     @ViewBuilder
     private var photoHeroProxy: some View {
-        if let photoZoomNamespace, !reduceMotion, fullFrame.height > 0 {
-            ChatPhotoHeroPreviewView(hero: photoHero, fullFrame: fullFrame, namespace: photoZoomNamespace)
+        if let photoZoomNamespace, !reduceMotion, fullVertical.height > 0 {
+            ChatPhotoHeroPreviewView(hero: photoHero, namespace: photoZoomNamespace)
         }
     }
 
@@ -511,7 +726,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
             isRoom: isRoom,
             historyInView: historyPage != nil,
             defaultBot: bot,
-            teamBots: team.bots,
+            teamBots: teamSlice.bots,
             showThinking: showThinking,
             showStats: showStats,
             working: working,
@@ -556,7 +771,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         )
 
         let pulseSpeaker = chat.stream.pulseSpeaker.flatMap { id in
-            team.bots.first { $0.id == id }
+            teamSlice.bots.first { $0.id == id }
         }
 
         let canLoadEarlier = historyPage == nil && (displayedRows.count > shownCount || chat.hasEarlier)
@@ -569,12 +784,12 @@ struct ChatUIKitContainer<Minimap: View>: View {
             historyInView: historyPage != nil,
             isRoom: isRoom,
             defaultBot: bot,
-            teamBots: team.bots,
+            teamBots: teamSlice.bots,
             working: working,
             sendingBlocked: sendingBlocked,
             faces: faces,
             rows: rows,
-            isCompressing: team.compressing.contains(chat.key),
+            isCompressing: teamSlice.isCompressing,
             streamPulse: chat.stream.pulse,
             streamPulseSpeaker: pulseSpeaker,
             streamReasoning: chat.stream.reasoning,
@@ -584,7 +799,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
             fresh: chat.stream.fresh,
             showToolTail: showToolTail,
             failureCardError: failureCardError,
-            queuedItems: team.queued[chat.key] ?? [],
+            queuedItems: teamSlice.queuedItems,
             emptyPetState: emptyPetState,
             starters: starters,
             reach: reach,
@@ -594,19 +809,37 @@ struct ChatUIKitContainer<Minimap: View>: View {
     }
 }
 
+private struct ChatFollowHostSyncView: View {
+    let followState: ChatFollowState
+    let listProxy: ChatListControllerProxy
+    let petPerch: PetPerch
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: followState.following, initial: true) { _, next in
+                petPerch.avoidsReplies = next
+                if let controller = listProxy.controller, controller.isPinnedToBottom != next {
+                    controller.setFollowingFromHost(next)
+                }
+            }
+    }
+}
+
 /// UIKit representable wrapping `ChatListViewController` with loop-free bidirectional state binding.
 private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let state: ChatListState
     let styleSignal: String
     let safeTopInset: CGFloat
     let safeBottomInset: CGFloat
-    @Binding var following: Bool
     @Binding var touchScrolling: Bool
     @Binding var quote: String?
-    @Binding var jumpedTo: String?
     @Binding var photoHero: ChatPhotoHeroTarget?
     let chrome: ChatChrome
     let viewport: ChatViewport
+    let followState: ChatFollowState
     let petPerch: PetPerch
     let chat: ChatModel
     let team: TeamModel
@@ -626,7 +859,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let makeEmptyView: () -> AnyView
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(lastStyleSignal: styleSignal, lastSyncedFollowing: following)
+        Coordinator(lastStyleSignal: styleSignal)
     }
 
     func makeUIViewController(context: Context) -> ChatListViewController {
@@ -646,7 +879,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         context.coordinator.actions = actions
         controller.performHostUpdate {
             controller.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
-            controller.setFollowingFromHost(following)
+            controller.setFollowingFromHost(followState.following)
             controller.applyState(state)
         }
         return controller
@@ -665,11 +898,6 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             if coordinator.lastStyleSignal != styleSignal {
                 coordinator.lastStyleSignal = styleSignal
                 uiViewController.refreshTypographyAndTheme()
-            }
-
-            if coordinator.lastSyncedFollowing != following {
-                coordinator.lastSyncedFollowing = following
-                uiViewController.setFollowingFromHost(following)
             }
 
             uiViewController.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
@@ -744,9 +972,8 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
 
         actions.onFollowingChanged = { [weak coordinator] next in
             guard let coordinator, !coordinator.isDismantled else { return }
-            coordinator.lastSyncedFollowing = next
-            if following != next {
-                following = next
+            if followState.following != next {
+                followState.following = next
             }
         }
 
@@ -858,7 +1085,6 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator {
         var lastStyleSignal: String
-        var lastSyncedFollowing: Bool
         var actions: ChatListActions?
         var ownedSelectionIDs: Set<UUID> = []
         var isDismantled = false
@@ -866,9 +1092,8 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         weak var petPerch: PetPerch?
         weak var listProxy: ChatListControllerProxy?
 
-        init(lastStyleSignal: String, lastSyncedFollowing: Bool) {
+        init(lastStyleSignal: String) {
             self.lastStyleSignal = lastStyleSignal
-            self.lastSyncedFollowing = lastSyncedFollowing
         }
     }
 }
@@ -901,28 +1126,39 @@ private struct ChatTopPaperFadeView: View {
     }
 }
 
-/// Isolated hero fallback view so `ChatUIKitContainer.body` does not read `Ink.paperRaised`, `Ink.Radius.small`, or `ChatCellMetrics.photoSize`.
+/// Isolated hero fallback view so `ChatUIKitContainer.body` does not read `Ink.paperRaised`, `Ink.Radius.small`, or `ChatCellMetrics.photoSize`,
+/// and horizontal container drags do not trigger geometry updates when `hero == nil`.
 private struct ChatPhotoHeroPreviewView: View {
     let hero: ChatPhotoHeroTarget?
-    let fullFrame: CGRect
     let namespace: Namespace.ID
 
-    private var localRect: CGRect {
-        guard let hero else {
-            return CGRect(x: 0, y: 0, width: ChatCellMetrics.photoSize, height: ChatCellMetrics.photoSize)
+    var body: some View {
+        if let hero {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .global)
+                let rect = CGRect(
+                    x: hero.globalRect.minX - frame.minX,
+                    y: hero.globalRect.minY - frame.minY,
+                    width: max(1, hero.globalRect.width),
+                    height: max(1, hero.globalRect.height)
+                )
+                heroLayer(hero: hero, rect: rect)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        } else {
+            let idleRect = CGRect(x: 0, y: 0, width: ChatCellMetrics.photoSize, height: ChatCellMetrics.photoSize)
+            heroLayer(hero: nil, rect: idleRect)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
-        return CGRect(
-            x: hero.globalRect.minX - fullFrame.minX,
-            y: hero.globalRect.minY - fullFrame.minY,
-            width: max(1, hero.globalRect.width),
-            height: max(1, hero.globalRect.height)
-        )
     }
 
-    var body: some View {
-        let rect = localRect
+    private func heroLayer(hero: ChatPhotoHeroTarget?, rect: CGRect) -> some View {
         let heroID = hero?.id ?? "__clio-photo-hero-idle__"
-        Group {
+        return Group {
             if let image = hero?.image {
                 Image(uiImage: image)
                     .resizable()
@@ -935,8 +1171,5 @@ private struct ChatPhotoHeroPreviewView: View {
         .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
         .modifier(PhotoZoomSourceModifier(id: heroID, namespace: namespace, enabled: true))
         .position(x: rect.midX, y: rect.midY)
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }

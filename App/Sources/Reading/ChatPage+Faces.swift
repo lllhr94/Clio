@@ -89,19 +89,31 @@ extension ChatPage {
     func timeGap(before line: ChatLine) -> String? {
         let rows = displayedRows
         sourcesMemo.sync(rows: rows, defaultBotId: bot.id)
+        if let cached = sourcesMemo.timeGaps[line.id] {
+            return cached.isEmpty ? nil : cached
+        }
         guard let at = line.at,
               let index = sourcesMemo.indexById[line.id], index > 0,
               let before = rows[..<index].last(where: { $0.at != nil })?.at,
-              at - before > 30 * 60 * 1000 else { return nil }
+              at - before > 30 * 60 * 1000 else {
+            sourcesMemo.timeGaps[line.id] = ""
+            return nil
+        }
         let date = Date(timeIntervalSince1970: at / 1000)
         let calendar = Calendar.current
         let clock = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
-        if calendar.isDateInToday(date) { return clock }
-        if calendar.isDateInYesterday(date) { return "昨天 " + clock }
-        if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
-            return date.formatted(.dateTime.month(.defaultDigits).day()) + " " + clock
+        let formatted: String
+        if calendar.isDateInToday(date) {
+            formatted = clock
+        } else if calendar.isDateInYesterday(date) {
+            formatted = "昨天 " + clock
+        } else if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
+            formatted = date.formatted(.dateTime.month(.defaultDigits).day()) + " " + clock
+        } else {
+            formatted = date.formatted(.dateTime.year().month(.defaultDigits).day()) + " " + clock
         }
-        return date.formatted(.dateTime.year().month(.defaultDigits).day()) + " " + clock
+        sourcesMemo.timeGaps[line.id] = formatted
+        return formatted
     }
 
     /// Where a compression happened: a quiet divider. Above it everything is still here; tap to read the 前情提要.
@@ -171,10 +183,11 @@ extension ChatPage {
     /// 重来一次, or 改了重发: when that turn changed files, first ask whether they go back too.
     @discardableResult
     func redo(from entry: String? = nil, text: String? = nil) -> Bool {
-        Self.performRedo(
+        let followRef = followState
+        return Self.performRedo(
             chat: chat,
             team: team,
-            following: $following,
+            following: Binding(get: { followRef.following }, set: { followRef.following = $0 }),
             undoAsk: $undoAsk,
             from: entry,
             text: text
@@ -213,12 +226,13 @@ extension ChatPage {
     }
 
     func act(_ next: Explain.Next) {
+        let followRef = followState
         Self.performAct(
             next,
             chat: chat,
             team: team,
             notice: notice,
-            following: $following,
+            following: Binding(get: { followRef.following }, set: { followRef.following = $0 }),
             undoAsk: $undoAsk,
             tuningOpen: $tuningOpen,
             careOpen: $careOpen
