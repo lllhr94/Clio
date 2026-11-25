@@ -260,16 +260,17 @@ private struct ChatMinimapCursorOverlay: View {
         return nil
     }
 
+    private var cursorAnimation: Animation? {
+        if chrome.minimapScrub == nil && !reduceMotion {
+            return .interactiveSpring(response: 0.14, dampingFraction: 0.90)
+        }
+        return nil
+    }
+
     var body: some View {
         let first = rows.startIndex
         let span = max(1, rows.count - 1)
         let currentActive = activeIndex
-        let cursorAnimation: Animation?
-        if chrome.minimapScrub == nil && !reduceMotion {
-            cursorAnimation = .interactiveSpring(response: 0.14, dampingFraction: 0.90)
-        } else {
-            cursorAnimation = nil
-        }
 
         ZStack(alignment: .top) {
             if let idx = currentActive {
