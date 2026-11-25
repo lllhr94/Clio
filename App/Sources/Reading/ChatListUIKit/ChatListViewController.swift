@@ -48,6 +48,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastReportedFarFromEnd: Bool?
     private var lastReportedNeedsEndCorrection: Bool?
     private var lastReportedVisibleIDs: [String] = []
+    private var turnUserIDBySection: [String?] = []
+    private var firstUserRowID: String?
+    private var lastUserRowID: String?
+    private var lastReportedActiveTurnID: String?
     private var lastReportedReplyOwner: String?
     private var lastReportedReplyRect: CGRect = .null
 
@@ -122,6 +126,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
         lastReportedHeroTarget = nil
+        lastReportedActiveTurnID = nil
         return owner
     }
 
@@ -804,6 +809,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
         lastReportedHeroTarget = nil
+        if lastReportedActiveTurnID != nil {
+            lastReportedActiveTurnID = nil
+            if isInHostUpdate {
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isDismantled else { return }
+                    if self.lastReportedActiveTurnID == nil {
+                        self.actions.onActiveTurnChanged(nil)
+                    }
+                }
+            } else {
+                actions.onActiveTurnChanged(nil)
+            }
+        }
         if let heroID = actions.currentPreparedHeroID() {
             if isInHostUpdate {
                 Task { @MainActor [weak self] in
@@ -850,6 +868,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     ) {
         let oldRowMap = rowByID
         rowByID = nextRowMap
+        if prev.rows != next.rows {
+            rebuildTurnUserIndex()
+        }
         let width = max(240, collectionView.bounds.width)
         var layoutMayHaveChanged = false
 
@@ -1105,6 +1126,30 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         rowByID.removeAll(keepingCapacity: true)
         for row in rows {
             rowByID[row.line.id] = row
+        }
+        rebuildTurnUserIndex()
+    }
+
+    private func rebuildTurnUserIndex() {
+        var firstUser: String?
+        var lastUser: String?
+        for item in items {
+            if case .line(let id) = item, rowByID[id]?.line.kind == .user {
+                if firstUser == nil { firstUser = id }
+                lastUser = id
+            }
+        }
+        firstUserRowID = firstUser
+        lastUserRowID = lastUser
+
+        turnUserIDBySection = []
+        turnUserIDBySection.reserveCapacity(items.count)
+        var currentUserID = firstUser
+        for item in items {
+            if case .line(let id) = item, rowByID[id]?.line.kind == .user {
+                currentUserID = id
+            }
+            turnUserIDBySection.append(currentUserID)
         }
     }
 
@@ -1662,6 +1707,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         pendingScrollRequest = nil
         performScrollToRow(section: section, anchor: anchor, animated: animated)
+        publishActiveTurnIfNeeded(for: collectionView)
     }
 
     private func performScrollToRow(section: Int, anchor: UnitPoint, animated: Bool) {
@@ -1811,6 +1857,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if !isPinnedToBottom {
             actions.onDragStarted()
         }
+        publishActiveTurnIfNeeded(for: scrollView)
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -1904,6 +1951,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             lastAutoPrependTime = CACurrentMediaTime()
             requestLoadEarlier()
         }
+
+        publishActiveTurnIfNeeded(for: scrollView)
 
         let now = CACurrentMediaTime()
         if now - lastScrollMetricsPublishTime >= 0.10 {
@@ -2014,6 +2063,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             lastReportedVisibleIDs = ids
             actions.onVisibleIDsChanged(ids)
         }
+        publishActiveTurnIfNeeded(for: collectionView)
 
         if !isUserTouchScrolling {
             if latestOwner != lastReportedReplyOwner || latestRect != lastReportedReplyRect {
@@ -2023,6 +2073,63 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 actions.petPerch.replyActions = latestRect
             }
         }
+    }
+
+    private func computeActiveTurnID(for scrollView: UIScrollView) -> String? {
+        guard !turnUserIDBySection.isEmpty else { return nil }
+        let topInset = scrollView.adjustedContentInset.top
+        let currentY = scrollView.contentOffset.y
+        let bottomY = bottomOffsetY(for: scrollView)
+        if currentY >= bottomY - 8 {
+            return lastUserRowID
+        }
+        if currentY <= -topInset + 8 {
+            return firstUserRowID
+        }
+        let viewportH = max(1, scrollView.bounds.height - topInset - scrollView.adjustedContentInset.bottom)
+        let anchorY = currentY + topInset + viewportH * 0.25
+
+        var bestAtOrAboveSection: Int?
+        var bestMinY: CGFloat = -.greatestFiniteMagnitude
+        var firstBelowSection: Int?
+        var firstBelowMinY: CGFloat = .greatestFiniteMagnitude
+
+        for cell in collectionView.visibleCells {
+            guard !cell.isHidden, cell.superview != nil, cell.frame.height > 0,
+                  let path = collectionView.indexPath(for: cell),
+                  path.section >= 0, path.section < turnUserIDBySection.count else {
+                continue
+            }
+            let minY = cell.frame.minY
+            if minY <= anchorY {
+                if minY > bestMinY || (minY == bestMinY && path.section > (bestAtOrAboveSection ?? -1)) {
+                    bestMinY = minY
+                    bestAtOrAboveSection = path.section
+                }
+            } else {
+                if minY < firstBelowMinY || (minY == firstBelowMinY && path.section < (firstBelowSection ?? Int.max)) {
+                    firstBelowMinY = minY
+                    firstBelowSection = path.section
+                }
+            }
+        }
+
+        if let section = bestAtOrAboveSection ?? firstBelowSection {
+            return turnUserIDBySection[section]
+        }
+        return lastReportedActiveTurnID ?? firstUserRowID
+    }
+
+    private func publishActiveTurnIfNeeded(for scrollView: UIScrollView) {
+        guard !isDismantled, collectionView != nil else { return }
+        let nextTurnID = computeActiveTurnID(for: scrollView)
+        guard nextTurnID != lastReportedActiveTurnID else { return }
+        if isInHostUpdate {
+            scheduleHostMetricsFlush()
+            return
+        }
+        lastReportedActiveTurnID = nextTurnID
+        actions.onActiveTurnChanged(nextTurnID)
     }
 
     private func clearReplyPerchClearance() {

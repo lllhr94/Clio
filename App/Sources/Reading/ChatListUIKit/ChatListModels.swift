@@ -258,6 +258,7 @@ final class ChatListActions {
     var onFarFromEndChanged: (Bool) -> Void = { _ in }
     var onNeedsEndCorrectionChanged: (Bool) -> Void = { _ in }
     var onVisibleIDsChanged: ([String]) -> Void = { _ in }
+    var onActiveTurnChanged: (String?) -> Void = { _ in }
     var onScrollPhaseChanged: (String) -> Void = { _ in }
     var onDragStarted: () -> Void = {}
     var onScrollEnded: () -> Void = {}

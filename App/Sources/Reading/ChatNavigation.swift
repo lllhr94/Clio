@@ -9,6 +9,7 @@ final class ChatChrome {
     var jumpVisible = false
     var farFromEnd = false
     var minimapScrub: Int?
+    var activeTurnID: String?
     var scrolling = false
 }
 
@@ -171,23 +172,42 @@ struct ChatMinimapOverlay: View {
     }
 
     private func strip(rows: ArraySlice<ChatLine>, asked: [Int]) -> some View {
-        let visible = Set(viewport.ids)
         let first = rows.startIndex
         let span = max(1, rows.count - 1)
+        var askedIndexByID: [String: Int] = [:]
+        askedIndexByID.reserveCapacity(asked.count)
+        for idx in asked {
+            askedIndexByID[rows[idx].id] = idx
+        }
         return GeometryReader { box in
             let height = box.size.height
             let place = { (index: Int) in height * CGFloat(index - first) / CGFloat(span) }
             let nearest = { (y: CGFloat) in asked.min(by: { abs(place($0) - y) < abs(place($1) - y) }) }
             ZStack(alignment: .top) {
-                Capsule().fill(Ink.rule.opacity(0.28)).frame(width: 1)
-                ForEach(asked, id: \.self) { index in
-                    // While sliding, the finger's question is the one lit; otherwise the ones on screen.
-                    let lit = chrome.minimapScrub.map { $0 == index } ?? visible.contains(rows[index].id)
-                    Capsule()
-                        .fill(lit ? Ink.accent : Ink.inkFaint.opacity(0.45))
-                        .frame(width: lit ? 10 : 4, height: lit ? 2.5 : 2)
-                        .offset(y: place(index) - 1)
+                Canvas { context, size in
+                    let trackRect = CGRect(x: (size.width - 1) * 0.5, y: 0, width: 1, height: size.height)
+                    context.fill(Path(roundedRect: trackRect, cornerRadius: 0.5), with: .color(Ink.rule.opacity(0.28)))
+                    let tickColor = Ink.inkFaint.opacity(0.45)
+                    let tickX = (size.width - 4) * 0.5
+                    for index in asked {
+                        let y = size.height * CGFloat(index - first) / CGFloat(span) - 1
+                        let rect = CGRect(x: tickX, y: y, width: 4, height: 2)
+                        context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(tickColor))
+                    }
                 }
+                .frame(width: 16, height: height)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+                ChatMinimapCursorOverlay(
+                    chrome: chrome,
+                    viewport: viewport,
+                    rows: rows,
+                    asked: asked,
+                    askedIndexByID: askedIndexByID,
+                    height: height,
+                    onStepQuestion: onStepQuestion
+                )
             }
             .frame(width: 16, height: height, alignment: .top)
             .contentShape(Rectangle().inset(by: -Ink.Space.m))
@@ -207,37 +227,89 @@ struct ChatMinimapOverlay: View {
                         onJump(rows[index].id, false, "小地图(\(rank)/\(asked.count))")
                     }
             )
-            .overlay(alignment: .topTrailing) {
-                if let index = chrome.minimapScrub, rows.indices.contains(index) {
-                    Text(rows[index].text.replacingOccurrences(of: "\n", with: " "))
-                        .font(.system(size: Ink.Size.small))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(2)
-                        .frame(width: 200, alignment: .trailing)
-                        .padding(.horizontal, Ink.Space.m)
-                        .padding(.vertical, Ink.Space.s)
-                        .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
-                        .offset(x: -24, y: min(max(0, place(index) - 18), max(0, height - 44)))
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
-            }
         }
         .frame(width: 16)
         .padding(.vertical, Ink.Bar.height * 2)
         .padding(.trailing, 2)
         .transition(.opacity)
+    }
+}
+
+private struct ChatMinimapCursorOverlay: View {
+    let chrome: ChatChrome
+    let viewport: ChatViewport
+    let rows: ArraySlice<ChatLine>
+    let asked: [Int]
+    let askedIndexByID: [String: Int]
+    let height: CGFloat
+    let onStepQuestion: (Bool) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var activeIndex: Int? {
+        if let scrub = chrome.minimapScrub, rows.indices.contains(scrub) {
+            return scrub
+        }
+        if let turnID = chrome.activeTurnID, let idx = askedIndexByID[turnID] {
+            return idx
+        }
+        let visible = Set(viewport.ids)
+        if let firstVisible = rows.indices.first(where: { visible.contains(rows[$0].id) }) {
+            return asked.last(where: { $0 <= firstVisible }) ?? asked.first
+        }
+        return nil
+    }
+
+    var body: some View {
+        let first = rows.startIndex
+        let span = max(1, rows.count - 1)
+        let currentActive = activeIndex
+        let cursorAnimation: Animation?
+        if chrome.minimapScrub == nil && !reduceMotion {
+            cursorAnimation = .interactiveSpring(response: 0.14, dampingFraction: 0.90)
+        } else {
+            cursorAnimation = nil
+        }
+
+        ZStack(alignment: .top) {
+            if let idx = currentActive {
+                let y = height * CGFloat(idx - first) / CGFloat(span) - 1.25
+                Capsule()
+                    .fill(Ink.accent)
+                    .frame(width: 10, height: 2.5)
+                    .offset(y: y)
+                    .animation(cursorAnimation, value: currentActive)
+            }
+        }
+        .frame(width: 16, height: height, alignment: .top)
+        .allowsHitTesting(false)
+        .overlay(alignment: .topTrailing) {
+            if let index = chrome.minimapScrub, rows.indices.contains(index) {
+                let previewY = height * CGFloat(index - first) / CGFloat(span)
+                Text(rows[index].text.replacingOccurrences(of: "\n", with: " "))
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(2)
+                    .frame(width: 200, alignment: .trailing)
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.s)
+                    .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .offset(x: -24, y: min(max(0, previewY - 18), max(0, height - 44)))
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
         .accessibilityElement()
         .accessibilityLabel(L.t("chat.questionMap"))
-        .accessibilityValue(minimapPlace(rows: rows, asked: asked, visible: visible))
+        .accessibilityValue(accessibilityRank(for: currentActive))
         .accessibilityAdjustableAction { direction in
             onStepQuestion(direction == .decrement)
         }
     }
 
-    private func minimapPlace(rows: ArraySlice<ChatLine>, asked: [Int], visible: Set<String>) -> String {
-        guard let at = asked.firstIndex(where: { visible.contains(rows[$0].id) }) else { return "\(asked.count)" }
-        return "\(at + 1) / \(asked.count)"
+    private func accessibilityRank(for index: Int?) -> String {
+        guard let index, let pos = asked.firstIndex(of: index) else { return "\(asked.count)" }
+        return "\(pos + 1) / \(asked.count)"
     }
 }
 

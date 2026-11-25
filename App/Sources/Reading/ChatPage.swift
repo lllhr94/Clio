@@ -517,7 +517,25 @@ struct ChatPage: View {
                 Haptics.light()
                 speak(picked)
             }
-            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { viewport.ids = $0 }
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { ids in
+                viewport.ids = ids
+                let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
+                let turnID: String?
+                if following || ids.contains(Self.end) {
+                    turnID = rows.last(where: { $0.kind == .user })?.id
+                } else {
+                    let visibleSet = Set(ids)
+                    if let firstVisible = rows.firstIndex(where: { visibleSet.contains($0.id) }) {
+                        turnID = rows[...firstVisible].last(where: { $0.kind == .user })?.id
+                            ?? rows.first(where: { $0.kind == .user })?.id
+                    } else {
+                        turnID = rows.first(where: { $0.kind == .user })?.id
+                    }
+                }
+                if chrome.activeTurnID != turnID {
+                    chrome.activeTurnID = turnID
+                }
+            }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(Self.resizeAnchor(following: following, inHistory: historyPage != nil,
                                                    hasSelection: !selecting.isEmpty), for: .sizeChanges)

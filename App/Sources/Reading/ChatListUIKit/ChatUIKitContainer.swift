@@ -849,6 +849,13 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
+        actions.onActiveTurnChanged = { [weak coordinator] turnID in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if chrome.activeTurnID != turnID {
+                chrome.activeTurnID = turnID
+            }
+        }
+
         actions.onScrollPhaseChanged = { [weak coordinator] label in
             guard let coordinator, !coordinator.isDismantled else { return }
             if viewport.scrollPhaseLabel != label {
