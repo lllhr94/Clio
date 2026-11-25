@@ -1,10 +1,10 @@
 # 现状与交接
 
-## 当前一览（11-25，Clio 0.36 Wave 1–2 + T_CACHE 集成检查点）
+## 当前一览（11-25，Clio 0.36 Wave 1–4 全部收口集成）
 
-- **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"`，`fc2f66c` 起，当前已合并 PR #67–#73）；**不动 `main` / `latest`**。
+- **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"` / `CFBundleVersion = "37"`，`fc2f66c` 起，当前已合并 PR #67–#84，最新提交见本文件更新前 `53a30a8`）；**未碰 `main` / `latest` / `v0.36`**，正式发版仍等主人说「发」。
 - **CI 改进**：`0545787` 为 `.github/workflows/build.yml` 的 `AgentKit` 测试补充失败断言高亮输出（不再被 `tail -n 80` 遮盖前置套件错误）。
-- **已合入 PR（均过本地 4 项门禁、Codex 审查及 macOS CI 全绿）**：
+- **已合入 PR（Wave 1–4 与两次安全加固均已通过本地门禁、Pro 审查及 macOS CI 全绿）**：
   - **Wave 1**
     - `v36-1a-perf-fix`（PR #67，`239a9fa`，CI `45443323679`）：用户气泡改轻量 `glassBubble` + 1.5pt 编辑框、`Voice` 语音懒加载、`ProseView` 配置快照整合、正则预编译与 `fresh` 观测隔离。
     - `v36-1b-memory-safety`（PR #68，`c93f37f`，CI `45449509297`）：`Entry.tainted/delegated` 隔离、SHA-256 撤回记忆哈希与轮内删除实时停发、`AssembledSystemPrompt` 前缀/动态尾切分、压缩与切走前记忆冲刷。
@@ -14,7 +14,23 @@
     - `v36-t-web-search`（PR #71，`51cf3d1`，CI `45459450988`）：修复 Bing/DDG 广告与追踪剥离、中文与非东亚多语种相关性打分、新增 HTTPS/局域网 SearXNG 与源站绑定密钥及有序回退、`speak()` 接 `NLLanguageRecognizer` 自动识别语种。
     - `v36-t-cache`（PR #72，`50c562e`，CI `45460741559`）：`Endpoint.promptCache` 与设置页 Anthropic 缓存开关（`nil` 沿用旧版主机默认策略防旧中转报错）、`ModelRequest.systemCachePrefix` 同步原子实时前缀实现两段系统提示 `cache_control` 切分。
     - `v36-2a-readonly-index`（PR #73，`9ca1f0a`，CI `45461880846`）：契约一可重建只读 SQLite3 + FTS5 索引 `clio-index.db`（schema v3、分槽版本、CJK 二元词与长消息分块去重、SQL 层 `MemoryAccessContext` 与 `leaf_tainted` 遮蔽、摘录前信匣脱敏、`search_history` 接 `Grant.memory`），不动任何 canonical JSON 写入。
-- **下一步**：打一次 `batch-0.36` 检查点试签包（`probe-batch-0.36`），并同步推进 Wave 3（`3a-state-split` 审查收口、`2b-memory-db`、`t-ask`）与 Wave 4。
+  - **Wave 3**
+    - `v36-3a-state-split`（PR #74，`a8eb79c`，CI `45475980271`）：聊天状态域拆分、`ChatPage` 预排版解耦与宠物状态瘦身（未触碰 `PetStage.swift` / `PetPerch.swift` 拖拽定位红线）。
+    - `v36-t-ask`（PR #75，`eba5f8e`，CI `45476926514`）：主动提问卡片 InlineAsk v2（单选/多选/文本输入与涉密字段强制走信匣规则校验 `AskUserRules`）。
+    - `v36-2b-memory-db`（PR #76，`e43108c`，CI `45484583716`）：权威 `clio-memory.db` 与 canonical JSON 对账同步、四层记忆（常驻/近期/较早/封存）、删除墓碑同步及 `书案` Markdown 镜像。
+  - **Wave 4（含安全专题与 4B 收官）**
+    - `v36-t-conc`（PR #77，`02377b3`，CI `45487989339`）：只读工具并发批处理（外部读取与非只读自动退回串行）与连续重复轮询刹车（`Agent.swift`），修复并发栅栏单测等待竞争。
+    - `v36-t-bak`（PR #78，`a3bbfc8`，CI `45493772745`）：`BackupCrypto` 口令加密备份（PBKDF2-HMAC-SHA256 >= 600,000 + `AES.GCM` + 头段 AAD）、WebDAV 分块流式上传下载、`书案/技能/` 暂存恢复、`Vault`/SQLite 严格排除。
+    - `v36-3b-uikit-chat`（PR #79，`a34f3b4`，CI `45494622169`）：正式聊天流迁移至 `UICollectionView`（`App/Sources/Reading/ChatListUIKit/*`）及外观「聊天列表引擎」调试切换入口，合齐双词典新键。
+    - `v36-2c-memory-ui-import`（PR #80，`36343e2`，CI `45496948531`）：四层记忆管理页 `MemoryPageV2`、待审提案合并与批量一键记忆导入 `MemoryImporter`（含粘贴脱敏）。
+    - `v36-3c-interactions`（PR #81，`fc1e07b`，CI `45503174152`）：UIKit 聊天列表跟手键盘弹出与下拉收起、`Desk` 侧栏随动视差（遵守减弱动态效果）、大图 Hero 缩放转场与查看器。
+    - `v36-security-fix`（PR #82，`ab7fee1`，CI `45503610384`）：根据 Codex 审计补牢 4 处安全规则——含密钥备份全程内存组包封缄（明文 `#keys` 不落 `.part` 磁盘）、拒绝从未加密备份导入 `#keys`、`AskUserRules` 对非涉密字段也拦截 URL 内嵌口令/凭证、`MemoryImporter` 识别 JSON 引号包裹的密钥键值对。
+    - `v36-4-recall-fts`（PR #83，`c617224`，CI `45507298082`）：通道一 FTS5 `.deep` 零成本召回（严格仅拼入易变 `extraTail`，保持 `systemCachePrefix` 字节级不变）、夜间 `MemoryPromotionPolicy`（`.pinned` 与墓碑严格免疫、零召回/单次未编修浅用不误晋升）与单事务提交、`Library/Caches/ClioIndex/clio-docs-fts.db` 自愈文档索引（保留 PDF 页码与分目录密文轮换清理）。
+    - `v36-4b-sec-fix`（PR #84，`53a30a8`，CI `45512687307`）：根据 Codex 对 PR #83 的只读审计修齐 5 处边界——检索查询截断与 `Set`/单次分析防耗时拖慢、PDF 越界页码 `Int32(exactly:)` 防崩溃、`search_docs` 路径与返回边界实时信匣脱敏及轮换重检、`Disk.frozen` 阻断读盘与 `MountedFolders.revision` 变动失效防陈旧命中、`LiveChatMemoryGate` 在单对话关闭记忆后同轮立即停发常驻与召回记忆。
+- **审查覆盖与交接 Claude 复核重点**：
+  - Wave 3–4 与两轮安全修复均经过 Antigravity Pro 只读逐行复审及 macOS CI 单测编译验证；Codex CLI 对 `batch-0.36` 安全边界与 `4B-1` 做了两轮只读对抗审计（已修问题见 PR #82、PR #84）。
+  - **留待 Claude 回来重点复核**：① `Agent.swift` 只读并发门禁与循环刹车（PR #77）；② `Backup.swift` / `BackupCrypto.swift` 口令流、`#keys` 拒绝未加密导入与 `书案/技能/` 暂存回滚（PR #78、PR #82），以及原有 `Team/mounts.json` 进备份评估；③ `AskUserRules.swift` URL 凭证拦截范围（PR #75、PR #82）；④ `MemoryStore` / `MemoryRecall` / `DocSearchIndex` 访问隔离与 `LiveChatMemoryGate` 轮内实时关停（PR #73、#76、#83、#84）；⑤ **设计裁决留档**：`MountedFolders` 用户自行在文件 App 挂载的本地文件夹暂维持与 `read_file`/`read_pdf` 一致的「非外部网页污点」策略（见 `CraftTests.swift:508`），待 Claude 一并确认 `search_docs` / `read_file` 挂载目录是否需要单独接入 `Taint`。
+- **下一步**：发布最新版 `probe-batch-0.36` 试签包交由主人在 iPhone 真机按验收清单过一遍；待主人确认「发」且 `docs/releases/0.36.md` 写好后，再合并到 `main`。
 
 ---
 
