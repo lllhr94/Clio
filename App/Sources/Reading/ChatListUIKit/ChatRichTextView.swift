@@ -34,6 +34,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var isActivatingSelection = false
     private var keepsFallbackTextView = false
 
+    private struct DecorationCacheKey: Hashable {
+        let renderToken: UInt64
+        let widthKey: Int
+    }
+
+    private struct DecorationGeometry {
+        let codePath: CGPath?
+        let rulePath: CGPath?
+        let quoteSpans: [(minY: CGFloat, maxY: CGFloat)?]
+    }
+
+    private static let decorationGeometryCache = BoundedLRUCache<DecorationCacheKey, DecorationGeometry>(countLimit: 256)
+
     private var decorationRoot: CALayer?
     private var inlineCodeLayer: CAShapeLayer?
     private var ruleLayer: CAShapeLayer?
@@ -331,8 +344,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         } else {
             inFlightRenderKey = renderKey
             ChatTextTileRenderer.shared.renderAsync(request) { [weak self] key, tiles in
-                guard let self, self.activeRenderKey == key, self.selectionTextView == nil else { return }
-                self.inFlightRenderKey = ""
+                guard let self else { return }
+                if self.inFlightRenderKey == key {
+                    self.inFlightRenderKey = ""
+                }
+                guard self.activeRenderKey == key, self.selectionTextView == nil else { return }
                 if let tiles {
                     self.applyTiles(tiles, forKey: key, scale: scale)
                 } else {
@@ -662,8 +678,22 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         let layers = ensureDecorationLayers()
         layers.root.isHidden = false
 
+        let widthKey = Int((bounds.width * 2).rounded())
+        let cacheKey = DecorationCacheKey(renderToken: lastRenderToken, widthKey: widthKey)
+        if lastRenderToken > 0, let cached = Self.decorationGeometryCache.get(cacheKey) {
+            applyDecorationGeometry(cached, to: layers)
+            paintedWidth = bounds.width
+            paintedToken = lastRenderToken
+            paintedTraitStyle = currentInterface
+            needsDecorationLayout = false
+            return
+        }
+
         if let tlm = tv.textLayoutManager {
-            layoutDecorationsSinglePass(using: tlm, textView: tv, layers: layers)
+            let geometry = layoutDecorationsSinglePass(using: tlm, textView: tv, layers: layers)
+            if lastRenderToken > 0 {
+                Self.decorationGeometryCache.set(geometry, for: cacheKey)
+            }
         } else {
             tv.layoutManager.ensureLayout(for: tv.textContainer)
             CATransaction.begin()
@@ -682,11 +712,34 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         needsDecorationLayout = false
     }
 
+    private func applyDecorationGeometry(
+        _ geometry: DecorationGeometry,
+        to layers: (root: CALayer, code: CAShapeLayer, rule: CAShapeLayer)
+    ) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layers.root.frame = bounds
+        if let codePath = geometry.codePath {
+            layers.code.path = codePath
+            layers.code.fillColor = resolvedColorCG(Ink.mine, alpha: 0.85)
+        } else {
+            layers.code.path = nil
+        }
+        if let rulePath = geometry.rulePath {
+            layers.rule.path = rulePath
+            layers.rule.fillColor = resolvedColorCG(Ink.rule, alpha: 0.85)
+        } else {
+            layers.rule.path = nil
+        }
+        applyQuoteLayers(spans: geometry.quoteSpans, root: layers.root)
+        CATransaction.commit()
+    }
+
     private func layoutDecorationsSinglePass(
         using tlm: NSTextLayoutManager,
         textView tv: UITextView,
         layers: (root: CALayer, code: CAShapeLayer, rule: CAShapeLayer)
-    ) {
+    ) -> DecorationGeometry {
         let decorations = currentRendered.decorations
         let totalLength = tv.attributedText?.length ?? 0
         let codeRanges = decorations.inlineCodeRanges
@@ -811,27 +864,13 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         }
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        layers.root.frame = bounds
-        if codeRanges.isEmpty {
-            layers.code.path = nil
-        } else {
-            layers.code.path = codePath
-            layers.code.fillColor = resolvedColorCG(Ink.mine, alpha: 0.85)
-        }
-
-        if ruleRanges.isEmpty {
-            layers.rule.path = nil
-        } else {
-            layers.rule.path = rulePath
-            layers.rule.fillColor = resolvedColorCG(Ink.rule, alpha: 0.85)
-        }
-
-        applyQuoteLayers(spans: quoteSpans, root: layers.root)
-
-        CATransaction.commit()
+        let geometry = DecorationGeometry(
+            codePath: codeRanges.isEmpty ? nil : codePath,
+            rulePath: ruleRanges.isEmpty ? nil : rulePath,
+            quoteSpans: quoteSpans
+        )
+        applyDecorationGeometry(geometry, to: layers)
+        return geometry
     }
 
     private func layoutInlineCodeFallback(_ ranges: [NSRange], textView tv: UITextView, codeLayer: CAShapeLayer) {

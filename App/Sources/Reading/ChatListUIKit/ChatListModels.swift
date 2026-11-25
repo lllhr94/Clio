@@ -20,6 +20,42 @@ struct ChatListStyle: Equatable {
     let fontGeneration: Int
     let isDark: Bool
     let contentSizeCategory: String
+    let styleKey: String
+    let layoutStyleKey: String
+
+    init(
+        face: Pref.Face,
+        code: Pref.Code,
+        size: Double,
+        lineHeight: Double,
+        fade: Bool,
+        reduceMotion: Bool,
+        uiScale: Double,
+        themeKey: String,
+        white: Bool,
+        oled: Bool,
+        bubble: String,
+        fontGeneration: Int,
+        isDark: Bool,
+        contentSizeCategory: String
+    ) {
+        self.face = face
+        self.code = code
+        self.size = size
+        self.lineHeight = lineHeight
+        self.fade = fade
+        self.reduceMotion = reduceMotion
+        self.uiScale = uiScale
+        self.themeKey = themeKey
+        self.white = white
+        self.oled = oled
+        self.bubble = bubble
+        self.fontGeneration = fontGeneration
+        self.isDark = isDark
+        self.contentSizeCategory = contentSizeCategory
+        self.layoutStyleKey = "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(fade)|\(reduceMotion)|\(uiScale)|\(fontGeneration)|\(contentSizeCategory)"
+        self.styleKey = "\(self.layoutStyleKey)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(isDark)"
+    }
 
     var scale: CGFloat { CGFloat(uiScale) }
     var readingSize: CGFloat { CGFloat(size) }
@@ -45,10 +81,6 @@ struct ChatListStyle: Equatable {
     func resolveColor(_ color: Color, alpha: CGFloat = 1) -> UIColor {
         let base = UIColor(color).resolvedColor(with: resolvedTraitCollection)
         return alpha < 1 ? base.withAlphaComponent(alpha) : base
-    }
-
-    var styleKey: String {
-        "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(fade)|\(reduceMotion)|\(uiScale)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(fontGeneration)|\(isDark)|\(contentSizeCategory)"
     }
 
     static func current(traits: UITraitCollection, reduceMotion: Bool = false) -> ChatListStyle {
@@ -120,7 +152,7 @@ struct ChatListRowItem: Equatable {
     let lit: Bool
     let isFirst: Bool
     let isFreshWriting: Bool
-    let freshShown: Int?
+    var freshShown: Int?
     let isLatestBot: Bool
     let isLatestNote: Bool
     let isLastLine: Bool

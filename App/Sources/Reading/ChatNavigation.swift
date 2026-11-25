@@ -18,6 +18,7 @@ final class ChatViewport {
     var needsEndCorrection = false
     var touchScrolling = false
     var isTouching = false
+    var jumpedTo: String?
     var navigationGeneration: UInt64 = 0
     var lastStirAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     var scrollPhaseLabel = "静止"
@@ -162,12 +163,14 @@ struct ChatMinimapOverlay: View {
     let onStepQuestion: (Bool) -> Void
 
     var body: some View {
-        if chrome.jumpVisible {
-            let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
-            let asked = rows.indices.filter { rows[$0].kind == .user }
-            if rows.count >= 30, asked.count >= 4 {
-                strip(rows: rows, asked: asked)
-            }
+        let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
+        let asked = rows.indices.filter { rows[$0].kind == .user }
+        if rows.count >= 30, asked.count >= 4 {
+            strip(rows: rows, asked: asked)
+                .opacity(chrome.jumpVisible ? 1 : 0)
+                .allowsHitTesting(chrome.jumpVisible)
+                .accessibilityHidden(!chrome.jumpVisible)
+                .animation(Ink.Motion.settle, value: chrome.jumpVisible)
         }
     }
 

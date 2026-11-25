@@ -1,4 +1,5 @@
 import AgentKit
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -44,7 +45,7 @@ final class ChatPetAvatarView: UIView {
 
     func configure(bot: BotInfo?, state: String = "idle", wash: Color? = nil, avatar: Bool = true) {
         let resolvedWash = UIColor(wash ?? Ink.accentWash).resolvedColor(with: traitCollection)
-        let washSig = washColorSignature(resolvedWash)
+        let washSig = wash != nil ? washColorSignature(resolvedWash) : ""
         let photoPicture: UIImage?
         let photoToken: Int
         if avatar, let bot, bot.avatar == "photo", let picture = Avatars.image(bot.id) {
@@ -54,7 +55,9 @@ final class ChatPetAvatarView: UIView {
             photoPicture = nil
             photoToken = 0
         }
-        let signature = "\(bot?.id ?? "")|\(bot?.avatar ?? "")|\(state)|\(avatar ? 1 : 0)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(wash != nil ? 1 : 0)|\(washSig)|\(traitCollection.userInterfaceStyle.rawValue)|\(photoToken)"
+        let pack = photoPicture == nil ? resolvedPack(for: bot) : nil
+        let theme = Theme.shared
+        let signature = "\(bot?.id ?? "")|\(bot?.avatar ?? "")|\(state)|\(avatar ? 1 : 0)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(pack?.dir.path ?? "")|\(washSig)|\(theme.key)|\(theme.white)|\(theme.oled)|\(traitCollection.userInterfaceStyle.rawValue)|\(photoToken)"
         if signature == lastConfiguredSignature && imageView.image != nil {
             return
         }
@@ -64,7 +67,10 @@ final class ChatPetAvatarView: UIView {
 
         if let picture = photoPicture {
             lastConfiguredSignature = signature
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             bgLayer.isHidden = true
+            CATransaction.commit()
             imageView.isHidden = false
             fallbackView.isHidden = true
             imageView.contentMode = .scaleAspectFill
@@ -74,14 +80,16 @@ final class ChatPetAvatarView: UIView {
             return
         }
 
-        let pack = resolvedPack(for: bot)
         if let pack,
            let animName = pack.anim(for: state) ?? pack.anim(for: "idle"),
            let anim = pack.animations[animName],
            let first = anim.frames.first,
            let cell = PetSheets.cell(pack, anim, first.i) {
             lastConfiguredSignature = signature
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             bgLayer.isHidden = !avatar
+            CATransaction.commit()
             imageView.isHidden = false
             fallbackView.isHidden = true
             imageView.contentMode = .scaleAspectFit
@@ -89,7 +97,10 @@ final class ChatPetAvatarView: UIView {
             imageView.layer.magnificationFilter = pack.pixelArt ? .nearest : .linear
         } else {
             lastConfiguredSignature = ""
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             bgLayer.isHidden = !avatar
+            CATransaction.commit()
             imageView.image = nil
             imageView.isHidden = true
             fallbackView.isHidden = false
@@ -215,40 +226,46 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         } else {
             photoID = 0
         }
-        let resolvedPackID: String
+        let resolvedPackPath: String
         if face.hasPrefix("pet:") {
             let targetID = String(face.dropFirst(4))
-            resolvedPackID = PetLibrary.shared.packs.first(where: { $0.id == targetID })?.id ?? "missing"
+            resolvedPackPath = PetLibrary.shared.packs.first(where: { $0.id == targetID })?.dir.path ?? "missing"
         } else {
-            resolvedPackID = PetLibrary.shared.pack?.id ?? "none"
+            resolvedPackPath = PetLibrary.shared.pack?.dir.path ?? "none"
         }
         let theme = Theme.shared
-        let signature = "\(face)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(resolvedPackID)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+        let signature = "\(face)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(resolvedPackPath)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
         guard signature != lastRenderedSignature else { return }
         lastRenderedSignature = signature
 
         if face == "photo", let photo = Avatars.image("me") {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             circleLayer.isHidden = true
+            CATransaction.commit()
             charLabel.isHidden = true
             petView.isHidden = true
             photoView.isHidden = false
             photoView.image = photo
         } else if face.hasPrefix("pet:") {
             let packID = String(face.dropFirst(4))
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             circleLayer.isHidden = true
+            CATransaction.commit()
             charLabel.isHidden = true
             photoView.isHidden = true
             petView.isHidden = false
             let standIn = BotInfo(id: "me", name: "我", avatar: "pet:\(packID)")
             petView.configure(bot: standIn, state: "idle", wash: Ink.accentWash, avatar: true)
         } else {
-            circleLayer.isHidden = false
             charLabel.isHidden = false
             petView.isHidden = true
             photoView.isHidden = true
             let accent = UIColor(Ink.accent).resolvedColor(with: traitCollection)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            circleLayer.isHidden = false
             circleLayer.colors = [accent.cgColor, accent.withAlphaComponent(0.84).cgColor]
             CATransaction.commit()
             charLabel.textColor = UIColor(Ink.paper)
@@ -332,7 +349,39 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
 /// Pure UIKit thumbnail loader matching `RemotePhoto` with `NSCache` and tap callback.
 @MainActor
 final class ChatRemotePhotoView: UIView {
-    private static let cache = NSCache<NSString, UIImage>()
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 16 * 1024 * 1024
+        return cache
+    }()
+
+    nonisolated private static func decodeThumbnail(from data: Data, maxPixelSize: Int) -> (image: UIImage, cost: Int)? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) {
+            let thumbOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
+                let raw = UIImage(cgImage: cgImage)
+                let prepared = raw.preparingForDisplay() ?? raw
+                let cost = max(1, cgImage.bytesPerRow * cgImage.height)
+                return (prepared, cost)
+            }
+        }
+        guard let fallback = UIImage(data: data) else { return nil }
+        let prepared = fallback.preparingForDisplay() ?? fallback
+        let cost: Int
+        if let cg = prepared.cgImage {
+            cost = max(1, cg.bytesPerRow * cg.height)
+        } else {
+            cost = max(1, data.count)
+        }
+        return (prepared, cost)
+    }
 
     var onPrepareTouch: ((String) -> Void)?
     var onCancelTouch: ((String) -> Void)?
@@ -405,7 +454,9 @@ final class ChatRemotePhotoView: UIView {
         layer.cornerRadius = Ink.Radius.small
         refreshColors()
 
-        let key = "small-\(attachmentID)" as NSString
+        let scale = max(1, window?.screen.scale ?? (traitCollection.displayScale > 0 ? traitCollection.displayScale : 3))
+        let targetMaxPixel = max(1, Int((72 * scale).rounded()))
+        let key = "small-\(attachmentID)-\(targetMaxPixel)" as NSString
         if let hit = Self.cache.object(forKey: key) {
             imageView.image = hit
             placeholderIcon.isHidden = true
@@ -418,11 +469,16 @@ final class ChatRemotePhotoView: UIView {
         spinner.startAnimating()
         loadTask = Task { [weak self] in
             let data = await chat.photo(attachmentID, preview: true)
+            guard !Task.isCancelled else { return }
+            let decoded: (image: UIImage, cost: Int)? = await Task.detached(priority: .userInitiated) {
+                guard let data, !Task.isCancelled else { return nil }
+                return Self.decodeThumbnail(from: data, maxPixelSize: targetMaxPixel)
+            }.value
             guard !Task.isCancelled, let self, self.currentAttachmentID == attachmentID else { return }
             self.spinner.stopAnimating()
-            if let data, let loaded = UIImage(data: data) {
-                Self.cache.setObject(loaded, forKey: key)
-                self.imageView.image = loaded
+            if let decoded {
+                Self.cache.setObject(decoded.image, forKey: key, cost: decoded.cost)
+                self.imageView.image = decoded.image
             } else {
                 self.placeholderIcon.isHidden = false
             }
@@ -562,6 +618,7 @@ final class ChatSourcesPillView: UIView {
                         self.badgeImages[index].image = fetched
                         self.badgeImages[index].isHidden = false
                         self.badgeLetters[index].isHidden = true
+                        self.refreshColors()
                     }
                 }
                 iconTasks.append(task)
@@ -603,18 +660,29 @@ final class ChatSourcesPillView: UIView {
         host.present(vc, animated: true)
     }
 
+    private var lastColorSignature = ""
+
     private func refreshColors() {
+        let theme = Theme.shared
+        let badgeMask = (0..<3).map { badgeImages[$0].isHidden ? "1" : "0" }.joined()
+        let sig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(badgeMask)"
+        guard sig != lastColorSignature else { return }
+        lastColorSignature = sig
+
         backgroundColor = UIColor(Ink.paperRaised)
         layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
         label.textColor = UIColor(Ink.inkSoft)
         chevron.tintColor = UIColor(Ink.inkFaint)
         let borderCG = UIColor(Ink.paperRaised).resolvedColor(with: traitCollection).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         for index in 0..<3 {
             let container = badgeContainers[index]
             container.backgroundColor = badgeImages[index].isHidden ? UIColor(Ink.inkSoft) : UIColor(Ink.Artwork.white)
             container.layer.borderColor = borderCG
             badgeLetters[index].textColor = UIColor(Ink.Artwork.white)
         }
+        CATransaction.commit()
     }
 
     override func sizeThatFits(_ size: CGSize) -> CGSize {
@@ -745,24 +813,30 @@ final class ChatBotFooterView: UIView {
         }
     }
 
+    private var lastConfigSignature = ""
+    private var lastColorSignature = ""
+
     func configure(row: ChatListRowItem) {
         let newest = row.isLatestBot
-        showsRetry = newest
-        showsStats = newest && row.showStats
-        isRoom = row.isRoom
-        isSpeaking = row.isSpeakingThisLine
+        let signature = "\(row.line.id)|\(newest)|\(row.showStats)|\(row.isRoom)|\(row.isSpeakingThisLine)|\(row.line.seconds ?? -1)|\(row.line.tokens ?? -1)|\(UIScale.factor)"
+        if signature != lastConfigSignature {
+            lastConfigSignature = signature
+            showsRetry = newest
+            showsStats = newest && row.showStats
+            isRoom = row.isRoom
+            isSpeaking = row.isSpeakingThisLine
 
-        retryButton.isHidden = !showsRetry
-        statsLabel.isHidden = !showsStats
-        if showsStats {
-            statsLabel.font = UIFont.monospacedDigitSystemFont(ofSize: Ink.Size.micro, weight: .regular)
-            statsLabel.text = ChatPage.numbers(row.line)
-        } else {
-            statsLabel.text = nil
+            retryButton.isHidden = !showsRetry
+            statsLabel.isHidden = !showsStats
+            if showsStats {
+                statsLabel.font = UIFont.monospacedDigitSystemFont(ofSize: Ink.Size.micro, weight: .regular)
+                statsLabel.text = ChatPage.numbers(row.line)
+            } else {
+                statsLabel.text = nil
+            }
+            setNeedsLayout()
         }
-
         refreshColors()
-        setNeedsLayout()
     }
 
     private func makeMoreMenuElements() -> [UIMenuElement] {
@@ -807,6 +881,7 @@ final class ChatBotFooterView: UIView {
         showsStats = false
         isRoom = false
         isSpeaking = false
+        lastConfigSignature = ""
         onCopy = nil
         onRedo = nil
         onSpeak = nil
@@ -818,6 +893,11 @@ final class ChatBotFooterView: UIView {
     }
 
     private func refreshColors() {
+        let theme = Theme.shared
+        let colorSig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+        guard colorSig != lastColorSignature else { return }
+        lastColorSignature = colorSig
+
         let faint = UIColor(Ink.inkFaint)
         copyButton.tintColor = faint
         retryButton.tintColor = faint

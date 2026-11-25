@@ -59,7 +59,7 @@ enum ProseTextTransforms {
 }
 
 /// Deterministic FNV-1a 64-bit hash for pure-Swift cache keys.
-nonisolated private func fnv1a64(_ text: String) -> UInt64 {
+nonisolated func fnv1a64(_ text: String) -> UInt64 {
     var hash: UInt64 = 14695981039346656037
     for byte in text.utf8 {
         hash ^= UInt64(byte)
@@ -121,16 +121,31 @@ struct PreparsedInline: Equatable, Sendable {
     let runs: [PreparsedInlineRun]
     let hasCode: Bool
 
+    private static let cache = BoundedLRUCache<ProseTextCacheKey, PreparsedInline>(
+        countLimit: 1024,
+        totalCostLimit: 2 * 1024 * 1024
+    )
+    private static let singleEntryCostLimit = 256 * 1024
+
     nonisolated static func parse(_ text: String) -> PreparsedInline {
+        guard !text.isEmpty else {
+            return PreparsedInline(runs: [], hasCode: false)
+        }
+        let key = ProseTextCacheKey(text)
+        if let cached = cache.get(key) {
+            return cached
+        }
         let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
         var runs: [PreparsedInlineRun] = []
         var hasCode = false
+        var cost = 32
         for run in parsed.runs {
             let piece = String(parsed[run.range].characters)
             guard !piece.isEmpty else { continue }
             let intent = run.inlinePresentationIntent ?? []
             let isCode = intent.contains(.code)
             if isCode { hasCode = true }
+            cost += 48 + piece.utf8.count * 2
             runs.append(PreparsedInlineRun(
                 text: piece,
                 bold: intent.contains(.stronglyEmphasized),
@@ -140,7 +155,11 @@ struct PreparsedInline: Equatable, Sendable {
                 link: run.link
             ))
         }
-        return PreparsedInline(runs: runs, hasCode: hasCode)
+        let result = PreparsedInline(runs: runs, hasCode: hasCode)
+        if cost <= singleEntryCostLimit {
+            cache.set(result, for: key, cost: cost)
+        }
+        return result
     }
 }
 
@@ -214,91 +233,6 @@ struct PreparsedReply: Sendable {
     let rawBlocks: [Prose.Block]
     let parts: [PreparsedPart]
     let styleKey: ProseStyleKey
-}
-
-/// Thread-safe O(1) bounded LRU cache guarded by `NSLock`.
-private final class BoundedLRUCache<Key: Hashable, Value>: @unchecked Sendable {
-    private final class Node {
-        let key: Key
-        var value: Value
-        var cost: Int
-        weak var prev: Node?
-        var next: Node?
-
-        init(key: Key, value: Value, cost: Int) {
-            self.key = key
-            self.value = value
-            self.cost = cost
-        }
-    }
-
-    private let lock = NSLock()
-    private let countLimit: Int
-    private let totalCostLimit: Int
-    private var map: [Key: Node] = [:]
-    private var head: Node?
-    private var tail: Node?
-    private var totalCost = 0
-
-    init(countLimit: Int, totalCostLimit: Int = Int.max) {
-        self.countLimit = max(1, countLimit)
-        self.totalCostLimit = max(1, totalCostLimit)
-    }
-
-    func get(_ key: Key) -> Value? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let node = map[key] else { return nil }
-        moveToFront(node)
-        return node.value
-    }
-
-    func set(_ value: Value, for key: Key, cost: Int = 1) {
-        let safeCost = max(1, cost)
-        guard safeCost <= totalCostLimit else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        if let existing = map[key] {
-            totalCost = max(0, totalCost - existing.cost) + safeCost
-            existing.value = value
-            existing.cost = safeCost
-            moveToFront(existing)
-        } else {
-            let node = Node(key: key, value: value, cost: safeCost)
-            map[key] = node
-            insertAtFront(node)
-            totalCost += safeCost
-        }
-        while map.count > countLimit || totalCost > totalCostLimit {
-            guard let victim = tail else { break }
-            removeNode(victim)
-            map.removeValue(forKey: victim.key)
-            totalCost = max(0, totalCost - victim.cost)
-        }
-    }
-
-    private func insertAtFront(_ node: Node) {
-        node.prev = nil
-        node.next = head
-        head?.prev = node
-        head = node
-        if tail == nil { tail = node }
-    }
-
-    private func removeNode(_ node: Node) {
-        let prev = node.prev
-        let next = node.next
-        if let prev { prev.next = next } else { head = next }
-        if let next { next.prev = prev } else { tail = prev }
-        node.prev = nil
-        node.next = nil
-    }
-
-    private func moveToFront(_ node: Node) {
-        guard head !== node else { return }
-        removeNode(node)
-        insertAtFront(node)
-    }
 }
 
 private struct ProseTextCacheKey: Hashable, Sendable {
@@ -762,19 +696,75 @@ enum ProsePrewarm {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var inFlight: Set<ProseReplyCacheKey> = []
 
-    nonisolated static func prewarm(lines: ArraySlice<ChatLine>, styleKey: ProseStyleKey) {
-        for line in lines.reversed() where line.kind == .bot && !line.text.isEmpty {
-            if Task.isCancelled { return }
-            prewarmLine(id: line.id, text: line.text, styleKey: styleKey)
+    nonisolated static func prewarm(lines: ArraySlice<ChatLine>, styleKey: ProseStyleKey?) {
+        if let styleKey {
+            for line in lines.reversed() where line.kind == .bot && !line.text.isEmpty {
+                if Task.isCancelled { return }
+                prewarmLine(id: line.id, text: line.text, styleKey: styleKey)
+            }
+        } else {
+            prewarmUIKit(lines: lines)
         }
     }
 
-    nonisolated static func schedule(lines: [ChatLine], styleKey: ProseStyleKey) {
+    nonisolated static func schedule(lines: [ChatLine], styleKey: ProseStyleKey?) {
         let targets = lines.filter { $0.kind == .bot && !$0.text.isEmpty }
         guard !targets.isEmpty else { return }
         queue.addOperation {
-            for line in targets.reversed() {
-                prewarmLine(id: line.id, text: line.text, styleKey: styleKey)
+            prewarm(lines: targets[...], styleKey: styleKey)
+        }
+    }
+
+    nonisolated static func prewarmUIKit(lines: ArraySlice<ChatLine>) {
+        for line in lines.reversed() where line.kind == .bot && !line.text.isEmpty {
+            if Task.isCancelled { return }
+            let raw = line.text
+            let rawRest = ProseTextTransforms.lookback(raw).rest
+            prewarmUIKitText(rawRest)
+            let trimmed = ProseTextTransforms.trimSourceList(raw)
+            if trimmed != raw {
+                let trimmedRest = ProseTextTransforms.lookback(trimmed).rest
+                if trimmedRest != rawRest {
+                    prewarmUIKitText(trimmedRest)
+                }
+            }
+        }
+    }
+
+    nonisolated static func prewarmUIKitText(_ rawText: String) {
+        guard !rawText.isEmpty else { return }
+        let blocks = ParsedCache.blocks(rawText)
+        prewarmUIKitBlocks(blocks)
+    }
+
+    nonisolated private static func prewarmUIKitBlocks(_ blocks: [Prose.Block]) {
+        for block in blocks {
+            if Task.isCancelled { return }
+            switch block {
+            case .heading(_, let text), .paragraph(let text):
+                _ = PreparsedInline.parse(text)
+            case .list(let items):
+                for item in items {
+                    if Task.isCancelled { return }
+                    _ = PreparsedInline.parse(item.text)
+                }
+            case .code(let language, let rawCode, _):
+                let trimmed = CodeTokenizer.trimmedLines(rawCode)
+                let body = trimmed.isEmpty ? " " : trimmed
+                let count = CodeTokenizer.lineCount(body)
+                let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
+                if count > 20 {
+                    let folded = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
+                    _ = CodeTokenizer.prepare(folded, language: language, isOutput: isOutput)
+                } else {
+                    _ = CodeTokenizer.prepare(body, language: language, isOutput: isOutput)
+                }
+            case .table(let table):
+                _ = TablePreparer.prepare(table)
+            case .quote(let inner):
+                prewarmUIKitBlocks(inner)
+            case .math, .rule:
+                break
             }
         }
     }
@@ -2981,16 +2971,19 @@ private final class ProseHeightKey: NSObject {
 private final class ProseRenderedWords {
     let attributed: NSAttributedString
     let codeRanges: [NSRange]
-    var pathsByWidth: [Int: CGPath] = [:]
+    private let pathsByWidth = BoundedLRUCache<Int, CGPath>(countLimit: 4)
 
     init(attributed: NSAttributedString, codeRanges: [NSRange]) {
         self.attributed = attributed
         self.codeRanges = codeRanges
     }
 
+    func path(for widthKey: Int) -> CGPath? {
+        pathsByWidth.get(widthKey)
+    }
+
     func storePath(_ path: CGPath, for widthKey: Int) {
-        if pathsByWidth.count >= 4 { pathsByWidth.removeAll(keepingCapacity: true) }
-        pathsByWidth[widthKey] = path
+        pathsByWidth.set(path, for: widthKey)
     }
 }
 
@@ -3057,7 +3050,7 @@ private final class InlineCodeTextView: UITextView {
         guard !codeRanges.isEmpty, bounds.width > 0, paintedWidth != bounds.width else { return }
         let widthKey = Int((bounds.width * 2).rounded())
         let resolvedPath: CGPath
-        if let cached = pathCache?.pathsByWidth[widthKey] {
+        if let cached = pathCache?.path(for: widthKey) {
             resolvedPath = cached
         } else {
             let path = CGMutablePath()

@@ -52,18 +52,28 @@ struct ChatCodeSlice {
     let lineCount: Int
     let folds: Bool
     let foldedAttributed: NSAttributedString
-    let fullAttributed: NSAttributedString
+    let fullAttributed: NSAttributedString?
     let foldedContentSize: CGSize
-    let fullContentSize: CGSize
+    let fullContentSize: CGSize?
     let foldedRenderToken: UInt64
-    let fullRenderToken: UInt64
+    let fullRenderToken: UInt64?
+
+    func resolved(unfolded: Bool) -> (attributed: NSAttributedString, size: CGSize, token: UInt64) {
+        if (!folds || unfolded), let fullAttributed, let fullContentSize, let fullRenderToken {
+            return (fullAttributed, fullContentSize, fullRenderToken)
+        }
+        return (foldedAttributed, foldedContentSize, foldedRenderToken)
+    }
 }
 
 struct ChatTableSlice: Equatable {
+    let sliceID: UInt64
     let table: Prose.Table
     let prepared: PreparsedTableModel
     let headerCells: [NSAttributedString]
     let rowCells: [[NSAttributedString]]
+    let headerHasLinks: [Bool]
+    let rowHasLinks: [[Bool]]
     let naturalWidths: [CGFloat]
 }
 
@@ -94,23 +104,11 @@ enum ChatCodeHighlighter {
         let italic: Bool
     }
 
-    private static var fontPairCache: [FontPairKey: AlignedFontPair] = [:]
-
-    private static func tokenColor(_ kind: CodeTokenKind, isOutput: Bool, style: ChatListStyle) -> UIColor {
-        if isOutput { return style.resolveColor(Ink.Code.output) }
-        switch kind {
-        case .plain: return style.resolveColor(Ink.ink)
-        case .keyword: return style.resolveColor(Ink.Code.keyword)
-        case .function: return style.resolveColor(Ink.Code.function)
-        case .number: return style.resolveColor(Ink.Code.number)
-        case .string: return style.resolveColor(Ink.Code.string)
-        case .comment: return style.resolveColor(Ink.inkFaint)
-        }
-    }
+    private static let fontPairCache = BoundedLRUCache<FontPairKey, AlignedFontPair>(countLimit: 24)
 
     private static func alignedCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> AlignedFontPair {
         let key = FontPairKey(sizeKey: Int((size * 2).rounded()), codePref: preference, italic: italic)
-        if let hit = fontPairCache[key] { return hit }
+        if let hit = fontPairCache.get(key) { return hit }
 
         let baseMono = Ink.uiMono(size, preference: preference)
         let targetMono: UIFont
@@ -145,8 +143,7 @@ enum ChatCodeHighlighter {
         } else {
             pair = AlignedFontPair(narrow: targetMono, wide: targetWide)
         }
-        if fontPairCache.count > 24 { fontPairCache.removeAll(keepingCapacity: true) }
-        fontPairCache[key] = pair
+        fontPairCache.set(pair, for: key)
         return pair
     }
 
@@ -168,7 +165,26 @@ enum ChatCodeHighlighter {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = style.codeLineSpacing
 
+        let outputColor = isOutput ? style.resolveColor(Ink.Code.output) : nil
+        let plainColor = outputColor ?? style.resolveColor(Ink.ink)
+        let keywordColor = outputColor ?? style.resolveColor(Ink.Code.keyword)
+        let functionColor = outputColor ?? style.resolveColor(Ink.Code.function)
+        let numberColor = outputColor ?? style.resolveColor(Ink.Code.number)
+        let stringColor = outputColor ?? style.resolveColor(Ink.Code.string)
+        let commentColor = outputColor ?? style.resolveColor(Ink.inkFaint)
+        func color(for kind: CodeTokenKind) -> UIColor {
+            switch kind {
+            case .plain: return plainColor
+            case .keyword: return keywordColor
+            case .function: return functionColor
+            case .number: return numberColor
+            case .string: return stringColor
+            case .comment: return commentColor
+            }
+        }
+
         let out = NSMutableAttributedString()
+        out.beginEditing()
         if model.hasWide {
             let regular = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: false)
             let italic = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: true)
@@ -177,7 +193,7 @@ enum ChatCodeHighlighter {
                 let font = seg.isWide ? pair.wide : pair.narrow
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput, style: style),
+                    .foregroundColor: color(for: seg.kind),
                     .paragraphStyle: pStyle,
                 ]))
             }
@@ -188,11 +204,12 @@ enum ChatCodeHighlighter {
                 let font = seg.kind == .comment ? italic : regular
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput, style: style),
+                    .foregroundColor: color(for: seg.kind),
                     .paragraphStyle: pStyle,
                 ]))
             }
         }
+        out.endEditing()
         return NSAttributedString(attributedString: out)
     }
 }
@@ -212,15 +229,45 @@ final class ChatProseBuilder {
 
     private struct BlockCacheKey: Hashable {
         let styleKey: String
-        let blockHash: Int
+        let blockHash: UInt64
+        let byteCount: Int
         let isFirst: Bool
         let isLast: Bool
         let text: String
+
+        init(styleKey: String, isFirst: Bool, isLast: Bool, text: String) {
+            self.styleKey = styleKey
+            self.blockHash = fnv1a64(text)
+            self.byteCount = text.utf8.count
+            self.isFirst = isFirst
+            self.isLast = isLast
+            self.text = text
+        }
+
+        static func == (lhs: BlockCacheKey, rhs: BlockCacheKey) -> Bool {
+            lhs.blockHash == rhs.blockHash
+                && lhs.byteCount == rhs.byteCount
+                && lhs.isFirst == rhs.isFirst
+                && lhs.isLast == rhs.isLast
+                && lhs.styleKey == rhs.styleKey
+                && lhs.text == rhs.text
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(styleKey)
+            hasher.combine(blockHash)
+            hasher.combine(byteCount)
+            hasher.combine(isFirst)
+            hasher.combine(isLast)
+        }
     }
 
     private struct StreamScannerEntry {
         var scanner: StreamBlocks
         var sealedBlocks: [Prose.Block]
+        var sealedStyleKey: String
+        var sealedCodeSlices: [Int: ChatCodeSlice] = [:]
+        var sealedTableSlices: [Int: ChatTableSlice] = [:]
     }
 
     private struct RichTextSliceKey: Hashable {
@@ -232,12 +279,64 @@ final class ChatProseBuilder {
     private struct CodeSliceKey: Hashable {
         let styleKey: String
         let language: String
+        let byteCount: Int
+        let textHash: UInt64
         let rawText: String
+
+        init(styleKey: String, language: String, rawText: String) {
+            self.styleKey = styleKey
+            self.language = language
+            self.byteCount = rawText.utf8.count
+            self.textHash = fnv1a64(rawText)
+            self.rawText = rawText
+        }
+
+        static func == (lhs: CodeSliceKey, rhs: CodeSliceKey) -> Bool {
+            lhs.textHash == rhs.textHash
+                && lhs.byteCount == rhs.byteCount
+                && lhs.language == rhs.language
+                && lhs.styleKey == rhs.styleKey
+                && lhs.rawText == rhs.rawText
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(styleKey)
+            hasher.combine(language)
+            hasher.combine(byteCount)
+            hasher.combine(textHash)
+        }
     }
 
-    private var blockCache: [BlockCacheKey: BlockCacheEntry] = [:]
-    private var richTextSliceCache: [RichTextSliceKey: ChatRenderedProse] = [:]
-    private var codeSliceCache: [CodeSliceKey: ChatCodeSlice] = [:]
+    private struct TableSliceKey: Hashable {
+        let styleKey: String
+        let table: Prose.Table
+        private let cachedHash: Int
+
+        init(styleKey: String, table: Prose.Table) {
+            self.styleKey = styleKey
+            self.table = table
+            var hasher = Hasher()
+            hasher.combine(styleKey)
+            hasher.combine(table.header)
+            hasher.combine(table.rows.count)
+            if let first = table.rows.first { hasher.combine(first) }
+            if let last = table.rows.last, table.rows.count > 1 { hasher.combine(last) }
+            self.cachedHash = hasher.finalize()
+        }
+
+        static func == (lhs: TableSliceKey, rhs: TableSliceKey) -> Bool {
+            lhs.cachedHash == rhs.cachedHash && lhs.styleKey == rhs.styleKey && lhs.table == rhs.table
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(cachedHash)
+        }
+    }
+
+    private let blockCache = BoundedLRUCache<BlockCacheKey, BlockCacheEntry>(countLimit: 800)
+    private let richTextSliceCache = BoundedLRUCache<RichTextSliceKey, ChatRenderedProse>(countLimit: 1200)
+    private let codeSliceCache = BoundedLRUCache<CodeSliceKey, ChatCodeSlice>(countLimit: 400)
+    private let tableSliceCache = BoundedLRUCache<TableSliceKey, ChatTableSlice>(countLimit: 256)
     private var streamScanners: [String: StreamScannerEntry] = [:]
     private var nextToken: UInt64 = 1
 
@@ -248,9 +347,10 @@ final class ChatProseBuilder {
     }
 
     func clearCaches() {
-        blockCache.removeAll(keepingCapacity: true)
-        richTextSliceCache.removeAll(keepingCapacity: true)
-        codeSliceCache.removeAll(keepingCapacity: true)
+        blockCache.removeAll()
+        richTextSliceCache.removeAll()
+        codeSliceCache.removeAll()
+        tableSliceCache.removeAll()
         streamScanners.removeAll(keepingCapacity: true)
     }
 
@@ -303,7 +403,9 @@ final class ChatProseBuilder {
         isStreaming: Bool,
         streamKey: String? = nil
     ) -> [ChatProseSlice] {
-        let blocks = parseBlocks(rawText, isStreaming: isStreaming, streamKey: streamKey)
+        let parsed = parseBlocks(rawText, isStreaming: isStreaming, streamKey: streamKey, styleKey: style.styleKey)
+        let blocks = parsed.blocks
+        let sealedCount = parsed.sealedCount
         if blocks.isEmpty {
             let pStyle = makeParagraphStyle(style: style)
             let placeholder = NSAttributedString(attributedString: NSAttributedString(string: isStreaming ? " " : "", attributes: [
@@ -326,7 +428,7 @@ final class ChatProseBuilder {
 
         enum PendingSegment {
             case proseRun([Prose.Block])
-            case block(Prose.Block)
+            case block(Prose.Block, sealedIndex: Int?)
         }
 
         var segments: [PendingSegment] = []
@@ -338,12 +440,14 @@ final class ChatProseBuilder {
             }
         }
 
-        for block in blocks {
+        for blockIndex in blocks.indices {
+            let block = blocks[blockIndex]
             if isProseRunBlock(block) {
                 run.append(block)
             } else {
                 flushRun()
-                segments.append(.block(block))
+                let sealedIndex: Int? = blockIndex < sealedCount ? blockIndex : nil
+                segments.append(.block(block, sealedIndex: sealedIndex))
             }
         }
         flushRun()
@@ -364,16 +468,41 @@ final class ChatProseBuilder {
                 slices.append(.richText(rendered))
                 sliceIdx += 1
 
-            case .block(let block):
+            case .block(let block, let sealedIndex):
                 switch block {
                 case .code(let lang, let codeText, let closed):
                     let liveCode = isStreaming && isLastSegment && !closed
-                    let slice = buildCodeSlice(language: lang, rawText: codeText, isLive: liveCode, style: style)
+                    let slice: ChatCodeSlice
+                    if !liveCode,
+                       let streamKey,
+                       let sealedIndex,
+                       let cachedSealed = streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] {
+                        slice = cachedSealed
+                    } else {
+                        let built = buildCodeSlice(language: lang, rawText: codeText, isLive: liveCode, style: style)
+                        if !liveCode, let streamKey, let sealedIndex {
+                            streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] = built
+                        }
+                        slice = built
+                    }
                     slices.append(.code(slice, sliceIndex: sliceIdx))
                     sliceIdx += 1
 
                 case .table(let table):
-                    let slice = buildTableSlice(table, style: style)
+                    let isSealed = sealedIndex != nil || !(isStreaming && isLastSegment)
+                    let slice: ChatTableSlice
+                    if isSealed,
+                       let streamKey,
+                       let sealedIndex,
+                       let cachedSealed = streamScanners[streamKey]?.sealedTableSlices[sealedIndex] {
+                        slice = cachedSealed
+                    } else {
+                        let built = buildTableSlice(table, style: style, cacheable: isSealed)
+                        if isSealed, let streamKey, let sealedIndex {
+                            streamScanners[streamKey]?.sealedTableSlices[sealedIndex] = built
+                        }
+                        slice = built
+                    }
                     slices.append(.table(slice, sliceIndex: sliceIdx))
                     sliceIdx += 1
 
@@ -428,17 +557,35 @@ final class ChatProseBuilder {
         return slices
     }
 
-    private func parseBlocks(_ rawText: String, isStreaming: Bool, streamKey: String?) -> [Prose.Block] {
+    private func parseBlocks(
+        _ rawText: String,
+        isStreaming: Bool,
+        streamKey: String?,
+        styleKey: String
+    ) -> (blocks: [Prose.Block], sealedCount: Int) {
         guard isStreaming else {
             if let streamKey { streamScanners.removeValue(forKey: streamKey) }
-            return ParsedCache.blocks(rawText)
+            return (ParsedCache.blocks(rawText), 0)
         }
         guard let streamKey else {
-            return Prose.parse(Prose.mend(rawText))
+            return (Prose.parse(Prose.mend(rawText)), 0)
         }
-        var entry = streamScanners[streamKey] ?? StreamScannerEntry(scanner: StreamBlocks(), sealedBlocks: [])
+        var entry = streamScanners[streamKey] ?? StreamScannerEntry(
+            scanner: StreamBlocks(),
+            sealedBlocks: [],
+            sealedStyleKey: styleKey
+        )
         if rawText.utf8.count < entry.scanner.receivedBytes {
-            entry = StreamScannerEntry(scanner: StreamBlocks(), sealedBlocks: [])
+            entry = StreamScannerEntry(
+                scanner: StreamBlocks(),
+                sealedBlocks: [],
+                sealedStyleKey: styleKey
+            )
+        }
+        if entry.sealedStyleKey != styleKey {
+            entry.sealedStyleKey = styleKey
+            entry.sealedCodeSlices.removeAll(keepingCapacity: true)
+            entry.sealedTableSlices.removeAll(keepingCapacity: true)
         }
         let priorFinished = entry.scanner.finished.count
         let delta = String(decoding: rawText.utf8.dropFirst(entry.scanner.receivedBytes), as: UTF8.self)
@@ -450,10 +597,10 @@ final class ChatProseBuilder {
         }
         streamScanners[streamKey] = entry
         if entry.scanner.receivedBytes == 0 {
-            return Prose.parse(Prose.mend(rawText))
+            return (Prose.parse(Prose.mend(rawText)), 0)
         }
         let tailBlocks = Prose.parse(Prose.mend(entry.scanner.tail))
-        return entry.sealedBlocks + tailBlocks
+        return (entry.sealedBlocks + tailBlocks, entry.sealedBlocks.count)
     }
 
     private func isProseRunBlock(_ block: Prose.Block) -> Bool {
@@ -492,7 +639,7 @@ final class ChatProseBuilder {
         let cacheKey: CodeSliceKey?
         if !isLive {
             let candidate = CodeSliceKey(styleKey: style.styleKey, language: language, rawText: rawText)
-            if let hit = codeSliceCache[candidate] {
+            if let hit = codeSliceCache.get(candidate) {
                 return hit
             }
             cacheKey = candidate
@@ -506,22 +653,31 @@ final class ChatProseBuilder {
         let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
         let folds = !isLive && count > 20
 
-        let fullAttr = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
-        let fullSize = measureCodeUnwrappedSize(fullAttr)
-        let fullToken = allocateRenderToken()
-
         let foldedAttr: NSAttributedString
         let foldedSize: CGSize
         let foldedToken: UInt64
+        let fullAttr: NSAttributedString?
+        let fullSize: CGSize?
+        let fullToken: UInt64?
+
         if folds {
             let foldedBody = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
             foldedAttr = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(foldedBody, language: language, isOutput: isOutput, style: style))
-            foldedSize = measureCodeUnwrappedSize(foldedAttr)
+            foldedSize = measureCodeUnwrappedSize(foldedAttr, knownLineCount: min(count, 12))
             foldedToken = allocateRenderToken()
+            fullAttr = nil
+            fullSize = nil
+            fullToken = nil
         } else {
-            foldedAttr = fullAttr
-            foldedSize = fullSize
-            foldedToken = fullToken
+            let highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
+            let measuredSize = measureCodeUnwrappedSize(highlighted, knownLineCount: count)
+            let token = allocateRenderToken()
+            foldedAttr = highlighted
+            foldedSize = measuredSize
+            foldedToken = token
+            fullAttr = highlighted
+            fullSize = measuredSize
+            fullToken = token
         }
 
         let built = ChatCodeSlice(
@@ -540,33 +696,96 @@ final class ChatProseBuilder {
             fullRenderToken: fullToken
         )
         if let cacheKey {
-            if codeSliceCache.count > 400 { codeSliceCache.removeAll(keepingCapacity: true) }
-            codeSliceCache[cacheKey] = built
+            codeSliceCache.set(built, for: cacheKey)
         }
         return built
     }
 
-    private func measureCodeUnwrappedSize(_ attributed: NSAttributedString) -> CGSize {
-        let (fitted, lineCount) = ChatLayoutCache.measureCoreTextMetrics(attributed, maxWidth: .greatestFiniteMagnitude)
+    func resolvedCodeSlice(_ slice: ChatCodeSlice, unfolded: Bool, style: ChatListStyle) -> ChatCodeSlice {
+        guard slice.folds, unfolded, slice.fullAttributed == nil else {
+            return slice
+        }
+        let fullAttr = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(slice.trimmedText, language: slice.language, isOutput: slice.isOutput, style: style))
+        let fullSize = measureCodeUnwrappedSize(fullAttr, knownLineCount: slice.lineCount)
+        let fullToken = allocateRenderToken()
+        let updated = ChatCodeSlice(
+            language: slice.language,
+            rawText: slice.rawText,
+            trimmedText: slice.trimmedText,
+            isOutput: slice.isOutput,
+            isLive: slice.isLive,
+            lineCount: slice.lineCount,
+            folds: slice.folds,
+            foldedAttributed: slice.foldedAttributed,
+            fullAttributed: fullAttr,
+            foldedContentSize: slice.foldedContentSize,
+            fullContentSize: fullSize,
+            foldedRenderToken: slice.foldedRenderToken,
+            fullRenderToken: fullToken
+        )
+        if !slice.isLive {
+            let cacheKey = CodeSliceKey(styleKey: style.styleKey, language: slice.language, rawText: slice.rawText)
+            codeSliceCache.set(updated, for: cacheKey)
+        }
+        return updated
+    }
+
+    private func measureCodeUnwrappedSize(_ attributed: NSAttributedString, knownLineCount: Int? = nil) -> CGSize {
+        let (fitted, lineCount) = ChatLayoutCache.measureCoreTextMetrics(
+            attributed,
+            maxWidth: .greatestFiniteMagnitude,
+            knownLineCount: knownLineCount
+        )
         guard fitted.width > 0 || fitted.height > 0 else { return .zero }
         return CGSize(width: ceil(fitted.width) + 2, height: ceil(fitted.height + max(1.0, CGFloat(lineCount) * 0.35)))
     }
 
-    private func buildTableSlice(_ table: Prose.Table, style: ChatListStyle) -> ChatTableSlice {
+    private func buildTableSlice(_ table: Prose.Table, style: ChatListStyle, cacheable: Bool) -> ChatTableSlice {
+        let cacheKey: TableSliceKey?
+        if cacheable {
+            let candidate = TableSliceKey(styleKey: style.styleKey, table: table)
+            if let hit = tableSliceCache.get(candidate) {
+                return hit
+            }
+            cacheKey = candidate
+        } else {
+            cacheKey = nil
+        }
+
         let prepared = TablePreparer.prepare(table)
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
-        let headerCells: [NSAttributedString] = (0..<columns).map { column in
+        var headerCells: [NSAttributedString] = []
+        var headerHasLinks: [Bool] = []
+        headerCells.reserveCapacity(columns)
+        headerHasLinks.reserveCapacity(columns)
+        for column in 0..<columns {
             let align = column < table.aligns.count ? table.aligns[column] : .leading
             let source = column < prepared.header.count ? prepared.header[column] : AttributedString("")
-            return buildTableCellAttributed(source, isHeader: true, align: align, style: style)
+            let built = buildTableCellAttributed(source, isHeader: true, align: align, style: style)
+            headerCells.append(built.attributed)
+            headerHasLinks.append(built.hasLink)
         }
-        let rowCells: [[NSAttributedString]] = prepared.rows.map { row in
-            (0..<columns).map { column in
+
+        var rowCells: [[NSAttributedString]] = []
+        var rowHasLinks: [[Bool]] = []
+        rowCells.reserveCapacity(prepared.rows.count)
+        rowHasLinks.reserveCapacity(prepared.rows.count)
+        for row in prepared.rows {
+            var cells: [NSAttributedString] = []
+            var links: [Bool] = []
+            cells.reserveCapacity(columns)
+            links.reserveCapacity(columns)
+            for column in 0..<columns {
                 let align = column < table.aligns.count ? table.aligns[column] : .leading
                 let source = column < row.count ? row[column] : AttributedString("")
-                return buildTableCellAttributed(source, isHeader: false, align: align, style: style)
+                let built = buildTableCellAttributed(source, isHeader: false, align: align, style: style)
+                cells.append(built.attributed)
+                links.append(built.hasLink)
             }
+            rowCells.append(cells)
+            rowHasLinks.append(links)
         }
+
         let widths: [CGFloat] = (0..<columns).map { column in
             var natural: CGFloat = column < headerCells.count ? ceil(headerCells[column].size().width) : 0
             for row in rowCells where column < row.count {
@@ -574,13 +793,20 @@ final class ChatProseBuilder {
             }
             return max(28, natural + 4)
         }
-        return ChatTableSlice(
+        let built = ChatTableSlice(
+            sliceID: allocateRenderToken(),
             table: table,
             prepared: prepared,
             headerCells: headerCells,
             rowCells: rowCells,
+            headerHasLinks: headerHasLinks,
+            rowHasLinks: rowHasLinks,
             naturalWidths: widths
         )
+        if let cacheKey {
+            tableSliceCache.set(built, for: cacheKey)
+        }
+        return built
     }
 
     private func buildTableCellAttributed(
@@ -588,7 +814,7 @@ final class ChatProseBuilder {
         isHeader: Bool,
         align: Prose.Table.Align,
         style: ChatListStyle
-    ) -> NSAttributedString {
+    ) -> (attributed: NSAttributedString, hasLink: Bool) {
         let cellSize = style.tableCellSize
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = cellSize * 0.25
@@ -600,7 +826,10 @@ final class ChatProseBuilder {
 
         let ink = style.resolveColor(Ink.ink)
         let accent = style.resolveColor(Ink.accent)
+        let monoFont = Ink.uiMono(max(CGFloat(12), cellSize - 2), preference: style.code)
+        var hasLink = false
         let out = NSMutableAttributedString()
+        out.beginEditing()
         for run in source.runs {
             let chunk = String(source[run.range].characters)
             let intent = run.inlinePresentationIntent ?? []
@@ -624,20 +853,22 @@ final class ChatProseBuilder {
                 attrs[.strokeColor] = ink
             }
             if isCode {
-                attrs[.font] = Ink.uiMono(max(CGFloat(12), cellSize - 2), preference: style.code)
+                attrs[.font] = monoFont
                 attrs[.foregroundColor] = accent
             }
             if isStrike {
                 attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
             if let link = run.link {
+                hasLink = true
                 attrs[.link] = link
                 attrs[.foregroundColor] = accent
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             }
             out.append(NSAttributedString(string: chunk, attributes: attrs))
         }
-        return NSAttributedString(attributedString: out)
+        out.endEditing()
+        return (NSAttributedString(attributedString: out), hasLink)
     }
 
     private func buildRichTextSlice(
@@ -652,7 +883,7 @@ final class ChatProseBuilder {
             var hasher = Hasher()
             for key in keys { hasher.combine(key) }
             let candidate = RichTextSliceKey(styleKey: style.styleKey, blockHash: hasher.finalize(), keys: keys)
-            if let hit = richTextSliceCache[candidate] {
+            if let hit = richTextSliceCache.get(candidate) {
                 return hit
             }
             sliceCacheKey = candidate
@@ -661,9 +892,11 @@ final class ChatProseBuilder {
         }
 
         let out = NSMutableAttributedString()
+        out.beginEditing()
         var inlineCodeRanges: [NSRange] = []
         var quoteBlocks: [NSRange] = []
         var ruleRanges: [NSRange] = []
+        let separatorFont = Ink.uiFace(style.readingSize, bold: false, face: style.face)
 
         for index in blocks.indices {
             let block = blocks[index]
@@ -693,7 +926,7 @@ final class ChatProseBuilder {
             if !isLast {
                 let separatorAttrs: [NSAttributedString.Key: Any] = [
                     .paragraphStyle: entry.trailingSeparatorStyle,
-                    .font: Ink.uiFace(style.readingSize, bold: false, face: style.face),
+                    .font: separatorFont,
                 ]
                 out.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
             }
@@ -702,6 +935,7 @@ final class ChatProseBuilder {
         if fadeTail && out.length > 0 {
             applyStreamingTailFade(to: out)
         }
+        out.endEditing()
 
         let topInset: CGFloat
         if case .quote = blocks.first {
@@ -732,10 +966,7 @@ final class ChatProseBuilder {
             hasLinks: Self.containsLinks(immutable)
         )
         if let sliceCacheKey {
-            if richTextSliceCache.count > 1200 {
-                richTextSliceCache.removeAll(keepingCapacity: true)
-            }
-            richTextSliceCache[sliceCacheKey] = rendered
+            richTextSliceCache.set(rendered, for: sliceCacheKey)
         }
         return rendered
     }
@@ -761,6 +992,7 @@ final class ChatProseBuilder {
         let tailIndices = Array(raw.indices.suffix(12))
         let count = tailIndices.count
         guard count > 0 else { return }
+        attributed.beginEditing()
         for (offset, strIndex) in tailIndices.enumerated() {
             let range = NSRange(strIndex..<raw.index(after: strIndex), in: raw)
             guard range.location >= 0, range.location + range.length <= attributed.length else { continue }
@@ -772,6 +1004,7 @@ final class ChatProseBuilder {
                 attributed.addAttribute(.strokeColor, value: stroke.withAlphaComponent(alpha), range: range)
             }
         }
+        attributed.endEditing()
     }
 
     private func renderedBlock(
@@ -784,19 +1017,17 @@ final class ChatProseBuilder {
         let keyString = cacheKeyString(for: block)
         let cacheKey = BlockCacheKey(
             styleKey: style.styleKey,
-            blockHash: keyString.hashValue,
             isFirst: isFirst,
             isLast: isLast,
             text: keyString
         )
-        if cacheable, let hit = blockCache[cacheKey] {
+        if cacheable, let hit = blockCache.get(cacheKey) {
             return hit
         }
 
         let built = buildSingleBlock(block, style: style, isFirst: isFirst, isLast: isLast)
         if cacheable {
-            if blockCache.count > 800 { blockCache.removeAll(keepingCapacity: true) }
-            blockCache[cacheKey] = built
+            blockCache.set(built, for: cacheKey)
         }
         return built
     }
@@ -856,10 +1087,12 @@ final class ChatProseBuilder {
 
         case .list(let items):
             let out = NSMutableAttributedString()
+            out.beginEditing()
             let base = style.readingSize
             let bodyInk = style.resolveColor(Ink.ink)
             let faintInk = style.resolveColor(Ink.inkFaint)
             let accentInk = style.resolveColor(Ink.accent)
+            let separatorFont = Ink.uiFace(base, face: style.face)
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : style.paragraphGap)
             for (itemIndex, item) in items.enumerated() {
                 let marker: String
@@ -886,7 +1119,7 @@ final class ChatProseBuilder {
                 lastPStyle = pStyle
                 if itemIndex > 0 {
                     out.append(NSAttributedString(string: "\n", attributes: [
-                        .font: Ink.uiFace(base, face: style.face),
+                        .font: separatorFont,
                         .paragraphStyle: pStyle,
                     ]))
                 }
@@ -897,6 +1130,7 @@ final class ChatProseBuilder {
                 ]))
                 out.append(buildInline(item.text, size: base, bold: false, style: style, ink: bodyInk, paragraph: pStyle))
             }
+            out.endEditing()
             let immutable = NSAttributedString(attributedString: out)
             return BlockCacheEntry(
                 attributed: immutable,
@@ -908,10 +1142,12 @@ final class ChatProseBuilder {
 
         case .quote(let inner):
             let out = NSMutableAttributedString()
+            out.beginEditing()
             let indent = Ink.Space.l + 4
             let tail = -Ink.Space.m
             let cardPadV = Ink.Space.m
             let quoteInk = style.resolveColor(Ink.inkSoft)
+            let separatorFont = Ink.uiFace(style.readingSize, face: style.face)
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : cardPadV + style.paragraphGap, indent: indent, tailIndent: tail)
             let flatLines = flattenQuoteBlocks(inner)
             for (idx, line) in flatLines.enumerated() {
@@ -930,7 +1166,7 @@ final class ChatProseBuilder {
                 )
                 if idx > 0 {
                     out.append(NSAttributedString(string: "\n", attributes: [
-                        .font: Ink.uiFace(style.readingSize, face: style.face),
+                        .font: separatorFont,
                         .paragraphStyle: lastPStyle,
                     ]))
                 }
@@ -940,11 +1176,12 @@ final class ChatProseBuilder {
             }
             if out.length == 0 {
                 out.append(NSAttributedString(string: " ", attributes: [
-                    .font: Ink.uiFace(style.readingSize, face: style.face),
+                    .font: separatorFont,
                     .foregroundColor: quoteInk,
                     .paragraphStyle: lastPStyle,
                 ]))
             }
+            out.endEditing()
             let immutable = NSAttributedString(attributedString: out)
             let span = NSRange(location: 0, length: immutable.length)
             return BlockCacheEntry(
@@ -1061,10 +1298,14 @@ final class ChatProseBuilder {
     ) -> NSAttributedString {
         let parsed = PreparsedInline.parse(text)
         let accent = style.resolveColor(Ink.accent)
+        let regularFont = Ink.uiFace(size, bold: bold, face: style.face)
+        let boldFont = bold ? regularFont : Ink.uiFace(size, bold: true, face: style.face)
+        let monoFont = Ink.uiMono(max(CGFloat(12), size - 2), preference: style.code)
         let out = NSMutableAttributedString()
+        out.beginEditing()
         for run in parsed.runs {
             let isBold = bold || run.bold
-            var font = Ink.uiFace(size, bold: isBold, face: style.face)
+            var font = isBold ? boldFont : regularFont
             if run.italic,
                let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
                 font = UIFont(descriptor: slanted, size: size)
@@ -1079,7 +1320,7 @@ final class ChatProseBuilder {
                 attributes[.strokeColor] = ink
             }
             if run.code {
-                attributes[.font] = Ink.uiMono(max(CGFloat(12), size - 2), preference: style.code)
+                attributes[.font] = monoFont
                 attributes[.foregroundColor] = accent
                 attributes[.chatInlineCode] = true
             }
@@ -1093,6 +1334,7 @@ final class ChatProseBuilder {
             }
             out.append(NSAttributedString(string: run.text, attributes: attributes))
         }
+        out.endEditing()
         return NSAttributedString(attributedString: out)
     }
 
@@ -1163,16 +1405,25 @@ final class ChatLayoutCache {
         let id: String
         let styleKey: String
         let widthKey: Int
+        let textByteCount: Int
+        let textHash: UInt64
         let text: String
+        let reasoningByteCount: Int
+        let reasoningHash: UInt64
         let reasoning: String
+        let pulseByteCount: Int
+        let pulseHash: UInt64
         let pulse: String
+        let lookbackNoteByteCount: Int
+        let lookbackNoteHash: UInt64
         let lookbackNote: String
+        let lookbackRestByteCount: Int
+        let lookbackRestHash: UInt64
         let lookbackRest: String
         let opens: Bool
         let faces: Bool
         let isRoom: Bool
         let showThinking: Bool
-        let showStats: Bool
         let hasTimeGap: Bool
         let hasSources: Bool
         let hasContinue: Bool
@@ -1184,27 +1435,252 @@ final class ChatLayoutCache {
         let expandedLookback: Bool
         let unfoldedSlices: [Int]
         let overrideVersion: UInt64
+        private let cachedHash: Int
+
+        init(
+            id: String,
+            styleKey: String,
+            widthKey: Int,
+            text: String,
+            reasoning: String,
+            pulse: String,
+            lookbackNote: String,
+            lookbackRest: String,
+            opens: Bool,
+            faces: Bool,
+            isRoom: Bool,
+            showThinking: Bool,
+            hasTimeGap: Bool,
+            hasSources: Bool,
+            hasContinue: Bool,
+            hasFooter: Bool,
+            isStreaming: Bool,
+            freshShown: Int,
+            expandedThinking: Bool,
+            expandedPulse: Bool,
+            expandedLookback: Bool,
+            unfoldedSlices: [Int],
+            overrideVersion: UInt64
+        ) {
+            self.id = id
+            self.styleKey = styleKey
+            self.widthKey = widthKey
+            self.textByteCount = text.utf8.count
+            self.textHash = fnv1a64(text)
+            self.text = text
+            self.reasoningByteCount = reasoning.utf8.count
+            self.reasoningHash = fnv1a64(reasoning)
+            self.reasoning = reasoning
+            self.pulseByteCount = pulse.utf8.count
+            self.pulseHash = fnv1a64(pulse)
+            self.pulse = pulse
+            self.lookbackNoteByteCount = lookbackNote.utf8.count
+            self.lookbackNoteHash = fnv1a64(lookbackNote)
+            self.lookbackNote = lookbackNote
+            self.lookbackRestByteCount = lookbackRest.utf8.count
+            self.lookbackRestHash = fnv1a64(lookbackRest)
+            self.lookbackRest = lookbackRest
+            self.opens = opens
+            self.faces = faces
+            self.isRoom = isRoom
+            self.showThinking = showThinking
+            self.hasTimeGap = hasTimeGap
+            self.hasSources = hasSources
+            self.hasContinue = hasContinue
+            self.hasFooter = hasFooter
+            self.isStreaming = isStreaming
+            self.freshShown = freshShown
+            self.expandedThinking = expandedThinking
+            self.expandedPulse = expandedPulse
+            self.expandedLookback = expandedLookback
+            self.unfoldedSlices = unfoldedSlices
+            self.overrideVersion = overrideVersion
+
+            var hasher = Hasher()
+            hasher.combine(id)
+            hasher.combine(styleKey)
+            hasher.combine(widthKey)
+            hasher.combine(self.textByteCount)
+            hasher.combine(self.textHash)
+            hasher.combine(self.reasoningByteCount)
+            hasher.combine(self.reasoningHash)
+            hasher.combine(self.pulseByteCount)
+            hasher.combine(self.pulseHash)
+            hasher.combine(self.lookbackNoteByteCount)
+            hasher.combine(self.lookbackNoteHash)
+            hasher.combine(self.lookbackRestByteCount)
+            hasher.combine(self.lookbackRestHash)
+            hasher.combine(opens)
+            hasher.combine(faces)
+            hasher.combine(isRoom)
+            hasher.combine(showThinking)
+            hasher.combine(hasTimeGap)
+            hasher.combine(hasSources)
+            hasher.combine(hasContinue)
+            hasher.combine(hasFooter)
+            hasher.combine(isStreaming)
+            hasher.combine(freshShown)
+            hasher.combine(expandedThinking)
+            hasher.combine(expandedPulse)
+            hasher.combine(expandedLookback)
+            hasher.combine(unfoldedSlices)
+            hasher.combine(overrideVersion)
+            self.cachedHash = hasher.finalize()
+        }
+
+        static func == (lhs: AssistantKey, rhs: AssistantKey) -> Bool {
+            lhs.cachedHash == rhs.cachedHash
+                && lhs.widthKey == rhs.widthKey
+                && lhs.textByteCount == rhs.textByteCount
+                && lhs.textHash == rhs.textHash
+                && lhs.lookbackRestByteCount == rhs.lookbackRestByteCount
+                && lhs.lookbackRestHash == rhs.lookbackRestHash
+                && lhs.reasoningByteCount == rhs.reasoningByteCount
+                && lhs.reasoningHash == rhs.reasoningHash
+                && lhs.pulseByteCount == rhs.pulseByteCount
+                && lhs.pulseHash == rhs.pulseHash
+                && lhs.lookbackNoteByteCount == rhs.lookbackNoteByteCount
+                && lhs.lookbackNoteHash == rhs.lookbackNoteHash
+                && lhs.freshShown == rhs.freshShown
+                && lhs.overrideVersion == rhs.overrideVersion
+                && lhs.opens == rhs.opens
+                && lhs.faces == rhs.faces
+                && lhs.isRoom == rhs.isRoom
+                && lhs.showThinking == rhs.showThinking
+                && lhs.hasTimeGap == rhs.hasTimeGap
+                && lhs.hasSources == rhs.hasSources
+                && lhs.hasContinue == rhs.hasContinue
+                && lhs.hasFooter == rhs.hasFooter
+                && lhs.isStreaming == rhs.isStreaming
+                && lhs.expandedThinking == rhs.expandedThinking
+                && lhs.expandedPulse == rhs.expandedPulse
+                && lhs.expandedLookback == rhs.expandedLookback
+                && lhs.unfoldedSlices == rhs.unfoldedSlices
+                && lhs.id == rhs.id
+                && lhs.styleKey == rhs.styleKey
+                && lhs.lookbackRest == rhs.lookbackRest
+                && lhs.text == rhs.text
+                && lhs.reasoning == rhs.reasoning
+                && lhs.pulse == rhs.pulse
+                && lhs.lookbackNote == rhs.lookbackNote
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(cachedHash)
+        }
     }
 
     private struct UserKey: Hashable {
         let id: String
         let styleKey: String
         let widthKey: Int
+        let textByteCount: Int
+        let textHash: UInt64
         let text: String
         let photoCount: Int
         let isFirst: Bool
         let opens: Bool
         let faces: Bool
         let hasTimeGap: Bool
+
+        init(
+            id: String,
+            styleKey: String,
+            widthKey: Int,
+            text: String,
+            photoCount: Int,
+            isFirst: Bool,
+            opens: Bool,
+            faces: Bool,
+            hasTimeGap: Bool
+        ) {
+            self.id = id
+            self.styleKey = styleKey
+            self.widthKey = widthKey
+            self.textByteCount = text.utf8.count
+            self.textHash = fnv1a64(text)
+            self.text = text
+            self.photoCount = photoCount
+            self.isFirst = isFirst
+            self.opens = opens
+            self.faces = faces
+            self.hasTimeGap = hasTimeGap
+        }
+
+        static func == (lhs: UserKey, rhs: UserKey) -> Bool {
+            lhs.textHash == rhs.textHash
+                && lhs.textByteCount == rhs.textByteCount
+                && lhs.widthKey == rhs.widthKey
+                && lhs.photoCount == rhs.photoCount
+                && lhs.isFirst == rhs.isFirst
+                && lhs.opens == rhs.opens
+                && lhs.faces == rhs.faces
+                && lhs.hasTimeGap == rhs.hasTimeGap
+                && lhs.id == rhs.id
+                && lhs.styleKey == rhs.styleKey
+                && lhs.text == rhs.text
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+            hasher.combine(styleKey)
+            hasher.combine(widthKey)
+            hasher.combine(textByteCount)
+            hasher.combine(textHash)
+            hasher.combine(photoCount)
+            hasher.combine(isFirst)
+            hasher.combine(opens)
+            hasher.combine(faces)
+            hasher.combine(hasTimeGap)
+        }
+    }
+
+    private struct LiveStreamingKey: Equatable {
+        let generation: Int
+        let widthKey: Int
+        let styleKey: String
+        let byteCount: Int
+        let contentHash: UInt64
+        let text: String
+
+        init(generation: Int, widthKey: Int, styleKey: String, text: String) {
+            self.generation = generation
+            self.widthKey = widthKey
+            self.styleKey = styleKey
+            self.byteCount = text.utf8.count
+            self.contentHash = fnv1a64(text)
+            self.text = text
+        }
+
+        static func == (lhs: LiveStreamingKey, rhs: LiveStreamingKey) -> Bool {
+            lhs.generation == rhs.generation
+                && lhs.widthKey == rhs.widthKey
+                && lhs.byteCount == rhs.byteCount
+                && lhs.contentHash == rhs.contentHash
+                && lhs.styleKey == rhs.styleKey
+                && lhs.text == rhs.text
+        }
+    }
+
+    private struct NoteKey: Hashable {
+        let id: String
+        let text: String
+        let nextRaw: String
+        let fold: Bool
+        let isLatestNote: Bool
+        let widthKey: Int
+        let uiScale: Double
     }
 
     let builder = ChatProseBuilder()
 
-    private var assistantFinalizedCache: [AssistantKey: AssistantLayoutEntry] = [:]
+    private let assistantFinalizedCache = BoundedLRUCache<AssistantKey, AssistantLayoutEntry>(countLimit: 1000)
     private var assistantStreamingCache: [String: (key: AssistantKey, entry: AssistantLayoutEntry)] = [:]
-    private var userCache: [UserKey: UserLayoutEntry] = [:]
+    private let userCache = BoundedLRUCache<UserKey, UserLayoutEntry>(countLimit: 1200)
+    private let noteCache = BoundedLRUCache<NoteKey, NoteLayoutEntry>(countLimit: 256)
+    private var lastLiveStreamingEntry: (key: LiveStreamingKey, entry: AssistantLayoutEntry)?
     private var blockHeightOverrides: [String: CGFloat] = [:]
-    private var hostingHeights: [String: CGFloat] = [:]
+    private let hostingHeights = BoundedLRUCache<String, CGFloat>(countLimit: 600)
     private var overrideVersionsByOwner: [String: UInt64] = [:]
 
     private let labelMeasurer: UILabel = {
@@ -1220,16 +1696,29 @@ final class ChatLayoutCache {
     }()
 
     func invalidateAll() {
-        assistantFinalizedCache.removeAll(keepingCapacity: true)
+        assistantFinalizedCache.removeAll()
         assistantStreamingCache.removeAll(keepingCapacity: true)
-        userCache.removeAll(keepingCapacity: true)
+        userCache.removeAll()
+        noteCache.removeAll()
+        hostingHeights.removeAll()
+        lastLiveStreamingEntry = nil
         builder.clearCaches()
+    }
+
+    func invalidateHeightsOnly() {
+        assistantFinalizedCache.removeAll()
+        assistantStreamingCache.removeAll(keepingCapacity: true)
+        userCache.removeAll()
+        noteCache.removeAll()
+        hostingHeights.removeAll()
+        lastLiveStreamingEntry = nil
     }
 
     func invalidateMessage(id: String) {
         assistantStreamingCache.removeValue(forKey: id)
-        assistantFinalizedCache = assistantFinalizedCache.filter { $0.key.id != id }
-        userCache = userCache.filter { $0.key.id != id }
+        assistantFinalizedCache.removeAll { $0.id == id }
+        userCache.removeAll { $0.id == id }
+        noteCache.removeAll { $0.id == id }
     }
 
     func setBlockHeightOverride(_ height: CGFloat, key: String, ownerID: String) -> Bool {
@@ -1240,29 +1729,31 @@ final class ChatLayoutCache {
         blockHeightOverrides[key] = rounded
         overrideVersionsByOwner[ownerID, default: 1] &+= 1
         assistantStreamingCache.removeValue(forKey: ownerID)
+        if ownerID.hasPrefix("streaming-") {
+            lastLiveStreamingEntry = nil
+        }
         return true
     }
 
     func hostingHeight(for key: String) -> CGFloat? {
-        hostingHeights[key]
+        hostingHeights.get(key)
     }
 
     func setHostingHeight(_ height: CGFloat, for key: String) -> Bool {
         let rounded = ceil(height)
-        if let old = hostingHeights[key], abs(old - rounded) <= 0.5 {
+        if let old = hostingHeights.get(key), abs(old - rounded) <= 0.5 {
             return false
         }
-        hostingHeights[key] = rounded
+        hostingHeights.set(rounded, for: key)
         return true
     }
 
     func measureHostingView<V: View>(_ view: V, width: CGFloat, cacheKey: String) -> CGFloat {
-        if let hit = hostingHeights[cacheKey] { return hit }
+        if let hit = hostingHeights.get(cacheKey) { return hit }
         hostingMeasurer.rootView = AnyView(view)
         let size = hostingMeasurer.sizeThatFits(in: CGSize(width: max(120, width), height: CGFloat.greatestFiniteMagnitude))
         let h = max(24, ceil(size.height))
-        if hostingHeights.count > 600 { hostingHeights.removeAll(keepingCapacity: true) }
-        hostingHeights[cacheKey] = h
+        hostingHeights.set(h, for: cacheKey)
         return h
     }
 
@@ -1283,7 +1774,7 @@ final class ChatLayoutCache {
             faces: row.faces,
             hasTimeGap: row.faces && row.opens && row.timeGap != nil
         )
-        if let hit = userCache[key] { return hit }
+        if let hit = userCache.get(key) { return hit }
 
         let pageMargin = Ink.Space.page
         let avatarSpace: CGFloat = row.faces ? (ChatCellMetrics.faceSize + Ink.Space.s) : 0
@@ -1331,8 +1822,7 @@ final class ChatLayoutCache {
             bubbleHeight: bubbleH,
             cellHeight: ceil(total)
         )
-        if userCache.count > 1200 { userCache.removeAll(keepingCapacity: true) }
-        userCache[key] = entry
+        userCache.set(entry, for: key)
         return entry
     }
 
@@ -1367,7 +1857,6 @@ final class ChatLayoutCache {
             faces: row.faces,
             isRoom: row.isRoom,
             showThinking: row.showThinking,
-            showStats: row.showStats,
             hasTimeGap: row.faces && row.opens && row.timeGap != nil,
             hasSources: hasSources,
             hasContinue: hasContinue,
@@ -1387,7 +1876,7 @@ final class ChatLayoutCache {
             }
         } else {
             assistantStreamingCache.removeValue(forKey: row.line.id)
-            if let hit = assistantFinalizedCache[key] {
+            if let hit = assistantFinalizedCache.get(key) {
                 return hit
             }
         }
@@ -1495,10 +1984,7 @@ final class ChatLayoutCache {
         if isFresh {
             assistantStreamingCache[row.line.id] = (key: key, entry: entry)
         } else {
-            if assistantFinalizedCache.count > 1000 {
-                assistantFinalizedCache.removeAll(keepingCapacity: true)
-            }
-            assistantFinalizedCache[key] = entry
+            assistantFinalizedCache.set(entry, for: key)
         }
         return entry
     }
@@ -1511,6 +1997,15 @@ final class ChatLayoutCache {
     ) -> AssistantLayoutEntry {
         let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
         let widthKey = Int((collectionWidth * 2).rounded())
+        let cacheKey = LiveStreamingKey(
+            generation: generation,
+            widthKey: widthKey,
+            styleKey: style.styleKey,
+            text: text
+        )
+        if let cached = lastLiveStreamingEntry, cached.key == cacheKey {
+            return cached.entry
+        }
         let ownerID = "streaming-\(generation)"
         let slices = builder.buildAssistantSlices(
             text,
@@ -1531,7 +2026,7 @@ final class ChatLayoutCache {
             if idx > 0 { proseStackH += style.paragraphGap }
             proseStackH += item.height
         }
-        return AssistantLayoutEntry(
+        let entry = AssistantLayoutEntry(
             timeGapHeight: 0,
             speakerHeight: 0,
             thinkingText: nil,
@@ -1546,6 +2041,8 @@ final class ChatLayoutCache {
             contentWidth: contentWidth,
             cellHeight: ceil(proseStackH + ChatCellMetrics.rowSpacing)
         )
+        lastLiveStreamingEntry = (key: cacheKey, entry: entry)
+        return entry
     }
 
     private func measureSlices(
@@ -1564,11 +2061,16 @@ final class ChatLayoutCache {
 
             case .code(let codeSlice, let sliceIndex):
                 let unfolded = unfoldedSlices.contains(sliceIndex)
-                let bodySize = (codeSlice.folds && !unfolded) ? codeSlice.foldedContentSize : codeSlice.fullContentSize
+                let resolvedCode = (codeSlice.folds && unfolded)
+                    ? builder.resolvedCodeSlice(codeSlice, unfolded: true, style: style)
+                    : codeSlice
+                let bodySize = (resolvedCode.folds && !unfolded)
+                    ? resolvedCode.foldedContentSize
+                    : resolvedCode.resolved(unfolded: unfolded).size
                 let bodyH = max(16, bodySize.height) + Ink.Space.m * 2
-                let foldH = codeSlice.folds ? style.codeFoldButtonHeight : 0
+                let foldH = resolvedCode.folds ? style.codeFoldButtonHeight : 0
                 let total = ceil(style.codeHeaderHeight + bodyH + foldH)
-                return MeasuredSlice(slice: slice, height: total, pictureHeights: [])
+                return MeasuredSlice(slice: .code(resolvedCode, sliceIndex: sliceIndex), height: total, pictureHeights: [])
 
             case .table(let tableSlice, _):
                 let h = ChatTableBlockView.measureHeight(slice: tableSlice, maxWidth: contentWidth, style: style)
@@ -1609,11 +2111,25 @@ final class ChatLayoutCache {
     }
 
     func measureNote(line: ChatLine, isLatestNote: Bool, collectionWidth: CGFloat) -> NoteLayoutEntry {
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
-        if line.fold {
-            return NoteLayoutEntry(titleHeight: 36, detailHeight: 0, cellHeight: ceil(36 + ChatCellMetrics.rowSpacing))
+        let widthKey = Int((collectionWidth * 2).rounded())
+        let key = NoteKey(
+            id: line.id,
+            text: line.text,
+            nextRaw: line.next?.rawValue ?? "",
+            fold: line.fold,
+            isLatestNote: isLatestNote,
+            widthKey: widthKey,
+            uiScale: UIScale.shared.value
+        )
+        if let hit = noteCache.get(key) {
+            return hit
         }
-        if let next = line.next {
+
+        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
+        let entry: NoteLayoutEntry
+        if line.fold {
+            entry = NoteLayoutEntry(titleHeight: 36, detailHeight: 0, cellHeight: ceil(36 + ChatCellMetrics.rowSpacing))
+        } else if let next = line.next {
             let parts = line.text.split(separator: "\n", maxSplits: 1).map(String.init)
             let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
             let innerW = max(80, contentWidth - Ink.Space.l * 2)
@@ -1631,12 +2147,15 @@ final class ChatLayoutCache {
             var total = Ink.Space.l * 2 + titleH
             if detailH > 0 { total += Ink.Space.s + detailH }
             if isLatestNote && advice.button != nil { total += Ink.Space.s + Ink.Space.xs + 34 }
-            return NoteLayoutEntry(titleHeight: titleH, detailHeight: detailH, cellHeight: ceil(total + ChatCellMetrics.rowSpacing))
+            entry = NoteLayoutEntry(titleHeight: titleH, detailHeight: detailH, cellHeight: ceil(total + ChatCellMetrics.rowSpacing))
+        } else {
+            labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.small)
+            labelMeasurer.text = line.text
+            let h = ceil(labelMeasurer.sizeThatFits(CGSize(width: contentWidth, height: .greatestFiniteMagnitude)).height)
+            entry = NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + ChatCellMetrics.rowSpacing))
         }
-        labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.small)
-        labelMeasurer.text = line.text
-        let h = ceil(labelMeasurer.sizeThatFits(CGSize(width: contentWidth, height: .greatestFiniteMagnitude)).height)
-        return NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + ChatCellMetrics.rowSpacing))
+        noteCache.set(entry, for: key)
+        return entry
     }
 
     func measureLiveText(_ text: String, collectionWidth: CGFloat, style: ChatListStyle, cardInsetH: CGFloat, cardInsetV: CGFloat) -> LiveTextEntry {
@@ -1704,7 +2223,8 @@ final class ChatLayoutCache {
     nonisolated static func measureCoreTextMetrics(
         _ attributed: NSAttributedString,
         maxWidth: CGFloat,
-        checkNarrowBoundary: Bool = false
+        checkNarrowBoundary: Bool = false,
+        knownLineCount: Int? = nil
     ) -> (size: CGSize, lineCount: Int) {
         guard attributed.length > 0 else { return (.zero, 0) }
         let measuredSource = prepareCoreTextSource(attributed)
@@ -1734,6 +2254,9 @@ final class ChatLayoutCache {
                 maxHeight = narrowFitted.height
                 effectiveWidth = narrowWidth
             }
+        }
+        if let knownLineCount {
+            return (CGSize(width: fitted.width, height: maxHeight), max(1, knownLineCount))
         }
         let path = CGPath(
             rect: CGRect(x: 0, y: 0, width: effectiveWidth, height: max(1000, ceil(maxHeight) + 64)),

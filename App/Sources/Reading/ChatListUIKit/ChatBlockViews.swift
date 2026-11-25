@@ -37,6 +37,8 @@ final class ChatCodeBlockView: UIView {
     private var isUnfolded = false
     private var copiedWork: DispatchWorkItem?
     private var isCopied = false
+    private var lastCopySignature = ""
+    private var lastFoldSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -131,14 +133,13 @@ final class ChatCodeBlockView: UIView {
 
             outputStripe.isHidden = !slice.isOutput
 
-            let activeAttr = (slice.folds && !unfolded) ? slice.foldedAttributed : slice.fullAttributed
-            let activeToken = (slice.folds && !unfolded) ? slice.foldedRenderToken : slice.fullRenderToken
+            let resolved = slice.resolved(unfolded: unfolded)
             let rendered = ChatRenderedProse(
-                attributed: activeAttr,
+                attributed: resolved.attributed,
                 decorations: .empty,
                 topInset: 0,
                 bottomInset: 0,
-                renderToken: activeToken,
+                renderToken: resolved.token,
                 hasLinks: false
             )
             codeTextView.apply(
@@ -168,6 +169,8 @@ final class ChatCodeBlockView: UIView {
         copiedWork = nil
         isCopied = false
         currentSlice = nil
+        lastCopySignature = ""
+        lastFoldSignature = ""
         codeTextView.resetForReuse()
         onToggleFold = nil
         onQuoteSelection = nil
@@ -195,6 +198,11 @@ final class ChatCodeBlockView: UIView {
     }
 
     private func updateCopyButtonAppearance() {
+        let theme = Theme.shared
+        let signature = "\(isCopied)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(UIScale.factor)"
+        guard signature != lastCopySignature else { return }
+        lastCopySignature = signature
+
         var config = UIButton.Configuration.plain()
         config.title = isCopied ? "已复制" : "复制"
         config.image = UIImage(
@@ -209,10 +217,18 @@ final class ChatCodeBlockView: UIView {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.micro, weight: .medium)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         copyButton.configuration = config
+        CATransaction.commit()
     }
 
     private func updateFoldButtonTitle(lineCount: Int, unfolded: Bool) {
+        let theme = Theme.shared
+        let signature = "\(lineCount)|\(unfolded)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(UIScale.factor)"
+        guard signature != lastFoldSignature else { return }
+        lastFoldSignature = signature
+
         var config = UIButton.Configuration.plain()
         config.title = unfolded ? "收起" : "展开全部 \(lineCount) 行"
         config.image = UIImage(
@@ -226,7 +242,10 @@ final class ChatCodeBlockView: UIView {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .medium)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         foldButton.configuration = config
+        CATransaction.commit()
     }
 
     private func refreshThemeColors() {
@@ -286,7 +305,7 @@ final class ChatCodeBlockView: UIView {
         let bodyH = max(0, bounds.height - headerH - foldH)
         scrollView.frame = CGRect(x: 0, y: bodyY, width: width, height: bodyH)
 
-        let textSize = (slice.folds && !isUnfolded) ? slice.foldedContentSize : slice.fullContentSize
+        let textSize = slice.resolved(unfolded: isUnfolded).size
         let padH = Ink.Space.l
         let padV = Ink.Space.m
         let contentW = max(width, textSize.width + padH * 2)
@@ -329,17 +348,8 @@ private final class ChatTableCellLabel: UILabel {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func apply(_ attr: NSAttributedString) {
+    func apply(_ attr: NSAttributedString, hasLinks: Bool) {
         attributedText = attr
-        var hasLinks = false
-        if attr.length > 0 {
-            attr.enumerateAttribute(.link, in: NSRange(location: 0, length: attr.length)) { value, _, stop in
-                if value != nil {
-                    hasLinks = true
-                    stop.pointee = true
-                }
-            }
-        }
         isUserInteractionEnabled = hasLinks
     }
 
@@ -394,6 +404,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private var activeColCount = 0
     private var activeRuleCount = 0
     private var lastWidth: CGFloat = 0
+    private var lastLayoutHeight: CGFloat = 0
+    private var lastLayoutSliceID: UInt64 = 0
+    private var lastLayoutStyleKey = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -476,6 +489,7 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         }
         currentSlice = slice
         currentStyle = style
+        lastLayoutSliceID = 0
         applyGrid(slice: slice)
         refreshThemeColors()
         setNeedsLayout()
@@ -485,6 +499,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         currentSlice = nil
         currentStyle = nil
         lastWidth = 0
+        lastLayoutHeight = 0
+        lastLayoutSliceID = 0
+        lastLayoutStyleKey = ""
         onOpenURL = nil
         scrollView.contentOffset = .zero
     }
@@ -492,6 +509,7 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
     private func applyGrid(slice: ChatTableSlice) {
         scrollView.contentOffset = .zero
         let allRows = [slice.headerCells] + slice.rowCells
+        let allHasLinks = [slice.headerHasLinks] + slice.rowHasLinks
         let rowCount = allRows.count
         let colCount = max(1, slice.naturalWidths.count)
         let ruleCount = max(0, rowCount - 1)
@@ -528,6 +546,7 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             }
 
             let rowCells = allRows[rIdx]
+            let rowLinks = rIdx < allHasLinks.count ? allHasLinks[rIdx] : []
             while cellViews[rIdx].count < colCount {
                 let label = ChatTableCellLabel()
                 label.onOpenURL = { [weak self] url in
@@ -541,7 +560,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
                 let label = cellViews[rIdx][col]
                 if col < colCount {
                     label.isHidden = false
-                    label.apply(col < rowCells.count ? rowCells[col] : NSAttributedString())
+                    let cellAttr = col < rowCells.count ? rowCells[col] : NSAttributedString()
+                    let hasLinks = col < rowLinks.count ? rowLinks[col] : false
+                    label.apply(cellAttr, hasLinks: hasLinks)
                 } else {
                     label.isHidden = true
                 }
@@ -575,6 +596,13 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         super.layoutSubviews()
         guard let slice = currentSlice, let style = currentStyle, bounds.width > 0 else { return }
         let width = bounds.width
+        let height = bounds.height
+        if lastLayoutSliceID == slice.sliceID,
+           lastLayoutStyleKey == style.layoutStyleKey,
+           abs(lastWidth - width) <= 0.5,
+           abs(lastLayoutHeight - height) <= 0.5 {
+            return
+        }
         scrollView.frame = bounds
 
         let widths = Self.spreadWidths(slice.naturalWidths, availableRoom: width)
@@ -628,6 +656,9 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         trailingFade.frame = CGRect(x: max(0, width - Ink.Space.xl), y: 0, width: Ink.Space.xl, height: bounds.height)
         CATransaction.commit()
         lastWidth = width
+        lastLayoutHeight = height
+        lastLayoutSliceID = slice.sliceID
+        lastLayoutStyleKey = style.layoutStyleKey
     }
 
     // MARK: - UIContextMenuInteractionDelegate
@@ -677,6 +708,14 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
 /// Native UIKit math formula view backed by `SwiftMath` `MTMathUILabel` with horizontal scroll & copy menu.
 @MainActor
 final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
+    private struct FormulaHeightKey: Hashable {
+        let size: Double
+        let uiScale: Double
+        let latex: String
+    }
+
+    private static let formulaHeights = BoundedLRUCache<FormulaHeightKey, CGFloat>(countLimit: 400)
+
     private static let measurer: MTMathUILabel = {
         let label = MTMathUILabel()
         label.displayErrorInline = false
@@ -732,8 +771,8 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
 
     static func measureHeight(latex: String, maxWidth: CGFloat, style: ChatListStyle, streaming: Bool) -> CGFloat {
         if !streaming {
-            let key = "\(style.size)|\(latex)"
-            if let hit = FormulaBlock.heights[key] {
+            let key = FormulaHeightKey(size: style.size, uiScale: style.uiScale, latex: latex)
+            if let hit = formulaHeights.get(key) {
                 return hit
             }
             measurer.fontSize = style.readingSize + 2
@@ -741,8 +780,7 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
             let size = measurer.intrinsicContentSize
             if measurer.error == nil, size.height > 0 {
                 let total = ceil(size.height + Ink.Space.m * 2)
-                if FormulaBlock.heights.count > 400 { FormulaBlock.heights.removeAll() }
-                FormulaBlock.heights[key] = total
+                formulaHeights.set(total, for: key)
                 return total
             }
         }
@@ -758,6 +796,9 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
     }
 
     func configure(latex: String, style: ChatListStyle, streaming: Bool) {
+        if currentLatex == latex && currentStreaming == streaming && currentStyle == style {
+            return
+        }
         currentLatex = latex
         currentStreaming = streaming
         currentStyle = style
@@ -872,6 +913,10 @@ final class ChatHostedBlockView: UIView {
             if reportedKey == key {
                 onHeightChanged(h)
             }
+        }
+        if currentKey == key, let controller {
+            attach(controller, to: parent)
+            return
         }
         model.key = key
         model.content = AnyView(content())

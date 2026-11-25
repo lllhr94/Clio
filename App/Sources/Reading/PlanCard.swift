@@ -88,7 +88,7 @@ struct PlanCard: View {
             Image(systemName: "checkmark.circle.fill").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ok)
         case "doing":
             Image(systemName: "circle.circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent)
-                .symbolEffect(.pulse)
+                .symbolEffect(.pulse, isActive: open && !reduceMotion)
         default:
             Image(systemName: "circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkFaint)
         }

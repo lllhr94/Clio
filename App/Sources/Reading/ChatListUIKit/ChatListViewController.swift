@@ -33,7 +33,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private var selectingOwnerIDs: Set<UUID> = []
     private var hasPerformedInitialScroll = false
-    private var isPinnedToBottom = true
+    private(set) var isPinnedToBottom = true
     private var isProgrammaticScroll = false
     private var isLoadingEarlierRequest = false
     private var loadEarlierGeneration: UInt64 = 0
@@ -60,6 +60,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
     private var needsDeferredDynamicRefresh = false
+    private var needsDeferredStreamingResize = false
+    private var lastMeasuredItemHeights: [ChatListItemID: CGFloat] = [:]
     private var userDefaultsObserver: NSObjectProtocol?
     private var lastObservedUserAvatarSignature = ""
     private var keyboardObserverTokens: [NSObjectProtocol] = []
@@ -123,6 +125,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         pendingHostMetricFlush = false
         pendingDynamicRefresh = false
         needsDeferredDynamicRefresh = false
+        needsDeferredStreamingResize = false
+        lastMeasuredItemHeights.removeAll()
         stopInsetDisplayLink()
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = nil
@@ -290,38 +294,52 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return .estimated(cached)
 
         case .earlierButton:
-            return .absolute(36 + ChatCellMetrics.rowSpacing)
+            let h = 36 + ChatCellMetrics.rowSpacing
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
 
         case .line(let id):
             guard let row = rowByID[id] else { return .absolute(44) }
             switch row.line.kind {
             case .user:
-                return .absolute(layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle).cellHeight)
+                let h = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle).cellHeight
+                lastMeasuredItemHeights[itemID] = h
+                return .absolute(h)
             case .bot:
-                return .absolute(measureAssistant(row: row, width: width).cellHeight)
+                let h = measureAssistant(row: row, width: width).cellHeight
+                lastMeasuredItemHeights[itemID] = h
+                return .absolute(h)
             case .steps:
                 let key = traceHeightKey(row)
                 let est = layoutCache.hostingHeight(for: key) ?? 50
                 return .estimated(est)
             case .note:
-                return .absolute(layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight)
+                let h = layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight
+                lastMeasuredItemHeights[itemID] = h
+                return .absolute(h)
             }
 
         case .liveFolding:
-            return .absolute(24 + ChatCellMetrics.rowSpacing)
+            let h = 24 + ChatCellMetrics.rowSpacing
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
 
         case .livePulse:
             let text = currentState?.streamPulse ?? ""
             let tail = text.split(separator: "\n", omittingEmptySubsequences: true).suffix(4).joined(separator: "\n")
             let h = layoutCache.measureLiveText(tail, collectionWidth: width, style: currentStyle, cardInsetH: Ink.Space.m, cardInsetV: Ink.Space.s).cellHeight
+            lastMeasuredItemHeights[itemID] = h
             return .absolute(h)
 
         case .liveThinking:
-            return .absolute(ChatLiveThinkingCell.fixedHeight())
+            let h = ChatLiveThinkingCell.fixedHeight()
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
 
         case .liveProse(let gen):
             let text = currentState?.streamText ?? ""
             let h = layoutCache.measureLiveStreamingProse(text: text, generation: gen, collectionWidth: width, style: currentStyle).cellHeight
+            lastMeasuredItemHeights[itemID] = h
             return .absolute(h)
 
         case .liveToolTail:
@@ -331,16 +349,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         case .liveFailure:
             let err = currentState?.failureCardError ?? ""
             let working = currentState?.working ?? false
-            return .absolute(layoutCache.measureFailure(error: err, working: working, collectionWidth: width))
+            let h = layoutCache.measureFailure(error: err, working: working, collectionWidth: width)
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
 
         case .queued(let id):
             if let item = currentState?.queuedItems.first(where: { $0.id == id }) {
-                return .absolute(layoutCache.measureQueued(item, collectionWidth: width).cellHeight)
+                let h = layoutCache.measureQueued(item, collectionWidth: width).cellHeight
+                lastMeasuredItemHeights[itemID] = h
+                return .absolute(h)
             }
             return .absolute(56)
 
         case .bottomSpacer:
-            return .absolute(ChatCellMetrics.bottomSpacerHeight)
+            let h = ChatCellMetrics.bottomSpacerHeight
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
         }
     }
 
@@ -841,6 +865,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isPinnedToBottom = true
         isTrackingUserScroll = false
         needsDeferredDynamicRefresh = false
+        needsDeferredStreamingResize = false
+        lastMeasuredItemHeights.removeAll()
         lastScrollMetricsPublishTime = 0
         wasPinnedAtDragStart = false
         userMovedAwayFromBottomDuringDrag = false
@@ -913,6 +939,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         let width = max(240, collectionView.bounds.width)
         var layoutMayHaveChanged = false
+        var checkedItemIDs: Set<ChatListItemID> = []
 
         for indexPath in collectionView.indexPathsForVisibleItems {
             guard indexPath.section < items.count else { continue }
@@ -926,30 +953,42 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 }
 
             case .liveProse(let gen):
-                if prev.streamText != next.streamText,
-                   let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
+                if prev.streamText != next.streamText {
+                    checkedItemIDs.insert(itemID)
                     let entry = layoutCache.measureLiveStreamingProse(text: next.streamText, generation: gen, collectionWidth: width, style: currentStyle)
-                    cell.updateLiveStreamingInPlace(entry: entry, style: currentStyle)
-                    layoutMayHaveChanged = true
+                    if let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
+                        cell.updateLiveStreamingInPlace(entry: entry, style: currentStyle)
+                    }
+                    let prevH = lastMeasuredItemHeights[itemID]
+                    if prevH == nil || abs((prevH ?? 0) - entry.cellHeight) > 0.5 {
+                        lastMeasuredItemHeights[itemID] = entry.cellHeight
+                        layoutMayHaveChanged = true
+                    }
                 }
 
             case .livePulse:
-                if prev.streamPulse != next.streamPulse,
-                   let cell = collectionView.cellForItem(at: indexPath) as? ChatLivePulseCell {
+                if prev.streamPulse != next.streamPulse {
+                    checkedItemIDs.insert(itemID)
                     let tail = next.streamPulse.split(separator: "\n", omittingEmptySubsequences: true).suffix(4).joined(separator: "\n")
                     let entry = layoutCache.measureLiveText(tail, collectionWidth: width, style: currentStyle, cardInsetH: Ink.Space.m, cardInsetV: Ink.Space.s)
-                    let speaker = next.streamPulseSpeaker ?? (next.isRoom ? nil : next.defaultBot)
-                    cell.configure(
-                        text: tail,
-                        temper: Temper.of(speaker),
-                        entry: entry,
-                        style: currentStyle,
-                        onSelectionChanged: { [weak self] uuid, active in self?.handleSelectionChanged(uuid, active) },
-                        onQuoteExcerpt: { [weak self] excerpt in self?.actions.onQuoteExcerpt(excerpt) },
-                        onSaveNoteExcerpt: { [weak self] excerpt in self?.actions.onSaveNoteExcerpt("live-pulse", excerpt) },
-                        onSpeakExcerpt: { [weak self] excerpt in self?.actions.onSpeakExcerpt(excerpt) }
-                    )
-                    layoutMayHaveChanged = true
+                    if let cell = collectionView.cellForItem(at: indexPath) as? ChatLivePulseCell {
+                        let speaker = next.streamPulseSpeaker ?? (next.isRoom ? nil : next.defaultBot)
+                        cell.configure(
+                            text: tail,
+                            temper: Temper.of(speaker),
+                            entry: entry,
+                            style: currentStyle,
+                            onSelectionChanged: { [weak self] uuid, active in self?.handleSelectionChanged(uuid, active) },
+                            onQuoteExcerpt: { [weak self] excerpt in self?.actions.onQuoteExcerpt(excerpt) },
+                            onSaveNoteExcerpt: { [weak self] excerpt in self?.actions.onSaveNoteExcerpt("live-pulse", excerpt) },
+                            onSpeakExcerpt: { [weak self] excerpt in self?.actions.onSpeakExcerpt(excerpt) }
+                        )
+                    }
+                    let prevH = lastMeasuredItemHeights[itemID]
+                    if prevH == nil || abs((prevH ?? 0) - entry.cellHeight) > 0.5 {
+                        lastMeasuredItemHeights[itemID] = entry.cellHeight
+                        layoutMayHaveChanged = true
+                    }
                 }
 
             case .liveThinking:
@@ -979,26 +1018,85 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                         onWithdraw: { [weak self] in self?.actions.bridge.onWithdrawQueued(qItem) },
                         onSendNow: { [weak self] in self?.actions.bridge.onSendQueuedNow() }
                     )
-                    layoutMayHaveChanged = true
+                    let prevH = lastMeasuredItemHeights[itemID]
+                    if prevH == nil || abs((prevH ?? 0) - entry.cellHeight) > 0.5 {
+                        lastMeasuredItemHeights[itemID] = entry.cellHeight
+                        layoutMayHaveChanged = true
+                    }
                 }
 
             case .line(let lineID):
                 guard let newRow = nextRowMap[lineID], oldRowMap[lineID] != newRow else { continue }
-                updateVisibleRowCell(at: indexPath, newRow: newRow, width: width)
-                layoutMayHaveChanged = true
+                checkedItemIDs.insert(itemID)
+                let newHeight = updateVisibleRowCell(at: indexPath, newRow: newRow, width: width)
+                if let newHeight {
+                    let prevH = lastMeasuredItemHeights[itemID]
+                    if prevH == nil || abs((prevH ?? 0) - newHeight) > 0.5 {
+                        lastMeasuredItemHeights[itemID] = newHeight
+                        layoutMayHaveChanged = true
+                    }
+                } else {
+                    layoutMayHaveChanged = true
+                }
 
             default:
                 break
             }
         }
 
-        // Also check offscreen height changes for fresh handoff / row text edits.
-        if prev.streamText != next.streamText || prev.streamPulse != next.streamPulse || prev.rows != next.rows {
-            layoutMayHaveChanged = true
+        // Also check offscreen height changes for fresh handoff / streaming / row text edits.
+        if !layoutMayHaveChanged && prev.streamText != next.streamText {
+            let liveID = ChatListItemID.liveProse(next.streamGeneration)
+            if !checkedItemIDs.contains(liveID) {
+                let entry = layoutCache.measureLiveStreamingProse(
+                    text: next.streamText,
+                    generation: next.streamGeneration,
+                    collectionWidth: width,
+                    style: currentStyle
+                )
+                let prevH = lastMeasuredItemHeights[liveID]
+                if prevH == nil || abs((prevH ?? 0) - entry.cellHeight) > 0.5 {
+                    lastMeasuredItemHeights[liveID] = entry.cellHeight
+                    layoutMayHaveChanged = true
+                }
+            }
+        }
+        if !layoutMayHaveChanged && prev.streamPulse != next.streamPulse {
+            if !checkedItemIDs.contains(.livePulse) {
+                let tail = next.streamPulse.split(separator: "\n", omittingEmptySubsequences: true).suffix(4).joined(separator: "\n")
+                let entry = layoutCache.measureLiveText(tail, collectionWidth: width, style: currentStyle, cardInsetH: Ink.Space.m, cardInsetV: Ink.Space.s)
+                let prevH = lastMeasuredItemHeights[.livePulse]
+                if prevH == nil || abs((prevH ?? 0) - entry.cellHeight) > 0.5 {
+                    lastMeasuredItemHeights[.livePulse] = entry.cellHeight
+                    layoutMayHaveChanged = true
+                }
+            }
+        }
+        if !layoutMayHaveChanged && prev.rows != next.rows {
+            for newRow in next.rows {
+                let id = ChatListItemID.line(newRow.line.id)
+                guard !checkedItemIDs.contains(id), oldRowMap[newRow.line.id] != newRow else { continue }
+                let newHeight = measuredHeightForRow(newRow, width: width)
+                if let newHeight {
+                    let prevH = lastMeasuredItemHeights[id]
+                    if prevH == nil || abs((prevH ?? 0) - newHeight) > 0.5 {
+                        lastMeasuredItemHeights[id] = newHeight
+                        layoutMayHaveChanged = true
+                        break
+                    }
+                } else {
+                    layoutMayHaveChanged = true
+                    break
+                }
+            }
         }
 
         if layoutMayHaveChanged && collectionView.bounds.width > 0 {
-            applyStreamingResizePreservingScroll()
+            if isUserTouchScrolling && !isPinnedToBottom {
+                needsDeferredStreamingResize = true
+            } else {
+                applyStreamingResizePreservingScroll()
+            }
         }
         if prev.headerHeight != next.headerHeight {
             updateCollectionInsetsIfNeeded()
@@ -1006,11 +1104,25 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         publishVisibleAndFooterMetrics()
     }
 
-    private func updateVisibleRowCell(at indexPath: IndexPath, newRow: ChatListRowItem, width: CGFloat) {
+    private func measuredHeightForRow(_ row: ChatListRowItem, width: CGFloat) -> CGFloat? {
+        switch row.line.kind {
+        case .user:
+            return layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle).cellHeight
+        case .bot:
+            return measureAssistant(row: row, width: width).cellHeight
+        case .steps:
+            return nil
+        case .note:
+            return layoutCache.measureNote(line: row.line, isLatestNote: row.isLatestNote, collectionWidth: width).cellHeight
+        }
+    }
+
+    @discardableResult
+    private func updateVisibleRowCell(at indexPath: IndexPath, newRow: ChatListRowItem, width: CGFloat) -> CGFloat? {
         switch newRow.line.kind {
         case .bot:
+            let entry = measureAssistant(row: newRow, width: width)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
-                let entry = measureAssistant(row: newRow, width: width)
                 cell.updateSettledInPlace(
                     row: newRow,
                     entry: entry,
@@ -1021,20 +1133,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     unfoldedSlices: unfoldedCodeSlices[newRow.line.id] ?? []
                 )
             }
+            return entry.cellHeight
         case .user:
+            let entry = layoutCache.measureUser(row: newRow, collectionWidth: width, style: currentStyle)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatUserCell {
-                let entry = layoutCache.measureUser(row: newRow, collectionWidth: width, style: currentStyle)
                 cell.configure(row: newRow, entry: entry, style: currentStyle, hostViewController: self, actions: actions)
             }
+            return entry.cellHeight
         case .steps:
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatTraceHostingCell {
                 cell.updateLineInPlace(newRow)
             }
+            return nil
         case .note:
+            let entry = layoutCache.measureNote(line: newRow.line, isLatestNote: newRow.isLatestNote, collectionWidth: width)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatNoteCell {
-                let entry = layoutCache.measureNote(line: newRow.line, isLatestNote: newRow.isLatestNote, collectionWidth: width)
                 cell.configure(row: newRow, entry: entry, actions: actions)
             }
+            return entry.cellHeight
         }
     }
 
@@ -1062,7 +1178,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             : nil
 
         items = nextItems
-        prefetchedKeysBySection.removeAll()
+        cancelAllPrefetches()
+        lastMeasuredItemHeights.removeAll()
         rebuildIndexMaps(rows: next.rows)
 
         UIView.performWithoutAnimation {
@@ -1098,7 +1215,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 performScrollToRow(section: targetIdx, anchor: req.anchor, animated: false)
                 snapped = true
             } else if shouldPinToBottom {
-                scrollToBottom(animated: false)
+                scrollToBottom(animated: false, layoutIfNeeded: false, publishMetrics: false)
                 snapped = true
             } else if let anchor,
                       let newIdx = itemIndexByID[anchor.id],
@@ -1218,8 +1335,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         view.backgroundColor = UIColor(Ink.paper)
         guard nextStyle != currentStyle else { return }
         currentStyle = nextStyle
+        cancelAllPrefetches()
+        lastMeasuredItemHeights.removeAll()
         layoutCache.invalidateAll()
-        prefetchedKeysBySection.removeAll()
         ChatTextTileRenderer.shared.invalidateAll()
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
         preserveReadingAnchorDuring {
@@ -1361,8 +1479,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 scheduleHostMetricsFlush()
             } else if abs(collectionView.bounds.width - lastKnownContentWidth) > 0.5 {
                 lastKnownContentWidth = collectionView.bounds.width
-                layoutCache.invalidateAll()
-                prefetchedKeysBySection.removeAll()
+                cancelAllPrefetches()
+                lastMeasuredItemHeights.removeAll()
+                layoutCache.invalidateHeightsOnly()
                 preserveReadingAnchorDuring {
                     reconfigureAllVisibleCells()
                     collectionView.collectionViewLayout.invalidateLayout()
@@ -1529,7 +1648,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let finished = progress >= 1 || abs(nextBottom - insetCatchUpToBottom) < 0.5
         let resolvedBottom = finished ? insetCatchUpToBottom : nextBottom
 
-        applyInsetsNow(top: targetTopInset, bottom: resolvedBottom)
+        applyInsetsNow(top: targetTopInset, bottom: resolvedBottom, publishMetrics: finished)
 
         if finished {
             stopInsetDisplayLink()
@@ -1598,7 +1717,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
-    private func applyInsetsNow(top: CGFloat, bottom: CGFloat) {
+    private func applyInsetsNow(top: CGFloat, bottom: CGFloat, publishMetrics: Bool = true) {
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
         let current = collectionView.contentInset
         guard abs(current.top - top) > 0.25 || abs(current.bottom - bottom) > 0.25 else { return }
@@ -1619,7 +1738,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         if hasPerformedInitialScroll {
             if shouldPinToBottom {
-                scrollToBottom(animated: false)
+                scrollToBottom(animated: false, layoutIfNeeded: true, publishMetrics: false)
             } else if !isUserTouchScrolling,
                       let anchor,
                       let newIdx = itemIndexByID[anchor.id],
@@ -1645,7 +1764,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isProgrammaticScroll = wasProgrammatic
         CATransaction.commit()
 
-        if hasPerformedInitialScroll {
+        if publishMetrics && hasPerformedInitialScroll {
             publishVisibleAndFooterMetrics()
         }
     }
@@ -1727,6 +1846,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func applyStreamingResizePreservingScroll() {
+        needsDeferredStreamingResize = false
         let savedOffsetY = collectionView.contentOffset.y
         let pinned = canAutoPinToBottom
         let wasProgrammatic = isProgrammaticScroll
@@ -1740,9 +1860,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.layoutIfNeeded()
 
             if pinned {
-                scrollToBottom(animated: false)
+                scrollToBottom(animated: false, layoutIfNeeded: false, publishMetrics: false)
             } else if !wasProgrammatic && !isUserTouchScrolling {
-                collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: savedOffsetY)
+                let minY = -collectionView.contentInset.top
+                let maxY = bottomOffsetY(for: collectionView)
+                let clampedY = min(maxY, max(minY, savedOffsetY))
+                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
+                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
+                }
+                lastScrollOffsetY = collectionView.contentOffset.y
             }
 
             isProgrammaticScroll = wasProgrammatic
@@ -1851,14 +1977,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         return max(minY, maxY)
     }
 
-    private func scrollToBottom(animated: Bool) {
+    private func scrollToBottom(animated: Bool, layoutIfNeeded: Bool = true, publishMetrics: Bool = true) {
         let targetY = bottomOffsetY(for: collectionView)
         isPinnedToBottom = true
         if animated {
             if abs(collectionView.contentOffset.y - targetY) < 0.5 {
                 isProgrammaticScroll = false
                 lastScrollOffsetY = collectionView.contentOffset.y
-                publishVisibleAndFooterMetrics()
+                if publishMetrics { publishVisibleAndFooterMetrics() }
                 return
             }
             isProgrammaticScroll = true
@@ -1875,10 +2001,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
             collectionView.contentOffset = CGPoint(x: 0, y: targetY)
-            collectionView.layoutIfNeeded()
+            if layoutIfNeeded {
+                collectionView.layoutIfNeeded()
+            }
             lastScrollOffsetY = collectionView.contentOffset.y
             isProgrammaticScroll = wasProgrammatic
-            publishVisibleAndFooterMetrics()
+            if publishMetrics {
+                publishVisibleAndFooterMetrics()
+            }
         }
     }
 
@@ -1974,12 +2104,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         actions.chat.setBrowsingHistory(false)
         actions.onScrollingChanged(false)
 
-        if needsDeferredDynamicRefresh {
+        if needsDeferredDynamicRefresh || needsDeferredStreamingResize {
+            let hadStreamingResize = needsDeferredStreamingResize
             needsDeferredDynamicRefresh = false
+            needsDeferredStreamingResize = false
             if !isDismantled, collectionView != nil, collectionView.bounds.width > 0 {
-                preserveReadingAnchorDuring {
-                    collectionView.collectionViewLayout.invalidateLayout()
-                    collectionView.layoutIfNeeded()
+                if hadStreamingResize {
+                    applyStreamingResizePreservingScroll()
+                } else {
+                    preserveReadingAnchorDuring {
+                        collectionView.collectionViewLayout.invalidateLayout()
+                        collectionView.layoutIfNeeded()
+                    }
                 }
             }
         }
@@ -2364,9 +2500,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 case .code(let codeSlice, let sliceIndex):
                     guard !codeSlice.isLive else { continue }
                     let unfolded = unfoldedSet.contains(sliceIndex)
-                    let activeAttr = (codeSlice.folds && !unfolded) ? codeSlice.foldedAttributed : codeSlice.fullAttributed
-                    let activeToken = (codeSlice.folds && !unfolded) ? codeSlice.foldedRenderToken : codeSlice.fullRenderToken
-                    let textSize = (codeSlice.folds && !unfolded) ? codeSlice.foldedContentSize : codeSlice.fullContentSize
+                    let resolved = codeSlice.resolved(unfolded: unfolded)
+                    let activeAttr = resolved.attributed
+                    let activeToken = resolved.token
+                    let textSize = resolved.size
                     let codeW = max(contentWidth - Ink.Space.l * 2, textSize.width)
                     let codeH = max(16, textSize.height)
                     guard activeAttr.length > 0, codeW > 0, codeH > 0 else { continue }

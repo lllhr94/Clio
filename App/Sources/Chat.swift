@@ -72,7 +72,10 @@ final class ChatLiveStreamState {
 /// The chat with one Bot or one group: shows it, keeps it live, sends into it.
 @MainActor @Observable
 final class ChatModel {
-    private(set) var lines: [ChatLine] = []
+    private(set) var lines: [ChatLine] = [] {
+        didSet { linesVersion &+= 1 }
+    }
+    @ObservationIgnored private(set) var linesVersion: UInt64 = 0
     private(set) var pending: [ChatLine] = []
     /// Isolated domain for high-frequency token, thinking, pulse, and handoff updates.
     @ObservationIgnored let stream = ChatLiveStreamState()
@@ -195,7 +198,7 @@ final class ChatModel {
 
     func open() {
         guard feed == nil, opening == nil else { return }
-        let styleKey = ProseStyleKey.current()
+        let styleKey: ProseStyleKey? = Pref.useUIKitChatList ? nil : ProseStyleKey.current()
         if demo {
             if !loaded { lines = Self.demoLines(for: bot) }
             loaded = true
@@ -270,7 +273,7 @@ final class ChatModel {
         fresh = nil
     }
 
-    private func schedulePrewarm(_ targetLines: ArraySlice<ChatLine>, styleKey: ProseStyleKey) {
+    private func schedulePrewarm(_ targetLines: ArraySlice<ChatLine>, styleKey: ProseStyleKey?) {
         prewarmTask?.cancel()
         let targets = Array(targetLines.filter { $0.kind == .bot && !$0.text.isEmpty })
         guard !targets.isEmpty else {
@@ -341,7 +344,7 @@ final class ChatModel {
         let epoch = team.epochs[key, default: 0]
         let nextLimit = limit + 160
         let priorCount = lines.count
-        let styleKey = ProseStyleKey.current()
+        let styleKey: ProseStyleKey? = Pref.useUIKitChatList ? nil : ProseStyleKey.current()
         let history = await team.loadHistory(key)
         let working = team.isWorking(key)
         let tool = running
@@ -517,7 +520,7 @@ final class ChatModel {
         let epoch = team.epochs[key, default: 0]
         let working = team.isWorking(key)
         let label = running
-        let styleKey = ProseStyleKey.current()
+        let styleKey: ProseStyleKey? = Pref.useUIKitChatList ? nil : ProseStyleKey.current()
         toolRows = Task { [weak self] in
             let worker = Task.detached(priority: .userInitiated) {
                 Self.buildRows(history.suffix(pageLimit), working: working, running: label)
@@ -571,7 +574,8 @@ final class ChatModel {
             updateKeptRows(next, event: event)
             if case .replyCommitted(let id) = event,
                let committed = next.first(where: { $0.id == id && $0.kind == .bot }) {
-                schedulePrewarm([committed][...], styleKey: ProseStyleKey.current())
+                let styleKey: ProseStyleKey? = Pref.useUIKitChatList ? nil : ProseStyleKey.current()
+                schedulePrewarm([committed][...], styleKey: styleKey)
             }
         case .finished:
             running = nil

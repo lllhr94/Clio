@@ -357,6 +357,8 @@ final class ChatNoteCell: UICollectionViewCell {
     private var currentIsLatest = false
     private var currentEntry: ChatLayoutCache.NoteLayoutEntry?
     private var actions: ChatListActions?
+    private var lastAdviceButtonSignature = ""
+    private var lastAdviceColorSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -457,16 +459,24 @@ final class ChatNoteCell: UICollectionViewCell {
 
             if row.isLatestNote, let buttonText = advice.button {
                 adviceButton.isHidden = false
-                var cfg = UIButton.Configuration.filled()
-                cfg.title = buttonText
-                cfg.cornerStyle = .capsule
-                cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: Ink.Space.l, bottom: 6, trailing: Ink.Space.l)
-                cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                    var copy = incoming
-                    copy.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
-                    return copy
+                let sig = "\(buttonText)|\(UIScale.factor)"
+                if sig != lastAdviceButtonSignature || adviceButton.configuration == nil {
+                    lastAdviceButtonSignature = sig
+                    lastAdviceColorSignature = ""
+                    var cfg = adviceButton.configuration ?? UIButton.Configuration.filled()
+                    cfg.title = buttonText
+                    cfg.cornerStyle = .capsule
+                    cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: Ink.Space.l, bottom: 6, trailing: Ink.Space.l)
+                    cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                        var copy = incoming
+                        copy.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
+                        return copy
+                    }
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    adviceButton.configuration = cfg
+                    CATransaction.commit()
                 }
-                adviceButton.configuration = cfg
             } else {
                 adviceButton.isHidden = true
             }
@@ -499,10 +509,19 @@ final class ChatNoteCell: UICollectionViewCell {
         adviceTitle.textColor = titleColor
         adviceDetail.textColor = UIColor(Ink.inkSoft)
 
-        var cfg = adviceButton.configuration
-        cfg?.baseForegroundColor = UIColor(Ink.accent)
-        cfg?.baseBackgroundColor = UIColor(Ink.accentWash)
-        adviceButton.configuration = cfg
+        if !adviceButton.isHidden {
+            let theme = Theme.shared
+            let colorSig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+            if colorSig != lastAdviceColorSignature, var cfg = adviceButton.configuration {
+                lastAdviceColorSignature = colorSig
+                cfg.baseForegroundColor = UIColor(Ink.accent)
+                cfg.baseBackgroundColor = UIColor(Ink.accentWash)
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                adviceButton.configuration = cfg
+                CATransaction.commit()
+            }
+        }
     }
 
     override func layoutSubviews() {
@@ -562,6 +581,7 @@ final class ChatEarlierButtonCell: UICollectionViewCell {
     var onLoadEarlier: (() -> Void)?
 
     private let button = UIButton(type: .system)
+    private var lastButtonSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -602,8 +622,13 @@ final class ChatEarlierButtonCell: UICollectionViewCell {
     }
 
     private func applyButtonConfiguration() {
+        let title = L.t("chat.earlier")
+        let signature = "\(title)|\(UIScale.factor)"
+        guard signature != lastButtonSignature || button.configuration == nil else { return }
+        lastButtonSignature = signature
+
         var cfg = button.configuration ?? UIButton.Configuration.plain()
-        cfg.title = L.t("chat.earlier")
+        cfg.title = title
         cfg.image = UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium))
         cfg.imagePadding = Ink.Space.xs
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
@@ -611,7 +636,10 @@ final class ChatEarlierButtonCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .medium)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         button.configuration = cfg
+        CATransaction.commit()
     }
 
     override func prepareForReuse() {
@@ -735,7 +763,8 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
     private let headerLabel = UILabel()
     private let cardView = UIView()
     private let tailLabel = UILabel()
-    private let fadeMask = CAGradientLayer()
+    private let fadeOverlay = CAGradientLayer()
+    private var lastColorSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -758,6 +787,7 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
         headerLabel.lineBreakMode = .byTruncatingTail
         contentView.addSubview(headerLabel)
 
+        cardView.clipsToBounds = true
         cardView.layer.cornerCurve = .continuous
         cardView.layer.borderWidth = 0.5
         contentView.addSubview(cardView)
@@ -765,13 +795,9 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
         tailLabel.numberOfLines = 3
         cardView.addSubview(tailLabel)
 
-        fadeMask.colors = [
-            UIColor.black.withAlphaComponent(0.35).cgColor,
-            UIColor.black.cgColor,
-        ]
-        fadeMask.startPoint = CGPoint(x: 0.5, y: 0)
-        fadeMask.endPoint = CGPoint(x: 0.5, y: 0.5)
-        cardView.layer.mask = fadeMask
+        fadeOverlay.startPoint = CGPoint(x: 0.5, y: 0)
+        fadeOverlay.endPoint = CGPoint(x: 0.5, y: 0.55)
+        cardView.layer.addSublayer(fadeOverlay)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatLiveThinkingCell, _) in
             cell.refreshColors()
@@ -786,7 +812,6 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
     }
 
     func configure(text: String) {
-        brainView.image = UIImage(systemName: "brain", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium))
         headerLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
         headerLabel.text = Words.t("正在沉吟") + " · \(text.count) 字"
         tailLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
@@ -797,12 +822,26 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
     }
 
     private func refreshColors() {
+        let theme = Theme.shared
+        let sig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(UIScale.factor)"
+        guard sig != lastColorSignature else { return }
+        lastColorSignature = sig
+
         brainView.tintColor = UIColor(Ink.inkFaint)
         headerLabel.textColor = UIColor(Ink.inkFaint)
         cardView.layer.cornerRadius = Ink.Radius.small
-        cardView.backgroundColor = UIColor(Ink.paperRaised)
+        let raised = UIColor(Ink.paperRaised).resolvedColor(with: traitCollection)
+        cardView.backgroundColor = raised
         cardView.layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.65).cgColor
         tailLabel.textColor = UIColor(Ink.inkSoft)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fadeOverlay.colors = [
+            raised.withAlphaComponent(0.72).cgColor,
+            raised.withAlphaComponent(0).cgColor,
+        ]
+        CATransaction.commit()
     }
 
     override func layoutSubviews() {
@@ -821,7 +860,7 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
         tailLabel.frame = CGRect(x: Ink.Space.m, y: Ink.Space.s, width: max(40, contentW - Ink.Space.m * 2), height: textH)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        fadeMask.frame = cardView.bounds
+        fadeOverlay.frame = cardView.bounds
         CATransaction.commit()
     }
 }
@@ -838,6 +877,8 @@ final class ChatLiveFailureCell: UICollectionViewCell {
     private let errorLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private var showsRetry = true
+    private var lastRetryConfigSignature = ""
+    private var lastRetryColorSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -894,8 +935,14 @@ final class ChatLiveFailureCell: UICollectionViewCell {
     }
 
     private func applyRetryConfiguration() {
+        let title = L.t("actions.retry")
+        let signature = "\(title)|\(UIScale.factor)"
+        guard signature != lastRetryConfigSignature || retryButton.configuration == nil else { return }
+        lastRetryConfigSignature = signature
+        lastRetryColorSignature = ""
+
         var cfg = retryButton.configuration ?? UIButton.Configuration.filled()
-        cfg.title = L.t("actions.retry")
+        cfg.title = title
         cfg.image = UIImage(systemName: "arrow.clockwise", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .semibold))
         cfg.imagePadding = Ink.Space.xs
         cfg.cornerStyle = .capsule
@@ -905,7 +952,10 @@ final class ChatLiveFailureCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .semibold)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         retryButton.configuration = cfg
+        CATransaction.commit()
     }
 
     private func refreshColors() {
@@ -914,10 +964,17 @@ final class ChatLiveFailureCell: UICollectionViewCell {
         iconView.tintColor = UIColor(Ink.stop)
         errorLabel.textColor = UIColor(Ink.stop)
 
-        var cfg = retryButton.configuration
-        cfg?.baseForegroundColor = UIColor(Ink.ink)
-        cfg?.baseBackgroundColor = UIColor(Ink.paper)
-        retryButton.configuration = cfg
+        let theme = Theme.shared
+        let colorSig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+        if colorSig != lastRetryColorSignature, var cfg = retryButton.configuration {
+            lastRetryColorSignature = colorSig
+            cfg.baseForegroundColor = UIColor(Ink.ink)
+            cfg.baseBackgroundColor = UIColor(Ink.paper)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            retryButton.configuration = cfg
+            CATransaction.commit()
+        }
     }
 
     override func layoutSubviews() {
@@ -968,6 +1025,7 @@ final class ChatQueuedCell: UICollectionViewCell {
 
     private var currentEntry: ChatLayoutCache.QueuedLayoutEntry?
     private var sendingBlocked = false
+    private var lastActionConfigSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1019,6 +1077,12 @@ final class ChatQueuedCell: UICollectionViewCell {
     }
 
     private func applyActionButtonConfigurations() {
+        let signature = "\(UIScale.factor)"
+        guard signature != lastActionConfigSignature || withdrawButton.configuration == nil || sendNowButton.configuration == nil else {
+            return
+        }
+        lastActionConfigSignature = signature
+
         var withdrawCfg = withdrawButton.configuration ?? UIButton.Configuration.plain()
         withdrawCfg.title = "撤回"
         withdrawCfg.image = UIImage(systemName: "arrow.uturn.backward", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small))
@@ -1029,7 +1093,6 @@ final class ChatQueuedCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small)
             return copy
         }
-        withdrawButton.configuration = withdrawCfg
 
         var sendCfg = sendNowButton.configuration ?? UIButton.Configuration.plain()
         sendCfg.title = "立即发送"
@@ -1041,7 +1104,12 @@ final class ChatQueuedCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .semibold)
             return copy
         }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        withdrawButton.configuration = withdrawCfg
         sendNowButton.configuration = sendCfg
+        CATransaction.commit()
     }
 
     override func prepareForReuse() {

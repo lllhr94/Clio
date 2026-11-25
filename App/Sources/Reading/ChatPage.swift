@@ -16,7 +16,11 @@ struct ChatPage: View {
     @State var dictationSlot = ChatDictationSlot()
     let asker = Asker.shared
     @State var petPerch = PetPerch()
-    @State var chatViewport = CGSize.zero
+    @State var viewportMetrics = ChatViewportMetrics()
+    var chatViewport: CGSize {
+        get { viewportMetrics.size }
+        nonmutating set { viewportMetrics.size = newValue }
+    }
     @Environment(\.accessibilityReduceMotion) var calmPetMotion
     @Environment(\.scenePhase) var scenePhase
     /// Opens the sidebar. An object that stays the same, not a closure made anew: a new closure on every redraw of the
@@ -31,6 +35,9 @@ struct ChatPage: View {
     @State var headerHeight: CGFloat = 0
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
+    @State var draftAttachmentsLoaded = false
+    @State var draftAttachmentsEdited = false
+    @State var isApplyingLoadedAttachments = false
     @State var picks: [PhotosPickerItem] = []
     @State var attachmentRevision = UUID()
     @State var pasteTask: Task<Void, Never>?
@@ -46,7 +53,10 @@ struct ChatPage: View {
     @AppStorage("look.uikitChatList") var useUIKitChatList = true
     /// Whether the page keeps to the newest line as things arrive: off once the reader scrolls up to read,
     /// on again when they come back to the bottom, send something, or tap 回到最新.
-    @State var following = true
+    var following: Bool {
+        get { followState.following }
+        nonmutating set { followState.following = newValue }
+    }
     /// 聊天里显示头像: off unless turned on (设置 › 对话 › 对话显示与反馈).
     @AppStorage("chat.faces") var faces = false
     /// The stop button asks first (as Open Minis does): a long task lost to a thumb that slipped is worse than one more tap.
@@ -69,7 +79,10 @@ struct ChatPage: View {
     /// A reply opened to pick any words from it.
     @State var picking: ChatLine?
     /// The message of yours 「回到我上一句」 went to last; the next tap goes one further up.
-    @State var jumpedTo: String?
+    var jumpedTo: String? {
+        get { viewport.jumpedTo }
+        nonmutating set { viewport.jumpedTo = newValue }
+    }
     @State var hideJumps: Task<Void, Never>?
     @State var chrome = ChatChrome()
     @State var viewport = ChatViewport()
@@ -237,33 +250,7 @@ struct ChatPage: View {
     }
 
     nonisolated private static func prewarmProseText(_ rawText: String) {
-        guard !rawText.isEmpty else { return }
-        let blocks = ParsedCache.blocks(rawText)
-        prewarmCodeAndTables(in: blocks)
-    }
-
-    nonisolated private static func prewarmCodeAndTables(in blocks: [Prose.Block]) {
-        for block in blocks {
-            if Task.isCancelled { return }
-            switch block {
-            case .code(let language, let rawCode, _):
-                let trimmed = CodeTokenizer.trimmedLines(rawCode)
-                let body = trimmed.isEmpty ? " " : trimmed
-                let count = CodeTokenizer.lineCount(body)
-                let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
-                _ = CodeTokenizer.prepare(body, language: language, isOutput: isOutput)
-                if count > 20 {
-                    let folded = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
-                    _ = CodeTokenizer.prepare(folded, language: language, isOutput: isOutput)
-                }
-            case .table(let table):
-                _ = TablePreparer.prepare(table)
-            case .quote(let inner):
-                prewarmCodeAndTables(in: inner)
-            default:
-                break
-            }
-        }
+        ProsePrewarm.prewarmUIKitText(rawText)
     }
 
     @State var earlierTask: Task<Void, Never>?
@@ -864,7 +851,7 @@ struct ChatPage: View {
             largeText: largeText,
             confirmStop: confirmStop,
             calmPetMotion: calmPetMotion,
-            chatViewport: chatViewport,
+            viewportMetrics: viewportMetrics,
             coveredByPage: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
             baseSheetOpen: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil,
             typing: $typing,
@@ -882,7 +869,6 @@ struct ChatPage: View {
             quote: $quote,
             photos: $photos,
             files: $files,
-            following: $following,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() },
             onPreviousQuestion: { stepQuestion(earlier: true) },
@@ -913,7 +899,6 @@ struct ChatPage: View {
             contextMetrics: contextMetrics,
             followState: followState,
             workTimer: workTimer,
-            following: following,
             usageOpen: usageOpen,
             typing: $typing,
             onStir: stir,
@@ -944,7 +929,8 @@ struct ChatPage: View {
         let leafingBinding = $leafing
         let savingNoteBinding = $savingNote
         let notingBinding = $noting
-        let followingBinding = $following
+        let followRef = followState
+        let followingBinding = Binding(get: { followRef.following }, set: { followRef.following = $0 })
         let undoAskBinding = $undoAsk
         let tuningOpenBinding = $tuningOpen
         let careOpenBinding = $careOpen
@@ -1054,8 +1040,10 @@ struct ChatPage: View {
             }
         }
         .background { observers }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { chatViewport = $0 }
         .safeAreaInset(edge: .bottom) { bottomStack }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            if chatViewport != newSize { chatViewport = newSize }
+        }
         .sheet(isPresented: $petSettingsOpen) { PetPage() }
         .sheet(isPresented: $usageOpen) {
             UsageSheet(team: team, key: chat.key)
@@ -1066,13 +1054,32 @@ struct ChatPage: View {
             DiagTrail.record("开对话(\(chat.lines.count)条)")
             chat.open()
             PetNews.shared.focused = chat.key
-            draftState.load(chat.key)
-            if photos.isEmpty, files.isEmpty {
-                let kept = DraftAttachments.load(chat.key)
-                photos = kept.photos
-                files = kept.files
-                draftAttachmentQueuedIds = kept.queuedIds
+            draftState.bind(chat.key)
+        }
+        .task(id: chat.key) {
+            let targetKey = chat.key
+            let startRevision = attachmentRevision
+            async let loadedText = DraftTextStore.loadAsync(for: targetKey)
+            async let loadedAttachments = DraftAttachments.loadAsync(targetKey)
+            let (textDraft, keptAttachments) = await (loadedText, loadedAttachments)
+            guard !Task.isCancelled, self.chat.key == targetKey else { return }
+            draftState.applyLoaded(textDraft, for: targetKey)
+            if !draftAttachmentsEdited, photos.isEmpty, files.isEmpty, attachmentRevision == startRevision {
+                if !keptAttachments.photos.isEmpty || !keptAttachments.files.isEmpty || !keptAttachments.queuedIds.isEmpty {
+                    isApplyingLoadedAttachments = true
+                    photos = keptAttachments.photos
+                    files = keptAttachments.files
+                    draftAttachmentQueuedIds = keptAttachments.queuedIds
+                    isApplyingLoadedAttachments = false
+                }
             }
+            draftAttachmentsLoaded = true
+        }
+        .onChange(of: photos) { _, _ in
+            if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
+        }
+        .onChange(of: files) { _, _ in
+            if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
         }
         .onChange(of: scenePhase) { _, next in
             if next == .background {
@@ -1085,7 +1092,9 @@ struct ChatPage: View {
             }
             if next != .active {
                 draftState.flush()
-                DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+                if draftAttachmentsLoaded || draftAttachmentsEdited || !photos.isEmpty || !files.isEmpty {
+                    DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+                }
             }
         }
         .hitchPage(isRoom ? "雅集" : "絮语")
@@ -1098,7 +1107,9 @@ struct ChatPage: View {
             approvalInsetTask?.cancel()
             approvalInsetTask = nil
             draftState.flush()
-            DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+            if draftAttachmentsLoaded || draftAttachmentsEdited || !photos.isEmpty || !files.isEmpty {
+                DraftAttachments.save(photos: photos, files: files, chat: chat.key, queuedIds: draftAttachmentQueuedIds)
+            }
             chat.close()
             team.markSeen(chat.key)
             hideJumps?.cancel()
@@ -1429,6 +1440,11 @@ final class ChatFollowState {
 }
 
 @MainActor @Observable
+final class ChatViewportMetrics {
+    var size = CGSize.zero
+}
+
+@MainActor @Observable
 final class ChatWorkTimer {
     var since: Date?
 }
@@ -1672,7 +1688,6 @@ struct ChatConversationObservers: View {
     let followState: ChatFollowState
     let workTimer: ChatWorkTimer
 
-    let following: Bool
     let usageOpen: Bool
     let typing: FocusState<Bool>.Binding
 
@@ -1697,9 +1712,6 @@ struct ChatConversationObservers: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .onChange(of: following, initial: true) { _, now in
-                if followState.following != now { followState.following = now }
-            }
             .onChange(of: working, initial: true) { _, now in
                 workTimer.since = now ? (workTimer.since ?? Date()) : nil
             }
@@ -1821,6 +1833,13 @@ final class ChatDraft {
             let hasSendableText = text.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
             if self.hasText != hasText { self.hasText = hasText }
             if self.hasSendableText != hasSendableText { self.hasSendableText = hasSendableText }
+            guard !isApplyingLoaded else { return }
+            if !loaded {
+                userEditedBeforeLoad = true
+                if key == nil, let chatKey {
+                    key = "draft." + chatKey
+                }
+            }
             guard key != nil else { return }
             if text.isEmpty {
                 flush()
@@ -1840,14 +1859,36 @@ final class ChatDraft {
     @ObservationIgnored private var chatKey: String?
     @ObservationIgnored private var queuedIds: [UUID] = []
     @ObservationIgnored private var save: Task<Void, Never>?
+    @ObservationIgnored private var loaded = false
+    @ObservationIgnored private var userEditedBeforeLoad = false
+    @ObservationIgnored private var isApplyingLoaded = false
+
+    func bind(_ chat: String) {
+        if chatKey == nil {
+            chatKey = chat
+        }
+    }
 
     func load(_ chat: String) {
-        guard key == nil else { return }
+        bind(chat)
+        guard !loaded else { return }
+        let fetched = DraftTextStore.load(for: chat)
+        applyLoaded(fetched, for: chat)
+    }
+
+    func applyLoaded(_ fetched: StoredTextDraft, for chat: String) {
+        guard !loaded else { return }
         chatKey = chat
-        let loaded = DraftTextStore.load(for: chat)
-        text = loaded.text
-        queuedIds = loaded.queuedIds
+        loaded = true
         key = "draft." + chat
+        if !userEditedBeforeLoad && text.isEmpty {
+            isApplyingLoaded = true
+            text = fetched.text
+            isApplyingLoaded = false
+            queuedIds = fetched.queuedIds
+        } else if queuedIds.isEmpty, !fetched.queuedIds.isEmpty {
+            queuedIds = fetched.queuedIds
+        }
     }
 
     func recordQueuedId(_ id: UUID) {
@@ -1868,7 +1909,7 @@ final class ChatDraft {
     func flush() {
         save?.cancel()
         save = nil
-        guard let chatKey else { return }
+        guard let chatKey, loaded || userEditedBeforeLoad else { return }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             queuedIds.removeAll()
             DraftTextStore.save(StoredTextDraft(text: "", queuedIds: []), for: chatKey)
@@ -1927,7 +1968,18 @@ enum DraftTextStore {
     }
 
     static func load(for chat: String) -> StoredTextDraft {
-        queue.sync {}
+        queue.sync { readSync(for: chat) }
+    }
+
+    static func loadAsync(for chat: String) async -> StoredTextDraft {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: readSync(for: chat))
+            }
+        }
+    }
+
+    private static func readSync(for chat: String) -> StoredTextDraft {
         if let saved = QueuedMessageStore.loadTextDraft(for: chat, under: root) {
             return saved
         }
@@ -2093,7 +2145,18 @@ enum DraftAttachments {
     }
 
     static func load(_ chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID]) {
-        queue.sync {}
+        queue.sync { readSync(chat) }
+    }
+
+    static func loadAsync(_ chat: String) async -> (photos: [Data], files: [String], queuedIds: [UUID]) {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: readSync(chat))
+            }
+        }
+    }
+
+    private static func readSync(_ chat: String) -> (photos: [Data], files: [String], queuedIds: [UUID]) {
         let primary = folder(chat)
         if let loaded = loadFrom(dir: primary, chat: chat) {
             return loaded

@@ -207,7 +207,10 @@ final class ChatAssistantCell: UICollectionViewCell {
             copy.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
             return copy
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         continueButton.configuration = cfg
+        CATransaction.commit()
     }
 
     override func prepareForReuse() {
@@ -780,7 +783,10 @@ final class ChatAssistantCell: UICollectionViewCell {
                 appliedContinueThemeSignature = themeSig
                 cfg.baseForegroundColor = UIColor(Ink.accent)
                 cfg.baseBackgroundColor = UIColor(Ink.accentWash)
-                continueButton.configuration = cfg
+                CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        continueButton.configuration = cfg
+        CATransaction.commit()
             }
         }
     }
