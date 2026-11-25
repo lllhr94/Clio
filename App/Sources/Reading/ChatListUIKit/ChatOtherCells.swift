@@ -1605,10 +1605,7 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        cancellable?.cancel()
-        cancellable = nil
-        observedTail = nil
-        onHeightChanged = nil
+        stopObserving()
         currentLines = []
         currentStyle = nil
         lastReportedHeight = -1
@@ -1619,6 +1616,13 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
             label.isHidden = true
             label.text = nil
         }
+    }
+
+    func stopObserving() {
+        cancellable?.cancel()
+        cancellable = nil
+        observedTail = nil
+        onHeightChanged = nil
     }
 
     static func measureHeight(lines: [ToolTail.Line], style: ChatListStyle) -> CGFloat {

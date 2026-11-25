@@ -169,7 +169,22 @@ struct Trace: View {
         }
     }
 
+    private enum CanonicalPlace {
+        case desk
+        case shell
+        case remote
+        case browser
+    }
+
+    struct PrewarmedTraceSummary: Sendable {
+        fileprivate let keepsakes: [Keepsake]
+        fileprivate let remembered: [Remembered]
+        fileprivate let pages: [URL]
+        let mountRevision: UInt64
+    }
+
     /// True when the steps row can render as a pure UIKit 1-line summary cell (no open drawer or inline outcome cards).
+    /// Never performs synchronous disk/mount resolution (`WorkspaceFileRef.resolve`) on `@MainActor`.
     @MainActor
     static func shouldUseSummaryCell(for line: ChatLine) -> Bool {
         guard !Pref.traceOpen else { return false }
@@ -180,13 +195,195 @@ struct Trace: View {
         if let cached = TraceKeepsakeCache.get(line: line, desk: desk) {
             return cached.items.isEmpty && cached.remembered.isEmpty && cached.pages.isEmpty
         }
-        let keepsakes = buildKeepsakes(line, desk: desk).filter { item in
+        if !buildPages(line).isEmpty || !buildRemembered(line).isEmpty || hasSynchronousOutcomeKeepsake(line) {
+            return false
+        }
+        if mayReferenceWorkspaceFiles(line) {
+            return false
+        }
+        TraceKeepsakeCache.set([], remembered: [], pages: [], line: line, desk: desk)
+        return true
+    }
+
+    @MainActor
+    static func hasCachedSummaryEligibility(for line: ChatLine) -> Bool {
+        TraceKeepsakeCache.get(line: line, desk: Words.t("书案/")) != nil
+    }
+
+    @MainActor
+    static func clearSummaryCache() {
+        TraceKeepsakeCache.clear()
+    }
+
+    nonisolated static func prewarmKeepsakePayload(
+        for line: ChatLine,
+        desk: String,
+        mountRevision: UInt64
+    ) -> PrewarmedTraceSummary {
+        PrewarmedTraceSummary(
+            keepsakes: buildKeepsakes(line, desk: desk),
+            remembered: buildRemembered(line),
+            pages: buildPages(line),
+            mountRevision: mountRevision
+        )
+    }
+
+    @MainActor
+    static func commitPrewarmedSummary(_ payload: PrewarmedTraceSummary, for line: ChatLine, desk: String) -> Bool {
+        guard payload.mountRevision == MountedFolders.revision else { return false }
+        let currentOnly = payload.keepsakes.filter { item in
             item.mount.map(MountedFolders.isCurrent) ?? true
         }
-        let remembered = buildRemembered(line)
-        let pages = buildPages(line)
-        TraceKeepsakeCache.set(keepsakes, remembered: remembered, pages: pages, line: line, desk: desk)
-        return keepsakes.isEmpty && remembered.isEmpty && pages.isEmpty
+        TraceKeepsakeCache.set(
+            currentOnly,
+            remembered: payload.remembered,
+            pages: payload.pages,
+            line: line,
+            desk: desk,
+            mountRevision: payload.mountRevision
+        )
+        return !Pref.traceOpen && currentOnly.isEmpty && payload.remembered.isEmpty && payload.pages.isEmpty
+    }
+
+    nonisolated private static func canonicalPlace(of label: String) -> CanonicalPlace? {
+        guard let kind = canonicalKind(of: label) else { return nil }
+        if kind == canonicalKind(of: "文件") { return .desk }
+        if kind == canonicalKind(of: "终端") { return .shell }
+        if kind == canonicalKind(of: "远程主机") { return .remote }
+        if kind == canonicalKind(of: "浏览器") { return .browser }
+        return nil
+    }
+
+    /// Pure in-memory check returning true when at least one step guarantees an outcome card
+    /// without invoking `WorkspaceFileRef.resolve`.
+    nonisolated static func hasSynchronousOutcomeKeepsake(_ line: ChatLine) -> Bool {
+        for (index, tool) in line.tools.enumerated() {
+            let parsed = TraceStepStatus.parse(tool)
+            let status = parsed.status
+            let cleanTool = parsed.clean
+            let detail = index < line.details.count ? line.details[index] : nil
+            let output = detail?.output ?? ""
+            let parts = cleanTool.split(separator: "：", maxSplits: 1).map(String.init)
+            let rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : cleanTool
+            let place = canonicalPlace(of: cleanTool)
+
+            if status.allowsOutcomeCard {
+                if cleanTool.hasPrefix("新建日程：")
+                    || cleanTool.hasPrefix("加提醒：")
+                    || (cleanTool.hasPrefix("查天气：") && !output.isEmpty && !output.hasPrefix("没找到"))
+                    || (cleanTool.hasPrefix("健康：") && !output.isEmpty) {
+                    return true
+                }
+            }
+
+            if let toolName = detail?.tool, !toolName.isEmpty {
+                let args = detail.flatMap { JSONValue.parse($0.input) }
+                switch toolName {
+                case "write_file", "edit_file":
+                    guard status.allowsOutcomeCard else { continue }
+                    let fallbackPath = (rest.hasPrefix("写 ") || rest.hasPrefix("改 "))
+                        ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                        : ""
+                    let rawPath = (args?["path"]?.string ?? fallbackPath).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty && (place == .shell || place == .remote) {
+                        return true
+                    }
+                case "shell":
+                    if args?["background"]?.bool == true { continue }
+                    if let job = args?["job"]?.string, !job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+                    if TraceStepStatus.shouldKeepCommand(status: status, output: output) {
+                        return true
+                    }
+                case "ssh_run":
+                    if TraceStepStatus.shouldKeepCommand(status: status, output: output) {
+                        return true
+                    }
+                default:
+                    break
+                }
+                continue
+            }
+
+            if place == .shell || place == .remote {
+                if ["读 ", "找 ", "搜 ", "翻看 ", "看图 ", "看后台任务", "看看后台任务", "停掉后台任务", "后台跑"].contains(where: { rest.hasPrefix($0) }) {
+                    continue
+                }
+                if rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
+                    if status.allowsOutcomeCard { return true }
+                    continue
+                }
+                if TraceStepStatus.shouldKeepCommand(status: status, output: output) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Pure string/tool-name check returning true when any step may resolve a workspace file
+    /// (requiring off-main `WorkspaceFileRef.resolve`).
+    nonisolated static func mayReferenceWorkspaceFiles(_ line: ChatLine) -> Bool {
+        for (index, tool) in line.tools.enumerated() {
+            let parsed = TraceStepStatus.parse(tool)
+            let status = parsed.status
+            let cleanTool = parsed.clean
+            let detail = index < line.details.count ? line.details[index] : nil
+            let output = detail?.output ?? ""
+            let parts = cleanTool.split(separator: "：", maxSplits: 1).map(String.init)
+            let rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : cleanTool
+            let place = canonicalPlace(of: cleanTool)
+
+            if status.allowsOutcomeCard {
+                if cleanTool.hasPrefix("新建日程：")
+                    || cleanTool.hasPrefix("加提醒：")
+                    || (cleanTool.hasPrefix("查天气：") && !output.isEmpty && !output.hasPrefix("没找到"))
+                    || (cleanTool.hasPrefix("健康：") && !output.isEmpty) {
+                    continue
+                }
+            }
+
+            if let toolName = detail?.tool, !toolName.isEmpty {
+                switch toolName {
+                case "write_file", "edit_file":
+                    guard status.allowsOutcomeCard, place != .shell, place != .remote else { continue }
+                    let args = detail.flatMap { JSONValue.parse($0.input) }
+                    let fallbackPath = (rest.hasPrefix("写 ") || rest.hasPrefix("改 "))
+                        ? String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                        : ""
+                    let rawPath = (args?["path"]?.string ?? fallbackPath).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty { return true }
+                case "make_document":
+                    guard status.allowsOutcomeCard else { continue }
+                    if rest.hasPrefix("写 ") {
+                        let candidate = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                        if !candidate.isEmpty { return true }
+                    }
+                    if output.hasPrefix("做好了：") {
+                        let after = String(output.dropFirst(4))
+                        let candidate = String(after.split(separator: "（", maxSplits: 1).first ?? Substring(after)).trimmingCharacters(in: .whitespaces)
+                        if !candidate.isEmpty { return true }
+                    }
+                default:
+                    break
+                }
+                continue
+            }
+
+            if status.allowsOutcomeCard, place == .desk, rest.hasPrefix("写 ") || rest.hasPrefix("改 ") {
+                return true
+            }
+        }
+        return false
+    }
+
+    @MainActor
+    static func needsOffMainKeepsakePrewarm(for line: ChatLine) -> Bool {
+        guard !Pref.traceOpen, !line.live else { return false }
+        guard !hasCachedSummaryEligibility(for: line) else { return false }
+        guard buildPages(line).isEmpty, buildRemembered(line).isEmpty, !hasSynchronousOutcomeKeepsake(line) else {
+            return false
+        }
+        return mayReferenceWorkspaceFiles(line)
     }
 
     nonisolated static func summaryDisplayText(for line: ChatLine) -> String {

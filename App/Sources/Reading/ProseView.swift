@@ -2133,7 +2133,7 @@ enum LocalPictureCache {
 /// One picture in a reply: from the web, or from 书案 (a path the companion wrote there). Tap to see it whole,
 /// with the system viewer's share and save.
 struct ProsePicture: View {
-    static let maxRemoteBytes = 25 * 1024 * 1024
+    nonisolated static let maxRemoteBytes = 25 * 1024 * 1024
 
     let source: String
     var label: String = ""
@@ -2342,7 +2342,7 @@ struct ProsePicture: View {
         }
     }
 
-    static func downloadRemoteImage(_ remote: URL) async throws -> URL {
+    nonisolated static func downloadRemoteImage(_ remote: URL) async throws -> URL {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 45

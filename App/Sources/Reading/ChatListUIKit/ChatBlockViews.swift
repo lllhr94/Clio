@@ -1087,12 +1087,17 @@ final class ChatFileCardsBlockView: UIView {
         private(set) var checked = false
         private var thumbImage: UIImage?
         private var generation: UInt64 = 0
-        private var resolveTask: Task<Void, Never>?
-        private var thumbTask: Task<Void, Never>?
+        private nonisolated(unsafe) var resolveTask: Task<Void, Never>?
+        private nonisolated(unsafe) var thumbTask: Task<Void, Never>?
         private var currentStyle: ChatListStyle?
 
         var onStateChanged: (() -> Void)?
         var onTapCard: ((CardRowView) -> Void)?
+
+        deinit {
+            resolveTask?.cancel()
+            thumbTask?.cancel()
+        }
 
         var activeResolved: WorkspaceFileRef? {
             guard let resolved, resolved.isMountCurrent else { return nil }
@@ -1262,6 +1267,8 @@ final class ChatFileCardsBlockView: UIView {
             }
             if resolved?.mount != nil || resolved == nil {
                 generation &+= 1
+                thumbTask?.cancel()
+                thumbTask = nil
                 checked = false
                 refreshAppearance(style: currentStyle)
                 startResolve(cleanPath: clean, generation: generation)
@@ -1313,6 +1320,7 @@ final class ChatFileCardsBlockView: UIView {
             thumbTask = Task { [weak self] in
                 let preview = await InteractiveThumbnails.shared.image(for: doc)
                 guard !Task.isCancelled, let self, self.generation == expectedGen else { return }
+                self.thumbTask = nil
                 guard let active = self.activeResolved, active.isMountCurrent else {
                     self.thumbImage = nil
                     self.refreshThumbnailImage()
@@ -1480,6 +1488,9 @@ final class ChatFileCardsBlockView: UIView {
     private var expectedHeight: CGFloat = 0
     private var lastReportedHeightSignature = ""
     private nonisolated(unsafe) var mountObserver: NSObjectProtocol?
+    private weak var presentedViewerVC: UIViewController?
+    private var presentedViewerMount: MountedFolder?
+    private var presentedViewerPath: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1577,6 +1588,9 @@ final class ChatFileCardsBlockView: UIView {
         hostViewController = nil
         actions = nil
         onHeightChanged = nil
+        presentedViewerVC = nil
+        presentedViewerMount = nil
+        presentedViewerPath = nil
         for card in cardViews {
             card.isHidden = true
             card.resetForReuse()
@@ -1584,12 +1598,27 @@ final class ChatFileCardsBlockView: UIView {
     }
 
     private func handleMountsChanged() {
-        guard !currentLinks.isEmpty else { return }
-        for idx in 0..<currentLinks.count where idx < cardViews.count {
-            cardViews[idx].handleMountsChanged()
+        if !currentLinks.isEmpty {
+            for idx in 0..<currentLinks.count where idx < cardViews.count {
+                cardViews[idx].handleMountsChanged()
+            }
+            recomputeAndReportHeightIfNeeded()
+            setNeedsLayout()
         }
-        recomputeAndReportHeightIfNeeded()
-        setNeedsLayout()
+        if let vc = presentedViewerVC {
+            let mountRevoked = presentedViewerMount.map { !$0.isCurrent } ?? false
+            let activeMissing = presentedViewerPath.map { path in
+                !cardViews.prefix(currentLinks.count).contains { $0.link.path == path && $0.activeResolved != nil }
+            } ?? true
+            if mountRevoked || activeMissing {
+                if vc.presentingViewController != nil {
+                    vc.dismiss(animated: true)
+                }
+                presentedViewerVC = nil
+                presentedViewerMount = nil
+                presentedViewerPath = nil
+            }
+        }
     }
 
     private func totalMeasuredHeight(forWidth width: CGFloat) -> CGFloat {
@@ -1639,15 +1668,23 @@ final class ChatFileCardsBlockView: UIView {
         Haptics.light()
         if InteractiveDocument.supports(ref.url) {
             let doc = InteractiveDocument(url: ref.url, root: ref.rootURL, mount: ref.mount)
-            let vc = UIHostingController(rootView: InteractivePreviewPage(document: doc))
-            vc.modalPresentationStyle = .fullScreen
             if let host = hostViewController, host.presentedViewController == nil {
+                let vc = UIHostingController(rootView: InteractivePreviewPage(document: doc))
+                vc.modalPresentationStyle = .fullScreen
+                presentedViewerVC = vc
+                presentedViewerMount = ref.mount
+                presentedViewerPath = card.link.path
                 host.present(vc, animated: true)
+            } else {
+                actions?.bridge.onOpenFile(ref.url, ref.mount)
             }
         } else if let host = hostViewController, host.presentedViewController == nil {
             let vc = UIHostingController(rootView: NavigationStack {
                 StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
             })
+            presentedViewerVC = vc
+            presentedViewerMount = ref.mount
+            presentedViewerPath = card.link.path
             host.present(vc, animated: true)
         } else {
             actions?.bridge.onOpenFile(ref.url, ref.mount)
@@ -1675,6 +1712,40 @@ final class ChatFileCardsBlockView: UIView {
 /// SSRF-guarded remote download, aspect-fit rounded display, error fallback, and preview sheet presentation.
 @MainActor
 final class ChatProsePictureView: UIView {
+    private final class OwnedTempImageFile: @unchecked Sendable {
+        let url: URL
+
+        init(url: URL) {
+            self.url = url
+        }
+
+        deinit {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    @MainActor
+    private final class QuickPreviewHostingController: UIHostingController<AnyView> {
+        private var ownedTempFile: OwnedTempImageFile?
+
+        init(tempFile: OwnedTempImageFile) {
+            self.ownedTempFile = tempFile
+            super.init(rootView: AnyView(QuickPreview(url: tempFile.url).ignoresSafeArea()))
+        }
+
+        @available(*, unavailable)
+        required init?(coder aDecoder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            if isBeingDismissed || isMovingFromParent {
+                ownedTempFile = nil
+            }
+        }
+    }
+
     private enum LocalOutcome: Sendable {
         case unchanged
         case missing
@@ -1699,12 +1770,14 @@ final class ChatProsePictureView: UIView {
     private var lastReportedHeightSignature = ""
 
     private var generation: UInt64 = 0
-    private var loadTask: Task<Void, Never>?
+    private nonisolated(unsafe) var loadTask: Task<Void, Never>?
     private var activeImage: UIImage?
     private var workspaceRef: WorkspaceFileRef?
     private var isFailed = false
-    private nonisolated(unsafe) var remoteFile: URL?
+    private var remoteFile: OwnedTempImageFile?
     private nonisolated(unsafe) var mountObserver: NSObjectProtocol?
+    private weak var presentedViewerVC: UIViewController?
+    private var presentedViewerMount: MountedFolder?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1717,11 +1790,9 @@ final class ChatProsePictureView: UIView {
     }
 
     deinit {
+        loadTask?.cancel()
         if let observer = mountObserver {
             NotificationCenter.default.removeObserver(observer)
-        }
-        if let url = remoteFile {
-            try? FileManager.default.removeItem(at: url)
         }
     }
 
@@ -1846,6 +1917,8 @@ final class ChatProsePictureView: UIView {
         hostViewController = nil
         actions = nil
         onHeightChanged = nil
+        presentedViewerVC = nil
+        presentedViewerMount = nil
         spinner.stopAnimating()
         imageView.image = nil
         imageView.isHidden = true
@@ -1855,10 +1928,7 @@ final class ChatProsePictureView: UIView {
     }
 
     private func clearRemoteTempFile() {
-        if let url = remoteFile {
-            try? FileManager.default.removeItem(at: url)
-            remoteFile = nil
-        }
+        remoteFile = nil
     }
 
     private func beginLoad(source: String, label: String) {
@@ -1937,7 +2007,7 @@ final class ChatProsePictureView: UIView {
                 return
             }
             clearRemoteTempFile()
-            remoteFile = downloaded
+            remoteFile = OwnedTempImageFile(url: downloaded)
             activeImage = preview
             isFailed = false
             let aspect = preview.size.width / max(0.01, preview.size.height)
@@ -2016,16 +2086,28 @@ final class ChatProsePictureView: UIView {
     }
 
     private func handleMountsChanged() {
-        guard !currentSource.isEmpty else { return }
-        if let ref = workspaceRef, !ref.isMountCurrent {
-            let decodedPath = currentSource.removingPercentEncoding ?? currentSource
-            LocalPictureCache.set(nil, for: decodedPath)
-            ChatMediaLayoutCache.clearPicture(source: currentSource)
-            activeImage = nil
-            workspaceRef = nil
+        if !currentSource.isEmpty {
+            if let ref = workspaceRef, !ref.isMountCurrent {
+                let decodedPath = currentSource.removingPercentEncoding ?? currentSource
+                LocalPictureCache.set(nil, for: decodedPath)
+                ChatMediaLayoutCache.clearPicture(source: currentSource)
+                activeImage = nil
+                workspaceRef = nil
+            }
+            if workspaceRef?.mount != nil || (remoteFile == nil && (activeImage == nil || isFailed)) {
+                beginLoad(source: currentSource, label: currentLabel)
+            }
         }
-        if workspaceRef?.mount != nil || (remoteFile == nil && (activeImage == nil || isFailed)) {
-            beginLoad(source: currentSource, label: currentLabel)
+        if let vc = presentedViewerVC {
+            let mountRevoked = presentedViewerMount.map { !$0.isCurrent } ?? false
+            let becameInvalid = presentedViewerMount != nil && activeWorkspaceRef == nil
+            if mountRevoked || becameInvalid {
+                if vc.presentingViewController != nil {
+                    vc.dismiss(animated: true)
+                }
+                presentedViewerVC = nil
+                presentedViewerMount = nil
+            }
         }
     }
 
@@ -2122,12 +2204,16 @@ final class ChatProsePictureView: UIView {
                 let vc = UIHostingController(rootView: NavigationStack {
                     StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
                 })
+                presentedViewerVC = vc
+                presentedViewerMount = ref.mount
                 host.present(vc, animated: true)
             } else {
                 actions?.bridge.onOpenFile(ref.url, ref.mount)
             }
         } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
-            let vc = UIHostingController(rootView: QuickPreview(url: remoteFile).ignoresSafeArea())
+            let vc = QuickPreviewHostingController(tempFile: remoteFile)
+            presentedViewerVC = vc
+            presentedViewerMount = nil
             host.present(vc, animated: true)
         }
     }

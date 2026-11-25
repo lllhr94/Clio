@@ -72,13 +72,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var needsDeferredStreamingResize = false
     private var lastMeasuredItemHeights: [ChatListItemID: CGFloat] = [:]
     private var userDefaultsObserver: NSObjectProtocol?
+    private var mountedFoldersObserver: NSObjectProtocol?
     private var lastObservedUserAvatarSignature = ""
     private var lastObservedTraceOpen = Pref.traceOpen
     private var activeTraceSheetModel: ChatTraceDetailSheetModel?
     private var activeTraceSheetLineID: String?
+    private weak var activeTraceSheetVC: UIViewController?
+    private var tracePrewarmTasks: [UUID: Task<Void, Never>] = [:]
+    private var inFlightTracePrewarmIDs: Set<String> = []
     private var keyboardObserverTokens: [NSObjectProtocol] = []
     private var isViewVisible = false
     private var pendingAvatarRefresh = false
+    private var pendingMountRefresh = false
     private var deferredState: ChatListState?
     private var pendingKeyboardSync = false
     private var styleObservationGeneration: UInt64 = 0
@@ -131,6 +136,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isDismantled = true
         isViewVisible = false
         pendingAvatarRefresh = false
+        pendingMountRefresh = false
         deferredState = nil
         pendingKeyboardSync = false
         styleObservationGeneration &+= 1
@@ -140,6 +146,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         needsDeferredStreamingResize = false
         pendingDynamicOwnerIDs.removeAll()
         lastMeasuredItemHeights.removeAll()
+        activeTraceSheetVC = nil
         activeTraceSheetModel = nil
         activeTraceSheetLineID = nil
         stopInsetDisplayLink()
@@ -149,10 +156,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             NotificationCenter.default.removeObserver(observer)
             userDefaultsObserver = nil
         }
+        if let observer = mountedFoldersObserver {
+            NotificationCenter.default.removeObserver(observer)
+            mountedFoldersObserver = nil
+        }
         for token in keyboardObserverTokens {
             NotificationCenter.default.removeObserver(token)
         }
         keyboardObserverTokens.removeAll()
+        if let collectionView {
+            for cell in collectionView.visibleCells {
+                (cell as? ChatAssistantCell)?.prepareForReuse()
+                (cell as? ChatLiveToolTailCell)?.stopObserving()
+            }
+        }
         cancelAllPrefetches()
         cancelPrewarm()
         let owner = lastReportedReplyOwner
@@ -179,6 +196,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if let prewarmToken {
             ChatTextTileRenderer.shared.cancelPrefetch(token: prewarmToken)
         }
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
         for task in prefetchTasksBySection.values {
             task.cancel()
         }
@@ -186,6 +206,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ChatTextTileRenderer.shared.cancelPrefetch(token: token)
         }
         if let observer = userDefaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = mountedFoldersObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         for token in keyboardObserverTokens {
@@ -216,6 +239,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 self?.handleUserDefaultsChanged()
             }
         }
+        mountedFoldersObserver = NotificationCenter.default.addObserver(
+            forName: MountedFolders.changed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleMountedFoldersChanged()
+            }
+        }
 
         if let initialState = currentState {
             applyInitialState(initialState)
@@ -233,6 +265,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if pendingAvatarRefresh {
             pendingAvatarRefresh = false
             handleUserDefaultsChanged()
+        }
+        if pendingMountRefresh {
+            pendingMountRefresh = false
+            handleMountedFoldersChanged()
         }
         if pendingKeyboardSync {
             pendingKeyboardSync = false
@@ -705,11 +741,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         activeTraceSheetLineID = latestLine.id
         let sheet = ChatTraceDetailSheetView(model: model, actions: actions) { [weak self] in
             if self?.activeTraceSheetModel === model {
+                self?.activeTraceSheetVC = nil
                 self?.activeTraceSheetModel = nil
                 self?.activeTraceSheetLineID = nil
             }
         }
         let vc = UIHostingController(rootView: sheet)
+        activeTraceSheetVC = vc
         present(vc, animated: true)
     }
 
@@ -988,6 +1026,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         expandedLookbackIDs.removeAll()
         unfoldedCodeSlices.removeAll()
         pendingSelectionTransfers.removeAll()
+        if activeTraceSheetLineID != nil,
+           activeTraceSheetModel != nil,
+           let presented = presentedViewController,
+           presented === activeTraceSheetVC {
+            presented.dismiss(animated: false)
+        }
+        activeTraceSheetVC = nil
         activeTraceSheetModel = nil
         activeTraceSheetLineID = nil
         isLoadingEarlierRequest = false
@@ -1577,6 +1622,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard nextSignature != lastObservedUserAvatarSignature else { return }
         lastObservedUserAvatarSignature = nextSignature
         refreshVisibleUserAvatars()
+    }
+
+    private func handleMountedFoldersChanged() {
+        guard !isDismantled else { return }
+        Trace.clearSummaryCache()
+        inFlightTracePrewarmIDs.removeAll()
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
+        tracePrewarmTasks.removeAll()
+        guard isViewVisible else {
+            pendingMountRefresh = true
+            return
+        }
+        reloadTraceRowsForPreferenceChange()
+        prewarmTraceRows(in: Array(items.indices))
     }
 
     private func reloadTraceRowsForPreferenceChange() {
@@ -2427,6 +2488,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        if let toolTailCell = cell as? ChatLiveToolTailCell {
+            let chatKey = currentState?.chatKey ?? actions.chat.key
+            let tail = actions.team.toolTail(for: chatKey)
+            let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
+            toolTailCell.configure(tail: tail, style: currentStyle, expectedHeight: expected) { [weak self] h in
+                self?.handleLiveToolTailHeightChanged(h)
+            }
+        }
+    }
+
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         if let assistant = cell as? ChatAssistantCell {
             for uuid in assistant.activeSelectionOwnerIDs() {
@@ -2454,6 +2526,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     actions.onClearPhotoHero(heroID)
                 }
             }
+        } else if let toolTailCell = cell as? ChatLiveToolTailCell {
+            toolTailCell.stopObserving()
         }
     }
 
@@ -2697,6 +2771,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
             prefetchTasksBySection[section] = task
         }
+        prewarmTraceRows(in: targetSections)
     }
 
     func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
@@ -2805,6 +2880,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
 
         cancelPrewarm()
+        prewarmTraceRows(in: prioritySections + secondarySections)
         guard !priorityJobs.isEmpty || !secondaryTileJobs.isEmpty || !secondaryLayoutOnlyJobs.isEmpty else {
             return
         }
@@ -2831,10 +2907,79 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    private func prewarmTraceRows(in sections: [Int]) {
+        guard !isDismantled, !Pref.traceOpen else { return }
+        let desk = Words.t("书案/")
+        let mountRevision = MountedFolders.revision
+        var pending: [ChatLine] = []
+        for section in sections {
+            guard section >= 0, section < items.count,
+                  case .line(let id) = items[section],
+                  let row = rowByID[id],
+                  row.line.kind == .steps,
+                  !inFlightTracePrewarmIDs.contains(row.line.id),
+                  Trace.needsOffMainKeepsakePrewarm(for: row.line) else {
+                continue
+            }
+            inFlightTracePrewarmIDs.insert(row.line.id)
+            pending.append(row.line)
+        }
+        guard !pending.isEmpty else { return }
+
+        let lines = pending
+        let taskID = UUID()
+        let expectedChatKey = currentState?.chatKey ?? actions.chat.key
+        let task = Task { [weak self] in
+            let payloads = await Task.detached(priority: .utility) { () -> [(ChatLine, Trace.PrewarmedTraceSummary)] in
+                var results: [(ChatLine, Trace.PrewarmedTraceSummary)] = []
+                results.reserveCapacity(lines.count)
+                for line in lines {
+                    if Task.isCancelled { break }
+                    results.append((line, Trace.prewarmKeepsakePayload(for: line, desk: desk, mountRevision: mountRevision)))
+                }
+                return results
+            }.value
+            guard let self else { return }
+            self.tracePrewarmTasks.removeValue(forKey: taskID)
+            for line in lines {
+                self.inFlightTracePrewarmIDs.remove(line.id)
+            }
+            guard !Task.isCancelled, !self.isDismantled else { return }
+            guard (self.currentState?.chatKey ?? self.actions.chat.key) == expectedChatKey else { return }
+            var becameEligibleIDs: [ChatListItemID] = []
+            for (line, payload) in payloads {
+                if Trace.commitPrewarmedSummary(payload, for: line, desk: desk),
+                   let currentRow = self.rowByID[line.id],
+                   currentRow.line == line,
+                   self.itemIndexByID[.line(line.id)] != nil {
+                    becameEligibleIDs.append(.line(line.id))
+                }
+            }
+            guard !becameEligibleIDs.isEmpty, self.collectionView != nil, self.dataSource != nil else { return }
+            self.preserveReadingAnchorDuring {
+                var snapshot = self.dataSource.snapshot()
+                let existing = Set(snapshot.itemIdentifiers)
+                let valid = becameEligibleIDs.filter { existing.contains($0) }
+                guard !valid.isEmpty else { return }
+                snapshot.reloadItems(valid)
+                self.dataSource.apply(snapshot, animatingDifferences: false)
+                self.collectionView.collectionViewLayout.invalidateLayout()
+                self.collectionView.layoutIfNeeded()
+            }
+            self.publishVisibleAndFooterMetrics()
+        }
+        tracePrewarmTasks[taskID] = task
+    }
+
     private func cancelPrewarm() {
         prewarmGeneration = prewarmGate.advance()
         prewarmTask?.cancel()
         prewarmTask = nil
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
+        tracePrewarmTasks.removeAll()
+        inFlightTracePrewarmIDs.removeAll()
         if let token = prewarmToken {
             ChatTextTileRenderer.shared.cancelPrefetch(token: token)
             prewarmToken = nil
