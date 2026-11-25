@@ -122,14 +122,13 @@ def literary_warnings():
                     break
 
 
-SWIFT_STRIP = re.compile(
-    r'//[^\n]*|/\*[\s\S]*?\*/'
-    r'|(?P<raw>#+)(?:"""[\s\S]*?"""|"[^\n]*?")(?P=raw)'
-    r'|"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"'
-)
 HAS_VIEW_CONFORMANCE = re.compile(r':\s*(?:SwiftUI\.)?View\b')
 PERF_ALLOC = re.compile(r'\b(?:DateFormatter|ByteCountFormatter|NSRegularExpression)\s*\(')
 STATIC_LET_DECL = re.compile(r'\bstatic\s+let\b')
+NEW_DECL_START = re.compile(
+    r'^(?:@|\b(?:let|var|func|init|deinit|subscript|struct|enum|class|actor|protocol|extension|typealias|associatedtype|private|fileprivate|internal|public|open|package|static|override|mutating|nonmutating|convenience|required|final|lazy|weak|unowned|nonisolated|return|if|guard|for|while|switch|do)\b)'
+)
+CONTINUATION_END = re.compile(r'(?:=|->|[:,.+\?\!]|(?<![A-Za-z0-9_])try)$')
 SOME_VIEW_SCOPE = re.compile(r'(?::|->)\s*(?:SwiftUI\.)?some\s+View\b')
 NAMECARD_FILE_CALL = re.compile(r'\bNameCard\s*\.\s*file\s*\(')
 SECRETS_SECRET_CALL = re.compile(r'\bSecrets\s*\.\s*secret\s*\(')
@@ -142,8 +141,133 @@ FOREACH_ID_ARG = re.compile(r'\bid\s*:')
 UUID_CALL = re.compile(r'\bUUID\s*\(\s*\)')
 
 
+def _scan_swift_string(text, pos, n, out, hashes):
+    for _ in range(hashes):
+        out.append(" ")
+        pos += 1
+    multiline = text.startswith('"""', pos)
+    quote_len = 3 if multiline else 1
+    for _ in range(quote_len):
+        out.append(" ")
+        pos += 1
+    closing = ('"""' if multiline else '"') + ("#" * hashes)
+    escape = "\\" + ("#" * hashes)
+    while pos < n:
+        if text.startswith(closing, pos):
+            for _ in range(len(closing)):
+                out.append(" ")
+                pos += 1
+            return pos
+        if text.startswith(escape, pos):
+            after = pos + len(escape)
+            if after < n and text[after] == "(":
+                for _ in range(len(escape) + 1):
+                    out.append(" ")
+                pos = _scan_swift_code(text, after + 1, n, out, stop_at_rparen=True)
+                continue
+            for _ in range(len(escape)):
+                out.append(" ")
+                pos += 1
+            if pos < n:
+                out.append("\n" if text[pos] == "\n" else " ")
+                pos += 1
+            continue
+        ch = text[pos]
+        if ch == "\n" and not multiline:
+            out.append("\n")
+            return pos + 1
+        out.append("\n" if ch == "\n" else " ")
+        pos += 1
+    return pos
+
+
+def _scan_swift_regex(text, pos, n, out, hashes):
+    for _ in range(hashes + 1):
+        out.append(" ")
+        pos += 1
+    closing = "/" + ("#" * hashes)
+    escape = "\\" + ("#" * hashes)
+    while pos < n:
+        if text.startswith(closing, pos):
+            for _ in range(len(closing)):
+                out.append(" ")
+                pos += 1
+            return pos
+        if text.startswith(escape, pos):
+            for _ in range(len(escape)):
+                out.append(" ")
+                pos += 1
+            if pos < n:
+                out.append("\n" if text[pos] == "\n" else " ")
+                pos += 1
+            continue
+        ch = text[pos]
+        out.append("\n" if ch == "\n" else " ")
+        pos += 1
+    return pos
+
+
+def _scan_swift_code(text, pos, n, out, stop_at_rparen=False):
+    paren_depth = 0
+    while pos < n:
+        ch = text[pos]
+        if stop_at_rparen:
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                if paren_depth == 0:
+                    out.append(" ")
+                    return pos + 1
+                paren_depth -= 1
+        if ch == "/" and pos + 1 < n:
+            nxt = text[pos + 1]
+            if nxt == "/":
+                while pos < n and text[pos] != "\n":
+                    out.append(" ")
+                    pos += 1
+                continue
+            if nxt == "*":
+                out.append(" ")
+                out.append(" ")
+                pos += 2
+                depth = 1
+                while pos < n and depth > 0:
+                    if text[pos] == "/" and pos + 1 < n and text[pos + 1] == "*":
+                        out.append(" ")
+                        out.append(" ")
+                        pos += 2
+                        depth += 1
+                    elif text[pos] == "*" and pos + 1 < n and text[pos + 1] == "/":
+                        out.append(" ")
+                        out.append(" ")
+                        pos += 2
+                        depth -= 1
+                    else:
+                        out.append("\n" if text[pos] == "\n" else " ")
+                        pos += 1
+                continue
+        if ch == "#":
+            h = pos
+            while h < n and text[h] == "#":
+                h += 1
+            if h < n and text[h] == '"':
+                pos = _scan_swift_string(text, pos, n, out, h - pos)
+                continue
+            if h < n and text[h] == "/":
+                pos = _scan_swift_regex(text, pos, n, out, h - pos)
+                continue
+        if ch == '"':
+            pos = _scan_swift_string(text, pos, n, out, 0)
+            continue
+        out.append(ch)
+        pos += 1
+    return pos
+
+
 def strip_comments_and_strings(text):
-    return SWIFT_STRIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    out = []
+    _scan_swift_code(text, 0, len(text), out, stop_at_rparen=False)
+    return "".join(out)
 
 
 def balanced_span(text, start, open_ch, close_ch):
@@ -184,32 +308,39 @@ def perf_checks():
 
         # 1. Non-static DateFormatter / ByteCountFormatter / NSRegularExpression in View-containing files.
         if HAS_VIEW_CONFORMANCE.search(stripped):
-            static_let_depth = 0
-            pending_static_let = False
+            in_static_let = False
+            static_indent = 0
+            static_depth = 0
+            prev_continues = False
             for lineno, line in enumerate(stripped_lines, 1):
-                is_static_line = bool(STATIC_LET_DECL.search(line))
-                if not is_static_line and static_let_depth == 0 and not pending_static_let:
-                    if PERF_ALLOC.search(line) and not has_perf_exemption(raw_lines, lineno):
-                        perf_warnings.append((
-                            path,
-                            lineno,
-                            "non-static formatter/regex allocation in View file; hoist to static let (or // lint:perf-ok)",
-                        ))
-                if is_static_line:
-                    pending_static_let = True
-                if pending_static_let or static_let_depth > 0:
-                    opens = line.count("{")
-                    closes = line.count("}")
-                    static_let_depth += opens - closes
-                    if opens > 0 or "=" in line:
-                        if static_let_depth <= 0 and "{" in line:
-                            pending_static_let = False
-                            static_let_depth = 0
-                        elif static_let_depth > 0:
-                            pending_static_let = False
-                    if static_let_depth <= 0 and not line.rstrip().endswith(("=", "{")):
-                        pending_static_let = False
-                        static_let_depth = 0
+                code = line.strip()
+                indent = len(line) - len(line.lstrip())
+                if in_static_let and static_depth == 0 and not prev_continues:
+                    if not code or indent <= static_indent or NEW_DECL_START.match(code):
+                        in_static_let = False
+                if STATIC_LET_DECL.search(line):
+                    in_static_let = True
+                    static_indent = indent
+                    static_depth = 0
+                    prev_continues = False
+                if not in_static_let and PERF_ALLOC.search(line) and not has_perf_exemption(raw_lines, lineno):
+                    perf_warnings.append((
+                        path,
+                        lineno,
+                        "non-static formatter/regex allocation in View file; hoist to static let (or // lint:perf-ok)",
+                    ))
+                if in_static_let:
+                    for ch in line:
+                        if ch in "([{":
+                            static_depth += 1
+                        elif ch in ")]}" and static_depth > 0:
+                            static_depth -= 1
+                    if static_depth > 0:
+                        prev_continues = True
+                    elif code:
+                        prev_continues = bool(CONTINUATION_END.search(code))
+                    else:
+                        prev_continues = False
 
         # 2. Direct NameCard.file( (error) or Secrets.secret( (warning) inside `some View` scopes.
         view_depth = 0

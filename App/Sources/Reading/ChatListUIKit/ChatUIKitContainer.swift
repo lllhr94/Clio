@@ -477,27 +477,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
     @ViewBuilder
     private var photoHeroProxy: some View {
         if let photoZoomNamespace, !reduceMotion, fullFrame.height > 0 {
-            let localRect = resolvedHeroLocalRect
-            let heroID = photoHero?.id ?? "__clio-photo-hero-idle__"
-            ChatPhotoHeroPreviewView(image: photoHero?.image, size: localRect.size)
-                .modifier(PhotoZoomSourceModifier(id: heroID, namespace: photoZoomNamespace, enabled: true))
-                .position(x: localRect.midX, y: localRect.midY)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            ChatPhotoHeroPreviewView(hero: photoHero, fullFrame: fullFrame, namespace: photoZoomNamespace)
         }
-    }
-
-    private var resolvedHeroLocalRect: CGRect {
-        guard let hero = photoHero else {
-            return CGRect(x: 0, y: 0, width: ChatCellMetrics.photoSize, height: ChatCellMetrics.photoSize)
-        }
-        return CGRect(
-            x: hero.globalRect.minX - fullFrame.minX,
-            y: hero.globalRect.minY - fullFrame.minY,
-            width: max(1, hero.globalRect.width),
-            height: max(1, hero.globalRect.height)
-        )
     }
 
     private func makeEmptyStatusAnyView() -> AnyView {
@@ -920,14 +901,29 @@ private struct ChatTopPaperFadeView: View {
     }
 }
 
-/// Isolated hero fallback view so `ChatUIKitContainer.body` does not read `Ink.paperRaised` or `Ink.Radius.small`.
+/// Isolated hero fallback view so `ChatUIKitContainer.body` does not read `Ink.paperRaised`, `Ink.Radius.small`, or `ChatCellMetrics.photoSize`.
 private struct ChatPhotoHeroPreviewView: View {
-    let image: UIImage?
-    let size: CGSize
+    let hero: ChatPhotoHeroTarget?
+    let fullFrame: CGRect
+    let namespace: Namespace.ID
+
+    private var localRect: CGRect {
+        guard let hero else {
+            return CGRect(x: 0, y: 0, width: ChatCellMetrics.photoSize, height: ChatCellMetrics.photoSize)
+        }
+        return CGRect(
+            x: hero.globalRect.minX - fullFrame.minX,
+            y: hero.globalRect.minY - fullFrame.minY,
+            width: max(1, hero.globalRect.width),
+            height: max(1, hero.globalRect.height)
+        )
+    }
 
     var body: some View {
+        let rect = localRect
+        let heroID = hero?.id ?? "__clio-photo-hero-idle__"
         Group {
-            if let image {
+            if let image = hero?.image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -935,7 +931,12 @@ private struct ChatPhotoHeroPreviewView: View {
                 Ink.paperRaised.opacity(0.7)
             }
         }
-        .frame(width: size.width, height: size.height)
+        .frame(width: rect.width, height: rect.height)
         .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
+        .modifier(PhotoZoomSourceModifier(id: heroID, namespace: namespace, enabled: true))
+        .position(x: rect.midX, y: rect.midY)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

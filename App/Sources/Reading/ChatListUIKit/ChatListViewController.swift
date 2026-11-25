@@ -64,7 +64,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastObservedUserAvatarSignature = ""
     private var keyboardObserverTokens: [NSObjectProtocol] = []
     private var isViewVisible = false
-    private var pendingStyleRefresh = false
     private var pendingAvatarRefresh = false
     private var deferredState: ChatListState?
     private var pendingKeyboardSync = false
@@ -117,7 +116,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     func prepareForDismantle() -> String? {
         isDismantled = true
         isViewVisible = false
-        pendingStyleRefresh = false
         pendingAvatarRefresh = false
         deferredState = nil
         pendingKeyboardSync = false
@@ -196,15 +194,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         isViewVisible = true
-        pendingStyleRefresh = false
+        if let pending = deferredState {
+            deferredState = nil
+            applyState(pending)
+        }
         refreshTypographyAndTheme()
         if pendingAvatarRefresh {
             pendingAvatarRefresh = false
             handleUserDefaultsChanged()
-        }
-        if let pending = deferredState {
-            deferredState = nil
-            applyState(pending)
         }
         if pendingKeyboardSync {
             pendingKeyboardSync = false
@@ -1205,13 +1202,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let generation = styleObservationGeneration
         withObservationTracking {
             _ = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
-        } onChange: {
-            Task { @MainActor [weak self] in
+        } onChange: { [weak self] in
+            Task { @MainActor in
                 guard let self, !self.isDismantled, self.styleObservationGeneration == generation else { return }
-                guard self.isViewVisible else {
-                    self.pendingStyleRefresh = true
-                    return
-                }
+                guard self.isViewVisible else { return }
                 self.refreshTypographyAndTheme()
                 self.startStyleObservationIfVisible()
             }
@@ -1219,11 +1213,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func refreshTypographyAndTheme() {
-        guard isViewVisible else {
-            pendingStyleRefresh = true
-            return
-        }
-        pendingStyleRefresh = false
+        guard isViewVisible else { return }
         let nextStyle = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
         view.backgroundColor = UIColor(Ink.paper)
         guard nextStyle != currentStyle else { return }

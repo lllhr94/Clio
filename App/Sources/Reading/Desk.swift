@@ -72,7 +72,7 @@ struct ClioRoot: View {
                 DraftTextStore.finishBeforeSuspension()
                 DraftAttachments.finishBeforeSuspension()
                 Hitches.shared.save()
-                WidgetFeed.publish(team)
+                WidgetFeed.publish(team, immediate: true)
             }
         }
         .task {
