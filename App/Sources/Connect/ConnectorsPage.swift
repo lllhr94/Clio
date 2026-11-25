@@ -15,15 +15,19 @@ struct ConnectorsPage: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+                let lookup = ServerLookup(servers: hills.servers)
+                LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
                     if query.isEmpty {
                         suggestCard
                     }
-                    let connected = mine
-                    if !connected.isEmpty { section(L.t("connectors.connected"), connected) }
+                    let connected = mine(needle: needle)
+                    if !connected.isEmpty { section(L.t("connectors.connected"), connected, lookup: lookup) }
                     ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
-                        let items = Connector.catalog.filter { $0.group == group && matches($0) && work.server(of: $0) == nil }
-                        if !items.isEmpty { section(group, items) }
+                        let items = Connector.catalog.filter {
+                            $0.group == group && $0.matches(needle) && lookup.server(of: $0) == nil
+                        }
+                        if !items.isEmpty { section(group, items, lookup: lookup) }
                     }
                     Button {
                         Haptics.light()
@@ -103,40 +107,61 @@ struct ConnectorsPage: View {
         .scrollIndicators(.hidden)
     }
 
+    private struct ServerLookup {
+        private let byID: [String: Hills.Server]
+        private let byConnector: [String: Hills.Server]
+
+        init(servers: [Hills.Server]) {
+            var idMap: [String: Hills.Server] = [:]
+            var connectorMap: [String: Hills.Server] = [:]
+            idMap.reserveCapacity(servers.count)
+            for server in servers {
+                idMap[server.id] = server
+                if let connector = server.connector, connectorMap[connector] == nil {
+                    connectorMap[connector] = server
+                }
+            }
+            self.byID = idMap
+            self.byConnector = connectorMap
+        }
+
+        func server(of connector: Connector) -> Hills.Server? {
+            if let serverId = connector.serverId {
+                return byID[serverId]
+            }
+            return byConnector[connector.id]
+        }
+    }
+
     /// Everything connected: from the catalog, and the ones added by address.
-    private var mine: [Connector] {
+    private func mine(needle: String) -> [Connector] {
         hills.servers.compactMap { server in
-            if let id = server.connector, let known = Connector.catalog.first(where: { $0.id == id }) { return known }
+            if let id = server.connector, let known = Connector.catalogByID[id] { return known }
             return Connector(id: server.connector ?? server.id, name: server.name, icon: "point.3.connected.trianglepath.dotted",
                              line: URL(string: server.url)?.host ?? server.url, url: server.url, auth: .oauth, group: "自己加的", serverId: server.id)
         }
-        .filter { (kind == "全部" || $0.group == kind) && matches($0) }
-    }
-
-    private func matches(_ connector: Connector) -> Bool {
-        let words = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return words.isEmpty || connector.name.lowercased().contains(words) || connector.line.lowercased().contains(words) || connector.group.contains(words)
+        .filter { (kind == "全部" || $0.group == kind) && $0.matches(needle) }
     }
 
     private func heading(_ title: String) -> some View {
         SectionTitle(title)
     }
 
-    private func section(_ title: String, _ items: [Connector]) -> some View {
+    private func section(_ title: String, _ items: [Connector], lookup: ServerLookup) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             heading(title)
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if index > 0 { Kit.divider }
-                    NavigationLink(value: item) { row(item) }.buttonStyle(PressStyle(haptic: false))
+                    NavigationLink(value: item) { row(item, lookup: lookup) }.buttonStyle(PressStyle(haptic: false))
                 }
             }
             .paperCard()
         }
     }
 
-    private func row(_ item: Connector) -> some View {
-        let failed = work.server(of: item).map { hills.lastError[$0.id] != nil }
+    private func row(_ item: Connector, lookup: ServerLookup) -> some View {
+        let failed = lookup.server(of: item).map { hills.lastError[$0.id] != nil }
         return RowLabel(title: item.name, line: item.line, end: failed.map { RowEnd.valueChevron($0 ? L.t("connectors.connectionError") : L.t("connectors.connected"), $0 ? Ink.stop : Ink.ok) } ?? RowEnd.chevron) {
             ConnectorIcon(connector: item)
         }
@@ -192,27 +217,52 @@ final class ConnectorWork: ObservableObject {
         if connector.serverId == nil { entry.connector = connector.id }
         entry.enabled = true
         var token: String?
+        var shouldForgetOAuth = false
         if connector.auth == .google {
             token = Hills.googleToken
         } else if let typed = typed?.trimmingCharacters(in: .whitespacesAndNewlines), !typed.isEmpty {
             if case .key(_, _, let query, _) = connector.auth, let query { token = "?\(query)=\(typed)" } else { token = typed }
-            MCPAuth.forget(entry.id)
+            shouldForgetOAuth = true
         }
-        hills.save(entry, token: token)
+        let serverID = entry.id
+        let tokenToWrite = token
+        if shouldForgetOAuth || tokenToWrite != nil {
+            await Task.detached(priority: .userInitiated) {
+                if shouldForgetOAuth { MCPAuth.forget(serverID) }
+                if let tokenToWrite { Vault.save(tokenToWrite, as: "mcp.\(serverID)") }
+            }.value
+        }
+        hills.save(entry, token: nil)
         let said = await Connecting.connect(entry, signIn: connector.auth == .oauth && token == nil)
         if hills.lastError[entry.id] == nil {
             Haptics.grab()
             return nil
         }
         // A first connect that failed leaves nothing half-done behind.
-        if hills.tools(of: entry).isEmpty { hills.remove(entry) }
+        if hills.tools(of: entry).isEmpty {
+            await Task.detached(priority: .userInitiated) {
+                MCPAuth.forget(serverID)
+                Vault.remove("mcp.\(serverID)")
+            }.value
+            hills.remove(entry)
+        }
         return said
     }
 
     func disconnect(_ connector: Connector) {
         guard let server = server(of: connector) else { return }
         Haptics.light()
-        Hills.shared.remove(server)
+        let connectorID = connector.id
+        let serverID = server.id
+        busy.insert(connectorID)
+        Task {
+            defer { busy.remove(connectorID) }
+            await Task.detached(priority: .userInitiated) {
+                MCPAuth.forget(serverID)
+                Vault.remove("mcp.\(serverID)")
+            }.value
+            Hills.shared.remove(server)
+        }
     }
 }
 
@@ -461,7 +511,7 @@ private struct ConnectorDetail: View {
             let tools = hills.tools(of: server)
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 SectionTitle(L.format("connectors.toolCount", tools.count))
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(tools.enumerated()), id: \.element.name) { index, tool in
                         if index > 0 { Kit.rule(inset: 40) }
                         HStack(alignment: .top, spacing: Ink.Space.m) {
@@ -526,43 +576,68 @@ struct Connector: Identifiable, Hashable {
     var serverId: String? = nil
     /// Where to make a token, for connecting without signing in.
     var tokenPage: String? = nil
+    /// Where its icon is fetched from (see `BrandIcon`).
+    let domain: String?
+    /// The letter on its tile until (or unless) its icon arrives: 「N」, 「高」.
+    let mark: String
+    private let searchKey: String
+
+    private static let knownDomains: [String: String] = [
+        "amap": "amap.com", "rube": "rube.app", "zapier": "zapier.com", "notion": "notion.so", "linear": "linear.app",
+        "atlassian": "atlassian.com", "asana": "asana.com", "monday": "monday.com", "airtable": "airtable.com", "box": "box.com",
+        "canva": "canva.com", "figma": "figma.com", "github": "github.com", "sentry": "sentry.io", "vercel": "vercel.com",
+        "supabase": "supabase.com", "stripe": "stripe.com", "cloudflare": "cloudflare.com", "netlify": "netlify.com",
+        "neon": "neon.tech", "exa": "exa.ai", "wolfram": "wolframalpha.com", "deepwiki": "deepwiki.com",
+        "context7": "context7.com", "mslearn": "learn.microsoft.com", "cfdocs": "developers.cloudflare.com",
+        "huggingface": "huggingface.co", "g-gmail": "mail.google.com", "g-drive": "drive.google.com",
+        "g-calendar": "calendar.google.com",
+        // docs / sheets / slides share one favicon (Drive's); these are each product's own.
+        "g-docs": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_document_x128.png",
+        "g-sheets": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_spreadsheet_x128.png",
+        "g-slides": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_presentation_x128.png",
+    ]
+    private static let tileColors: [Color] = [Ink.Tile.dai, Ink.Tile.xiang, Ink.Tile.zhu, Ink.Tile.teng, Ink.Tile.yan, Ink.Tile.mo]
 
     init(id: String, name: String, icon: String, line: String, url: String, auth: Auth, group: String, serverId: String? = nil, tokenPage: String? = nil) {
         self.id = id; self.name = name; self.icon = icon; self.line = line; self.url = url
         self.auth = auth; self.group = group; self.serverId = serverId; self.tokenPage = tokenPage
+        self.domain = Self.knownDomains[id] ?? URL(string: url)?.host
+        self.mark = (name.first.map(String.init) ?? "?").uppercased()
+        self.searchKey = "\(name)\n\(line)\n\(group)".lowercased()
     }
 
-    /// Where its icon is fetched from (see `BrandIcon`).
-    var domain: String? {
-        let known: [String: String] = [
-            "amap": "amap.com", "rube": "rube.app", "zapier": "zapier.com", "notion": "notion.so", "linear": "linear.app",
-            "atlassian": "atlassian.com", "asana": "asana.com", "monday": "monday.com", "airtable": "airtable.com", "box": "box.com",
-            "canva": "canva.com", "figma": "figma.com", "github": "github.com", "sentry": "sentry.io", "vercel": "vercel.com",
-            "supabase": "supabase.com", "stripe": "stripe.com", "cloudflare": "cloudflare.com", "netlify": "netlify.com",
-            "neon": "neon.tech", "exa": "exa.ai", "wolfram": "wolframalpha.com", "deepwiki": "deepwiki.com",
-            "context7": "context7.com", "mslearn": "learn.microsoft.com", "cfdocs": "developers.cloudflare.com",
-            "huggingface": "huggingface.co", "g-gmail": "mail.google.com", "g-drive": "drive.google.com",
-            "g-calendar": "calendar.google.com", 
-            // docs / sheets / slides share one favicon (Drive's); these are each product's own.
-            "g-docs": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_document_x128.png",
-            "g-sheets": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_spreadsheet_x128.png",
-            "g-slides": "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_presentation_x128.png",
-        ]
-        if let found = known[id] { return found }
-        return URL(string: url)?.host
+    func matches(_ lowercasedNeedle: String) -> Bool {
+        lowercasedNeedle.isEmpty || searchKey.contains(lowercasedNeedle)
     }
 
-    /// The letter on its tile until (or unless) its icon arrives: 「N」, 「高」.
-    var mark: String {
-        let first = name.first.map(String.init) ?? "?"
-        return first.uppercased()
+    static func == (lhs: Connector, rhs: Connector) -> Bool {
+        lhs.id == rhs.id
+            && lhs.name == rhs.name
+            && lhs.icon == rhs.icon
+            && lhs.line == rhs.line
+            && lhs.url == rhs.url
+            && lhs.auth == rhs.auth
+            && lhs.group == rhs.group
+            && lhs.serverId == rhs.serverId
+            && lhs.tokenPage == rhs.tokenPage
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(icon)
+        hasher.combine(line)
+        hasher.combine(url)
+        hasher.combine(auth)
+        hasher.combine(group)
+        hasher.combine(serverId)
+        hasher.combine(tokenPage)
     }
 
     /// A colour of its own, the same every time.
     var tint: Color {
-        let colors: [Color] = [Ink.Tile.dai, Ink.Tile.xiang, Ink.Tile.zhu, Ink.Tile.teng, Ink.Tile.yan, Ink.Tile.mo]
         let sum = id.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
-        return colors[sum % colors.count]
+        return Self.tileColors[sum % Self.tileColors.count]
     }
 
     static let groups = ["谷歌", "开发", "文档与资料", "协作办公", "设计", "地图与出行", "搜索与查资料", "一个账号连一堆"]
@@ -617,6 +692,8 @@ struct Connector: Identifiable, Hashable {
         Connector(id: "cfdocs", name: "Cloudflare 文档", icon: "cloud", line: "查 Cloudflare 的文档", url: "https://docs.mcp.cloudflare.com/mcp", auth: .open, group: "搜索与查资料"),
         Connector(id: "huggingface", name: "Hugging Face", icon: "face.smiling", line: "找模型、数据集和论文", url: "https://huggingface.co/mcp", auth: .open, group: "搜索与查资料"),
     ]
+
+    static let catalogByID: [String: Connector] = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
 }
 
 /// Adding any MCP service by its address. Signs in by itself when the service asks for it.
@@ -672,12 +749,22 @@ private struct CustomSheet: View {
         var entry = Hills.Server(name: title, url: address)
         entry.connector = "c" + String(entry.id.prefix(6)).lowercased().filter { $0.isLetter || $0.isNumber }
         let typed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        hills.save(entry, token: typed.isEmpty ? nil : typed)
+        let serverID = entry.id
+        if !typed.isEmpty {
+            await Task.detached(priority: .userInitiated) {
+                Vault.save(typed, as: "mcp.\(serverID)")
+            }.value
+        }
+        hills.save(entry, token: nil)
         result = await Connecting.connect(entry, signIn: typed.isEmpty)
         if hills.lastError[entry.id] == nil {
             Haptics.grab()
             dismiss()
         } else if hills.tools(of: entry).isEmpty {
+            await Task.detached(priority: .userInitiated) {
+                MCPAuth.forget(serverID)
+                Vault.remove("mcp.\(serverID)")
+            }.value
             hills.remove(entry)
         }
     }
@@ -690,7 +777,11 @@ enum Connecting {
         let hills = Hills.shared
         var count = await hills.refresh(server)
         let refused = hills.lastError[server.id].map { $0.contains("401") || $0.contains("403") || $0.lowercased().contains("unauthorized") } ?? false
-        if count < 0, signIn, refused || !MCPAuth.signedIn(server.id) {
+        let serverID = server.id
+        let alreadySignedIn = count < 0 && signIn && !refused
+            ? await Task.detached(priority: .userInitiated) { MCPAuth.signedIn(serverID) }.value
+            : false
+        if count < 0, signIn, refused || !alreadySignedIn {
             do {
                 try await MCPAuth.shared.login(server: server.id, url: server.url)
                 count = await hills.refresh(server)

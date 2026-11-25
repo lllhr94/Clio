@@ -156,10 +156,63 @@ final class Hitches {
     private var watchers: [NSObjectProtocol] = []
     private nonisolated static let storeKey = "diag.hitches"
     private let writes = DispatchQueue(label: "clio.hitches.storage", qos: .utility)
+    private var loadStarted = false
+    private var hasLoadedStored = false
+    private var pendingSaveAfterLoad = false
+    private var loadGeneration: UInt64 = 0
+    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.storeKey), let kept = try? JSONDecoder().decode([Hitch].self, from: data) {
-            recent = kept
+        loadStored()
+    }
+
+    private func loadStored() {
+        guard !loadStarted else { return }
+        loadStarted = true
+        let token = loadGeneration
+        let key = Self.storeKey
+        writes.async { [weak self] in
+            let kept: [Hitch]
+            if let data = UserDefaults.standard.data(forKey: key),
+               let decoded = try? JSONDecoder().decode([Hitch].self, from: data) {
+                kept = decoded
+            } else {
+                kept = []
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.loadGeneration == token else { return }
+                self.hasLoadedStored = true
+                if !kept.isEmpty {
+                    self.recent = Array((kept + self.recent).suffix(200))
+                    self.version &+= 1
+                }
+                self.resumeLoadWaiters()
+                if self.pendingSaveAfterLoad {
+                    self.pendingSaveAfterLoad = false
+                    self.save()
+                }
+            }
+        }
+    }
+
+    private func resumeLoadWaiters() {
+        guard !loadWaiters.isEmpty else { return }
+        let waiters = loadWaiters
+        loadWaiters = []
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func waitForInitialLoad() async {
+        guard !hasLoadedStored else { return }
+        await withCheckedContinuation { continuation in
+            if hasLoadedStored {
+                continuation.resume()
+            } else {
+                loadWaiters.append(continuation)
+            }
         }
     }
 
@@ -204,13 +257,21 @@ final class Hitches {
     }
 
     func clear() {
+        loadGeneration &+= 1
+        hasLoadedStored = true
+        pendingSaveAfterLoad = false
         recent = []
         version &+= 1
         newSinceSave = 0
+        resumeLoadWaiters()
         writes.async { UserDefaults.standard.removeObject(forKey: Self.storeKey) }
     }
 
     func save() {
+        guard hasLoadedStored else {
+            pendingSaveAfterLoad = true
+            return
+        }
         newSinceSave = 0
         let snapshot = recent
         writes.async {

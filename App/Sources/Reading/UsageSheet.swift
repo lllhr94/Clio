@@ -3,7 +3,7 @@ import SwiftUI
 
 /// 用量: how full the next request's context is, what this conversation has used, and what is left on the service's account.
 struct UsageSheet: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     let key: String
     @Environment(\.dismiss) private var dismiss
     @State private var estimate: TeamModel.ContextEstimate?
@@ -13,8 +13,9 @@ struct UsageSheet: View {
     @State private var floor: Double = 0
     @State private var folding = false
     @State private var note: String?
+    @State private var currentSpend = Spend()
+    @State private var allSpendRows: [(name: String, spend: Spend)] = []
 
-    private var spend: Spend { team.options(key).spend ?? Spend() }
     private var endpoint: Endpoint? { team.chatEndpoint(key) }
 
     var body: some View {
@@ -48,9 +49,13 @@ struct UsageSheet: View {
         }
         .hitchPage("用量")
         .task {
-            estimate = await team.contextEstimate(key)
+            async let spendTask: Void = loadSpendBreakdown()
+            async let estimateTask: TeamModel.ContextEstimate = team.contextEstimate(key)
             if let endpoint { floor = TeamModel.balanceFloor(endpoint.id) }
-            await loadBalance()
+            async let balanceTask: Void = loadBalance()
+            estimate = await estimateTask
+            await spendTask
+            await balanceTask
         }
     }
 
@@ -103,7 +108,7 @@ struct UsageSheet: View {
     private func explanation(_ estimate: TeamModel.ContextEstimate) -> String {
         var words = "按字数估算：中文一个字约 0.6 token，其他字符约 0.3。分项各自估，加起来可能和总量略有出入。"
         words += "上限按 \(estimate.model.isEmpty ? "所用模型" : estimate.model) 的上下文长度算。"
-        if spend.lastInput > 0 { words += "上一次请求，服务方实际算的是 \(Tokens.short(spend.lastInput))。" }
+        if currentSpend.lastInput > 0 { words += "上一次请求，服务方实际算的是 \(Tokens.short(currentSpend.lastInput))。" }
         return words
     }
 
@@ -128,13 +133,13 @@ struct UsageSheet: View {
     private var spendCard: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
             HStack(alignment: .top, spacing: 0) {
-                stat(Tokens.short(spend.input), "累计输入")
-                stat(Tokens.short(spend.output), "输出")
-                stat("\(Int((spend.cacheShare * 100).rounded()))%", "缓存命中")
+                stat(Tokens.short(currentSpend.input), "累计输入")
+                stat(Tokens.short(currentSpend.output), "输出")
+                stat("\(Int((currentSpend.cacheShare * 100).rounded()))%", "缓存命中")
             }
-            Text(spend.turns == 0 && spend.input == 0
+            Text(currentSpend.turns == 0 && currentSpend.input == 0
                  ? Words.t("从 0.27 起开始记，这段絮语之后的每一轮都会算进来。")
-                 : "共 \(spend.turns) 轮 · 输入含缓存命中的部分，命中越多越省钱")
+                 : "共 \(currentSpend.turns) 轮 · 输入含缓存命中的部分，命中越多越省钱")
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)
         }
@@ -153,12 +158,11 @@ struct UsageSheet: View {
     /// Every conversation's tokens side by side, to see where they go.
     @ViewBuilder
     private var allCard: some View {
-        let all = team.allSpend()
-        if all.count > 1 {
-            let total = all.reduce(0) { $0 + $1.spend.input + $1.spend.output }
+        if allSpendRows.count > 1 {
+            let total = allSpendRows.reduce(0) { $0 + $1.spend.input + $1.spend.output }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 Text("全部对话 · 共 \(Tokens.short(total))").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                ForEach(Array(all.prefix(8).enumerated()), id: \.offset) { _, item in
+                ForEach(Array(allSpendRows.prefix(8).enumerated()), id: \.offset) { _, item in
                     let used = item.spend.input + item.spend.output
                     HStack(spacing: Ink.Space.s) {
                         Text(item.name).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.ink).lineLimit(1).frame(width: 72, alignment: .leading)
@@ -174,6 +178,72 @@ struct UsageSheet: View {
             .padding(Ink.Space.l)
             .paperCard()
         }
+    }
+
+    private struct SpendOptionsPayload: Decodable, Sendable {
+        var spend: Spend?
+    }
+
+    private func loadSpendBreakdown() async {
+        let keeping = team.keeping
+        let targetKey = key
+        let keys = team.bots.map { TeamModel.key(bot: $0.id) } + team.rooms.map { TeamModel.key(room: $0.id) }
+
+        var cachedByKey: [String: Spend] = [:]
+        var jobs: [(key: String, name: String, url: URL)] = []
+        var namesByKey: [String: String] = [:]
+        for chatKey in keys {
+            let name = team.chatName(chatKey)
+            namesByKey[chatKey] = name
+            if let cached = team.optionBook[chatKey] {
+                if let spend = cached.spend {
+                    cachedByKey[chatKey] = spend
+                }
+            } else if keeping {
+                jobs.append((chatKey, name, Disk.url(TeamModel.optionsFile(chatKey))))
+            }
+        }
+        let needTargetFromDisk = team.optionBook[targetKey] == nil && keeping && !keys.contains(targetKey)
+        let targetURL = Disk.url(TeamModel.optionsFile(targetKey))
+        if let cachedTarget = team.optionBook[targetKey]?.spend {
+            currentSpend = cachedTarget
+        }
+
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (target: Spend?, rows: [(name: String, spend: Spend)]) in
+            var diskSpend: [String: Spend] = [:]
+            for job in jobs {
+                if Task.isCancelled { break }
+                guard let data = try? Data(contentsOf: job.url),
+                      let payload = try? JSONDecoder().decode(SpendOptionsPayload.self, from: data),
+                      let spend = payload.spend else { continue }
+                diskSpend[job.key] = spend
+            }
+            let targetResolved: Spend?
+            if needTargetFromDisk {
+                if let data = try? Data(contentsOf: targetURL),
+                   let payload = try? JSONDecoder().decode(SpendOptionsPayload.self, from: data) {
+                    targetResolved = payload.spend
+                } else {
+                    targetResolved = nil
+                }
+            } else {
+                targetResolved = cachedByKey[targetKey] ?? diskSpend[targetKey]
+            }
+            var combined: [(name: String, spend: Spend)] = []
+            for chatKey in keys {
+                guard let spend = cachedByKey[chatKey] ?? diskSpend[chatKey],
+                      spend.input + spend.output > 0 else { continue }
+                combined.append((name: namesByKey[chatKey] ?? "", spend: spend))
+            }
+            combined.sort { $0.spend.input + $0.spend.output > $1.spend.input + $1.spend.output }
+            return (targetResolved, combined)
+        }.value
+
+        guard !Task.isCancelled else { return }
+        if let target = loaded.target {
+            currentSpend = target
+        }
+        allSpendRows = loaded.rows
     }
 
     // MARK: 余额

@@ -1,3 +1,4 @@
+import Craft
 import SwiftUI
 
 /// 絮语页: the conversation now, and the ones put aside. Turn a new leaf, or bring an old one back.
@@ -13,6 +14,8 @@ struct LeavesSheet: View {
     @State private var digestDraft = ""
     @State private var unfolding: TeamModel.Leaf?
     @State private var reading: BotInfo?
+    @State private var liveCharSize: Int?
+    @State private var foldAtChars = 0
 
     /// The companion of a one-to-one conversation, for its diary.
     private var companion: BotInfo? { key.hasPrefix("bot-") ? team.bots.first { TeamModel.key(bot: $0.id) == key } : nil }
@@ -34,12 +37,24 @@ struct LeavesSheet: View {
                 let count = try await team.compress(key)
                 note = "压好了：较早的 \(count) 条写成了前情提要。"
                 Haptics.thud()
+                await refreshSize()
             } catch {
                 note = error.localizedDescription
                 Haptics.lock()
             }
             folding = false
         }
+    }
+
+    private func refreshSize() async {
+        let liveEntries = Array(team.live(key))
+        let threshold = team.foldAt(key)
+        let computed = await Task.detached(priority: .userInitiated) {
+            Turns.size(liveEntries)
+        }.value
+        guard !Task.isCancelled else { return }
+        liveCharSize = computed
+        foldAtChars = threshold
     }
 
     private var content: some View {
@@ -79,7 +94,7 @@ struct LeavesSheet: View {
                                     Text(folding ? L.t("loading.compactingContext") : L.t("chat.compactContext")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
                                     Text(Words.t("较早的话写成提要，原文收进絮语页"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                    Text("眼下约 \(team.size(of: key) / 1000) 千字" + (Pref.autoCompress ? "，超过 \(team.foldAt(key) / 1000) 千字会自动压缩" : ""))
+                                    Text(liveCharSize.map { "眼下约 \($0 / 1000) 千字" + (Pref.autoCompress ? "，超过 \(foldAtChars / 1000) 千字会自动压缩" : "") } ?? L.t("loading.calculating"))
                                         .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
                                 }
                                 Spacer(minLength: 0)
@@ -164,6 +179,7 @@ struct LeavesSheet: View {
                                                     withAnimation(Ink.Motion.unfold) { team.unfoldLine(key) }
                                                     Haptics.thud()
                                                     note = Words.t("撤销了：那几条又按原文交给旅伴，前情提要退回之前的样子。")
+                                                    Task { await refreshSize() }
                                                 }
                                             } else if let fold = team.undoableFold(key) {
                                                 Button("拆开此叶，撤销压缩", systemImage: "arrow.uturn.backward") { unfolding = fold }
@@ -182,7 +198,7 @@ struct LeavesSheet: View {
                             EmptyNote(symbol: "book.pages", words: L.t("empty.savedConversations"))
                         } else {
                             SectionTitle(Words.t("收起的絮语"))
-                            VStack(spacing: 0) {
+                            LazyVStack(spacing: 0) {
                                 ForEach(leaves) { leaf in
                                     Button {
                                         Haptics.tick(0.7)
@@ -228,6 +244,7 @@ struct LeavesSheet: View {
                         withAnimation(Ink.Motion.unfold) { team.unfold(key, fold) }
                         Haptics.thud()
                         note = Words.t("拆开了：压缩前的原文放回了絮语里，前情提要退回压缩前的样子。")
+                        Task { await refreshSize() }
                     }
                     unfolding = nil
                 }
@@ -237,6 +254,7 @@ struct LeavesSheet: View {
             }
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
             .sheet(item: $reading) { bot in DiarySheet(team: team, bot: bot) }
+            .task(id: team.history(key).count) { await refreshSize() }
         }
     }
 }

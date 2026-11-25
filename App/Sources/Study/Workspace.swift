@@ -331,11 +331,11 @@ enum Workspace {
         case mounted(mount: MountedFolder, innerParts: [String], relative: String)
     }
 
-    static var root: URL {
+    static let root: URL = {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("书案", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
-    }
+    }()
 
     /// A path the model wrote, kept inside the local desk. Nil when it tries to step outside.
     static func resolve(_ path: String?) -> URL? {
@@ -439,8 +439,15 @@ enum Workspace {
         return rest.isEmpty ? prefix : "\(prefix)/\(rest)"
     }
 
+    private static let sizeLock = NSLock()
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
     static func size(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        sizeLock.withLock { sizeFormatter.string(fromByteCount: Int64(bytes)) }
     }
 
     /// Everything under a folder, a few levels deep, the way `tree` shows it. Symlinks escaping `baseRoot` are skipped.

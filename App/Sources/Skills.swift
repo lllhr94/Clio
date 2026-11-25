@@ -71,7 +71,12 @@ enum SkillShelf {
             var set = off
             if on { set.remove(item.id) } else { set.insert(item.id) }
             off = set
-            cache = nil
+            if var current = cache {
+                for index in current.items.indices where current.items[index].id == item.id {
+                    current.items[index].on = on
+                }
+                cache = (Date(), current.items)
+            }
             cacheVersion += 1
         }
     }
@@ -259,7 +264,7 @@ struct SkillsPage: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text(Words.t("书案/技能 里的做事说明，对得上就照做"))
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
                     if loading {
@@ -279,9 +284,13 @@ struct SkillsPage: View {
                             .foregroundStyle(Ink.inkSoft)
                         }
                     } else {
-                        RowCard {
-                            ForEach(items) { item in row(item) }
+                        LazyVStack(spacing: 0) {
+                            ForEach(items) { item in
+                                row(item)
+                                if item.id != items.last?.id { Kit.divider }
+                            }
                         }
+                        .paperCard()
                     }
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                 }
@@ -347,7 +356,6 @@ struct SkillsPage: View {
             Toggle("", isOn: Binding(get: { item.on }, set: { value in
                 SkillShelf.setOn(item, value)
                 if let index = items.firstIndex(where: { $0.id == item.id }) { items[index].on = value }
-                reload()
             }))
             .labelsHidden()
             .tint(Ink.accent)
@@ -358,8 +366,11 @@ struct SkillsPage: View {
         .contextMenu {
             Button("改一改", systemImage: "pencil") { editing = Editing(item: item) }
             Button("删掉", systemImage: "trash", role: .destructive) {
-                SkillShelf.remove(item)
-                reload()
+                let target = item
+                Task {
+                    await Task.detached(priority: .userInitiated) { SkillShelf.remove(target) }.value
+                    items.removeAll { $0.id == target.id }
+                }
             }
         }
     }
@@ -372,6 +383,7 @@ struct SkillEditor: View {
     @State private var name = ""
     @State private var description = ""
     @State private var body_ = ""
+    @State private var saving = false
 
     var body: some View {
         NavigationStack {
@@ -402,18 +414,29 @@ struct SkillEditor: View {
             .navigationTitle(item == nil ? L.t("skills.new") : L.t("skills.edit"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                        .disabled(saving)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
+                        guard !saving else { return }
+                        saving = true
                         let skill = Skill(name: name.trimmingCharacters(in: .whitespacesAndNewlines), description: description.trimmingCharacters(in: .whitespacesAndNewlines), body: body_.trimmingCharacters(in: .whitespacesAndNewlines))
-                        SkillShelf.save(skill, over: item?.file)
-                        Haptics.thud()
-                        dismiss()
+                        let file = item?.file
+                        Task {
+                            await Task.detached(priority: .userInitiated) {
+                                SkillShelf.save(skill, over: file)
+                            }.value
+                            Haptics.thud()
+                            dismiss()
+                        }
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || body_.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty || body_.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
+        .interactiveDismissDisabled(saving)
         .onAppear {
             guard let item else { return }
             name = item.skill.name

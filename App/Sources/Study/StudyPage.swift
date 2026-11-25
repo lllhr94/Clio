@@ -90,7 +90,7 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
         return decodePreview(at: ref.url, maxPixelSize: maxPixelSize)
     }
 
-    nonisolated private static func decodePreview(at url: URL, maxPixelSize: Int) -> UIImage? {
+    nonisolated static func decodePreview(at url: URL, maxPixelSize: Int) -> UIImage? {
         let limit = max(64, maxPixelSize)
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
             let options: [CFString: Any] = [
@@ -181,6 +181,7 @@ struct StudyFolder: View {
     @State private var request: UUID?
     @State private var scope: MountedFolders.ScopeToken?
     @State private var mountRoot: URL?
+    @State private var isMountRootFolder = false
 
     var body: some View {
         ZStack {
@@ -283,8 +284,7 @@ struct StudyFolder: View {
 
     private var navigationTitle: String {
         if top { return L.t("nav.files") }
-        if let mount, let mountRoot,
-           folder.resolvingSymlinksInPath().standardizedFileURL.path == mountRoot.resolvingSymlinksInPath().standardizedFileURL.path {
+        if let mount, isMountRootFolder {
             return mount.name
         }
         return folder.lastPathComponent
@@ -446,25 +446,38 @@ struct StudyFolder: View {
     }
 
     private func handleImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result else { return }
-        let activeRoot = mountRoot ?? Workspace.root
-        guard Workspace.isInsideRealRoot(folder, root: activeRoot) else { return }
-        for source in urls {
-            let reach = source.startAccessingSecurityScopedResource()
-            defer { if reach { source.stopAccessingSecurityScopedResource() } }
-            var target = folder.appendingPathComponent(source.lastPathComponent)
-            var number = 2
-            while FileManager.default.fileExists(atPath: target.path) {
-                let base = source.deletingPathExtension().lastPathComponent
-                let ext = source.pathExtension
-                target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
-                number += 1
+        guard case .success(let urls) = result, !urls.isEmpty else { return }
+        let targetFolder = folder
+        let currentMount = mount
+        let fallbackRoot = mountRoot ?? Workspace.root
+        Task {
+            let copied = await Task.detached(priority: .userInitiated) { () -> Bool in
+                let opened = currentMount.flatMap { MountedFolders.openForUI($0) }
+                defer { opened?.token.stop() }
+                if currentMount != nil && opened == nil { return false }
+                let activeRoot = opened?.url ?? fallbackRoot
+                guard Workspace.isInsideRealRoot(targetFolder, root: activeRoot) else { return false }
+                for source in urls {
+                    let reach = source.startAccessingSecurityScopedResource()
+                    defer { if reach { source.stopAccessingSecurityScopedResource() } }
+                    var target = targetFolder.appendingPathComponent(source.lastPathComponent)
+                    var number = 2
+                    while FileManager.default.fileExists(atPath: target.path) {
+                        let base = source.deletingPathExtension().lastPathComponent
+                        let ext = source.pathExtension
+                        target = targetFolder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
+                        number += 1
+                    }
+                    guard Workspace.isInsideRealRoot(target, root: activeRoot) else { continue }
+                    try? FileManager.default.copyItem(at: source, to: target)
+                }
+                return true
+            }.value
+            if copied {
+                Haptics.thud()
+                await load()
             }
-            guard Workspace.isInsideRealRoot(target, root: activeRoot) else { continue }
-            try? FileManager.default.copyItem(at: source, to: target)
         }
-        Haptics.thud()
-        Task { await load() }
     }
 
     private func handlePickMount(_ result: Result<[URL], Error>) {
@@ -497,23 +510,45 @@ struct StudyFolder: View {
         let name = newFolder.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
         guard !name.isEmpty, name != ".", name != ".." else { return }
         let target = folder.appendingPathComponent(name, isDirectory: true)
-        let activeRoot = mountRoot ?? Workspace.root
-        guard Workspace.isInsideRealRoot(target, root: activeRoot) else { return }
-        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-        Task { await load() }
+        let currentMount = mount
+        let fallbackRoot = mountRoot ?? Workspace.root
+        Task {
+            let created = await Task.detached(priority: .userInitiated) { () -> Bool in
+                let opened = currentMount.flatMap { MountedFolders.openForUI($0) }
+                defer { opened?.token.stop() }
+                if currentMount != nil && opened == nil { return false }
+                let activeRoot = opened?.url ?? fallbackRoot
+                guard Workspace.isInsideRealRoot(target, root: activeRoot) else { return false }
+                return (try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)) != nil
+            }.value
+            if created { await load() }
+        }
     }
 
     private func deleteSelectedItem() {
-        if let item = deleting {
-            let activeRoot = mountRoot ?? Workspace.root
-            if Workspace.isInsideRealRoot(item.url, root: activeRoot),
-               item.url.resolvingSymlinksInPath().standardizedFileURL.path != activeRoot.resolvingSymlinksInPath().standardizedFileURL.path {
-                try? FileManager.default.removeItem(at: item.url)
+        guard let item = deleting else { return }
+        deleting = nil
+        let currentMount = mount
+        let fallbackRoot = mountRoot ?? Workspace.root
+        let itemURL = item.url
+        Task {
+            let removed = await Task.detached(priority: .userInitiated) { () -> Bool in
+                let opened = currentMount.flatMap { MountedFolders.openForUI($0) }
+                defer { opened?.token.stop() }
+                if currentMount != nil && opened == nil { return false }
+                let activeRoot = opened?.url ?? fallbackRoot
+                guard Workspace.isInsideRealRoot(itemURL, root: activeRoot),
+                      itemURL.resolvingSymlinksInPath().standardizedFileURL.path != activeRoot.resolvingSymlinksInPath().standardizedFileURL.path else {
+                    return false
+                }
+                try? FileManager.default.removeItem(at: itemURL)
+                return true
+            }.value
+            if removed {
                 Haptics.lock()
-                Task { await load() }
+                await load()
             }
         }
-        deleting = nil
     }
 
     private func load() async {
@@ -532,6 +567,7 @@ struct StudyFolder: View {
             guard let opened else {
                 scope = nil
                 mountRoot = nil
+                isMountRootFolder = false
                 items = []
                 mountBroken = true
                 loading = false
@@ -541,14 +577,18 @@ struct StudyFolder: View {
             mountRoot = opened.url
             mountBroken = false
             let result = await Task.detached(priority: .utility) {
-                Self.readFolder(folder, root: opened.url, mount: mount)
+                let files = Self.readFolder(folder, root: opened.url, mount: mount)
+                let isRoot = folder.resolvingSymlinksInPath().standardizedFileURL.path == opened.url.resolvingSymlinksInPath().standardizedFileURL.path
+                return (files, isRoot)
             }.value
             guard !Task.isCancelled, request == id else { return }
-            items = result
+            items = result.0
+            isMountRootFolder = result.1
             loading = false
             return
         }
 
+        isMountRootFolder = false
         let loaded = await Task.detached(priority: .utility) { () -> ([StudyPage.Item], [MountedFolders.Inspection]) in
             let files = Self.readFolder(folder, root: Workspace.root, mount: nil)
             let inspections = top ? MountedFolders.all(fresh: true).map(MountedFolders.inspect) : []
@@ -562,7 +602,7 @@ struct StudyFolder: View {
 
     nonisolated private static func readFolder(_ folder: URL, root baseRoot: URL, mount: MountedFolder?) -> [StudyPage.Item] {
         guard Workspace.isInsideRealRoot(folder, root: baseRoot) else { return [] }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
         return urls.compactMap { url in
             guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return nil }
@@ -571,8 +611,10 @@ struct StudyFolder: View {
             let shareURL: URL?
             if isFolder {
                 shareURL = nil
-            } else {
+            } else if values?.isRegularFile == true {
                 shareURL = url.resolvingSymlinksInPath()
+            } else {
+                shareURL = nil
             }
             return StudyPage.Item(
                 url: url,
@@ -594,7 +636,11 @@ struct StudyFile: View {
     var mount: MountedFolder? = nil
     var showsDone = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
     @State private var text: String?
+    @State private var csvRows: [[String]]?
+    @State private var csvColumns = 0
+    @State private var csvColumnChars: [Int] = []
     @State private var plain = false
     @State private var picture: UIImage?
     @State private var loaded = false
@@ -602,18 +648,12 @@ struct StudyFile: View {
     @State private var accessDenied = false
     @State private var scope: MountedFolders.ScopeToken?
     @State private var allowedRoot: URL?
+    @State private var resolvedShareURL: URL?
+    @State private var quickLookURL: URL?
 
     private var ext: String { url.pathExtension.lowercased() }
     private var interactive: Bool { InteractiveDocument.supports(url) }
     private var taskKey: String { (mount?.id ?? "desk") + "|" + url.path }
-    private var shareURL: URL? {
-        if mountBroken || accessDenied { return nil }
-        guard let allowedRoot, Workspace.isInsideRealRoot(url, root: allowedRoot) else { return nil }
-        if interactive {
-            return InteractiveDocument(url: url, root: allowedRoot, mount: mount).shareURL
-        }
-        return url.resolvingSymlinksInPath()
-    }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
     private var longPlainText: String? {
@@ -650,8 +690,8 @@ struct StudyFile: View {
                 LongTextPreview(text: longPlainText)
                     .id(url)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let text, table, !plain {
-                TableGrid(rows: CSV.rows(text, separator: ext == "tsv" ? "\t" : ","))
+            } else if table, !plain, let csvRows {
+                TableGrid(rows: csvRows, columns: csvColumns, columnChars: csvColumnChars)
             } else if let text {
                 ScrollView {
                     Group {
@@ -669,9 +709,8 @@ struct StudyFile: View {
                     .padding(.vertical, Ink.Space.l)
                 }
             } else if loaded {
-                if let allowedRoot, Workspace.isInsideRealRoot(url, root: allowedRoot),
-                   QLPreviewController.canPreview(url.resolvingSymlinksInPath() as NSURL) {
-                    QuickPreview(url: url.resolvingSymlinksInPath()).ignoresSafeArea(edges: .bottom)
+                if let quickLookURL {
+                    QuickPreview(url: quickLookURL).ignoresSafeArea(edges: .bottom)
                 } else {
                     Text(L.t("files.previewUnavailable"))
                         .font(Ink.secondary)
@@ -688,8 +727,8 @@ struct StudyFile: View {
                 if (markdown || table) && text != nil && longPlainText == nil {
                     Button(plain ? (table ? L.t("files.showTable") : L.t("files.showFormatted")) : L.t("files.showSource")) { plain.toggle() }
                 }
-                if let shareURL {
-                    ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
+                if let resolvedShareURL {
+                    ShareLink(item: resolvedShareURL) { Image(systemName: "square.and.arrow.up") }
                         .accessibilityLabel(L.t("files.shareFile"))
                 }
                 if showsDone {
@@ -700,12 +739,25 @@ struct StudyFile: View {
         .task(id: taskKey) {
             let url = self.url
             let mount = self.mount
+            let screenWidth = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .map { $0.screen.bounds.width }
+                .max() ?? 430
+            let maxPixelSize = max(1080, Int((screenWidth * displayScale).rounded()))
+
             picture = nil
             text = nil
+            csvRows = nil
+            csvColumns = 0
+            csvColumnChars = []
             loaded = false
             mountBroken = false
             accessDenied = false
             allowedRoot = nil
+            resolvedShareURL = nil
+            quickLookURL = nil
+
+            let effectiveRoot: URL
             if let mount {
                 let opened = await Task.detached(priority: .utility) { MountedFolders.openForUI(mount) }.value
                 guard !Task.isCancelled else {
@@ -720,57 +772,88 @@ struct StudyFile: View {
                     return
                 }
                 scope = opened.token
-                let inside = await Task.detached(priority: .utility) { Workspace.isInsideRealRoot(url, root: opened.url) }.value
-                guard !Task.isCancelled else { return }
-                guard inside else {
-                    accessDenied = true
-                    loaded = true
-                    return
-                }
-                allowedRoot = opened.url
-                if interactive {
-                    return
-                }
-                let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: opened.url) }.value
-                guard !Task.isCancelled else { return }
-                picture = result.picture
-                text = result.text
-                loaded = true
-                return
+                effectiveRoot = opened.url
+            } else {
+                effectiveRoot = Workspace.root
             }
-            let inside = await Task.detached(priority: .utility) { Workspace.isInsideRealRoot(url, root: Workspace.root) }.value
+
+            let isInteractive = interactive
+            let resolvedInfo = await Task.detached(priority: .utility) { () -> (inside: Bool, resolvedURL: URL, shareURL: URL?) in
+                let inside = Workspace.isInsideRealRoot(url, root: effectiveRoot)
+                let resolved = inside ? url.resolvingSymlinksInPath() : url
+                let interactiveShare = (inside && isInteractive)
+                    ? InteractiveDocument(url: url, root: effectiveRoot, mount: mount).shareURL
+                    : nil
+                return (inside, resolved, interactiveShare)
+            }.value
             guard !Task.isCancelled else { return }
-            guard inside else {
+            guard resolvedInfo.inside else {
                 accessDenied = true
                 loaded = true
                 return
             }
-            allowedRoot = Workspace.root
-            if interactive {
+            allowedRoot = effectiveRoot
+            if isInteractive {
+                resolvedShareURL = resolvedInfo.shareURL
                 return
             }
-            let result = await Task.detached(priority: .utility) { Self.readPreview(url, root: Workspace.root) }.value
+            resolvedShareURL = resolvedInfo.resolvedURL
+
+            let result = await Task.detached(priority: .utility) {
+                Self.readPreview(url, root: effectiveRoot, maxPixelSize: maxPixelSize)
+            }.value
             guard !Task.isCancelled else { return }
             picture = result.picture
             text = result.text
+            csvRows = result.csvRows
+            csvColumns = result.csvColumns
+            csvColumnChars = result.csvColumnChars
+            if result.picture == nil && result.text == nil {
+                quickLookURL = QLPreviewController.canPreview(resolvedInfo.resolvedURL as NSURL) ? resolvedInfo.resolvedURL : nil
+            }
             loaded = true
         }
         .onDisappear {
             scope?.stop()
             scope = nil
             allowedRoot = nil
+            resolvedShareURL = nil
+            quickLookURL = nil
         }
     }
 
-    nonisolated private static func readPreview(_ url: URL, root baseRoot: URL) -> (picture: UIImage?, text: String?) {
-        guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return (nil, nil) }
-        if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(url.pathExtension.lowercased()),
-           let image = UIImage(contentsOfFile: url.path) {
-            return (image.preparingForDisplay() ?? image, nil)
+    private struct PreviewResult: Sendable {
+        var picture: UIImage?
+        var text: String?
+        var csvRows: [[String]]?
+        var csvColumns: Int = 0
+        var csvColumnChars: [Int] = []
+    }
+
+    nonisolated private static func readPreview(_ url: URL, root baseRoot: URL, maxPixelSize: Int) -> PreviewResult {
+        guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return PreviewResult() }
+        let fileExt = url.pathExtension.lowercased()
+        if ["png", "jpg", "jpeg", "heic", "gif", "webp", "bmp", "tiff"].contains(fileExt),
+           let image = WorkspaceFileRef.decodePreview(at: url, maxPixelSize: maxPixelSize) {
+            return PreviewResult(picture: image)
         }
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size < 2_000_000,
-              let data = try? Data(contentsOf: url), data.count < 2_000_000 else { return (nil, nil) }
-        return (nil, String(data: data, encoding: .utf8))
+              let data = try? Data(contentsOf: url), data.count < 2_000_000,
+              let decoded = String(data: data, encoding: .utf8) else { return PreviewResult() }
+        if ["csv", "tsv"].contains(fileExt) {
+            let rows = CSV.rows(decoded, separator: fileExt == "tsv" ? "\t" : ",")
+            let columns = rows.map(\.count).max() ?? 0
+            var colChars = [Int](repeating: 1, count: columns)
+            for row in rows {
+                for (col, cell) in row.enumerated() where col < columns {
+                    if cell.count > colChars[col] {
+                        colChars[col] = min(28, cell.count)
+                    }
+                }
+            }
+            return PreviewResult(text: decoded, csvRows: rows, csvColumns: columns, csvColumnChars: colChars)
+        }
+        return PreviewResult(text: decoded)
     }
 }
 
@@ -834,6 +917,8 @@ enum CSV {
 /// A grid that scrolls both ways, the first row as its header.
 private struct TableGrid: View {
     let rows: [[String]]
+    let columns: Int
+    let columnChars: [Int]
     @State private var width: CGFloat = 0
 
     private var narrowColumn: CGFloat { Ink.Size.small * 4.6 }
@@ -841,26 +926,38 @@ private struct TableGrid: View {
         width > 0 ? min(Ink.Size.body * 16, max(narrowColumn, width * 0.56)) : Ink.Size.body * 13
     }
 
+    private func columnWidths() -> [CGFloat] {
+        (0..<columns).map { column in
+            let chars = column < columnChars.count ? columnChars[column] : 4
+            let estimated = CGFloat(chars) * Ink.Size.small * 0.72 + Ink.Space.s * 2
+            return min(wideColumn, max(narrowColumn, estimated))
+        }
+    }
+
     var body: some View {
-        let columns = rows.map(\.count).max() ?? 0
+        let widths = columnWidths()
         ScrollView([.horizontal, .vertical]) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                    GridRow {
+                    HStack(alignment: .top, spacing: 0) {
                         ForEach(0..<columns, id: \.self) { column in
+                            if column > 0 {
+                                Rectangle().fill(Ink.rule).frame(width: 0.5)
+                            }
                             Text(column < row.count ? row[column] : "")
                                 .font(index == 0 ? .system(size: Ink.Size.small, weight: .semibold) : .system(size: Ink.Size.small))
                                 .foregroundStyle(Ink.ink)
                                 .lineLimit(3)
-                                .frame(minWidth: narrowColumn, maxWidth: wideColumn, alignment: .leading)
+                                .frame(width: widths[column], alignment: .leading)
                                 .padding(.horizontal, Ink.Space.s)
                                 .padding(.vertical, Ink.Space.s)
-                                .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
-                                .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
                         }
                     }
+                    .background(index == 0 ? Ink.accentWash : (index % 2 == 0 ? Ink.paperRaised : Color.clear))
+                    Rectangle().fill(Ink.rule).frame(height: 0.5)
                 }
             }
+            .overlay(Rectangle().strokeBorder(Ink.rule, lineWidth: 0.5))
             .padding(Ink.Space.l)
             .textSelection(.enabled)
         }

@@ -99,7 +99,15 @@ struct HillsPage: View {
                 titleVisibility: .visible
             ) {
                 Button(L.t("actions.delete"), role: .destructive) {
-                    if let host = hostPendingDelete { hills.remove(host) }
+                    if let host = hostPendingDelete {
+                        let hostID = host.id
+                        Task {
+                            await Task.detached(priority: .userInitiated) {
+                                Vault.remove("hill.\(hostID)")
+                            }.value
+                            hills.remove(host)
+                        }
+                    }
                     hostPendingDelete = nil
                 }
                 Button(L.t("actions.cancel"), role: .cancel) { hostPendingDelete = nil }
@@ -112,7 +120,16 @@ struct HillsPage: View {
                 titleVisibility: .visible
             ) {
                 Button(L.t("actions.delete"), role: .destructive) {
-                    if let server = serverPendingDelete { hills.remove(server) }
+                    if let server = serverPendingDelete {
+                        let serverID = server.id
+                        Task {
+                            await Task.detached(priority: .userInitiated) {
+                                MCPAuth.forget(serverID)
+                                Vault.remove("mcp.\(serverID)")
+                            }.value
+                            hills.remove(server)
+                        }
+                    }
                     serverPendingDelete = nil
                 }
                 Button(L.t("actions.cancel"), role: .cancel) { serverPendingDelete = nil }
@@ -343,6 +360,7 @@ private struct HostEditor: View {
     @State private var password = ""
     @State private var hasPassword = false
     @State private var port = ""
+    @State private var saving = false
     @Environment(\.dismiss) private var dismiss
 
     private var parsedPort: Int? {
@@ -385,22 +403,37 @@ private struct HostEditor: View {
             .navigationTitle(host.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.t("remote.newHost") : host.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                        .disabled(saving)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
-                        guard let validPort = parsedPort else { return }
-                        host.address = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
-                        host.user = host.user.trimmingCharacters(in: .whitespacesAndNewlines)
-                        host.name = host.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        host.port = validPort
-                        if host.name.isEmpty { host.name = host.address }
-                        Hills.shared.save(host, password: password.isEmpty ? nil : password)
-                        Haptics.thud()
-                        dismiss()
+                        guard !saving, let validPort = parsedPort else { return }
+                        saving = true
+                        var updated = host
+                        updated.address = updated.address.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.user = updated.user.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.name = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.port = validPort
+                        if updated.name.isEmpty { updated.name = updated.address }
+                        let pw = password.isEmpty ? nil : password
+                        let hostID = updated.id
+                        Task {
+                            if let pw {
+                                await Task.detached(priority: .userInitiated) {
+                                    Vault.save(pw, as: "hill.\(hostID)")
+                                }.value
+                            }
+                            Hills.shared.save(updated, password: nil)
+                            Haptics.thud()
+                            dismiss()
+                        }
                     }
-                    .disabled(!canSave)
+                    .disabled(saving || !canSave)
                 }
             }
+            .interactiveDismissDisabled(saving)
             .onAppear { port = String(host.port) }
             .task(id: host.id) { hasPassword = await Vault.readString("hill.\(host.id)") != nil }
         }
@@ -411,6 +444,7 @@ private struct ServerEditor: View {
     @State var server: Hills.Server
     @State private var token = ""
     @State private var hasToken = false
+    @State private var saving = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -464,30 +498,44 @@ private struct ServerEditor: View {
             .navigationTitle(server.name.isEmpty ? L.t("remote.newService") : server.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button(L.t("actions.cancel")) { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                        .disabled(saving)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.save")) {
-                        server.url = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
-                        server.name = server.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if server.name.isEmpty { server.name = URL(string: server.url)?.host() ?? "MCP" }
+                        guard !saving else { return }
+                        saving = true
+                        var updated = server
+                        updated.url = updated.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.name = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if updated.name.isEmpty { updated.name = URL(string: updated.url)?.host() ?? "MCP" }
                         let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                        Hills.shared.save(server, token: cleanToken.isEmpty ? nil : cleanToken)
-                        let saved = server
+                        let serverID = updated.id
                         Task {
-                            let hasSavedToken: Bool
                             if !cleanToken.isEmpty {
-                                hasSavedToken = true
-                            } else {
-                                hasSavedToken = await Vault.readString("mcp.\(saved.id)") != nil
+                                await Task.detached(priority: .userInitiated) {
+                                    Vault.save(cleanToken, as: "mcp.\(serverID)")
+                                }.value
                             }
-                            _ = await Connecting.connect(saved, signIn: saved.tunnelHost == nil && !hasSavedToken)
+                            Hills.shared.save(updated, token: nil)
+                            Task {
+                                let hasSavedToken: Bool
+                                if !cleanToken.isEmpty {
+                                    hasSavedToken = true
+                                } else {
+                                    hasSavedToken = await Vault.readString("mcp.\(serverID)") != nil
+                                }
+                                _ = await Connecting.connect(updated, signIn: updated.tunnelHost == nil && !hasSavedToken)
+                            }
+                            Haptics.thud()
+                            dismiss()
                         }
-                        Haptics.thud()
-                        dismiss()
                     }
-                    .disabled(URL(string: server.url.trimmingCharacters(in: .whitespacesAndNewlines))?.host() == nil)
+                    .disabled(saving || URL(string: server.url.trimmingCharacters(in: .whitespacesAndNewlines))?.host() == nil)
                 }
             }
+            .interactiveDismissDisabled(saving)
         }
     }
 }

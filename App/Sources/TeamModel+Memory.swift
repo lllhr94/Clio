@@ -53,13 +53,112 @@ extension TeamModel {
         return true
     }
 
+    private static var offMainMutationTails: [ObjectIdentifier: (id: UInt64, task: Task<Void, Never>)] = [:]
+    private static var offMainMutationSeq: UInt64 = 0
+
+    private func serializedMemoryMutation<T: Sendable>(
+        _ work: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        let key = ObjectIdentifier(self)
+        let previous = Self.offMainMutationTails[key]?.task
+        Self.offMainMutationSeq &+= 1
+        let mySeq = Self.offMainMutationSeq
+        let myTask = Task<Result<T, Error>, Never> { @MainActor in
+            await previous?.value
+            do {
+                return .success(try await work())
+            } catch {
+                return .failure(error)
+            }
+        }
+        let anchor = Task<Void, Never> { @MainActor in
+            _ = await myTask.value
+            if Self.offMainMutationTails[key]?.id == mySeq {
+                Self.offMainMutationTails.removeValue(forKey: key)
+            }
+        }
+        Self.offMainMutationTails[key] = (mySeq, anchor)
+        return try await myTask.value.get()
+    }
+
+    private func applyCommittedMemoryBook(_ committedBook: MemoryBook) {
+        memoryBook = committedBook
+        if memories != committedBook.memories {
+            memories = committedBook.memories
+        }
+        memoryReviews = committedBook.reviews
+        syncLivePromptsFromMemories()
+    }
+
     @discardableResult
-    func remember(_ fact: String, by bot: String?) -> String? {
-        guard canMutateMemoryState else { return nil }
-        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+    private func commitMemoryBookPrepared(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        orderedSecrets: [String]
+    ) throws -> MemoryBook {
+        guard keeping, !Disk.frozen else {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
+        guard !MemoryStoreBridge.shared.isCanonicalReadOnly else {
+            throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
+        }
+        ensureRetractedFlushHashesLoaded()
+        let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let committed = try MemoryStoreBridge.shared.commitAppBook(
+            book,
+            mutation: mutation,
+            suppressedHashes: suppressed,
+            promptState: memoryPromptState,
+            bots: bots,
+            mainBotId: mainBotId,
+            secrets: orderedSecrets
+        )
+        applyCommittedMemoryBook(committed.book)
+        return committed.book
+    }
+
+    @discardableResult
+    private func commitMemoryBookPreparedAsync(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        orderedSecrets: [String]
+    ) async throws -> MemoryBook {
+        guard keeping, !Disk.frozen else {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
+        guard !MemoryStoreBridge.shared.isCanonicalReadOnly else {
+            throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
+        }
+        ensureRetractedFlushHashesLoaded()
+        let suppressed = memoryPromptState.suppressedFlushHashesSnapshot()
+        let committed = try await MemoryStoreBridge.shared.commitAppBookAsync(
+            book,
+            mutation: mutation,
+            suppressedHashes: suppressed,
+            promptState: memoryPromptState,
+            bots: bots,
+            mainBotId: mainBotId,
+            secrets: orderedSecrets
+        )
+        applyCommittedMemoryBook(committed.book)
+        return committed.book
+    }
+
+    private enum RememberPlan {
+        case empty
+        case local(nextMemories: [Memory], touchedID: String, safeFact: String, added: String?)
+        case commit(book: MemoryBook, mutation: MemoryCommitMutation, added: String?)
+    }
+
+    private func buildRememberPlan(
+        _ fact: String,
+        by bot: String?,
+        orderedSecrets: [String],
+        pinnedIDs: Set<String>
+    ) -> RememberPlan {
         let safeFact = MemorySafety.redactSecrets(fact, secrets: orderedSecrets)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !safeFact.isEmpty else { return nil }
+        guard !safeFact.isEmpty else { return .empty }
 
         let now = Now.ms
         var nextMemories = memories
@@ -81,28 +180,84 @@ extension TeamModel {
 
         if !keeping {
             Self.settleMemory(&nextMemories, pinnedIDs: [])
+            return .local(nextMemories: nextMemories, touchedID: touchedMemory.id, safeFact: safeFact, added: added)
+        }
+
+        Self.settleMemory(&nextMemories, pinnedIDs: pinnedIDs)
+        var nextBook = memoryBook
+        nextBook.memories = nextMemories
+        return .commit(
+            book: nextBook,
+            mutation: .remember(memory: touchedMemory, explicitUserAction: bot == nil, nowMs: now),
+            added: added
+        )
+    }
+
+    @discardableResult
+    func remember(_ fact: String, by bot: String?) -> String? {
+        guard canMutateMemoryState else { return nil }
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        switch buildRememberPlan(fact, by: bot, orderedSecrets: orderedSecrets, pinnedIDs: pins) {
+        case .empty:
+            return nil
+        case .local(let nextMemories, let touchedID, let safeFact, let added):
             memories = nextMemories
             memoryBook.memories = nextMemories
             if bot == nil {
-                memoryPromptState.clearRetraction(id: touchedMemory.id, text: safeFact)
+                memoryPromptState.clearRetraction(id: touchedID, text: safeFact)
             } else {
                 memoryPromptState.invalidate()
             }
             syncLivePromptsFromMemories()
             return added
+        case .commit(let nextBook, let mutation, let added):
+            guard let committed = try? commitMemoryBookPrepared(
+                nextBook,
+                mutation: mutation,
+                orderedSecrets: orderedSecrets
+            ) else {
+                return nil
+            }
+            guard let added else { return nil }
+            return committed.memories.contains(where: { $0.id == added }) ? added : nil
         }
+    }
 
-        Self.settleMemory(&nextMemories, pinnedIDs: MemoryStoreBridge.shared.pinnedIDsSnapshot())
-        var nextBook = memoryBook
-        nextBook.memories = nextMemories
-        guard let committed = try? commitMemoryBook(
-            nextBook,
-            mutation: .remember(memory: touchedMemory, explicitUserAction: bot == nil, nowMs: now)
-        ) else {
-            return nil
+    @discardableResult
+    func rememberOffMain(_ fact: String, by bot: String?) async throws -> String? {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState else { return nil }
+            let keeping = self.keeping
+            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], pins: Set<String>) in
+                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+                return (secrets, pins)
+            }.value
+            guard self.canMutateMemoryState else { return nil }
+            switch self.buildRememberPlan(fact, by: bot, orderedSecrets: prep.secrets, pinnedIDs: prep.pins) {
+            case .empty:
+                return nil
+            case .local(let nextMemories, let touchedID, let safeFact, let added):
+                self.memories = nextMemories
+                self.memoryBook.memories = nextMemories
+                if bot == nil {
+                    self.memoryPromptState.clearRetraction(id: touchedID, text: safeFact)
+                } else {
+                    self.memoryPromptState.invalidate()
+                }
+                self.syncLivePromptsFromMemories()
+                return added
+            case .commit(let nextBook, let mutation, let added):
+                let committed = try await self.commitMemoryBookPreparedAsync(
+                    nextBook,
+                    mutation: mutation,
+                    orderedSecrets: prep.secrets
+                )
+                guard let added else { return nil }
+                return committed.memories.contains(where: { $0.id == added }) ? added : nil
+            }
         }
-        guard let added else { return nil }
-        return committed.memories.contains(where: { $0.id == added }) ? added : nil
     }
 
     /// Keeps the surface small: the least recently used things sink first; pinned (`镇纸`) entries never sink.
@@ -236,36 +391,71 @@ extension TeamModel {
         )
     }
 
-    func setMemoryLayer(_ id: String, _ layer: MemoryLayer, kind: String? = nil, topic: String? = nil, confidence: Double? = nil) {
-        guard canMutateMemoryState else { return }
+    private enum MemoryMutationPlan {
+        case noOp(succeeded: Bool)
+        case local(nextMemories: [Memory], nextReviews: [MemoryReviewLog]?, retract: (id: String, text: String?)?, clearRetract: (id: String, text: String)?)
+        case commit(book: MemoryBook, mutation: MemoryCommitMutation)
+    }
+
+    private func executeLocalPlan(
+        nextMemories: [Memory],
+        nextReviews: [MemoryReviewLog]?,
+        retract: (id: String, text: String?)?,
+        clearRetract: (id: String, text: String)?
+    ) {
+        memories = nextMemories
+        memoryBook.memories = nextMemories
+        if let nextReviews {
+            memoryBook.reviews = nextReviews
+            memoryReviews = nextReviews
+        }
+        if let retract {
+            memoryPromptState.retract(id: retract.id, textForInFlightGuard: retract.text)
+        } else if let clearRetract {
+            memoryPromptState.clearRetraction(id: clearRetract.id, text: clearRetract.text)
+        } else {
+            memoryPromptState.invalidate()
+        }
+        syncLivePromptsFromMemories()
+    }
+
+    private func buildSetLayerPlan(
+        _ id: String,
+        _ layer: MemoryLayer,
+        kind: String?,
+        topic: String?,
+        confidence: Double?,
+        archivedFallback: Memory?,
+        hasBridgeRecord: Bool,
+        pinnedIDs: Set<String>
+    ) -> MemoryMutationPlan {
         let now = Now.ms
         if layer == .archived {
             if !keeping {
-                memories.removeAll { $0.id == id }
-                memoryBook.memories = memories
-                memoryPromptState.invalidate()
-                syncLivePromptsFromMemories()
-                return
+                var nextMemories = memories
+                nextMemories.removeAll { $0.id == id }
+                return .local(nextMemories: nextMemories, nextReviews: nil, retract: nil, clearRetract: nil)
             }
             let fallback = memories.first { $0.id == id }
-            guard fallback != nil || MemoryStoreBridge.shared.hasRecordSnapshot(id: id) else { return }
+            guard fallback != nil || hasBridgeRecord else { return .noOp(succeeded: false) }
             var nextMemories = memories
             nextMemories.removeAll { $0.id == id }
             var nextBook = memoryBook
             nextBook.memories = nextMemories
-            _ = try? commitMemoryBook(
-                nextBook,
+            return .commit(
+                book: nextBook,
                 mutation: .layerAndMetadata(
                     id: id,
                     layer: .archived,
                     kind: kind,
                     topic: topic,
                     confidence: confidence,
+                    text: nil,
+                    editedByUser: false,
                     fallbackMemory: fallback,
                     nowMs: now
                 )
             )
-            return
         }
 
         var nextMemories = memories
@@ -275,7 +465,7 @@ extension TeamModel {
             if layer == .pinned || layer == .surface {
                 nextMemories[index].used = now
             }
-        } else if keeping, var archived = MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) {
+        } else if keeping, var archived = archivedFallback {
             archived.deep = (layer == .deep) ? true : nil
             if layer == .pinned || layer == .surface {
                 archived.used = now
@@ -284,20 +474,16 @@ extension TeamModel {
             nextMemories.append(archived)
             fallbackMemory = archived
         } else {
-            return
+            return .noOp(succeeded: false)
         }
 
         if !keeping {
             if layer != .deep { Self.settleMemory(&nextMemories, pinnedIDs: []) }
-            memories = nextMemories
-            memoryBook.memories = nextMemories
-            memoryPromptState.invalidate()
-            syncLivePromptsFromMemories()
-            return
+            return .local(nextMemories: nextMemories, nextReviews: nil, retract: nil, clearRetract: nil)
         }
 
         if layer != .deep {
-            var candidatePins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+            var candidatePins = pinnedIDs
             if layer == .pinned {
                 candidatePins.insert(id)
             } else {
@@ -307,14 +493,209 @@ extension TeamModel {
         }
         var nextBook = memoryBook
         nextBook.memories = nextMemories
-        _ = try? commitMemoryBook(
-            nextBook,
+        return .commit(
+            book: nextBook,
             mutation: .layerAndMetadata(
                 id: id,
                 layer: layer,
                 kind: kind,
                 topic: topic,
                 confidence: confidence,
+                text: nil,
+                editedByUser: false,
+                fallbackMemory: fallbackMemory,
+                nowMs: now
+            )
+        )
+    }
+
+    func setMemoryLayer(_ id: String, _ layer: MemoryLayer, kind: String? = nil, topic: String? = nil, confidence: Double? = nil) {
+        guard canMutateMemoryState else { return }
+        let orderedSecrets = keeping ? Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } : []
+        let hasRecord = (keeping && layer == .archived) ? MemoryStoreBridge.shared.hasRecordSnapshot(id: id) : false
+        let archivedFallback = (keeping && layer != .archived && !memories.contains(where: { $0.id == id }))
+            ? MemoryStoreBridge.shared.archivedMemorySnapshot(id: id)
+            : nil
+        let pins = (keeping && layer != .deep && layer != .archived) ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        switch buildSetLayerPlan(
+            id,
+            layer,
+            kind: kind,
+            topic: topic,
+            confidence: confidence,
+            archivedFallback: archivedFallback,
+            hasBridgeRecord: hasRecord,
+            pinnedIDs: pins
+        ) {
+        case .noOp:
+            return
+        case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+            executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+        case .commit(let nextBook, let mutation):
+            _ = try? commitMemoryBookPrepared(nextBook, mutation: mutation, orderedSecrets: orderedSecrets)
+        }
+    }
+
+    @discardableResult
+    func setMemoryLayerOffMain(_ id: String, _ layer: MemoryLayer, kind: String? = nil, topic: String? = nil, confidence: Double? = nil) async throws -> Bool {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState else { return false }
+            let keeping = self.keeping
+            let needsArchiveLookup = keeping && layer != .archived
+            let needsHasRecord = keeping && layer == .archived
+            let needsPins = keeping && layer != .archived && layer != .deep
+            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], archived: Memory?, hasRecord: Bool, pins: Set<String>) in
+                let secrets = keeping ? Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } : []
+                let archived = needsArchiveLookup ? MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) : nil
+                let hasRecord = needsHasRecord ? MemoryStoreBridge.shared.hasRecordSnapshot(id: id) : false
+                let pins = needsPins ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+                return (secrets, archived, hasRecord, pins)
+            }.value
+            guard self.canMutateMemoryState else { return false }
+            let fallbackForCurrentState = self.memories.contains(where: { $0.id == id }) ? nil : prep.archived
+            switch self.buildSetLayerPlan(
+                id,
+                layer,
+                kind: kind,
+                topic: topic,
+                confidence: confidence,
+                archivedFallback: fallbackForCurrentState,
+                hasBridgeRecord: prep.hasRecord,
+                pinnedIDs: prep.pins
+            ) {
+            case .noOp(let succeeded):
+                return succeeded
+            case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+                self.executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+                return true
+            case .commit(let nextBook, let mutation):
+                _ = try await self.commitMemoryBookPreparedAsync(nextBook, mutation: mutation, orderedSecrets: prep.secrets)
+                return true
+            }
+        }
+    }
+
+    private func buildUpdateDetailPlan(
+        id: String,
+        text: String,
+        layer: MemoryLayer,
+        kind: String,
+        topic: String,
+        orderedSecrets: [String],
+        currentRecord: MemoryRecord?,
+        archivedFallback: Memory?,
+        hasBridgeRecord: Bool,
+        archivedDeleteText: String?,
+        pinnedIDs: Set<String>
+    ) -> MemoryMutationPlan {
+        let safeText = MemorySafety.redactSecrets(text, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if safeText.isEmpty {
+            return buildDeletePlan(id, archivedText: archivedDeleteText)
+        }
+        let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedKind = cleanKind.isEmpty ? "fact" : cleanKind
+        let cleanTopic = MemorySafety.redactSecrets(topic, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let textChanged = currentRecord?.text != safeText
+        let metaChanged: Bool
+        if keeping {
+            metaChanged = currentRecord == nil
+                || currentRecord?.layer != layer
+                || currentRecord?.kind != resolvedKind
+                || currentRecord?.topic != cleanTopic
+        } else {
+            metaChanged = currentRecord == nil || currentRecord?.layer != layer
+        }
+        guard textChanged || metaChanged else { return .noOp(succeeded: true) }
+
+        let now = Now.ms
+        if layer == .archived {
+            if !keeping {
+                var nextMemories = memories
+                nextMemories.removeAll { $0.id == id }
+                return .local(nextMemories: nextMemories, nextReviews: nil, retract: nil, clearRetract: nil)
+            }
+            let fallback = memories.first { $0.id == id }
+            guard fallback != nil || hasBridgeRecord else { return .noOp(succeeded: false) }
+            var nextMemories = memories
+            nextMemories.removeAll { $0.id == id }
+            var nextBook = memoryBook
+            nextBook.memories = nextMemories
+            return .commit(
+                book: nextBook,
+                mutation: .layerAndMetadata(
+                    id: id,
+                    layer: .archived,
+                    kind: resolvedKind,
+                    topic: cleanTopic,
+                    confidence: nil,
+                    text: textChanged ? safeText : nil,
+                    editedByUser: textChanged,
+                    fallbackMemory: fallback,
+                    nowMs: now
+                )
+            )
+        }
+
+        var nextMemories = memories
+        var fallbackMemory: Memory?
+        if let index = nextMemories.firstIndex(where: { $0.id == id }) {
+            if textChanged {
+                nextMemories[index].text = safeText
+                nextMemories[index].editedByUser = true
+            }
+            nextMemories[index].deep = (layer == .deep) ? true : nil
+            if (layer == .pinned || layer == .surface) && currentRecord?.layer != layer {
+                nextMemories[index].used = now
+            }
+        } else if keeping, var archived = archivedFallback {
+            if textChanged {
+                archived.text = safeText
+                archived.editedByUser = true
+            }
+            archived.deep = (layer == .deep) ? true : nil
+            if layer == .pinned || layer == .surface {
+                archived.used = now
+            }
+            nextMemories.removeAll { $0.id == id }
+            nextMemories.append(archived)
+            fallbackMemory = archived
+        } else {
+            return .noOp(succeeded: false)
+        }
+
+        if !keeping {
+            if layer != .deep { Self.settleMemory(&nextMemories, pinnedIDs: []) }
+            return .local(
+                nextMemories: nextMemories,
+                nextReviews: nil,
+                retract: nil,
+                clearRetract: textChanged ? (id: id, text: safeText) : nil
+            )
+        }
+
+        if layer != .deep {
+            var candidatePins = pinnedIDs
+            if layer == .pinned {
+                candidatePins.insert(id)
+            } else {
+                candidatePins.remove(id)
+            }
+            Self.settleMemory(&nextMemories, pinnedIDs: candidatePins)
+        }
+        var nextBook = memoryBook
+        nextBook.memories = nextMemories
+        return .commit(
+            book: nextBook,
+            mutation: .layerAndMetadata(
+                id: id,
+                layer: layer,
+                kind: resolvedKind,
+                topic: cleanTopic,
+                confidence: nil,
+                text: textChanged ? safeText : nil,
+                editedByUser: textChanged,
                 fallbackMemory: fallbackMemory,
                 nowMs: now
             )
@@ -324,75 +705,127 @@ extension TeamModel {
     func updateMemoryDetail(id: String, text: String, layer: MemoryLayer, kind: String, topic: String) {
         guard canMutateMemoryState else { return }
         let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
-        let safeText = MemorySafety.redactSecrets(text, secrets: orderedSecrets)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if safeText.isEmpty {
-            deleteMemory(id)
+        let currentRecord = memoryRecord(id: id)
+        let hasRecord = (keeping && layer == .archived) ? MemoryStoreBridge.shared.hasRecordSnapshot(id: id) : false
+        let archivedFallback = (keeping && layer != .archived && !memories.contains(where: { $0.id == id }))
+            ? MemoryStoreBridge.shared.archivedMemorySnapshot(id: id)
+            : nil
+        let archivedDeleteText = (keeping && !memories.contains(where: { $0.id == id }))
+            ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text
+            : nil
+        let pins = (keeping && layer != .deep && layer != .archived) ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        switch buildUpdateDetailPlan(
+            id: id,
+            text: text,
+            layer: layer,
+            kind: kind,
+            topic: topic,
+            orderedSecrets: orderedSecrets,
+            currentRecord: currentRecord,
+            archivedFallback: archivedFallback,
+            hasBridgeRecord: hasRecord,
+            archivedDeleteText: archivedDeleteText,
+            pinnedIDs: pins
+        ) {
+        case .noOp:
             return
-        }
-        let current = memoryRecord(id: id)
-        let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedKind = cleanKind.isEmpty ? "fact" : cleanKind
-        let cleanTopic = MemorySafety.redactSecrets(topic, secrets: orderedSecrets)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let textChanged = current?.text != safeText
-        let metaChanged: Bool
-        if keeping {
-            metaChanged = current == nil
-                || current?.layer != layer
-                || current?.kind != resolvedKind
-                || current?.topic != cleanTopic
-        } else {
-            metaChanged = current == nil || current?.layer != layer
-        }
-
-        if layer == .archived {
-            if !keeping {
-                setMemoryLayer(id, .archived)
-                return
-            }
-            if textChanged {
-                if !memories.contains(where: { $0.id == id }) {
-                    // Temporarily promote through `.deep` so editing text never runs `settleMemory` or bumps `used`.
-                    setMemoryLayer(id, .deep)
-                }
-                editMemory(id, safeText)
-                setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
-            } else if metaChanged {
-                setMemoryLayer(id, .archived, kind: resolvedKind, topic: cleanTopic)
-            }
-            return
-        }
-
-        if !memories.contains(where: { $0.id == id }) {
-            setMemoryLayer(id, layer, kind: resolvedKind, topic: cleanTopic)
-            if textChanged {
-                editMemory(id, safeText)
-            }
-            return
-        }
-
-        if textChanged {
-            editMemory(id, safeText)
-        }
-        if metaChanged {
-            setMemoryLayer(id, layer, kind: resolvedKind, topic: cleanTopic)
+        case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+            executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+        case .commit(let nextBook, let mutation):
+            _ = try? commitMemoryBookPrepared(nextBook, mutation: mutation, orderedSecrets: orderedSecrets)
         }
     }
 
     @discardableResult
-    func importMemoryCandidates(
-        _ items: [(text: String, layer: MemoryLayer, kind: String, topic: String)]
-    ) -> Int {
-        guard canMutateMemoryState, !items.isEmpty else { return 0 }
-        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+    func updateMemoryDetailOffMain(id: String, text: String, layer: MemoryLayer, kind: String, topic: String) async throws -> Bool {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState else { return false }
+            let keeping = self.keeping
+            let needsArchiveLookup = keeping && layer != .archived
+            let prep = await Task.detached(priority: .userInitiated) { () -> (
+                secrets: [String],
+                bridgeRecord: MemoryRecord?,
+                archivedFallback: Memory?,
+                hasRecord: Bool,
+                pins: Set<String>
+            ) in
+                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                guard keeping else { return (secrets, nil, nil, false, []) }
+                let allRecords = MemoryStoreBridge.shared.recordsSnapshot()
+                let bridgeRecord = allRecords.first(where: { $0.id == id })
+                let archivedFallback = needsArchiveLookup ? MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) : nil
+                let hasRecord = bridgeRecord != nil
+                let pins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+                return (secrets, bridgeRecord, archivedFallback, hasRecord, pins)
+            }.value
+            guard self.canMutateMemoryState else { return false }
+            let currentRecord: MemoryRecord? = {
+                if keeping, let found = prep.bridgeRecord { return found }
+                if let mem = self.memories.first(where: { $0.id == id }) {
+                    let isPinned = keeping && prep.pins.contains(mem.id)
+                    let resolvedLayer: MemoryLayer = isPinned ? .pinned : (mem.deep == true ? .deep : .surface)
+                    return MemoryRecord(
+                        id: mem.id,
+                        text: mem.text,
+                        layer: resolvedLayer,
+                        pinned: isPinned,
+                        createdAtMs: mem.at,
+                        usedAtMs: mem.used,
+                        byBot: mem.by,
+                        automatic: mem.automatic == true,
+                        editedByUser: mem.editedByUser == true
+                    )
+                }
+                return nil
+            }()
+            let fallbackForCurrentState = self.memories.contains(where: { $0.id == id }) ? nil : prep.archivedFallback
+            let archivedDeleteText = (keeping && prep.bridgeRecord?.layer == .archived) ? prep.bridgeRecord?.text : nil
+            switch self.buildUpdateDetailPlan(
+                id: id,
+                text: text,
+                layer: layer,
+                kind: kind,
+                topic: topic,
+                orderedSecrets: prep.secrets,
+                currentRecord: currentRecord,
+                archivedFallback: fallbackForCurrentState,
+                hasBridgeRecord: prep.hasRecord,
+                archivedDeleteText: archivedDeleteText,
+                pinnedIDs: prep.pins
+            ) {
+            case .noOp(let succeeded):
+                return succeeded
+            case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+                self.executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+                return true
+            case .commit(let nextBook, let mutation):
+                _ = try await self.commitMemoryBookPreparedAsync(nextBook, mutation: mutation, orderedSecrets: prep.secrets)
+                return true
+            }
+        }
+    }
+
+    private enum ImportPlan {
+        case empty
+        case local(nextMemories: [Memory], count: Int)
+        case commit(book: MemoryBook, mutation: MemoryCommitMutation, candidateIDs: [String])
+    }
+
+    private func buildImportPlan(
+        _ items: [(text: String, layer: MemoryLayer, kind: String, topic: String)],
+        orderedSecrets: [String],
+        bridgeExistingTexts: [String],
+        pinnedIDs: Set<String>,
+        isSuppressed: (String) -> Bool
+    ) -> ImportPlan {
+        guard !items.isEmpty else { return .empty }
         if keeping {
             ensureRetractedFlushHashesLoaded()
         }
         let suppressedHashes = memoryPromptState.suppressedFlushHashesSnapshot()
         var existingTexts = memories.map(\.text)
         if keeping {
-            existingTexts.append(contentsOf: MemoryStoreBridge.shared.recordsSnapshot().map(\.text))
+            existingTexts.append(contentsOf: bridgeExistingTexts)
         }
         var seenKeys = Set(existingTexts.map(MemorySafety.normalizedFactKey).filter { !$0.isEmpty })
 
@@ -420,7 +853,7 @@ extension TeamModel {
             let hash = MemorySafety.retractionHash(cleanText)
             guard !key.isEmpty, !hash.isEmpty else { continue }
             guard !suppressedHashes.contains(hash) else { continue }
-            if keeping, MemoryStoreBridge.shared.isSuppressedInShadow(text: cleanText) {
+            if keeping, isSuppressed(cleanText) {
                 continue
             }
             guard seenKeys.insert(key).inserted else { continue }
@@ -446,25 +879,20 @@ extension TeamModel {
             accepted.append((memory: memory, layer: targetLayer, kind: cleanKind, topic: redactedTopic))
         }
 
-        guard !accepted.isEmpty else { return 0 }
+        guard !accepted.isEmpty else { return .empty }
 
         if !keeping {
             let activeMemories = accepted.filter { $0.layer != .archived }.map(\.memory)
-            guard !activeMemories.isEmpty else { return 0 }
+            guard !activeMemories.isEmpty else { return .empty }
             var nextMemories = memories + activeMemories
             Self.settleMemory(&nextMemories, pinnedIDs: [])
-            memories = nextMemories
-            memoryBook.memories = nextMemories
-            memoryPromptState.invalidate()
-            syncLivePromptsFromMemories()
-            return activeMemories.count
+            return .local(nextMemories: nextMemories, count: activeMemories.count)
         }
 
         let activeEntries = accepted.filter { $0.layer != .archived }
-        let existingPins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
         let newPinIDs = Set(activeEntries.filter { $0.layer == .pinned }.map(\.memory.id))
         var nextMemories = memories + activeEntries.map(\.memory)
-        Self.settleMemory(&nextMemories, pinnedIDs: existingPins.union(newPinIDs))
+        Self.settleMemory(&nextMemories, pinnedIDs: pinnedIDs.union(newPinIDs))
 
         let batchEntries: [MemoryImportBatchEntry] = accepted.map { entry in
             let finalLayer: MemoryLayer
@@ -485,46 +913,153 @@ extension TeamModel {
 
         var nextBook = memoryBook
         nextBook.memories = nextMemories
-        guard let committed = try? commitMemoryBook(
-            nextBook,
-            mutation: .importBatch(items: batchEntries, nowMs: now)
-        ) else {
-            return 0
-        }
+        return .commit(
+            book: nextBook,
+            mutation: .importBatch(items: batchEntries, nowMs: now),
+            candidateIDs: accepted.map(\.memory.id)
+        )
+    }
 
-        var committedIDs = Set(committed.memories.map(\.id))
-        committedIDs.formUnion(MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.id))
-        return accepted.reduce(0) { $0 + (committedIDs.contains($1.memory.id) ? 1 : 0) }
+    @discardableResult
+    func importMemoryCandidates(
+        _ items: [(text: String, layer: MemoryLayer, kind: String, topic: String)]
+    ) -> Int {
+        guard canMutateMemoryState, !items.isEmpty else { return 0 }
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        let bridgeExisting = keeping ? MemoryStoreBridge.shared.recordsSnapshot().map(\.text) : []
+        let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        switch buildImportPlan(
+            items,
+            orderedSecrets: orderedSecrets,
+            bridgeExistingTexts: bridgeExisting,
+            pinnedIDs: pins,
+            isSuppressed: { MemoryStoreBridge.shared.isSuppressedInShadow(text: $0) }
+        ) {
+        case .empty:
+            return 0
+        case .local(let nextMemories, let count):
+            executeLocalPlan(nextMemories: nextMemories, nextReviews: nil, retract: nil, clearRetract: nil)
+            return count
+        case .commit(let nextBook, let mutation, let candidateIDs):
+            guard let committed = try? commitMemoryBookPrepared(
+                nextBook,
+                mutation: mutation,
+                orderedSecrets: orderedSecrets
+            ) else {
+                return 0
+            }
+            var committedIDs = Set(committed.memories.map(\.id))
+            committedIDs.formUnion(MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.id))
+            return candidateIDs.reduce(0) { $0 + (committedIDs.contains($1) ? 1 : 0) }
+        }
+    }
+
+    @discardableResult
+    func importMemoryCandidatesOffMain(
+        _ items: [(text: String, layer: MemoryLayer, kind: String, topic: String)]
+    ) async throws -> Int {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState, !items.isEmpty else { return 0 }
+            let keeping = self.keeping
+            let prep = await Task.detached(priority: .userInitiated) { () -> (
+                secrets: [String],
+                bridgeTexts: [String],
+                pins: Set<String>,
+                suppressedCheck: @Sendable (String) -> Bool
+            ) in
+                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                let bridgeTexts = keeping ? MemoryStoreBridge.shared.recordsSnapshot().map(\.text) : []
+                let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+                return (secrets, bridgeTexts, pins, { MemoryStoreBridge.shared.isSuppressedInShadow(text: $0) })
+            }.value
+            guard self.canMutateMemoryState else { return 0 }
+            switch self.buildImportPlan(
+                items,
+                orderedSecrets: prep.secrets,
+                bridgeExistingTexts: prep.bridgeTexts,
+                pinnedIDs: prep.pins,
+                isSuppressed: prep.suppressedCheck
+            ) {
+            case .empty:
+                return 0
+            case .local(let nextMemories, let count):
+                self.executeLocalPlan(nextMemories: nextMemories, nextReviews: nil, retract: nil, clearRetract: nil)
+                return count
+            case .commit(let nextBook, let mutation, let candidateIDs):
+                let committed = try await self.commitMemoryBookPreparedAsync(
+                    nextBook,
+                    mutation: mutation,
+                    orderedSecrets: prep.secrets
+                )
+                let archivedIDs = await Task.detached(priority: .userInitiated) {
+                    MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).map(\.id)
+                }.value
+                var committedIDs = Set(committed.memories.map(\.id))
+                committedIDs.formUnion(archivedIDs)
+                return candidateIDs.reduce(0) { $0 + (committedIDs.contains($1) ? 1 : 0) }
+            }
+        }
     }
 
     func archiveMemory(_ id: String) {
         setMemoryLayer(id, .archived)
     }
 
-    @discardableResult
-    func restoreMemory(_ id: String) -> Bool {
-        guard canMutateMemoryState, keeping else { return false }
+    private func buildRestorePlan(
+        _ id: String,
+        restored initial: Memory,
+        pinnedIDs: Set<String>
+    ) -> (book: MemoryBook, mutation: MemoryCommitMutation) {
         let now = Now.ms
-        guard var restored = MemoryStoreBridge.shared.restorableMemorySnapshot(id: id) else { return false }
+        var restored = initial
         restored.deep = nil
         restored.used = now
 
         var nextMemories = memories
         nextMemories.removeAll { $0.id == id }
         nextMemories.append(restored)
-        var candidatePins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+        var candidatePins = pinnedIDs
         candidatePins.remove(id)
         Self.settleMemory(&nextMemories, pinnedIDs: candidatePins)
 
         var nextBook = memoryBook
         nextBook.memories = nextMemories
-        guard (try? commitMemoryBook(
-            nextBook,
-            mutation: .restore(id: id, memory: restored, nowMs: now)
-        )) != nil else {
-            return false
+        return (nextBook, .restore(id: id, memory: restored, nowMs: now))
+    }
+
+    @discardableResult
+    func restoreMemory(_ id: String) -> Bool {
+        guard canMutateMemoryState, keeping else { return false }
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        guard let restored = MemoryStoreBridge.shared.restorableMemorySnapshot(id: id) else { return false }
+        let pins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+        let plan = buildRestorePlan(id, restored: restored, pinnedIDs: pins)
+        return (try? commitMemoryBookPrepared(
+            plan.book,
+            mutation: plan.mutation,
+            orderedSecrets: orderedSecrets
+        )) != nil
+    }
+
+    @discardableResult
+    func restoreMemoryOffMain(_ id: String) async throws -> Bool {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState, self.keeping else { return false }
+            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], restored: Memory?, pins: Set<String>) in
+                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                let restored = MemoryStoreBridge.shared.restorableMemorySnapshot(id: id)
+                let pins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
+                return (secrets, restored, pins)
+            }.value
+            guard self.canMutateMemoryState, self.keeping, let restored = prep.restored else { return false }
+            let plan = self.buildRestorePlan(id, restored: restored, pinnedIDs: prep.pins)
+            _ = try await self.commitMemoryBookPreparedAsync(
+                plan.book,
+                mutation: plan.mutation,
+                orderedSecrets: prep.secrets
+            )
+            return true
         }
-        return true
     }
 
     func forget(about words: String) -> [String] {
@@ -570,38 +1105,88 @@ extension TeamModel {
         guard canMutateMemoryState,
               let memory = memories.first(where: { $0.id == id }),
               memory.text == fact, memory.by != nil, memory.editedByUser != true else { return false }
-        return performDeleteMemory(id)
+        let orderedSecrets = keeping ? Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } : []
+        return performDeleteMemory(id, orderedSecrets: orderedSecrets, archivedText: nil)
     }
 
-    func deleteMemory(_ id: String) {
-        _ = performDeleteMemory(id)
-    }
-
-    private func performDeleteMemory(_ id: String) -> Bool {
-        guard canMutateMemoryState else { return false }
-        let removedText = memories.first(where: { $0.id == id })?.text
-            ?? (keeping ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text : nil)
+    private func buildDeletePlan(_ id: String, archivedText: String?) -> MemoryMutationPlan {
+        let removedText = memories.first(where: { $0.id == id })?.text ?? (keeping ? archivedText : nil)
         let now = Now.ms
         var nextBook = memoryBook
         nextBook.memories.removeAll { $0.id == id }
         nextBook.reviews = Self.removingReviewDetails(from: nextBook.reviews, memoryIDs: [id])
 
         if !keeping {
-            memories = nextBook.memories
-            memoryBook = nextBook
-            memoryReviews = nextBook.reviews
-            memoryPromptState.retract(id: id, textForInFlightGuard: removedText)
-            syncLivePromptsFromMemories()
-            return true
+            return .local(
+                nextMemories: nextBook.memories,
+                nextReviews: nextBook.reviews,
+                retract: (id: id, text: removedText),
+                clearRetract: nil
+            )
         }
 
-        guard (try? commitMemoryBook(
-            nextBook,
+        return .commit(
+            book: nextBook,
             mutation: .softDelete(items: [(id: id, text: removedText)], reason: "user_delete", nowMs: now)
-        )) != nil else {
-            return false
+        )
+    }
+
+    private func performDeleteMemory(_ id: String, orderedSecrets: [String], archivedText: String?) -> Bool {
+        guard canMutateMemoryState else { return false }
+        switch buildDeletePlan(id, archivedText: archivedText) {
+        case .noOp(let succeeded):
+            return succeeded
+        case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+            executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+            return true
+        case .commit(let nextBook, let mutation):
+            return (try? commitMemoryBookPrepared(
+                nextBook,
+                mutation: mutation,
+                orderedSecrets: orderedSecrets
+            )) != nil
         }
-        return true
+    }
+
+    func deleteMemory(_ id: String) {
+        guard canMutateMemoryState else { return }
+        let orderedSecrets = keeping ? Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } : []
+        let archivedText = (keeping && !memories.contains(where: { $0.id == id }))
+            ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text
+            : nil
+        _ = performDeleteMemory(id, orderedSecrets: orderedSecrets, archivedText: archivedText)
+    }
+
+    @discardableResult
+    func deleteMemoryOffMain(_ id: String) async throws -> Bool {
+        try await serializedMemoryMutation {
+            guard self.canMutateMemoryState else { return false }
+            let keeping = self.keeping
+            let needsArchivedText = keeping && !self.memories.contains(where: { $0.id == id })
+            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], archivedText: String?) in
+                guard keeping else { return ([], nil) }
+                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                let archivedText = needsArchivedText
+                    ? MemoryStoreBridge.shared.recordsSnapshot(layer: .archived).first(where: { $0.id == id })?.text
+                    : nil
+                return (secrets, archivedText)
+            }.value
+            guard self.canMutateMemoryState else { return false }
+            switch self.buildDeletePlan(id, archivedText: prep.archivedText) {
+            case .noOp(let succeeded):
+                return succeeded
+            case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
+                self.executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
+                return true
+            case .commit(let nextBook, let mutation):
+                _ = try await self.commitMemoryBookPreparedAsync(
+                    nextBook,
+                    mutation: mutation,
+                    orderedSecrets: prep.secrets
+                )
+                return true
+            }
+        }
     }
 
     private static let nightlyPromotionDayKey = "memory.nightlyPromotion.lastDay"
@@ -698,6 +1283,8 @@ extension TeamModel {
                         kind: nil,
                         topic: nil,
                         confidence: nil,
+                        text: nil,
+                        editedByUser: false,
                         fallbackMemory: firstFallback,
                         nowMs: nowMs
                     )
@@ -725,6 +1312,8 @@ extension TeamModel {
                         kind: nil,
                         topic: nil,
                         confidence: nil,
+                        text: nil,
+                        editedByUser: false,
                         fallbackMemory: fallback,
                         nowMs: nowMs
                     )

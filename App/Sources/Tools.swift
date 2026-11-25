@@ -5,6 +5,8 @@ import UserNotifications
 
 /// Dates as the model writes them: local time, `2026-11-17 15:00` and the like.
 enum When {
+    private static let formatterLock = NSLock()
+
     private static func formatter(_ format: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -18,28 +20,52 @@ enum When {
         "yyyy/MM/dd HH:mm", "yyyy-MM-dd",
     ].map { When.formatter($0) }
 
+    private static let isoFormatter = ISO8601DateFormatter()
+    private static let stampFormatter = When.formatter("yyyy-MM-dd HH:mm")
+    private static let showTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日 EEE HH:mm"
+        return formatter
+    }()
+    private static let showDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日 EEE"
+        return formatter
+    }()
+
     static func parse(_ text: String?) -> (date: Date, allDay: Bool)? {
         guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        let iso = ISO8601DateFormatter()
-        for options: ISO8601DateFormatter.Options in [[.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds]] {
-            iso.formatOptions = options
-            if let date = iso.date(from: text) { return (date, false) }
+        return formatterLock.withLock {
+            let currentTZ = TimeZone.current
+            for options: ISO8601DateFormatter.Options in [[.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds]] {
+                isoFormatter.formatOptions = options
+                if let date = isoFormatter.date(from: text) { return (date, false) }
+            }
+            for formatter in formats {
+                if formatter.timeZone != currentTZ { formatter.timeZone = currentTZ }
+                if let date = formatter.date(from: text) { return (date, formatter.dateFormat == "yyyy-MM-dd") }
+            }
+            return nil
         }
-        for formatter in formats {
-            if let date = formatter.date(from: text) { return (date, formatter.dateFormat == "yyyy-MM-dd") }
-        }
-        return nil
     }
 
     static func show(_ date: Date, time: Bool = true) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = time ? "M月d日 EEE HH:mm" : "M月d日 EEE"
-        return formatter.string(from: date)
+        formatterLock.withLock {
+            let formatter = time ? showTimeFormatter : showDateFormatter
+            let currentTZ = TimeZone.current
+            if formatter.timeZone != currentTZ { formatter.timeZone = currentTZ }
+            return formatter.string(from: date)
+        }
     }
 
     static func stamp(_ date: Date) -> String {
-        formatter("yyyy-MM-dd HH:mm").string(from: date)
+        formatterLock.withLock {
+            let currentTZ = TimeZone.current
+            if stampFormatter.timeZone != currentTZ { stampFormatter.timeZone = currentTZ }
+            return stampFormatter.string(from: date)
+        }
     }
 }
 

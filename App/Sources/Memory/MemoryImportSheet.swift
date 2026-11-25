@@ -23,6 +23,10 @@ struct MemoryImportSheet: View {
     @State private var cachedSecrets: [String] = []
     @State private var cachedExistingTexts: [String] = []
     @State private var cachedSuppressedHashes: Set<String> = []
+    @State private var parseTask: Task<Void, Never>?
+    @State private var parseGeneration = 0
+    @State private var skipNextParseDebounce = false
+    @State private var committing = false
 
     private static let maxImportBytes = 1_048_576
 
@@ -84,7 +88,7 @@ struct MemoryImportSheet: View {
                         commitImport()
                     }
                     .fontWeight(.semibold)
-                    .disabled(selectedCount == 0 || loadingFile || !team.canMutateMemoryState)
+                    .disabled(selectedCount == 0 || loadingFile || committing || !team.canMutateMemoryState)
                 }
             }
             .fileImporter(
@@ -106,13 +110,18 @@ struct MemoryImportSheet: View {
                 }
             }
             .onChange(of: rawText) { _, _ in
-                reparse(preservingSelectionsAndLayers: true)
+                let delayMs = skipNextParseDebounce ? 0 : 250
+                skipNextParseDebounce = false
+                scheduleReparse(preservingSelectionsAndLayers: true, debounceMs: delayMs)
             }
             .onChange(of: defaultLayer) { _, _ in
-                reparse(preservingSelectionsAndLayers: true)
+                scheduleReparse(preservingSelectionsAndLayers: true, debounceMs: 0)
             }
             .task {
                 await loadImportContext()
+            }
+            .onDisappear {
+                parseTask?.cancel()
             }
         }
     }
@@ -272,7 +281,7 @@ struct MemoryImportSheet: View {
                     .padding(.horizontal, Ink.Space.l)
 
                 if !candidates.isEmpty {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(candidates.enumerated()), id: \.element.id) { index, item in
                             if index > 0 {
                                 Kit.rule(inset: Ink.Space.l)
@@ -358,7 +367,7 @@ struct MemoryImportSheet: View {
     private var skippedSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.format("memoryImport.skippedSection", skipped.count))
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 ForEach(Array(skipped.enumerated()), id: \.element.id) { index, item in
                     if index > 0 {
                         Kit.rule(inset: Ink.Space.l)
@@ -420,52 +429,69 @@ struct MemoryImportSheet: View {
         cachedSecrets = snapshot.secrets
         cachedExistingTexts = liveTexts + snapshot.archivedTexts
         cachedSuppressedHashes = promptSuppressed
-        reparse(preservingSelectionsAndLayers: true)
+        scheduleReparse(preservingSelectionsAndLayers: true, debounceMs: 0)
     }
 
-    private func reparse(preservingSelectionsAndLayers: Bool) {
-        let deselectedKeys: Set<String>
-        if preservingSelectionsAndLayers {
-            deselectedKeys = Set(
-                candidates.filter { !$0.selected }.map { MemorySafety.normalizedFactKey($0.text) }
-            )
-        } else {
-            deselectedKeys = []
+    private func scheduleReparse(preservingSelectionsAndLayers: Bool, debounceMs: Int) {
+        parseTask?.cancel()
+        parseGeneration &+= 1
+        let generation = parseGeneration
+        let text = rawText
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            candidates = []
+            skipped = []
+            return
         }
-
+        let layer = defaultLayer
+        let existingTexts = cachedExistingTexts
+        let suppressedHashes = cachedSuppressedHashes
+        let secrets = cachedSecrets
         let keeping = team.keeping
-        let retractedCheck: ((String) -> Bool)?
-        if keeping {
-            retractedCheck = { MemoryStoreBridge.shared.isSuppressedInShadow(text: $0) }
-        } else {
-            retractedCheck = nil
+        let overrides = layerOverrides
+        let deselectedKeys: Set<String> = preservingSelectionsAndLayers
+            ? Set(candidates.filter { !$0.selected }.map { MemorySafety.normalizedFactKey($0.text) })
+            : []
+
+        parseTask = Task {
+            if debounceMs > 0 {
+                do {
+                    try await Task.sleep(for: .milliseconds(debounceMs))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) { () -> (candidates: [MemoryImportCandidate], skipped: [MemoryImportSkippedItem]) in
+                let retractedCheck: ((String) -> Bool)? = keeping
+                    ? { MemoryStoreBridge.shared.isSuppressedInShadow(text: $0) }
+                    : nil
+                let preview = MemoryImporter.parse(
+                    text,
+                    defaultLayer: layer,
+                    existingTexts: existingTexts,
+                    suppressedHashes: suppressedHashes,
+                    secrets: secrets,
+                    isRetracted: retractedCheck
+                )
+                var nextCandidates = preview.candidates
+                for index in nextCandidates.indices {
+                    let key = MemorySafety.normalizedFactKey(nextCandidates[index].text)
+                    if preservingSelectionsAndLayers && deselectedKeys.contains(key) {
+                        nextCandidates[index].selected = false
+                    }
+                    if preservingSelectionsAndLayers, let override = overrides[key] {
+                        nextCandidates[index].targetLayer = override
+                    }
+                    if !keeping && (nextCandidates[index].targetLayer == .pinned || nextCandidates[index].targetLayer == .archived) {
+                        nextCandidates[index].targetLayer = layer
+                    }
+                }
+                return (nextCandidates, preview.skipped)
+            }.value
+            guard !Task.isCancelled, generation == parseGeneration else { return }
+            candidates = result.candidates
+            skipped = result.skipped
         }
-
-        let preview = MemoryImporter.parse(
-            rawText,
-            defaultLayer: defaultLayer,
-            existingTexts: cachedExistingTexts,
-            suppressedHashes: cachedSuppressedHashes,
-            secrets: cachedSecrets,
-            isRetracted: retractedCheck
-        )
-
-        var nextCandidates = preview.candidates
-        for index in nextCandidates.indices {
-            let key = MemorySafety.normalizedFactKey(nextCandidates[index].text)
-            if preservingSelectionsAndLayers && deselectedKeys.contains(key) {
-                nextCandidates[index].selected = false
-            }
-            if preservingSelectionsAndLayers, let override = layerOverrides[key] {
-                nextCandidates[index].targetLayer = override
-            }
-            if !keeping && (nextCandidates[index].targetLayer == .pinned || nextCandidates[index].targetLayer == .archived) {
-                nextCandidates[index].targetLayer = defaultLayer
-            }
-        }
-
-        candidates = nextCandidates
-        skipped = preview.skipped
     }
 
     private func handlePickedFile(_ result: Result<[URL], Error>) {
@@ -497,6 +523,7 @@ struct MemoryImportSheet: View {
                     fileError = nil
                     layerOverrides = [:]
                     loadedFileName = url.lastPathComponent
+                    skipNextParseDebounce = true
                     rawText = decoded
                 case .failure(let errorKey):
                     fileError = L.t(errorKey)
@@ -545,21 +572,31 @@ struct MemoryImportSheet: View {
     }
 
     private func commitImport() {
+        guard !committing else { return }
         let payload = candidates
             .filter(\.selected)
             .map { (text: $0.text, layer: $0.targetLayer, kind: $0.kind, topic: $0.topic) }
         guard !payload.isEmpty else { return }
 
-        let count = team.importMemoryCandidates(payload)
-        if count > 0 {
-            Haptics.tick(0.8)
-            onImported?(count)
-            dismiss()
-        } else {
-            Haptics.thud()
-            commitNotice = L.t("memoryImport.noneCommitted")
-            Task {
-                await loadImportContext()
+        committing = true
+        commitNotice = nil
+        Task {
+            do {
+                let count = try await team.importMemoryCandidatesOffMain(payload)
+                committing = false
+                if count > 0 {
+                    Haptics.tick(0.8)
+                    onImported?(count)
+                    dismiss()
+                } else {
+                    Haptics.thud()
+                    commitNotice = L.t("memoryImport.noneCommitted")
+                    await loadImportContext()
+                }
+            } catch {
+                committing = false
+                Haptics.lock()
+                commitNotice = error.localizedDescription
             }
         }
     }

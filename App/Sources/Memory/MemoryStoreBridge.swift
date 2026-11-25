@@ -11,7 +11,7 @@ struct MemoryImportBatchEntry: Sendable {
     let topic: String
 }
 
-enum MemoryCommitMutation {
+enum MemoryCommitMutation: Sendable {
     case none
     case remember(memory: Memory, explicitUserAction: Bool, nowMs: Double)
     case recall(ids: Set<String>, nowMs: Double)
@@ -23,6 +23,8 @@ enum MemoryCommitMutation {
         kind: String?,
         topic: String?,
         confidence: Double?,
+        text: String?,
+        editedByUser: Bool,
         fallbackMemory: Memory?,
         nowMs: Double
     )
@@ -64,7 +66,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private let store: MemoryStore
     private let teamRoot: URL
     private let mirrorRoot: URL
-    private let queue = DispatchQueue(label: "clio.memory-store", qos: .utility)
+    private let commitQueue = DispatchQueue(label: "clio.memory-store.commit", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "clio.memory-store", qos: .userInitiated)
 
     private let stateLock = NSLock()
     private var pinnedIDs: Set<String> = []
@@ -356,11 +359,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     func restorableMemorySnapshot(id: String) -> Memory? {
-        let secrets = Self.orderedSecrets(Vault.allStrings())
         let archivedCopy: MemoryRecord? = stateLock.withLock {
             archivedRecords.first(where: { $0.id == id })
         }
         if let archivedCopy {
+            let secrets = Self.orderedSecrets(Vault.allStrings())
             var restored = Self.toAppMemory(archivedCopy)
             restored.text = Self.redact(restored.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -373,6 +376,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         guard let dbRecord, dbRecord.layer == .archived || dbRecord.deletedAtMs != nil else {
             return nil
         }
+        let secrets = Self.orderedSecrets(Vault.allStrings())
         var restored = Self.toAppMemory(dbRecord)
         restored.text = Self.redact(restored.text, orderedSecrets: secrets)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -381,11 +385,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     /// Returns a live `.archived` memory (`deletedAtMs == nil`) without ever resurrecting tombstoned rows.
     func archivedMemorySnapshot(id: String) -> Memory? {
-        let secrets = Self.orderedSecrets(Vault.allStrings())
         let archivedCopy: MemoryRecord? = stateLock.withLock {
             archivedRecords.first(where: { $0.id == id && $0.deletedAtMs == nil })
         }
         if let archivedCopy {
+            let secrets = Self.orderedSecrets(Vault.allStrings())
             var snapshot = Self.toAppMemory(archivedCopy)
             snapshot.text = Self.redact(snapshot.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -398,6 +402,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         guard let dbRecord, dbRecord.layer == .archived, dbRecord.deletedAtMs == nil else {
             return nil
         }
+        let secrets = Self.orderedSecrets(Vault.allStrings())
         var snapshot = Self.toAppMemory(dbRecord)
         snapshot.text = Self.redact(snapshot.text, orderedSecrets: secrets)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -406,17 +411,21 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     // MARK: - Unified Canonical Book Commit (Throws on disk failure before mutating caller or SQLite state)
 
-    @discardableResult
-    @MainActor
-    func commitAppBook(
+    private struct CommitPromptPayload: Sendable {
+        let sanitizedAppBook: MemoryBook
+        let retractItems: [(id: String, textForInFlightGuard: String?)]
+        let clearRetractions: [(id: String?, text: String)]
+        let shouldInvalidatePromptCache: Bool
+    }
+
+    private func performSerializedCommitOnCommitQueue(
         _ book: MemoryBook,
-        mutation: MemoryCommitMutation = .none,
+        mutation: MemoryCommitMutation,
         suppressedHashes: Set<String>,
-        promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
         mainBotId: String?,
         secrets: [String]
-    ) throws -> (book: MemoryBook, editedTexts: [String]) {
+    ) throws -> CommitPromptPayload {
         guard !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
         }
@@ -441,20 +450,6 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
         let writtenDigest = try writeCanonicalBookToDisk(prepared.canonical, at: memoryURL)
 
-        applyCommittedShadow(prepared.shadowUpdate)
-
-        if let promptState {
-            for item in prepared.retractItems {
-                promptState.retract(id: item.id, textForInFlightGuard: item.textForInFlightGuard)
-            }
-            for clear in prepared.clearRetractions {
-                promptState.clearRetraction(id: clear.id, text: clear.text)
-            }
-            if prepared.shouldInvalidatePromptCache && prepared.retractItems.isEmpty && prepared.clearRetractions.isEmpty {
-                promptState.invalidate()
-            }
-        }
-
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
         let existingRetracted = loadRetractedHashes(at: retractedURL)
         syncRetractedHashesFileIfNeeded(
@@ -462,6 +457,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
             existing: existingRetracted,
             at: retractedURL
         )
+
+        applyCommittedShadow(prepared.shadowUpdate)
 
         queue.async { [weak self] in
             guard let self, !Disk.frozen else { return }
@@ -477,36 +474,121 @@ final class MemoryStoreBridge: @unchecked Sendable {
             )
         }
 
-        return (prepared.sanitizedAppBook, prepared.clearRetractions.map(\.text))
+        return CommitPromptPayload(
+            sanitizedAppBook: prepared.sanitizedAppBook,
+            retractItems: prepared.retractItems,
+            clearRetractions: prepared.clearRetractions,
+            shouldInvalidatePromptCache: prepared.shouldInvalidatePromptCache
+        )
+    }
+
+    @MainActor
+    private func applyPromptState(_ payload: CommitPromptPayload, to promptState: MemorySafety.PromptState?) {
+        guard let promptState else { return }
+        for item in payload.retractItems {
+            promptState.retract(id: item.id, textForInFlightGuard: item.textForInFlightGuard)
+        }
+        for clear in payload.clearRetractions {
+            promptState.clearRetraction(id: clear.id, text: clear.text)
+        }
+        if payload.shouldInvalidatePromptCache && payload.retractItems.isEmpty && payload.clearRetractions.isEmpty {
+            promptState.invalidate()
+        }
+    }
+
+    @discardableResult
+    @MainActor
+    func commitAppBook(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        suppressedHashes: Set<String>,
+        promptState: MemorySafety.PromptState? = nil,
+        bots: [BotInfo],
+        mainBotId: String?,
+        secrets: [String]
+    ) throws -> (book: MemoryBook, editedTexts: [String]) {
+        let payload = try commitQueue.sync {
+            try performSerializedCommitOnCommitQueue(
+                book,
+                mutation: mutation,
+                suppressedHashes: suppressedHashes,
+                bots: bots,
+                mainBotId: mainBotId,
+                secrets: secrets
+            )
+        }
+        applyPromptState(payload, to: promptState)
+        return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
+    }
+
+    @discardableResult
+    @MainActor
+    func commitAppBookAsync(
+        _ book: MemoryBook,
+        mutation: MemoryCommitMutation = .none,
+        suppressedHashes: Set<String>,
+        promptState: MemorySafety.PromptState? = nil,
+        bots: [BotInfo],
+        mainBotId: String?,
+        secrets: [String]
+    ) async throws -> (book: MemoryBook, editedTexts: [String]) {
+        let payload: CommitPromptPayload = try await withCheckedThrowingContinuation { continuation in
+            commitQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: TeamError(message: "记忆保存已取消。"))
+                    return
+                }
+                do {
+                    let result = try self.performSerializedCommitOnCommitQueue(
+                        book,
+                        mutation: mutation,
+                        suppressedHashes: suppressedHashes,
+                        bots: bots,
+                        mainBotId: mainBotId,
+                        secrets: secrets
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        applyPromptState(payload, to: promptState)
+        return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
     @MainActor
     func resetAll(team: TeamModel) {
         let summaries = Self.makeBotSummaries(bots: team.bots, mainBotId: team.mainBotId)
-        let secrets = Self.orderedSecrets(Vault.allStrings())
-        stateLock.withLock {
-            pinnedIDs.removeAll()
-            archivedRecords.removeAll()
-            tombstoneShadow.removeAll()
-            recordShadowByID.removeAll()
-            lastSyncedMemories = []
-            lastSyncedBookDigest = Self.bookDigest(MemoryBook())
-            botSummaries = summaries
-            canonicalLoadFailed = false
-            syncSequence &+= 1
-        }
-        guard !Disk.frozen else { return }
-        let emptyBook = CanonicalMemoryBook()
-        _ = try? writeCanonicalBookToDisk(emptyBook, at: teamRoot.appendingPathComponent(Self.memoryFileName))
-        try? FileManager.default.removeItem(at: teamRoot.appendingPathComponent(Self.retractedFileName))
-        queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
-            try? self.store.resetAll(clearTombstones: true)
-            MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
+        let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
+        let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
+        commitQueue.sync {
+            stateLock.withLock {
+                pinnedIDs.removeAll()
+                archivedRecords.removeAll()
+                tombstoneShadow.removeAll()
+                recordShadowByID.removeAll()
+                lastSyncedMemories = []
+                lastSyncedBookDigest = Self.bookDigest(MemoryBook())
+                botSummaries = summaries
+                canonicalLoadFailed = false
+                syncSequence &+= 1
+            }
+            guard !Disk.frozen else { return }
+            let emptyBook = CanonicalMemoryBook()
+            _ = try? writeCanonicalBookToDisk(emptyBook, at: memoryURL)
+            try? FileManager.default.removeItem(at: retractedURL)
+            queue.async { [weak self] in
+                guard let self, !Disk.frozen else { return }
+                let secrets = Self.orderedSecrets(Vault.allStrings())
+                try? self.store.resetAll(clearTombstones: true)
+                MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
+            }
         }
     }
 
     func flushSync() {
+        commitQueue.sync {}
         queue.sync {}
     }
 
@@ -594,7 +676,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
              .recall(_, let nowMs),
              .setDeep(_, _, let nowMs),
              .pin(_, _, let nowMs),
-             .layerAndMetadata(_, _, _, _, _, _, let nowMs),
+             .layerAndMetadata(_, _, _, _, _, _, _, _, let nowMs),
              .importBatch(_, let nowMs),
              .restore(_, _, let nowMs),
              .softDelete(_, _, let nowMs),
@@ -676,7 +758,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             sqliteActions.pinEvents.append((id: id, pinned: pinned, nowMs: pinNow))
             shouldInvalidatePromptCache = true
 
-        case .layerAndMetadata(let id, let layer, let kind, let topic, let confidence, let fallbackMemory, let layerNow):
+        case .layerAndMetadata(let id, let layer, let kind, let topic, let confidence, let text, let editedByUser, let fallbackMemory, let layerNow):
             if layer == .pinned {
                 workingPinnedIDs.insert(id)
             } else {
@@ -713,6 +795,24 @@ final class MemoryStoreBridge: @unchecked Sendable {
             if var updated = target {
                 updated.layer = layer
                 updated.pinned = (layer == .pinned)
+                if let rawText = text {
+                    let safeNewText = Self.redact(rawText, orderedSecrets: secrets)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let newHash = MemorySafety.retractionHash(safeNewText)
+                    if !safeNewText.isEmpty && !newHash.isEmpty {
+                        workingTombstones.removeValue(forKey: newHash)
+                        effectiveSuppressedHashes.remove(newHash)
+                        clearRetractions.append((id: id, text: safeNewText))
+                        if updated.text != safeNewText {
+                            updated.text = safeNewText
+                            updated.textSHA256 = newHash
+                            sqliteActions.editEvents.append((id: id, text: safeNewText, editedByUser: editedByUser))
+                        }
+                        if editedByUser {
+                            updated.editedByUser = true
+                        }
+                    }
+                }
                 if let kind {
                     let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !cleanKind.isEmpty { updated.kind = cleanKind }

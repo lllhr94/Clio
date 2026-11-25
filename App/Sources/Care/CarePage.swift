@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// 养护: backup and restore, and a diagnosis to paste when something goes wrong.
 struct CarePage: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     var openRestore = false
     @State private var denState = Den.State.asleep
     @State private var diagnosticsReady = false
@@ -33,6 +33,8 @@ struct CarePage: View {
     /// (the review, #28: reading and writing the keychain on every redraw and keystroke).
     @State private var davPassword = ""
     @State private var davPasswordLoaded = false
+    @State private var davPasswordDirty = false
+    @State private var lastSavedDavPassword = ""
     @State private var davBusy = false
     /// The drive's backups, newest first, while the person picks which one to bring back.
     @State private var davChoices: [String] = []
@@ -113,17 +115,26 @@ struct CarePage: View {
             }
             .task {
                 guard !davPasswordLoaded else { return }
-                davPassword = await Task.detached { WebDAV.password }.value
+                let loaded = await CareWebDAVCoordinator.loadPassword()
+                guard !Task.isCancelled else { return }
+                lastSavedDavPassword = loaded
+                davPassword = loaded
                 davPasswordLoaded = true
+                davPasswordDirty = false
+            }
+            .onChange(of: davPassword) { _, newValue in
+                guard davPasswordLoaded else { return }
+                davPasswordDirty = (newValue != lastSavedDavPassword)
             }
             .onDisappear {
                 cleanTask?.cancel()
-                if davPasswordLoaded { WebDAV.setPassword(davPassword) }
+                persistDavPasswordIfNeeded()
                 pendingSetupAction = nil
                 deferredNoticeAfterUnlock = nil
                 if !restoringBusy {
+                    let pendingURL = pendingRestore?.url
                     pendingRestore = nil
-                    WebDAV.cleanupRestoreInbox()
+                    CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
                 }
             }
             .task {
@@ -219,7 +230,7 @@ struct CarePage: View {
             TextField(L.t("settings.davUser"), text: $davUser)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
             SecureField(L.t("settings.davPassword"), text: $davPassword)
-                .onSubmit { WebDAV.setPassword(davPassword) }
+                .onSubmit { persistDavPasswordIfNeeded() }
             if let problem = WebDAV.addressProblem(davURL) {
                 Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
             }
@@ -237,32 +248,7 @@ struct CarePage: View {
 
     @ViewBuilder
     private var archivedSection: some View {
-        Section {
-            if team.archived.isEmpty {
-                Text(L.t("empty.archivedChats")).foregroundStyle(Ink.inkSoft)
-            } else {
-                ForEach(team.archived.sorted(), id: \.self) { key in
-                    HStack {
-                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                            Text(team.chatName(key)).foregroundStyle(Ink.ink)
-                            if let title = team.title(of: key) {
-                                Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                            }
-                        }
-                        Spacer()
-                        Button(L.t("actions.restore")) {
-                            withAnimation(Ink.Motion.settle) { team.archive(key, false) }
-                            Haptics.tick(0.6)
-                        }
-                        .fontWeight(.medium)
-                    }
-                }
-            }
-        } header: {
-            Text(L.t("settings.archivedConversations"))
-        } footer: {
-            Text(L.t("settings.archivedRestoreNote"))
-        }
+        CareArchivedSection(team: team)
     }
 
     @ViewBuilder
@@ -284,23 +270,13 @@ struct CarePage: View {
 
     @ViewBuilder
     private var connectivitySection: some View {
-        Section {
-            ForEach(team.settings.endpoints) { endpoint in
-                row(endpoint.name, probes[endpoint.id] ?? "未测")
-            }
-            Button(probing ? L.t("loading.testingModels") : L.t("actions.testProviderConnections")) { probe() }
-                .disabled(probing || team.settings.endpoints.isEmpty)
-        } header: {
-            Text(L.t("settings.modelConnectivity"))
-        }
+        CareConnectivitySection(team: team, probes: $probes, probing: $probing, onProbe: probe)
     }
 
     @ViewBuilder
     private var recentErrorsSection: some View {
         Section {
-            if !diagnosticsReady {
-                Text(L.t("loading.calculating")).foregroundStyle(Ink.inkSoft)
-            } else if recentErrors.isEmpty {
+            if recentErrors.isEmpty {
                 Text(L.t("settings.noRecentErrors")).foregroundStyle(Ink.inkSoft)
             } else {
                 ForEach(Array(recentErrors.enumerated()), id: \.offset) { _, line in
@@ -559,11 +535,19 @@ struct CarePage: View {
         }
     }
 
+    private func persistDavPasswordIfNeeded() {
+        guard davPasswordLoaded, davPasswordDirty else { return }
+        let value = davPassword
+        lastSavedDavPassword = value
+        davPasswordDirty = false
+        CareWebDAVCoordinator.enqueuePasswordSave(value)
+    }
+
     private func davUpload() {
         guard !davBusy, !cleaningCache, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil, passphraseSetup == nil else {
             return
         }
-        WebDAV.setPassword(davPassword)
+        persistDavPasswordIfNeeded()
         if davEncrypt {
             passphraseSetup = PassphraseSetupRequest(purpose: .webdavUpload)
         } else {
@@ -613,6 +597,7 @@ struct CarePage: View {
         let ids = team.settings.endpoints.map(\.id)
         Task {
             do {
+                await CareWebDAVCoordinator.flushPasswordWrites()
                 await stopCleanBeforeRestore()
                 // Never include model API keys in WebDAV backups: remote drives sit outside the phone's keychain (review #4).
                 let (url, summary) = try await StorageMaintenance.runThrowing {
@@ -634,9 +619,11 @@ struct CarePage: View {
         guard !davBusy, !cleaningCache, !restoringBusy, !making, !restored, !Disk.frozen, pendingRestore == nil else {
             return
         }
+        persistDavPasswordIfNeeded()
         davBusy = true
         Task {
             do {
+                await CareWebDAVCoordinator.flushPasswordWrites()
                 let names = try await WebDAV.list()
                 guard !names.isEmpty else { throw TeamError(message: "网盘的 Clio 文件夹里还没有备份。") }
                 davChoices = names
@@ -650,10 +637,14 @@ struct CarePage: View {
     private func davRestore(_ name: String) {
         davChoices = []
         guard !davBusy, !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
+        persistDavPasswordIfNeeded()
+        CareWebDAVCoordinator.beginRestoreSession()
         davBusy = true
         restoringBusy = true
         Task {
             do {
+                await CareWebDAVCoordinator.flushPasswordWrites()
+                await CareWebDAVCoordinator.awaitPendingInboxCleanup()
                 let file = try await WebDAV.download(name)
                 let encrypted = await Task.detached(priority: .userInitiated) {
                     Backup.isEncryptedBackup(at: file)
@@ -676,12 +667,13 @@ struct CarePage: View {
 
     private func prepareLocalRestore(from pickedURL: URL) {
         guard !restoringBusy, !restored, !Disk.frozen, pendingRestore == nil else { return }
+        CareWebDAVCoordinator.beginRestoreSession()
         restoringBusy = true
         Task {
             do {
-                let stagedFile = try await Task.detached(priority: .userInitiated) {
-                    try Self.copySecurityScopedBackupToInbox(pickedURL)
-                }.value
+                let stagedFile = try await CareWebDAVCoordinator.stageLocalRestore(from: pickedURL) {
+                    try Self.copySecurityScopedBackupToInbox($0)
+                }
                 let encrypted = await Task.detached(priority: .userInitiated) {
                     Backup.isEncryptedBackup(at: stagedFile)
                 }.value
@@ -797,17 +789,15 @@ struct CarePage: View {
 
     private func cancelPendingRestore() {
         guard !restoringBusy else { return }
-        if let pending = pendingRestore {
-            try? FileManager.default.removeItem(at: pending.url)
-        }
+        let pendingURL = pendingRestore?.url
         deferredNoticeAfterUnlock = nil
         pendingRestore = nil
-        WebDAV.cleanupRestoreInbox()
+        CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
     }
 
     private func handleUnlockSheetDismissed() {
         if !restoringBusy && pendingRestore == nil {
-            WebDAV.cleanupRestoreInbox()
+            CareWebDAVCoordinator.scheduleInboxCleanup()
         }
         if let deferred = deferredNoticeAfterUnlock {
             deferredNoticeAfterUnlock = nil
@@ -1306,7 +1296,6 @@ private enum StorageMaintenance {
     }
 }
 
-
 private struct HitchRow: Identifiable, Equatable, Sendable {
     let id: String
     let line: String
@@ -1348,6 +1337,8 @@ private struct HitchSettings: View {
             Text(L.t("settings.recordHitchesNote"))
         }
         .task(id: recordingHitches) {
+            await Hitches.shared.waitForInitialLoad()
+            guard !Task.isCancelled else { return }
             await refreshHitches(force: true)
             guard recordingHitches else { return }
             while !Task.isCancelled {
@@ -1390,5 +1381,203 @@ private struct HitchSettings: View {
         rows = formatted
         totalCount = total
         lastVersion = version
+    }
+}
+
+private struct ArchivedChatPreviewRow: Identifiable, Equatable, Sendable {
+    let key: String
+    let name: String
+    let title: String?
+    var id: String { key }
+}
+
+private struct ArchivedChatOptionsPayload: Decodable, Sendable {
+    var title: String?
+}
+
+private struct CareArchivedSection: View {
+    let team: TeamModel
+    @State private var archivedKeys: [String] = []
+    @State private var rows: [ArchivedChatPreviewRow] = []
+
+    var body: some View {
+        Section {
+            if archivedKeys.isEmpty {
+                Text(L.t("empty.archivedChats")).foregroundStyle(Ink.inkSoft)
+            } else {
+                ForEach(rows) { entry in
+                    HStack {
+                        VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                            Text(entry.name).foregroundStyle(Ink.ink)
+                            if let title = entry.title {
+                                Text(title).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            }
+                        }
+                        Spacer()
+                        Button(L.t("actions.restore")) {
+                            withAnimation(Ink.Motion.settle) { team.archive(entry.key, false) }
+                            Haptics.tick(0.6)
+                        }
+                        .fontWeight(.medium)
+                    }
+                }
+            }
+        } header: {
+            Text(L.t("settings.archivedConversations"))
+        } footer: {
+            Text(L.t("settings.archivedRestoreNote"))
+        }
+        .onAppear {
+            let sorted = team.archived.sorted()
+            if archivedKeys != sorted { archivedKeys = sorted }
+        }
+        .onReceive(team.$archived.removeDuplicates()) { updated in
+            let sorted = updated.sorted()
+            if archivedKeys != sorted { archivedKeys = sorted }
+        }
+        .task(id: archivedKeys) {
+            await loadArchivedRows(for: archivedKeys)
+        }
+    }
+
+    private func loadArchivedRows(for keys: [String]) async {
+        guard !keys.isEmpty else {
+            rows = []
+            return
+        }
+        let keeping = team.keeping
+        let initial = keys.map { key -> (key: String, name: String, cachedTitle: String?, needsDisk: Bool, optionsURL: URL) in
+            let name = team.chatName(key)
+            if let cached = team.optionBook[key] {
+                return (key, name, cached.title, false, Disk.url(TeamModel.optionsFile(key)))
+            }
+            return (key, name, nil, keeping, Disk.url(TeamModel.optionsFile(key)))
+        }
+        // Seed rows immediately with names and any cached titles so layout is instant.
+        rows = initial.map { ArchivedChatPreviewRow(key: $0.key, name: $0.name, title: $0.cachedTitle) }
+        let diskJobs = initial.filter(\.needsDisk).map { (key: $0.key, url: $0.optionsURL) }
+        guard !diskJobs.isEmpty else { return }
+        let loadedTitles = await Task.detached(priority: .utility) {
+            var resolved: [String: String] = [:]
+            for job in diskJobs {
+                if Task.isCancelled { break }
+                guard let data = try? Data(contentsOf: job.url),
+                      let payload = try? JSONDecoder().decode(ArchivedChatOptionsPayload.self, from: data),
+                      let title = payload.title else { continue }
+                resolved[job.key] = title
+            }
+            return resolved
+        }.value
+        guard !Task.isCancelled else { return }
+        rows = initial.map { entry in
+            ArchivedChatPreviewRow(
+                key: entry.key,
+                name: entry.name,
+                title: entry.cachedTitle ?? loadedTitles[entry.key]
+            )
+        }
+    }
+}
+
+private struct CareConnectivitySection: View {
+    let team: TeamModel
+    @Binding var probes: [String: String]
+    @Binding var probing: Bool
+    let onProbe: () -> Void
+    @State private var endpoints: [Endpoint] = []
+
+    var body: some View {
+        Section {
+            ForEach(endpoints) { endpoint in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(endpoint.name).foregroundStyle(Ink.ink)
+                    Spacer()
+                    Text(probes[endpoint.id] ?? "未测")
+                        .foregroundStyle(Ink.inkSoft)
+                        .multilineTextAlignment(.trailing)
+                        .font(.system(size: Ink.Size.sub))
+                }
+            }
+            Button(probing ? L.t("loading.testingModels") : L.t("actions.testProviderConnections")) { onProbe() }
+                .disabled(probing || endpoints.isEmpty)
+        } header: {
+            Text(L.t("settings.modelConnectivity"))
+        }
+        .onAppear {
+            if endpoints != team.settings.endpoints { endpoints = team.settings.endpoints }
+        }
+        .onReceive(team.$settings) { updated in
+            if endpoints != updated.endpoints { endpoints = updated.endpoints }
+        }
+    }
+}
+
+private enum CareWebDAVCoordinator {
+    private static let passwordQueue = DispatchQueue(label: "clio.care.webdav.password", qos: .userInitiated)
+    private static let inboxQueue = DispatchQueue(label: "clio.care.webdav.inbox", qos: .userInitiated)
+    private static let stateLock = NSLock()
+    nonisolated(unsafe) private static var inboxGeneration: UInt64 = 0
+
+    static func loadPassword() async -> String {
+        await withCheckedContinuation { continuation in
+            passwordQueue.async {
+                continuation.resume(returning: WebDAV.password)
+            }
+        }
+    }
+
+    static func enqueuePasswordSave(_ value: String) {
+        passwordQueue.async {
+            WebDAV.setPassword(value)
+        }
+    }
+
+    static func flushPasswordWrites() async {
+        await withCheckedContinuation { continuation in
+            passwordQueue.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    static func scheduleInboxCleanup(removing pendingURL: URL? = nil) {
+        let token = stateLock.withLock { inboxGeneration }
+        inboxQueue.async {
+            let current = stateLock.withLock { inboxGeneration }
+            guard current == token else { return }
+            if let pendingURL {
+                try? FileManager.default.removeItem(at: pendingURL)
+            }
+            WebDAV.cleanupRestoreInbox()
+        }
+    }
+
+    static func beginRestoreSession() {
+        stateLock.withLock {
+            inboxGeneration &+= 1
+        }
+    }
+
+    static func awaitPendingInboxCleanup() async {
+        await withCheckedContinuation { continuation in
+            inboxQueue.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    static func stageLocalRestore(
+        from pickedURL: URL,
+        copy: @escaping @Sendable (URL) throws -> URL
+    ) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            inboxQueue.async {
+                do {
+                    continuation.resume(returning: try copy(pickedURL))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }
