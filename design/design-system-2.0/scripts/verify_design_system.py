@@ -38,14 +38,16 @@ REQUIRED_FILES = [
     DS / "specs" / "05-motion.md",
     DS / "specs" / "06-haptics.md",
     DS / "specs" / "07-accessibility.md",
-    # Engineering & Roadmap & Device QA (Deliverables 18-21)
+    # Engineering & Roadmap & Device QA (Deliverables 18-21 + Porting/Private-Network Spec)
     DS / "engineering" / "01-component-source-mapping.md",
     DS / "engineering" / "02-swiftui-uikit-implementation.md",
     DS / "engineering" / "03-phased-refactoring-roadmap.md",
     DS / "engineering" / "04-device-qa-and-acceptance-rubric.md",
-    # Scripts & Prototype v14 (Deliverables 9-10)
+    DS / "engineering" / "05-telegram-porting-and-private-network.md",
+    # Scripts & Prototype v15 (Deliverables 9-10)
     DS / "scripts" / "build_pet_sprites.py",
     DS / "scripts" / "test_prototype_behavior.mjs",
+    DS / "scripts" / "test_prototype_browser_e2e.mjs",
     DS / "scripts" / "verify_design_system.py",
     DS / "prototype" / "index.html",
     DS / "prototype" / "styles.css",
@@ -261,12 +263,17 @@ def main() -> int:
         elif not (ROOT / rel_ttf).is_file():
             errors.append(f"Missing real font target on disk: {rel_ttf}")
 
-    # Verify DS 2.0 v2.3.0 structural invariants in tokens.v2.json
+    # Verify DS 2.0 v2.4.0 structural invariants in tokens.v2.json
     tokens_v2 = json.loads((DS / "specs" / "tokens.v2.json").read_text(encoding="utf-8"))
-    if tokens_v2.get("schemaVersion") != "2.3.0":
-        errors.append(f"Expected tokens.v2.json schemaVersion 2.3.0, got {tokens_v2.get('schemaVersion')}")
-    if tokens_v2.get("streamingReveal", {}).get("planSelected") != "C":
+    if tokens_v2.get("schemaVersion") != "2.4.0":
+        errors.append(f"Expected tokens.v2.json schemaVersion 2.4.0, got {tokens_v2.get('schemaVersion')}")
+    rev = tokens_v2.get("streamingReveal", {})
+    if rev.get("planSelected") != "C":
         errors.append("tokens.v2.json streamingReveal.planSelected must be 'C'")
+    if rev.get("portingStrategy") != "telegram_upstream_reuse":
+        errors.append("tokens.v2.json streamingReveal.portingStrategy must be 'telegram_upstream_reuse'")
+    if rev.get("finalizeTime") != 0.3 or rev.get("edgeFadeDurationMs") != 200:
+        errors.append("tokens.v2.json streamingReveal must keep finalizeTime=0.3 and edgeFadeDurationMs=200")
     single_truth = tokens_v2.get("typography", {}).get("fontOpticalCalibration", {}).get("singleTruthSpacing", {})
     if single_truth.get("lineSpacing") != 0 or single_truth.get("maximumLineHeight") != 0:
         errors.append("tokens.v2.json fontOpticalCalibration.singleTruthSpacing must enforce lineSpacing=0 & maximumLineHeight=0")

@@ -2,12 +2,13 @@
 
 > 严格执行任务书第二十节加权评分表、**11 项一票否决红线**、**生产真机缺陷回归基线**，以及 **60Hz 标准屏 vs 120Hz ProMotion 高刷屏** 双机型独立真机实测规程。
 >
-> **五层验证严格分级红线**：
-> 1. `已通过静态校验`：脚本静态检查（WCAG、相对路径、`App/Fonts/*.ttf` 引用、JS 语法、零生产文件修改）。
-> 2. `已通过自动化行为测试`：`scripts/test_prototype_behavior.mjs` 10 项全量回归（解析前缀全切、600 次模糊测试、EWMA 6 Trace 渐显、增量块零重建、ScrollChrome 滞回/9 锁、7 态汇总、审批与 IME 运行态）。
-> 3. `已完成浏览器视觉对照`：Chrome Headless CDP 实载 6 个 `App/Fonts/*.ttf`、5 字号对比、模拟键盘抗透字、Scroll-Aware 沉浸收放、Plan C 实机渐显与 A/B/C 对照。
-> 4. `待 Swift 原生实现`：SwiftUI / UIKit / CoreText / `ChatChromeCoordinator` / `ClioRevealController` / `Web.swift` Fake-IP 工单代码改造（当前零改动 Swift 源码）。
-> 5. `待 iPhone 真机验证`：`New York` / 苹方 / 宋体真机 CoreText 测量、60Hz/120Hz `CADisplayLink` 实帧率、Core Haptics 实体手感与真机 UI 缺陷最终闭环（未到真机前严禁宣称已实测过真机性能）。
+> **六层验证严格分级红线（不得混为一谈，未测项禁止标通过）**：
+> 1. `静态校验通过`：`scripts/verify_design_system.py`（WCAG AA 对比度、相对路径、零本地绝对路径 scheme、`App/Fonts/*.ttf` 引用、`tokens.v2.json` 2.4.0、JS 语法、零生产代码修改）。
+> 2. `模拟环境自动化测试通过`：`scripts/test_prototype_behavior.mjs` 14 项回归（100% 前缀扫测、600 次 Unicode fuzz、Telegram `TextRevealController` 参数一致性、Points/multiplier 验证、定稿去标与 Wrapper 清理、选区延迟提交、审批取消保护与中文 IME）。
+> 3. `真实浏览器验证通过`：`scripts/test_prototype_browser_e2e.mjs` 在真实 Chrome DOM 下通过（6 字体 `loaded`、选区跨流式完成/Stop/延迟补交不丢、Scroll-Aware Chrome + 生成停止、0 JS 异常、0 HTTP 错误）。
+> 4. `原生实验验证通过`：独立可丢弃 Swift Target 实测原版 `TextRevealController` + Points 宽度成本 + CoreText `SnippetLayer/revealMaskLayer` *(当前 Windows 无 Xcode 环境，标注 **`[待 macOS/Xcode 或 CI 原生实验验证]`**)*。
+> 5. `待 Swift 正式实现`：Wave 1–5 生产 Swift 源码改造（当前严格零改动 `batch-0.36`）。
+> 6. `待 iPhone 真机验证`：`New York` / 苹方 / 宋体 CoreText 视觉与行框实测、60Hz/120Hz 真机帧率、Fake-IP/Tailscale/SSH 实体网络实测及 Core Haptics 触感闭环。
 
 ---
 
@@ -76,4 +77,16 @@
 | **D12** | **审批中断防误批 (P0)** | `pointercancel` / 来电 / 切后台可能导致意外批准 | 滑超 84% 遇 `pointercancel`/失焦必回弹，`pointerup` 方可批准 + 无障碍钮 | Node 运行态单测已核 / Swift 待改 |
 | **D13** | **中文 IME & 全局搜** | 输入拼音未上屏即重建焦点丢字 | 全搜索框强制 `compositionstart/end` 无损保护 | Node 运行态单测已核 / Swift 待改 |
 | **D14** | **真实字体光学校验** | 原型靠系统回退字体冒充文楷 | `App/Fonts/*.ttf` 全加载，实测 `ClioKai-Medium`；苹果字体待真机 | Chrome 已核文楷/等宽 / 真机待核苹果字 |
-| **D15** | **Fake-IP SSRF 冲突** | TUN 代理 `198.18.0.0/15` 被 `LocalAddress.isLocalV4` 误阻断 | **独立网络兼容工单**跟进提示与受控例外，严禁削弱私网 SSRF 屏障 | 已定独立工单方案 / 网络修复待排 |
+| **D15** | **Fake-IP & 私人网络授权** | TUN 代理 `198.18.0.0/15` 被 `LocalAddress` 误拒且缺授权机制 | 5 域分类、可信 Proxy 兼容、持久私网授权、`Taint/SSRF/Jump` 全覆盖 | 架构规范已定 / Swift + 真机待测 |
+
+---
+
+## 五、Telegram 原生移植与私人网络/Fake-IP 补充强制验收条款 *(Section 27 独立过关门禁)*
+
+> **性能与安全为独立一票否决门槛，不得以加权平均分掩盖任何单项失败；严禁把调用 `CADisplayLink` 等同于稳定 120fps！**
+
+### 5.1 Telegram 流式渐显原生移植验证（14 项）
+1. 原版 `TextRevealController.swift` 与 CLI 适配层行为对照；2. 中文 / 英文 / 霞鹜文楷 / ZWJ Emoji / 代码 / 表格 / 公式混合渲染；3. 慢速 / 快速 / 突发 / 抖动输出 Trace；4. 首字显示延迟（TTFT）；5. 输出缓冲积压与 Points/s 测量（重校 `SnippetLayer` 降级线）；6. 最终显示内容与 SSE 接收原文 100% 一致；7. 用户主动 Stop 停止及网络中断保留已收前缀；8. 流式定稿零异常闪跳；9. 选字与长按系统菜单在流式收口及补交后持续稳定；10. 滚动阅读锚点零跳变；11. Scroll-Aware Chrome + 键盘联动无冲突；12. 60Hz (`≤16.67ms`) 与 120Hz (`≤8.33ms`) 实体 iPhone 帧耗时；13. 内存与持续流式功耗；14. Reduce Motion 与 VoiceOver。
+
+### 5.2 Fake-IP 与私人网络及安全边界验证（11 项）
+1. 正常公网 DNS 直连（`web_search` / `web_read`）；2. Fake-IP (`198.18.0.0/15`) 公网访问 + 可信代理兼容模式；3. 用户授权内网 HTTP/HTTPS (NAS / Hermes)；4. 未授权私网/局域网目标拦截并出清晰诊断；5. `.local` / `.lan` / `.ts.net` 私有域名及 IPv6 混合返回校检；6. 内网 MCP 工具（直连 HTTPS 与经远山 SSH 隧道）；7. Tailscale (`100.64.0.0/10`) 可达性与授权作用域；8. SSH 与跳板机（`ProxyJump` 多段指纹校验、密钥脱敏、工作地点重绑）；9. DNS 重绑定 / 恶意跳入私网 / 云元数据 `169.254.169.254` 阻断；10. 权限实时撤销（`PendingApprovalQueue.reconcile` 生效）；11. 外网页面或私网文件内嵌提示注入严禁越权创建/扩大授权。

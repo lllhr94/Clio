@@ -13,12 +13,12 @@
   4. 补充 `tools/lint.py` 检查规则，确保双词典 1,075+ 键完全对等、禁止滚动 Cell 引入真玻璃。
 - **验证方式**：跑 `python3 tools/lint.py` + GitHub Actions `publish=true, shots=false` 出第一个底层兼容测试包。
 
-## Wave 2：排版引擎（`SafeLineBox` + `ClioRevealController` + 9 控排版页）
-- **改动文件**：`App/Sources/Reading/ChatListUIKit/ChatListModels.swift`, `ChatProseRenderer.swift`, `ChatTextTileRenderer.swift`, `ChatBlockViews.swift`, `App/Sources/Design/LookPage.swift`, `App/Sources/Design/FontPage.swift`, `App/Sources/Design/Ink.swift`, `App/Sources/Reading/ProseView.swift`
+## Wave 2：排版引擎与 Telegram 原版流式渐显（最小实验前置 -> `SafeLineBox` + `TextRevealController` + 9 控排版页）
+- **改动文件**：*(前置可丢弃原型 Target 验证 -> 后合入)* `App/Sources/Reading/ThirdParty/TelegramReveal/TextRevealController.swift` & `UPSTREAM.md`, `App/Sources/Reading/ChatListUIKit/ChatListModels.swift`, `ChatProseRenderer.swift`, `ChatTextTileRenderer.swift`, `ChatBlockViews.swift`, `App/Sources/Design/LookPage.swift`, `App/Sources/Design/FontPage.swift`, `App/Sources/Design/Ink.swift`, `App/Sources/Reading/ProseView.swift`
 - **交付内容**：
-  1. 彻底替换旧 `Pref.leading`/`Ink.leading`，上线单源 `SafeLineBox`（`lineSpacing = 0`, `maximumLineHeight = 0`, `lhOffset = 0`）+ H1–H4 阶梯；同步修复 `userBody` 使 7 处阅读面完全一致。
-  2. 上线干净增量不死循环 Markdown 解析器与 `ClioRevealController`（方案 C EWMA 渐显，受 `Pref.fade` / Reduce Motion / 后台暂停 / 突发熔断门控，选区稳态保护）。
-  3. 升级 `ReadingSizePage` 暴露独立可调 `StopRow`（带真实样本预览）。
+  1. **Wave 2 前置门禁（独立可丢弃原生验证 Target）**：实测原样 `TextRevealController.swift` + Points 宽度成本 + CoreText `SnippetLayer/revealMaskLayer`，测定真机 Points/s 与 `durationMultiplier` 并检验 `GPL-2.0-or-later` 隔离合规后再合入主列表。
+  2. 彻底替换旧 `Pref.leading`/`Ink.leading`，上线单源 `SafeLineBox`（`lineSpacing = 0`, `maximumLineHeight = 0`, `lhOffset = 0`）+ H1–H4 阶梯；同步修复 `userBody` 使 7 处阅读面完全一致。
+  3. 在 `ChatListUIKit` 接入 Telegram 级渐显（受 `Pref.fade` / Reduce Motion / 后台暂停 / Points 突发降级控制），确保定稿/停止零重排与选中文本延迟提交。
   4. **零破坏检查**：逐行对比流式生成至定稿瞬间高度 `delta == 0.0pt`、120Hz 向上翻页锚点无漂移。
 
 ## Wave 3：信息架构、`ChatChromeCoordinator`、Scroll-Aware Chrome & 全局搜索 & `CarePage` 拆解
@@ -28,12 +28,13 @@
   2. 侧栏升级为 4+1（提亮记忆/书案/工作台）；上线 `UnifiedSearchSheet`（`clio-index.db + MemoryIndexService + clio-docs-fts.db`，支持中文 IME 无损输入）。
   3. `SettingsView` 重组为 8+1 分组并全面统一 `NavigationStack`；彻底拆解 `CarePage`。
 
-## Wave 4：对话与 Agent 工作流精雕（工具 7 态 / 审批 / 提问 / 用量 & 独立 Fake-IP 工单）
-- **改动文件**：`ThinkingBox.swift`, `ChatTrace.swift`, `ToolTail.swift`, `PlanCard.swift`, `InlineAsk.swift`, `ApproveView.swift`, `InlineApproval.swift`, `ChatSources.swift`, `UsageSheet.swift`, `VoiceSettings.swift` *(另立独立网络兼容工单跟进 `AgentKit/Web.swift` Fake-IP `198.18.0.0/15`)*
+## Wave 4：对话、审批与私人网络/Fake-IP 统一授权工作流 *(并列安全工程子轨，统一于 `Grant / PermissionGate / Hills`)*
+- **改动文件**：`ThinkingBox.swift`, `ChatTrace.swift`, `ToolTail.swift`, `PlanCard.swift`, `InlineAsk.swift`, `ApproveView.swift`, `InlineApproval.swift`, `ChatSources.swift`, `UsageSheet.swift`, `VoiceSettings.swift`, `AgentKit/Sources/AgentKit/Web.swift`, `AgentKit/Sources/Craft/{PermissionGate,Taint}.swift`, `App/Sources/Grant/{Grants,GrantsPage}.swift`, `App/Sources/Hills/{Hills,Tunnel,MCPAuth}.swift`, `App/Sources/Roam/Browser.swift`
 - **交付内容**：
   1. 修复 `ChatTrace.swift:999` 失败步显绿勾问题，严格推行 **7 态聚合语义**与运行状态 4 处去重（任务条仅突显审批/提问/接管）。
   2. `ApproveView` 移除硬编码 `.fontDesign(.rounded)`，新增 `@GestureState` + `scenePhase` 取消保护与等效无障碍确认按钮，守死 `Taint` 边界。
-  3. `InlineAsk`、`SourcesSheet`、`UsageSheet` 补全精修。
+  3. **私人网络与 Fake-IP 专项合入**（见 [05-telegram-porting-and-private-network.md](./05-telegram-porting-and-private-network.md)）：上线 5 域网络识别与 6 类可懂诊断、可信 Fake-IP 代理兼容开关（不削弱 SSRF）、扩展 `PermissionGate` 作用域持久私人设备/网段/MCP 授权与即时撤销，以及 `Hills` 跳板机 (`ProxyJump`) 工作地点串联。
+  4. `InlineAsk`、`SourcesSheet`、`UsageSheet` 补全精修。
 
 ## Wave 5：系统表面收口、全状态无障碍自查与 60Hz/120Hz 真机回归
 - **改动文件**：`StudyPage.swift`, `InteractivePreview.swift` (Zoom Hero 过渡), `DenPage.swift`, `HillsPage.swift`, `PetStage.swift`, `AlwaysOn.swift`, `TurnActivity.swift`, `docs/STATUS.md`, `docs/FEEDBACK.md`

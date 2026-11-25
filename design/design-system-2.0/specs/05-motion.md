@@ -27,13 +27,14 @@
    - 如点击聊天通知条切换会话、关闭侧栏的同时唤醒输入框，多个关联属性动画并行异步推进，禁止串行队列“关完一个再等下一个打开”（Ant Design Motion：退场必须干脆同步且快于进场）。
 4. **动画中途异常状态恢复（State Recovery）**：
    - 当网络出错、审批被他处处理（`ApproveView.onChange(of: team.approvals)`）或用户突然取消长任务时，正在展开或脉冲中的控件能在 180ms 内稳定退回合法静置态，不悬停在半中间残破状态。
-5. **Telegram 级自适应流式文本渐显与稳定布局（Progressive Streaming Reveal，Clean-Room 独立设计）**：
-   - **上游参考与许可边界**：算法思路经独立核验参考 `TelegramMessenger/Telegram-iOS` `master @ 24638bc69bd083981b178dd1e7f921eebbf7fc46`（许可 **GPL-2.0-or-later**，与 Clio **GPL-3.0** 相容于洁净室独立设计重实现，**零直接拷贝源文件**；核心参考模块：`TextRevealController.swift`、`InstantPageV2RevealCost.swift`、`InstantPageV2Layout.swift`、`InstantPageRenderer.swift`、`InteractiveTextComponent.swift`）。
-   - **A / B / C 原型对照实验室裁决（Scene 15 ⑤）**：
-     - **方案 A（旧 66ms 固定批次）**：全块 `innerHTML` 重建，遇网络抖动即一顿一吐，且打断长按选字；**已淘汰**。
-     - **方案 B（EWMA 平滑进度 + 增量块对齐，无边缘模糊）**：解决节奏抖动并保护已定稿块与选区，但字端略偏机械打字机；留作实验对照组，不进主对话。
-     - **方案 C（定稿采用：`ClioRevealController` EWMA 速率预测 + 图素簇安全切片 + 选区保护增量块协调 + 前沿 `200ms` 微透明+轻柔柔边）**：主对话流默认且唯一采用方案 C，**严禁全段落整体 Fade 重叠或整块重建**（零三层重影、定稿块重建计数 `= 0`），直接复用既有 `Pref.fade` 作为主开关；**自动降级熔断**：当追赶速度 `> 80 图素/秒`（突发积压）、`Reduce Motion == true`、`Pref.fade == false` 或 App 退至后台时自动关闭边缘微糊或切为无动画瞬显。
-   - **核心参数与 8 段解耦架构**：EWMA `gapEwmaAlpha = 0.4`、`initialGap = 0.5s`、`velocityTau = 0.12s`、`stallFloor = 0.10s`、`finalizeTime = 0.28s`、`frameDtCap = 0.05s`、`initialInputRate = 40.0` 图素/秒；底层管线分为 `SSE Chunk 摄入 -> ClioRevealController -> 宽容不死循环增量块解析器 -> 已定稿块缓存/选区锁定 -> 物理揭示前沿层（iOS CoreText+CALayer 遮罩 / 原型文本图素包裹）`，保证 60/120Hz 追帧同时绝不阻塞暂停（`Stop`）、中断保护或Scroll-Aware 锚点定位。
+5. **Telegram 级自适应流式文本渐显与稳定布局（Progressive Streaming Reveal · 原版源码移植路线）**：
+   - **正式技术路线（取代早期 Clean-Room 方案）**：在 Clio (`GPL-3.0`) 与 Telegram 官方客户端授权声明（`telegram.org/apps`：`GPL-2.0-or-later`）兼容前提下，直接复用 `TelegramMessenger/Telegram-iOS @ 24638bc69bd083981b178dd1e7f921eebbf7fc46` 的成熟原生算法与核心代码，严禁 AI 自写平行控制器重造边界 Bug：
+     * 原样移植 `submodules/TelegramUI/Components/StreamingTextReveal/Sources/TextRevealController.swift`（90 行，仅依赖 `Foundation`；参数原值：`gapEwmaAlpha = 0.4`、`initialGap = 0.5s`、`velocityTau = 0.12s`、`stallFloor = 0.10s`、`finalizeTime = 0.30s`、`frameDtCap = 0.05s`、`initialInputRate = 40.0`；注意 `finalizeTime` 是目标追帧分母而非硬等 300ms）。
+     * 仅抽离并适配 `InstantPageV2RevealCost.swift`、`InstantPageV2Layout.swift`（`computeRevealCharacterRects` 字形墨迹框）、`InstantPageRenderer.swift`（`SnippetLayer` + `revealMaskLayer` 合并单层遮罩），绝不引入 TelegramCore / ASDK / 完整 InstantPage 架构（完整依赖矩阵见 [engineering/05-telegram-porting-and-private-network.md](../engineering/05-telegram-porting-and-private-network.md)）。
+   - **揭示成本单位纠偏与动画参数对齐**：
+     * 原生实现以 CoreText 实测布局宽 **Points**（非原型里的单纯字符簇数）作揭示成本基准，并叠加 Swift `Character` 图素簇及连字延续槽（`CGRect.zero`）保护防切割 Emoji/ZWJ/复合字；
+     * 前沿揭示动画以 Telegram 原版 `0.20s` Alpha/位置/缩放 + `0.22s` Blur（网页原型已由旧 `160ms` 对齐到 `200ms`）为基线，原生突发降级阈值需在 CoreText 实机环境按 Points/s 重新测量确定（禁止机械把原型的 `80 图素/s` 写成 `80 pt/s`）。
+   - **A / B / C 原型裁决与门控保护**：主对话唯一保留方案 C；直连现有 `Pref.fade` 开关；开启 `Reduce Motion`、应用退后台或突发追赶时关闭前沿柔糊或切换直出，**且应用退后台仅暂停视觉渲染动画，严禁中断 SSE 生成及 Agent 后台任务**；定稿与用户停止输出均采用原位增量更新，彻底保护当前文本选区与滚动锚点。
    - **列表分页与翻阅零跳位**：新消息追加、删除、历史向上分页与 Scroll-Aware Chrome 状态切换采用确定性预测量行高 + `scrollHeight - scrollTop` / `anchorOffset` 锁定（`viewport Δ = 0.0pt`）。
 6. **键盘 ↔ 输入框 ↔ 小克严格帧同步**：
    - `ChatListViewController` 维持 `keyboardSpacerView` + `CADisplayLink` 精确追踪系统键盘弹窗与交互下滑轨迹，保证键盘动作期间最后一条回复、输入框顶沿与立于其上的 `PetStage` 三者同步升降、0 错位、0 穿模。

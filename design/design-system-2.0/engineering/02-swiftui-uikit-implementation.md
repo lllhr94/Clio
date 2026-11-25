@@ -54,20 +54,20 @@
   3. 收敛 `codeBlockFonts` 至 `Ink.mapleWithChinese` 单一 `1:2` 对齐方案；`ClioKai-Medium` 保留内部 `1.045×`、`0.002em`、描边粗体 `-2.2`（表格 `-1.8`）；
   4. `FontShelf` 随选字体（宋体/楷体）加载成功或阅读配置切换时递增 `fontEpoch` 全量清缓存。
 
-### 7. Clean-Room Telegram 级流式渐显与 `ChatChromeCoordinator` / Scroll-Aware Chrome
-- **Clean-Room 渐显管线（GPL-3.0 原创 Swift 实现，仅借鉴构思、零抄代码）**：
-  - `ClioRevealController` 独立维护 EWMA 到词间隔（`gapEwmaAlpha = 0.4`, `velocityTau = 0.12s`, `finalizeTime = 0.28s`, `frameDtCap = 0.05s`）与图素安全计数；
-  - 底层以**宽容增量块协调**（已闭合前序块保持对象恒定零重排，当前活跃选区块延迟替换）配合 CoreText 行矩形 + `CALayer` 前沿线性遮罩实现平滑推进，严格受 `Pref.fade`、`UIAccessibility.isReduceMotionEnabled`、后台退避与 `velocity > 80` 图素/秒突发直出护栏控制。
+### 7. Telegram 原版流式渐显移植与 `ChatChromeCoordinator` / Scroll-Aware Chrome
+- **Telegram 原版核心复用路线（非重写/非 Clean-Room 替代）**：
+  - 按 [05-telegram-porting-and-private-network.md](./05-telegram-porting-and-private-network.md) 先经最小可丢弃原生验证工程校验，后隔离原样移植 `TextRevealController.swift`（`finalizeTime = 0.30s`、`gapEwmaAlpha = 0.4`、`velocityTau = 0.12s`），严禁引入 TelegramCore / ASDK；
+  - 揭示成本由 CoreText `CTFontGetBoundingRectsForGlyphs` 与布局宽（**Points**）提供，并用 Swift `Character` 图素簇边界与连字槽守卫防止切碎 Emoji/ZWJ/复合字，由 `revealMaskLayer`（单层收拢已显示全行）+ 可降级 `SnippetLayer`（`0.20s/0.22s`，受 `Pref.fade`、`Reduce Motion`、`scenePhase` 后台暂停与真机 Points 突发降级控制）接回 `ChatListViewController` + `ChatTextTileRenderer`。定稿与停止均原位落盘且延迟提交选中块，绝不打断选区与滚动位置。
 - **`ChatChromeCoordinator` 与 `UICollectionView.contentInset` 协调**：
   - 统一协调 `TopBar / ModelMenu / BottomDock / PlanCard / InlineApproval / InlineAsk / RoamSlip / JumpLatest / SelectionToolbar / PetStage / Keyboard / SafeArea` 共 12 个表面；
   - `BottomDock` 顶部配纸色 Paper Scrim + ≈92% 纸色玻璃防透字；`Scroll-Aware Chrome` 上滑历史超滞回阈值平滑收起、保留「恢复控件」与生成期「停止生成」，触碰输入/选字/审批/提问/接管/VoiceOver/程序性滚动立刻锁定为 `full` 且保持 `scrollHeight - scrollTop` 阅读锚点 `Δ = 0.0pt`。
 
 ---
 
-## 三、独立网络兼容工程工单：Fake-IP TUN 代理环境下的 SSRF 检测冲突（单独立案，不改设计系统范围）
+## 三、Fake-IP 代理兼容与私人网络授权统一工程接入（收口至既有 `Grant / PermissionGate / Hills` 底座）
 
-> **发现背景**：真机诊断发现网页检索在开启 Surge / Clash / Shadowrocket TUN Fake-IP 代理时误判阻断，经只读排查定位至 [Web.swift:753-759](../../../AgentKit/Sources/AgentKit/Web.swift#L753-L759) 与 [Web.swift:2054-2106](../../../AgentKit/Sources/AgentKit/Web.swift#L2054-L2106)。
+> 完整设计、许可证合规与 8 处 `LocalAddress` 调用点分析详见 [05-telegram-porting-and-private-network.md](./05-telegram-porting-and-private-network.md) 第二部分；此处明确原生合入红线：
 >
-> - **根因**：`LocalAddress.isLocalV4`（`Web.swift:2103`）将 RFC 2544 基准网段 `198.18.0.0/15` 列为内网禁用 IP；而在 iOS VPN/TUN Fake-IP 模式下，系统 DNS 为公网域名分配的虚构映射地址正落在 `198.18.0.0/15`。
-> - **安全红线**：**绝不允许简单移除或整体放宽 SSRF 校验！** 私网（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`127.0.0.0/8`、`169.254.0.0/16`、`fc00::/7` 等）及 `Taint` 边界必须保持默认拦截。
-> - **单列改造方向（纳入独立网络工单，不占用 UI 重构波次）**：① 明确诊断提示（识别 `198.18.0.0/15` + 检测到 utun 接口时，向用户明确解释可能为代理 Fake-IP 映射，而非泛报错）；② 由用户**显式在网络/代理高级开关中确认**或结合 DoH / 系统解析真实公网验证，仅对「高概率 Fake-IP 映射且通过外网协议校验」提供独立受控白名单策略并保留审计日志，与 SSRF 本地内网访问隔离完全分离。
+> - **明确区分 5 类访问域**：公网、Fake-IP 代理公网（`198.18.0.0/15`）、用户授权私网（NAS/Hermes/MCP/SearXNG）、私有组网（Tailscale `100.64.0.0/10`）、以及 SSH/跳板机（`Hills` + `Tunnel`）。
+> - **禁止弱化安全**：严禁仅删除 `LocalAddress.isLocalV4` 中 `198.18.0.0/15`、严禁把检测到 `utun` 或单一 DoH 当作足够安全证明、严禁让外部网页/文档文本创建或扩大私网授权，并坚持拦死 IMDS (`169.254.169.254`)、未授权本机服务、混合 DNS 欺骗与跨网络 `Taint` 外传。
+> - **现有体系复用**：直接扩展 `Grant`、`PermissionGate`（`LiveGatedTool` + `PendingApprovalQueue.reconcile` 实时撤销）、`SearXNGEndpoint` 与 `Hills`（多跳 `jumpHostID` + `HostKeyKeeper` 指纹校验），UI 归口进 8+1 既有「权限与隐私安全」「远山工作地点」页面。

@@ -522,7 +522,6 @@ html, body {
   overflow-y: auto;
   overflow-x: clip;
   padding: 10px 22px 64px 16px;
-  scroll-behavior: smooth;
   position: relative;
   min-width: 0;
 }
@@ -2687,10 +2686,10 @@ html, body {
 }
 .reveal-chunk {
   display: inline;
-  animation: clioInkReveal 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: clioInkReveal 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .reveal-chunk.reveal-blur {
-  animation: clioInkRevealBlur 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: clioInkRevealBlur 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .iphone-screen[data-reduce-motion="true"] .reveal-chunk,
 .reveal-chunk.reveal-no-anim {

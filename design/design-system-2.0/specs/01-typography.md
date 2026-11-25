@@ -129,7 +129,9 @@ FontOpticalProfile {
 }
 ```
 
-> **浏览器真实字体与 iOS 验证分层记录**：已在 Chrome Headless CDP 中通过 `@font-face` 直接加载仓库 `App/Fonts/ClioKai-Regular.ttf` (400)、`ClioKai-Medium.ttf` (500)、`MapleMono-Regular.ttf` (400)、`MapleMono-SemiBold.ttf` (600)、`ClioMonoCN-Regular.ttf` (400) 与 `ClioSeal-Regular.ttf` (400)（6 个字体面均达到 `status: "loaded"`，无系统楷体伪装），实测 `17pt -> 18.0px`（`1.045×` 半点取整）、`0.002em`、`29.7px` 行高（用户气泡同步 `18.0px / 27.54px`）清晰平衡。`New York` / `PingFang SC` / `STSongti-SC` / `STKaiti-SC` 为 Apple 系统/按需字体，非 Apple 平台明确回退并标记 **`[待 iPhone CoreText 真机核验]`**。
+> **浏览器真实字体与 iOS 验证边界（参数收敛定案）**：
+> - 已在真实 Chrome 中直接加载仓库 `App/Fonts/ClioKai-Regular.ttf` (400)、`ClioKai-Medium.ttf` (500)、`MapleMono-Regular.ttf` (400)、`MapleMono-SemiBold.ttf` (600)、`ClioMonoCN-Regular.ttf` (400) 与 `ClioSeal-Regular.ttf` (400)（6 个字体面均实测 `status: "loaded"`，无系统楷体伪装）；`1.045×`、`0.002em` 微距与 `-2.2/-1.8` 合成粗体属于**待 iOS CoreText 真机视觉裁决的候选内部校准参数**（不再额外新增或暴露字体、主题与排版设置）。
+> - `New York` / `PingFang SC` / `STSongti-SC` / `STKaiti-SC` 为 Apple 生态字体，浏览器测试时的 OS 回退效果绝不代表 iOS 实机表现，全部标记 **`[待 iPhone CoreText 真机核验]`**。
 
 ---
 

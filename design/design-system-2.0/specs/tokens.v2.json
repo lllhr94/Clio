@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.3.0",
+  "schemaVersion": "2.4.0",
   "name": "Clio Design System 2.0 Tokens",
   "finalizedDirection": "AC",
   "platforms": ["iOS 26", "iPadOS 26"],
@@ -513,17 +513,34 @@
   },
   "streamingReveal": {
     "planSelected": "C",
-    "upstreamInspiration": "TelegramMessenger/Telegram-iOS @ 24638bc69bd083981b178dd1e7f921eebbf7fc46 (GPL-2.0-or-later clean-room independent design)",
+    "portingStrategy": "telegram_upstream_reuse",
+    "upstreamRepo": "https://github.com/TelegramMessenger/Telegram-iOS",
+    "upstreamCommit": "24638bc69bd083981b178dd1e7f921eebbf7fc46",
+    "upstreamLicenseBasis": "GPL-2.0-or-later (telegram.org/apps; upgrade-compatible with Clio GPL-3.0)",
+    "revealCostUnit": "points_coretext_with_grapheme_guard",
     "gateSettingKey": "Pref.fade",
     "gapEwmaAlpha": 0.4,
     "initialGap": 0.5,
     "velocityTau": 0.12,
     "stallFloor": 0.10,
-    "finalizeTime": 0.28,
+    "finalizeTime": 0.3,
     "frameDtCap": 0.05,
     "initialInputRate": 40.0,
-    "burstBlurCutoffCharsPerSec": 80,
-    "edgeFadeDurationMs": 200
+    "burstBlurCutoffPrototypeGraphemesPerSec": 80,
+    "burstBlurCutoffNativeNote": "Must be calibrated empirically on iOS CoreText in points/s rather than mechanically copying 80",
+    "edgeFadeDurationMs": 200,
+    "snippetBlurDurationMs": 220
+  },
+  "privateNetworkAndFakeIP": {
+    "trafficDomains": [
+      "public",
+      "fakeip_proxy",
+      "authorized_private",
+      "private_mesh",
+      "ssh_workplace"
+    ],
+    "extendsExisting": ["Grant", "PermissionGate", "LiveGatedTool", "PendingApprovalQueue", "TaintGuard", "Vault", "Hills", "SearXNGEndpoint"],
+    "forbiddenPatterns": ["delete_198_18_check", "trust_utun_alone", "trust_doh_alone", "allow_metadata_imds", "parallel_permission_system"]
   },
   "scrollAwareChrome": {
     "enterDeltaPx": 44,

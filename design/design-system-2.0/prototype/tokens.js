@@ -66,14 +66,16 @@ window.CLIO_TOKENS_V2 = {
     }
   },
   streamingReveal: {
+    portingStrategy: "telegram_upstream_reuse",
+    upstreamCommit: "24638bc69bd083981b178dd1e7f921eebbf7fc46",
     velocityTau: 0.12,
     gapEwmaAlpha: 0.4,
     initialGap: 0.5,
     stallFloor: 0.10,
-    finalizeTime: 0.28,
+    finalizeTime: 0.3,
     frameDtCap: 0.05,
     initialInputRate: 40,
-    edgeDurationMs: 160,
+    edgeDurationMs: 200,
     blurRadiusPx: 1.4,
     translateYPx: 1.5,
     scale: 1.0,

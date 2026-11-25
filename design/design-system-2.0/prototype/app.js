@@ -1135,6 +1135,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     const di = document.getElementById("dynamicIsland");
     const dot = document.getElementById("diDot");
     const label = document.getElementById("diLabel");
+    if (!di || !dot || !label) return;
 
     let text = `${t("idle")} · Clio`;
     dot.className = "di-dot";
@@ -1488,8 +1489,11 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     }
 
     ScrollChromeController.markProgrammaticScroll();
-    if (opts.scrollToBottom) scroller.scrollTop = scroller.scrollHeight;
-    else if (prevScrollTop > 0) scroller.scrollTop = prevScrollTop;
+    if (opts.scrollToBottom) {
+      scroller.scrollTop = scroller.scrollHeight;
+    } else if (prevScrollTop > 0) {
+      scroller.scrollTop = prevScrollTop;
+    }
   }
 
   // ==================== Scene 1 & 3: Complex Markdown Chat, 5-Combo Font Comparator & Pet Studio ====================
@@ -4177,7 +4181,94 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     }
   }
 
-  // ==================== Clean-Room Telegram-Inspired Adaptive Reveal Controller ====================
+  // ==================== Telegram Upstream-Aligned Reveal Controller & Port Reference ====================
+  // Verbatim JS math mirror of TelegramMessenger/Telegram-iOS (24638bc69bd083981b178dd1e7f921eebbf7fc46)
+  // submodules/TelegramUI/Components/StreamingTextReveal/Sources/TextRevealController.swift (L4-89)
+  class TelegramTextRevealControllerRef {
+    static velocityTau = 0.12;
+    static gapEwmaAlpha = 0.4;
+    static initialGap = 0.5;
+    static stallFloor = 0.10;
+    static finalizeTime = 0.3;
+    static frameDtCap = 0.05;
+    static initialInputRate = 40.0;
+
+    constructor(initialRevealedCount = 0, initialLength = 0, durationMultiplier = 1.0) {
+      this.revealedCount = Number(initialRevealedCount);
+      this.velocity = 0.0;
+      this.avgInterArrival = TelegramTextRevealControllerRef.initialGap;
+      this.lastSampleTime = null;
+      this.lastSampleLength = null;
+      this.predictedNextArrivalTime = null;
+      this.chunkCount = 0;
+      this.latestLength = initialLength;
+      this.isFinalizing = false;
+      this.lastFrameTime = null;
+      this.durationMultiplier = Math.max(0.0001, durationMultiplier);
+    }
+
+    get currentGlyphCount() {
+      return Math.trunc(this.revealedCount);
+    }
+
+    observeUpdate(latestLength, now) {
+      if (this.lastSampleLength !== null) {
+        if (latestLength > this.lastSampleLength) {
+          if (this.lastSampleTime !== null) {
+            const interArrival = Math.max(now - this.lastSampleTime, 0.001);
+            this.avgInterArrival = TelegramTextRevealControllerRef.gapEwmaAlpha * interArrival
+              + (1.0 - TelegramTextRevealControllerRef.gapEwmaAlpha) * this.avgInterArrival;
+          }
+          this.lastSampleTime = now;
+          this.lastSampleLength = latestLength;
+          this.predictedNextArrivalTime = now + this.avgInterArrival;
+          this.chunkCount += 1;
+        } else if (latestLength < this.lastSampleLength) {
+          this.lastSampleLength = latestLength;
+        }
+      } else {
+        this.lastSampleTime = now;
+        this.lastSampleLength = latestLength;
+        this.predictedNextArrivalTime = now + this.avgInterArrival;
+        this.chunkCount += 1;
+      }
+      this.latestLength = latestLength;
+      if (this.revealedCount > latestLength) {
+        this.revealedCount = latestLength;
+      }
+    }
+
+    finalize(finalLength) {
+      this.latestLength = finalLength;
+      this.isFinalizing = true;
+      if (this.revealedCount > finalLength) {
+        this.revealedCount = finalLength;
+      }
+    }
+
+    tick(now) {
+      const dt = Math.min(now - (this.lastFrameTime ?? now), TelegramTextRevealControllerRef.frameDtCap);
+      const lag = Math.max(0.0, this.latestLength - this.revealedCount);
+      let targetVelocity;
+      if (this.isFinalizing) {
+        targetVelocity = Math.max(this.velocity, lag / TelegramTextRevealControllerRef.finalizeTime);
+      } else if (this.chunkCount < 2) {
+        targetVelocity = lag > 0.0 ? TelegramTextRevealControllerRef.initialInputRate : 0.0;
+      } else if (this.predictedNextArrivalTime !== null) {
+        const timeToNext = Math.max(TelegramTextRevealControllerRef.stallFloor, this.predictedNextArrivalTime - now);
+        targetVelocity = lag / timeToNext;
+      } else {
+        targetVelocity = lag > 0.0 ? TelegramTextRevealControllerRef.initialInputRate : 0.0;
+      }
+      const smoothing = Math.min(1.0, dt / TelegramTextRevealControllerRef.velocityTau);
+      this.velocity += (targetVelocity - this.velocity) * smoothing;
+      this.revealedCount = Math.min(this.latestLength, this.revealedCount + this.velocity * dt / this.durationMultiplier);
+      this.lastFrameTime = now;
+      const isComplete = this.isFinalizing && this.revealedCount >= this.latestLength;
+      return { revealedGlyphCount: Math.trunc(this.revealedCount), isComplete };
+    }
+  }
+
   class ClioRevealController {
     constructor(opts = {}) {
       const cfg = (typeof TOKENS !== "undefined" && TOKENS.streamingReveal) || {};
@@ -4185,7 +4276,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       this.gapEwmaAlpha = opts.gapEwmaAlpha ?? cfg.gapEwmaAlpha ?? 0.4;
       this.initialGap = opts.initialGap ?? cfg.initialGap ?? 0.5;
       this.stallFloor = opts.stallFloor ?? cfg.stallFloor ?? 0.10;
-      this.finalizeTime = opts.finalizeTime ?? cfg.finalizeTime ?? 0.28;
+      this.finalizeTime = opts.finalizeTime ?? cfg.finalizeTime ?? 0.3;
       this.frameDtCap = opts.frameDtCap ?? cfg.frameDtCap ?? 0.05;
       this.initialInputRate = opts.initialInputRate ?? cfg.initialInputRate ?? 40.0;
       this.burstBlurCutoff = opts.burstBlurCutoff ?? cfg.burstBlurCutoffCharsPerSec ?? 80;
@@ -4413,7 +4504,19 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     }
   }
 
-  // Incremental Block DOM Reconciler: settled prior blocks are NEVER replaced; selected blocks are protected!
+  function unwrapRevealChunks(rootEl) {
+    if (!rootEl || !rootEl.querySelectorAll || typeof document === "undefined") return;
+    const spans = Array.from(rootEl.querySelectorAll(".reveal-chunk"));
+    spans.forEach((span) => {
+      const parent = span.parentNode;
+      if (!parent) return;
+      const tn = document.createTextNode(span.textContent || "");
+      parent.replaceChild(tn, span);
+    });
+    if (rootEl.dataset) rootEl.dataset.hasRevealWrap = "0";
+  }
+
+  // Incremental Block DOM Reconciler: settled prior blocks are NEVER replaced; selected blocks & pending reveals are cleanly managed!
   function patchStreamingProseDom(containerEl, revealedText, isStreaming, opts = {}) {
     if (!containerEl) return { settledRebuilds: 0, deferredSelection: false, blockCount: 0 };
     const blocks = parseStreamingMarkdownBlocks(revealedText, isStreaming);
@@ -4425,6 +4528,8 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     while (existingBlocks.length > blocks.length) {
       const extra = existingBlocks.pop();
       if (selectionIntersectsNode(extra, sel)) {
+        if (extra.dataset) extra.dataset.deferredPending = "1";
+        extra._deferredPayload = { remove: true, isStreaming };
         deferredSelection = true;
         break;
       }
@@ -4439,16 +4544,35 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
       let el = existingBlocks[k];
       const isFrontier = (k === blocks.length - 1);
       if (el) {
-        if (el.dataset?.blockRaw === b.raw) {
-          continue; // Settled unchanged block: zero DOM mutation!
+        const sameHtml = el.dataset?.blockHtml === b.html && el.dataset?.blockRaw === b.raw;
+        const hasTemporaryWraps = el.dataset?.hasRevealWrap === "1";
+        const hasDeferred = el.dataset?.deferredPending === "1";
+
+        if (sameHtml && !hasDeferred) {
+          if (!isStreaming && hasTemporaryWraps && !selectionIntersectsNode(el, sel)) {
+            unwrapRevealChunks(el);
+            if (el.dataset) el.dataset.blockStreaming = "0";
+          }
+          continue; // Settled unchanged block: zero DOM mutation / zero rebuild!
         }
+
         if (selectionIntersectsNode(el, sel)) {
           if (el.dataset) el.dataset.deferredPending = "1";
+          el._deferredPayload = { raw: b.raw, html: b.html, type: b.type, isStreaming };
           deferredSelection = true;
-          continue; // Protect user selection inside this block!
+          continue; // Protect user selection inside this block until selection clears!
         }
+
         if (!isFrontier) settledRebuilds += 1;
-        if (el.dataset) el.dataset.blockRaw = b.raw;
+        if (el.dataset) {
+          el.dataset.blockRaw = b.raw;
+          el.dataset.blockHtml = b.html;
+          el.dataset.blockType = b.type;
+          el.dataset.blockStreaming = isStreaming ? "1" : "0";
+          el.dataset.hasRevealWrap = "0";
+          delete el.dataset.deferredPending;
+        }
+        delete el._deferredPayload;
         el.innerHTML = b.html;
       } else {
         el = document.createElement("div");
@@ -4456,6 +4580,10 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
         if (el.dataset) {
           el.dataset.blockIdx = String(k);
           el.dataset.blockRaw = b.raw;
+          el.dataset.blockHtml = b.html;
+          el.dataset.blockType = b.type;
+          el.dataset.blockStreaming = isStreaming ? "1" : "0";
+          el.dataset.hasRevealWrap = "0";
         } else {
           el.setAttribute("data-block-idx", String(k));
         }
@@ -4466,6 +4594,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
 
       if (isFrontier && isStreaming && opts.animateEdge && (opts.deltaCount || 0) > 0) {
         wrapTrailingTextGraphemes(el, opts.deltaCount, Boolean(opts.useBlur));
+        if (el.dataset) el.dataset.hasRevealWrap = "1";
       }
     }
 
@@ -4480,6 +4609,51 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     }
 
     return { settledRebuilds, deferredSelection, blockCount: blocks.length };
+  }
+
+  function flushDeferredProseBlocks(rootOverride = null, selectionOverride = null) {
+    const scope = rootOverride || (typeof document !== "undefined" ? document : null);
+    if (!scope || !scope.querySelectorAll) return 0;
+    const sel = selectionOverride ?? (typeof window !== "undefined" && window.getSelection ? window.getSelection() : null);
+    let flushed = 0;
+    const pendingNodes = Array.from(scope.querySelectorAll(".md-block")).filter(
+      (n) => n.dataset?.deferredPending === "1" || n.getAttribute?.("data-deferred-pending") === "1"
+    );
+    for (const el of pendingNodes) {
+      if (selectionIntersectsNode(el, sel)) continue;
+      const payload = el._deferredPayload;
+      if (payload?.remove) {
+        const parent = el.parentNode;
+        el.remove();
+        flushed += 1;
+        if (parent && !state.streaming) parent.querySelector?.(".streaming-caret")?.remove();
+        continue;
+      }
+      if (payload) {
+        el.innerHTML = payload.html;
+        if (el.dataset) {
+          el.dataset.blockRaw = payload.raw;
+          el.dataset.blockHtml = payload.html;
+          el.dataset.blockType = payload.type || "paragraph";
+          el.dataset.blockStreaming = payload.isStreaming ? "1" : "0";
+          el.dataset.hasRevealWrap = "0";
+          delete el.dataset.deferredPending;
+        }
+        delete el._deferredPayload;
+        flushed += 1;
+      } else {
+        if (el.dataset) delete el.dataset.deferredPending;
+        unwrapRevealChunks(el);
+      }
+    }
+    if (!state.streaming && scope.querySelectorAll) {
+      scope.querySelectorAll(".streaming-caret").forEach((c) => c.remove());
+      const hadAnySelection = Boolean(sel && sel.rangeCount && String(sel.toString() || "").trim());
+      if (!hadAnySelection) {
+        scope.querySelectorAll("[data-deferred-collapse='1'], [data-deferred-collapse=\"1\"]").forEach((lw) => lw.remove());
+      }
+    }
+    return flushed;
   }
 
   const STREAM_TRACES = {
@@ -4629,28 +4803,127 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     streamRaf = null;
   }
 
-  function stopStreaming(reasonLabel = "手动停止流式输出") {
-    pauseOrCancelStreamTimers();
-    if (activeRevealCtrl) {
-      activeRevealCtrl.stop();
-    }
-    if (state.streamingTurnId) {
-      const turn = state.chatTurns.find((x) => x.id === state.streamingTurnId);
-      if (turn) {
-        turn.streaming = false;
-        const kept = (activeRevealCtrl && activeRevealCtrl.receivedText) ? activeRevealCtrl.receivedText : (turn.plainText || "（已手动停止生成）");
-        turn.plainText = kept;
-        turn.renderedRevealText = kept;
-        turn.aiBody = renderStreamingMarkdown(kept, false);
-      }
-    }
+  function settleActiveStreamInPlace(turn, finalText, opts = {}) {
+    if (!turn) return;
+    turn.streaming = false;
+    turn.plainText = finalText;
+    turn.renderedRevealText = finalText;
+    turn.aiBody = renderStreamingMarkdown(finalText, false);
+    if (opts.metricsText) turn.metrics = opts.metricsText;
+
     activeRevealCtrl = null;
     activeStreamMeta = null;
     state.streaming = false;
     state.streamingTurnId = null;
-    setPetMood("idle");
-    emitHaptic("alert", reasonLabel);
-    renderAll();
+
+    setPetMood(opts.petMood || "idle", opts.petMs);
+    if (opts.hapticMsg) emitHaptic(opts.hapticKind || "confirm", opts.hapticMsg);
+
+    if (typeof document === "undefined") return;
+    const inChatScene = state.scene === "chat" || state.scene === "pet";
+    const proseEl = inChatScene ? document.querySelector(`[data-turn-prose="${turn.id}"]`) : null;
+
+    if (!proseEl) {
+      updateDynamicIsland();
+      renderTopBar();
+      if (opts.backgroundToast) showToast(opts.backgroundToast);
+      return;
+    }
+
+    const sc = document.getElementById("mainScroller");
+    const savedScrollTop = sc ? sc.scrollTop : null;
+    const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+    const hasSel = state.selectionActive || Boolean(sel && String(sel.toString() || "").trim());
+
+    patchStreamingProseDom(proseEl, finalText, false, { animateEdge: false, selection: sel });
+
+    const turnSec = document.getElementById(`turn-${turn.id}`);
+    if (turnSec) {
+      const thinkToggle = turnSec.querySelector(".thinking-toggle");
+      if (thinkToggle && !hasSel) thinkToggle.textContent = "✦ 已思考 1.8s · 48 字";
+      const liveWin = turnSec.querySelector(".thinking-live-window");
+      if (liveWin) {
+        if (hasSel && liveWin.dataset) liveWin.dataset.deferredCollapse = "1";
+        else liveWin.remove();
+      }
+      const metricsSpan = turnSec.querySelector(".reply-actions .font-mono");
+      if (metricsSpan && turn.metrics) metricsSpan.textContent = turn.metrics;
+    }
+
+    const simBtn = document.getElementById("btnSimulateStream");
+    if (simBtn) simBtn.textContent = "▶ 复杂流式";
+
+    renderTopBar();
+    renderBottomDock();
+    updateDynamicIsland();
+
+    if (sc && savedScrollTop !== null) {
+      if (opts.scrollToBottom && state.chatFollowBottom && !hasSel && state.chromeMode !== "immersive") {
+        ScrollChromeController.markProgrammaticScroll();
+        if (sc.scrollTo) sc.scrollTo({ top: sc.scrollHeight, behavior: "instant" });
+        else sc.scrollTop = sc.scrollHeight;
+      } else {
+        ScrollChromeController.markProgrammaticScroll();
+        if (sc.scrollTo) sc.scrollTo({ top: savedScrollTop, behavior: "instant" });
+        else sc.scrollTop = savedScrollTop;
+      }
+    }
+  }
+
+  function stopStreaming(reasonLabel = "手动停止流式输出") {
+    pauseOrCancelStreamTimers();
+    const ctrl = activeRevealCtrl;
+    const turnId = state.streamingTurnId;
+    if (ctrl) ctrl.stop();
+    const turn = turnId ? state.chatTurns.find((x) => x.id === turnId) : null;
+    const kept = (ctrl && ctrl.receivedText) ? ctrl.receivedText : (turn?.plainText || "（已手动停止生成）");
+    if (turn) {
+      settleActiveStreamInPlace(turn, kept, {
+        petMood: "idle",
+        hapticKind: "alert",
+        hapticMsg: reasonLabel,
+        scrollToBottom: false
+      });
+    } else {
+      activeRevealCtrl = null;
+      activeStreamMeta = null;
+      state.streaming = false;
+      state.streamingTurnId = null;
+      setPetMood("idle");
+      emitHaptic("alert", reasonLabel);
+      if (typeof document !== "undefined") {
+        renderTopBar();
+        renderBottomDock();
+        updateDynamicIsland();
+      }
+    }
+  }
+
+  function failActiveStream(errorMsg = "连接中断：已保留前序成功正文") {
+    pauseOrCancelStreamTimers();
+    const ctrl = activeRevealCtrl;
+    const turnId = state.streamingTurnId;
+    if (ctrl) ctrl.fail(errorMsg);
+    const turn = turnId ? state.chatTurns.find((x) => x.id === turnId) : null;
+    const kept = (ctrl && ctrl.receivedText) ? ctrl.receivedText : (turn?.plainText || "");
+    const finalOut = kept || `（${errorMsg}）`;
+    if (turn) {
+      settleActiveStreamInPlace(turn, finalOut, {
+        petMood: "error",
+        petMs: 2600,
+        hapticKind: "error",
+        hapticMsg: errorMsg,
+        scrollToBottom: false,
+        metricsText: "已中断·已保字"
+      });
+    } else {
+      activeRevealCtrl = null;
+      activeStreamMeta = null;
+      state.streaming = false;
+      state.streamingTurnId = null;
+      setPetMood("error", 2600);
+    }
+    if (typeof showToast === "function") showToast(errorMsg);
   }
 
   function runActiveRevealLoop() {
@@ -4695,19 +4968,16 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
 
       if (step.isComplete) {
         pauseOrCancelStreamTimers();
-        turn.streaming = false;
-        turn.plainText = activeRevealCtrl.receivedText || fullMarkdown;
-        turn.renderedRevealText = turn.plainText;
-        turn.aiBody = renderStreamingMarkdown(turn.plainText, false);
-        turn.metrics = metricsText;
-        activeRevealCtrl = null;
-        activeStreamMeta = null;
-        state.streaming = false;
-        state.streamingTurnId = null;
-        setPetMood("attention", 2200);
-        emitHaptic("confirm", "流式定稿完成");
-        if (state.scene === "chat" || state.scene === "pet") renderAll({ scrollToBottom: state.chatFollowBottom && !state.selectionActive });
-        else { updateDynamicIsland(); showToast("后台流式回复已生成完毕 ✓"); }
+        const finalText = activeRevealCtrl.receivedText || fullMarkdown;
+        settleActiveStreamInPlace(turn, finalText, {
+          metricsText,
+          petMood: "attention",
+          petMs: 2200,
+          hapticKind: "confirm",
+          hapticMsg: "流式定稿完成",
+          scrollToBottom: true,
+          backgroundToast: "后台流式回复已生成完毕 ✓"
+        });
         return;
       }
 
@@ -4819,6 +5089,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
 
   function renderBottomDock() {
     const dock = document.getElementById("bottomDockArea");
+    if (!dock) return;
     const showPlan = state.scene === "tools" && state.viewState === "normal";
     const showComposer = ["chat", "tools", "pet", "approval", "ask"].includes(state.scene) && state.viewState === "normal";
     const showDenInput = state.scene === "roam_den" && state.roamSub === "den" && state.viewState === "normal";
@@ -5711,6 +5982,7 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     renderInlineMd,
     renderStreamingMarkdown,
     splitGraphemes,
+    TelegramTextRevealControllerRef,
     ClioRevealController,
     ScrollChromeController,
     computeSafeLineBox,
@@ -5718,10 +5990,14 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
     resolveShortModelName,
     resolveReadingTypography,
     patchStreamingProseDom,
+    flushDeferredProseBlocks,
     detectFontEnvironment,
     getChromeLockReason,
     bindSlideTrack,
     attachImeSafeInput,
+    startStreamIntoTurn,
+    stopStreaming,
+    failActiveStream,
     STREAM_TRACES,
     SECTION46_SAMPLE,
     getState: () => state,
@@ -5734,6 +6010,14 @@ let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender)
   // Boot (skipped automatically when loaded inside headless Node unit test sandbox)
   if (!globalThis.__CLIO_TEST_MODE__) {
     if (typeof document !== "undefined") {
+      document.addEventListener("selectionchange", () => {
+        const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+        const picked = sel ? String(sel.toString() || "").trim() : "";
+        if (!picked && state.selectionActive) {
+          state.selectionActive = false;
+        }
+        flushDeferredProseBlocks(document, sel);
+      });
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden && state.streaming && activeRevealCtrl) {
           runActiveRevealLoop();

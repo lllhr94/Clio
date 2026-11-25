@@ -679,6 +679,147 @@ runTest("Runtime & Contract: Approval pointercancel/blur safety + Chinese IME co
   assert.ok(appSrc.includes("e.isComposing || e.keyCode === 229"), "Enter submit must guard IME composition");
 });
 
+// 11. Finalize State Transition & Wrapper Cleanup (identical rawText streaming->finalized)
+runTest("Finalize State Transition: strips streaming badges, unclosed emphasis & temporary reveal wrappers", () => {
+  const root = createMockNode("div", mockDoc);
+  // 11a: Unclosed fence changes HTML from "· 生成中" -> plain code header on finalize even with identical rawText
+  const streamFence = "# 前序标题\n\n```swift\nlet ok = true";
+  engine.patchStreamingProseDom(root, streamFence, true, { animateEdge: true, deltaCount: 3, useBlur: true });
+  const initialBlocks = root.querySelectorAll(".md-block");
+  assert.equal(initialBlocks.length, 2);
+  const headingRef = initialBlocks[0];
+  assert.ok(initialBlocks[1].innerHTML.includes("· 生成中"));
+  assert.ok(initialBlocks[1].querySelectorAll(".reveal-chunk").length > 0);
+
+  const finRes = engine.patchStreamingProseDom(root, streamFence, false, { animateEdge: false });
+  assert.equal(finRes.settledRebuilds, 0, "Prior settled block must never rebuild");
+  const afterBlocks = root.querySelectorAll(".md-block");
+  assert.equal(afterBlocks[0], headingRef, "Heading DOM identity preserved on finalize");
+  assert.equal(afterBlocks[1].innerHTML.includes("· 生成中"), false, "Finalize must strip · 生成中 even when rawText is identical");
+  assert.equal(afterBlocks[1].dataset.hasRevealWrap, "0");
+
+  // 11b: Unclosed **bold while streaming vs literal **bold when finalized (same raw string)
+  const root2 = createMockNode("div", mockDoc);
+  const rawBold = "这里有 **未闭合粗体";
+  engine.patchStreamingProseDom(root2, rawBold, true, { animateEdge: true, deltaCount: 2, useBlur: false });
+  assert.ok(root2.querySelectorAll(".md-block")[0].innerHTML.includes("<strong>"));
+  engine.patchStreamingProseDom(root2, rawBold, false, { animateEdge: false });
+  assert.equal(root2.querySelectorAll(".md-block")[0].innerHTML.includes("<strong>"), false, "Unclosed ** must revert to literal text on finalize");
+  assert.equal(root2.querySelectorAll(".reveal-chunk").length, 0);
+});
+
+// 12. Deferred Selection Flush & In-Place Error/Stop Settlement
+runTest("Deferred Selection Flush & In-Place Settlement: protects active selection then commits cleanly on clear", () => {
+  const root = createMockNode("div", mockDoc);
+  const baseText = "首段稳态内容。\n\n正在生成的尾段：**半截";
+  engine.patchStreamingProseDom(root, baseText, true, { animateEdge: false });
+  const blk1 = root.querySelectorAll(".md-block")[1];
+  const staleHtml = blk1.innerHTML;
+
+  let active = true;
+  const selMock = {
+    get rangeCount() { return active ? 1 : 0; },
+    toString: () => (active ? "尾段" : ""),
+    getRangeAt: () => ({
+      startContainer: blk1,
+      endContainer: blk1,
+      intersectsNode: (n) => active && n === blk1
+    })
+  };
+
+  const finalText = "首段稳态内容。\n\n正在生成的尾段：**完整加粗收口**";
+  const rFin = engine.patchStreamingProseDom(root, finalText, false, { selection: selMock });
+  assert.equal(rFin.deferredSelection, true);
+  assert.equal(blk1.dataset.deferredPending, "1");
+  assert.equal(blk1.innerHTML, staleHtml, "Active selected block HTML must not mutate prematurely");
+
+  // Release selection and flush deferred update
+  active = false;
+  engine.setState({ streaming: false });
+  const flushed = engine.flushDeferredProseBlocks(root, selMock);
+  assert.equal(flushed, 1, "Must flush deferred block once selection clears");
+  assert.equal(blk1.dataset.deferredPending, undefined);
+  assert.ok(blk1.innerHTML.includes("<strong>完整加粗收口</strong>"));
+  assert.equal(root.querySelectorAll(".streaming-caret").length, 0);
+});
+
+// 13. Arbitrary Unicode Chunk Arrival & Received === Rendered Parity
+runTest("Arbitrary Unicode Chunks: random 1-9 codepoint splits over ZWJ/combining/CJK stay lossless", () => {
+  const mixedDoc = "## 混排校验 👨‍👩‍👧‍👦\n\n测试中文、e\u0301 组合字符、👍🏽 肤色 emoji 与 `code_block` 在任意切片边界到达，最终原文一字不丢。";
+  const cps = Array.from(mixedDoc);
+  const ctrl = new engine.ClioRevealController();
+  let cursor = 0;
+  let t = 0;
+  let seed = 987654321;
+  const rndInt = (max) => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return 1 + (seed % max);
+  };
+  let acc = "";
+  while (cursor < cps.length) {
+    const step = rndInt(9);
+    cursor = Math.min(cps.length, cursor + step);
+    acc = cps.slice(0, cursor).join("");
+    t += 0.04;
+    ctrl.observeUpdate(acc, t);
+    const tick = ctrl.tick(t, {});
+    const revealed = ctrl.currentRevealedText;
+    assert.ok(acc.startsWith(revealed), "Intermediate reveal must stay an exact grapheme prefix of received text");
+    assert.ok(tick.revealedCount <= ctrl.latestLength);
+  }
+  ctrl.finalize(mixedDoc);
+  for (let i = 0; i < 120; i++) {
+    t += 1 / 60;
+    if (ctrl.tick(t, {}).isComplete) break;
+  }
+  assert.equal(ctrl.currentRevealedText, mixedDoc, "Final revealed text must equal received text 100%");
+});
+
+// 14. Verbatim Telegram TextRevealControllerRef Parity & DurationMultiplier Check
+runTest("Telegram TextRevealControllerRef: exact upstream finalizeTime=0.30 math & width-cost multiplier", () => {
+  assert.equal(tokens.streamingReveal.finalizeTime, 0.3, "finalizeTime token must match Telegram upstream 0.30s");
+  assert.equal(tokens.streamingReveal.edgeDurationMs, 200, "edgeDurationMs must match 200ms spec");
+  const tgRef = new engine.TelegramTextRevealControllerRef(0, 0, 1.0);
+  const clioCtrl = new engine.ClioRevealController();
+
+  const text = engine.SECTION46_SAMPLE.fullMarkdown;
+  const gAll = Array.from(engine.splitGraphemes(text));
+  let emitted = 0;
+  let t = 0;
+  for (const seg of engine.STREAM_TRACES.jitter) {
+    t += seg.dtMs / 1000;
+    emitted = Math.min(gAll.length, emitted + seg.chars);
+    tgRef.observeUpdate(emitted, t);
+    clioCtrl.observeUpdate(gAll.slice(0, emitted).join(""), t);
+    tgRef.tick(t);
+    clioCtrl.tick(t, {});
+    assert.ok(Math.abs(tgRef.revealedCount - clioCtrl.revealedCount) < 1e-9, "ClioRevealController math must match upstream 1.0x");
+  }
+  tgRef.finalize(gAll.length);
+  clioCtrl.finalize(text);
+  for (let i = 0; i < 60; i++) {
+    t += 1 / 60;
+    tgRef.tick(t);
+    clioCtrl.tick(t, {});
+    assert.ok(Math.abs(tgRef.revealedCount - clioCtrl.revealedCount) < 1e-9);
+  }
+
+  // Test Telegram RichData multiplier (width-cost in points / durationMultiplier = 10.0)
+  const richCtrl = new engine.TelegramTextRevealControllerRef(0, 0, 10.0);
+  richCtrl.observeUpdate(400, 0.05);
+  richCtrl.tick(0.05); // prime lastFrameTime (frame 0 has dt=0 in TextRevealController.swift)
+  richCtrl.observeUpdate(1800, 0.25);
+  const midTick = richCtrl.tick(0.266);
+  assert.ok(midTick.revealedGlyphCount > 0 && midTick.revealedGlyphCount < 1800, "Point-cost controller must advance smoothly under durationMultiplier=10.0");
+  richCtrl.finalize(1800);
+  let done = false;
+  for (let f = 0; f < 400; f++) {
+    t = 0.31 + f * 0.016;
+    if (richCtrl.tick(t).isComplete) { done = true; break; }
+  }
+  assert.equal(done, true, "Point-cost controller with durationMultiplier=10.0 must drain completely after finalize");
+});
+
 console.log(`PASS ${results.length}/${results.length} behavioral test suites:`);
 for (const r of results) {
   console.log(`  ✓ ${r.name} (${r.ms} ms)`);
