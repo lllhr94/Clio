@@ -1601,7 +1601,11 @@ final class ChatLayoutCache {
         return ceil(max(18, fitted.height))
     }
 
-    nonisolated static func measureCoreTextMetrics(_ attributed: NSAttributedString, maxWidth: CGFloat) -> (size: CGSize, lineCount: Int) {
+    nonisolated static func measureCoreTextMetrics(
+        _ attributed: NSAttributedString,
+        maxWidth: CGFloat,
+        checkNarrowBoundary: Bool = false
+    ) -> (size: CGSize, lineCount: Int) {
         guard attributed.length > 0 else { return (.zero, 0) }
         let measuredSource: NSAttributedString
         if attributed.string.hasSuffix("\n") {
@@ -1613,21 +1617,39 @@ final class ChatLayoutCache {
             measuredSource = attributed
         }
         let framesetter = CTFramesetterCreateWithAttributedString(measuredSource as CFAttributedString)
-        let constrainedWidth = maxWidth.isFinite ? max(1, maxWidth) : CGFloat.greatestFiniteMagnitude
-        let constraints = CGSize(width: constrainedWidth, height: .greatestFiniteMagnitude)
+        let isUnbounded = !maxWidth.isFinite || maxWidth > 1_000_000
+        let constrainedWidth = isUnbounded ? CGFloat.greatestFiniteMagnitude : max(1, maxWidth)
+        let wholeRange = CFRange(location: 0, length: measuredSource.length)
         let fitted = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter,
-            CFRange(location: 0, length: measuredSource.length),
+            wholeRange,
             nil,
-            constraints,
+            CGSize(width: constrainedWidth, height: .greatestFiniteMagnitude),
             nil
         )
-        let frameWidth: CGFloat = maxWidth.isFinite ? constrainedWidth : max(1000, ceil(fitted.width) + 64)
-        let frameHeight: CGFloat = max(1000, ceil(fitted.height) + 64)
-        let path = CGPath(rect: CGRect(x: 0, y: 0, width: frameWidth, height: frameHeight), transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: measuredSource.length), path, nil)
+        var maxHeight = fitted.height
+        var effectiveWidth: CGFloat = isUnbounded ? max(1000, ceil(fitted.width) + 64) : constrainedWidth
+        if checkNarrowBoundary && !isUnbounded && fitted.width >= constrainedWidth - 3.0 {
+            let narrowWidth = max(1, constrainedWidth - 2.0)
+            let narrowFitted = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter,
+                wholeRange,
+                nil,
+                CGSize(width: narrowWidth, height: .greatestFiniteMagnitude),
+                nil
+            )
+            if narrowFitted.height > maxHeight {
+                maxHeight = narrowFitted.height
+                effectiveWidth = narrowWidth
+            }
+        }
+        let path = CGPath(
+            rect: CGRect(x: 0, y: 0, width: effectiveWidth, height: max(1000, ceil(maxHeight) + 64)),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(framesetter, wholeRange, path, nil)
         let lineCount = max(1, CFArrayGetCount(CTFrameGetLines(frame)))
-        return (fitted, lineCount)
+        return (CGSize(width: fitted.width, height: maxHeight), lineCount)
     }
 
     nonisolated static func measureCoreTextSize(_ attributed: NSAttributedString, maxWidth: CGFloat) -> CGSize {
@@ -1640,16 +1662,13 @@ final class ChatLayoutCache {
             return CGSize(width: 0, height: ceil(insetHeight))
         }
         let safeMaxWidth = max(1, maxWidth)
-        let (fitted, lineCount) = Self.measureCoreTextMetrics(rendered.attributed, maxWidth: safeMaxWidth)
+        let (fitted, lineCount) = Self.measureCoreTextMetrics(
+            rendered.attributed,
+            maxWidth: safeMaxWidth,
+            checkNarrowBoundary: true
+        )
         let width = min(safeMaxWidth, fitted.width > 0 ? ceil(fitted.width + 1.5) : 0)
-        var maxHeight = fitted.height
-        var maxLines = lineCount
-        if fitted.width >= safeMaxWidth - 3.0 {
-            let narrowCheck = Self.measureCoreTextMetrics(rendered.attributed, maxWidth: max(1, safeMaxWidth - 2.0))
-            maxHeight = max(maxHeight, narrowCheck.size.height)
-            maxLines = max(maxLines, narrowCheck.lineCount)
-        }
-        let height = ceil(maxHeight + insetHeight + max(1.0, CGFloat(maxLines) * 0.35))
+        let height = ceil(fitted.height + insetHeight + max(1.0, CGFloat(lineCount) * 0.35))
         return CGSize(width: width, height: height)
     }
 }
