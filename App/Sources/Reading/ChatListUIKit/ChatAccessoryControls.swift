@@ -12,6 +12,7 @@ final class ChatPetAvatarView: UIView {
 
     private var isAvatarCircle = true
     private var currentWash: Color?
+    private var lastConfiguredSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -36,15 +37,33 @@ final class ChatPetAvatarView: UIView {
         addSubview(fallbackView)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatPetAvatarView, _) in
+            view.lastConfiguredSignature = ""
             view.refreshColors()
         }
     }
 
     func configure(bot: BotInfo?, state: String = "idle", wash: Color? = nil, avatar: Bool = true) {
+        let resolvedWash = UIColor(wash ?? Ink.accentWash).resolvedColor(with: traitCollection)
+        let washSig = washColorSignature(resolvedWash)
+        let photoPicture: UIImage?
+        let photoToken: Int
+        if avatar, let bot, bot.avatar == "photo", let picture = Avatars.image(bot.id) {
+            photoPicture = picture
+            photoToken = ObjectIdentifier(picture).hashValue
+        } else {
+            photoPicture = nil
+            photoToken = 0
+        }
+        let signature = "\(bot?.id ?? "")|\(bot?.avatar ?? "")|\(state)|\(avatar ? 1 : 0)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(wash != nil ? 1 : 0)|\(washSig)|\(traitCollection.userInterfaceStyle.rawValue)|\(photoToken)"
+        if signature == lastConfiguredSignature && imageView.image != nil {
+            return
+        }
+
         isAvatarCircle = avatar
         currentWash = wash
 
-        if avatar, let bot, bot.avatar == "photo", let picture = Avatars.image(bot.id) {
+        if let picture = photoPicture {
+            lastConfiguredSignature = signature
             bgLayer.isHidden = true
             imageView.isHidden = false
             fallbackView.isHidden = true
@@ -61,6 +80,7 @@ final class ChatPetAvatarView: UIView {
            let anim = pack.animations[animName],
            let first = anim.frames.first,
            let cell = PetSheets.cell(pack, anim, first.i) {
+            lastConfiguredSignature = signature
             bgLayer.isHidden = !avatar
             imageView.isHidden = false
             fallbackView.isHidden = true
@@ -68,12 +88,25 @@ final class ChatPetAvatarView: UIView {
             imageView.image = UIImage(cgImage: cell)
             imageView.layer.magnificationFilter = pack.pixelArt ? .nearest : .linear
         } else {
+            lastConfiguredSignature = ""
             bgLayer.isHidden = !avatar
+            imageView.image = nil
             imageView.isHidden = true
             fallbackView.isHidden = false
         }
-        refreshColors()
+        refreshColors(resolvedWash: resolvedWash)
         setNeedsLayout()
+    }
+
+    private func washColorSignature(_ color: UIColor) -> String {
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        if color.getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return "\(Int((r * 255).rounded())),\(Int((g * 255).rounded())),\(Int((b * 255).rounded())),\(Int((a * 255).rounded()))"
+        }
+        return "\(color.cgColor.hashValue)"
     }
 
     private func resolvedPack(for bot: BotInfo?) -> PetPack? {
@@ -84,8 +117,8 @@ final class ChatPetAvatarView: UIView {
         return PetLibrary.shared.pack
     }
 
-    private func refreshColors() {
-        let color = UIColor(currentWash ?? Ink.accentWash).resolvedColor(with: traitCollection).cgColor
+    private func refreshColors(resolvedWash: UIColor? = nil) {
+        let color = (resolvedWash ?? UIColor(currentWash ?? Ink.accentWash).resolvedColor(with: traitCollection)).cgColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         bgLayer.backgroundColor = color

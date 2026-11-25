@@ -35,6 +35,18 @@ struct ChatListStyle: Equatable {
     var codeFoldButtonHeight: CGFloat { 34 * scale }
     var inlineCodeCorner: CGFloat { 5 * scale }
 
+    private static let lightTraitCollection = UITraitCollection(userInterfaceStyle: .light)
+    private static let darkTraitCollection = UITraitCollection(userInterfaceStyle: .dark)
+
+    var resolvedTraitCollection: UITraitCollection {
+        isDark ? Self.darkTraitCollection : Self.lightTraitCollection
+    }
+
+    func resolveColor(_ color: Color, alpha: CGFloat = 1) -> UIColor {
+        let base = UIColor(color).resolvedColor(with: resolvedTraitCollection)
+        return alpha < 1 ? base.withAlphaComponent(alpha) : base
+    }
+
     var styleKey: String {
         "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(fade)|\(reduceMotion)|\(uiScale)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(fontGeneration)|\(isDark)|\(contentSizeCategory)"
     }

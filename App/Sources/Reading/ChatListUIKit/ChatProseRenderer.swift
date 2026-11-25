@@ -11,6 +11,16 @@ struct ChatBlockDecorations: Equatable {
     let inlineCodeRanges: [NSRange]
     let quoteBlocks: [NSRange]
     let ruleRanges: [NSRange]
+
+    var hasAny: Bool {
+        !inlineCodeRanges.isEmpty || !quoteBlocks.isEmpty || !ruleRanges.isEmpty
+    }
+
+    static let empty = ChatBlockDecorations(
+        inlineCodeRanges: [],
+        quoteBlocks: [],
+        ruleRanges: []
+    )
 }
 
 struct ChatRenderedProse {
@@ -19,6 +29,18 @@ struct ChatRenderedProse {
     let topInset: CGFloat
     let bottomInset: CGFloat
     let renderToken: UInt64
+    let hasLinks: Bool
+
+    var isEmpty: Bool { attributed.length == 0 }
+
+    static let empty = ChatRenderedProse(
+        attributed: NSAttributedString(),
+        decorations: .empty,
+        topInset: 0,
+        bottomInset: 0,
+        renderToken: 0,
+        hasLinks: false
+    )
 }
 
 struct ChatCodeSlice {
@@ -33,6 +55,8 @@ struct ChatCodeSlice {
     let fullAttributed: NSAttributedString
     let foldedContentSize: CGSize
     let fullContentSize: CGSize
+    let foldedRenderToken: UInt64
+    let fullRenderToken: UInt64
 }
 
 struct ChatTableSlice: Equatable {
@@ -72,15 +96,15 @@ enum ChatCodeHighlighter {
 
     private static var fontPairCache: [FontPairKey: AlignedFontPair] = [:]
 
-    private static func tokenColor(_ kind: CodeTokenKind, isOutput: Bool) -> UIColor {
-        if isOutput { return UIColor(Ink.Code.output) }
+    private static func tokenColor(_ kind: CodeTokenKind, isOutput: Bool, style: ChatListStyle) -> UIColor {
+        if isOutput { return style.resolveColor(Ink.Code.output) }
         switch kind {
-        case .plain: return UIColor(Ink.ink)
-        case .keyword: return UIColor(Ink.Code.keyword)
-        case .function: return UIColor(Ink.Code.function)
-        case .number: return UIColor(Ink.Code.number)
-        case .string: return UIColor(Ink.Code.string)
-        case .comment: return UIColor(Ink.inkFaint)
+        case .plain: return style.resolveColor(Ink.ink)
+        case .keyword: return style.resolveColor(Ink.Code.keyword)
+        case .function: return style.resolveColor(Ink.Code.function)
+        case .number: return style.resolveColor(Ink.Code.number)
+        case .string: return style.resolveColor(Ink.Code.string)
+        case .comment: return style.resolveColor(Ink.inkFaint)
         }
     }
 
@@ -153,7 +177,7 @@ enum ChatCodeHighlighter {
                 let font = seg.isWide ? pair.wide : pair.narrow
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput),
+                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput, style: style),
                     .paragraphStyle: pStyle,
                 ]))
             }
@@ -164,12 +188,12 @@ enum ChatCodeHighlighter {
                 let font = seg.kind == .comment ? italic : regular
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput),
+                    .foregroundColor: tokenColor(seg.kind, isOutput: isOutput, style: style),
                     .paragraphStyle: pStyle,
                 ]))
             }
         }
-        return out
+        return NSAttributedString(attributedString: out)
     }
 }
 
@@ -205,14 +229,28 @@ final class ChatProseBuilder {
         let keys: [String]
     }
 
+    private struct CodeSliceKey: Hashable {
+        let styleKey: String
+        let language: String
+        let rawText: String
+    }
+
     private var blockCache: [BlockCacheKey: BlockCacheEntry] = [:]
     private var richTextSliceCache: [RichTextSliceKey: ChatRenderedProse] = [:]
+    private var codeSliceCache: [CodeSliceKey: ChatCodeSlice] = [:]
     private var streamScanners: [String: StreamScannerEntry] = [:]
     private var nextToken: UInt64 = 1
+
+    private func allocateRenderToken() -> UInt64 {
+        let token = nextToken
+        nextToken &+= 1
+        return token
+    }
 
     func clearCaches() {
         blockCache.removeAll(keepingCapacity: true)
         richTextSliceCache.removeAll(keepingCapacity: true)
+        codeSliceCache.removeAll(keepingCapacity: true)
         streamScanners.removeAll(keepingCapacity: true)
     }
 
@@ -224,38 +262,38 @@ final class ChatProseBuilder {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = 4
         let font = UIFont.systemFont(ofSize: Ink.Size.body)
-        let attr = NSAttributedString(string: text, attributes: [
+        let attr = NSAttributedString(attributedString: NSAttributedString(string: text, attributes: [
             .font: font,
-            .foregroundColor: UIColor(Ink.ink),
+            .foregroundColor: style.resolveColor(Ink.ink),
             .paragraphStyle: pStyle,
-        ])
-        let token = nextToken
-        nextToken &+= 1
+        ]))
+        let token = allocateRenderToken()
         return ChatRenderedProse(
             attributed: attr,
-            decorations: ChatBlockDecorations(inlineCodeRanges: [], quoteBlocks: [], ruleRanges: []),
+            decorations: .empty,
             topInset: 0,
             bottomInset: 0,
-            renderToken: token
+            renderToken: token,
+            hasLinks: false
         )
     }
 
     func buildDisclosureText(_ text: String, style: ChatListStyle) -> ChatRenderedProse {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = 3
-        let attr = NSAttributedString(string: text, attributes: [
+        let attr = NSAttributedString(attributedString: NSAttributedString(string: text, attributes: [
             .font: UIFont.systemFont(ofSize: Ink.Size.small),
-            .foregroundColor: UIColor(Ink.inkSoft),
+            .foregroundColor: style.resolveColor(Ink.inkSoft),
             .paragraphStyle: pStyle,
-        ])
-        let token = nextToken
-        nextToken &+= 1
+        ]))
+        let token = allocateRenderToken()
         return ChatRenderedProse(
             attributed: attr,
-            decorations: ChatBlockDecorations(inlineCodeRanges: [], quoteBlocks: [], ruleRanges: []),
+            decorations: .empty,
             topInset: 0,
             bottomInset: 0,
-            renderToken: token
+            renderToken: token,
+            hasLinks: false
         )
     }
 
@@ -268,20 +306,20 @@ final class ChatProseBuilder {
         let blocks = parseBlocks(rawText, isStreaming: isStreaming, streamKey: streamKey)
         if blocks.isEmpty {
             let pStyle = makeParagraphStyle(style: style)
-            let placeholder = NSAttributedString(string: isStreaming ? " " : "", attributes: [
+            let placeholder = NSAttributedString(attributedString: NSAttributedString(string: isStreaming ? " " : "", attributes: [
                 .font: Ink.uiFace(style.readingSize, bold: false, face: style.face),
-                .foregroundColor: UIColor(Ink.ink),
+                .foregroundColor: style.resolveColor(Ink.ink),
                 .paragraphStyle: pStyle,
-            ])
-            let token = nextToken
-            nextToken &+= 1
+            ]))
+            let token = allocateRenderToken()
             return [
                 .richText(ChatRenderedProse(
                     attributed: placeholder,
-                    decorations: ChatBlockDecorations(inlineCodeRanges: [], quoteBlocks: [], ruleRanges: []),
+                    decorations: .empty,
                     topInset: 0,
                     bottomInset: 2,
-                    renderToken: token
+                    renderToken: token,
+                    hasLinks: false
                 ))
             ]
         }
@@ -451,27 +489,42 @@ final class ChatProseBuilder {
         isLive: Bool,
         style: ChatListStyle
     ) -> ChatCodeSlice {
+        let cacheKey: CodeSliceKey?
+        if !isLive {
+            let candidate = CodeSliceKey(styleKey: style.styleKey, language: language, rawText: rawText)
+            if let hit = codeSliceCache[candidate] {
+                return hit
+            }
+            cacheKey = candidate
+        } else {
+            cacheKey = nil
+        }
+
         let trimmed = CodeTokenizer.trimmedLines(rawText)
         let body = trimmed.isEmpty ? " " : trimmed
         let count = CodeTokenizer.lineCount(body)
         let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
         let folds = !isLive && count > 20
 
-        let fullAttr = ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style)
+        let fullAttr = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
         let fullSize = measureCodeUnwrappedSize(fullAttr)
+        let fullToken = allocateRenderToken()
 
         let foldedAttr: NSAttributedString
         let foldedSize: CGSize
+        let foldedToken: UInt64
         if folds {
             let foldedBody = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(12).joined(separator: "\n")
-            foldedAttr = ChatCodeHighlighter.highlight(foldedBody, language: language, isOutput: isOutput, style: style)
+            foldedAttr = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(foldedBody, language: language, isOutput: isOutput, style: style))
             foldedSize = measureCodeUnwrappedSize(foldedAttr)
+            foldedToken = allocateRenderToken()
         } else {
             foldedAttr = fullAttr
             foldedSize = fullSize
+            foldedToken = fullToken
         }
 
-        return ChatCodeSlice(
+        let built = ChatCodeSlice(
             language: language,
             rawText: rawText,
             trimmedText: body,
@@ -482,8 +535,15 @@ final class ChatProseBuilder {
             foldedAttributed: foldedAttr,
             fullAttributed: fullAttr,
             foldedContentSize: foldedSize,
-            fullContentSize: fullSize
+            fullContentSize: fullSize,
+            foldedRenderToken: foldedToken,
+            fullRenderToken: fullToken
         )
+        if let cacheKey {
+            if codeSliceCache.count > 400 { codeSliceCache.removeAll(keepingCapacity: true) }
+            codeSliceCache[cacheKey] = built
+        }
+        return built
     }
 
     private func measureCodeUnwrappedSize(_ attributed: NSAttributedString) -> CGSize {
@@ -538,7 +598,8 @@ final class ChatProseBuilder {
         case .leading: pStyle.alignment = .left
         }
 
-        let ink = UIColor(Ink.ink)
+        let ink = style.resolveColor(Ink.ink)
+        let accent = style.resolveColor(Ink.accent)
         let out = NSMutableAttributedString()
         for run in source.runs {
             let chunk = String(source[run.range].characters)
@@ -564,19 +625,19 @@ final class ChatProseBuilder {
             }
             if isCode {
                 attrs[.font] = Ink.uiMono(max(CGFloat(12), cellSize - 2), preference: style.code)
-                attrs[.foregroundColor] = UIColor(Ink.accent)
+                attrs[.foregroundColor] = accent
             }
             if isStrike {
                 attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
             if let link = run.link {
                 attrs[.link] = link
-                attrs[.foregroundColor] = UIColor(Ink.accent)
+                attrs[.foregroundColor] = accent
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             }
             out.append(NSAttributedString(string: chunk, attributes: attrs))
         }
-        return out
+        return NSAttributedString(attributedString: out)
     }
 
     private func buildRichTextSlice(
@@ -656,10 +717,10 @@ final class ChatProseBuilder {
             bottomInset = 2
         }
 
-        let token = nextToken
-        nextToken &+= 1
+        let token = allocateRenderToken()
+        let immutable = NSAttributedString(attributedString: out)
         let rendered = ChatRenderedProse(
-            attributed: out,
+            attributed: immutable,
             decorations: ChatBlockDecorations(
                 inlineCodeRanges: inlineCodeRanges,
                 quoteBlocks: quoteBlocks,
@@ -667,7 +728,8 @@ final class ChatProseBuilder {
             ),
             topInset: topInset,
             bottomInset: bottomInset,
-            renderToken: token
+            renderToken: token,
+            hasLinks: Self.containsLinks(immutable)
         )
         if let sliceCacheKey {
             if richTextSliceCache.count > 1200 {
@@ -678,6 +740,22 @@ final class ChatProseBuilder {
         return rendered
     }
 
+    private static func containsLinks(_ attributed: NSAttributedString) -> Bool {
+        guard attributed.length > 0 else { return false }
+        var found = false
+        attributed.enumerateAttribute(
+            .link,
+            in: NSRange(location: 0, length: attributed.length),
+            options: .longestEffectiveRangeNotRequired
+        ) { value, _, stop in
+            if value != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
     private func applyStreamingTailFade(to attributed: NSMutableAttributedString) {
         let raw = attributed.string
         let tailIndices = Array(raw.indices.suffix(12))
@@ -686,9 +764,13 @@ final class ChatProseBuilder {
         for (offset, strIndex) in tailIndices.enumerated() {
             let range = NSRange(strIndex..<raw.index(after: strIndex), in: raw)
             guard range.location >= 0, range.location + range.length <= attributed.length else { continue }
-            guard let color = attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor else { continue }
             let alpha = CGFloat(count - offset) / CGFloat(count + 1)
-            attributed.addAttribute(.foregroundColor, value: color.withAlphaComponent(alpha), range: range)
+            if let color = attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor {
+                attributed.addAttribute(.foregroundColor, value: color.withAlphaComponent(alpha), range: range)
+            }
+            if let stroke = attributed.attribute(.strokeColor, at: range.location, effectiveRange: nil) as? UIColor {
+                attributed.addAttribute(.strokeColor, value: stroke.withAlphaComponent(alpha), range: range)
+            }
         }
     }
 
@@ -751,7 +833,7 @@ final class ChatProseBuilder {
             let before = isFirst ? 0 : style.headingTop(level: level)
             let spacing = isLast ? 0 : style.headingBottom
             let pStyle = makeParagraphStyle(style: style, spacing: spacing, before: before, tight: true)
-            let attr = buildInline(text, size: style.headingSize(level: level), bold: true, style: style, ink: UIColor(Ink.ink), paragraph: pStyle)
+            let attr = buildInline(text, size: style.headingSize(level: level), bold: true, style: style, ink: style.resolveColor(Ink.ink), paragraph: pStyle)
             return BlockCacheEntry(
                 attributed: attr,
                 trailingSeparatorStyle: pStyle,
@@ -763,7 +845,7 @@ final class ChatProseBuilder {
         case .paragraph(let text):
             let spacing = isLast ? 0 : style.paragraphGap
             let pStyle = makeParagraphStyle(style: style, spacing: spacing)
-            let attr = buildInline(text, size: style.readingSize, bold: false, style: style, ink: UIColor(Ink.ink), paragraph: pStyle)
+            let attr = buildInline(text, size: style.readingSize, bold: false, style: style, ink: style.resolveColor(Ink.ink), paragraph: pStyle)
             return BlockCacheEntry(
                 attributed: attr,
                 trailingSeparatorStyle: pStyle,
@@ -775,6 +857,9 @@ final class ChatProseBuilder {
         case .list(let items):
             let out = NSMutableAttributedString()
             let base = style.readingSize
+            let bodyInk = style.resolveColor(Ink.ink)
+            let faintInk = style.resolveColor(Ink.inkFaint)
+            let accentInk = style.resolveColor(Ink.accent)
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : style.paragraphGap)
             for (itemIndex, item) in items.enumerated() {
                 let marker: String
@@ -783,15 +868,15 @@ final class ChatProseBuilder {
                 if let checked = item.checked {
                     marker = checked ? "☑︎" : "☐"
                     markerSize = base
-                    markerColor = UIColor(checked ? Ink.accent : Ink.inkFaint)
+                    markerColor = checked ? accentInk : faintInk
                 } else if let number = item.number {
                     marker = "\(number)."
                     markerSize = base * 0.92
-                    markerColor = UIColor(Ink.inkFaint)
+                    markerColor = faintInk
                 } else {
                     marker = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪")
                     markerSize = base * (item.depth == 0 ? 0.95 : 0.78)
-                    markerColor = UIColor(Ink.inkFaint)
+                    markerColor = faintInk
                 }
                 let indent = CGFloat(item.depth) * base * 1.25
                 let hang = item.number != nil ? base * 1.75 : base * 1.25
@@ -810,12 +895,13 @@ final class ChatProseBuilder {
                     .foregroundColor: markerColor,
                     .paragraphStyle: pStyle,
                 ]))
-                out.append(buildInline(item.text, size: base, bold: false, style: style, ink: UIColor(Ink.ink), paragraph: pStyle))
+                out.append(buildInline(item.text, size: base, bold: false, style: style, ink: bodyInk, paragraph: pStyle))
             }
+            let immutable = NSAttributedString(attributedString: out)
             return BlockCacheEntry(
-                attributed: out,
+                attributed: immutable,
                 trailingSeparatorStyle: lastPStyle,
-                inlineCodeOffsets: extractInlineCodeRanges(in: out),
+                inlineCodeOffsets: extractInlineCodeRanges(in: immutable),
                 quoteSpan: nil,
                 isRule: false
             )
@@ -825,7 +911,7 @@ final class ChatProseBuilder {
             let indent = Ink.Space.l + 4
             let tail = -Ink.Space.m
             let cardPadV = Ink.Space.m
-            let quoteInk = UIColor(Ink.inkSoft)
+            let quoteInk = style.resolveColor(Ink.inkSoft)
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : cardPadV + style.paragraphGap, indent: indent, tailIndent: tail)
             let flatLines = flattenQuoteBlocks(inner)
             for (idx, line) in flatLines.enumerated() {
@@ -859,11 +945,12 @@ final class ChatProseBuilder {
                     .paragraphStyle: lastPStyle,
                 ]))
             }
-            let span = NSRange(location: 0, length: out.length)
+            let immutable = NSAttributedString(attributedString: out)
+            let span = NSRange(location: 0, length: immutable.length)
             return BlockCacheEntry(
-                attributed: out,
+                attributed: immutable,
                 trailingSeparatorStyle: lastPStyle,
-                inlineCodeOffsets: extractInlineCodeRanges(in: out),
+                inlineCodeOffsets: extractInlineCodeRanges(in: immutable),
                 quoteSpan: span,
                 isRule: false
             )
@@ -874,14 +961,15 @@ final class ChatProseBuilder {
             pStyle.paragraphSpacing = isLast ? 0 : style.paragraphGap * 0.85
             pStyle.maximumLineHeight = Ink.Size.micro
             pStyle.minimumLineHeight = Ink.Size.micro
+            let immutableStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
             let attr = NSAttributedString(string: "\u{200B}", attributes: [
                 .font: UIFont.systemFont(ofSize: Ink.Size.micro),
                 .foregroundColor: UIColor.clear,
-                .paragraphStyle: pStyle,
+                .paragraphStyle: immutableStyle,
             ])
             return BlockCacheEntry(
                 attributed: attr,
-                trailingSeparatorStyle: pStyle,
+                trailingSeparatorStyle: immutableStyle,
                 inlineCodeOffsets: [],
                 quoteSpan: nil,
                 isRule: true
@@ -951,7 +1039,7 @@ final class ChatProseBuilder {
         hanging: CGFloat = 0,
         tailIndent: CGFloat = 0,
         tight: Bool = false
-    ) -> NSMutableParagraphStyle {
+    ) -> NSParagraphStyle {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = tight ? style.leading * 0.5 : style.leading
         pStyle.paragraphSpacing = spacing
@@ -960,7 +1048,7 @@ final class ChatProseBuilder {
         pStyle.headIndent = indent + hanging
         if tailIndent != 0 { pStyle.tailIndent = tailIndent }
         if hanging > 0 { pStyle.tabStops = [NSTextTab(textAlignment: .left, location: indent + hanging)] }
-        return pStyle
+        return (pStyle.copy() as? NSParagraphStyle) ?? pStyle
     }
 
     private func buildInline(
@@ -972,6 +1060,7 @@ final class ChatProseBuilder {
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
         let parsed = PreparsedInline.parse(text)
+        let accent = style.resolveColor(Ink.accent)
         let out = NSMutableAttributedString()
         for run in parsed.runs {
             let isBold = bold || run.bold
@@ -991,7 +1080,7 @@ final class ChatProseBuilder {
             }
             if run.code {
                 attributes[.font] = Ink.uiMono(max(CGFloat(12), size - 2), preference: style.code)
-                attributes[.foregroundColor] = UIColor(Ink.accent)
+                attributes[.foregroundColor] = accent
                 attributes[.chatInlineCode] = true
             }
             if run.strikethrough {
@@ -999,12 +1088,12 @@ final class ChatProseBuilder {
             }
             if let link = run.link {
                 attributes[.link] = link
-                attributes[.foregroundColor] = UIColor(Ink.accent)
+                attributes[.foregroundColor] = accent
                 attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
             }
             out.append(NSAttributedString(string: run.text, attributes: attributes))
         }
-        return out
+        return NSAttributedString(attributedString: out)
     }
 
     private func extractInlineCodeRanges(in attr: NSAttributedString) -> [NSRange] {
@@ -1601,21 +1690,24 @@ final class ChatLayoutCache {
         return ceil(max(18, fitted.height))
     }
 
+    nonisolated static func prepareCoreTextSource(_ attributed: NSAttributedString) -> NSAttributedString {
+        guard attributed.length > 0 else { return attributed }
+        if attributed.string.hasSuffix("\n") {
+            let copy = NSMutableAttributedString(attributedString: attributed)
+            let tailAttrs = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
+            copy.append(NSAttributedString(string: "\u{200B}", attributes: tailAttrs))
+            return NSAttributedString(attributedString: copy)
+        }
+        return attributed
+    }
+
     nonisolated static func measureCoreTextMetrics(
         _ attributed: NSAttributedString,
         maxWidth: CGFloat,
         checkNarrowBoundary: Bool = false
     ) -> (size: CGSize, lineCount: Int) {
         guard attributed.length > 0 else { return (.zero, 0) }
-        let measuredSource: NSAttributedString
-        if attributed.string.hasSuffix("\n") {
-            let copy = NSMutableAttributedString(attributedString: attributed)
-            let tailAttrs = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
-            copy.append(NSAttributedString(string: "\u{200B}", attributes: tailAttrs))
-            measuredSource = copy
-        } else {
-            measuredSource = attributed
-        }
+        let measuredSource = prepareCoreTextSource(attributed)
         let framesetter = CTFramesetterCreateWithAttributedString(measuredSource as CFAttributedString)
         let isUnbounded = !maxWidth.isFinite || maxWidth > 1_000_000
         let constrainedWidth = isUnbounded ? CGFloat.greatestFiniteMagnitude : max(1, maxWidth)

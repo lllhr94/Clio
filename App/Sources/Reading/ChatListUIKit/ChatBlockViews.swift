@@ -7,7 +7,7 @@ import UIKit
 /// Native UIKit code block matching `ProseView.CodeBlock`: language/output header, copy button,
 /// horizontal scrolling when overflowing, selectable code text, and >20-line fold/unfold.
 @MainActor
-final class ChatCodeBlockView: UIView, UITextViewDelegate {
+final class ChatCodeBlockView: UIView {
     let selectionOwnerID = UUID()
     var hasActiveSelection: Bool { codeTextView.selectedRange.length > 0 }
 
@@ -25,7 +25,7 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
     private let copyButton = UIButton(type: .system)
 
     private let scrollView = UIScrollView()
-    private let codeTextView = UITextView(usingTextLayoutManager: true)
+    private let codeTextView = ChatRichTextView()
     private let outputStripe = UIView()
     private let trailingFade = CAGradientLayer()
 
@@ -37,7 +37,6 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
     private var isUnfolded = false
     private var copiedWork: DispatchWorkItem?
     private var isCopied = false
-    private var wasSelecting = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -78,15 +77,7 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
         scrollView.bounces = true
         addSubview(scrollView)
 
-        codeTextView.isEditable = false
-        codeTextView.isSelectable = true
-        codeTextView.isScrollEnabled = false
-        codeTextView.backgroundColor = .clear
-        codeTextView.textContainer.lineFragmentPadding = 0
-        codeTextView.textContainerInset = .zero
-        codeTextView.linkTextAttributes = [:]
-        codeTextView.dataDetectorTypes = []
-        codeTextView.delegate = self
+        codeTextView.allowLongPressSelection = true
         scrollView.addSubview(codeTextView)
 
         addSubview(outputStripe)
@@ -115,6 +106,20 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
         currentStyle = style
         isUnfolded = unfolded
 
+        codeTextView.onQuoteSelection = { [weak self] excerpt in
+            self?.onQuoteSelection?(excerpt)
+        }
+        codeTextView.onSaveNoteSelection = { [weak self] excerpt in
+            self?.onSaveNoteSelection?(excerpt)
+        }
+        codeTextView.onSpeakSelection = { [weak self] excerpt in
+            self?.onSpeakSelection?(excerpt)
+        }
+        codeTextView.onSelectionActiveChanged = { [weak self] _, active in
+            guard let self else { return }
+            self.onSelectionActiveChanged?(self.selectionOwnerID, active)
+        }
+
         if !sameCode {
             terminalIcon.isHidden = !slice.isOutput
             titleLabel.font = Ink.uiMono(Ink.Size.micro, bold: false, preference: style.code)
@@ -127,23 +132,21 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
             outputStripe.isHidden = !slice.isOutput
 
             let activeAttr = (slice.folds && !unfolded) ? slice.foldedAttributed : slice.fullAttributed
-            let oldSelection = codeTextView.selectedRange
-            let oldStr = (codeTextView.attributedText?.string ?? "") as NSString
-            let newStr = activeAttr.string as NSString
-            var restored: NSRange?
-            if oldSelection.length > 0,
-               oldSelection.location + oldSelection.length <= oldStr.length,
-               oldSelection.location + oldSelection.length <= newStr.length,
-               oldStr.substring(with: oldSelection) == newStr.substring(with: oldSelection) {
-                restored = oldSelection
-            }
-            codeTextView.attributedText = activeAttr
-            if let restored {
-                codeTextView.selectedRange = restored
-            } else if oldSelection.length > 0 {
-                codeTextView.selectedRange = NSRange(location: 0, length: 0)
-                publishSelection(false)
-            }
+            let activeToken = (slice.folds && !unfolded) ? slice.foldedRenderToken : slice.fullRenderToken
+            let rendered = ChatRenderedProse(
+                attributed: activeAttr,
+                decorations: .empty,
+                topInset: 0,
+                bottomInset: 0,
+                renderToken: activeToken,
+                hasLinks: false
+            )
+            codeTextView.apply(
+                ownerID: selectionOwnerID.uuidString,
+                rendered: rendered,
+                style: style,
+                isLive: slice.isLive
+            )
 
             foldButton.isHidden = !slice.folds
             if slice.folds {
@@ -156,15 +159,16 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
         setNeedsLayout()
     }
 
+    func clearSelection() {
+        codeTextView.clearSelectionIfNeeded()
+    }
+
     func resetForReuse() {
         copiedWork?.cancel()
         copiedWork = nil
         isCopied = false
         currentSlice = nil
-        if codeTextView.selectedRange.length > 0 {
-            codeTextView.selectedRange = NSRange(location: 0, length: 0)
-        }
-        publishSelection(false)
+        codeTextView.resetForReuse()
         onToggleFold = nil
         onQuoteSelection = nil
         onSaveNoteSelection = nil
@@ -304,58 +308,6 @@ final class ChatCodeBlockView: UIView, UITextViewDelegate {
             foldButton.frame = CGRect(x: 0, y: foldY, width: width, height: foldH)
             foldHairline.frame = CGRect(x: 0, y: 0, width: width, height: 0.5)
         }
-    }
-
-    // MARK: - UITextViewDelegate
-
-    func textViewDidChangeSelection(_ textView: UITextView) {
-        publishSelection(textView.selectedRange.length > 0)
-    }
-
-    func textViewDidEndEditing(_ textView: UITextView) {
-        publishSelection(false)
-    }
-
-    private func publishSelection(_ active: Bool) {
-        guard active != wasSelecting else { return }
-        wasSelecting = active
-        onSelectionActiveChanged?(selectionOwnerID, active)
-    }
-
-    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-        guard range.length > 0,
-              let nsText = textView.text as NSString?,
-              range.location >= 0,
-              range.location + range.length <= nsText.length else {
-            return UIMenu(children: suggestedActions)
-        }
-        let picked = ChatRichTextView.cleanExcerpt(nsText.substring(with: range))
-        guard !picked.isEmpty else { return UIMenu(children: suggestedActions) }
-
-        var custom: [UIMenuElement] = []
-        if let onQuoteSelection {
-            custom.append(UIAction(title: L.t("chat.quoteFollowup"), image: UIImage(systemName: "text.quote")) { [weak self, weak textView] _ in
-                textView?.selectedRange = NSRange(location: 0, length: 0)
-                self?.publishSelection(false)
-                DispatchQueue.main.async { onQuoteSelection(picked) }
-            })
-        }
-        if let onSaveNoteSelection {
-            custom.append(UIAction(title: L.t("saveNote.title"), image: UIImage(systemName: "square.and.arrow.down.on.square")) { [weak self, weak textView] _ in
-                textView?.selectedRange = NSRange(location: 0, length: 0)
-                self?.publishSelection(false)
-                DispatchQueue.main.async { onSaveNoteSelection(picked) }
-            })
-        }
-        if let onSpeakSelection {
-            custom.append(UIAction(title: "朗读", image: UIImage(systemName: "speaker.wave.2")) { [weak self, weak textView] _ in
-                textView?.selectedRange = NSRange(location: 0, length: 0)
-                self?.publishSelection(false)
-                DispatchQueue.main.async { onSpeakSelection(picked) }
-            })
-        }
-        guard !custom.isEmpty else { return UIMenu(children: suggestedActions) }
-        return UIMenu(children: custom + suggestedActions)
     }
 }
 

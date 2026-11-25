@@ -75,18 +75,20 @@ struct CarePage: View {
                     localBackupSection
                     webdavSection
                     archivedSection
-                    diagnosticInfoSection
-                    storageSection
-                    connectivitySection
-                    recentErrorsSection
-                    if hitchesReady {
-                        HitchSettings()
+                    if diagnosticsReady {
+                        diagnosticInfoSection
+                        storageSection
+                        connectivitySection
+                        recentErrorsSection
+                        if hitchesReady {
+                            HitchSettings()
+                        }
+                        if showSpikeLab {
+                            spikeLabSection
+                        }
+                        diagnosticsActionSection
+                        aboutSection
                     }
-                    if showSpikeLab {
-                        spikeLabSection
-                    }
-                    diagnosticsActionSection
-                    aboutSection
                 }
             }
             .paperForm()

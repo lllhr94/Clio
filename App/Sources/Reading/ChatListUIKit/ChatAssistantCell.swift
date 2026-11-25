@@ -33,14 +33,14 @@ final class ChatAssistantCell: UICollectionViewCell {
     private let thinkingLabel = UILabel()
     private let thinkingChevron = UIImageView()
     private let thinkingStripe = UIView()
-    private let thinkingTextView = ChatRichTextView()
+    private var thinkingTextView: ChatRichTextView?
 
     private let pulseHeader = UIButton(type: .custom)
     private let pulseSymbol = UILabel()
     private let pulseLabel = UILabel()
     private let pulseChevron = UIImageView()
     private let pulseCard = UIView()
-    private let pulseTextView = ChatRichTextView()
+    private var pulseTextView: ChatRichTextView?
 
     private let lookbackButton = UIButton(type: .custom)
     private let lookbackIcon = UIImageView()
@@ -72,6 +72,7 @@ final class ChatAssistantCell: UICollectionViewCell {
     private var streamingGeneration = 0
     private var appliedContinueButtonSignature = ""
     private var appliedContinueThemeSignature = ""
+    private var lastColorSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -140,9 +141,6 @@ final class ChatAssistantCell: UICollectionViewCell {
         thinkingStripe.layer.cornerRadius = 1
         thinkingStripe.isHidden = true
         contentView.addSubview(thinkingStripe)
-
-        thinkingTextView.isHidden = true
-        contentView.addSubview(thinkingTextView)
     }
 
     private func setupPulseViews() {
@@ -163,7 +161,6 @@ final class ChatAssistantCell: UICollectionViewCell {
 
         pulseCard.layer.cornerCurve = .continuous
         pulseCard.isHidden = true
-        pulseCard.addSubview(pulseTextView)
         contentView.addSubview(pulseCard)
     }
 
@@ -198,6 +195,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         guard appliedContinueButtonSignature != sig || continueButton.configuration == nil else { return }
         appliedContinueButtonSignature = sig
         appliedContinueThemeSignature = ""
+        lastColorSignature = ""
         var cfg = continueButton.configuration ?? UIButton.Configuration.filled()
         cfg.title = title
         cfg.image = UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .semibold))
@@ -222,8 +220,10 @@ final class ChatAssistantCell: UICollectionViewCell {
         actions = nil
         callbacks = Callbacks()
 
-        thinkingTextView.resetForReuse()
-        pulseTextView.resetForReuse()
+        thinkingTextView?.resetForReuse()
+        thinkingTextView?.isHidden = true
+        pulseTextView?.resetForReuse()
+        pulseTextView?.isHidden = true
         richTextViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         codeBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         tableBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
@@ -235,8 +235,12 @@ final class ChatAssistantCell: UICollectionViewCell {
 
     func activeSelectionOwnerIDs() -> [UUID] {
         var ids: [UUID] = []
-        if thinkingTextView.selectedRange.length > 0 { ids.append(thinkingTextView.selectionOwnerID) }
-        if pulseTextView.selectedRange.length > 0 { ids.append(pulseTextView.selectionOwnerID) }
+        if let thinkingTextView, !thinkingTextView.isHidden, thinkingTextView.selectedRange.length > 0 {
+            ids.append(thinkingTextView.selectionOwnerID)
+        }
+        if let pulseTextView, !pulseTextView.isHidden, pulseTextView.selectedRange.length > 0 {
+            ids.append(pulseTextView.selectionOwnerID)
+        }
         for tv in richTextViews where !tv.isHidden && tv.selectedRange.length > 0 {
             ids.append(tv.selectionOwnerID)
         }
@@ -260,10 +264,10 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     func clearAllSelections() {
-        thinkingTextView.clearSelectionIfNeeded()
-        pulseTextView.clearSelectionIfNeeded()
+        thinkingTextView?.clearSelectionIfNeeded()
+        pulseTextView?.clearSelectionIfNeeded()
         richTextViews.forEach { $0.clearSelectionIfNeeded() }
-        codeBlockViews.forEach { $0.resetForReuse() }
+        codeBlockViews.forEach { $0.clearSelection() }
     }
 
     var latestFooterOwnerID: String? {
@@ -338,9 +342,12 @@ final class ChatAssistantCell: UICollectionViewCell {
         speakerLabel.isHidden = true
         thinkingHeader.isHidden = true
         thinkingStripe.isHidden = true
-        thinkingTextView.isHidden = true
+        thinkingTextView?.isHidden = true
+        thinkingTextView?.resetForReuse()
         pulseHeader.isHidden = true
         pulseCard.isHidden = true
+        pulseTextView?.isHidden = true
+        pulseTextView?.resetForReuse()
         lookbackButton.isHidden = true
         sourcesPill.isHidden = true
         continueButton.isHidden = true
@@ -470,11 +477,28 @@ final class ChatAssistantCell: UICollectionViewCell {
         setNeedsLayout()
     }
 
+    private func ensureThinkingTextView() -> ChatRichTextView {
+        if let existing = thinkingTextView { return existing }
+        let tv = ChatRichTextView()
+        contentView.addSubview(tv)
+        thinkingTextView = tv
+        return tv
+    }
+
+    private func ensurePulseTextView() -> ChatRichTextView {
+        if let existing = pulseTextView { return existing }
+        let tv = ChatRichTextView()
+        pulseCard.addSubview(tv)
+        pulseTextView = tv
+        return tv
+    }
+
     private func configureThinking(row: ChatListRowItem, entry: ChatLayoutCache.AssistantLayoutEntry, style: ChatListStyle) {
         guard let rendered = entry.thinkingText, let raw = row.line.reasoning else {
             thinkingHeader.isHidden = true
             thinkingStripe.isHidden = true
-            thinkingTextView.isHidden = true
+            thinkingTextView?.isHidden = true
+            thinkingTextView?.resetForReuse()
             return
         }
         thinkingHeader.isHidden = false
@@ -484,10 +508,14 @@ final class ChatAssistantCell: UICollectionViewCell {
         thinkingChevron.transform = isThinkingExpanded ? CGAffineTransform(rotationAngle: .pi * 0.5) : .identity
 
         thinkingStripe.isHidden = !isThinkingExpanded
-        thinkingTextView.isHidden = !isThinkingExpanded
         if isThinkingExpanded {
-            wireTextViewCallbacks(thinkingTextView, lineID: row.line.id)
-            thinkingTextView.apply(ownerID: row.line.id + "#thinking", rendered: rendered, style: style)
+            let tv = ensureThinkingTextView()
+            tv.isHidden = false
+            wireTextViewCallbacks(tv, lineID: row.line.id)
+            tv.apply(ownerID: row.line.id + "#thinking", rendered: rendered, style: style)
+        } else {
+            thinkingTextView?.isHidden = true
+            thinkingTextView?.resetForReuse()
         }
     }
 
@@ -495,6 +523,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         guard let rendered = entry.pulseText, let raw = row.line.pulse else {
             pulseHeader.isHidden = true
             pulseCard.isHidden = true
+            pulseTextView?.isHidden = true
+            pulseTextView?.resetForReuse()
             return
         }
         let temper = Temper.of(row.speakerBot)
@@ -509,8 +539,13 @@ final class ChatAssistantCell: UICollectionViewCell {
 
         pulseCard.isHidden = !isPulseExpanded
         if isPulseExpanded {
-            wireTextViewCallbacks(pulseTextView, lineID: row.line.id)
-            pulseTextView.apply(ownerID: row.line.id + "#pulse", rendered: rendered, style: style)
+            let tv = ensurePulseTextView()
+            tv.isHidden = false
+            wireTextViewCallbacks(tv, lineID: row.line.id)
+            tv.apply(ownerID: row.line.id + "#pulse", rendered: rendered, style: style)
+        } else {
+            pulseTextView?.isHidden = true
+            pulseTextView?.resetForReuse()
         }
     }
 
@@ -601,6 +636,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         var fbIndex = 0
         var hbIndex = 0
         let widthKey = Int(((entry.contentWidth + Ink.Space.page * 2) * 2).rounded())
+        let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
 
         func transferTuple(for idx: Int) -> (range: NSRange, substring: String)? {
             guard let snap = transferredSelection, snap.richTextIndex == idx else { return nil }
@@ -613,7 +649,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                 let tv = ensureRichTextView(at: rtIndex)
                 tv.isHidden = false
                 wireTextViewCallbacks(tv, lineID: lineID)
-                tv.apply(ownerID: "\(lineID)#rt\(rtIndex)", rendered: rendered, style: style, transferredSelection: transferTuple(for: rtIndex))
+                tv.apply(ownerID: "\(lineID)#rt\(rtIndex)", rendered: rendered, style: style, isLive: isLive, transferredSelection: transferTuple(for: rtIndex))
                 rtIndex += 1
 
             case .code(let codeSlice, let sliceIndex):
@@ -672,7 +708,7 @@ final class ChatAssistantCell: UICollectionViewCell {
                     let tv = ensureRichTextView(at: rtIndex)
                     tv.isHidden = false
                     wireTextViewCallbacks(tv, lineID: lineID)
-                    tv.apply(ownerID: "\(lineID)#picwords\(slicePos)", rendered: words, style: style, transferredSelection: transferTuple(for: rtIndex))
+                    tv.apply(ownerID: "\(lineID)#picwords\(slicePos)", rendered: words, style: style, isLive: isLive, transferredSelection: transferTuple(for: rtIndex))
                     rtIndex += 1
                 }
                 for (picIndex, pic) in pics.enumerated() {
@@ -711,6 +747,11 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     private func refreshColors() {
+        let theme = Theme.shared
+        let colorSig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(UIScale.factor)|\(!continueButton.isHidden)"
+        guard colorSig != lastColorSignature else { return }
+        lastColorSignature = colorSig
+
         litBackdrop.layer.cornerRadius = Ink.Radius.small
         litBackdrop.backgroundColor = UIColor(Ink.accentWash)
 
@@ -845,7 +886,7 @@ final class ChatAssistantCell: UICollectionViewCell {
             y += ChatCellMetrics.disclosureGap
             let h = max(16, entry.thinkingTextHeight)
             thinkingStripe.frame = CGRect(x: x, y: y, width: 2, height: h)
-            thinkingTextView.frame = CGRect(x: x + Ink.Space.m, y: y, width: max(40, width - Ink.Space.m), height: h)
+            thinkingTextView?.frame = CGRect(x: x + Ink.Space.m, y: y, width: max(40, width - Ink.Space.m), height: h)
             y += h
         }
     }
@@ -865,7 +906,7 @@ final class ChatAssistantCell: UICollectionViewCell {
             y += ChatCellMetrics.disclosureGap
             let cardH = entry.pulseTextHeight + Ink.Space.s * 2
             pulseCard.frame = CGRect(x: x, y: y, width: width, height: cardH)
-            pulseTextView.frame = CGRect(x: Ink.Space.m, y: Ink.Space.s, width: max(40, width - Ink.Space.m * 2), height: entry.pulseTextHeight)
+            pulseTextView?.frame = CGRect(x: Ink.Space.m, y: Ink.Space.s, width: max(40, width - Ink.Space.m * 2), height: entry.pulseTextHeight)
             y += cardH
         }
     }
