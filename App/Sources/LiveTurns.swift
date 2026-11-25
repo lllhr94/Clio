@@ -35,13 +35,33 @@ enum LiveTurns {
             Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
             return
         }
+        let rawFace = face()
+        let safeFace: Data?
+        if let rawFace, rawFace.count <= 2000 {
+            safeFace = rawFace
+        } else {
+            safeFace = nil
+        }
+        let oled = Theme.shared.oled
+        let content = ActivityContent(state: state, staleDate: nil)
         do {
-            let attributes = TurnAttributes(name: name, chat: chat, face: face(), oled: Theme.shared.oled)
-            let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+            let attributes = TurnAttributes(name: name, chat: chat, face: safeFace, oled: oled)
+            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
             running[chat] = activity
             states[chat] = state
         } catch {
-            Diag.note("实时活动没开起来：\(error.localizedDescription)")
+            if safeFace != nil {
+                do {
+                    let fallback = TurnAttributes(name: name, chat: chat, face: nil, oled: oled)
+                    let activity = try Activity.request(attributes: fallback, content: content, pushType: nil)
+                    running[chat] = activity
+                    states[chat] = state
+                } catch {
+                    Diag.note("实时活动没开起来：\(error.localizedDescription)")
+                }
+            } else {
+                Diag.note("实时活动没开起来：\(error.localizedDescription)")
+            }
         }
     }
 

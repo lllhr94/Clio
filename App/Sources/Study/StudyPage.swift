@@ -137,6 +137,7 @@ struct StudyPage: View {
         let bytes: Int
         let changed: Date
         var mount: MountedFolder? = nil
+        var shareURL: URL? = nil
         var id: String { (mount?.id ?? "desk") + "|" + url.path }
     }
 
@@ -387,8 +388,8 @@ struct StudyFolder: View {
                     NavigationLink(value: item) { row(item) }
                         .buttonStyle(PressStyle())
                         .contextMenu {
-                            if !item.folder, Workspace.isInsideRealRoot(item.url, root: mountRoot ?? Workspace.root) {
-                                ShareLink(item: item.url.resolvingSymlinksInPath()) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
+                            if let shareURL = item.shareURL {
+                                ShareLink(item: shareURL) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
                             }
                             Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
                         }
@@ -566,7 +567,21 @@ struct StudyFolder: View {
         return urls.compactMap { url in
             guard Workspace.isInsideRealRoot(url, root: baseRoot) else { return nil }
             let values = try? url.resourceValues(forKeys: Set(keys))
-            return StudyPage.Item(url: url, folder: values?.isDirectory == true, bytes: values?.fileSize ?? 0, changed: values?.contentModificationDate ?? .distantPast, mount: mount)
+            let isFolder = values?.isDirectory == true
+            let shareURL: URL?
+            if isFolder {
+                shareURL = nil
+            } else {
+                shareURL = url.resolvingSymlinksInPath()
+            }
+            return StudyPage.Item(
+                url: url,
+                folder: isFolder,
+                bytes: values?.fileSize ?? 0,
+                changed: values?.contentModificationDate ?? .distantPast,
+                mount: mount,
+                shareURL: shareURL
+            )
         }
         .sorted { ($0.folder ? 0 : 1, $1.changed) < ($1.folder ? 0 : 1, $0.changed) }
     }
