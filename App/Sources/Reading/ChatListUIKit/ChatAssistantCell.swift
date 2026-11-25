@@ -276,6 +276,60 @@ final class ChatAssistantCell: UICollectionViewCell {
         codeBlockViews.forEach { $0.clearSelection() }
     }
 
+    @discardableResult
+    func beginTextSelection() -> Bool {
+        guard let entry = currentEntry else { return false }
+        var rtIndex = 0
+        var cbIndex = 0
+        for measured in entry.slices {
+            switch measured.slice {
+            case .richText:
+                if rtIndex < richTextViews.count {
+                    let tv = richTextViews[rtIndex]
+                    rtIndex += 1
+                    if !tv.isHidden && tv.hasSelectableText && tv.activateSelectionAll() {
+                        return true
+                    }
+                } else {
+                    rtIndex += 1
+                }
+            case .code:
+                if cbIndex < codeBlockViews.count {
+                    let cb = codeBlockViews[cbIndex]
+                    cbIndex += 1
+                    if !cb.isHidden && cb.beginTextSelection() {
+                        return true
+                    }
+                } else {
+                    cbIndex += 1
+                }
+            case .pictures(let words, _, _):
+                if words != nil {
+                    if rtIndex < richTextViews.count {
+                        let tv = richTextViews[rtIndex]
+                        rtIndex += 1
+                        if !tv.isHidden && tv.hasSelectableText && tv.activateSelectionAll() {
+                            return true
+                        }
+                    } else {
+                        rtIndex += 1
+                    }
+                }
+            case .table, .math, .fileCards:
+                break
+            }
+        }
+        if let thinkingTextView, !thinkingTextView.isHidden && thinkingTextView.hasSelectableText,
+           thinkingTextView.activateSelectionAll() {
+            return true
+        }
+        if let pulseTextView, !pulseTextView.isHidden && pulseTextView.hasSelectableText,
+           pulseTextView.activateSelectionAll() {
+            return true
+        }
+        return false
+    }
+
     var latestFooterOwnerID: String? {
         guard let row = currentRow, row.isLatestBot, let entry = currentEntry, entry.hasFooter else { return nil }
         return row.line.id
@@ -452,6 +506,9 @@ final class ChatAssistantCell: UICollectionViewCell {
                 UIPasteboard.general.string = row.line.text
                 Haptics.tick(0.5)
                 actions?.bridge.onSay("复制好了。")
+            }
+            footerView.onSelectText = { [weak self] in
+                self?.beginTextSelection()
             }
             footerView.onRedo = { [weak actions] in
                 actions?.bridge.onRedo()

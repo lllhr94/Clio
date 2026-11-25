@@ -23,6 +23,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     var onSelectionActiveChanged: ((UUID, Bool) -> Void)?
     var onLinkTapped: ((URL) -> Void)?
 
+    var hasSelectableText: Bool {
+        !currentRendered.isEmpty
+    }
+
     var selectedRange: NSRange {
         selectionTextView?.selectedRange ?? NSRange(location: 0, length: 0)
     }
@@ -33,19 +37,31 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var selectionTextView: UITextView?
     private var isActivatingSelection = false
     private var keepsFallbackTextView = false
+    private var isAwaitingFinalizedTiles = false
+    private var drawGeneration: UInt64 = 0
 
-    private struct DecorationCacheKey: Hashable {
+    private struct DecorationCacheKey: Hashable, Sendable {
         let renderToken: UInt64
         let widthKey: Int
     }
 
-    private struct DecorationGeometry {
+    private struct DecorationGeometry: @unchecked Sendable {
         let codePath: CGPath?
         let rulePath: CGPath?
         let quoteSpans: [(minY: CGFloat, maxY: CGFloat)?]
     }
 
-    private static let decorationGeometryCache = BoundedLRUCache<DecorationCacheKey, DecorationGeometry>(countLimit: 256)
+    private static let decorationGeometryCache: BoundedLRUCache<DecorationCacheKey, DecorationGeometry> = {
+        let cache = BoundedLRUCache<DecorationCacheKey, DecorationGeometry>(countLimit: 256)
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            cache.removeAll()
+        }
+        return cache
+    }()
 
     private var decorationRoot: CALayer?
     private var inlineCodeLayer: CAShapeLayer?
@@ -144,16 +160,20 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         addGestureRecognizer(longPressGesture)
 
         updateGestureStates()
+        updateAccessibility()
 
         registerForTraitChanges([
             UITraitUserInterfaceStyle.self,
             UITraitPreferredContentSizeCategory.self,
             UITraitDisplayScale.self,
         ]) { (view: ChatRichTextView, _) in
-            view.paintedTraitStyle = .unspecified
-            view.needsDecorationLayout = true
+            view.drawGeneration &+= 1
+            view.activeRenderKey = ""
             view.appliedRenderKey = ""
             view.inFlightRenderKey = ""
+            view.paintedTraitStyle = .unspecified
+            view.needsDecorationLayout = true
+            view.clearTileLayers()
             view.setNeedsLayout()
         }
     }
@@ -181,6 +201,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             && style.styleKey == lastStyleKey
             && isLive == lastIsLive
         if sameToken && transferredSelection == nil { return }
+
+        drawGeneration &+= 1
+        let wasLive = lastIsLive
+        let wasAwaitingTiles = isAwaitingFinalizedTiles
 
         let oldRange = selectedRange
         let oldNS = (selectionTextView?.attributedText?.string ?? currentRendered.attributed.string) as NSString
@@ -214,8 +238,17 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         lastIsLive = isLive
         keepsFallbackTextView = false
 
-        let needsTextView = isLive || restoredRange != nil
-        if needsTextView {
+        let transitionFromLiveToSettled = !isLive
+            && restoredRange == nil
+            && (wasLive || wasAwaitingTiles)
+            && selectionTextView != nil
+            && !rendered.isEmpty
+
+        if isLive || restoredRange != nil {
+            isAwaitingFinalizedTiles = false
+            activeRenderKey = ""
+            inFlightRenderKey = ""
+            clearTileLayers()
             isActivatingSelection = true
             let tv = ensureSelectionTextView()
             applyToSelectionTextView(tv, rendered: rendered, restoredRange: restoredRange)
@@ -225,7 +258,20 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             } else if oldRange.length > 0 {
                 publishSelection(false)
             }
+        } else if transitionFromLiveToSettled, let tv = selectionTextView {
+            isAwaitingFinalizedTiles = true
+            activeRenderKey = ""
+            appliedRenderKey = ""
+            inFlightRenderKey = ""
+            clearTileLayers()
+            isActivatingSelection = true
+            applyToSelectionTextView(tv, rendered: rendered, restoredRange: nil)
+            isActivatingSelection = false
+            if oldRange.length > 0 {
+                publishSelection(false)
+            }
         } else {
+            isAwaitingFinalizedTiles = false
             if selectionTextView != nil {
                 teardownSelectionTextView(notifyIfNeeded: oldRange.length > 0)
             }
@@ -236,10 +282,13 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
         needsDecorationLayout = true
         updateGestureStates()
+        updateAccessibility()
         setNeedsLayout()
     }
 
     func resetForReuse() {
+        drawGeneration &+= 1
+        isAwaitingFinalizedTiles = false
         currentOwnerID = nil
         currentRendered = .empty
         currentStyle = nil
@@ -259,6 +308,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         onSelectionActiveChanged = nil
         onLinkTapped = nil
         updateGestureStates()
+        updateAccessibility()
     }
 
     func clearSelectionIfNeeded() {
@@ -267,7 +317,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 tv.selectedRange = NSRange(location: 0, length: 0)
             }
             publishSelection(false)
-            if !currentIsLive && !keepsFallbackTextView {
+            if !currentIsLive && !keepsFallbackTextView && !isAwaitingFinalizedTiles {
                 teardownSelectionTextView(notifyIfNeeded: false)
             }
         } else {
@@ -281,10 +331,13 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             tileRoot.isHidden = true
             tv.frame = bounds
             updateDecorationsIfNeeded(for: tv)
-            return
+            if !isAwaitingFinalizedTiles {
+                return
+            }
+        } else {
+            decorationRoot?.isHidden = true
         }
 
-        decorationRoot?.isHidden = true
         guard bounds.width > 0, bounds.height > 0, let style = currentStyle else {
             clearTileLayers()
             return
@@ -293,7 +346,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             activeRenderKey = ""
             appliedRenderKey = ""
             inFlightRenderKey = ""
+            isAwaitingFinalizedTiles = false
             clearTileLayers()
+            if selectionTextView != nil && !currentIsLive && !keepsFallbackTextView && selectedRange.length == 0 {
+                teardownSelectionTextView(notifyIfNeeded: false, triggerLayout: false)
+            }
             return
         }
 
@@ -306,7 +363,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             scale: scale
         )
 
-        if appliedRenderKey == renderKey {
+        if appliedRenderKey == renderKey && !isAwaitingFinalizedTiles {
             tileRoot.isHidden = false
             tileRoot.frame = bounds
             return
@@ -339,19 +396,26 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             if let tiles = ChatTextTileRenderer.shared.renderSync(request) {
                 applyTiles(tiles, forKey: renderKey, scale: scale)
             } else {
+                isAwaitingFinalizedTiles = false
                 mountFallbackTextView()
             }
         } else {
+            let expectedDrawGen = drawGeneration
             inFlightRenderKey = renderKey
             ChatTextTileRenderer.shared.renderAsync(request) { [weak self] key, tiles in
                 guard let self else { return }
-                if self.inFlightRenderKey == key {
+                if self.drawGeneration == expectedDrawGen && self.inFlightRenderKey == key {
                     self.inFlightRenderKey = ""
                 }
-                guard self.activeRenderKey == key, self.selectionTextView == nil else { return }
+                guard self.drawGeneration == expectedDrawGen,
+                      self.activeRenderKey == key,
+                      self.selectionTextView == nil || self.isAwaitingFinalizedTiles else {
+                    return
+                }
                 if let tiles {
                     self.applyTiles(tiles, forKey: key, scale: scale)
                 } else {
+                    self.isAwaitingFinalizedTiles = false
                     self.mountFallbackTextView()
                 }
             }
@@ -361,6 +425,14 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     // MARK: - Tile Rendering Layer Pool
 
     private func applyTiles(_ rendered: ChatRenderedTiles, forKey key: String, scale: CGFloat) {
+        if let tv = selectionTextView {
+            guard !keepsFallbackTextView, tv.selectedRange.length == 0, isAwaitingFinalizedTiles else {
+                isAwaitingFinalizedTiles = false
+                return
+            }
+        }
+        isAwaitingFinalizedTiles = false
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         tileRoot.isHidden = false
@@ -387,9 +459,14 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 tileLayer.contents = nil
             }
         }
+
+        if selectionTextView != nil {
+            teardownSelectionTextView(notifyIfNeeded: false, triggerLayout: false)
+        }
         CATransaction.commit()
         appliedRenderKey = key
         inFlightRenderKey = ""
+        updateAccessibility()
     }
 
     private func clearTileLayers() {
@@ -425,6 +502,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         addSubview(tv)
         selectionTextView = tv
         updateGestureStates()
+        updateAccessibility()
         return tv
     }
 
@@ -458,10 +536,13 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         isActivatingSelection = false
         needsDecorationLayout = true
         updateGestureStates()
+        updateAccessibility()
         setNeedsLayout()
     }
 
-    private func teardownSelectionTextView(notifyIfNeeded: Bool) {
+    private func teardownSelectionTextView(notifyIfNeeded: Bool, triggerLayout: Bool = true) {
+        drawGeneration &+= 1
+        isAwaitingFinalizedTiles = false
         if notifyIfNeeded {
             publishSelection(false)
         }
@@ -475,22 +556,30 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         keepsFallbackTextView = false
         resetDecorationLayers()
         updateGestureStates()
-        setNeedsLayout()
+        updateAccessibility()
+        if triggerLayout {
+            setNeedsLayout()
+        }
     }
 
     private func scheduleTeardownSelectionTextViewIfIdle() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            guard !self.currentIsLive, !self.isActivatingSelection, !self.keepsFallbackTextView else { return }
+            guard !self.currentIsLive,
+                  !self.isActivatingSelection,
+                  !self.keepsFallbackTextView,
+                  !self.isAwaitingFinalizedTiles else {
+                return
+            }
             guard let tv = self.selectionTextView, tv.selectedRange.length == 0 else { return }
             self.teardownSelectionTextView(notifyIfNeeded: false)
         }
     }
 
-    private func activateSelection(at point: CGPoint) {
-        guard !currentRendered.isEmpty else { return }
-        isActivatingSelection = true
-        defer { isActivatingSelection = false }
+    private func prepareSelectionTextView() -> UITextView? {
+        guard !currentRendered.isEmpty else { return nil }
+        drawGeneration &+= 1
+        isAwaitingFinalizedTiles = false
 
         let tv = ensureSelectionTextView()
         tv.frame = bounds
@@ -498,6 +587,13 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         tv.layoutIfNeeded()
         needsDecorationLayout = true
         updateDecorationsIfNeeded(for: tv)
+        return tv
+    }
+
+    private func activateSelection(at point: CGPoint) {
+        isActivatingSelection = true
+        defer { isActivatingSelection = false }
+        guard let tv = prepareSelectionTextView() else { return }
 
         let localPoint = convert(point, to: tv)
         let len = tv.attributedText?.length ?? 0
@@ -524,6 +620,40 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         tv.becomeFirstResponder()
         publishSelection(tv.selectedRange.length > 0)
         updateGestureStates()
+        updateAccessibility()
+    }
+
+    @discardableResult
+    func activateSelectionAll() -> Bool {
+        isActivatingSelection = true
+        defer { isActivatingSelection = false }
+        guard let tv = prepareSelectionTextView() else { return false }
+
+        let len = tv.attributedText?.length ?? 0
+        guard len > 0 else {
+            if !currentIsLive && !keepsFallbackTextView {
+                teardownSelectionTextView(notifyIfNeeded: false)
+            }
+            return false
+        }
+        tv.selectedRange = NSRange(location: 0, length: len)
+        tv.becomeFirstResponder()
+        publishSelection(true)
+        updateGestureStates()
+        updateAccessibility()
+        return true
+    }
+
+    private func updateAccessibility() {
+        if selectionTextView == nil && !currentRendered.isEmpty {
+            isAccessibilityElement = true
+            accessibilityLabel = currentRendered.attributed.string
+            accessibilityTraits = [.staticText]
+        } else {
+            isAccessibilityElement = false
+            accessibilityLabel = nil
+            accessibilityTraits = []
+        }
     }
 
     // MARK: - Gestures & CoreText Link Hit-Testing
@@ -992,15 +1122,18 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     func textViewDidChangeSelection(_ textView: UITextView) {
         let hasSel = textView.selectedRange.length > 0
+        if hasSel {
+            isAwaitingFinalizedTiles = false
+        }
         publishSelection(hasSel)
-        if !hasSel && !currentIsLive && !isActivatingSelection && !keepsFallbackTextView {
+        if !hasSel && !currentIsLive && !isActivatingSelection && !keepsFallbackTextView && !isAwaitingFinalizedTiles {
             scheduleTeardownSelectionTextViewIfIdle()
         }
     }
 
     func textViewDidEndEditing(_ textView: UITextView) {
         publishSelection(false)
-        if !currentIsLive && !isActivatingSelection && !keepsFallbackTextView {
+        if !currentIsLive && !isActivatingSelection && !keepsFallbackTextView && !isAwaitingFinalizedTiles {
             scheduleTeardownSelectionTextViewIfIdle()
         }
     }

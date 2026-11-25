@@ -738,6 +738,7 @@ final class ChatSourcesPillView: UIView {
 @MainActor
 final class ChatBotFooterView: UIView {
     var onCopy: (() -> Void)?
+    var onSelectText: (() -> Void)?
     var onRedo: (() -> Void)?
     var onSpeak: (() -> Void)?
     var onQuote: (() -> Void)?
@@ -842,6 +843,10 @@ final class ChatBotFooterView: UIView {
     private func makeMoreMenuElements() -> [UIMenuElement] {
         var items: [UIMenuElement] = [
             UIAction(
+                title: L.t("chat.selectText"),
+                image: UIImage(systemName: "text.cursor") ?? UIImage(systemName: "doc.plaintext")
+            ) { [weak self] _ in self?.onSelectText?() },
+            UIAction(
                 title: isSpeaking ? "停止朗读" : "朗读",
                 image: UIImage(systemName: isSpeaking ? "stop.circle" : "speaker.wave.2")
             ) { [weak self] _ in self?.onSpeak?() },
@@ -883,6 +888,7 @@ final class ChatBotFooterView: UIView {
         isSpeaking = false
         lastConfigSignature = ""
         onCopy = nil
+        onSelectText = nil
         onRedo = nil
         onSpeak = nil
         onQuote = nil

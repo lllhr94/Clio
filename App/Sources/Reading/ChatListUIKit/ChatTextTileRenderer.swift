@@ -94,8 +94,29 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     private let lock = NSLock()
     private var inFlight: [String: (op: Operation, completions: [@MainActor (String, ChatRenderedTiles?) -> Void])] = [:]
     private var generation: UInt64 = 0
+    private var memoryWarningObserver: NSObjectProtocol?
 
-    private init() {}
+    private init() {
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.purgeMemoryCache()
+        }
+    }
+
+    deinit {
+        if let observer = memoryWarningObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    func purgeMemoryCache() {
+        lock.lock()
+        cache.removeAllObjects()
+        lock.unlock()
+    }
 
     static func cacheKey(token: UInt64, width: CGFloat, height: CGFloat, styleKey: String, scale: CGFloat) -> String {
         let safeScale = max(1, scale)
