@@ -1,0 +1,435 @@
+{
+  "schemaVersion": "2.1.0",
+  "name": "Clio Design System 2.0 Tokens",
+  "finalizedDirection": "AC",
+  "platforms": ["iOS 26", "iPadOS 26"],
+  "chatAvatars": {
+    "defaultVisible": false,
+    "toggleKey": "chat.faces",
+    "quickToggleLocations": ["chatMoreMenu", "settingsAppearance"],
+    "avatarSizePt": 32,
+    "assistantHeaderPlacement": "aboveReplyFullWidth",
+    "userAvatarPlacement": "rightOfBubble",
+    "consecutiveTurnGrouping": true,
+    "tapToEdit": true
+  },
+  "identityAndPet": {
+    "decoupledRoles": true,
+    "followPetDefault": true,
+    "assistantEditableFields": ["name", "subtitle", "sealChar", "avatarMode", "modelRole"],
+    "assistantAvatarModes": ["followPet", "pet", "monogram", "photo"],
+    "userEditableFields": ["name", "avatarMode"],
+    "userAvatarModes": ["monogram", "pet", "photo"],
+    "builtInPetRoster": [
+      { "id": "xiaoke", "name": "小克", "status": "shipped" },
+      { "id": "roubao", "name": "肉包", "status": "shipped" },
+      { "id": "xuanmao", "name": "玄猫", "status": "planned_ds2" },
+      { "id": "songque", "name": "松雀", "status": "planned_ds2" },
+      { "id": "zhihe", "name": "纸鹤", "status": "planned_ds2" }
+    ],
+    "petCustomizationControls6": [
+      "packChoiceAndNickname",
+      "decoupleAssistantAvatar",
+      "sizeScaleStopRow",
+      "composerVisibleAndSnooze1h",
+      "activityLevelSegmented",
+      "perCompanionPetBinding"
+    ],
+    "petActivityLevels": ["lively", "quiet", "minimal"],
+    "petSizeStops": [0.75, 1.0, 1.25, 1.5],
+    "singleImageBreathFallback": true
+  },
+  "uiScale": {
+    "levels": [
+      { "key": "compact", "title": "紧凑", "factor": 0.88 },
+      { "key": "small", "title": "偏小", "factor": 0.94 },
+      { "key": "standard", "title": "标准", "factor": 1.0 },
+      { "key": "large", "title": "偏大", "factor": 1.08 }
+    ],
+    "nonScaling": ["hairlineWidthPt", "minTouchTargetPt"]
+  },
+  "typography": {
+    "uiScaleFiveStopsPt": {
+      "micro": 11,
+      "small": 13,
+      "sub": 15,
+      "body": 17,
+      "title": 20
+    },
+    "markdownHierarchyPt": {
+      "h1": { "basePt": 23, "rangePt": [22, 24], "weight": "semibold", "topSpacingEm": 1.05, "bottomSpacingEm": 0.40 },
+      "h2": { "basePt": 19.5, "rangePt": [19, 20], "weight": "semibold", "topSpacingEm": 0.85, "bottomSpacingEm": 0.35 },
+      "h3": { "basePt": 17.5, "rangePt": [17, 18], "weight": "semibold", "topSpacingEm": 0.60, "bottomSpacingEm": 0.30 },
+      "bodyAi": { "defaultPt": 17, "rangePt": [16, 17] },
+      "bodyUser": { "defaultPt": 17, "rangePt": [16, 17] },
+      "table": { "defaultPt": 14.5, "rangePt": [14, 15] },
+      "code": { "defaultPt": 13.5, "rangePt": [13, 14] },
+      "meta": { "defaultPt": 12.5, "rangePt": [12, 13] }
+    },
+    "readingSizesPt": [15, 16, 17, 19, 21, 24],
+    "lineHeightMultipliers": [1.35, 1.5, 1.65, 1.8],
+    "defaultLineHeight": 1.65,
+    "paragraphGapStopsPt": [10, 12, 14, 16],
+    "defaultParagraphGapPt": 13,
+    "readingWidthStopsPt": [560, 640, 700],
+    "independentControls9": [
+      "uiScale",
+      "readingSize",
+      "readingFace",
+      "headingWeight",
+      "codeFace",
+      "lineHeight",
+      "paragraphGap",
+      "readingWidth",
+      "uiDensity"
+    ],
+    "listItemGapRatio": 0.25,
+    "codeSizeOffsetPt": -3,
+    "codeMinSizePt": 12,
+    "codeLineSpacingRatio": 0.12,
+    "cjkLatinOpticalSpacingEm": 0.12
+  },
+  "spacingPt": {
+    "xs": 4,
+    "s": 8,
+    "m": 12,
+    "l": 16,
+    "page": 20,
+    "pageRange": [18, 24],
+    "pageCompact": 18,
+    "xl": 24,
+    "xxl": 32,
+    "huge": 48,
+    "barHeight": 44,
+    "barEdge": 12,
+    "minTouchTarget": 44,
+    "hairlineWidth": 0.5
+  },
+  "motionTiers": {
+    "instant": { "rangeMs": [80, 120], "usage": "按压缩放、选择切换、复制成功图标" },
+    "quick": { "rangeMs": [150, 220], "usage": "菜单弹出、Thinking/Trace 折叠展开、气泡状态切换" },
+    "standard": { "rangeMs": [250, 350], "usage": "侧栏抽屉推拉、页面 Push 转场、PlanCard、Sheet" },
+    "expressive": { "rangeMs": [400, 600], "usage": "宠物落地回弹、朱印盖章仪式、高价值完成确认" }
+  },
+  "hapticsPolicy": {
+    "defaultButtonHaptic": "none",
+    "continuousDragThrottleMs": 35,
+    "muteDuringVoiceCapture": true,
+    "intensityLevels": ["off", "gentle", "standard", "crisp"]
+  },
+  "section13CandidateAudit": {
+    "A_editorial": {
+      "raw": ["#F9F6EF", "#E7E1D6", "#39342E", "#A64236", "#858575"],
+      "auditNote": "#858575 on #F9F6EF measures 3.47:1 (FAIL AA small text); calibrated secondary/tertiary text to #57534A (7.54:1) and #696459 (4.91:1)."
+    },
+    "B_native": {
+      "raw": ["#FAFBFC", "#E8EDF4", "#253A59", "#727A86", "#338977"],
+      "auditNote": "#727A86 (4.18:1) and #338977 (4.07:1) on #FAFBFC FAIL AA small text; calibrated secondary/tertiary to #49505E/#5D6575 and text accent to #147043 / #1B56CF."
+    },
+    "C_companion": {
+      "raw": ["#F7F4EB", "#D7E1D0", "#738A70", "#394B3E", "#D6DDD4"],
+      "auditNote": "#738A70 on #F7F4EB measures 3.41:1 (FAIL AA text); reserved for soft fills/glows, text accent calibrated to #276454 (6.63:1)."
+    }
+  },
+  "languages": {
+    "AC": {
+      "id": "AC",
+      "name": "素笺·栖息",
+      "englishName": "Editorial Companion",
+      "tagline": "A 骨（字标朱印/出版排版/盖印仪式）+ C 韵（双头牌松绿/静态光氛/中文温和工具叙事）+ B 序（对齐与8+1架构）",
+      "defaultTone": "literary",
+      "defaultPalette": "paper_dai",
+      "radii": { "outerCard": 26, "innerBlock": 14, "sheet": 34, "control": 9999, "badgeRatio": 0.26 },
+      "typographyPolicy": {
+        "uiControlFont": "systemSans",
+        "readingFontDefault": "serif",
+        "markFont": "ClioKai-Medium",
+        "markUsage": ["inscription", "onboardingTitle", "approvalSource", "wordmarkSeal"],
+        "codeFont": "MapleMono + ClioMonoCN (2:1)"
+      },
+      "signatureRitual": {
+        "brandMark": "Clio wordmark + ClioSeal",
+        "approvalStyle": "stamp",
+        "toolRailWidthPt": 2.5,
+        "ambientGlow": true,
+        "collapsedToolNarrative": "warmChinese"
+      },
+      "motion": {
+        "instant": { "duration": 0.10, "response": 0.18, "dampingFraction": 0.88, "bounce": 0.06, "overshootPct": 1.2, "initialVelocityScale": 1.0 },
+        "quick": { "duration": 0.19, "response": 0.26, "dampingFraction": 0.85, "bounce": 0.10, "overshootPct": 2.0, "initialVelocityScale": 1.0 },
+        "standard": { "duration": 0.31, "response": 0.36, "dampingFraction": 0.84, "bounce": 0.12, "overshootPct": 2.5, "initialVelocityScale": 1.0 },
+        "expressive": { "duration": 0.48, "response": 0.48, "dampingFraction": 0.72, "bounce": 0.24, "overshootPct": 6.0, "initialVelocityScale": 1.0 },
+        "micro": { "duration": 0.10, "bounce": 0.06 },
+        "snappy": { "duration": 0.19, "bounce": 0.10 },
+        "sheet": { "duration": 0.31, "bounce": 0.12 },
+        "petBounce": { "duration": 0.48, "bounce": 0.28 }
+      },
+      "haptics": {
+        "profile": "editorial-warm",
+        "tapIntensity": 0.40,
+        "tickIntensity": 0.48,
+        "detentIntensity": 0.68,
+        "sharpnessBias": 0.40
+      },
+      "colors": {
+        "light": {
+          "bg": "#F8F5EE", "surface": "#FFFDF8", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#EFEAE0",
+          "ink": "#1F1E1B", "inkSecondary": "#57534A", "inkTertiary": "#696459", "rule": "#E2DACB",
+          "accent": "#35587B", "onAccent": "#FFFDF8", "accentWash": "#E2EAF2",
+          "seal": "#B5382A", "sealFill": "#B5382A", "onSeal": "#FBF3EA",
+          "ok": "#286644", "warn": "#945608", "danger": "#B4322A",
+          "myBubble": "#EAE2D3", "codeBg": "#F1ECE1", "stopWash": "#F5E2DF"
+        },
+        "dark": {
+          "bg": "#191815", "surface": "#23211D", "surfaceElevated": "#2C2924", "surfaceSubtle": "#2C2924",
+          "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#3A362F",
+          "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#253443",
+          "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+          "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+          "myBubble": "#312D26", "codeBg": "#1F1D19", "stopWash": "#3D2624"
+        },
+        "oled": {
+          "bg": "#000000", "surface": "#12110F", "surfaceElevated": "#1C1A17", "surfaceSubtle": "#1C1A17",
+          "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#2B2823",
+          "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#1E2B38",
+          "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+          "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+          "myBubble": "#24211C", "codeBg": "#141310", "stopWash": "#331D1B"
+        }
+      },
+      "palettes": {
+        "paper_dai": {
+          "name": "素笺黛蓝",
+          "light": {
+            "bg": "#F8F5EE", "surface": "#FFFDF8", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#EFEAE0",
+            "ink": "#1F1E1B", "inkSecondary": "#57534A", "inkTertiary": "#696459", "rule": "#E2DACB",
+            "accent": "#35587B", "onAccent": "#FFFDF8", "accentWash": "#E2EAF2",
+            "seal": "#B5382A", "sealFill": "#B5382A", "onSeal": "#FBF3EA",
+            "ok": "#286644", "warn": "#945608", "danger": "#B4322A",
+            "myBubble": "#EAE2D3", "codeBg": "#F1ECE1", "stopWash": "#F5E2DF"
+          },
+          "dark": {
+            "bg": "#191815", "surface": "#23211D", "surfaceElevated": "#2C2924", "surfaceSubtle": "#2C2924",
+            "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#3A362F",
+            "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#253443",
+            "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+            "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+            "myBubble": "#312D26", "codeBg": "#1F1D19", "stopWash": "#3D2624"
+          },
+          "oled": {
+            "bg": "#000000", "surface": "#12110F", "surfaceElevated": "#1C1A17", "surfaceSubtle": "#1C1A17",
+            "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#2B2823",
+            "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#1E2B38",
+            "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+            "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+            "myBubble": "#24211C", "codeBg": "#141310", "stopWash": "#331D1B"
+          }
+        },
+        "oat_pine": {
+          "name": "栖息松绿",
+          "light": {
+            "bg": "#F5F3EE", "surface": "#FCFAF6", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#EAE5DB",
+            "ink": "#1E2420", "inkSecondary": "#4D5750", "inkTertiary": "#5E6961", "rule": "#DFDAD0",
+            "accent": "#276454", "onAccent": "#FCFAF6", "accentWash": "#DFECE7",
+            "seal": "#9A492B", "sealFill": "#9A492B", "onSeal": "#FCFAF6",
+            "ok": "#26684A", "warn": "#965214", "danger": "#B53B34",
+            "myBubble": "#E3EAE5", "codeBg": "#ECE8DF", "stopWash": "#F5E3DF"
+          },
+          "dark": {
+            "bg": "#151816", "surface": "#1E221F", "surfaceElevated": "#272C28", "surfaceSubtle": "#272C28",
+            "ink": "#ECF0EC", "inkSecondary": "#A9B4AD", "inkTertiary": "#8B9890", "rule": "#333A35",
+            "accent": "#70BFAA", "onAccent": "#0E1A16", "accentWash": "#203630",
+            "seal": "#E59170", "sealFill": "#A85233", "onSeal": "#FCFAF6",
+            "ok": "#6AC296", "warn": "#E4A65D", "danger": "#EE7D75",
+            "myBubble": "#24312C", "codeBg": "#1A1E1B", "stopWash": "#3B2422"
+          },
+          "oled": {
+            "bg": "#000000", "surface": "#111412", "surfaceElevated": "#1A1F1C", "surfaceSubtle": "#1A1F1C",
+            "ink": "#ECF0EC", "inkSecondary": "#A9B4AD", "inkTertiary": "#8B9890", "rule": "#262C28",
+            "accent": "#70BFAA", "onAccent": "#0E1A16", "accentWash": "#182924",
+            "seal": "#E59170", "sealFill": "#A85233", "onSeal": "#FCFAF6",
+            "ok": "#6AC296", "warn": "#E4A65D", "danger": "#EE7D75",
+            "myBubble": "#1B2622", "codeBg": "#131714", "stopWash": "#311C1A"
+          }
+        }
+      }
+    },
+    "A": {
+      "id": "A",
+      "name": "素笺 2.0",
+      "englishName": "Editorial Ink",
+      "tagline": "书卷基因的当代精密出版化演进",
+      "defaultTone": "literary",
+      "radii": { "outerCard": 26, "innerBlock": 14, "sheet": 34, "control": 9999, "badgeRatio": 0.26 },
+      "typographyPolicy": {
+        "uiControlFont": "systemSans",
+        "readingFontDefault": "serif",
+        "markFont": "ClioKai-Medium",
+        "markUsage": ["inscription", "onboardingTitle", "approvalSource", "wordmarkSeal"],
+        "codeFont": "MapleMono + ClioMonoCN (2:1)"
+      },
+      "signatureRitual": { "brandMark": "Clio wordmark + ClioSeal 克", "approvalStyle": "stamp", "toolRailWidthPt": 2, "ambientGlow": false },
+      "motion": {
+        "instant": { "duration": 0.10, "response": 0.18, "dampingFraction": 0.88, "bounce": 0.06, "overshootPct": 1.2, "initialVelocityScale": 1.0 },
+        "quick": { "duration": 0.19, "response": 0.26, "dampingFraction": 0.85, "bounce": 0.10, "overshootPct": 2.0, "initialVelocityScale": 1.0 },
+        "standard": { "duration": 0.31, "response": 0.36, "dampingFraction": 0.84, "bounce": 0.12, "overshootPct": 2.5, "initialVelocityScale": 1.0 },
+        "expressive": { "duration": 0.48, "response": 0.48, "dampingFraction": 0.72, "bounce": 0.24, "overshootPct": 6.0, "initialVelocityScale": 1.0 },
+        "micro": { "duration": 0.10, "bounce": 0.06 },
+        "snappy": { "duration": 0.19, "bounce": 0.10 },
+        "sheet": { "duration": 0.31, "bounce": 0.12 },
+        "petBounce": { "duration": 0.48, "bounce": 0.28 }
+      },
+      "haptics": {
+        "profile": "editorial-crisp",
+        "tapIntensity": 0.40,
+        "tickIntensity": 0.50,
+        "detentIntensity": 0.70,
+        "sharpnessBias": 0.45
+      },
+      "colors": {
+        "light": {
+          "bg": "#F8F5EE", "surface": "#FFFDF8", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#EFEAE0",
+          "ink": "#1F1E1B", "inkSecondary": "#57534A", "inkTertiary": "#696459", "rule": "#E2DACB",
+          "accent": "#35587B", "onAccent": "#FFFDF8", "accentWash": "#E2EAF2",
+          "seal": "#B5382A", "sealFill": "#B5382A", "onSeal": "#FBF3EA",
+          "ok": "#286644", "warn": "#945608", "danger": "#B4322A",
+          "myBubble": "#EAE2D3", "codeBg": "#F1ECE1", "stopWash": "#F5E2DF"
+        },
+        "dark": {
+          "bg": "#191815", "surface": "#23211D", "surfaceElevated": "#2C2924", "surfaceSubtle": "#2C2924",
+          "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#3A362F",
+          "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#253443",
+          "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+          "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+          "myBubble": "#312D26", "codeBg": "#1F1D19", "stopWash": "#3D2624"
+        },
+        "oled": {
+          "bg": "#000000", "surface": "#12110F", "surfaceElevated": "#1C1A17", "surfaceSubtle": "#1C1A17",
+          "ink": "#EFEAE0", "inkSecondary": "#B9B1A2", "inkTertiary": "#989082", "rule": "#2B2823",
+          "accent": "#8CB4DB", "onAccent": "#14181E", "accentWash": "#1E2B38",
+          "seal": "#E87568", "sealFill": "#B84134", "onSeal": "#FBF3EA",
+          "ok": "#6EC08E", "warn": "#E4A952", "danger": "#EC7E75",
+          "myBubble": "#24211C", "codeBg": "#141310", "stopWash": "#331D1B"
+        }
+      }
+    },
+    "B": {
+      "id": "B",
+      "name": "清器",
+      "englishName": "Native Precision",
+      "tagline": "去文人化原生精密智能体仪器",
+      "defaultTone": "daily",
+      "radii": { "outerCard": 18, "innerBlock": 10, "sheet": 28, "control": 9999, "badgeRatio": 0.24 },
+      "typographyPolicy": {
+        "uiControlFont": "systemSans",
+        "readingFontDefault": "sans",
+        "markFont": "systemSans-Semibold",
+        "markUsage": ["allMonospaceDigits"],
+        "codeFont": "MapleMono + ClioMonoCN (2:1)"
+      },
+      "signatureRitual": { "brandMark": "Clio Geometric + Live Telemetry Dot", "approvalStyle": "ratchet", "toolRailWidthPt": 2.5, "ambientGlow": false },
+      "motion": {
+        "instant": { "duration": 0.09, "response": 0.14, "dampingFraction": 0.94, "bounce": 0.02, "overshootPct": 0.3, "initialVelocityScale": 1.0 },
+        "quick": { "duration": 0.16, "response": 0.21, "dampingFraction": 0.90, "bounce": 0.05, "overshootPct": 0.8, "initialVelocityScale": 1.0 },
+        "standard": { "duration": 0.26, "response": 0.27, "dampingFraction": 0.89, "bounce": 0.06, "overshootPct": 1.0, "initialVelocityScale": 1.0 },
+        "expressive": { "duration": 0.42, "response": 0.40, "dampingFraction": 0.82, "bounce": 0.14, "overshootPct": 3.0, "initialVelocityScale": 1.0 },
+        "micro": { "duration": 0.09, "bounce": 0.02 },
+        "snappy": { "duration": 0.16, "bounce": 0.05 },
+        "sheet": { "duration": 0.26, "bounce": 0.06 },
+        "petBounce": { "duration": 0.42, "bounce": 0.18 }
+      },
+      "haptics": {
+        "profile": "mechanical-ratchet",
+        "tapIntensity": 0.50,
+        "tickIntensity": 0.62,
+        "detentIntensity": 0.85,
+        "sharpnessBias": 0.85
+      },
+      "colors": {
+        "light": {
+          "bg": "#F3F4F6", "surface": "#FFFFFF", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#E8ECF2",
+          "ink": "#111318", "inkSecondary": "#49505E", "inkTertiary": "#5D6575", "rule": "#DCE0E6",
+          "accent": "#1B56CF", "onAccent": "#FFFFFF", "accentWash": "#E5EEFC",
+          "seal": "#1B56CF", "sealFill": "#1B56CF", "onSeal": "#FFFFFF",
+          "ok": "#147043", "warn": "#9A4D06", "danger": "#C42828",
+          "myBubble": "#E6ECF6", "codeBg": "#ECEFF5", "stopWash": "#F9E2E2"
+        },
+        "dark": {
+          "bg": "#101216", "surface": "#181B21", "surfaceElevated": "#21252E", "surfaceSubtle": "#21252E",
+          "ink": "#F1F3F7", "inkSecondary": "#ACB3C2", "inkTertiary": "#8C95A6", "rule": "#2D323E",
+          "accent": "#75A8FF", "onAccent": "#0B1220", "accentWash": "#1E2D47",
+          "seal": "#75A8FF", "sealFill": "#1B56CF", "onSeal": "#FFFFFF",
+          "ok": "#56C48B", "warn": "#E5A14B", "danger": "#F07575",
+          "myBubble": "#222938", "codeBg": "#15181E", "stopWash": "#381E20"
+        },
+        "oled": {
+          "bg": "#000000", "surface": "#101216", "surfaceElevated": "#1A1E26", "surfaceSubtle": "#1A1E26",
+          "ink": "#F1F3F7", "inkSecondary": "#ACB3C2", "inkTertiary": "#8C95A6", "rule": "#262B35",
+          "accent": "#75A8FF", "onAccent": "#0B1220", "accentWash": "#17243A",
+          "seal": "#75A8FF", "sealFill": "#1B56CF", "onSeal": "#FFFFFF",
+          "ok": "#56C48B", "warn": "#E5A14B", "danger": "#F07575",
+          "myBubble": "#1A2130", "codeBg": "#11141A", "stopWash": "#30181A"
+        }
+      }
+    },
+    "C": {
+      "id": "C",
+      "name": "栖息",
+      "englishName": "Quiet Companion",
+      "tagline": "温润低焦虑的有机呼吸陪伴场",
+      "defaultTone": "daily",
+      "radii": { "outerCard": 28, "innerBlock": 14, "sheet": 36, "control": 9999, "badgeRatio": 0.28 },
+      "typographyPolicy": {
+        "uiControlFont": "systemRoundedHeader + systemSansBody",
+        "readingFontDefault": "serif",
+        "markFont": "systemRounded-Semibold",
+        "markUsage": ["greeting", "onboardingTitle", "companionCardTitle"],
+        "codeFont": "MapleMono + ClioMonoCN (2:1)"
+      },
+      "signatureRitual": { "brandMark": "Clio Living Dot + Ambient State Glow", "approvalStyle": "bloom", "toolRailWidthPt": 3, "ambientGlow": true },
+      "motion": {
+        "instant": { "duration": 0.11, "response": 0.20, "dampingFraction": 0.84, "bounce": 0.10, "overshootPct": 1.8, "initialVelocityScale": 1.0 },
+        "quick": { "duration": 0.21, "response": 0.29, "dampingFraction": 0.80, "bounce": 0.14, "overshootPct": 3.0, "initialVelocityScale": 1.0 },
+        "standard": { "duration": 0.34, "response": 0.42, "dampingFraction": 0.79, "bounce": 0.16, "overshootPct": 3.5, "initialVelocityScale": 1.0 },
+        "expressive": { "duration": 0.54, "response": 0.54, "dampingFraction": 0.70, "bounce": 0.28, "overshootPct": 6.5, "initialVelocityScale": 1.0 },
+        "micro": { "duration": 0.11, "bounce": 0.10 },
+        "snappy": { "duration": 0.21, "bounce": 0.14 },
+        "sheet": { "duration": 0.34, "bounce": 0.16 },
+        "petBounce": { "duration": 0.54, "bounce": 0.30 }
+      },
+      "haptics": {
+        "profile": "organic-breath",
+        "tapIntensity": 0.38,
+        "tickIntensity": 0.44,
+        "detentIntensity": 0.62,
+        "sharpnessBias": 0.25
+      },
+      "colors": {
+        "light": {
+          "bg": "#F5F3EE", "surface": "#FCFAF6", "surfaceElevated": "#FFFFFF", "surfaceSubtle": "#EAE5DB",
+          "ink": "#1E2420", "inkSecondary": "#4D5750", "inkTertiary": "#5E6961", "rule": "#DFDAD0",
+          "accent": "#276454", "onAccent": "#FCFAF6", "accentWash": "#DFECE7",
+          "seal": "#9A492B", "sealFill": "#9A492B", "onSeal": "#FCFAF6",
+          "ok": "#26684A", "warn": "#965214", "danger": "#B53B34",
+          "myBubble": "#E3EAE5", "codeBg": "#ECE8DF", "stopWash": "#F5E3DF"
+        },
+        "dark": {
+          "bg": "#151816", "surface": "#1E221F", "surfaceElevated": "#272C28", "surfaceSubtle": "#272C28",
+          "ink": "#ECF0EC", "inkSecondary": "#A9B4AD", "inkTertiary": "#8B9890", "rule": "#333A35",
+          "accent": "#70BFAA", "onAccent": "#0E1A16", "accentWash": "#203630",
+          "seal": "#E59170", "sealFill": "#A85233", "onSeal": "#FCFAF6",
+          "ok": "#6AC296", "warn": "#E4A65D", "danger": "#EE7D75",
+          "myBubble": "#24312C", "codeBg": "#1A1E1B", "stopWash": "#3B2422"
+        },
+        "oled": {
+          "bg": "#000000", "surface": "#111412", "surfaceElevated": "#1A1F1C", "surfaceSubtle": "#1A1F1C",
+          "ink": "#ECF0EC", "inkSecondary": "#A9B4AD", "inkTertiary": "#8B9890", "rule": "#262C28",
+          "accent": "#70BFAA", "onAccent": "#0E1A16", "accentWash": "#182924",
+          "seal": "#E59170", "sealFill": "#A85233", "onSeal": "#FCFAF6",
+          "ok": "#6AC296", "warn": "#E4A65D", "danger": "#EE7D75",
+          "myBubble": "#1B2622", "codeBg": "#131714", "stopWash": "#311C1A"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clio Design 2.0 Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="studio-shell">
+    <!-- ==================== LEFT: iPhone 16 Pro / iOS 26 Device Frame ==================== -->
+    <div class="device-stage">
+      <div class="iphone-bezel">
+        <div class="iphone-screen" id="iphoneScreen" data-lang="AC" data-palette="paper_dai" data-mode="light" data-tone="literary" data-ax="false" data-reduce-motion="false" data-reduce-transparency="false">
+          <div class="ambient-glow" id="ambientGlow"></div>
+
+          <!-- iOS Status Bar + Interactive Dynamic Island -->
+          <div class="ios-statusbar">
+            <span class="tabular">21:42</span>
+            <button type="button" class="dynamic-island" id="dynamicIsland" title="灵动岛：点按展开或收起实况">
+              <canvas class="di-mini-pet" id="diPetCanvas" data-pet-canvas="1" width="48" height="48"></canvas>
+              <span class="di-dot" id="diDot"></span>
+              <span id="diLabel">闲坐 · Clio</span>
+            </button>
+            <span class="tabular" id="networkStatusChip" style="font-size:11px; letter-spacing:0.3px;">5G · 94%</span>
+          </div>
+
+          <!-- Top Floating Glass Bar (Always Single-Row unless AX3) -->
+          <header class="app-topbar" id="appTopBar"></header>
+
+          <!-- Main Viewport -->
+          <main class="app-viewport" id="appViewport"></main>
+
+          <!-- Bottom Dock / PlanCard / InlineApproval / PetStage / Composer -->
+          <div class="bottom-dock-area" id="bottomDockArea"></div>
+
+          <!-- Inside-Phone Toast Feedback -->
+          <div class="toast-host" id="toastHost"></div>
+
+          <!-- Popovers / Sheets / Fullscreen Overlays inside Phone -->
+          <div id="phoneModalLayer"></div>
+
+          <div class="home-indicator"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== RIGHT: Design System 2.0 Master Brief Studio ==================== -->
+    <aside class="inspector-stack">
+      <section class="studio-panel">
+        <div class="studio-heading">
+          <span>Clio Design System 2.0 · 视觉方案与全局状态台</span>
+          <span style="font-size:11px; color:#6EE7B7;" id="langBadge">AC · 素笺·栖息</span>
+        </div>
+
+        <div class="seg-row" id="langSwitch">
+          <button type="button" class="seg-btn active" data-lang="AC">定稿 · 素笺·栖息</button>
+          <button type="button" class="seg-btn" data-lang="A">A · 素笺 2.0</button>
+          <button type="button" class="seg-btn" data-lang="B">B · 清器</button>
+          <button type="button" class="seg-btn" data-lang="C">C · 栖息</button>
+        </div>
+        <p id="langDesc" style="margin:0 0 8px; font-size:12px; color:#B6BFCE; line-height:1.45;"></p>
+
+        <div class="seg-row" id="acControlsRow">
+          <div style="display:flex; gap:5px; flex-wrap:wrap;" id="acPaletteSwitch">
+            <button type="button" class="seg-btn active" data-ac-palette="paper_dai">主盘 · 素笺黛蓝</button>
+            <button type="button" class="seg-btn" data-ac-palette="oat_pine">主盘 · 栖息松绿</button>
+          </div>
+          <button type="button" class="seg-btn" id="btnStudioFacesToggle">正文双方头像：关</button>
+        </div>
+
+        <div class="seg-row">
+          <div style="display:flex; gap:5px; flex-wrap:wrap;" id="modeSwitch">
+            <button type="button" class="seg-btn active" data-mode="light">浅色</button>
+            <button type="button" class="seg-btn" data-mode="dark">深色</button>
+            <button type="button" class="seg-btn" data-mode="oled">OLED 纯黑</button>
+          </div>
+          <div style="display:flex; gap:5px; flex-wrap:wrap;" id="toneSwitch">
+            <button type="button" class="seg-btn" data-tone="daily">日常词典</button>
+            <button type="button" class="seg-btn active" data-tone="literary">书卷词典</button>
+          </div>
+        </div>
+
+        <div class="seg-row" id="a11ySwitch">
+          <button type="button" class="seg-btn" data-toggle="ax">AX3 大字</button>
+          <button type="button" class="seg-btn" data-toggle="rm">减动效</button>
+          <button type="button" class="seg-btn" data-toggle="rt">减透明</button>
+        </div>
+
+        <div class="studio-subhead">全局界面状态模拟（覆盖空态 / 加载 / 断网 / 成败）</div>
+        <div class="seg-row" style="margin-bottom:0;" id="viewStateSwitch">
+          <button type="button" class="seg-btn active" data-view-state="normal">正常数据</button>
+          <button type="button" class="seg-btn" data-view-state="empty">空白态</button>
+          <button type="button" class="seg-btn" data-view-state="loading">加载态</button>
+          <button type="button" class="seg-btn" data-view-state="error">断网报错</button>
+          <button type="button" class="seg-btn" data-view-state="outcome">成功 / 失败</button>
+        </div>
+      </section>
+
+      <section class="studio-panel">
+        <div class="studio-heading">
+          <span>全页面高保真覆盖（同场景横向对照 A / B / C）</span>
+          <span style="font-size:11px; color:#93C5FD;">14 个主域 × 全浮层</span>
+        </div>
+        <div class="scene-groups" id="sceneGroupTabs">
+          <button type="button" class="filter-pill active" data-group="core">核心与对话</button>
+          <button type="button" class="filter-pill" data-group="agent">Agent·审批·提问</button>
+          <button type="button" class="filter-pill" data-group="ia">导航·搜索·模型</button>
+          <button type="button" class="filter-pill" data-group="workspace">书案·浏览·终端·扩展</button>
+          <button type="button" class="filter-pill" data-group="settings">设置·排版·备份·用量</button>
+          <button type="button" class="filter-pill" data-group="motion">动效与触觉实验室</button>
+        </div>
+        <div class="scene-grid" id="sceneGrid"></div>
+      </section>
+
+      <section class="studio-panel">
+        <div class="studio-heading">
+          <span>CoreHaptics 语义监视器（普通按钮默认无震动）</span>
+          <span id="hapticProfileTag" style="font-size:11px; color:#93C5FD;"></span>
+        </div>
+        <div class="haptic-monitor">
+          <canvas id="hapticCanvas" width="480" height="90"></canvas>
+          <div class="haptic-log" id="hapticLog">等待语义操作触发 CoreHaptics…</div>
+        </div>
+      </section>
+
+      <section class="studio-panel">
+        <div class="studio-heading">
+          <span>SwiftUI / UIKit 源码映射与 0.36 护城河点检</span>
+        </div>
+        <div class="native-map-grid" id="nativeInspector"></div>
+      </section>
+    </aside>
+  </div>
+
+  <script src="tokens.js"></script>
+  <script src="pet-sprites.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
