@@ -94,6 +94,10 @@ final class ChatCodeBlockView: UIView {
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatCodeBlockView, _) in
             view.refreshThemeColors()
+            view.updateCopyButtonAppearance()
+            if let slice = view.currentSlice, slice.folds {
+                view.updateFoldButtonTitle(lineCount: slice.lineCount, unfolded: view.isUnfolded)
+            }
         }
         refreshThemeColors()
     }
@@ -160,8 +164,15 @@ final class ChatCodeBlockView: UIView {
         setNeedsLayout()
     }
 
+    var hasSelectableText: Bool { codeTextView.hasSelectableText }
+
     func clearSelection() {
         codeTextView.clearSelectionIfNeeded()
+    }
+
+    @discardableResult
+    func beginTextSelection() -> Bool {
+        codeTextView.activateSelectionAll()
     }
 
     func resetForReuse() {
@@ -211,7 +222,7 @@ final class ChatCodeBlockView: UIView {
         )
         config.imagePadding = Ink.Space.xs
         config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: Ink.Space.s, bottom: 2, trailing: Ink.Space.s)
-        config.baseForegroundColor = UIColor(isCopied ? Ink.ok : Ink.inkSoft)
+        config.baseForegroundColor = UIColor(isCopied ? Ink.ok : Ink.inkSoft).resolvedColor(with: traitCollection)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var copy = incoming
             copy.font = UIFont.systemFont(ofSize: Ink.Size.micro, weight: .medium)
@@ -236,7 +247,7 @@ final class ChatCodeBlockView: UIView {
             withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .medium)
         )
         config.imagePadding = Ink.Space.xs
-        config.baseForegroundColor = UIColor(Ink.accent)
+        config.baseForegroundColor = UIColor(Ink.accent).resolvedColor(with: traitCollection)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var copy = incoming
             copy.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .medium)

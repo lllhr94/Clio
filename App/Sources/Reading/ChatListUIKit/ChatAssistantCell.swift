@@ -276,6 +276,72 @@ final class ChatAssistantCell: UICollectionViewCell {
         codeBlockViews.forEach { $0.clearSelection() }
     }
 
+    private enum SelectableTarget {
+        case richText(ChatRichTextView)
+        case codeBlock(ChatCodeBlockView)
+    }
+
+    private func firstSelectableTarget(in entry: ChatLayoutCache.AssistantLayoutEntry) -> SelectableTarget? {
+        var rtIndex = 0
+        var cbIndex = 0
+        for measured in entry.slices {
+            switch measured.slice {
+            case .richText:
+                if rtIndex < richTextViews.count {
+                    let tv = richTextViews[rtIndex]
+                    if !tv.isHidden && tv.hasSelectableText {
+                        return .richText(tv)
+                    }
+                }
+                rtIndex += 1
+            case .code:
+                if cbIndex < codeBlockViews.count {
+                    let cb = codeBlockViews[cbIndex]
+                    if !cb.isHidden && cb.hasSelectableText {
+                        return .codeBlock(cb)
+                    }
+                }
+                cbIndex += 1
+            case .pictures(let words, _, _):
+                if words != nil {
+                    if rtIndex < richTextViews.count {
+                        let tv = richTextViews[rtIndex]
+                        if !tv.isHidden && tv.hasSelectableText {
+                            return .richText(tv)
+                        }
+                    }
+                    rtIndex += 1
+                }
+            case .table, .math, .fileCards:
+                break
+            }
+        }
+        if let thinkingTextView, !thinkingTextView.isHidden && thinkingTextView.hasSelectableText {
+            return .richText(thinkingTextView)
+        }
+        if let pulseTextView, !pulseTextView.isHidden && pulseTextView.hasSelectableText {
+            return .richText(pulseTextView)
+        }
+        return nil
+    }
+
+    private func hasAnySelectableText(entry: ChatLayoutCache.AssistantLayoutEntry) -> Bool {
+        firstSelectableTarget(in: entry) != nil
+    }
+
+    @discardableResult
+    func beginTextSelection() -> Bool {
+        guard let entry = currentEntry, let target = firstSelectableTarget(in: entry) else {
+            return false
+        }
+        switch target {
+        case .richText(let tv):
+            return tv.activateSelectionAll()
+        case .codeBlock(let cb):
+            return cb.beginTextSelection()
+        }
+    }
+
     var latestFooterOwnerID: String? {
         guard let row = currentRow, row.isLatestBot, let entry = currentEntry, entry.hasFooter else { return nil }
         return row.line.id
@@ -453,6 +519,9 @@ final class ChatAssistantCell: UICollectionViewCell {
                 Haptics.tick(0.5)
                 actions?.bridge.onSay("复制好了。")
             }
+            footerView.onSelectText = { [weak self] in
+                self?.beginTextSelection()
+            }
             footerView.onRedo = { [weak actions] in
                 actions?.bridge.onRedo()
             }
@@ -474,7 +543,7 @@ final class ChatAssistantCell: UICollectionViewCell {
             footerView.onFork = { [weak actions] in
                 actions?.bridge.onFork(row.line)
             }
-            footerView.configure(row: row)
+            footerView.configure(row: row, showsSelectText: hasAnySelectableText(entry: entry))
         } else {
             footerView.isHidden = true
         }

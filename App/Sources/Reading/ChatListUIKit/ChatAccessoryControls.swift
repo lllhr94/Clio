@@ -738,6 +738,7 @@ final class ChatSourcesPillView: UIView {
 @MainActor
 final class ChatBotFooterView: UIView {
     var onCopy: (() -> Void)?
+    var onSelectText: (() -> Void)?
     var onRedo: (() -> Void)?
     var onSpeak: (() -> Void)?
     var onQuote: (() -> Void)?
@@ -752,6 +753,7 @@ final class ChatBotFooterView: UIView {
     private let moreButton = UIButton(type: .system)
     private let statsLabel = UILabel()
 
+    private var showsSelectText = true
     private var showsRetry = false
     private var showsStats = false
     private var isRoom = false
@@ -816,11 +818,12 @@ final class ChatBotFooterView: UIView {
     private var lastConfigSignature = ""
     private var lastColorSignature = ""
 
-    func configure(row: ChatListRowItem) {
+    func configure(row: ChatListRowItem, showsSelectText: Bool = true) {
         let newest = row.isLatestBot
-        let signature = "\(row.line.id)|\(newest)|\(row.showStats)|\(row.isRoom)|\(row.isSpeakingThisLine)|\(row.line.seconds ?? -1)|\(row.line.tokens ?? -1)|\(UIScale.factor)"
+        let signature = "\(row.line.id)|\(newest)|\(row.showStats)|\(row.isRoom)|\(row.isSpeakingThisLine)|\(row.line.seconds ?? -1)|\(row.line.tokens ?? -1)|\(showsSelectText)|\(UIScale.factor)"
         if signature != lastConfigSignature {
             lastConfigSignature = signature
+            self.showsSelectText = showsSelectText
             showsRetry = newest
             showsStats = newest && row.showStats
             isRoom = row.isRoom
@@ -840,7 +843,19 @@ final class ChatBotFooterView: UIView {
     }
 
     private func makeMoreMenuElements() -> [UIMenuElement] {
-        var items: [UIMenuElement] = [
+        var items: [UIMenuElement] = []
+        if showsSelectText {
+            items.append(UIAction(
+                title: L.t("chat.selectText"),
+                image: UIImage(systemName: "text.cursor") ?? UIImage(systemName: "doc.plaintext")
+            ) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window != nil else { return }
+                    self.onSelectText?()
+                }
+            })
+        }
+        items.append(contentsOf: [
             UIAction(
                 title: isSpeaking ? "停止朗读" : "朗读",
                 image: UIImage(systemName: isSpeaking ? "stop.circle" : "speaker.wave.2")
@@ -861,7 +876,7 @@ final class ChatBotFooterView: UIView {
                 title: "分享",
                 image: UIImage(systemName: "square.and.arrow.up")
             ) { [weak self] _ in self?.onShare?() },
-        ]
+        ])
         if !isRoom {
             items.append(UIAction(
                 title: Words.t("从这里另起一叶"),
@@ -877,12 +892,14 @@ final class ChatBotFooterView: UIView {
     }
 
     func resetForReuse() {
+        showsSelectText = true
         showsRetry = false
         showsStats = false
         isRoom = false
         isSpeaking = false
         lastConfigSignature = ""
         onCopy = nil
+        onSelectText = nil
         onRedo = nil
         onSpeak = nil
         onQuote = nil
