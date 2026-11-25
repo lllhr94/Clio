@@ -72,10 +72,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var needsDeferredStreamingResize = false
     private var lastMeasuredItemHeights: [ChatListItemID: CGFloat] = [:]
     private var userDefaultsObserver: NSObjectProtocol?
+    private var mountedFoldersObserver: NSObjectProtocol?
     private var lastObservedUserAvatarSignature = ""
+    private var lastObservedTraceOpen = Pref.traceOpen
+    private var activeTraceSheetModel: ChatTraceDetailSheetModel?
+    private var activeTraceSheetLineID: String?
+    private weak var activeTraceSheetVC: UIViewController?
+    private var tracePrewarmTasks: [UUID: Task<Void, Never>] = [:]
+    private var inFlightTracePrewarmIDs: Set<String> = []
     private var keyboardObserverTokens: [NSObjectProtocol] = []
     private var isViewVisible = false
     private var pendingAvatarRefresh = false
+    private var pendingMountRefresh = false
     private var deferredState: ChatListState?
     private var pendingKeyboardSync = false
     private var styleObservationGeneration: UInt64 = 0
@@ -128,6 +136,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isDismantled = true
         isViewVisible = false
         pendingAvatarRefresh = false
+        pendingMountRefresh = false
         deferredState = nil
         pendingKeyboardSync = false
         styleObservationGeneration &+= 1
@@ -137,6 +146,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         needsDeferredStreamingResize = false
         pendingDynamicOwnerIDs.removeAll()
         lastMeasuredItemHeights.removeAll()
+        activeTraceSheetVC = nil
+        activeTraceSheetModel = nil
+        activeTraceSheetLineID = nil
         stopInsetDisplayLink()
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = nil
@@ -144,10 +156,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             NotificationCenter.default.removeObserver(observer)
             userDefaultsObserver = nil
         }
+        if let observer = mountedFoldersObserver {
+            NotificationCenter.default.removeObserver(observer)
+            mountedFoldersObserver = nil
+        }
         for token in keyboardObserverTokens {
             NotificationCenter.default.removeObserver(token)
         }
         keyboardObserverTokens.removeAll()
+        if let collectionView {
+            for cell in collectionView.visibleCells {
+                (cell as? ChatAssistantCell)?.prepareForReuse()
+                (cell as? ChatLiveToolTailCell)?.stopObserving()
+            }
+        }
         cancelAllPrefetches()
         cancelPrewarm()
         let owner = lastReportedReplyOwner
@@ -174,6 +196,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if let prewarmToken {
             ChatTextTileRenderer.shared.cancelPrefetch(token: prewarmToken)
         }
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
         for task in prefetchTasksBySection.values {
             task.cancel()
         }
@@ -181,6 +206,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ChatTextTileRenderer.shared.cancelPrefetch(token: token)
         }
         if let observer = userDefaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = mountedFoldersObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         for token in keyboardObserverTokens {
@@ -201,6 +229,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
 
         lastObservedUserAvatarSignature = currentUserAvatarSignature()
+        lastObservedTraceOpen = Pref.traceOpen
         userDefaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
@@ -208,6 +237,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleUserDefaultsChanged()
+            }
+        }
+        mountedFoldersObserver = NotificationCenter.default.addObserver(
+            forName: MountedFolders.changed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleMountedFoldersChanged()
             }
         }
 
@@ -227,6 +265,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if pendingAvatarRefresh {
             pendingAvatarRefresh = false
             handleUserDefaultsChanged()
+        }
+        if pendingMountRefresh {
+            pendingMountRefresh = false
+            handleMountedFoldersChanged()
         }
         if pendingKeyboardSync {
             pendingKeyboardSync = false
@@ -271,8 +313,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.register(ChatQueuedCell.self, forCellWithReuseIdentifier: ChatQueuedCell.reuseID)
         collectionView.register(ChatLiveFoldingCell.self, forCellWithReuseIdentifier: ChatLiveFoldingCell.reuseID)
         collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "ChatEmptyHostCell")
+        collectionView.register(ChatTraceSummaryCell.self, forCellWithReuseIdentifier: ChatTraceSummaryCell.reuseID)
         collectionView.register(ChatTraceHostingCell.self, forCellWithReuseIdentifier: ChatTraceHostingCell.reuseID)
-        collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "ChatToolTailHostCell")
+        collectionView.register(ChatLiveToolTailCell.self, forCellWithReuseIdentifier: ChatLiveToolTailCell.reuseID)
         collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "ChatSpacerCell")
 
         view.addSubview(collectionView)
@@ -331,9 +374,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 lastMeasuredItemHeights[itemID] = h
                 return .absolute(h)
             case .steps:
-                let key = traceHeightKey(row)
-                let est = layoutCache.hostingHeight(for: key) ?? 50
-                return .estimated(est)
+                if Trace.shouldUseSummaryCell(for: row.line) {
+                    let h = layoutCache.measureTraceSummary(row: row, collectionWidth: width, style: currentStyle).cellHeight
+                    lastMeasuredItemHeights[itemID] = h
+                    return .absolute(h)
+                } else {
+                    let key = traceHeightKey(row)
+                    let est = layoutCache.hostingHeight(for: key) ?? 50
+                    return .estimated(est)
+                }
             case .note:
                 let h = measureNoteEntry(row, width: width).cellHeight
                 lastMeasuredItemHeights[itemID] = h
@@ -364,8 +413,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return .absolute(h)
 
         case .liveToolTail:
-            let est = layoutCache.hostingHeight(for: "toolTail") ?? 52
-            return .estimated(est)
+            let chatKey = currentState?.chatKey ?? actions.chat.key
+            let tail = actions.team.toolTail(for: chatKey)
+            let h = ChatLiveToolTailCell.measureHeight(lines: tail.lines, style: currentStyle)
+            lastMeasuredItemHeights[itemID] = h
+            return .absolute(h)
 
         case .liveFailure:
             let err = currentState?.failureCardError ?? ""
@@ -493,21 +545,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return cell
 
         case .liveToolTail:
-            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatToolTailHostCell", for: indexPath)
-            cell.backgroundColor = .clear
-            cell.contentView.backgroundColor = .clear
+            guard let cell = collectionView.dequeueReusableCell(
+                withReuseIdentifier: ChatLiveToolTailCell.reuseID,
+                for: indexPath
+            ) as? ChatLiveToolTailCell else { return UICollectionViewCell() }
             let chatKey = currentState?.chatKey ?? actions.chat.key
-            let team = actions.team
-            cell.contentConfiguration = UIHostingConfiguration {
-                ToolTailView(tail: team.toolTail(for: chatKey))
-                    .padding(.horizontal, Ink.Space.page)
-                    .padding(.bottom, Ink.Space.m)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] h in
-                        self?.handleDynamicHostHeight(key: "toolTail", height: h)
-                    }
+            let tail = actions.team.toolTail(for: chatKey)
+            let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
+            cell.configure(tail: tail, style: currentStyle, expectedHeight: expected) { [weak self] h in
+                self?.handleLiveToolTailHeightChanged(h)
             }
-            .margins(.all, 0)
-            .background(.clear)
             return cell
 
         case .liveFailure:
@@ -590,6 +637,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return cell
 
         case .steps:
+            if Trace.shouldUseSummaryCell(for: row.line) {
+                guard let cell = collectionView.dequeueReusableCell(
+                    withReuseIdentifier: ChatTraceSummaryCell.reuseID,
+                    for: indexPath
+                ) as? ChatTraceSummaryCell else { return UICollectionViewCell() }
+                let entry = layoutCache.measureTraceSummary(row: row, collectionWidth: width, style: currentStyle)
+                let lineID = row.line.id
+                cell.configure(row: row, entry: entry, style: currentStyle) { [weak self] in
+                    guard let self else { return }
+                    let targetLine = self.rowByID[lineID]?.line ?? row.line
+                    self.presentTraceDetailSheet(for: targetLine)
+                }
+                return cell
+            }
             guard let cell = collectionView.dequeueReusableCell(
                 withReuseIdentifier: ChatTraceHostingCell.reuseID,
                 for: indexPath
@@ -670,6 +731,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 self?.presentShareSheet(for: text)
             }
         )
+    }
+
+    private func presentTraceDetailSheet(for line: ChatLine) {
+        guard !isDismantled, presentedViewController == nil else { return }
+        let latestLine = rowByID[line.id]?.line ?? line
+        let model = ChatTraceDetailSheetModel(line: latestLine)
+        activeTraceSheetModel = model
+        activeTraceSheetLineID = latestLine.id
+        let sheet = ChatTraceDetailSheetView(model: model, actions: actions) { [weak self] in
+            if self?.activeTraceSheetModel === model {
+                self?.activeTraceSheetVC = nil
+                self?.activeTraceSheetModel = nil
+                self?.activeTraceSheetLineID = nil
+            }
+        }
+        let vc = UIHostingController(rootView: sheet)
+        activeTraceSheetVC = vc
+        present(vc, animated: true)
     }
 
     private func presentShareSheet(for text: String) {
@@ -754,6 +833,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func handleDynamicHostHeight(key: String, height: CGFloat) {
         guard layoutCache.setHostingHeight(height, for: key) else { return }
+        scheduleDynamicLayoutRefresh()
+    }
+
+    private func handleLiveToolTailHeightChanged(_ height: CGFloat) {
+        let rounded = ceil(height)
+        if let prev = lastMeasuredItemHeights[.liveToolTail], abs(prev - rounded) <= 0.5 {
+            return
+        }
+        lastMeasuredItemHeights[.liveToolTail] = rounded
         scheduleDynamicLayoutRefresh()
     }
 
@@ -938,6 +1026,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         expandedLookbackIDs.removeAll()
         unfoldedCodeSlices.removeAll()
         pendingSelectionTransfers.removeAll()
+        if activeTraceSheetLineID != nil,
+           activeTraceSheetModel != nil,
+           let presented = presentedViewController,
+           presented === activeTraceSheetVC {
+            presented.dismiss(animated: false)
+        }
+        activeTraceSheetVC = nil
+        activeTraceSheetModel = nil
+        activeTraceSheetLineID = nil
         isLoadingEarlierRequest = false
         loadEarlierSawHostBusy = false
         loadEarlierResetTask?.cancel()
@@ -1024,6 +1121,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let width = max(240, collectionView.bounds.width)
         var layoutMayHaveChanged = false
         var checkedItemIDs: Set<ChatListItemID> = []
+        var cellTypeReloadIDs: [ChatListItemID] = []
+
+        if let sheetLineID = activeTraceSheetLineID,
+           let updated = nextRowMap[sheetLineID],
+           activeTraceSheetModel?.line != updated.line {
+            activeTraceSheetModel?.line = updated.line
+        }
 
         for indexPath in collectionView.indexPathsForVisibleItems {
             guard indexPath.section < items.count else { continue }
@@ -1112,7 +1216,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             case .line(let lineID):
                 guard let newRow = nextRowMap[lineID], oldRowMap[lineID] != newRow else { continue }
                 checkedItemIDs.insert(itemID)
-                let newHeight = updateVisibleRowCell(at: indexPath, newRow: newRow, width: width)
+                let newHeight = updateVisibleRowCell(at: indexPath, newRow: newRow, width: width, reloadIDs: &cellTypeReloadIDs)
                 if let newHeight {
                     let prevH = lastMeasuredItemHeights[itemID]
                     if prevH == nil || abs((prevH ?? 0) - newHeight) > 0.5 {
@@ -1126,6 +1230,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             default:
                 break
             }
+        }
+
+        if !cellTypeReloadIDs.isEmpty {
+            UIView.performWithoutAnimation {
+                var snapshot = dataSource.snapshot()
+                snapshot.reloadItems(cellTypeReloadIDs)
+                dataSource.apply(snapshot, animatingDifferences: false)
+            }
+            layoutMayHaveChanged = true
         }
 
         // Also check offscreen height changes for fresh handoff / streaming / row text edits.
@@ -1195,6 +1308,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         case .bot:
             return measureAssistant(row: row, width: width).cellHeight
         case .steps:
+            if Trace.shouldUseSummaryCell(for: row.line) {
+                return layoutCache.measureTraceSummary(row: row, collectionWidth: width, style: currentStyle).cellHeight
+            }
             return nil
         case .note:
             return measureNoteEntry(row, width: width).cellHeight
@@ -1202,7 +1318,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     @discardableResult
-    private func updateVisibleRowCell(at indexPath: IndexPath, newRow: ChatListRowItem, width: CGFloat) -> CGFloat? {
+    private func updateVisibleRowCell(
+        at indexPath: IndexPath,
+        newRow: ChatListRowItem,
+        width: CGFloat,
+        reloadIDs: inout [ChatListItemID]
+    ) -> CGFloat? {
         switch newRow.line.kind {
         case .bot:
             let entry = measureAssistant(row: newRow, width: width)
@@ -1225,10 +1346,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
             return entry.cellHeight
         case .steps:
-            if let cell = collectionView.cellForItem(at: indexPath) as? ChatTraceHostingCell {
-                cell.updateLineInPlace(newRow)
+            if Trace.shouldUseSummaryCell(for: newRow.line) {
+                let entry = layoutCache.measureTraceSummary(row: newRow, collectionWidth: width, style: currentStyle)
+                if let cell = collectionView.cellForItem(at: indexPath) as? ChatTraceSummaryCell {
+                    cell.updateLineInPlace(row: newRow, entry: entry, style: currentStyle)
+                    return entry.cellHeight
+                }
+                reloadIDs.append(.line(newRow.line.id))
+                return entry.cellHeight
+            } else {
+                if let cell = collectionView.cellForItem(at: indexPath) as? ChatTraceHostingCell {
+                    cell.updateLineInPlace(newRow)
+                    return nil
+                }
+                reloadIDs.append(.line(newRow.line.id))
+                return nil
             }
-            return nil
         case .note:
             let entry = measureNoteEntry(newRow, width: width)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatNoteCell {
@@ -1291,13 +1424,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
             // Update existing visible cells whose payload changed even though their ID stayed in the snapshot.
             let width = max(240, collectionView.bounds.width)
+            if let sheetLineID = activeTraceSheetLineID,
+               let updated = nextRowMap[sheetLineID],
+               activeTraceSheetModel?.line != updated.line {
+                activeTraceSheetModel?.line = updated.line
+            }
+            var cellTypeReloadIDs: [ChatListItemID] = []
             for indexPath in collectionView.indexPathsForVisibleItems where indexPath.section < items.count {
                 if case .line(let lineID) = items[indexPath.section],
                    let newRow = nextRowMap[lineID],
                    oldRowMap[lineID] != nil,
                    oldRowMap[lineID] != newRow {
-                    updateVisibleRowCell(at: indexPath, newRow: newRow, width: width)
+                    updateVisibleRowCell(at: indexPath, newRow: newRow, width: width, reloadIDs: &cellTypeReloadIDs)
                 }
+            }
+            if !cellTypeReloadIDs.isEmpty {
+                var reloadSnap = dataSource.snapshot()
+                reloadSnap.reloadItems(cellTypeReloadIDs)
+                dataSource.apply(reloadSnap, animatingDifferences: false)
             }
 
             collectionView.layoutIfNeeded()
@@ -1469,10 +1613,50 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             pendingAvatarRefresh = true
             return
         }
+        let nextTraceOpen = Pref.traceOpen
+        if nextTraceOpen != lastObservedTraceOpen {
+            lastObservedTraceOpen = nextTraceOpen
+            reloadTraceRowsForPreferenceChange()
+        }
         let nextSignature = currentUserAvatarSignature()
         guard nextSignature != lastObservedUserAvatarSignature else { return }
         lastObservedUserAvatarSignature = nextSignature
         refreshVisibleUserAvatars()
+    }
+
+    private func handleMountedFoldersChanged() {
+        guard !isDismantled else { return }
+        Trace.clearSummaryCache()
+        inFlightTracePrewarmIDs.removeAll()
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
+        tracePrewarmTasks.removeAll()
+        guard isViewVisible else {
+            pendingMountRefresh = true
+            return
+        }
+        reloadTraceRowsForPreferenceChange()
+        prewarmTraceRows(in: Array(items.indices))
+    }
+
+    private func reloadTraceRowsForPreferenceChange() {
+        guard collectionView != nil, dataSource != nil else { return }
+        let stepIDs = items.filter { itemID in
+            if case .line(let id) = itemID {
+                return rowByID[id]?.line.kind == .steps
+            }
+            return false
+        }
+        guard !stepIDs.isEmpty else { return }
+        preserveReadingAnchorDuring {
+            var snapshot = dataSource.snapshot()
+            snapshot.reloadItems(stepIDs)
+            dataSource.apply(snapshot, animatingDifferences: false)
+            collectionView.collectionViewLayout.invalidateLayout()
+            collectionView.layoutIfNeeded()
+        }
+        publishVisibleAndFooterMetrics()
     }
 
     private func refreshVisibleUserAvatars() {
@@ -1495,6 +1679,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func reconfigureAllVisibleCells() {
         let width = max(240, collectionView.bounds.width)
+        var cellTypeReloadIDs: [ChatListItemID] = []
         for indexPath in collectionView.indexPathsForVisibleItems where indexPath.section < items.count {
             let itemID = items[indexPath.section]
             switch itemID {
@@ -1506,7 +1691,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 (collectionView.cellForItem(at: indexPath) as? ChatEarlierButtonCell)?.refreshTypography()
             case .line(let id):
                 if let row = rowByID[id] {
-                    updateVisibleRowCell(at: indexPath, newRow: row, width: width)
+                    updateVisibleRowCell(at: indexPath, newRow: row, width: width, reloadIDs: &cellTypeReloadIDs)
                 }
             case .liveFolding:
                 (collectionView.cellForItem(at: indexPath) as? ChatLiveFoldingCell)?.refreshTypography()
@@ -1514,6 +1699,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 if let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveThinkingCell {
                     cell.configure(text: currentState?.streamReasoning ?? "")
                 }
+            case .liveToolTail:
+                (collectionView.cellForItem(at: indexPath) as? ChatLiveToolTailCell)?.refreshTypography(style: currentStyle)
             case .liveFailure:
                 if let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveFailureCell {
                     cell.configure(error: currentState?.failureCardError ?? "", working: currentState?.working ?? false) { [weak self] in
@@ -1558,6 +1745,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             default:
                 break
             }
+        }
+        if !cellTypeReloadIDs.isEmpty {
+            var reloadSnap = dataSource.snapshot()
+            reloadSnap.reloadItems(cellTypeReloadIDs)
+            dataSource.apply(reloadSnap, animatingDifferences: false)
         }
     }
 
@@ -2296,6 +2488,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        if let toolTailCell = cell as? ChatLiveToolTailCell {
+            let chatKey = currentState?.chatKey ?? actions.chat.key
+            let tail = actions.team.toolTail(for: chatKey)
+            let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
+            toolTailCell.configure(tail: tail, style: currentStyle, expectedHeight: expected) { [weak self] h in
+                self?.handleLiveToolTailHeightChanged(h)
+            }
+        }
+    }
+
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         if let assistant = cell as? ChatAssistantCell {
             for uuid in assistant.activeSelectionOwnerIDs() {
@@ -2323,6 +2526,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     actions.onClearPhotoHero(heroID)
                 }
             }
+        } else if let toolTailCell = cell as? ChatLiveToolTailCell {
+            toolTailCell.stopObserving()
         }
     }
 
@@ -2566,6 +2771,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
             prefetchTasksBySection[section] = task
         }
+        prewarmTraceRows(in: targetSections)
     }
 
     func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
@@ -2674,6 +2880,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
 
         cancelPrewarm()
+        prewarmTraceRows(in: prioritySections + secondarySections)
         guard !priorityJobs.isEmpty || !secondaryTileJobs.isEmpty || !secondaryLayoutOnlyJobs.isEmpty else {
             return
         }
@@ -2700,10 +2907,79 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    private func prewarmTraceRows(in sections: [Int]) {
+        guard !isDismantled, !Pref.traceOpen else { return }
+        let desk = Words.t("书案/")
+        let mountRevision = MountedFolders.revision
+        var pending: [ChatLine] = []
+        for section in sections {
+            guard section >= 0, section < items.count,
+                  case .line(let id) = items[section],
+                  let row = rowByID[id],
+                  row.line.kind == .steps,
+                  !inFlightTracePrewarmIDs.contains(row.line.id),
+                  Trace.needsOffMainKeepsakePrewarm(for: row.line) else {
+                continue
+            }
+            inFlightTracePrewarmIDs.insert(row.line.id)
+            pending.append(row.line)
+        }
+        guard !pending.isEmpty else { return }
+
+        let lines = pending
+        let taskID = UUID()
+        let expectedChatKey = currentState?.chatKey ?? actions.chat.key
+        let task = Task { [weak self] in
+            let payloads = await Task.detached(priority: .utility) { () -> [(ChatLine, Trace.PrewarmedTraceSummary)] in
+                var results: [(ChatLine, Trace.PrewarmedTraceSummary)] = []
+                results.reserveCapacity(lines.count)
+                for line in lines {
+                    if Task.isCancelled { break }
+                    results.append((line, Trace.prewarmKeepsakePayload(for: line, desk: desk, mountRevision: mountRevision)))
+                }
+                return results
+            }.value
+            guard let self else { return }
+            self.tracePrewarmTasks.removeValue(forKey: taskID)
+            guard !Task.isCancelled, !self.isDismantled else { return }
+            for line in lines {
+                self.inFlightTracePrewarmIDs.remove(line.id)
+            }
+            guard (self.currentState?.chatKey ?? self.actions.chat.key) == expectedChatKey else { return }
+            var becameEligibleIDs: [ChatListItemID] = []
+            for (line, payload) in payloads {
+                if Trace.commitPrewarmedSummary(payload, for: line, desk: desk),
+                   let currentRow = self.rowByID[line.id],
+                   currentRow.line == line,
+                   self.itemIndexByID[.line(line.id)] != nil {
+                    becameEligibleIDs.append(.line(line.id))
+                }
+            }
+            guard !becameEligibleIDs.isEmpty, self.collectionView != nil, self.dataSource != nil else { return }
+            self.preserveReadingAnchorDuring {
+                var snapshot = self.dataSource.snapshot()
+                let existing = Set(snapshot.itemIdentifiers)
+                let valid = becameEligibleIDs.filter { existing.contains($0) }
+                guard !valid.isEmpty else { return }
+                snapshot.reloadItems(valid)
+                self.dataSource.apply(snapshot, animatingDifferences: false)
+                self.collectionView.collectionViewLayout.invalidateLayout()
+                self.collectionView.layoutIfNeeded()
+            }
+            self.publishVisibleAndFooterMetrics()
+        }
+        tracePrewarmTasks[taskID] = task
+    }
+
     private func cancelPrewarm() {
         prewarmGeneration = prewarmGate.advance()
         prewarmTask?.cancel()
         prewarmTask = nil
+        for task in tracePrewarmTasks.values {
+            task.cancel()
+        }
+        tracePrewarmTasks.removeAll()
+        inFlightTracePrewarmIDs.removeAll()
         if let token = prewarmToken {
             ChatTextTileRenderer.shared.cancelPrefetch(token: token)
             prewarmToken = nil

@@ -178,6 +178,64 @@ final class ChatTraceHostingCell: UICollectionViewCell {
     }
 }
 
+/// Top-level observable model driving the detail sheet presented when tapping a `ChatTraceSummaryCell`.
+@MainActor @Observable
+final class ChatTraceDetailSheetModel {
+    var line: ChatLine
+
+    init(line: ChatLine) {
+        self.line = line
+    }
+}
+
+struct ChatTraceDetailSheetView: View {
+    let model: ChatTraceDetailSheetModel
+    let actions: ChatListActions
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Trace(
+                    line: model.line,
+                    visit: { url in
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            actions.bridge.onOpenURL(url)
+                        }
+                    },
+                    openFile: { url, mount in
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            actions.bridge.onOpenFile(url, mount)
+                        }
+                    },
+                    unremember: { id, fact in
+                        actions.team.unremember(id, fact: fact)
+                    },
+                    initiallyOpen: true
+                )
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("agent.steps"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            onDismiss()
+        }
+    }
+}
+
 /// Caches mapped `ChatListRowItem`s so 15Hz live token updates never rebuild unchanged settled rows.
 @MainActor
 final class ChatRowsMemo {

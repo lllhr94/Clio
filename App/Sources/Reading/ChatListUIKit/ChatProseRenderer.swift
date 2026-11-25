@@ -1412,6 +1412,13 @@ final class ChatLayoutCache: @unchecked Sendable {
         let cellHeight: CGFloat
     }
 
+    struct TraceSummaryLayoutEntry: Sendable {
+        let timeGapHeight: CGFloat
+        let speakerHeight: CGFloat
+        let summaryHeight: CGFloat
+        let cellHeight: CGFloat
+    }
+
     private struct AssistantKey: Hashable {
         let id: String
         let styleKey: String
@@ -2195,13 +2202,9 @@ final class ChatLayoutCache: @unchecked Sendable {
 
             case .fileCards(let links, let sliceIndex):
                 let key = "file|\(ownerID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(links.map(\.path).joined(separator: "|"))"
-                let h: CGFloat
-                if let overrideH = overrides[key] {
-                    h = overrideH
-                } else {
-                    let singleH = 68 * style.scale
-                    h = CGFloat(links.count) * singleH + CGFloat(max(0, links.count - 1)) * metrics.spaceS
-                }
+                let h = overrides[key]
+                    ?? ChatMediaLayoutCache.fileCardsHeight(links: links, maxWidth: contentWidth, style: style)
+                    ?? ChatFileCardsBlockView.baseMeasureHeight(links: links, maxWidth: contentWidth, style: style)
                 return MeasuredSlice(slice: slice, height: ceil(h), pictureHeights: [])
 
             case .pictures(let words, let pics, let sliceIndex):
@@ -2213,7 +2216,9 @@ final class ChatLayoutCache: @unchecked Sendable {
                 var picHeights: [CGFloat] = []
                 for (picIndex, pic) in pics.enumerated() {
                     let key = "pic|\(ownerID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(style.styleKey)|\(pic.source)"
-                    let picH = overrides[key] ?? 160
+                    let picH = overrides[key]
+                        ?? ChatMediaLayoutCache.pictureHeight(source: pic.source, maxWidth: contentWidth, scale: style.scale)
+                        ?? 160
                     picHeights.append(picH)
                     if picIndex > 0 { total += style.readingSize * 0.6 }
                     total += picH
@@ -2222,6 +2227,35 @@ final class ChatLayoutCache: @unchecked Sendable {
             }
         }
         return (measured, hasEstimatedFormula)
+    }
+
+    @MainActor
+    func measureTraceSummary(
+        row: ChatListRowItem,
+        collectionWidth: CGFloat,
+        style: ChatListStyle
+    ) -> TraceSummaryLayoutEntry {
+        let metrics = style.metrics
+        let timeGapH: CGFloat = (row.faces && row.opens && row.timeGap != nil) ? metrics.timeGapHeight : 0
+        let speakerH: CGFloat = (row.opens && (row.faces || row.isRoom))
+            ? (row.faces ? metrics.faceSize : metrics.compactSpeakerSize)
+            : 0
+        let summaryFont = UIFont.systemFont(ofSize: metrics.sizeSub)
+        let summaryH = max(metrics.disclosureHeaderHeight, ceil(summaryFont.lineHeight))
+        var total: CGFloat = 0
+        if timeGapH > 0 {
+            total += timeGapH + metrics.timeGapBottomPad + metrics.sectionSpacing
+        }
+        if speakerH > 0 {
+            total += speakerH + metrics.sectionSpacing
+        }
+        total += summaryH + metrics.rowSpacing
+        return TraceSummaryLayoutEntry(
+            timeGapHeight: timeGapH,
+            speakerHeight: speakerH,
+            summaryHeight: summaryH,
+            cellHeight: ceil(total)
+        )
     }
 
     func measureNote(
