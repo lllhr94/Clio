@@ -520,11 +520,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         longPressGesture?.isEnabled = tilesActive && hasText && allowLongPressSelection
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === linkTapGesture {
             return hitTestLink(at: gestureRecognizer.location(in: self)) != nil
         }
-        return true
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
 
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
