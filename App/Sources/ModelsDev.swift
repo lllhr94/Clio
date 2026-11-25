@@ -9,7 +9,7 @@ import Foundation
 /// dates and version tags at the end are tried away, and when one model is listed by several services their
 /// answers are folded together (the larger window, any of them saying it can).
 enum ModelsDev {
-    struct Entry: Codable, Equatable {
+    struct Entry: Codable, Equatable, Sendable {
         var sees: Bool
         var tools: Bool
         var thinks: Bool
@@ -54,16 +54,26 @@ enum ModelsDev {
 
     private static func loaded() -> [String: Entry] {
         lock.lock()
-        defer { lock.unlock() }
-        if let index { return index }
+        if let index {
+            lock.unlock()
+            return index
+        }
+        lock.unlock()
         let kept = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
+        lock.lock()
+        if let existing = index {
+            lock.unlock()
+            return existing
+        }
         index = kept
+        lock.unlock()
         return kept
     }
 
-    /// Fetches the catalog again if what is kept is older than a day. Quiet on failure: the guess stays.
+    /// Fetches the catalog again if what is kept is older than a day. Pre-warms cached JSON off the main actor.
     static func refreshIfStale() async {
         let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) }
+        await Task.detached(priority: .utility) { _ = loaded() }.value
         if let age, age < 24 * 3600 { return }
         await refresh()
     }

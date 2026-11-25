@@ -34,6 +34,7 @@ struct PetStage: View {
     private static let liftLimit: CGFloat = 28
     @Environment(\.accessibilityReduceMotion) private var calm
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var drag: CGFloat = 0
     @State private var dragUp: CGFloat = 0
@@ -57,6 +58,10 @@ struct PetStage: View {
     private var asleep: Bool { sleeping && mood == .idle && oneOff == nil && !dragging }
 
     private var pack: PetPack? { library.pack(for: perch.face) }
+
+    private var clockTaskID: String {
+        "\(perch.suppressed)|\(scenePhase == .active)|\(library.shown)"
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -103,9 +108,19 @@ struct PetStage: View {
                 }
             }
         }
-        .task(id: "clock") {
+        .task(id: clockTaskID) {
+            guard !perch.suppressed, scenePhase == .active, library.shown else {
+                if oneOff != nil { oneOff = nil }
+                if wander != 0 || wanderTarget != 0 {
+                    wander = 0
+                    wanderTarget = 0
+                }
+                return
+            }
+            tick()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { break }
                 tick()
             }
         }
@@ -326,9 +341,12 @@ struct PetBubble: View {
             .lineLimit(1)
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, Ink.Space.s)
-            .background(Ink.paperRaised, in: .capsule)
+            .background {
+                Capsule()
+                    .fill(Ink.paperRaised)
+                    .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+            }
             .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
             .contentShape(.capsule)
             .onTapGesture {
                 PetNews.shared.dismiss()

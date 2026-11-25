@@ -206,7 +206,7 @@ struct BotEditor: View {
 
                         if let bot {
                             VStack(spacing: Ink.Space.m) {
-                                ShareLink(item: NameCard.file(for: bot)) {
+                                ShareLink(item: NameCardTransfer(bot: bot), preview: SharePreview(bot.name)) {
                                     Label(Words.t("把名帖递出去"), systemImage: "square.and.arrow.up")
                                         .font(.system(size: Ink.Size.sub, weight: .medium))
                                         .foregroundStyle(Ink.accent)

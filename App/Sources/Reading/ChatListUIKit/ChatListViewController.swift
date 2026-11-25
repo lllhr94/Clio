@@ -1,4 +1,5 @@
 import AgentKit
+import Observation
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -62,6 +63,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var userDefaultsObserver: NSObjectProtocol?
     private var lastObservedUserAvatarSignature = ""
     private var keyboardObserverTokens: [NSObjectProtocol] = []
+    private var isViewVisible = false
+    private var pendingAvatarRefresh = false
+    private var deferredState: ChatListState?
+    private var pendingKeyboardSync = false
+    private var styleObservationGeneration: UInt64 = 0
 
     private let keyboardSpacerView = UIView()
     private var insetDisplayLink: CADisplayLink?
@@ -109,6 +115,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func prepareForDismantle() -> String? {
         isDismantled = true
+        isViewVisible = false
+        pendingAvatarRefresh = false
+        deferredState = nil
+        pendingKeyboardSync = false
+        styleObservationGeneration &+= 1
         pendingHostMetricFlush = false
         pendingDynamicRefresh = false
         needsDeferredDynamicRefresh = false
@@ -182,11 +193,30 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        isViewVisible = true
+        if let pending = deferredState {
+            deferredState = nil
+            applyState(pending)
+        }
         refreshTypographyAndTheme()
+        if pendingAvatarRefresh {
+            pendingAvatarRefresh = false
+            handleUserDefaultsChanged()
+        }
+        if pendingKeyboardSync {
+            pendingKeyboardSync = false
+            activeKeyboardDeadline = 0
+            updateCollectionInsetsIfNeeded()
+        }
+        startStyleObservationIfVisible()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        isViewVisible = false
+        styleObservationGeneration &+= 1
+        activeKeyboardDeadline = 0
+        stopInsetDisplayLink()
         clearReplyPerchClearance()
     }
 
@@ -716,6 +746,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func applyState(_ next: ChatListState) {
         guard !isDismantled else { return }
+        if !isViewVisible, isViewLoaded, currentState != nil {
+            deferredState = next
+            return
+        }
         let prev = currentState
         currentState = next
 
@@ -1162,7 +1196,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     // MARK: - Typography, Theme, Layout & Insets
 
+    private func startStyleObservationIfVisible() {
+        guard isViewVisible, !isDismantled else { return }
+        styleObservationGeneration &+= 1
+        let generation = styleObservationGeneration
+        withObservationTracking {
+            _ = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.isDismantled, self.styleObservationGeneration == generation else { return }
+                guard self.isViewVisible else { return }
+                self.refreshTypographyAndTheme()
+                self.startStyleObservationIfVisible()
+            }
+        }
+    }
+
     func refreshTypographyAndTheme() {
+        guard isViewVisible else { return }
         let nextStyle = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
         view.backgroundColor = UIColor(Ink.paper)
         guard nextStyle != currentStyle else { return }
@@ -1192,6 +1243,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func handleUserDefaultsChanged() {
+        guard isViewVisible else {
+            pendingAvatarRefresh = true
+            return
+        }
         let nextSignature = currentUserAvatarSignature()
         guard nextSignature != lastObservedUserAvatarSignature else { return }
         lastObservedUserAvatarSignature = nextSignature
@@ -1199,6 +1254,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func refreshVisibleUserAvatars() {
+        guard isViewVisible else {
+            pendingAvatarRefresh = true
+            return
+        }
         guard collectionView != nil else { return }
         for cell in collectionView.visibleCells {
             if let userCell = cell as? ChatUserCell,
@@ -1375,6 +1434,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func handleKeyboardWillChangeFrame(beginScreen: CGRect?, endScreen: CGRect?, duration: TimeInterval) {
         guard !isDismantled, isViewLoaded, view.window != nil else { return }
+        guard isViewVisible else {
+            pendingKeyboardSync = true
+            return
+        }
         let beginOverlap = beginScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
         let endOverlap = endScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
 
@@ -1394,6 +1457,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func handleKeyboardDidChangeFrame(endScreen: CGRect?) {
         guard !isDismantled, isViewLoaded, view.window != nil else { return }
+        guard isViewVisible else {
+            pendingKeyboardSync = true
+            activeKeyboardDeadline = 0
+            stopInsetDisplayLink()
+            return
+        }
         if let endScreen {
             activeKeyboardEndOverlap = keyboardOverlap(forScreenRect: endScreen)
             activeKeyboardStartOverlap = activeKeyboardEndOverlap
@@ -1439,7 +1508,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func stepInsetTick(_ link: CADisplayLink) {
-        guard !isDismantled, isViewLoaded, collectionView != nil, collectionView.bounds.width > 0 else {
+        guard !isDismantled, isViewLoaded, isViewVisible, collectionView != nil, collectionView.bounds.width > 0 else {
+            if !isViewVisible { pendingKeyboardSync = true }
             stopInsetDisplayLink()
             return
         }
@@ -1479,6 +1549,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func updateCollectionInsetsIfNeeded() {
+        guard isViewVisible || !hasPerformedInitialScroll else {
+            pendingKeyboardSync = true
+            return
+        }
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
         let windowTop = view.window?.safeAreaInsets.top ?? 0
         let resolvedTop = hostTopInset > 0

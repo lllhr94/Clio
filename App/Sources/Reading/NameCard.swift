@@ -1,5 +1,19 @@
+import CoreTransferable
 import Foundation
 import UIKit
+import UniformTypeIdentifiers
+
+/// Lazy `Transferable` wrapper so `ShareLink` only builds and writes the `.名帖.json` file when shared.
+struct NameCardTransfer: Transferable, Sendable {
+    let bot: BotInfo
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .json) { item in
+            let url = await MainActor.run { NameCard.file(for: item.bot) }
+            return SentTransferredFile(url)
+        }
+    }
+}
 
 /// 名帖: a companion as a small file — who it is and how it talks — to keep, or to hand to someone.
 struct NameCard: Codable {
