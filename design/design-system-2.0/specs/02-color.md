@@ -6,7 +6,7 @@
 
 ## 一、Clio `batch-0.36` 现有色盘实测缺陷 vs 2.0 修复基线
 
-经 Python 线性对比度实测，`batch-0.36` 原版 [Ink.swift](file:///f:/work/Antigravity/Clio/App/Sources/Design/Ink.swift#L234-L387) 存在 4 处显性合规硬伤（均已在 DS 2.0 三套色盘中根治）：
+经 Python 线性对比度实测，`batch-0.36` 原版 [Ink.swift](../../../App/Sources/Design/Ink.swift#L234-L387) 存在 4 处显性合规硬伤（均已在 DS 2.0 三套色盘中根治）：
 
 - 浅色纸面 `#F6F1E7` 上：`inkFaint #A8A294` 对比度仅 **`2.26:1`**（严重不达标）；`warn #C08A3E` 仅 **`2.69:1`**；`ok #5E8C6A` 仅 **`3.43:1`**（小字不及格）。
 - 深色 `#1C1A17` 上：`inkFaint #6E685D` 仅 **`3.14:1`**（小字不及格）。

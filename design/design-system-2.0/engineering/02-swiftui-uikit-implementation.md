@@ -22,7 +22,7 @@
 ## 二、核心 SwiftUI / UIKit 工程技术设计细节
 
 ### 1. Liquid Glass 安全分级策略（对照 Apple WWDC25 284 / 323 & HIG Materials）
-- **交互浮层 (`Chrome Layer`)**：继续复用且收敛 [Ink.swift:678-704](file:///f:/work/Antigravity/Clio/App/Sources/Design/Ink.swift#L678-L704) 的 `glassFace` 与 `glassBacking`（含透明穿透触摸补丁层 `opacity(0.001)`），应用于 `ChatTopBarView`、悬浮 `ChatComposerBarView`、右下跳转圆钮与 `ApproveView` 顶部完成按钮。
+- **交互浮层 (`Chrome Layer`)**：继续复用且收敛 [Ink.swift:678-704](../../../App/Sources/Design/Ink.swift#L678-L704) 的 `glassFace` 与 `glassBacking`（含透明穿透触摸补丁层 `opacity(0.001)`），应用于 `ChatTopBarView`、悬浮 `ChatComposerBarView`、右下跳转圆钮与 `ApproveView` 顶部完成按钮。
 - **渐隐垫层（防硬切割边）**：悬浮顶栏下方垫 `LinearGradient([Ink.paper, Ink.paper.opacity(0)], .top → .bottom)`（`12pt` 高）；悬浮底栏上方同样垫向上纸色渐隐，彻底杜绝内容滚动穿过透明玻璃边缘产生的系统硬割线。
 - **内容层 (`Content Layer`)**：聊天 AI 回复、用户气泡、代码块、`RowCard`、记忆卡、设置表单 **100% 不使用真玻璃**，用纯色 `surface / surfaceSubtle` + 0.5pt `rule` + 用户气泡轻量 `glassBubble` 渐变实现 120Hz 满帧手感。
 
@@ -44,4 +44,12 @@
   - 将 `PressStyle(haptic:)` 默认设为 `false`；
   - 新增 `lastTickAt: CFTimeInterval` 加 `35ms` 节流防马达共振；
   - 订阅 `Voice` 录音状态，只要麦克风输入通道开启即暂停触觉播放，录音结束后无缝恢复；
-  - 预加载 4 组 AHAP 模式（含低电量/不支持硬件时自动降级 `UIFeedbackGenerator`）。
+- **跟底滚动状态保护 (`ChatFollowState`)**：流式输出绝不允许无条件强制 `scrollTop = bottom`；当用户主动向上浏览历史或开启长按选字时，立刻暂停自动跟底并在输入框上方亮出「↓ 回到最新（生成中）」胶囊，点按再恢复跟底锁定。
+- **审批手势取消护栏 & 无障碍等效路径 (`ApproveView`)**：使用 `@GestureState`（系统手势被通知中心/来电中断时自动回弹归零）搭配 `.onChange(of: scenePhase)` 中断校验，**仅当同一活跃拖动手势在 `onEnded` 超过 `84%` 阈值且应用处于 `.active` 前台时方可执行批准**；同时保留完整 Taint/命令展示的无障碍等效点按确认按钮供 VoiceOver 与全键盘操作使用。
+
+### 6. `FontOpticalProfile` + `SafeLineBox` 单一排版引擎落地契约
+- 直接替换 [Pref.swift:81](../../../App/Sources/Design/Pref.swift#L81) 与 [Ink.swift:573](../../../App/Sources/Design/Ink.swift#L573) 的旧 `leading` 算法（不并存两套实现）：
+  1. `ChatResolvedMetrics` 与 `ProseView` 共同消费 `FontOpticalProfile`（依据实测 `App/Fonts/*.ttf`：`ClioKai-Medium` 内置 `opticalScale = 1.045`、描边粗体 `-2.2`/`-1.8`）和 `SafeLineBox`（`minimumLineHeight = max(target, ascender - descender + safePad)`，且 `maximumLineHeight = 0` 不裁切 Emoji 与数学公式）；
+  2. 将 `ChatResolvedMetrics.headingSize(level:)` 收敛至克制阶梯（H1 `1.26×`，H2 `1.12×`，H3 `1.00× Semibold`），将 `ChatListModels.swift:300` 的 `userBody` 并入同套阅读字号与字体；
+  3. 收敛 `codeBlockFonts` 至 `Ink.mapleWithChinese` 单一 `1:2` 对齐方案；
+  4. `FontShelf` 随选字体（宋体/楷体）加载成功、切换字体/字号/行距/AX 字号时，递增 `fontEpoch` 并清理预排版高度与瓦片缓存（缓存键含 `(face, fontEpoch, readingSize, lineHeight, widthKey, axSize)`），确保流式、定稿、选字与设置预览 `100%` 一致且零滚动主线程重排。

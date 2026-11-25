@@ -94,6 +94,17 @@ def contrast(fg: str, bg: str) -> float:
     return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
 
 
+def blend_hex(fg_hex: str, bg_hex: str, alpha: float) -> str:
+    """Alpha-composite fg over bg in sRGB CSS space."""
+    f = fg_hex.lstrip("#")
+    b = bg_hex.lstrip("#")
+    rgb = [
+        round(int(f[i:i+2], 16) * alpha + int(b[i:i+2], 16) * (1.0 - alpha))
+        for i in (0, 2, 4)
+    ]
+    return "#{:02X}{:02X}{:02X}".format(*[max(0, min(255, c)) for c in rgb])
+
+
 def main() -> int:
     errors = []
 
@@ -151,6 +162,60 @@ def main() -> int:
                     if ratio < 4.5:
                         errors.append(f"WCAG AA fail {lang_id}{p_suffix}-{mode_id} {label}: {ratio:.2f} < 4.5")
 
+                # P2 Real rendered alpha-composited & state checks
+                glass_bg = blend_hex(c["surfaceElevated"], c["bg"], 0.76)
+                glass_wash = blend_hex(c["surfaceElevated"], c["accentWash"], 0.76)
+                taint_bg = blend_hex(c["warn"], c["surface"], 0.13)
+                pressed_ink = blend_hex(c["ink"], c["surface"], 0.85)
+                pressed_on_accent = blend_hex(c["onAccent"], c["accent"], 0.85)
+                composited_pairs = [
+                    ("glass76(ink/glassBg)", c["ink"], glass_bg),
+                    ("glass76(inkSec/glassBg)", c["inkSecondary"], glass_bg),
+                    ("glass76(ink/glassWash)", c["ink"], glass_wash),
+                    ("taint13(warn/taintBg)", c["warn"], taint_bg),
+                    ("taint13(ink/taintBg)", c["ink"], taint_bg),
+                    ("pressed85(ink/surface)", pressed_ink, c["surface"]),
+                    ("pressed85(onAccent/accent)", pressed_on_accent, c["accent"]),
+                    ("codeBlock(inkSec/codeBg)", c["inkSecondary"], c["codeBg"]),
+                    ("myBubble(ink/myBubble)", c["ink"], c["myBubble"]),
+                    ("myBubble(inkSec/myBubble)", c["inkSecondary"], c["myBubble"]),
+                    ("accentWash(accent/accentWash)", c["accent"], c["accentWash"]),
+                    ("stopWash(danger/stopWash)", c["danger"], c["stopWash"]),
+                ]
+                for label, fg, bg in composited_pairs:
+                    ratio = contrast(fg, bg)
+                    wcag_checked += 1
+                    if ratio < 4.5:
+                        errors.append(f"Composited/State AA fail {lang_id}{p_suffix}-{mode_id} {label}: {ratio:.2f} < 4.5")
+
+                if mode_id == "oled":
+                    if c["bg"].upper() != "#000000":
+                        errors.append(f"OLED bg must be #000000 in {lang_id}{p_suffix}")
+                    if not (lum(c["surfaceElevated"]) > lum(c["surface"]) > lum(c["bg"])):
+                        errors.append(f"OLED elevation hierarchy fail in {lang_id}{p_suffix}")
+                elif mode_id == "dark":
+                    if not (lum(c["surfaceElevated"]) > lum(c["surface"]) > lum(c["bg"])):
+                        errors.append(f"Dark elevation hierarchy fail in {lang_id}{p_suffix}")
+
+    # P2 Cross-device relative markdown links check (0 file:/// URLs, 0 broken relative targets)
+    link_pat = re.compile(r'\]\(([^)]+)\)')
+    rel_links_checked = 0
+    for md in sorted(DS.rglob("*.md")):
+        md_text = md.read_text(encoding="utf-8")
+        if "file://" in md_text.lower():
+            errors.append(f"Forbidden file:// URL in {md.relative_to(ROOT)}")
+        for m in link_pat.finditer(md_text):
+            raw_t = m.group(1).strip()
+            if raw_t.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            rel_path = raw_t.split("#", 1)[0]
+            if not rel_path:
+                continue
+            target = (md.parent / rel_path).resolve()
+            rel_links_checked += 1
+            if not target.exists():
+                errors.append(f"Broken relative markdown link in {md.relative_to(ROOT)}: {raw_t}")
+
     html = (DS / "prototype" / "index.html").read_text(encoding="utf-8")
     if re.search(r'<(script|link)\b[^>]+https?://', html, re.IGNORECASE):
         errors.append("prototype/index.html contains external HTTP/HTTPS CDN links")
@@ -198,8 +263,9 @@ def main() -> int:
     print(
         f"VERIFICATION PASSED: {len(REQUIRED_FILES)} deliverables/assets present, "
         f"{sum(len(v) for v in REQUIRED_COVERAGE.values())} core + extended benchmarks verified, "
-        f"{wcag_checked} WCAG 2.1 AA pairs >= 4.5:1, 11 xiaoke anims embedded, "
-        f"all JS syntax clean, 0 tracked files modified."
+        f"{wcag_checked} direct + composited/state WCAG 2.1 AA pairs >= 4.5:1, "
+        f"{rel_links_checked} repo-relative links verified, "
+        f"all JS syntax clean, 0 production files modified."
     )
     return 0
 

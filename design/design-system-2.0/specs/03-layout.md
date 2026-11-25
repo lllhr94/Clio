@@ -55,8 +55,8 @@ $$R_{\text{inner}} = \max\bigl(8,\ R_{\text{outer}} - \text{padding}\bigr)$$
 
 1. **默认态与 1-tap 入口**：
    - 默认保持 **关闭 (`false`)** 以保障单聊长文最大阅读留白与横宽；在**聊天顶栏 `⋯` 菜单**和**设置 › 外观与阅读**均提供显眼的一键开关，所见即所得。
-2. **开启后的空间不挤压规则（参考 [ChatPage+Faces.swift](file:///f:/work/Antigravity/Clio/App/Sources/Reading/ChatPage+Faces.swift) 与 [ChatProseRenderer.swift](file:///f:/work/Antigravity/Clio/App/Sources/Reading/ChatListUIKit/ChatProseRenderer.swift)）**：
+2. **开启后的空间不挤压规则（参考 [ChatPage+Faces.swift](../../../App/Sources/Reading/ChatPage+Faces.swift) 与 [ChatProseRenderer.swift](../../../App/Sources/Reading/ChatListUIKit/ChatProseRenderer.swift)）**：
    - **助手行**：`32×32pt` 圆形头像 + 定制助手名作为轻量行首**置于回复正文上方**，不占用左侧栏宽，长文、代码块与宽表格仍享满宽渲染。
-   - **我的行**：`32×32pt` 圆形头像（[MeAvatar.swift](file:///f:/work/Antigravity/Clio/App/Sources/Pet/MeAvatar.swift)）贴于右对齐气泡外侧；用户气泡最大宽度严格扣减 `faceSize + 8pt`，保证 AX3 大字下右侧零裁切。
+   - **我的行**：`32×32pt` 圆形头像（[MeAvatar.swift](../../../App/Sources/Pet/MeAvatar.swift)）贴于右对齐气泡外侧；用户气泡最大宽度严格扣减 `faceSize + 8pt`，保证 AX3 大字下右侧零裁切。
    - **连续归并 & 时间戳**：同一说话人连续多段仅首段展示头像；跨 30 分钟对话自动在段间居中插入 `.tabularNums` 时间戳。
    - **正文即入口**：直接点击正文中的助手头像/名字或我的头像，就地唤起对应身份编辑面板。

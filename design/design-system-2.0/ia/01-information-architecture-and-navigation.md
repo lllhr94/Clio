@@ -14,7 +14,7 @@
 | **旅伴（助手与群聊）** | **✅ 设为 L1（合并名帖与创建）** | 目前首页横向芯片 + 首页 `＋` 菜单 + 设置 › 旅伴三处重复；侧栏保留清晰入口直接进花名册/名帖切换，不把人挤成纯系统配置。 |
 | **书案（文件与 PDF 知识库）** | **✅ 保留 L1** | 承载本地工作目录 + 外部挂载文件夹 + 0.36 文档/PDF 索引视图。 |
 | **工作空间（终端/浏览器/SSH） + 任务（定时任务）** | **⚡ 收敛聚合为 `工作台 (Workspace)` 1 项 + 子菜单/段内直达，或展开 2 枚紧凑小砖** | 不建议把「终端 / 浏览器 / SSH / 定时任务」全部铺成 4 个独立大行占满高度；设计为一个简洁的 **「工作台与工具」分组**（或 2×2 紧凑轻量砖：`终端 · 浏览器 · 远程主机 · 定时`），首屏依旧把 65%+ 高度留给置顶与最近对话。 |
-| **归档对话** | **❌ 不单占独立一级目录行，改在筛选胶囊或列表底折叠栏** | 遵循现状 [DeskSidebarView.swift](file:///f:/work/Antigravity/Clio/App/Sources/Reading/DeskSidebarView.swift#L56) 与 [DeskHomeView.swift:197](file:///f:/work/Antigravity/Clio/App/Sources/Reading/DeskHomeView.swift#L197) 做法，筛选胶囊已支持 `全部 / 未完 / 已归档`，单独再加导航行纯属冗余。 |
+| **归档对话** | **❌ 不单占独立一级目录行，改在筛选胶囊或列表底折叠栏** | 遵循现状 [DeskSidebarView.swift](../../../App/Sources/Reading/DeskSidebarView.swift#L56) 与 [DeskHomeView.swift:197](../../../App/Sources/Reading/DeskHomeView.swift#L197) 做法，筛选胶囊已支持 `全部 / 未完 / 已归档`，单独再加导航行纯属冗余。 |
 
 ---
 
@@ -63,12 +63,12 @@ Clio 2.0 App Root
    - **现状不能**（三个 FTS5/内存库完全独立）。
    - **2.0 方案**：复用 0.36 已有三引擎——`clio-index.db`（对话 FTS5）+ `MemoryIndexService`（四层记忆 FTS）+ `clio-docs-fts.db`（PDF 与知识库文档）——在前端聚合成一个 **`UnifiedGlobalSearchSheet`**，输入一次关键词即可在 `全部 / 对话 / 记忆 / 文档PDF` 间丝滑切换并附带命中行高亮摘录，点击结果直接跳转定位。
 5. **模型切换是否必须离开当前聊天？**
-   - **绝对不离开**。继续保留并强化 [ChatPage+Chips.swift](file:///f:/work/Antigravity/Clio/App/Sources/Reading/ChatPage+Chips.swift) 的聊天内就地模型 + 思考档位菜单，仅覆盖当前对话（带清晰「仅影响本段对话」轻提示 + `Selection` 触觉）；方向 B 下甚至允许在输入框上方或顶栏直接看到等宽 `DeepSeek-R1 · 高深度`。
+   - **绝对不离开**。继续保留并强化 [ChatPage+Chips.swift](../../../App/Sources/Reading/ChatPage+Chips.swift) 的聊天内就地模型 + 思考档位菜单，仅覆盖当前对话（带清晰「仅影响本段对话」轻提示 + `Selection` 触觉）；方向 B 下甚至允许在输入框上方或顶栏直接看到等宽 `DeepSeek-R1 · 高深度`。
 6. **首页与侧边栏功能入口是否重复？**
    - **现存严重重复**：`DeskHomeView` 右上同时摆了 `新对话`、`＋(添旅伴/雅集)`、`设置`，与 `DeskSidebarView` 完全重样。
    - **2.0 收敛**：`DeskHomeView` 顶部保留问候语 + 最常触发的 **「全域搜索触发胶囊」与「新对话」**（把重复的设置按钮和冗余二级 `＋` 收回侧栏与旅伴横条末尾虚线圆框，消除顶栏 3 个玻璃球拥挤打架）。
 7. **常用操作点击次数是否达标？**
-   - 核心高频任务全部压缩到 **1–2 次点击**（详表见 [03-user-flows-and-click-paths.md](file:///f:/work/Antigravity/Clio/design/design-system-2.0/ia/03-user-flows-and-click-paths.md)）。
+   - 核心高频任务全部压缩到 **1–2 次点击**（详表见 [03-user-flows-and-click-paths.md](./03-user-flows-and-click-paths.md)）。
 8. **当前页面与全局功能之间的导航空间关系？**
    - **左向抽屉为「世界全貌」**：在任意对话右边缘内滑可预览并无缝滑出 `DeskSidebar`（支持中途反向拖拽取消，不重置当前对话滚动位置）。
    - **向上 Sheet 为「局部/临时任务」**：表单编辑器、审批、即时搜索、模型用量、互动预览。
@@ -79,3 +79,16 @@ Clio 2.0 App Root
      1. 首次引导第 3 页用**真实对比卡**展示同一界面的「日常直白 vs 书卷雅称」，**尊重选择权，不强制默认哪一方**（或随所选视觉方向联动默认，随时可 1 键切换）；
      2. 开启书卷词典时，全应用设置/侧栏/空态默认开启 **「日常旁注 `L.hint`」**（用清晰 AA 达标灰色标明如 `拾遗 (记忆)`、`调弦 (设置)`、`远山 (SSH)`）；
      3. 设置搜索框永远同时索引**日常名 + 书卷名 + 英文原词 + 高频别名**，输入「memory」「设置」「ssh」「密码」零成本直达。
+
+---
+
+## 四、全域搜索隐私与权限隔离边界（ChatGPT 复审 P1）
+
+> **硬边界**：`UnifiedGlobalSearchSheet`（用户本人主动全域搜索）与 **Agent 后台自动检索上下文** 是两套权限完全隔离的查询信道，绝不因共享 FTS5 索引库而越权泄漏：
+
+| 边界维度 | 用户主动全域搜索 (`UnifiedGlobalSearchSheet`) | Agent 自动检索 / 工具读取 (`RAG / Memory / Workspace`) |
+|---|---|---|
+| **密码匣 (`Vault / SecretsPage`)** | **严禁建入任何搜索索引**；搜关键词不回显密钥或口令条目（仅可在设置搜索跳去设置页本身） | **物理隔离，永不入上下文**（维持钥匙串 `SecretsPage` 零泄漏红线） |
+| **已删除 / 归档记忆** | 用户删除或撤回记忆条目时，**同一数据库事务内同步清理 `MemoryIndexService` FTS5 索引行**，绝不允许已删除记忆在搜索结果残留；「封存」默认不混入常规摘要（除非显式选封存标签） | 封存与已删除记忆**禁止**作为自动召回上下文喂给模型 |
+| **外部挂载目录与文件权限** | 当用户撤销 iOS `Security-Scoped Bookmark` 授权、或目录读权限失效（系统拒绝访问）时，**立即隐藏并异步清理该根目录对应的 `clio-docs-fts.db` 索引条目** | 严格走 `Workspace.isInsideRealRoot` 边界校验；无有效书签或未授予当前会话工作区权限时直接报错拒读，绝不偷偷代读用户个人私有文档 |
+| **敏感历史 / Taint 状态** | 界面明确标注「仅本机本人可见 · 不含密码匣 · 已排除撤回目录」 | 网页 `Taint` 标记继续随对话严格传导，不因全文搜索跳转而洗白风险上下文 |

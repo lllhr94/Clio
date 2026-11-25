@@ -1,7 +1,7 @@
 # Clio Design System 2.0：Haptics & Audio-Haptic 触觉反馈规范（Deliverable #16）
 
 > **权威依据**：**Apple HIG Playing Haptics + Core Haptics WWDC21 10278** · **任务书第十五节语义标准** · **OPPO O-Haptics / CapWords / Darkroom / Cindy** 克制哲学。
-> **现状批判**：`batch-0.36` 的 [Haptics.swift](file:///f:/work/Antigravity/Clio/App/Sources/Haptics.swift) 与 [Ink.swift:652](file:///f:/work/Antigravity/Clio/App/Sources/Design/Ink.swift#L652) 让 `PressStyle(haptic: true)` 默认每次点按钮都震（且 `Haptics.light()` 错用 `.medium 0.8` 强度）。DS 2.0 将其彻底纠偏为 **「普通按钮默认静默，只把震动留给高语义操作与品牌时刻」**！
+> **现状批判**：`batch-0.36` 的 [Haptics.swift](../../../App/Sources/Haptics.swift) 与 [Ink.swift:652](../../../App/Sources/Design/Ink.swift#L652) 让 `PressStyle(haptic: true)` 默认每次点按钮都震（且 `Haptics.light()` 错用 `.medium 0.8` 强度）。DS 2.0 将其彻底纠偏为 **「普通按钮默认静默，只把震动留给高语义操作与品牌时刻」**！
 
 ---
 

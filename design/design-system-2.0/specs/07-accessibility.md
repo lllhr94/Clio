@@ -37,3 +37,15 @@
 2. **`Reduce Motion`**：停用弹簧过冲、停用宠物落地挤压与闲逛、关闭呼吸光晕脉动与纸片飞出动画，切为 `≤ 150ms` 纯透明切换。
 3. **`Reduce Transparency`**：全部 `.glassEffect` 自动切为 98% 不透明 `surfaceElevated` + `1pt rule` 实框；方向 C 状态光氛切换 `1.5pt` 顶部实色状态线。
 4. **`Increase Contrast`**：分割线与卡片边界升至 `1pt`，三阶灰字 `inkTertiary` 自动提级至 `inkSecondary`（≥ 7:1）。
+
+---
+
+## 四、审批手势安全与无障碍等效确认规范（ChatGPT 复审 P0 + P1）
+
+1. **手势取消绝不批准（P0 防误批准底线）**：
+   - 审批滑动轨道（无论是原型 `bindSlideTrack` 还是 Swift [ApproveView.swift](../../../App/Sources/ApproveView.swift) `DragGesture`）**严禁共用 `onEnded` 与取消/中断回调**：
+     - 仅当**用户同一活跃触点主动抬起松手 (`pointerup` / `DragGesture.onEnded`) 且位移超过 `84%` 阈值**才可执行批准落款；
+     - `pointercancel`、iOS 来电/通知中心打断、`@GestureState` 自动复位、`scenePhase != .active`（退后台/锁屏/切走焦点）一律强制安全回弹至起点，**绝对不得标记为允许**。
+2. **滑动不可作为唯一确认路径（P1 无障碍等效确认）**：
+   - `ApproveView` 必须同时提供可聚焦、可点击、标签清晰的无障碍等效确认按钮（**「确认并落款批准」**，支持 VoiceOver 激活、Switch Control、全键盘控制及减弱动态效果场景）；
+   - 该按钮与滑动确认共用同一安全校验证明流水线：**完整命令预览、`Taint` 外网风险横幅、`forced == true` 限制同样 100% 展示与约束，绝不提供绕过安全审计的一键跳过**。

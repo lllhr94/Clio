@@ -50,41 +50,70 @@
     return "core";
   }
 
+  const SECTION46_SAMPLE = {
+    proseText: "Clio 使用 SQLite FTS5 实现长期记忆检索，并通过 UICollectionView 与 CoreText 优化长对话渲染。支持 120 Hz ProMotion，目标单帧预算约为 8.33 ms。当前模型 Claude Sonnet，已调用 3 个 MCP 工具，累计使用 12,840 Tokens。「中文引号」、“英文混排”、数字 0123456789、全角标点、**粗体**、*斜体*、Emoji 🐱、特殊符号 ≈ ± √，以及 `API.status = 200`。",
+    fullMarkdown: `## 二级结构：CLREQ 混排与光学验收样本
+
+Clio 使用 SQLite FTS5 实现长期记忆检索，并通过 UICollectionView 与 CoreText 优化长对话渲染。支持 120 Hz ProMotion，目标单帧预算约为 8.33 ms。当前模型 Claude Sonnet，已调用 3 个 MCP 工具，累计使用 12,840 Tokens。「中文引号」、“英文混排”、数字 0123456789、全角标点、**粗体**、*斜体*、Emoji 🐱、特殊符号 ≈ ± √，以及 \`API.status = 200\`。
+
+### 三级条目：列表密度与长链接核验
+
+1. **安全行框规则**：以字面自然高度为底线，严禁裁剪特殊数学符号与 Emoji；
+   - \`New York + PingFang\`：默认书卷搭配，兼顾中文清晰与数字衬线气质；
+   - \`ClioKai-Medium\`：实测 xHeight 较小，内部 \`+4.5%\` 光学校准并收柔假粗体。
+2. 源码定位：https://github.com/lllhr94/Clio/blob/batch-0.36/App/Sources/Reading/ChatListUIKit/ChatListModels.swift
+
+| 字体组合 | 自然行高比 | 视觉校准 | 实测 Tokens/s | 状态 |
+|---|---:|---:|---:|---|
+| 书卷 (NY+苹方) | 1.40× | 1.00× | 12,840 | 默认推荐 |
+| 霞鹜文楷 Medium | 1.184× | 1.045× | 12,840 | 人文长读 |
+| Maple + MonoCN | 1.320× | 1:2 栅格 | 60 / 120 | 代码对齐 |
+
+$$
+\\text{safeLineHeight} = \\max(\\text{target}, \\lceil \\text{asc} - \\text{desc} \\rceil + 2\\text{pt})
+$$
+
+\`\`\`swift
+// 流式未闭合代码围栏与定稿共享同一 FontOpticalProfile
+let safeMin = max(readingSize * lineHeight, ceil(font.ascender - font.descender) + 2)
+\`\`\`
+`
+  };
+
   // Same realistic scenario across all 3 languages (Section 19 invariant)
   const INITIAL_TURNS = [
     {
       id: 1,
-      user: "帮我做个 0.36 发布前体检：顺便按 CLREQ 检验长文全元素排版，确认 Nginx 配置并核对性能表。",
+      user: "帮我做个 0.36 发布前体检：按克制编辑式阶梯检验长文全元素排版，确认 Nginx 配置并核对指标表。",
       aiTitle: "0.36 发布前体检与长文排版基准",
       metrics: "1.48s · 526 tok",
       aiBody: `
-        <h1 class="prose-h1">H1 一级总览：0.36 架构体检结果 (23pt)</h1>
-        <p class="prose-p">已完成对 <strong>UIKit 聊天管线</strong> 与 <span class="inline-code">clio-memory.db</span> 的交叉核验。注意 <em>流式生成到定稿瞬间</em> <del>不再使用渐隐叠层</del>，而是保持零闪烁交接。汉字与 <span class="inline-code">120Hz</span> 等英文数字间保留视图层光学微距，绝不污染剪贴板。</p>
-        <h2 class="prose-h2">H2 二级结构：列表与引用检验 (19.5pt)</h2>
+        <h1 class="prose-h1">一级总览：0.36 架构体检结果 (21.5pt)</h1>
+        <p class="prose-p">已完成对 <strong>UIKit 聊天管线</strong> 与 <span class="inline-code">clio-memory.db</span> 的交叉核验。流式生成到定稿瞬间 <del>不再使用渐隐叠层</del>，保持零闪烁交接。Clio 使用 SQLite FTS5 实现长期记忆检索，支持 <span class="inline-code">120 Hz</span> ProMotion（目标单帧 <span class="inline-code">8.33 ms</span>），累计使用 12,840 Tokens，「中文引号」、“英文混排”、数字 0123456789、🐱 ≈ ± √，以及 <span class="inline-code">API.status = 200</span>。</p>
+        <h2 class="prose-h2">二级结构：列表密度与轻量化引用 (19pt)</h2>
         <ol class="prose-ol">
           <li><strong>首层序列表项</strong>：核心 SQLite FTS5 与 PDF 文档索引均已独立建表；
             <ul class="prose-list">
-              <li>二级嵌套列表：只读工具允许并发读盘与查库；</li>
+              <li>二级嵌套列表：只读工具允许并发读盘与查库（行高适度收紧至 1.50×）；</li>
               <li>写操作与 <span class="inline-code">ssh_run</span> 受外网 Taint 卫士强截保护。</li>
             </ul>
           </li>
-          <li><strong>安全与密钥边界</strong>：信匣密码保留在钥匙串，永不进入模型上下文。</li>
+          <li><strong>安全与密钥边界</strong>：参考 <a href="javascript:void(0)" class="prose-link">https://github.com/lllhr94/Clio/blob/batch-0.36/App/Sources/Reading/ChatListUIKit/ChatListModels.swift</a>。</li>
         </ol>
-        <h3 class="prose-h3">H3 三级引用、分割与公式验证 (17.5pt)</h3>
+        <h3 class="prose-h3">三级节段：轻引用与数值右对齐表格 (17pt Semibold)</h3>
         <blockquote class="prose-quote">Apple HIG Materials 明确要求：<strong>Don't use Liquid Glass in the content layer</strong> —— 实时玻璃只服务导航与控件，正文保持纯净高对比可读性。</blockquote>
-        <hr class="prose-hr" />
         <div class="prose-math">
-          <div class="math-label">CoreText 统一行高与对比度公式</div>
-          <div class="math-expr">leading = max(0, size × m<sub>h</sub> − uiFace(size).lineHeight) &nbsp;|&nbsp; CR ≥ 4.5:1</div>
+          <div class="math-label">统一安全行框公式（替换旧 extraSpacing 单点算法）</div>
+          <div class="math-expr">safeMin = max(size × m<sub>content</sub>, ceil(ascender − descender) + 2pt) &nbsp;|&nbsp; CR ≥ 4.5:1</div>
         </div>
-        <div class="prose-table-wrap">
+        <div class="prose-table-wrap has-scroll">
           <table class="prose-table">
-            <thead><tr><th>审计维度</th><th>A 素笺 2.0</th><th>B 清器</th><th>C 栖息</th><th>0.36 状态</th></tr></thead>
+            <thead><tr><th>审计维度</th><th class="num">A 素笺</th><th class="num">B 清器</th><th class="num">C 栖息</th><th>0.36 状态</th></tr></thead>
             <tbody>
-              <tr><td>外卡 / 内块圆角</td><td class="font-mono">26 / 14pt</td><td class="font-mono">18 / 10pt</td><td class="font-mono">28 / 14pt</td><td class="font-mono">已对齐</td></tr>
-              <tr><td>三阶灰字 AA 比</td><td class="font-mono">4.91:1</td><td class="font-mono">4.94:1</td><td class="font-mono">4.56:1</td><td class="font-mono">全部达标</td></tr>
-              <tr><td>普通按钮触觉</td><td>默认静默</td><td>默认静默</td><td>默认静默</td><td class="font-mono">已纠偏</td></tr>
-              <tr><td>UIKit 帧耗时上限</td><td class="font-mono">≤ 8.33ms</td><td class="font-mono">≤ 8.33ms</td><td class="font-mono">≤ 8.33ms</td><td class="font-mono">待实机测</td></tr>
+              <tr><td class="wrap-cell">外卡 / 内块圆角</td><td class="num font-mono">26 / 14pt</td><td class="num font-mono">18 / 10pt</td><td class="num font-mono">28 / 14pt</td><td class="font-mono">已对齐</td></tr>
+              <tr><td class="wrap-cell">三阶灰字 AA 对比</td><td class="num font-mono">4.91:1</td><td class="num font-mono">4.94:1</td><td class="num font-mono">4.56:1</td><td class="font-mono">全部达标</td></tr>
+              <tr><td class="wrap-cell">120Hz 帧预算</td><td class="num font-mono">8.33 ms</td><td class="num font-mono">8.33 ms</td><td class="num font-mono">8.33 ms</td><td class="font-mono">待实机测</td></tr>
+              <tr><td class="wrap-cell">Token 实测示例</td><td class="num font-mono">12,840</td><td class="num font-mono">12,840</td><td class="num font-mono">12,840</td><td class="font-mono">数字右齐</td></tr>
             </tbody>
           </table>
         </div>
@@ -97,8 +126,8 @@
           <span class="filter-pill" style="font-size:10.5px; padding:2px 8px;">预览 ›</span>
         </div>
       `,
-      code: `// SwiftUI + UIKit 混合保护：仅更新不可变样式快照\nlet metrics = ChatResolvedMetrics.resolve(\n    size: Theme.shared.size,      // 默认 17pt\n    lineHeight: Theme.shared.lineHeight,\n    uiScale: UIScale.factor       // 0.88x ~ 1.08x\n)`,
-      plainText: "0.36 发布前体检完成：UIKit 异步 CoreText 瓦片、W3C CLREQ 排版、117 组 WCAG AA 对比度及 Taint 安全护栏均校验就绪。",
+      code: `// 单一 FontOpticalProfile + SafeLineBox（替代旧 extraSpacing）\nlet metrics = ChatResolvedMetrics.resolve(\n    size: Theme.shared.size,      // 默认 17pt\n    lineHeight: Theme.shared.lineHeight,\n    uiScale: UIScale.factor       // 0.88x ~ 1.08x\n)`,
+      plainText: "0.36 发布前体检完成：UIKit 异步 CoreText 瓦片、W3C CLREQ 排版、SafeLineBox 光学校准与 Taint 安全护栏均校验就绪。",
       sources: ["w3.org · CLREQ", "apple.com · HIG", "linear.app · Refresh"]
     },
     {
@@ -160,34 +189,34 @@
 
   const SETTINGS_CATALOG = [
     // 模型与服务
-    { group: "模型与服务", id: "providers", icon: "cpu", tint: "#35587B", title: "服务商与密钥", line: "API 地址、测速与新服务接入", kw: "api key deepseek claude openai ollama 服务商 密钥", sub: "providers" },
-    { group: "模型与服务", id: "models_cfg", icon: "sparkles", tint: "#35587B", title: "模型角色与思考", line: "默认、备用与生图角色分配", kw: "model role thinking context 上下文 思考 模型", sub: "models_cfg" },
+    { group: "模型与服务", id: "providers", icon: "cpu", tint: "#3B5875", title: "服务商与密钥", line: "API 地址、测速与钥匙串凭据", kw: "api key deepseek claude openai ollama 服务商 密钥", sub: "providers" },
+    { group: "模型与服务", id: "models_cfg", icon: "sparkles", tint: "#3B5875", title: "模型角色与推理", line: "", kw: "model role thinking context temperature tokens retry 温度 上下文 思考 模型", sub: "models_cfg" },
     // 外观与阅读
-    { group: "外观与阅读", id: "appearance", icon: "palette", tint: "#6F5C96", title: "外观与设色", line: "", kw: "theme look color 设色 主题 深色 oled 书卷 日常 称谓 调弦 松绿 黛蓝 光氛", sub: "appearance" },
-    { group: "外观与阅读", id: "typography", icon: "textformat", tint: "#4F7099", title: "字体与版式", line: "", kw: "font size line height spacing clreq 字体 字号 行距 段距 版式 排版 缩放", sub: "typography" },
-    { group: "外观与阅读", id: "motion_haptics", icon: "waveform", tint: "#6F5C96", title: "动效与触觉反馈", line: "", kw: "motion haptic vibration 动效 触觉 震动 减弱动态", sub: "motion_haptics" },
-    // 对话与语音
-    { group: "对话与语音", id: "chat_display", icon: "bubble", tint: "#57534D", title: "对话显示与头像", line: "", kw: "avatar face thinking trace stats 对话 头像 思考 耗时 确认停止", sub: "chat_display" },
-    { group: "对话与语音", id: "voice", icon: "mic", tint: "#57534D", title: "语音、听写与朗读", line: "", kw: "voice stt tts whisper sensevoice 语音 麦克风 朗读", sub: "voice" },
+    { group: "外观与阅读", id: "appearance", icon: "palette", tint: "#5E547A", title: "外观与设色", line: "", kw: "theme look color 设色 主题 深色 oled 书卷 日常 称谓 调弦 松绿 黛蓝 光氛", sub: "appearance" },
+    { group: "外观与阅读", id: "typography", icon: "textformat", tint: "#4D6682", title: "字体与版式", line: "", kw: "font size line height spacing clreq wenkai 字体 字号 行距 段距 版式 排版 预设 文楷 缩放", sub: "typography" },
+    { group: "外观与阅读", id: "motion_haptics", icon: "waveform", tint: "#5E547A", title: "动效与触觉反馈", line: "", kw: "motion haptic vibration 动效 触觉 震动 减弱动态", sub: "motion_haptics" },
+    // 对话与交互
+    { group: "对话与交互", id: "chat_display", icon: "bubble", tint: "#5A5650", title: "对话与 Agent 策略", line: "", kw: "对话显示 avatar face thinking trace stats agent steps concurrency retry 对话 头像 思考 步数 并发 重试", sub: "chat_display" },
+    { group: "对话与交互", id: "voice", icon: "mic", tint: "#5A5650", title: "语音、听写与朗读", line: "", kw: "voice stt tts whisper sensevoice 语音 麦克风 朗读", sub: "voice" },
     // 旅伴与记忆
-    { group: "旅伴与记忆", id: "memory_rules", icon: "brain", tint: "#A9554C", title: "记忆策略与整理", line: "", kw: "memory recall night 记忆 拾遗 常记 自动整理", sub: "memory_rules" },
-    { group: "旅伴与记忆", id: "goPet", icon: "paw", tint: "#A9554C", title: "伴读宠物", line: "", kw: "pet xiaoke roubao xuanmao songque zhihe 宠物 伴读 小克 肉包", scene: "pet" },
-    { group: "旅伴与记忆", id: "morning", icon: "sun", tint: "#A9554C", title: "晨信与伴读手札", line: "", kw: "morning brief journal 晨信 手札 日记", sub: "morning" },
+    { group: "旅伴与记忆", id: "memory_rules", icon: "brain", tint: "#8F524B", title: "记忆策略与整理", line: "", kw: "memory recall night 记忆 拾遗 常记 自动整理", sub: "memory_rules" },
+    { group: "旅伴与记忆", id: "goPet", icon: "paw", tint: "#8F524B", title: "伴读宠物", line: "", kw: "pet xiaoke roubao xuanmao songque zhihe 宠物 伴读 小克 肉包", scene: "pet" },
+    { group: "旅伴与记忆", id: "morning", icon: "sun", tint: "#8F524B", title: "晨信与伴读手札", line: "", kw: "morning brief journal 晨信 手札 日记", sub: "morning" },
     // 工具与扩展
-    { group: "工具与扩展", id: "extensions", icon: "plug", tint: "#A9772F", title: "MCP 连接器与技能", line: "", kw: "mcp connector skill google github notion 连接器 技能", sub: "extensions" },
-    { group: "工具与扩展", id: "search_engine", icon: "globe", tint: "#A9772F", title: "联网搜索引擎", line: "", kw: "search tavily brave searxng 搜索 联网", sub: "search_engine" },
-    { group: "工具与扩展", id: "workspace", icon: "terminal", tint: "#A9772F", title: "工作空间与远程主机", line: "挂载目录、Alpine 终端与 SSH 远山", kw: "ssh vps host server 远山 远程 主机 公钥 终端 挂载", sub: "workspace" },
-    // 权限与隐私
-    { group: "权限与隐私", id: "permissions", icon: "shield", tint: "#286644", title: "权限预设与外网卫士", line: "", kw: "permission grant taint web 权限 审批 外网 安全", sub: "permissions" },
-    { group: "权限与隐私", id: "vault", icon: "key", tint: "#286644", title: "密码匣", line: "钥匙串物理加密保存 · 永不给模型明文", kw: "vault secret password keychain 密码 密钥 信匣 密匣", sub: "vault" },
-    { group: "权限与隐私", id: "privacy", icon: "faceid", tint: "#286644", title: "面容锁与防窥", line: "", kw: "face id privacy blur lock 面容 锁 防窥", sub: "privacy" },
+    { group: "工具与扩展", id: "extensions", icon: "plug", tint: "#8E6A34", title: "MCP 连接器与技能", line: "", kw: "mcp connector skill google github notion 连接器 技能", sub: "extensions" },
+    { group: "工具与扩展", id: "search_engine", icon: "globe", tint: "#8E6A34", title: "联网搜索引擎", line: "", kw: "search tavily brave searxng 搜索 联网", sub: "search_engine" },
+    { group: "工具与扩展", id: "workspace", icon: "terminal", tint: "#8E6A34", title: "工作空间与远程主机", line: "Alpine 终端、SSH 远山与挂载目录", kw: "ssh vps host server 远山 远程 主机 公钥 终端 挂载", sub: "workspace" },
+    // 权限与隐私安全
+    { group: "权限与隐私", id: "permissions", icon: "shield", tint: "#336349", title: "权限预设与外网卫士", line: "", kw: "permission grant taint web 权限 审批 外网 安全", sub: "permissions" },
+    { group: "权限与隐私", id: "vault", icon: "key", tint: "#336349", title: "密码匣", line: "钥匙串物理加密 · 永不入模型上下文", kw: "vault secret password keychain 密码 密钥 信匣 密匣", sub: "vault" },
+    { group: "权限与隐私", id: "privacy", icon: "faceid", tint: "#336349", title: "面容锁与防窥", line: "", kw: "face id privacy blur lock 面容 锁 防窥", sub: "privacy" },
     // 通知与后台
-    { group: "通知与后台", id: "notifications", icon: "bell", tint: "#2D6B82", title: "通知、灵动岛与后台", line: "", kw: "notification live activity island keepawake always on 通知 灵动岛 常亮 保活", sub: "notifications" },
+    { group: "通知与后台", id: "notifications", icon: "bell", tint: "#356173", title: "通知、灵动岛与后台", line: "", kw: "notification live activity island keepawake always on 通知 灵动岛 常亮 保活", sub: "notifications" },
     // 数据与养护
-    { group: "数据与养护", id: "backup", icon: "cloud", tint: "#3D5A73", title: "加密备份与 WebDAV", line: "", kw: "backup webdav restore aes 备份 恢复 云同步", sub: "backup" },
-    { group: "数据与养护", id: "usage_diag", icon: "chart", tint: "#3D5A73", title: "用量、存储与诊断", line: "", kw: "usage token storage fps hitch diag 用量 费用 存储 掉帧 诊断", sub: "usage_diag" },
+    { group: "数据与养护", id: "backup", icon: "cloud", tint: "#455A6E", title: "加密备份与 WebDAV", line: "", kw: "backup webdav restore aes 备份 恢复 云同步", sub: "backup" },
+    { group: "数据与养护", id: "usage_diag", icon: "chart", tint: "#455A6E", title: "用量、存储与诊断", line: "", kw: "usage token storage fps hitch diag 用量 费用 存储 掉帧 诊断", sub: "usage_diag" },
     // 关于
-    { group: "关于", id: "about", icon: "info", tint: "#5E6961", title: "关于 Clio", line: "", kw: "about version license gpl credits 关于 版本 许可 致谢", sub: "about" }
+    { group: "关于", id: "about", icon: "info", tint: "#5B635D", title: "关于 Clio", line: "", kw: "about version license gpl credits 关于 版本 许可 致谢", sub: "about" }
   ];
 
   const state = {
@@ -233,12 +262,28 @@
     memorySub: "layers", // layers | cards
     careSub: "backup", // backup | usage
 
-    // Typography 9-control live settings
-    readingSize: 16,
+    // Typography & Single Optical Calibration Engine
+    readingSize: 17,
     lineHeight: 1.65,
     paragraphGap: 13,
     readingWidth: 640,
     uiScale: 1.0,
+    activeReadingPreset: "editorial",
+    fontCombo: "E",
+    fontCompareOpen: false,
+
+    // Single Source of Truth: Model Inference vs Agent Execution vs Progressive Disclosure
+    modelAdvOpen: false,
+    modelTemp: 0.7,
+    modelMaxOut: "8k",
+    modelCtxRatio: "75%",
+    modelReqRetry: 2,
+    agentPolicyOpen: false,
+    agentMaxSteps: 16,
+    agentReadConcurrency: 4,
+    agentToolRetry: 1,
+    typoAdvOpen: false,
+    diagDevOpen: false,
 
     // Navigation & overlays
     sidebarOpen: false,
@@ -260,6 +305,7 @@
     activeTurn: 1,
     streaming: false,
     streamingTurnId: null,
+    chatFollowBottom: true,
     voiceRecording: false,
     pendingQuote: null,
     pendingAttachments: ["WCAG-audit.json (12KB)"],
@@ -314,8 +360,8 @@
     // Settings & Preferences (Real interactive 8+1 sub-page states)
     settingsQuery: "",
     settingsSub: null,
-    readingFace: "auto", // auto | serif | sans | wenkai
-    headingWeight: "bold", // medium | semibold | bold
+    readingFace: "editorial", // editorial | sans | serif | wenkai
+    headingWeight: "semibold", // medium | semibold | bold
     clreqSqueeze: true,
     ambientGlowOn: true,
     showHintBadge: true,
@@ -674,8 +720,14 @@
     style.setProperty("--rail-width", langCfg.toolRailWidth + "px");
     style.setProperty("--ui-scale", String(state.uiScale));
     style.setProperty("--ax-mult", state.ax ? "1.18" : "1");
-    style.setProperty("--reading-size", (state.readingSize * (state.ax ? 1.15 : 1)).toFixed(1) + "px");
-    style.setProperty("--reading-lh", String(state.lineHeight));
+    const resolvedFace = (state.lang === "B" && state.readingFace === "editorial") ? "sans" : (state.readingFace || "editorial");
+    const optical = (TOKENS.fontOpticalProfiles && TOKENS.fontOpticalProfiles[resolvedFace]) || TOKENS.fontOpticalProfiles.editorial;
+    const baseSizePx = state.readingSize * (state.ax ? 1.15 : 1);
+    style.setProperty("--reading-size", baseSizePx.toFixed(1) + "px");
+    style.setProperty("--font-optical-scale", String(optical.opticalScale || 1));
+    style.setProperty("--font-tracking", optical.trackingEm || "0em");
+    style.setProperty("--bold-weight", String(optical.boldWeight || 600));
+    style.setProperty("--reading-lh", String(Math.min(1.9, (state.lineHeight + (optical.lhOffset || 0))).toFixed(2)));
     style.setProperty("--para-gap", state.paragraphGap + "px");
     style.setProperty("--reading-width", state.readingWidth + "px");
     style.setProperty("--motion-dur", langCfg.motionTiers.standard.ms + "ms");
@@ -683,11 +735,12 @@
 
     const glow = document.getElementById("ambientGlow");
     let glowColor = c.accent;
-    if (state.viewState === "error") glowColor = c.danger;
-    else if (state.scene === "approval" && state.inlineApprovalStatus === "pending") glowColor = c.seal;
-    else if (state.streaming || state.petState === "thinking" || state.petState === "working") glowColor = c.warn;
+    let glowAlpha = 14;
+    if (state.viewState === "error") { glowColor = c.danger; glowAlpha = 22; }
+    else if (state.scene === "approval" && state.inlineApprovalStatus === "pending") { glowColor = c.seal; glowAlpha = 20; }
+    else if (state.streaming || state.petState === "thinking" || state.petState === "working") { glowColor = c.warn; glowAlpha = 18; }
     glow.style.display = state.ambientGlowOn ? "" : "none";
-    glow.style.background = `radial-gradient(ellipse at 50% 0%, color-mix(in srgb, ${glowColor} 24%, transparent), transparent 72%)`;
+    glow.style.background = `radial-gradient(ellipse at 50% 0%, color-mix(in srgb, ${glowColor} ${glowAlpha}%, transparent), transparent 68%)`;
     glow.style.setProperty("--ambient-line", glowColor);
 
     const netEl = document.getElementById("networkStatusChip");
@@ -1106,15 +1159,24 @@
     return false;
   }
 
+  function attachImeSafeInput(inputEl, onUpdate) {
+    if (!inputEl) return;
+    let composing = false;
+    inputEl.addEventListener("compositionstart", () => { composing = true; });
+    inputEl.addEventListener("compositionend", (e) => {
+      composing = false;
+      onUpdate(e.target.value);
+    });
+    inputEl.addEventListener("input", (e) => {
+      if (composing || e.isComposing) return;
+      onUpdate(e.target.value);
+    });
+  }
+
   function renderViewport(opts = {}) {
     const vp = document.getElementById("appViewport");
     const prevScroller = document.getElementById("mainScroller");
     const prevScrollTop = (!opts.resetScroll && prevScroller) ? prevScroller.scrollTop : 0;
-
-    const prevActive = document.activeElement;
-    const preserveIds = ["fileSearchInput", "settingsSearchInput", "globalSearchInput", "askCustomInput"];
-    const prevId = prevActive && preserveIds.includes(prevActive.id) ? prevActive.id : null;
-    const prevPos = prevId ? prevActive.selectionStart : null;
 
     vp.innerHTML = "";
 
@@ -1185,32 +1247,41 @@
 
     if (opts.scrollToBottom) scroller.scrollTop = scroller.scrollHeight;
     else if (prevScrollTop > 0) scroller.scrollTop = prevScrollTop;
-
-    if (prevId) {
-      const restored = document.getElementById(prevId);
-      if (restored) {
-        restored.focus();
-        if (typeof prevPos === "number") {
-          try { restored.setSelectionRange(prevPos, prevPos); } catch (_) {}
-        }
-      }
-    }
   }
 
-  // ==================== Scene 1 & 3: Complex Markdown Chat & Pet/Identity Studio ====================
+  // ==================== Scene 1 & 3: Complex Markdown Chat, 5-Combo Font Comparator & Pet Studio ====================
   function renderLanguageChatHeader() {
-    const sealCh = escHtml((state.assistant.sealChar || "克").slice(0, 1));
-    if (state.lang === "AC") {
-      const palLabel = state.acPalette === "oat_pine" ? "栖息松绿" : "素笺黛蓝";
-      return `<div class="lang-header-AC"><span class="clio-seal-stamp" style="width:18px;height:18px;font-size:10px;border-radius:3px;transform:none;box-shadow:none;animation:none;flex-shrink:0;">${sealCh}</span><span class="font-mark" style="font-size:13px; color:var(--ink-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(t("greetingC"))}</span><button type="button" class="filter-pill" id="btnHeaderPaletteChip" style="margin-left:auto; font-size:10px; padding:1px 7px; flex-shrink:0;">🎨 ${palLabel}</button><span class="font-mono" style="font-size:10.5px; color:var(--ink-tertiary); flex-shrink:0;">${state.lineHeight}×</span></div>`;
-    }
-    if (state.lang === "A") {
-      return `<div class="lang-header-A"><span class="clio-seal-stamp" style="width:18px;height:18px;font-size:10px;border-radius:3px;transform:none;box-shadow:none;animation:none;">${sealCh}</span><span class="font-mark" style="font-size:13px; color:var(--ink-secondary);">案头清简 · 现代素笺出版式</span><span class="font-mono" style="margin-left:auto; font-size:10.5px; color:var(--ink-tertiary);">${state.lineHeight}× CLREQ</span></div>`;
-    }
     if (state.lang === "B") {
       return `<div class="lang-header-B"><span>CORE // 120Hz TILES</span><span>CTX ${(state.chatTurns.length * 14).toFixed(0)}% · MONO DIGITS</span></div>`;
     }
-    return `<div class="lang-header-C"><div style="font-size:13px; font-weight:600; color:var(--ink);">${t("greetingC")}</div><span class="filter-pill" style="font-size:10.5px; padding:2px 8px; background:var(--surface); color:var(--accent);">● 温润同步</span></div>`;
+    return "";
+  }
+
+  function renderFontComparePanel() {
+    const combo = TOKENS.fontCombos.find((x) => x.id === state.fontCombo) || TOKENS.fontCombos[4];
+    const buttons = TOKENS.fontCombos.map((c) => `
+      <button type="button" class="filter-pill ${state.fontCombo === c.id ? "active" : ""}" style="font-size:11px; padding:3px 9px;" data-pick-combo="${c.id}">${c.id}</button>
+    `).join("");
+    return `
+      <div class="clio-card" style="padding:12px 13px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:7px;">
+          <strong style="font-size:13px;">4.6 同一复杂样本 · 5 组字体光学对照</strong>
+          <button type="button" class="reply-action-btn" id="btnCloseFontCompare" style="font-size:11.5px;">收起</button>
+        </div>
+        <div style="display:flex; gap:5px; flex-wrap:wrap; margin-bottom:7px;">${buttons}</div>
+        <div style="font-size:11.5px; color:var(--ink-secondary); margin-bottom:8px; line-height:1.45;">
+          <strong style="color:var(--accent);">${combo.title}</strong>：${combo.desc}
+        </div>
+        <div class="clio-inner-block" style="background:var(--bg); padding:10px 11px;">
+          <div class="font-reading combo-sample" data-combo="${combo.id}" id="fontCompareSampleBody">
+            ${renderStreamingMarkdown(SECTION46_SAMPLE.fullMarkdown, false)}
+          </div>
+        </div>
+        <div style="font-size:10.5px; color:var(--ink-tertiary); margin-top:6px;">
+          注：Web 原型仅供参考节奏；真实 CoreText 自然行高/描边参数均以实机 iPhone 渲染裁决。
+        </div>
+      </div>
+    `;
   }
 
   function renderPetStudioPanel() {
@@ -1341,16 +1412,21 @@
 
     html += `
       <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
-        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
           <button type="button" class="filter-pill" id="btnDemoSelection">✎ ${t("selectDemo")}</button>
+          <button type="button" class="filter-pill ${state.fontCompareOpen ? "active" : ""}" id="btnToggleFontCompare">Aa 5字体对照</button>
           <button type="button" class="filter-pill ${state.showChatFaces ? "active" : ""}" id="btnToggleChatFaces">👤 正文头像：${state.showChatFaces ? "开" : "关"}</button>
         </div>
-        <div style="display:flex; gap:6px; align-items:center;">
+        <div style="display:flex; gap:5px; align-items:center;">
           ${state.compressedNotice ? `<span class="font-mono" style="font-size:10.5px; color:var(--ok);">已收卷 38%</span>` : ""}
-          <button type="button" class="filter-pill" id="btnSimulateStream">${state.streaming ? "■ 停止输出" : "▶ 模拟 15Hz 流式"}</button>
+          <button type="button" class="filter-pill" id="btnSimulateStream">${state.streaming ? "■ 停止输出" : "▶ 复杂流式"}</button>
         </div>
       </div>
     `;
+
+    if (state.fontCompareOpen) {
+      html += renderFontComparePanel();
+    }
 
     state.chatTurns.forEach((turn, idx) => {
       const thinkingHtml = turn.thinking ? `
@@ -1385,6 +1461,10 @@
           <span class="speaker-edit-hint">改名/头像 ›</span>
         </button>` : "";
 
+      const liveProseBody = turn.streaming
+        ? renderStreamingMarkdown(turn.plainText || "", true)
+        : (turn.aiBody || renderStreamingMarkdown(turn.plainText || "……", false));
+
       html += `
         <section class="chat-turn" id="turn-${turn.id}">
           ${timeGapHtml}
@@ -1396,7 +1476,7 @@
             ${speakerHeadHtml}
             ${thinkingHtml}
             <div class="font-reading reading-measure" data-turn-prose="${turn.id}">
-              ${turn.aiBody || `<p class="prose-p">${escHtml(turn.plainText || "……")}</p>`}
+              ${liveProseBody}
             </div>
             ${codeHtml}
             ${srcHtml}
@@ -1413,6 +1493,27 @@
 
     scroller.innerHTML = html;
 
+    // Floating Jump-to-Latest Pill (shown when user scrolls up during streaming or reading history)
+    const jumpPill = document.createElement("button");
+    jumpPill.type = "button";
+    jumpPill.className = "jump-latest-pill pressable" + ((state.streaming && !state.chatFollowBottom) ? " visible" : "");
+    jumpPill.id = "btnJumpLatest";
+    jumpPill.innerHTML = `<span>↓</span><span>回到最新${state.streaming ? "（生成中）" : ""}</span>`;
+    vp.appendChild(jumpPill);
+
+    jumpPill.onclick = () => {
+      state.chatFollowBottom = true;
+      scroller.scrollTop = scroller.scrollHeight;
+      jumpPill.classList.remove("visible");
+      emitHaptic("silent", "回到底部并恢复跟底");
+    };
+
+    scroller.onscroll = () => {
+      const distBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      state.chatFollowBottom = distBottom <= 36;
+      jumpPill.classList.toggle("visible", Boolean(state.streaming && !state.chatFollowBottom));
+    };
+
     // Minimap
     const minimap = document.createElement("div");
     minimap.className = "minimap-rail";
@@ -1424,6 +1525,7 @@
       tick.onclick = () => {
         emitHaptic("tick", `小地图跳至第 ${turn.id} 轮`);
         state.activeTurn = turn.id;
+        state.chatFollowBottom = false;
         const target = document.getElementById(`turn-${turn.id}`);
         if (target) target.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "start" });
         minimap.querySelectorAll(".minimap-tick").forEach((el, idx2) => el.classList.toggle("active", state.chatTurns[idx2]?.id === state.activeTurn));
@@ -1436,19 +1538,29 @@
       const sel = window.getSelection();
       const picked = sel ? sel.toString().trim() : "";
       if (picked.length >= 2) {
-        emitHaptic("selection", "选中正文片段");
+        state.chatFollowBottom = false;
+        emitHaptic("selection", "选中正文片段（已暂停跟底滚动）");
         state.selectionMenuText = picked.slice(0, 34) + (picked.length > 34 ? "…" : "");
         try { sel.removeAllRanges(); } catch (_) {}
         renderViewport();
       }
     };
 
-    const btnPal = document.getElementById("btnHeaderPaletteChip");
-    if (btnPal) btnPal.onclick = () => {
-      state.acPalette = state.acPalette === "paper_dai" ? "oat_pine" : "paper_dai";
-      emitHaptic("selection", `切换 AC 头牌色盘 → ${TOKENS.languages.AC.palettes[state.acPalette].name}`);
-      renderAll();
+    const btnCmp = document.getElementById("btnToggleFontCompare");
+    if (btnCmp) btnCmp.onclick = () => {
+      state.fontCompareOpen = !state.fontCompareOpen;
+      emitHaptic("selection", "切换 5 组字体光学对照");
+      renderViewport();
     };
+    const btnCloseCmp = document.getElementById("btnCloseFontCompare");
+    if (btnCloseCmp) btnCloseCmp.onclick = () => { state.fontCompareOpen = false; renderViewport(); };
+    scroller.querySelectorAll("[data-pick-combo]").forEach((b) => {
+      b.onclick = () => {
+        state.fontCombo = b.dataset.pickCombo;
+        emitHaptic("selection", `对照字体组合 ${state.fontCombo}`);
+        renderViewport();
+      };
+    });
     const btnFaces = document.getElementById("btnToggleChatFaces");
     if (btnFaces) btnFaces.onclick = () => {
       state.showChatFaces = !state.showChatFaces;
@@ -1917,51 +2029,72 @@
 
   // ==================== Scene 7: Unified Global Search & IA Sidebar ====================
   function renderSearchScene(scroller) {
-    const q = state.globalQuery.trim().toLowerCase();
-    const hits = SEARCH_CORPUS.filter((item) => {
-      const tabMatch = state.globalTab === "all" || item.type === state.globalTab;
-      if (!tabMatch) return false;
-      if (!q) return true;
-      return item.title.toLowerCase().includes(q) || item.snippet.toLowerCase().includes(q) || item.owner.toLowerCase().includes(q);
-    });
+    function buildSearchResultsHtml() {
+      const q = state.globalQuery.trim().toLowerCase();
+      const hits = SEARCH_CORPUS.filter((item) => {
+        const tabMatch = state.globalTab === "all" || item.type === state.globalTab;
+        if (!tabMatch) return false;
+        if (!q) return true;
+        return item.title.toLowerCase().includes(q) || item.snippet.toLowerCase().includes(q) || item.owner.toLowerCase().includes(q);
+      });
+      const tabsHtml = `
+        <div class="pill-row">
+          ${[["all", "全部"], ["chat", "对话 FTS5"], ["memory", "记忆 拾遗"], ["file", "文件 & PDF"]].map(([k, lbl]) => {
+            const cnt = SEARCH_CORPUS.filter((x) => (k === "all" || x.type === k) && (!q || x.title.toLowerCase().includes(q) || x.snippet.toLowerCase().includes(q))).length;
+            return `<button type="button" class="filter-pill ${state.globalTab === k ? "active" : ""}" data-gs-tab="${k}">${lbl} (${cnt})</button>`;
+          }).join("")}
+        </div>
+      `;
+      const listHtml = `
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${hits.length ? hits.map((h) => `
+            <button type="button" class="clio-card" style="padding:11px 13px; text-align:left; cursor:pointer;" data-gs-go="${h.target}">
+              <div style="display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+                <span class="filter-pill" style="font-size:10px; padding:1px 7px; background:var(--accent-wash); color:var(--accent); border-color:transparent;">${h.type === "chat" ? "对话" : (h.type === "memory" ? "记忆" : "文件/PDF")}</span>
+                <strong style="font-size:13.5px;">${escHtml(h.title)}</strong>
+                <span style="margin-left:auto; font-size:10.5px; color:var(--ink-tertiary);">直达 ›</span>
+              </div>
+              <div style="font-size:11px; color:var(--ink-tertiary); margin-bottom:3px;">${escHtml(h.owner)}</div>
+              <div style="font-size:12.5px; color:var(--ink-secondary); line-height:1.45;">${escHtml(h.snippet)}</div>
+            </button>
+          `).join("") : `<div class="clio-card" style="padding:20px; text-align:center; font-size:13px; color:var(--ink-secondary);">在三大检索库里都没有找到「${escHtml(state.globalQuery)}」</div>`}
+        </div>
+      `;
+      return tabsHtml + listHtml;
+    }
+
+    function refreshSearchResults() {
+      const wrap = scroller.querySelector("#globalResultsWrap");
+      if (!wrap) return;
+      wrap.innerHTML = buildSearchResultsHtml();
+      const clr = scroller.querySelector("#btnClearGlobalQ");
+      if (clr) clr.style.display = state.globalQuery ? "inline-block" : "none";
+      wrap.querySelectorAll("[data-gs-tab]").forEach((b) => { b.onclick = () => { emitHaptic("selection", "切搜索范围"); state.globalTab = b.dataset.gsTab; refreshSearchResults(); }; });
+      wrap.querySelectorAll("[data-gs-go]").forEach((b) => { b.onclick = () => { emitHaptic("silent", "从搜索结果直达"); switchScene(b.dataset.gsGo); }; });
+    }
 
     scroller.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:9px;">
         <span style="font-size:20px; font-weight:700;" class="font-mark">全局统一搜索</span>
         <button type="button" class="filter-pill active" id="btnPreviewNewSidebar">☰ 拉出重构侧栏 IA</button>
       </div>
+      <div class="privacy-strip">
+        <span>⛨</span>
+        <span><strong>权限隔离：</strong>仅限本人主动搜索；永不索引密码匣，删除记忆同事务剔除 FTS5，撤销挂载目录实时清理，绝不对 Agent 静默开放。</span>
+      </div>
       <div class="settings-search">
         <span style="opacity:0.6;">🔍</span>
-        <input id="globalSearchInput" placeholder="跨 对话 · 四层记忆 · 文件/PDF FTS5 同步检索（如 PDF / nginx / 震动）" value="${escHtml(state.globalQuery)}" />
-        ${state.globalQuery ? `<button type="button" id="btnClearGlobalQ" style="border:0;background:transparent;color:var(--ink-tertiary);cursor:pointer;">✕</button>` : ""}
+        <input id="globalSearchInput" placeholder="跨 对话 · 四层记忆 · 文件/PDF FTS5 同步检索（支持中文拼音）" value="${escHtml(state.globalQuery)}" />
+        <button type="button" id="btnClearGlobalQ" style="border:0;background:transparent;color:var(--ink-tertiary);cursor:pointer;display:${state.globalQuery ? "inline-block" : "none"};">✕</button>
       </div>
-      <div class="pill-row">
-        ${[["all", "全部"], ["chat", "对话 FTS5"], ["memory", "记忆 拾遗"], ["file", "文件 & PDF"]].map(([k, lbl]) => {
-          const cnt = SEARCH_CORPUS.filter((x) => (k === "all" || x.type === k) && (!q || x.title.toLowerCase().includes(q) || x.snippet.toLowerCase().includes(q))).length;
-          return `<button type="button" class="filter-pill ${state.globalTab === k ? "active" : ""}" data-gs-tab="${k}">${lbl} (${cnt})</button>`;
-        }).join("")}
-      </div>
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        ${hits.length ? hits.map((h) => `
-          <button type="button" class="clio-card" style="padding:11px 13px; text-align:left; cursor:pointer;" data-gs-go="${h.target}">
-            <div style="display:flex; align-items:center; gap:6px; margin-bottom:3px;">
-              <span class="filter-pill" style="font-size:10px; padding:1px 7px; background:var(--accent-wash); color:var(--accent); border-color:transparent;">${h.type === "chat" ? "对话" : (h.type === "memory" ? "记忆" : "文件/PDF")}</span>
-              <strong style="font-size:13.5px;">${escHtml(h.title)}</strong>
-              <span style="margin-left:auto; font-size:10.5px; color:var(--ink-tertiary);">直达 ›</span>
-            </div>
-            <div style="font-size:11px; color:var(--ink-tertiary); margin-bottom:3px;">${escHtml(h.owner)}</div>
-            <div style="font-size:12.5px; color:var(--ink-secondary); line-height:1.45;">${escHtml(h.snippet)}</div>
-          </button>
-        `).join("") : `<div class="clio-card" style="padding:20px; text-align:center; font-size:13px; color:var(--ink-secondary);">在三大检索库里都没有找到「${escHtml(state.globalQuery)}」</div>`}
-      </div>
+      <div id="globalResultsWrap"></div>
     `;
     scroller.querySelector("#btnPreviewNewSidebar").onclick = () => { emitHaptic("silent", "打开重构后侧栏 IA"); state.sidebarOpen = true; renderModalLayer(); };
     const gIn = scroller.querySelector("#globalSearchInput");
-    if (gIn) gIn.oninput = (e) => { state.globalQuery = e.target.value; renderViewport(); };
+    attachImeSafeInput(gIn, (val) => { state.globalQuery = val; refreshSearchResults(); });
     const cBtn = scroller.querySelector("#btnClearGlobalQ");
-    if (cBtn) cBtn.onclick = () => { state.globalQuery = ""; renderViewport(); };
-    scroller.querySelectorAll("[data-gs-tab]").forEach((b) => { b.onclick = () => { emitHaptic("selection", "切搜索范围"); state.globalTab = b.dataset.gsTab; renderViewport(); }; });
-    scroller.querySelectorAll("[data-gs-go]").forEach((b) => { b.onclick = () => { emitHaptic("silent", "从搜索结果直达"); switchScene(b.dataset.gsGo); }; });
+    if (cBtn) cBtn.onclick = () => { state.globalQuery = ""; if (gIn) { gIn.value = ""; gIn.focus(); } refreshSearchResults(); };
+    refreshSearchResults();
   }
 
   // ==================== Scene 8: Models & 4-Role Allocation ====================
@@ -2003,35 +2136,46 @@
 
   // ==================== Scene 9: Files & PDF FTS5 Knowledge Base ====================
   function renderFilesScene(scroller) {
-    const files = [
+    const allFiles = [
       { id: "md", name: "设计系统2.0结论.md", meta: "本地 · 18.4 KB · 刚刚", tag: "Markdown", mount: false },
       { id: "html", name: "对比度与性能看板.html", meta: "本地 · 离线互动预览 · 12.1 KB", tag: "HTML 沙箱", mount: false },
       { id: "diff", name: "patch-0.36.diff", meta: "本地 · 3 处改动 · 4.8 KB", tag: "Diff", mount: false },
       { id: "pdf", name: "iOS26-HIG-Materials.pdf", meta: "书案资料库 · FTS5 全文已索引 42 页", tag: "PDF · 0.36", mount: false },
       { id: "mount", name: "iCloud / 工作笔记目录", meta: "外部挂载 · Security-Scoped Bookmark 已授权", tag: "已挂载", mount: true }
-    ].filter((f) => !state.fileQuery || f.name.toLowerCase().includes(state.fileQuery.toLowerCase()));
+    ];
+
+    function refreshFilesList() {
+      const wrap = scroller.querySelector("#filesResultsWrap");
+      if (!wrap) return;
+      const q = state.fileQuery.trim().toLowerCase();
+      const files = allFiles.filter((f) => !q || f.name.toLowerCase().includes(q) || f.meta.toLowerCase().includes(q));
+      wrap.innerHTML = files.length ? `
+        <div class="row-card">
+          ${files.map((f) => `
+            <button type="button" class="row-item pressable" data-open-file="${f.id}">
+              <span class="icon-badge" style="background:${f.mount ? "var(--ok)" : "var(--accent)"}; border-radius:calc(28px * ${TOKENS.languages[state.lang].radii.badgeRatio});">${f.mount ? "🔗" : (f.id === "pdf" ? "📑" : (f.id === "html" ? "✦" : "📄"))}</span>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:14px; font-weight:600;">${f.name}</div>
+                <div style="font-size:11.5px; color:var(--ink-secondary);">${f.meta}</div>
+              </div>
+              <span class="filter-pill" style="font-size:10.5px; padding:2px 8px;">${f.tag}</span>
+            </button>
+          `).join("")}
+        </div>
+      ` : `<div class="clio-card" style="padding:18px; text-align:center; font-size:13px; color:var(--ink-secondary);">未找到匹配「${escHtml(state.fileQuery)}」的书案文档</div>`;
+      wrap.querySelectorAll("[data-open-file]").forEach((btn) => {
+        btn.onclick = () => { emitHaptic("silent", `打开预览: ${btn.dataset.openFile}`); state.previewFile = btn.dataset.openFile; renderModalLayer(); };
+      });
+    }
 
     scroller.innerHTML = `
       <div style="font-size:20px; font-weight:700; margin-bottom:9px;" class="font-mark">${t("files")} ${hintBadge("文件与知识库")}</div>
       <div class="settings-search"><span style="opacity:0.6;">🔍</span><input id="fileSearchInput" placeholder="搜索文件名、PDF 或外部挂载目录" value="${escHtml(state.fileQuery)}" /></div>
-      <div class="row-card">
-        ${files.map((f) => `
-          <button type="button" class="row-item pressable" data-open-file="${f.id}">
-            <span class="icon-badge" style="background:${f.mount ? "var(--ok)" : "var(--accent)"}; border-radius:calc(28px * ${TOKENS.languages[state.lang].radii.badgeRatio});">${f.mount ? "🔗" : (f.id === "pdf" ? "📑" : (f.id === "html" ? "✦" : "📄"))}</span>
-            <div style="flex:1; min-width:0;">
-              <div style="font-size:14px; font-weight:600;">${f.name}</div>
-              <div style="font-size:11.5px; color:var(--ink-secondary);">${f.meta}</div>
-            </div>
-            <span class="filter-pill" style="font-size:10.5px; padding:2px 8px;">${f.tag}</span>
-          </button>
-        `).join("")}
-      </div>
+      <div id="filesResultsWrap"></div>
     `;
     const fInp = scroller.querySelector("#fileSearchInput");
-    if (fInp) fInp.oninput = (e) => { state.fileQuery = e.target.value; renderViewport(); };
-    scroller.querySelectorAll("[data-open-file]").forEach((btn) => {
-      btn.onclick = () => { emitHaptic("silent", `打开预览: ${btn.dataset.openFile}`); state.previewFile = btn.dataset.openFile; renderModalLayer(); };
-    });
+    attachImeSafeInput(fInp, (val) => { state.fileQuery = val; refreshFilesList(); });
+    refreshFilesList();
   }
 
   // ==================== Scene 10: Browser Roam · Alpine Den · SSH Hills ====================
@@ -2265,62 +2409,45 @@
   }
 
   function renderSettingsHome(scroller) {
-    const q = state.settingsQuery.trim().toLowerCase();
-    const valMap = getSettingsValueMap();
-    const groupsMap = new Map();
-    SETTINGS_CATALOG.forEach((it) => {
-      const hit = !q
-        || it.title.toLowerCase().includes(q)
-        || it.line.toLowerCase().includes(q)
-        || it.kw.toLowerCase().includes(q)
-        || it.group.toLowerCase().includes(q);
-      if (!hit) return;
-      if (!groupsMap.has(it.group)) groupsMap.set(it.group, []);
-      groupsMap.get(it.group).push(it);
-    });
+    function buildSettingsResultsHtml() {
+      const q = state.settingsQuery.trim().toLowerCase();
+      const valMap = getSettingsValueMap();
+      const groupsMap = new Map();
+      SETTINGS_CATALOG.forEach((it) => {
+        const hit = !q
+          || it.title.toLowerCase().includes(q)
+          || it.line.toLowerCase().includes(q)
+          || it.kw.toLowerCase().includes(q)
+          || it.group.toLowerCase().includes(q);
+        if (!hit) return;
+        if (!groupsMap.has(it.group)) groupsMap.set(it.group, []);
+        groupsMap.get(it.group).push(it);
+      });
 
-    const heroHtml = q ? "" : `
-      <div class="settings-hero-card">
-        <div class="settings-hero-profiles">
-          <button type="button" class="settings-hero-profile-btn" data-edit-identity="assistant">
-            <span class="chat-avatar-btn" style="width:38px;height:38px;">${renderAvatarMarkup("assistant", 38)}</span>
-            <div style="flex:1; min-width:0;">
-              <div style="font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(state.assistant.name)}</div>
-              <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">助手 · 「${escHtml((state.assistant.sealChar || "克").slice(0, 1))}」</div>
-            </div>
-            <span class="settings-chevron">${sfIcon("chevronRight", 12)}</span>
-          </button>
-          <button type="button" class="settings-hero-profile-btn" data-edit-identity="me">
-            <span class="chat-avatar-btn" style="width:38px;height:38px;">${renderAvatarMarkup("me", 38)}</span>
-            <div style="flex:1; min-width:0;">
-              <div style="font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(state.userProfile.name)}</div>
-              <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">我的头像</div>
-            </div>
-            <span class="settings-chevron">${sfIcon("chevronRight", 12)}</span>
-          </button>
+      const heroHtml = q ? "" : `
+        <div class="settings-hero-card slim">
+          <div class="settings-hero-profiles">
+            <button type="button" class="settings-hero-profile-btn" data-edit-identity="assistant">
+              <span class="chat-avatar-btn" style="width:34px;height:34px;">${renderAvatarMarkup("assistant", 34)}</span>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(state.assistant.name)}</div>
+                <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">助手 · ${escHtml((state.assistant.sealChar || "克").slice(0, 1))}印</div>
+              </div>
+              <span class="settings-chevron">${sfIcon("chevronRight", 12)}</span>
+            </button>
+            <button type="button" class="settings-hero-profile-btn" data-edit-identity="me">
+              <span class="chat-avatar-btn" style="width:34px;height:34px;">${renderAvatarMarkup("me", 34)}</span>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escHtml(state.userProfile.name)}</div>
+                <div style="font-size:11px; color:var(--ink-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">我的头像</div>
+              </div>
+              <span class="settings-chevron">${sfIcon("chevronRight", 12)}</span>
+            </button>
+          </div>
         </div>
-        <div class="settings-health-strip">
-          <button type="button" class="health-chip" data-push-sub="providers"><span class="status-dot"></span><span>DeepSeek 已连</span></button>
-          <button type="button" class="health-chip" data-push-sub="vault">${sfIcon("key", 11)}<span>${state.vaultUnlocked ? "密匣已开" : "面容已锁"}</span></button>
-          <button type="button" class="health-chip" data-push-sub="backup">${sfIcon("cloud", 11)}<span>今日已备份</span></button>
-        </div>
-      </div>
-    `;
+      `;
 
-    scroller.innerHTML = `
-      <div class="settings-page-head">
-        <div style="font-size:22px; font-weight:700; letter-spacing:-0.01em;" class="font-mark">${t("settings")} ${hintBadge("设置")}</div>
-        <span style="font-size:11.5px; color:var(--ink-tertiary);">${state.lang === "AC" ? TOKENS.languages.AC.palettes[state.acPalette].name : TOKENS.languages[state.lang].name}</span>
-      </div>
-      <div class="settings-search" style="margin-bottom:14px;">
-        <span style="opacity:0.55; display:inline-flex;">${sfIcon("globe", 14)}</span>
-        <input id="settingsSearchInput" placeholder="搜设置 (行距 · 头像 · 密码 · ssh · 备份)" value="${escHtml(state.settingsQuery)}" />
-        ${state.settingsQuery ? `<button type="button" id="btnClearSettingsQ" style="border:0;background:transparent;color:var(--ink-tertiary);cursor:pointer;">✕</button>` : ""}
-      </div>
-
-      ${heroHtml}
-
-      ${Array.from(groupsMap.entries()).map(([gName, items]) => `
+      const groupsHtml = Array.from(groupsMap.entries()).map(([gName, items]) => `
         <div class="settings-section-title">${gName}</div>
         <div class="settings-row-card">
           ${items.map((it) => `
@@ -2337,33 +2464,57 @@
             </button>
           `).join("")}
         </div>
-      `).join("")}
+      `).join("");
 
-      ${groupsMap.size === 0 ? `<div class="clio-card" style="padding:20px; text-align:center; font-size:13px; color:var(--ink-secondary); margin-bottom:14px;">没有匹配「${escHtml(state.settingsQuery)}」的设置项</div>` : ""}
+      const emptyHtml = groupsMap.size === 0
+        ? `<div class="clio-card" style="padding:20px; text-align:center; font-size:13px; color:var(--ink-secondary); margin-bottom:14px;">没有匹配「${escHtml(state.settingsQuery)}」的设置项</div>`
+        : "";
 
-      <div class="settings-footer-note">Clio 0.36 · 数据、记忆与钥匙串密码全部留在你自己的手机上</div>
+      return heroHtml + groupsHtml + emptyHtml + `<div class="settings-footer-note">Clio 0.36 · 数据、记忆与钥匙串密码全部留在你自己的手机上</div>`;
+    }
+
+    function refreshSettingsResults() {
+      const wrap = scroller.querySelector("#settingsResultsWrap");
+      if (!wrap) return;
+      wrap.innerHTML = buildSettingsResultsHtml();
+      const sClr = scroller.querySelector("#btnClearSettingsQ");
+      if (sClr) sClr.style.display = state.settingsQuery ? "inline-block" : "none";
+      wrap.querySelectorAll("[data-edit-identity]").forEach((b) => { b.onclick = () => openIdentityEditor(b.dataset.editIdentity); });
+      wrap.querySelectorAll("[data-cat-id]").forEach((b) => {
+        b.onclick = () => {
+          const it = SETTINGS_CATALOG.find((x) => x.id === b.dataset.catId);
+          if (!it) return;
+          if (it.scene) {
+            emitHaptic("silent", `进入 ${it.title}`);
+            switchScene(it.scene);
+          } else if (it.sub) {
+            emitHaptic("silent", `Push → ${it.title}`);
+            state.settingsSub = it.sub;
+            renderViewport({ resetScroll: true });
+          }
+        };
+      });
+      drawAllPetCanvases(performance.now());
+    }
+
+    scroller.innerHTML = `
+      <div class="settings-page-head">
+        <div style="font-size:22px; font-weight:700; letter-spacing:-0.01em;" class="font-mark">${t("settings")} ${hintBadge("设置")}</div>
+        <span style="font-size:11.5px; color:var(--ink-tertiary);">${state.lang === "AC" ? TOKENS.languages.AC.palettes[state.acPalette].name : TOKENS.languages[state.lang].name}</span>
+      </div>
+      <div class="settings-search" style="margin-bottom:14px;">
+        <span style="opacity:0.55; display:inline-flex;">${sfIcon("globe", 14)}</span>
+        <input id="settingsSearchInput" placeholder="搜设置 (行距 · 头像 · 密码 · ssh · 步数)" value="${escHtml(state.settingsQuery)}" />
+        <button type="button" id="btnClearSettingsQ" style="border:0;background:transparent;color:var(--ink-tertiary);cursor:pointer;display:${state.settingsQuery ? "inline-block" : "none"};">✕</button>
+      </div>
+      <div id="settingsResultsWrap"></div>
     `;
 
     const sInp = scroller.querySelector("#settingsSearchInput");
-    if (sInp) sInp.oninput = (e) => { state.settingsQuery = e.target.value; renderViewport(); };
+    attachImeSafeInput(sInp, (val) => { state.settingsQuery = val; refreshSettingsResults(); });
     const sClr = scroller.querySelector("#btnClearSettingsQ");
-    if (sClr) sClr.onclick = () => { state.settingsQuery = ""; renderViewport(); };
-    scroller.querySelectorAll("[data-edit-identity]").forEach((b) => { b.onclick = () => openIdentityEditor(b.dataset.editIdentity); });
-    scroller.querySelectorAll("[data-push-sub]").forEach((b) => { b.onclick = () => { state.settingsSub = b.dataset.pushSub; emitHaptic("silent", `打开设置子页 ${b.dataset.pushSub}`); renderViewport({ resetScroll: true }); }; });
-    scroller.querySelectorAll("[data-cat-id]").forEach((b) => {
-      b.onclick = () => {
-        const it = SETTINGS_CATALOG.find((x) => x.id === b.dataset.catId);
-        if (!it) return;
-        if (it.scene) {
-          emitHaptic("silent", `进入 ${it.title}`);
-          switchScene(it.scene);
-        } else if (it.sub) {
-          emitHaptic("silent", `Push → ${it.title}`);
-          state.settingsSub = it.sub;
-          renderViewport({ resetScroll: true });
-        }
-      };
-    });
+    if (sClr) sClr.onclick = () => { state.settingsQuery = ""; if (sInp) { sInp.value = ""; sInp.focus(); } refreshSettingsResults(); };
+    refreshSettingsResults();
   }
 
   function renderSettingsSubPage(scroller, subId) {
@@ -2460,34 +2611,50 @@
         </div>
       `;
     } else if (subId === "typography") {
-      const hWeights = [["medium", "中等"], ["semibold", "半粗"], ["bold", "粗体"]];
+      const hWeights = [["medium", "适中"], ["semibold", "半粗 (推荐)"], ["bold", "粗体"]];
       body = `
-        <div class="clio-card" style="padding:12px 13px; margin-bottom:14px;">
-          <div style="font-size:11px; color:var(--ink-tertiary); margin-bottom:5px;">实时版式小样（拖动 StopRuler 同步生效）</div>
+        <div class="clio-card" style="padding:12px 13px; margin-bottom:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+            <span style="font-size:11px; color:var(--ink-tertiary);">实时排版小样（与聊天正文共引擎）</span>
+            <button type="button" class="filter-pill" id="btnSubOpenFontCompare" style="font-size:10.5px; padding:2px 8px;">Aa 5字体对照</button>
+          </div>
           <div class="font-reading" id="typoLiveSample">
-            <div class="prose-h3" style="margin:0 0 4px;">纸墨之间，自有清欢</div>
-            <p class="prose-p">汉字与 <span class="inline-code">120Hz</span> 等英文之间保留光学微距，行高与段距均按比例独立调节。</p>
-            <p class="prose-p">第二段演示段落间距，确保长篇思考和报告在手机上阅读不累眼。</p>
+            <div class="prose-h3" style="margin:0 0 4px;">Clio 使用 SQLite FTS5 优化长对话</div>
+            <p class="prose-p">支持 <span class="inline-code">120 Hz</span> ProMotion（8.33 ms），累计 12,840 Tokens；「中文引号」、“英文混排”、🐱 ≈ ± √。</p>
+            <p class="prose-p" style="font-size:calc(var(--effective-reading-size) - 1px); color:var(--ink-secondary);">主题色彩与正文字体彼此独立；文楷与宋体内部已自动光学校准。</p>
           </div>
         </div>
 
-        <div class="settings-section-title">正文字体</div>
-        <div class="row-card" style="margin-bottom:14px;">
-          ${[["auto", "跟随主题默认", "var(--font-serif)"], ["serif", "书卷衬线（宋体/New York）", "var(--font-serif)"], ["sans", "现代无衬线（苹方 / SF Pro）", "var(--font-ui)"], ["wenkai", "Clio Kai（霞鹜文楷）", "\"LXGW WenKai\", \"Kaiti SC\", serif"]].map(([fKey, fLbl, fCss]) => `
-            <button type="button" class="row-item pressable" data-pick-face="${fKey}">
-              <span style="flex:1; font-family:${fCss}; font-size:14.5px;">${fLbl}</span>
-              <span style="color:var(--accent); font-weight:700;">${state.readingFace === fKey ? "✓" : ""}</span>
+        <div class="settings-section-title">快速阅读预设（一键起步，可再细调）</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-bottom:14px;">
+          ${TOKENS.readingPresets.map((p) => `
+            <button type="button" class="clio-card" style="padding:9px 10px; text-align:left; cursor:pointer; border:${state.activeReadingPreset === p.id ? "2px solid var(--accent)" : "0.5px solid var(--rule)"};" data-pick-preset="${p.id}">
+              <div style="font-weight:700; font-size:13px;">${p.name}</div>
+              <div style="font-size:11px; color:var(--ink-secondary); margin-top:2px;">${p.desc}</div>
             </button>
           `).join("")}
         </div>
 
-        <div class="settings-section-title">StopRuler 独立尺规（唯一调值控件）</div>
+        <div class="settings-section-title">正文字体（内部自动光学校准，不暴露复杂滑杆）</div>
+        <div class="row-card" style="margin-bottom:14px;">
+          ${[["editorial", "书卷默认（New York 英数 + 苹方中文）"], ["sans", "现代无衬线（苹方 / SF Pro）"], ["serif", "传统宋体（STSongti-SC）"], ["wenkai", "Clio Kai（霞鹜文楷 · +4.5% 视觉校准）"]].map(([fKey, fLbl]) => {
+            const prof = TOKENS.fontOpticalProfiles[fKey];
+            return `
+              <button type="button" class="row-item pressable" data-pick-face="${fKey}">
+                <span style="flex:1; font-family:${prof.fontCss}; font-size:14.5px;">${fLbl}</span>
+                <span style="color:var(--accent); font-weight:700;">${state.readingFace === fKey ? "✓" : ""}</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+
+        <div class="settings-section-title">正文排版与界面缩放（区分正文字号 vs 界面字号）</div>
         <div class="settings-row-card" style="margin-bottom:14px;">
           ${[
-            ["size", "正文字号", `${state.readingSize} 点`],
+            ["size", "正文字号（AI / 用户气泡 / 长文）", `${state.readingSize} 点`],
             ["lineHeight", "正文行距", `${state.lineHeight} 倍`],
             ["paragraphGap", "段落间距", `${state.paragraphGap} 点`],
-            ["uiScale", "界面缩放", `${Math.round(state.uiScale * 100)}%`]
+            ["uiScale", "界面字号与控件缩放", `${Math.round(state.uiScale * 100)}%`]
           ].map(([rKey, rTitle, rVal]) => `
             <button type="button" class="settings-row" data-open-ruler="${rKey}">
               <span class="settings-row-main"><div class="settings-row-title">${rTitle}</div></span>
@@ -2499,16 +2666,24 @@
         </div>
 
         <div class="row-card">
-          <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:8px;">
-            <span style="font-size:13.5px; font-weight:500;">标题字重阶梯</span>
-            <div style="display:flex; gap:5px;">
-              ${hWeights.map(([wk, wLbl]) => `<button type="button" class="filter-pill ${state.headingWeight === wk ? "active" : ""}" style="font-size:11.5px; padding:3px 9px;" data-pick-hw="${wk}">${wLbl}</button>`).join("")}
-            </div>
-          </div>
-          <button type="button" class="switch-row" id="swClreq">
-            <div style="flex:1; min-width:0;"><div style="font-weight:500;">W3C 中文标点挤压与混排微距</div><div style="font-size:11.5px; color:var(--ink-tertiary);">只影响渲染排版，复制原文保持纯净</div></div>
-            <span class="ios-switch ${state.clreqSqueeze ? "on" : ""}"></span>
+          <button type="button" class="disclosure-toggle" data-toggle-disclosure="typoAdvOpen">
+            <span>更多版式细调（标题字重 · CLREQ 标点挤压）</span>
+            <span>${state.typoAdvOpen ? "▾" : "▸"}</span>
           </button>
+          ${state.typoAdvOpen ? `
+            <div class="disclosure-body">
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                <span style="font-size:13.5px; font-weight:500;">标题字重阶梯</span>
+                <div style="display:flex; gap:5px;">
+                  ${hWeights.map(([wk, wLbl]) => `<button type="button" class="filter-pill ${state.headingWeight === wk ? "active" : ""}" style="font-size:11.5px; padding:3px 9px;" data-pick-hw="${wk}">${wLbl}</button>`).join("")}
+                </div>
+              </div>
+              <button type="button" class="switch-row" id="swClreq">
+                <div style="flex:1; min-width:0;"><div style="font-weight:500;">W3C 中文标点挤压与混排微距</div><div style="font-size:11.5px; color:var(--ink-tertiary);">只作用于视图渲染，复制原文保持纯净；iPad/横屏另显阅读宽度</div></div>
+                <span class="ios-switch ${state.clreqSqueeze ? "on" : ""}"></span>
+              </button>
+            </div>
+          ` : ""}
         </div>
       `;
     } else if (subId === "motion_haptics") {
@@ -2549,7 +2724,7 @@
           </div>
         </div>
 
-        <div class="row-card">
+        <div class="row-card" style="margin-bottom:14px;">
           <button type="button" class="switch-row" id="swSubChatFaces">
             <div style="flex:1; min-width:0;"><div style="font-weight:500;">聊天正文显示双方头像</div><div style="font-size:11.5px; color:var(--ink-tertiary);">默认关闭保留最大阅读留白；开启后可在正文点头像直改</div></div>
             <span class="ios-switch ${state.showChatFaces ? "on" : ""}"></span>
@@ -2566,10 +2741,39 @@
             <div style="flex:1; min-width:0;"><div style="font-weight:500;">回复末尾显示耗时与字数</div></div>
             <span class="ios-switch ${state.chatShowStats ? "on" : ""}"></span>
           </button>
-          <button type="button" class="switch-row" data-toggle-bool="chatConfirmStop">
-            <div style="flex:1; min-width:0;"><div style="font-weight:500;">长任务停止前二次防误触确认</div></div>
-            <span class="ios-switch ${state.chatConfirmStop ? "on" : ""}"></span>
+        </div>
+
+        <div class="row-card">
+          <button type="button" class="disclosure-toggle" data-toggle-disclosure="agentPolicyOpen">
+            <span>Agent 执行策略（唯一数据源 · 步数/并发/重试）</span>
+            <span>${state.agentPolicyOpen ? "▾" : "▸"}</span>
           </button>
+          ${state.agentPolicyOpen ? `
+            <div class="disclosure-body">
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">单轮最多工具步数</span>
+                <div style="display:flex; gap:5px;">
+                  ${[8, 16, 24, 32].map((n) => `<button type="button" class="filter-pill font-mono ${state.agentMaxSteps === n ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-agent-steps="${n}">${n}</button>`).join("")}
+                </div>
+              </div>
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">0.36 只读工具并发上限</span>
+                <div style="display:flex; gap:5px;">
+                  ${[2, 4, 6].map((n) => `<button type="button" class="filter-pill font-mono ${state.agentReadConcurrency === n ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-agent-conc="${n}">${n} 路</button>`).join("")}
+                </div>
+              </div>
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">工具失败自动重试</span>
+                <div style="display:flex; gap:5px;">
+                  ${[0, 1, 2].map((n) => `<button type="button" class="filter-pill font-mono ${state.agentToolRetry === n ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-agent-retry="${n}">${n} 次</button>`).join("")}
+                </div>
+              </div>
+              <button type="button" class="switch-row" data-toggle-bool="chatConfirmStop">
+                <div style="flex:1; min-width:0;"><div style="font-weight:500;">长任务停止前二次防误触确认</div></div>
+                <span class="ios-switch ${state.chatConfirmStop ? "on" : ""}"></span>
+              </button>
+            </div>
+          ` : ""}
         </div>
       `;
     } else if (subId === "voice") {
@@ -2653,13 +2857,41 @@
             </button>
           `).join("")}
         </div>
-        <div class="row-card">
+        <div class="row-card" style="margin-bottom:14px;">
           <div class="row-item" style="flex-direction:column; align-items:stretch; gap:7px;">
             <span style="font-size:13.5px; font-weight:500;">默认思考深度</span>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
               ${["关闭", "低", "中", "高", "自动"].map((tk) => `<button type="button" class="filter-pill ${state.activeModel.thinking === tk ? "active" : ""}" style="font-size:11.5px;" data-sub-pick-think="${tk}">${tk}</button>`).join("")}
             </div>
           </div>
+        </div>
+        <div class="row-card">
+          <button type="button" class="disclosure-toggle" data-toggle-disclosure="modelAdvOpen">
+            <span>高级推理参数（唯一数据源 · 温度/输出/请求重试）</span>
+            <span>${state.modelAdvOpen ? "▾" : "▸"}</span>
+          </button>
+          ${state.modelAdvOpen ? `
+            <div class="disclosure-body">
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">采样温度 (Temperature)</span>
+                <div style="display:flex; gap:5px;">
+                  ${[0.2, 0.7, 1.0].map((v) => `<button type="button" class="filter-pill font-mono ${state.modelTemp === v ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-model-temp="${v}">${v}</button>`).join("")}
+                </div>
+              </div>
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">上下文上限与自动压缩触发</span>
+                <div style="display:flex; gap:5px;">
+                  ${["60%", "75%", "90%"].map((v) => `<button type="button" class="filter-pill font-mono ${state.modelCtxRatio === v ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-model-ctx="${v}">${v}</button>`).join("")}
+                </div>
+              </div>
+              <div class="row-item" style="justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                <span style="font-size:13px;">模型接口请求重试</span>
+                <div style="display:flex; gap:5px;">
+                  ${[1, 2, 3].map((v) => `<button type="button" class="filter-pill font-mono ${state.modelReqRetry === v ? "active" : ""}" style="font-size:11px; padding:2px 8px;" data-model-retry="${v}">${v} 次</button>`).join("")}
+                </div>
+              </div>
+            </div>
+          ` : ""}
         </div>
       `;
     } else if (subId === "extensions") {
@@ -2778,10 +3010,20 @@
             <div><strong class="font-mono" style="font-size:15px; color:var(--ok);">68%</strong><div style="color:var(--ink-tertiary);">缓存命中</div></div>
           </div>
         </div>
-        <div class="row-card">
+        <div class="row-card" style="margin-bottom:14px;">
           <div class="row-item"><div style="flex:1;"><div style="font-weight:500;">SQLite + PDF 全文知识库</div></div><span class="font-mono" style="font-size:12px; color:var(--ok);">34.2 MB</span></div>
-          <div class="row-item"><div style="flex:1;"><div style="font-weight:500;">120Hz 聊天滚屏性能监测</div><div style="font-size:11px; color:var(--ink-tertiary);">[待实体真机 iPhone 录屏验证]</div></div><span class="font-mono" style="font-size:12px; color:var(--warn);">待测</span></div>
-          <button type="button" class="row-item pressable" id="btnSubOpenMotionLab"><div style="flex:1;"><div style="font-weight:600; color:var(--accent);">打开动效与触觉实验室</div></div><span class="settings-chevron">${sfIcon("chevronRight", 12)}</span></button>
+        </div>
+        <div class="row-card">
+          <button type="button" class="disclosure-toggle" data-toggle-disclosure="diagDevOpen">
+            <span>开发者与诊断工具（FrameMeter / 实验室）</span>
+            <span>${state.diagDevOpen ? "▾" : "▸"}</span>
+          </button>
+          ${state.diagDevOpen ? `
+            <div class="disclosure-body">
+              <div class="row-item"><div style="flex:1;"><div style="font-weight:500;">120Hz 聊天滚屏性能监测</div><div style="font-size:11px; color:var(--ink-tertiary);">[待实体真机 iPhone 录屏验证]</div></div><span class="font-mono" style="font-size:12px; color:var(--warn);">待测</span></div>
+              <button type="button" class="row-item pressable" id="btnSubOpenMotionLab"><div style="flex:1;"><div style="font-weight:600; color:var(--accent);">打开动效与触觉实验室</div></div><span class="settings-chevron">${sfIcon("chevronRight", 12)}</span></button>
+            </div>
+          ` : ""}
         </div>
       `;
     } else if (subId === "about") {
@@ -2817,9 +3059,34 @@
     };
     const rTypo = scroller.querySelector("#btnResetTypo");
     if (rTypo) rTypo.onclick = () => {
-      state.readingFace = "auto"; state.readingSize = 16; state.lineHeight = 1.65; state.paragraphGap = 13; state.uiScale = 1.0; state.headingWeight = "bold"; state.clreqSqueeze = true;
-      emitHaptic("confirm", "还原排版默认"); showToast("已还原默认字号、行距与版式"); renderAll();
+      state.readingFace = "editorial"; state.activeReadingPreset = "editorial"; state.readingSize = 17; state.lineHeight = 1.65; state.paragraphGap = 13; state.uiScale = 1.0; state.headingWeight = "semibold"; state.clreqSqueeze = true;
+      emitHaptic("confirm", "还原排版默认"); showToast("已还原默认书卷字号与版式"); renderAll();
     };
+    const openFCmp = scroller.querySelector("#btnSubOpenFontCompare");
+    if (openFCmp) openFCmp.onclick = () => { state.fontCompareOpen = true; switchScene("chat"); };
+    scroller.querySelectorAll("[data-pick-preset]").forEach((b) => {
+      b.onclick = () => {
+        const p = TOKENS.readingPresets.find((x) => x.id === b.dataset.pickPreset);
+        if (!p) return;
+        state.activeReadingPreset = p.id;
+        state.readingFace = p.readingFace;
+        state.readingSize = p.readingSize;
+        state.lineHeight = p.lineHeight;
+        state.paragraphGap = p.paragraphGap;
+        emitHaptic("selection", `应用阅读预设 → ${p.name}`);
+        showToast(`已切换「${p.name}」阅读预设`);
+        renderAll();
+      };
+    });
+    scroller.querySelectorAll("[data-toggle-disclosure]").forEach((b) => {
+      b.onclick = () => { const k = b.dataset.toggleDisclosure; state[k] = !state[k]; emitHaptic("silent", `展开/收起 ${k}`); renderViewport(); };
+    });
+    scroller.querySelectorAll("[data-model-temp]").forEach((b) => { b.onclick = () => { state.modelTemp = Number(b.dataset.modelTemp); emitHaptic("selection", `Temperature → ${state.modelTemp}`); renderViewport(); }; });
+    scroller.querySelectorAll("[data-model-ctx]").forEach((b) => { b.onclick = () => { state.modelCtxRatio = b.dataset.modelCtx; emitHaptic("selection", `压缩比例 → ${state.modelCtxRatio}`); renderViewport(); }; });
+    scroller.querySelectorAll("[data-model-retry]").forEach((b) => { b.onclick = () => { state.modelReqRetry = Number(b.dataset.modelRetry); emitHaptic("selection", `模型请求重试 → ${state.modelReqRetry}`); renderViewport(); }; });
+    scroller.querySelectorAll("[data-agent-steps]").forEach((b) => { b.onclick = () => { state.agentMaxSteps = Number(b.dataset.agentSteps); emitHaptic("selection", `最大步数 → ${state.agentMaxSteps}`); renderViewport(); }; });
+    scroller.querySelectorAll("[data-agent-conc]").forEach((b) => { b.onclick = () => { state.agentReadConcurrency = Number(b.dataset.agentConc); emitHaptic("selection", `只读并发 → ${state.agentReadConcurrency}`); renderViewport(); }; });
+    scroller.querySelectorAll("[data-agent-retry]").forEach((b) => { b.onclick = () => { state.agentToolRetry = Number(b.dataset.agentRetry); emitHaptic("selection", `工具重试 → ${state.agentToolRetry}`); renderViewport(); }; });
     const addProv = scroller.querySelector("#btnMockAddProv");
     if (addProv) addProv.onclick = () => { emitHaptic("silent", "新建服务商引导"); state.onboardSub = "onboard"; state.onboardStep = 3; switchScene("onboarding_home"); };
 
@@ -3078,14 +3345,173 @@
     });
   }
 
-  // ==================== Streaming, Terminal & Bottom Dock ====================
+  // ==================== Incremental Complex Markdown Stream Engine, Terminal & Dock ====================
+  function renderInlineMd(raw, isStreaming) {
+    let s = String(raw || "");
+    if (isStreaming) {
+      if ((s.match(/\*\*/g) || []).length % 2 === 1) s += "**";
+      if ((s.match(/`/g) || []).length % 2 === 1) s += "`";
+    }
+    const tokens = [];
+    s = s.replace(/`([^`\n]+)`/g, (_, code) => {
+      const idx = tokens.length;
+      tokens.push(`<span class="inline-code">${escHtml(code)}</span>`);
+      return `\u0000CODE${idx}\u0000`;
+    });
+    s = escHtml(s);
+    s = s.replace(/https?:\/\/[^\s<]+/g, (url) => `<a href="javascript:void(0)" class="prose-link">${url}</a>`);
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^\*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, idx) => tokens[Number(idx)] || "");
+    return s;
+  }
+
+  function renderStreamingMarkdown(rawMd, isStreaming) {
+    const lines = String(rawMd || "").replace(/\r\n/g, "\n").split("\n");
+    let out = "";
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      const trim = line.trim();
+      if (!trim) { i++; continue; }
+
+      // Fenced Code Block (gracefully auto-closes when unclosed mid-stream)
+      if (trim.startsWith("```")) {
+        const lang = trim.slice(3).trim() || "text";
+        const codeLines = [];
+        i++;
+        let closed = false;
+        while (i < lines.length) {
+          if (lines[i].trim().startsWith("```")) { closed = true; i++; break; }
+          codeLines.push(lines[i]);
+          i++;
+        }
+        const badge = (!closed && isStreaming) ? " · 生成中" : "";
+        out += `<div class="clio-inner-block" style="margin:6px 0 8px;"><div class="code-header"><span class="font-mono">${escHtml(lang)} · 2:1 grid${badge}</span><span style="font-size:10.5px; color:var(--ink-tertiary);">只读预览</span></div><pre class="code-pre">${escHtml(codeLines.join("\n") || " ")}</pre></div>`;
+        continue;
+      }
+
+      // Math Display Block ($$ ... $$)
+      if (trim.startsWith("$$")) {
+        const mathLines = [];
+        const restAfter = trim.slice(2).trim();
+        if (restAfter && restAfter.endsWith("$$") && restAfter.length > 2) {
+          mathLines.push(restAfter.slice(0, -2).trim());
+          i++;
+        } else {
+          if (restAfter) mathLines.push(restAfter);
+          i++;
+          while (i < lines.length) {
+            if (lines[i].trim().startsWith("$$")) { i++; break; }
+            mathLines.push(lines[i].trim());
+            i++;
+          }
+        }
+        out += `<div class="prose-math"><div class="math-label">公式渲染</div><div class="math-expr">${escHtml(mathLines.join(" ") || "…")}</div></div>`;
+        continue;
+      }
+
+      // Headings
+      const hm = trim.match(/^(#{1,4})\s+(.*)$/);
+      if (hm) {
+        const lvl = Math.min(4, hm[1].length);
+        out += `<h${lvl} class="prose-h${lvl}">${renderInlineMd(hm[2], isStreaming)}</h${lvl}>`;
+        i++;
+        continue;
+      }
+
+      // Markdown Table (incremental live table)
+      if (trim.startsWith("|")) {
+        const tLines = [];
+        while (i < lines.length && lines[i].trim().startsWith("|")) {
+          tLines.push(lines[i].trim());
+          i++;
+        }
+        const parseCells = (row) => row.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+        const headers = parseCells(tLines[0]);
+        let startRow = 1;
+        let aligns = headers.map(() => "left");
+        if (tLines[1] && /^[\|\s:-]+$/.test(tLines[1])) {
+          const sepCells = parseCells(tLines[1]);
+          aligns = sepCells.map((sc) => (sc.endsWith(":") && !sc.startsWith(":") ? "num" : "left"));
+          startRow = 2;
+        }
+        const bodyRows = tLines.slice(startRow).map(parseCells);
+        out += `<div class="prose-table-wrap has-scroll" style="margin:6px 0 8px;"><table class="prose-table"><thead><tr>${headers.map((h, ci) => `<th class="${aligns[ci] === "num" ? "num" : ""}">${renderInlineMd(h, isStreaming)}</th>`).join("")}</tr></thead><tbody>${bodyRows.map((r) => `<tr>${headers.map((_, ci) => {
+          const val = r[ci] || "";
+          const isNumCol = aligns[ci] === "num" || /^\d[\d,.*×]*$/.test(val);
+          return `<td class="${isNumCol ? "num font-mono" : ""}">${renderInlineMd(val, isStreaming)}</td>`;
+        }).join("")}</tr>`).join("")}</tbody></table></div>`;
+        continue;
+      }
+
+      // Ordered + nested unordered list
+      if (/^\d+\.\s+/.test(trim)) {
+        out += `<ol class="prose-ol">`;
+        while (i < lines.length) {
+          const curT = lines[i].trim();
+          const om = curT.match(/^\d+\.\s+(.*)$/);
+          if (!om) break;
+          i++;
+          let subUl = "";
+          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+            subUl += `<li>${renderInlineMd(lines[i].trim().slice(2), isStreaming)}</li>`;
+            i++;
+          }
+          out += `<li>${renderInlineMd(om[1], isStreaming)}${subUl ? `<ul class="prose-list">${subUl}</ul>` : ""}</li>`;
+        }
+        out += `</ol>`;
+        continue;
+      }
+
+      if (/^[-*]\s+/.test(trim)) {
+        out += `<ul class="prose-list">`;
+        while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+          out += `<li>${renderInlineMd(lines[i].trim().slice(2), isStreaming)}</li>`;
+          i++;
+        }
+        out += `</ul>`;
+        continue;
+      }
+
+      if (trim.startsWith(">")) {
+        const qLines = [];
+        while (i < lines.length && lines[i].trim().startsWith(">")) {
+          qLines.push(lines[i].trim().replace(/^>\s?/, ""));
+          i++;
+        }
+        out += `<blockquote class="prose-quote">${renderInlineMd(qLines.join(" "), isStreaming)}</blockquote>`;
+        continue;
+      }
+
+      // Paragraph
+      const pLines = [];
+      while (i < lines.length) {
+        const pt = lines[i].trim();
+        if (!pt || pt.startsWith("#") || pt.startsWith("```") || pt.startsWith("$$") || pt.startsWith("|") || pt.startsWith(">") || /^\d+\.\s+/.test(pt) || /^[-*]\s+/.test(pt)) break;
+        pLines.push(pt);
+        i++;
+      }
+      out += `<p class="prose-p">${renderInlineMd(pLines.join(" "), isStreaming)}</p>`;
+    }
+
+    if (isStreaming) {
+      out += `<span class="streaming-caret" aria-hidden="true"></span>`;
+    }
+    return out || `<p class="prose-p">……</p>`;
+  }
+
   let streamTimer = null;
   function stopStreaming(reasonLabel = "手动停止流式输出") {
     clearInterval(streamTimer);
     streamTimer = null;
     if (state.streamingTurnId) {
       const turn = state.chatTurns.find((x) => x.id === state.streamingTurnId);
-      if (turn) { turn.streaming = false; if (!turn.plainText) turn.plainText = "（已手动停止生成）"; }
+      if (turn) {
+        turn.streaming = false;
+        turn.aiBody = renderStreamingMarkdown(turn.plainText || "（已手动停止生成）", false);
+      }
     }
     state.streaming = false;
     state.streamingTurnId = null;
@@ -3094,11 +3520,12 @@
     renderAll();
   }
 
-  function startStreamIntoTurn(turn, fullText, metricsText) {
+  function startStreamIntoTurn(turn, fullMarkdown, metricsText) {
     clearInterval(streamTimer);
     state.streaming = true;
     state.streamingTurnId = turn.id;
     state.activeTurn = turn.id;
+    state.chatFollowBottom = true;
     turn.streaming = true;
     turn.thinking = true;
     turn.aiBody = "";
@@ -3108,35 +3535,49 @@
 
     let idx = 0;
     streamTimer = setInterval(() => {
-      idx += 4;
-      const chunk = fullText.slice(0, idx);
+      idx += 10;
+      const chunk = fullMarkdown.slice(0, idx);
       turn.plainText = chunk;
-      const proseEl = document.querySelector(`[data-turn-prose="${turn.id}"] .prose-p`);
-      if (proseEl) proseEl.textContent = chunk;
-      const sc = document.getElementById("mainScroller");
-      if (sc && turn.id === state.chatTurns[state.chatTurns.length - 1].id) sc.scrollTop = sc.scrollHeight;
 
-      if (idx >= fullText.length) {
+      if (state.scene === "chat") {
+        const proseEl = document.querySelector(`[data-turn-prose="${turn.id}"]`);
+        if (proseEl) proseEl.innerHTML = renderStreamingMarkdown(chunk, true);
+        const sc = document.getElementById("mainScroller");
+        const hasSel = Boolean(window.getSelection && window.getSelection().toString().trim());
+        const jumpPill = document.getElementById("btnJumpLatest");
+        if (sc && turn.id === state.chatTurns[state.chatTurns.length - 1].id) {
+          if (state.chatFollowBottom && !hasSel) {
+            sc.scrollTop = sc.scrollHeight;
+            if (jumpPill) jumpPill.classList.remove("visible");
+          } else {
+            if (jumpPill) jumpPill.classList.add("visible");
+          }
+        }
+      }
+
+      if (idx >= fullMarkdown.length) {
         clearInterval(streamTimer);
         streamTimer = null;
         turn.streaming = false;
+        turn.aiBody = renderStreamingMarkdown(fullMarkdown, false);
         turn.metrics = metricsText;
         state.streaming = false;
         state.streamingTurnId = null;
         setPetMood("attention", 2200);
         emitHaptic("confirm", "流式定稿完成");
-        renderAll();
+        if (state.scene === "chat") renderAll({ scrollToBottom: state.chatFollowBottom });
+        else { updateDynamicIsland(); showToast("后台流式回复已生成完毕 ✓"); }
       }
     }, 66);
   }
 
   function toggleStreamDemo() {
     if (state.streaming) { stopStreaming(); return; }
-    emitHaptic("light", "开始 15Hz 流式演示");
+    emitHaptic("light", "开始复杂 Markdown 15Hz 流式");
     const newId = Math.max(0, ...state.chatTurns.map((x) => x.id)) + 1;
-    const demoTurn = { id: newId, user: "演示思考至定稿零闪跳交接", metrics: "0.98s · 164 tok", aiBody: "", plainText: "", sources: null };
+    const demoTurn = { id: newId, user: "演示复杂 Markdown 流式渲染：含未闭合代码围栏、增量表格、公式与自定义字体", metrics: "1.18s · 342 tok", aiBody: "", plainText: "", sources: null };
     state.chatTurns.push(demoTurn);
-    startStreamIntoTurn(demoTurn, "这是流式定稿零闪跳演练：流式阶段禁用动画叠加与字块重排，每 66ms 节流刷新，并在定稿瞬间无缝交接给 CoreText 异步瓦片，保证 iPhone 120Hz 滚动丝滑如一。", "0.98s · 164 tok");
+    startStreamIntoTurn(demoTurn, SECTION46_SAMPLE.fullMarkdown, "1.18s · 342 tok");
   }
 
   function redoTurnStream(turnId) {
@@ -3284,8 +3725,12 @@
 
     const inp = document.getElementById("composerInput");
     if (inp) {
+      let cComposing = false;
+      inp.addEventListener("compositionstart", () => { cComposing = true; });
+      inp.addEventListener("compositionend", () => { cComposing = false; });
       inp.oninput = () => { inp.style.height = "auto"; inp.style.height = Math.min(76, inp.scrollHeight) + "px"; };
       inp.onkeydown = (e) => {
+        if (cComposing || e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           const v = inp.value;
@@ -3317,9 +3762,12 @@
     const btnDen = document.getElementById("btnRunDenCmd");
     const denInp = document.getElementById("denCmdInput");
     if (btnDen && denInp) {
+      let denComposing = false;
+      denInp.addEventListener("compositionstart", () => { denComposing = true; });
+      denInp.addEventListener("compositionend", () => { denComposing = false; });
       const exec = () => { if (denInp.value.trim()) { runTerminalCommand(denInp.value); denInp.value = ""; } };
       btnDen.onclick = exec;
-      denInp.onkeydown = (e) => { if (e.key === "Enter") exec(); };
+      denInp.onkeydown = (e) => { if (!denComposing && !e.isComposing && e.keyCode !== 229 && e.key === "Enter") exec(); };
     }
     bindPetInteractions();
   }
@@ -3532,6 +3980,14 @@
     }
   }
 
+  function approveFullSlip(viaLabel) {
+    const methodText = viaLabel === "assistive" ? "辅助/点按等效批准" : "右滑解锁批准";
+    emitHaptic("confirm", (state.lang === "A" || state.lang === "AC") ? `朱印盖章完成 (${methodText})` : (state.lang === "B" ? `棘轮锁止完成 (${methodText})` : `温和确认完成 (${methodText})`));
+    state.fullApprovalVerdict = "allowed";
+    state.inlineApprovalStatus = "once";
+    renderModalLayer();
+  }
+
   function renderFullApprovalOverlay(layer) {
     const ov = document.createElement("div");
     ov.className = "approval-overlay";
@@ -3564,17 +4020,23 @@
       <div class="approval-slip ${state.fullApprovalVerdict ? "stamped" : ""}">${perforationSvg}<div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-secondary); margin-bottom:10px;"><strong style="letter-spacing:1.2px;">${state.lang === "B" ? "AUTHORIZATION MANIFEST" : t("approvalSheet")}</strong><span class="font-mono">21:42</span></div>${middleBodyHtml}${stampOverlay}</div>
       <div style="text-align:center;">
         <div class="font-mark" style="font-size:18px; font-weight:700; margin-bottom:3px;">${isAllowed ? t("approved") : (isRejected ? t("rejected") : `${aName} 在等你${t("approvalSheet")}`)}</div>
-        <div style="font-size:12.5px; color:var(--ink-secondary); margin-bottom:12px;">${isAllowed ? `${aName}已继续执行。` : (isRejected ? "已拦截未执行。" : slideLabelText)}</div>
-        ${!state.fullApprovalVerdict ? `<div class="slide-track" id="approvalSlideTrack"><div class="slide-fill" id="approvalSlideFill" style="width:54px;"></div>${ratchetTicksHtml}<div class="slide-label" id="approvalSlideLabel">${slideLabelText}</div><div class="slide-knob" id="approvalSlideKnob">›</div></div><button type="button" class="reply-action-btn" id="btnRejectFullSlip" style="margin:8px auto 0; font-size:13.5px; padding:6px 18px;">${t("rejectBtn")}</button>` : `<button type="button" class="filter-pill active" id="btnReopenFullSlip" style="padding:7px 18px;">再试一次拖动</button>`}
+        <div style="font-size:12.5px; color:var(--ink-secondary); margin-bottom:10px;">${isAllowed ? `${aName}已继续执行。` : (isRejected ? "已拦截未执行。" : slideLabelText)}</div>
+        ${!state.fullApprovalVerdict ? `
+          <div class="slide-track" id="approvalSlideTrack"><div class="slide-fill" id="approvalSlideFill" style="width:54px;"></div>${ratchetTicksHtml}<div class="slide-label" id="approvalSlideLabel">${slideLabelText}</div><div class="slide-knob" id="approvalSlideKnob" role="slider" aria-label="${slideLabelText}">›</div></div>
+          <button type="button" class="a11y-approve-btn" id="btnAccessibleApprove" aria-label="已核对命令与外网风险，确认并落款批准">✓ 确认并落款批准（VoiceOver / 点按等效）</button>
+          <button type="button" class="reply-action-btn" id="btnRejectFullSlip" style="margin:6px auto 0; font-size:13.5px; padding:6px 18px;">${t("rejectBtn")}</button>
+        ` : `<button type="button" class="filter-pill active" id="btnReopenFullSlip" style="padding:7px 18px;">再试一次拖动 / 重置演示</button>`}
       </div>
     `;
     layer.appendChild(ov);
-    ov.querySelector("#btnCloseFullApproval").onclick = () => { state.fullApprovalOpen = false; renderAll(); };
+    const cleanup = bindSlideTrack(ov);
+    ov.querySelector("#btnCloseFullApproval").onclick = () => { cleanup(); state.fullApprovalOpen = false; renderAll(); };
+    const accBtn = ov.querySelector("#btnAccessibleApprove");
+    if (accBtn) accBtn.onclick = () => { cleanup(); approveFullSlip("assistive"); };
     const rej = ov.querySelector("#btnRejectFullSlip");
-    if (rej) rej.onclick = () => { emitHaptic("alert", "拒绝审批"); state.fullApprovalVerdict = "rejected"; renderModalLayer(); };
+    if (rej) rej.onclick = () => { cleanup(); emitHaptic("alert", "拒绝审批"); state.fullApprovalVerdict = "rejected"; renderModalLayer(); };
     const reo = ov.querySelector("#btnReopenFullSlip");
-    if (reo) reo.onclick = () => { state.fullApprovalVerdict = null; renderModalLayer(); };
-    bindSlideTrack(ov);
+    if (reo) reo.onclick = () => { cleanup(); state.fullApprovalVerdict = null; state.inlineApprovalStatus = "pending"; renderModalLayer(); };
   }
 
   function renderStopPickerOverlay(layer) {
@@ -3642,11 +4104,50 @@
     const fill = ov.querySelector("#approvalSlideFill");
     const label = ov.querySelector("#approvalSlideLabel");
     const ticks = ov.querySelectorAll(".ratchet-tick");
-    if (!track || !knob) return;
-    let dragging = false, startX = 0, progress = 0, lastTick = 0;
-    knob.onpointerdown = (e) => { e.preventDefault(); knob.setPointerCapture(e.pointerId); dragging = true; startX = e.clientX; knob.style.transition = "none"; fill.style.transition = "none"; };
-    knob.onpointermove = (e) => {
+    if (!track || !knob) return () => {};
+    let dragging = false, activePointerId = null, startX = 0, progress = 0, lastTick = 0;
+
+    function resetTrackVisuals() {
+      knob.style.transition = "transform 340ms cubic-bezier(0.22, 1.35, 0.36, 1)";
+      fill.style.transition = "width 340ms cubic-bezier(0.22, 1.35, 0.36, 1)";
+      knob.style.transform = "translateX(0px) scale(1)";
+      fill.style.width = "54px";
+      label.style.opacity = "1";
+      ticks.forEach((tk) => tk.classList.remove("lit"));
+    }
+
+    function safeCancel(reasonLabel) {
       if (!dragging) return;
+      dragging = false;
+      activePointerId = null;
+      progress = 0;
+      lastTick = 0;
+      emitHaptic("tick", reasonLabel || "手势中断 · 安全回弹未批准");
+      resetTrackVisuals();
+    }
+
+    const onWindowBlur = () => safeCancel("窗口失焦中断 · 安全回弹未批准");
+    const onVisibilityChange = () => { if (document.hidden) safeCancel("切后台中断 · 安全回弹未批准"); };
+    window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    function cleanup() {
+      window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+
+    knob.onpointerdown = (e) => {
+      e.preventDefault();
+      try { knob.setPointerCapture(e.pointerId); } catch (_) {}
+      dragging = true;
+      activePointerId = e.pointerId;
+      startX = e.clientX;
+      progress = 0;
+      knob.style.transition = "none";
+      fill.style.transition = "none";
+    };
+    knob.onpointermove = (e) => {
+      if (!dragging || e.pointerId !== activePointerId) return;
       const travel = Math.max(1, track.clientWidth - knob.clientWidth - 10);
       progress = Math.min(1, Math.max(0, (e.clientX - startX) / travel));
       knob.style.transform = `translateX(${travel * progress}px) scale(${1 + 0.05 * progress})`;
@@ -3656,24 +4157,26 @@
       const bucket = Math.floor(progress * 8);
       if (bucket !== lastTick) { lastTick = bucket; emitHaptic("tick", `审批滑动 ${Math.round(progress * 100)}%`); }
     };
-    knob.onpointerup = knob.onpointercancel = () => {
-      if (!dragging) return;
+    // Strictly ONLY explicit pointerup on the active pointer above 84% may approve!
+    knob.onpointerup = (e) => {
+      if (!dragging || e.pointerId !== activePointerId) return;
+      const finalProgress = progress;
       dragging = false;
-      if (progress > 0.84) {
-        emitHaptic("confirm", (state.lang === "A" || state.lang === "AC") ? "朱印盖章完成" : (state.lang === "B" ? "棘轮锁止完成" : "温和确认完成"));
-        state.fullApprovalVerdict = "allowed";
-        state.inlineApprovalStatus = "once";
-        renderModalLayer();
+      activePointerId = null;
+      progress = 0;
+      if (finalProgress > 0.84) {
+        cleanup();
+        approveFullSlip("slide");
       } else {
-        emitHaptic("tick", "未达阈值弹回");
-        knob.style.transition = "transform 340ms cubic-bezier(0.22, 1.35, 0.36, 1)";
-        fill.style.transition = "width 340ms cubic-bezier(0.22, 1.35, 0.36, 1)";
-        knob.style.transform = "translateX(0px) scale(1)";
-        fill.style.width = "54px";
-        label.style.opacity = "1";
-        ticks.forEach((tk) => tk.classList.remove("lit"));
+        emitHaptic("tick", "未达阈值松手回弹");
+        resetTrackVisuals();
       }
     };
+    // System interruption / pointercancel MUST NEVER approve even when progress > 0.84!
+    knob.onpointercancel = () => {
+      safeCancel("手势被系统取消 (pointercancel) · 安全回弹未批准");
+    };
+    return cleanup;
   }
 
   function openIdentityEditor(kind) {

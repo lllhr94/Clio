@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.1.0",
+  "schemaVersion": "2.2.0",
   "name": "Clio Design System 2.0 Tokens",
   "finalizedDirection": "AC",
   "platforms": ["iOS 26", "iPadOS 26"],
@@ -57,14 +57,86 @@
       "title": 20
     },
     "markdownHierarchyPt": {
-      "h1": { "basePt": 23, "rangePt": [22, 24], "weight": "semibold", "topSpacingEm": 1.05, "bottomSpacingEm": 0.40 },
-      "h2": { "basePt": 19.5, "rangePt": [19, 20], "weight": "semibold", "topSpacingEm": 0.85, "bottomSpacingEm": 0.35 },
-      "h3": { "basePt": 17.5, "rangePt": [17, 18], "weight": "semibold", "topSpacingEm": 0.60, "bottomSpacingEm": 0.30 },
+      "h1": { "basePt": 21.5, "rangePt": [21, 22], "ratio": 1.26, "weight": "semibold", "topSpacingEm": 1.0, "bottomSpacingEm": 0.36, "lineHeight": 1.32 },
+      "h2": { "basePt": 19, "rangePt": [18.5, 19.5], "ratio": 1.12, "weight": "semibold", "topSpacingEm": 0.85, "bottomSpacingEm": 0.30, "lineHeight": 1.35 },
+      "h3": { "basePt": 17, "rangePt": [17, 17.5], "ratio": 1.00, "weight": "semibold", "topSpacingEm": 0.62, "bottomSpacingEm": 0.22, "lineHeight": 1.42 },
+      "h4": { "basePt": 17, "ratio": 1.00, "weight": "medium", "topSpacingEm": 0.45, "bottomSpacingEm": 0.16, "lineHeight": 1.45 },
       "bodyAi": { "defaultPt": 17, "rangePt": [16, 17] },
-      "bodyUser": { "defaultPt": 17, "rangePt": [16, 17] },
-      "table": { "defaultPt": 14.5, "rangePt": [14, 15] },
-      "code": { "defaultPt": 13.5, "rangePt": [13, 14] },
+      "bodyUser": { "defaultPt": 17, "rangePt": [16, 17], "followsReadingMetrics": true },
+      "table": { "defaultPt": 14, "rangePt": [13.5, 15], "lineHeight": 1.40 },
+      "code": { "defaultPt": 13.5, "rangePt": [13, 14], "lineHeight": 1.30 },
       "meta": { "defaultPt": 12.5, "rangePt": [12, 13] }
+    },
+    "contentDensityLineHeight": {
+      "prose": { "range": [1.55, 1.70], "default": 1.65 },
+      "listSteps": { "range": [1.42, 1.55], "default": 1.50 },
+      "table": { "range": [1.35, 1.45], "default": 1.40 },
+      "code": { "range": [1.25, 1.38], "default": 1.30 },
+      "toolTrace": { "range": [1.30, 1.45], "default": 1.38 },
+      "literaryQuote": { "range": [1.65, 1.78], "default": 1.70 }
+    },
+    "readingPresets": {
+      "standard": { "name": "标准", "summary": "平衡清晰 · 系统无衬线", "readingFace": "sans", "readingSize": 17, "lineHeight": 1.65, "paragraphGap": 13 },
+      "editorial": { "name": "书卷", "summary": "默认人文编排 · 衬线+苹方", "readingFace": "editorial", "readingSize": 17, "lineHeight": 1.65, "paragraphGap": 13 },
+      "compact": { "name": "紧凑", "summary": "高密技术对照 · 代码友善", "readingFace": "sans", "readingSize": 15, "lineHeight": 1.50, "paragraphGap": 10 },
+      "relaxed": { "name": "舒阅", "summary": "大字舒展 · 长文低疲劳", "readingFace": "wenkai", "readingSize": 19, "lineHeight": 1.80, "paragraphGap": 16 }
+    },
+    "fontOpticalCalibration": {
+      "safeLineBoxEngine": true,
+      "internalOnly": true,
+      "replacesFormula": "extraSpacing = max(0, size * m - natural)",
+      "profiles": {
+        "ClioKai-Medium": {
+          "ttfPath": "App/Fonts/ClioKai-Medium.ttf",
+          "upm": 1000, "hheaAscent": 928, "hheaDescent": -256, "naturalRatio": 1.184,
+          "os2TypoRatio": 1.000, "winRatio": 1.317, "xHeight": 468, "capHeight": 695,
+          "opticalScale": 1.045, "trackingEm": 0.004, "latinBaselineOffset": 0.0,
+          "boldStrokeWidth": -2.2, "tableBoldStrokeWidth": -1.8, "fallbackSafePadPt": 2.0,
+          "calibrationStatus": "binary_measured_pending_coretext_device"
+        },
+        "ClioKai-Regular": {
+          "ttfPath": "App/Fonts/ClioKai-Regular.ttf",
+          "upm": 1000, "hheaAscent": 928, "hheaDescent": -256, "naturalRatio": 1.184,
+          "os2TypoRatio": 1.000, "winRatio": 1.317, "xHeight": 468, "capHeight": 695,
+          "note": "Bundled on disk; phone reading uses ClioKai-Medium per Pref.swift",
+          "calibrationStatus": "binary_measured"
+        },
+        "NewYork+PingFang": {
+          "postScriptLatin": "UI serif design (New York)", "postScriptCJK": "PingFang SC",
+          "opticalScale": 1.00, "latinOpticalScale": 1.02, "latinBaselineOffset": 0.25,
+          "boldWeight": "semibold", "fallbackSafePadPt": 2.0,
+          "calibrationStatus": "pending_coretext_device"
+        },
+        "PingFangSC": {
+          "postScript": "PingFang SC (System)",
+          "opticalScale": 1.00, "latinBaselineOffset": 0.0,
+          "boldWeight": "semibold", "fallbackSafePadPt": 2.0,
+          "calibrationStatus": "pending_coretext_device"
+        },
+        "STSongti-SC": {
+          "postScriptRegular": "STSongti-SC-Regular", "postScriptBold": "STSongti-SC-Bold",
+          "opticalScale": 1.03, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 2.0,
+          "calibrationStatus": "on_demand_download_pending_device"
+        },
+        "STKaiti-SC": {
+          "postScriptRegular": "STKaiti-SC-Regular", "postScriptBold": "STKaiti-SC-Bold",
+          "opticalScale": 1.045, "latinBaselineOffset": 0.0, "fallbackSafePadPt": 2.0,
+          "calibrationStatus": "on_demand_download_pending_device"
+        },
+        "MapleMono+ClioMonoCN": {
+          "ttfPaths": ["App/Fonts/MapleMono-Regular.ttf", "App/Fonts/MapleMono-SemiBold.ttf", "App/Fonts/ClioMonoCN-Regular.ttf"],
+          "mapleAscent": 1020, "mapleDescent": -300, "mapleNaturalRatio": 1.320, "mapleXHeight": 550, "mapleCapHeight": 730,
+          "cjkAscent": 990, "cjkDescent": -270, "cjkNaturalRatio": 1.260, "gridRatio": "1:2",
+          "calibrationStatus": "binary_measured"
+        },
+        "ClioSeal-Regular": {
+          "ttfPath": "App/Fonts/ClioSeal-Regular.ttf",
+          "upm": 1000, "hheaAscent": 880, "hheaDescent": -120, "naturalRatio": 1.000,
+          "winRatio": 1.373, "xHeight": 506, "capHeight": 760,
+          "sealOnly": true,
+          "calibrationStatus": "binary_measured"
+        }
+      }
     },
     "readingSizesPt": [15, 16, 17, 19, 21, 24],
     "lineHeightMultipliers": [1.35, 1.5, 1.65, 1.8],
@@ -142,7 +214,8 @@
       "radii": { "outerCard": 26, "innerBlock": 14, "sheet": 34, "control": 9999, "badgeRatio": 0.26 },
       "typographyPolicy": {
         "uiControlFont": "systemSans",
-        "readingFontDefault": "serif",
+        "readingFontDefault": "editorial_pair",
+        "readingFontPairDesc": "New York (Latin & digits) + PingFang SC (Chinese prose); ClioKai-Medium strictly for marks",
         "markFont": "ClioKai-Medium",
         "markUsage": ["inscription", "onboardingTitle", "approvalSource", "wordmarkSeal"],
         "codeFont": "MapleMono + ClioMonoCN (2:1)"

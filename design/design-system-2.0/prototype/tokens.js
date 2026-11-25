@@ -15,6 +15,57 @@ window.CLIO_TOKENS_V2 = {
     { value: 1.65, name: "舒展", detail: "1.65 倍" },
     { value: 1.8, name: "宽松", detail: "1.8 倍" }
   ],
+  readingPresets: [
+    { id: "editorial", name: "书卷", desc: "默认 · 衬线+苹方 17pt / 1.65×", readingFace: "editorial", readingSize: 17, lineHeight: 1.65, paragraphGap: 13 },
+    { id: "standard",  name: "标准", desc: "清爽无衬线 · 17pt / 1.65×",    readingFace: "sans",      readingSize: 17, lineHeight: 1.65, paragraphGap: 13 },
+    { id: "compact",   name: "紧凑", desc: "技术高密 · 15pt / 1.50×",      readingFace: "sans",      readingSize: 15, lineHeight: 1.50, paragraphGap: 10 },
+    { id: "relaxed",   name: "舒阅", desc: "文楷舒展 · 19pt / 1.80×",      readingFace: "wenkai",    readingSize: 19, lineHeight: 1.80, paragraphGap: 16 }
+  ],
+  fontOpticalProfiles: {
+    editorial: {
+      label: "书卷默认（New York 英数 + 苹方中文）",
+      fontCss: '"New York", -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif',
+      opticalScale: 1.0,
+      trackingEm: "0em",
+      lhOffset: 0,
+      boldWeight: 600,
+      note: "Clio AC 默认搭配：中文极清耐读，数字与英文呈出版衬线气质，文楷仅留作字标与落款。"
+    },
+    sans: {
+      label: "苹方 / 无衬线（PingFang SC + SF Pro）",
+      fontCss: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif',
+      opticalScale: 1.0,
+      trackingEm: "-0.004em",
+      lhOffset: 0,
+      boldWeight: 600,
+      note: "极清现代黑体，长段技术对比与代码混排最快扫读。"
+    },
+    serif: {
+      label: "全宋体（STSongti-SC + New York）",
+      fontCss: '"New York", "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif',
+      opticalScale: 1.03,
+      trackingEm: "0.002em",
+      lhOffset: 0.03,
+      boldWeight: 600,
+      note: "传统出版宋体风格，内部 +3% 字面光学微补。"
+    },
+    wenkai: {
+      label: "Clio Kai（霞鹜文楷 Medium）",
+      fontCss: '"ClioKai-Medium", "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", "FangSong", serif',
+      opticalScale: 1.045,
+      trackingEm: "0.004em",
+      lhOffset: 0.04,
+      boldWeight: 600,
+      note: "实测 xH=468、字面略小且无原生粗体：内部 +4.5% 视觉字号补偿并收柔粗体字重。"
+    }
+  },
+  fontCombos: [
+    { id: "A", title: "A · 无衬线 + 无衬线", face: "sans", hStyle: "sans", desc: "标题与正文全用系统无衬线；最冷静理性，略少书卷温度。" },
+    { id: "B", title: "B · 衬线标题 + 无衬线正文", face: "sans", hStyle: "serif", desc: "标题借衬线确立刊物锚点，正文全苹方高效扫读。" },
+    { id: "C", title: "C · 全宋体衬线体系", face: "serif", hStyle: "serif", desc: "整篇出版书籍质感，但小屏多标题和代码同框时偏繁复。" },
+    { id: "D", title: "D · 霞鹜文楷 + 校准标题", face: "wenkai", hStyle: "wenkai", desc: "手写人文温润，光学校准 +4.5% 后不缩水；适合深度慢读。" },
+    { id: "E", title: "E · AC 定稿（书卷默认）", face: "editorial", hStyle: "serif", desc: "New York 英数 + 苹方正文 + 克制 Semibold 阶梯，朱印文楷留给题词落款。" }
+  ],
   paragraphGaps: [
     { value: 10, name: "紧凑", detail: "10 点" },
     { value: 13, name: "标准", detail: "13 点" },
