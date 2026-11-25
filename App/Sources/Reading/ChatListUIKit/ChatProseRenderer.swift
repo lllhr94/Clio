@@ -35,7 +35,7 @@ struct ChatCodeSlice {
     let fullContentSize: CGSize
 }
 
-struct ChatTableSlice {
+struct ChatTableSlice: Equatable {
     let table: Prose.Table
     let prepared: PreparsedTableModel
     let headerCells: [NSAttributedString]
@@ -209,16 +209,6 @@ final class ChatProseBuilder {
     private var richTextSliceCache: [RichTextSliceKey: ChatRenderedProse] = [:]
     private var streamScanners: [String: StreamScannerEntry] = [:]
     private var nextToken: UInt64 = 1
-
-    private let codeSizeMeasurer: UITextView = {
-        let tv = UITextView(usingTextLayoutManager: true)
-        tv.isEditable = false
-        tv.isSelectable = false
-        tv.isScrollEnabled = false
-        tv.textContainer.lineFragmentPadding = 0
-        tv.textContainerInset = .zero
-        return tv
-    }()
 
     func clearCaches() {
         blockCache.removeAll(keepingCapacity: true)
@@ -497,9 +487,9 @@ final class ChatProseBuilder {
     }
 
     private func measureCodeUnwrappedSize(_ attributed: NSAttributedString) -> CGSize {
-        codeSizeMeasurer.attributedText = attributed
-        let fitted = codeSizeMeasurer.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-        return CGSize(width: ceil(fitted.width), height: ceil(fitted.height))
+        let (fitted, lineCount) = ChatLayoutCache.measureCoreTextMetrics(attributed, maxWidth: .greatestFiniteMagnitude)
+        guard fitted.width > 0 || fitted.height > 0 else { return .zero }
+        return CGSize(width: ceil(fitted.width) + 2, height: ceil(fitted.height + max(1.0, CGFloat(lineCount) * 0.35)))
     }
 
     private func buildTableSlice(_ table: Prose.Table, style: ChatListStyle) -> ChatTableSlice {
@@ -1128,16 +1118,6 @@ final class ChatLayoutCache {
     private var hostingHeights: [String: CGFloat] = [:]
     private var overrideVersionsByOwner: [String: UInt64] = [:]
 
-    private let textMeasurer: UITextView = {
-        let tv = UITextView(usingTextLayoutManager: true)
-        tv.isEditable = false
-        tv.isSelectable = false
-        tv.isScrollEnabled = false
-        tv.textContainer.lineFragmentPadding = 0
-        tv.linkTextAttributes = [:]
-        return tv
-    }()
-
     private let labelMeasurer: UILabel = {
         let label = UILabel()
         label.numberOfLines = 0
@@ -1621,10 +1601,74 @@ final class ChatLayoutCache {
         return ceil(max(18, fitted.height))
     }
 
+    nonisolated static func measureCoreTextMetrics(
+        _ attributed: NSAttributedString,
+        maxWidth: CGFloat,
+        checkNarrowBoundary: Bool = false
+    ) -> (size: CGSize, lineCount: Int) {
+        guard attributed.length > 0 else { return (.zero, 0) }
+        let measuredSource: NSAttributedString
+        if attributed.string.hasSuffix("\n") {
+            let copy = NSMutableAttributedString(attributedString: attributed)
+            let tailAttrs = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
+            copy.append(NSAttributedString(string: "\u{200B}", attributes: tailAttrs))
+            measuredSource = copy
+        } else {
+            measuredSource = attributed
+        }
+        let framesetter = CTFramesetterCreateWithAttributedString(measuredSource as CFAttributedString)
+        let isUnbounded = !maxWidth.isFinite || maxWidth > 1_000_000
+        let constrainedWidth = isUnbounded ? CGFloat.greatestFiniteMagnitude : max(1, maxWidth)
+        let wholeRange = CFRange(location: 0, length: measuredSource.length)
+        let fitted = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            wholeRange,
+            nil,
+            CGSize(width: constrainedWidth, height: .greatestFiniteMagnitude),
+            nil
+        )
+        var maxHeight = fitted.height
+        var effectiveWidth: CGFloat = isUnbounded ? max(1000, ceil(fitted.width) + 64) : constrainedWidth
+        if checkNarrowBoundary && !isUnbounded && fitted.width >= constrainedWidth - 3.0 {
+            let narrowWidth = max(1, constrainedWidth - 2.0)
+            let narrowFitted = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter,
+                wholeRange,
+                nil,
+                CGSize(width: narrowWidth, height: .greatestFiniteMagnitude),
+                nil
+            )
+            if narrowFitted.height > maxHeight {
+                maxHeight = narrowFitted.height
+                effectiveWidth = narrowWidth
+            }
+        }
+        let path = CGPath(
+            rect: CGRect(x: 0, y: 0, width: effectiveWidth, height: max(1000, ceil(maxHeight) + 64)),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(framesetter, wholeRange, path, nil)
+        let lineCount = max(1, CFArrayGetCount(CTFrameGetLines(frame)))
+        return (CGSize(width: fitted.width, height: maxHeight), lineCount)
+    }
+
+    nonisolated static func measureCoreTextSize(_ attributed: NSAttributedString, maxWidth: CGFloat) -> CGSize {
+        measureCoreTextMetrics(attributed, maxWidth: maxWidth).size
+    }
+
     func measureTextSize(rendered: ChatRenderedProse, maxWidth: CGFloat) -> CGSize {
-        textMeasurer.attributedText = rendered.attributed
-        textMeasurer.textContainerInset = UIEdgeInsets(top: rendered.topInset, left: 0, bottom: rendered.bottomInset, right: 0)
-        let fitted = textMeasurer.sizeThatFits(CGSize(width: maxWidth, height: .greatestFiniteMagnitude))
-        return CGSize(width: min(maxWidth, ceil(fitted.width)), height: ceil(fitted.height))
+        let insetHeight = rendered.topInset + rendered.bottomInset
+        guard rendered.attributed.length > 0 else {
+            return CGSize(width: 0, height: ceil(insetHeight))
+        }
+        let safeMaxWidth = max(1, maxWidth)
+        let (fitted, lineCount) = Self.measureCoreTextMetrics(
+            rendered.attributed,
+            maxWidth: safeMaxWidth,
+            checkNarrowBoundary: true
+        )
+        let width = min(safeMaxWidth, fitted.width > 0 ? ceil(fitted.width + 1.5) : 0)
+        let height = ceil(fitted.height + insetHeight + max(1.0, CGFloat(lineCount) * 0.35))
+        return CGSize(width: width, height: height)
     }
 }

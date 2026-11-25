@@ -196,23 +196,40 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
             || !decorations.quoteBlocks.isEmpty
             || !decorations.ruleRanges.isEmpty
 
-        if hasAnyDecoration {
-            if let tlm = textLayoutManager {
-                tlm.ensureLayout(for: tlm.documentRange)
-            } else {
-                layoutManager.ensureLayout(for: textContainer)
+        guard hasAnyDecoration else {
+            let needsLayerReset = inlineCodeLayer.path != nil
+                || ruleLayer.path != nil
+                || quoteLayers.contains { !$0.isHidden }
+            if needsLayerReset {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                inlineCodeLayer.path = nil
+                ruleLayer.path = nil
+                for qLayer in quoteLayers {
+                    qLayer.isHidden = true
+                }
+                CATransaction.commit()
             }
+            paintedWidth = bounds.width
+            paintedToken = lastRenderToken
+            paintedTraitStyle = currentInterface
+            needsDecorationLayout = false
+            return
         }
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        decorationRoot.frame = bounds
-        layoutInlineCode(decorations.inlineCodeRanges)
-        layoutRules(decorations.ruleRanges)
-        layoutQuotes(decorations.quoteBlocks)
-
-        CATransaction.commit()
+        if let tlm = textLayoutManager {
+            layoutDecorationsSinglePass(using: tlm)
+        } else {
+            layoutManager.ensureLayout(for: textContainer)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            decorationRoot.frame = bounds
+            layoutInlineCodeFallback(decorations.inlineCodeRanges)
+            layoutRulesFallback(decorations.ruleRanges)
+            let fallbackSpans = decorations.quoteBlocks.map { verticalSpanFallback(for: $0) }
+            applyQuoteLayers(spans: fallbackSpans)
+            CATransaction.commit()
+        }
 
         paintedWidth = bounds.width
         paintedToken = lastRenderToken
@@ -220,7 +237,154 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         needsDecorationLayout = false
     }
 
-    private func layoutInlineCode(_ ranges: [NSRange]) {
+    private func layoutDecorationsSinglePass(using tlm: NSTextLayoutManager) {
+        let totalLength = attributedText?.length ?? 0
+        let codeRanges = decorations.inlineCodeRanges
+            .filter { $0.length > 0 && $0.location >= 0 && $0.location + $0.length <= totalLength }
+            .sorted { $0.location < $1.location }
+        let ruleRanges = decorations.ruleRanges
+            .filter { $0.length > 0 && $0.location >= 0 && $0.location + $0.length <= totalLength }
+            .sorted { $0.location < $1.location }
+        let quoteRanges = decorations.quoteBlocks
+            .filter { $0.length > 0 && $0.location >= 0 && $0.location + $0.length <= totalLength }
+            .sorted { $0.location < $1.location }
+
+        let codePath = CGMutablePath()
+        let rulePath = CGMutablePath()
+        var quoteSpans: [(minY: CGFloat, maxY: CGFloat)?] = Array(repeating: nil, count: quoteRanges.count)
+
+        var ruleIdx = 0
+        var quoteIdx = 0
+
+        let inset = textContainerInset
+        let corner = currentStyle?.inlineCodeCorner ?? (5 * UIScale.factor)
+        let ruleInset = Ink.Space.l
+        let ruleWidth = max(24, bounds.width - ruleInset * 2)
+        let docStart = tlm.documentRange.location
+
+        if !ruleRanges.isEmpty || !quoteRanges.isEmpty {
+            _ = tlm.enumerateTextLayoutFragments(from: docStart, options: [.ensuresLayout]) { fragment in
+                let fragRange = fragment.rangeInElement
+                let fragStart = tlm.offset(from: docStart, to: fragRange.location)
+                let fragEnd = tlm.offset(from: docStart, to: fragRange.endLocation)
+                guard fragEnd > fragStart else {
+                    return ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
+                }
+
+                let fragFrame = fragment.layoutFragmentFrame
+                let originY = inset.top + fragFrame.minY
+                let lineFragments = fragment.textLineFragments
+
+                while ruleIdx < ruleRanges.count && NSMaxRange(ruleRanges[ruleIdx]) <= fragStart {
+                    ruleIdx += 1
+                }
+                var rScan = ruleIdx
+                while rScan < ruleRanges.count && ruleRanges[rScan].location < fragEnd {
+                    let target = ruleRanges[rScan]
+                    let tStart = target.location
+                    let tEnd = NSMaxRange(target)
+                    var minY = CGFloat.greatestFiniteMagnitude
+                    var maxY = -CGFloat.greatestFiniteMagnitude
+                    for lineFrag in lineFragments {
+                        let lineStart = fragStart + lineFrag.characterRange.location
+                        let lineEnd = lineStart + lineFrag.characterRange.length
+                        if tEnd > lineStart && tStart < lineEnd {
+                            let tBounds = lineFrag.typographicBounds
+                            minY = min(minY, originY + tBounds.minY)
+                            maxY = max(maxY, originY + tBounds.maxY)
+                        }
+                    }
+                    if !minY.isFinite || !maxY.isFinite {
+                        minY = originY
+                        maxY = originY + fragFrame.height
+                    }
+                    if minY <= maxY {
+                        let midY = (minY + maxY) * 0.5
+                        rulePath.addRect(CGRect(x: ruleInset, y: midY - 0.375, width: ruleWidth, height: 0.75))
+                    }
+                    if tEnd <= fragEnd {
+                        ruleIdx = rScan + 1
+                    }
+                    rScan += 1
+                }
+
+                while quoteIdx < quoteRanges.count && NSMaxRange(quoteRanges[quoteIdx]) <= fragStart {
+                    quoteIdx += 1
+                }
+                var qScan = quoteIdx
+                while qScan < quoteRanges.count && quoteRanges[qScan].location < fragEnd {
+                    let target = quoteRanges[qScan]
+                    let tStart = target.location
+                    let tEnd = NSMaxRange(target)
+                    var spanMinY = quoteSpans[qScan]?.minY ?? CGFloat.greatestFiniteMagnitude
+                    var spanMaxY = quoteSpans[qScan]?.maxY ?? -CGFloat.greatestFiniteMagnitude
+                    for lineFrag in lineFragments {
+                        let lineStart = fragStart + lineFrag.characterRange.location
+                        let lineEnd = lineStart + lineFrag.characterRange.length
+                        if tEnd > lineStart && tStart < lineEnd {
+                            let tBounds = lineFrag.typographicBounds
+                            spanMinY = min(spanMinY, originY + tBounds.minY)
+                            spanMaxY = max(spanMaxY, originY + tBounds.maxY)
+                        }
+                    }
+                    if lineFragments.isEmpty && tEnd > fragStart && tStart < fragEnd {
+                        spanMinY = min(spanMinY, originY)
+                        spanMaxY = max(spanMaxY, originY + fragFrame.height)
+                    }
+                    if spanMinY <= spanMaxY, spanMinY.isFinite, spanMaxY.isFinite {
+                        quoteSpans[qScan] = (minY: spanMinY, maxY: spanMaxY)
+                    }
+                    if tEnd <= fragEnd {
+                        quoteIdx = qScan + 1
+                    }
+                    qScan += 1
+                }
+
+                return ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
+            }
+        }
+
+        if !codeRanges.isEmpty {
+            for r in codeRanges {
+                guard let startLoc = tlm.location(docStart, offsetBy: r.location),
+                      let endLoc = tlm.location(docStart, offsetBy: NSMaxRange(r)),
+                      let segRange = NSTextRange(location: startLoc, end: endLoc) else { continue }
+                tlm.ensureLayout(for: segRange)
+                tlm.enumerateTextSegments(in: segRange, type: .selection, options: []) { _, segmentFrame, _, _ in
+                    let offsetFrame = segmentFrame.offsetBy(dx: inset.left, dy: inset.top)
+                    guard offsetFrame.width > 0, offsetFrame.height > 0 else { return true }
+                    let rect = offsetFrame.insetBy(dx: -2.5, dy: offsetFrame.height * 0.06)
+                    let radius = min(corner, rect.height * 0.3)
+                    codePath.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
+                    return true
+                }
+            }
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        decorationRoot.frame = bounds
+        if codeRanges.isEmpty {
+            inlineCodeLayer.path = nil
+        } else {
+            inlineCodeLayer.path = codePath
+            inlineCodeLayer.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
+        }
+
+        if ruleRanges.isEmpty {
+            ruleLayer.path = nil
+        } else {
+            ruleLayer.path = rulePath
+            ruleLayer.fillColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
+        }
+
+        applyQuoteLayers(spans: quoteSpans)
+
+        CATransaction.commit()
+    }
+
+    private func layoutInlineCodeFallback(_ ranges: [NSRange]) {
         guard !ranges.isEmpty else {
             inlineCodeLayer.path = nil
             return
@@ -245,7 +409,7 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         inlineCodeLayer.fillColor = UIColor(Ink.mine).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
     }
 
-    private func layoutRules(_ ranges: [NSRange]) {
+    private func layoutRulesFallback(_ ranges: [NSRange]) {
         guard !ranges.isEmpty else {
             ruleLayer.path = nil
             return
@@ -254,7 +418,7 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         let inset = Ink.Space.l
         let lineW = max(24, bounds.width - inset * 2)
         for range in ranges {
-            guard let span = verticalSpan(for: range) else { continue }
+            guard let span = verticalSpanFallback(for: range) else { continue }
             let midY = (span.minY + span.maxY) * 0.5
             path.addRect(CGRect(x: inset, y: midY - 0.375, width: lineW, height: 0.75))
         }
@@ -262,8 +426,8 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         ruleLayer.fillColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.85).cgColor
     }
 
-    private func layoutQuotes(_ ranges: [NSRange]) {
-        while quoteLayers.count < ranges.count {
+    private func applyQuoteLayers(spans: [(minY: CGFloat, maxY: CGFloat)?]) {
+        while quoteLayers.count < spans.count {
             let qLayer = QuoteCardLayer()
             decorationRoot.insertSublayer(qLayer, at: 0)
             quoteLayers.append(qLayer)
@@ -275,7 +439,7 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         let radius = Ink.Radius.small
 
         for (idx, qLayer) in quoteLayers.enumerated() {
-            guard idx < ranges.count, let span = verticalSpan(for: ranges[idx]) else {
+            guard idx < spans.count, let span = spans[idx] else {
                 qLayer.isHidden = true
                 continue
             }
@@ -297,7 +461,7 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         }
     }
 
-    private func verticalSpan(for range: NSRange) -> (minY: CGFloat, maxY: CGFloat)? {
+    private func verticalSpanFallback(for range: NSRange) -> (minY: CGFloat, maxY: CGFloat)? {
         let total = attributedText?.length ?? 0
         guard range.location >= 0, range.location + range.length <= total, range.length > 0,
               let start = position(from: beginningOfDocument, offset: range.location),

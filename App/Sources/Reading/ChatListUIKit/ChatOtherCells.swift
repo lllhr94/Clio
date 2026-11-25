@@ -26,6 +26,8 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
     private var currentRow: ChatListRowItem?
     private var currentEntry: ChatLayoutCache.UserLayoutEntry?
     private var actions: ChatListActions?
+    private var cachedShadowBounds: CGRect = .zero
+    private var cachedShadowCornerRadius: CGFloat = -1
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -258,10 +260,18 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         if entry.bubbleHeight > 0 {
             let bubbleX = max(pageMargin, rightEdge - entry.bubbleWidth)
             bubbleView.frame = CGRect(x: bubbleX, y: y, width: entry.bubbleWidth, height: entry.bubbleHeight)
+            let bubbleBounds = bubbleView.bounds
+            let cornerRadius = Ink.Radius.card
+            if !bubbleBounds.isEmpty,
+               (cachedShadowBounds.size != bubbleBounds.size || abs(cachedShadowCornerRadius - cornerRadius) > 0.1) {
+                cachedShadowBounds = bubbleBounds
+                cachedShadowCornerRadius = cornerRadius
+                bubbleView.layer.shadowPath = UIBezierPath(roundedRect: bubbleBounds, cornerRadius: cornerRadius).cgPath
+            }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            sheenLayer.frame = bubbleView.bounds
-            sheenLayer.cornerRadius = Ink.Radius.card
+            sheenLayer.frame = bubbleBounds
+            sheenLayer.cornerRadius = cornerRadius
             CATransaction.commit()
             richTextView.frame = CGRect(
                 x: ChatCellMetrics.userBubblePadH,

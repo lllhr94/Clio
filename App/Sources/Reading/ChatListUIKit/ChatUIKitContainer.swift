@@ -40,7 +40,7 @@ final class ChatScroller {
 @MainActor @Observable
 final class TraceRowModel {
     var row: ChatListRowItem
-    let actions: ChatListActions
+    var actions: ChatListActions
 
     init(row: ChatListRowItem, actions: ChatListActions) {
         self.row = row
@@ -48,15 +48,21 @@ final class TraceRowModel {
     }
 }
 
+private struct TraceGeometry: Equatable {
+    let lineID: String
+    let height: CGFloat
+}
+
 /// SwiftUI accessory view hosted inside `ChatTraceHostingCell` for expandable tool steps.
 private struct ChatTraceHostView: View {
     let model: TraceRowModel
-    let onHeightChanged: (CGFloat) -> Void
+    let onHeightChanged: (String, CGFloat) -> Void
 
     private var row: ChatListRowItem { model.row }
     private var actions: ChatListActions { model.actions }
 
     var body: some View {
+        let currentID = row.line.id
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             if row.faces, row.opens, let timeGap = row.timeGap {
                 Text(timeGap)
@@ -91,6 +97,7 @@ private struct ChatTraceHostView: View {
                     actions.team.unremember(id, fact: fact)
                 }
             )
+            .id(currentID)
         }
         .padding(.horizontal, Ink.Space.page)
         .padding(.bottom, Ink.Space.m)
@@ -102,8 +109,10 @@ private struct ChatTraceHostView: View {
                     .padding(.bottom, Ink.Space.xs)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            onHeightChanged(height)
+        .onGeometryChange(for: TraceGeometry.self) { proxy in
+            TraceGeometry(lineID: currentID, height: proxy.size.height)
+        } action: { geo in
+            onHeightChanged(geo.lineID, geo.height)
         }
     }
 }
@@ -133,16 +142,22 @@ final class ChatTraceHostingCell: UICollectionViewCell {
         onHeightChanged: @escaping (ChatListRowItem, CGFloat) -> Void
     ) {
         self.onHeightChanged = onHeightChanged
-        if configuredLineID == row.line.id, let model {
+        configuredLineID = row.line.id
+        if let model {
+            if model.actions !== actions {
+                model.actions = actions
+            }
             model.row = row
             return
         }
-        configuredLineID = row.line.id
         let nextModel = TraceRowModel(row: row, actions: actions)
         model = nextModel
         contentConfiguration = UIHostingConfiguration {
-            ChatTraceHostView(model: nextModel) { [weak self, weak nextModel] height in
-                guard let self, let nextModel else { return }
+            ChatTraceHostView(model: nextModel) { [weak self, weak nextModel] reportedLineID, height in
+                guard let self,
+                      let nextModel,
+                      self.configuredLineID == reportedLineID,
+                      nextModel.row.line.id == reportedLineID else { return }
                 self.onHeightChanged?(nextModel.row, height)
             }
         }
@@ -151,11 +166,13 @@ final class ChatTraceHostingCell: UICollectionViewCell {
     }
 
     func updateLineInPlace(_ row: ChatListRowItem) {
+        configuredLineID = row.line.id
         model?.row = row
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        configuredLineID = nil
         onHeightChanged = nil
     }
 }
@@ -829,6 +846,13 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             guard let coordinator, !coordinator.isDismantled else { return }
             if viewport.ids != ids {
                 viewport.ids = ids
+            }
+        }
+
+        actions.onActiveTurnChanged = { [weak coordinator] turnID in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if chrome.activeTurnID != turnID {
+                chrome.activeTurnID = turnID
             }
         }
 
