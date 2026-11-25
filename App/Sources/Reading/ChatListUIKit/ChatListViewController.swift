@@ -9,7 +9,7 @@ import UIKit
 /// - Upward pagination anchor lock (0.0 pt viewport shift)
 /// - Clean `following` / `touchScrolling` / `PetPerch` clearance bridging
 @MainActor
-final class ChatListViewController: UIViewController, UICollectionViewDelegate, UIScrollViewDelegate {
+final class ChatListViewController: UIViewController, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate {
     private let actions: ChatListActions
     private let layoutCache = ChatLayoutCache()
     private var currentStyle: ChatListStyle!
@@ -28,6 +28,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var expandedPulseIDs: Set<String> = []
     private var expandedLookbackIDs: Set<String> = []
     private var unfoldedCodeSlices: [String: Set<Int>] = [:]
+    private var prefetchedKeysBySection: [Int: [String]] = [:]
 
     private var selectingOwnerIDs: Set<UUID> = []
     private var hasPerformedInitialScroll = false
@@ -122,6 +123,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             NotificationCenter.default.removeObserver(token)
         }
         keyboardObserverTokens.removeAll()
+        cancelAllPrefetches()
         let owner = lastReportedReplyOwner
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
@@ -201,6 +203,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.keyboardDismissMode = .interactive
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.delegate = self
+        collectionView.prefetchDataSource = self
         collectionView.translatesAutoresizingMaskIntoConstraints = false
 
         collectionView.register(ChatAssistantCell.self, forCellWithReuseIdentifier: ChatAssistantCell.reuseID)
@@ -781,11 +784,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
             }
+            prewarmTailWindow()
             publishVisibleAndFooterMetrics()
         }
     }
 
     private func resetForChatSwitch(_ next: ChatListState) {
+        cancelAllPrefetches()
         expandedThinkingIDs.removeAll()
         expandedPulseIDs.removeAll()
         expandedLookbackIDs.removeAll()
@@ -853,6 +858,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 scrollToBottom(animated: false)
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
+                prewarmTailWindow()
             }
 
             isProgrammaticScroll = false
@@ -1022,6 +1028,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             : nil
 
         items = nextItems
+        prefetchedKeysBySection.removeAll()
         rebuildIndexMaps(rows: next.rows)
 
         UIView.performWithoutAnimation {
@@ -1161,6 +1168,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard nextStyle != currentStyle else { return }
         currentStyle = nextStyle
         layoutCache.invalidateAll()
+        prefetchedKeysBySection.removeAll()
+        ChatTextTileRenderer.shared.invalidateAll()
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
         preserveReadingAnchorDuring {
             reconfigureAllVisibleCells()
@@ -1289,10 +1298,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 hasPerformedInitialScroll = true
                 lastKnownContentWidth = collectionView.bounds.width
                 lastScrollOffsetY = collectionView.contentOffset.y
+                prewarmTailWindow()
                 scheduleHostMetricsFlush()
             } else if abs(collectionView.bounds.width - lastKnownContentWidth) > 0.5 {
                 lastKnownContentWidth = collectionView.bounds.width
                 layoutCache.invalidateAll()
+                prefetchedKeysBySection.removeAll()
                 preserveReadingAnchorDuring {
                     reconfigureAllVisibleCells()
                     collectionView.collectionViewLayout.invalidateLayout()
@@ -2139,6 +2150,203 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
+    }
+
+    // MARK: - UICollectionViewDataSourcePrefetching & Tile Prewarm
+
+    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        guard !isDismantled, collectionView.bounds.width > 0 else { return }
+        let width = max(240, collectionView.bounds.width)
+        let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
+        let palette = ChatTextRenderPalette.make(style: currentStyle)
+        var requests: [ChatTextRenderRequest] = []
+        for indexPath in indexPaths {
+            let section = indexPath.section
+            guard section >= 0, section < items.count else { continue }
+            let itemRequests = buildRenderRequests(forSection: section, width: width, scale: scale, palette: palette)
+            if !itemRequests.isEmpty {
+                prefetchedKeysBySection[section] = itemRequests.map(\.cacheKey)
+                requests.append(contentsOf: itemRequests)
+            }
+        }
+        if !requests.isEmpty {
+            ChatTextTileRenderer.shared.prefetch(requests)
+        }
+    }
+
+    func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+        var keysToCancel: [String] = []
+        for indexPath in indexPaths {
+            if let keys = prefetchedKeysBySection.removeValue(forKey: indexPath.section) {
+                keysToCancel.append(contentsOf: keys)
+            }
+        }
+        if !keysToCancel.isEmpty {
+            ChatTextTileRenderer.shared.cancelPrefetch(keys: keysToCancel)
+        }
+    }
+
+    private func prewarmTailWindow(limit: Int = 8) {
+        guard !isDismantled, isViewLoaded, collectionView != nil, collectionView.bounds.width > 0 else { return }
+        let width = max(240, collectionView.bounds.width)
+        let scale = ChatRichTextView.resolveDisplayScale(for: traitCollection, window: view.window)
+        let palette = ChatTextRenderPalette.make(style: currentStyle)
+        var requests: [ChatTextRenderRequest] = []
+        var warmedRows = 0
+        for section in items.indices.reversed() {
+            guard warmedRows < limit else { break }
+            guard case .line = items[section] else { continue }
+            warmedRows += 1
+            let itemRequests = buildRenderRequests(forSection: section, width: width, scale: scale, palette: palette)
+            if !itemRequests.isEmpty {
+                requests.append(contentsOf: itemRequests)
+            }
+        }
+        if !requests.isEmpty {
+            ChatTextTileRenderer.shared.prefetch(requests)
+        }
+    }
+
+    private func cancelAllPrefetches() {
+        guard !prefetchedKeysBySection.isEmpty else { return }
+        var allKeys: [String] = []
+        for keys in prefetchedKeysBySection.values {
+            allKeys.append(contentsOf: keys)
+        }
+        prefetchedKeysBySection.removeAll()
+        if !allKeys.isEmpty {
+            ChatTextTileRenderer.shared.cancelPrefetch(keys: allKeys)
+        }
+    }
+
+    private func buildRenderRequests(
+        forSection section: Int,
+        width: CGFloat,
+        scale: CGFloat,
+        palette: ChatTextRenderPalette
+    ) -> [ChatTextRenderRequest] {
+        guard section >= 0, section < items.count,
+              case .line(let id) = items[section],
+              let row = rowByID[id] else {
+            return []
+        }
+
+        switch row.line.kind {
+        case .user:
+            guard !row.line.text.isEmpty else { return [] }
+            let entry = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle)
+            guard entry.bubbleHeight > 0, entry.textWidth > 0, entry.textHeight > 0, !entry.rendered.isEmpty else {
+                return []
+            }
+            let key = ChatTextTileRenderer.cacheKey(
+                token: entry.rendered.renderToken,
+                width: entry.textWidth,
+                height: entry.textHeight,
+                styleKey: currentStyle.styleKey,
+                scale: scale
+            )
+            return [ChatTextRenderRequest(
+                cacheKey: key,
+                attributed: entry.rendered.attributed,
+                decorations: entry.rendered.decorations,
+                topInset: entry.rendered.topInset,
+                bottomInset: entry.rendered.bottomInset,
+                width: entry.textWidth,
+                height: entry.textHeight,
+                scale: scale,
+                palette: palette
+            )]
+
+        case .bot:
+            guard !row.isFreshWriting else { return [] }
+            let entry = measureAssistant(row: row, width: width)
+            let contentWidth = entry.contentWidth
+            let unfoldedSet = unfoldedCodeSlices[row.line.id] ?? []
+            var requests: [ChatTextRenderRequest] = []
+
+            for measured in entry.slices {
+                switch measured.slice {
+                case .richText(let rendered):
+                    guard !rendered.isEmpty, contentWidth > 0, measured.height > 0 else { continue }
+                    let key = ChatTextTileRenderer.cacheKey(
+                        token: rendered.renderToken,
+                        width: contentWidth,
+                        height: measured.height,
+                        styleKey: currentStyle.styleKey,
+                        scale: scale
+                    )
+                    requests.append(ChatTextRenderRequest(
+                        cacheKey: key,
+                        attributed: rendered.attributed,
+                        decorations: rendered.decorations,
+                        topInset: rendered.topInset,
+                        bottomInset: rendered.bottomInset,
+                        width: contentWidth,
+                        height: measured.height,
+                        scale: scale,
+                        palette: palette
+                    ))
+
+                case .code(let codeSlice, let sliceIndex):
+                    guard !codeSlice.isLive else { continue }
+                    let unfolded = unfoldedSet.contains(sliceIndex)
+                    let activeAttr = (codeSlice.folds && !unfolded) ? codeSlice.foldedAttributed : codeSlice.fullAttributed
+                    let activeToken = (codeSlice.folds && !unfolded) ? codeSlice.foldedRenderToken : codeSlice.fullRenderToken
+                    let textSize = (codeSlice.folds && !unfolded) ? codeSlice.foldedContentSize : codeSlice.fullContentSize
+                    let codeW = max(contentWidth - Ink.Space.l * 2, textSize.width)
+                    let codeH = max(16, textSize.height)
+                    guard activeAttr.length > 0, codeW > 0, codeH > 0 else { continue }
+                    let key = ChatTextTileRenderer.cacheKey(
+                        token: activeToken,
+                        width: codeW,
+                        height: codeH,
+                        styleKey: currentStyle.styleKey,
+                        scale: scale
+                    )
+                    requests.append(ChatTextRenderRequest(
+                        cacheKey: key,
+                        attributed: activeAttr,
+                        decorations: .empty,
+                        topInset: 0,
+                        bottomInset: 0,
+                        width: codeW,
+                        height: codeH,
+                        scale: scale,
+                        palette: palette
+                    ))
+
+                case .pictures(let words, let pics, _):
+                    guard let words, !words.isEmpty else { continue }
+                    let wordsH = max(18, measured.height - measured.pictureHeights.reduce(0, +) - CGFloat(pics.count) * currentStyle.readingSize * 0.6)
+                    guard contentWidth > 0, wordsH > 0 else { continue }
+                    let key = ChatTextTileRenderer.cacheKey(
+                        token: words.renderToken,
+                        width: contentWidth,
+                        height: wordsH,
+                        styleKey: currentStyle.styleKey,
+                        scale: scale
+                    )
+                    requests.append(ChatTextRenderRequest(
+                        cacheKey: key,
+                        attributed: words.attributed,
+                        decorations: words.decorations,
+                        topInset: words.topInset,
+                        bottomInset: words.bottomInset,
+                        width: contentWidth,
+                        height: wordsH,
+                        scale: scale,
+                        palette: palette
+                    ))
+
+                case .table, .math, .fileCards:
+                    break
+                }
+            }
+            return requests
+
+        case .steps, .note:
+            return []
+        }
     }
 
     private func traceHeightKey(_ row: ChatListRowItem) -> String {

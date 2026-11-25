@@ -28,6 +28,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
     private var actions: ChatListActions?
     private var cachedShadowBounds: CGRect = .zero
     private var cachedShadowCornerRadius: CGFloat = -1
+    private var lastColorSignature = ""
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -64,6 +65,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         sheenLayer.startPoint = CGPoint(x: 0.5, y: 0)
         sheenLayer.endPoint = CGPoint(x: 0.5, y: 0.5)
         bubbleView.layer.addSublayer(sheenLayer)
+        richTextView.allowLongPressSelection = false
         bubbleView.addSubview(richTextView)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatUserCell, _) in
@@ -198,11 +200,16 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
     }
 
     private func refreshColors() {
+        let editing = currentRow?.isEditing == true
+        let theme = Theme.shared
+        let colorSig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(theme.bubble)|\(UIScale.factor)|\(editing)"
+        guard colorSig != lastColorSignature else { return }
+        lastColorSignature = colorSig
+
         litBackdrop.layer.cornerRadius = Ink.Radius.small
         litBackdrop.backgroundColor = UIColor(Ink.accentWash)
         timeGapLabel.textColor = UIColor(Ink.inkFaint)
 
-        let editing = currentRow?.isEditing == true
         bubbleView.layer.cornerRadius = Ink.Radius.card
         bubbleView.backgroundColor = UIColor(editing ? Ink.accentWash : Ink.bubble)
         bubbleView.layer.borderWidth = editing ? 1.5 : 0.75
@@ -690,7 +697,7 @@ final class ChatLivePulseCell: UICollectionViewCell {
         textView.onQuoteSelection = onQuoteExcerpt
         textView.onSaveNoteSelection = onSaveNoteExcerpt
         textView.onSpeakSelection = onSpeakExcerpt
-        textView.apply(ownerID: "live-pulse", rendered: entry.rendered, style: style)
+        textView.apply(ownerID: "live-pulse", rendered: entry.rendered, style: style, isLive: true)
         refreshColors()
         setNeedsLayout()
     }
