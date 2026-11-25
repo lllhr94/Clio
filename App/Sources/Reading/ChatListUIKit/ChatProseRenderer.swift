@@ -487,9 +487,9 @@ final class ChatProseBuilder {
     }
 
     private func measureCodeUnwrappedSize(_ attributed: NSAttributedString) -> CGSize {
-        let fitted = ChatLayoutCache.measureCoreTextSize(attributed, maxWidth: .greatestFiniteMagnitude)
+        let (fitted, lineCount) = ChatLayoutCache.measureCoreTextMetrics(attributed, maxWidth: .greatestFiniteMagnitude)
         guard fitted.width > 0 || fitted.height > 0 else { return .zero }
-        return CGSize(width: ceil(fitted.width) + 1, height: ceil(fitted.height + 0.5))
+        return CGSize(width: ceil(fitted.width) + 2, height: ceil(fitted.height + max(1.0, CGFloat(lineCount) * 0.35)))
     }
 
     private func buildTableSlice(_ table: Prose.Table, style: ChatListStyle) -> ChatTableSlice {
@@ -1601,8 +1601,8 @@ final class ChatLayoutCache {
         return ceil(max(18, fitted.height))
     }
 
-    nonisolated static func measureCoreTextSize(_ attributed: NSAttributedString, maxWidth: CGFloat) -> CGSize {
-        guard attributed.length > 0 else { return .zero }
+    nonisolated static func measureCoreTextMetrics(_ attributed: NSAttributedString, maxWidth: CGFloat) -> (size: CGSize, lineCount: Int) {
+        guard attributed.length > 0 else { return (.zero, 0) }
         let measuredSource: NSAttributedString
         if attributed.string.hasSuffix("\n") {
             let copy = NSMutableAttributedString(attributedString: attributed)
@@ -1615,13 +1615,23 @@ final class ChatLayoutCache {
         let framesetter = CTFramesetterCreateWithAttributedString(measuredSource as CFAttributedString)
         let constrainedWidth = maxWidth.isFinite ? max(1, maxWidth) : CGFloat.greatestFiniteMagnitude
         let constraints = CGSize(width: constrainedWidth, height: .greatestFiniteMagnitude)
-        return CTFramesetterSuggestFrameSizeWithConstraints(
+        let fitted = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter,
             CFRange(location: 0, length: measuredSource.length),
             nil,
             constraints,
             nil
         )
+        let frameWidth: CGFloat = maxWidth.isFinite ? constrainedWidth : max(1000, ceil(fitted.width) + 64)
+        let frameHeight: CGFloat = max(1000, ceil(fitted.height) + 64)
+        let path = CGPath(rect: CGRect(x: 0, y: 0, width: frameWidth, height: frameHeight), transform: nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: measuredSource.length), path, nil)
+        let lineCount = max(1, CFArrayGetCount(CTFrameGetLines(frame)))
+        return (fitted, lineCount)
+    }
+
+    nonisolated static func measureCoreTextSize(_ attributed: NSAttributedString, maxWidth: CGFloat) -> CGSize {
+        measureCoreTextMetrics(attributed, maxWidth: maxWidth).size
     }
 
     func measureTextSize(rendered: ChatRenderedProse, maxWidth: CGFloat) -> CGSize {
@@ -1630,9 +1640,16 @@ final class ChatLayoutCache {
             return CGSize(width: 0, height: ceil(insetHeight))
         }
         let safeMaxWidth = max(1, maxWidth)
-        let fitted = Self.measureCoreTextSize(rendered.attributed, maxWidth: safeMaxWidth)
-        let width = min(safeMaxWidth, fitted.width > 0 ? ceil(fitted.width + 0.5) : 0)
-        let height = ceil(fitted.height + insetHeight + 0.5)
+        let (fitted, lineCount) = Self.measureCoreTextMetrics(rendered.attributed, maxWidth: safeMaxWidth)
+        let width = min(safeMaxWidth, fitted.width > 0 ? ceil(fitted.width + 1.5) : 0)
+        var maxHeight = fitted.height
+        var maxLines = lineCount
+        if fitted.width >= safeMaxWidth - 3.0 {
+            let narrowCheck = Self.measureCoreTextMetrics(rendered.attributed, maxWidth: max(1, safeMaxWidth - 2.0))
+            maxHeight = max(maxHeight, narrowCheck.size.height)
+            maxLines = max(maxLines, narrowCheck.lineCount)
+        }
+        let height = ceil(maxHeight + insetHeight + max(1.0, CGFloat(maxLines) * 0.35))
         return CGSize(width: width, height: height)
     }
 }

@@ -253,7 +253,6 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         let rulePath = CGMutablePath()
         var quoteSpans: [(minY: CGFloat, maxY: CGFloat)?] = Array(repeating: nil, count: quoteRanges.count)
 
-        var codeIdx = 0
         var ruleIdx = 0
         var quoteIdx = 0
 
@@ -263,123 +262,103 @@ final class ChatRichTextView: UITextView, UITextViewDelegate {
         let ruleWidth = max(24, bounds.width - ruleInset * 2)
         let docStart = tlm.documentRange.location
 
-        _ = tlm.enumerateTextLayoutFragments(from: docStart, options: [.ensuresLayout]) { fragment in
-            let fragRange = fragment.rangeInElement
-            let fragStart = tlm.offset(from: docStart, to: fragRange.location)
-            let fragEnd = tlm.offset(from: docStart, to: fragRange.endLocation)
-            guard fragEnd > fragStart else {
-                return codeIdx < codeRanges.count || ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
+        if !ruleRanges.isEmpty || !quoteRanges.isEmpty {
+            _ = tlm.enumerateTextLayoutFragments(from: docStart, options: [.ensuresLayout]) { fragment in
+                let fragRange = fragment.rangeInElement
+                let fragStart = tlm.offset(from: docStart, to: fragRange.location)
+                let fragEnd = tlm.offset(from: docStart, to: fragRange.endLocation)
+                guard fragEnd > fragStart else {
+                    return ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
+                }
+
+                let fragFrame = fragment.layoutFragmentFrame
+                let originY = inset.top + fragFrame.minY
+                let lineFragments = fragment.textLineFragments
+
+                while ruleIdx < ruleRanges.count && NSMaxRange(ruleRanges[ruleIdx]) <= fragStart {
+                    ruleIdx += 1
+                }
+                var rScan = ruleIdx
+                while rScan < ruleRanges.count && ruleRanges[rScan].location < fragEnd {
+                    let target = ruleRanges[rScan]
+                    let tStart = target.location
+                    let tEnd = NSMaxRange(target)
+                    var minY = CGFloat.greatestFiniteMagnitude
+                    var maxY = -CGFloat.greatestFiniteMagnitude
+                    for lineFrag in lineFragments {
+                        let lineStart = fragStart + lineFrag.characterRange.location
+                        let lineEnd = lineStart + lineFrag.characterRange.length
+                        if tEnd > lineStart && tStart < lineEnd {
+                            let tBounds = lineFrag.typographicBounds
+                            minY = min(minY, originY + tBounds.minY)
+                            maxY = max(maxY, originY + tBounds.maxY)
+                        }
+                    }
+                    if !minY.isFinite || !maxY.isFinite {
+                        minY = originY
+                        maxY = originY + fragFrame.height
+                    }
+                    if minY <= maxY {
+                        let midY = (minY + maxY) * 0.5
+                        rulePath.addRect(CGRect(x: ruleInset, y: midY - 0.375, width: ruleWidth, height: 0.75))
+                    }
+                    if tEnd <= fragEnd {
+                        ruleIdx = rScan + 1
+                    }
+                    rScan += 1
+                }
+
+                while quoteIdx < quoteRanges.count && NSMaxRange(quoteRanges[quoteIdx]) <= fragStart {
+                    quoteIdx += 1
+                }
+                var qScan = quoteIdx
+                while qScan < quoteRanges.count && quoteRanges[qScan].location < fragEnd {
+                    let target = quoteRanges[qScan]
+                    let tStart = target.location
+                    let tEnd = NSMaxRange(target)
+                    var spanMinY = quoteSpans[qScan]?.minY ?? CGFloat.greatestFiniteMagnitude
+                    var spanMaxY = quoteSpans[qScan]?.maxY ?? -CGFloat.greatestFiniteMagnitude
+                    for lineFrag in lineFragments {
+                        let lineStart = fragStart + lineFrag.characterRange.location
+                        let lineEnd = lineStart + lineFrag.characterRange.length
+                        if tEnd > lineStart && tStart < lineEnd {
+                            let tBounds = lineFrag.typographicBounds
+                            spanMinY = min(spanMinY, originY + tBounds.minY)
+                            spanMaxY = max(spanMaxY, originY + tBounds.maxY)
+                        }
+                    }
+                    if lineFragments.isEmpty && tEnd > fragStart && tStart < fragEnd {
+                        spanMinY = min(spanMinY, originY)
+                        spanMaxY = max(spanMaxY, originY + fragFrame.height)
+                    }
+                    if spanMinY <= spanMaxY, spanMinY.isFinite, spanMaxY.isFinite {
+                        quoteSpans[qScan] = (minY: spanMinY, maxY: spanMaxY)
+                    }
+                    if tEnd <= fragEnd {
+                        quoteIdx = qScan + 1
+                    }
+                    qScan += 1
+                }
+
+                return ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
             }
+        }
 
-            let fragFrame = fragment.layoutFragmentFrame
-            let originX = inset.left + fragFrame.minX
-            let originY = inset.top + fragFrame.minY
-            let lineFragments = fragment.textLineFragments
-
-            while codeIdx < codeRanges.count && NSMaxRange(codeRanges[codeIdx]) <= fragStart {
-                codeIdx += 1
-            }
-            var cScan = codeIdx
-            while cScan < codeRanges.count && codeRanges[cScan].location < fragEnd {
-                let target = codeRanges[cScan]
-                let tStart = target.location
-                let tEnd = NSMaxRange(target)
-                for lineFrag in lineFragments {
-                    let lineCharRange = lineFrag.characterRange
-                    let lineStart = fragStart + lineCharRange.location
-                    let lineEnd = lineStart + lineCharRange.length
-                    let overlapStart = max(tStart, lineStart)
-                    let overlapEnd = min(tEnd, lineEnd)
-                    guard overlapEnd > overlapStart else { continue }
-
-                    let localStart = overlapStart - fragStart
-                    let localEnd = overlapEnd - fragStart
-                    let startX = lineFrag.locationForCharacter(at: localStart).x
-                    let endX = lineFrag.locationForCharacter(at: localEnd).x
-                    let tBounds = lineFrag.typographicBounds
-                    let minX = originX + tBounds.minX + min(startX, endX)
-                    let maxX = originX + tBounds.minX + max(startX, endX)
-                    let rectW = maxX - minX
-                    let rectH = tBounds.height
-                    guard rectW > 0, rectH > 0 else { continue }
-
-                    let rawRect = CGRect(x: minX, y: originY + tBounds.minY, width: rectW, height: rectH)
-                    let rect = rawRect.insetBy(dx: -2.5, dy: rawRect.height * 0.06)
+        if !codeRanges.isEmpty {
+            for r in codeRanges {
+                guard let startLoc = tlm.location(docStart, offsetBy: r.location),
+                      let endLoc = tlm.location(docStart, offsetBy: NSMaxRange(r)),
+                      let segRange = NSTextRange(location: startLoc, end: endLoc) else { continue }
+                tlm.ensureLayout(for: segRange)
+                tlm.enumerateTextSegments(in: segRange, type: .selection, options: []) { _, segmentFrame, _, _ in
+                    let offsetFrame = segmentFrame.offsetBy(dx: inset.left, dy: inset.top)
+                    guard offsetFrame.width > 0, offsetFrame.height > 0 else { return true }
+                    let rect = offsetFrame.insetBy(dx: -2.5, dy: offsetFrame.height * 0.06)
                     let radius = min(corner, rect.height * 0.3)
                     codePath.addRoundedRect(in: rect, cornerWidth: radius, cornerHeight: radius)
+                    return true
                 }
-                if tEnd <= fragEnd {
-                    codeIdx = cScan + 1
-                }
-                cScan += 1
             }
-
-            while ruleIdx < ruleRanges.count && NSMaxRange(ruleRanges[ruleIdx]) <= fragStart {
-                ruleIdx += 1
-            }
-            var rScan = ruleIdx
-            while rScan < ruleRanges.count && ruleRanges[rScan].location < fragEnd {
-                let target = ruleRanges[rScan]
-                let tStart = target.location
-                let tEnd = NSMaxRange(target)
-                var minY = CGFloat.greatestFiniteMagnitude
-                var maxY = -CGFloat.greatestFiniteMagnitude
-                for lineFrag in lineFragments {
-                    let lineStart = fragStart + lineFrag.characterRange.location
-                    let lineEnd = lineStart + lineFrag.characterRange.length
-                    if tEnd > lineStart && tStart < lineEnd {
-                        let tBounds = lineFrag.typographicBounds
-                        minY = min(minY, originY + tBounds.minY)
-                        maxY = max(maxY, originY + tBounds.maxY)
-                    }
-                }
-                if !minY.isFinite || !maxY.isFinite {
-                    minY = originY
-                    maxY = originY + fragFrame.height
-                }
-                if minY <= maxY {
-                    let midY = (minY + maxY) * 0.5
-                    rulePath.addRect(CGRect(x: ruleInset, y: midY - 0.375, width: ruleWidth, height: 0.75))
-                }
-                if tEnd <= fragEnd {
-                    ruleIdx = rScan + 1
-                }
-                rScan += 1
-            }
-
-            while quoteIdx < quoteRanges.count && NSMaxRange(quoteRanges[quoteIdx]) <= fragStart {
-                quoteIdx += 1
-            }
-            var qScan = quoteIdx
-            while qScan < quoteRanges.count && quoteRanges[qScan].location < fragEnd {
-                let target = quoteRanges[qScan]
-                let tStart = target.location
-                let tEnd = NSMaxRange(target)
-                var spanMinY = quoteSpans[qScan]?.minY ?? CGFloat.greatestFiniteMagnitude
-                var spanMaxY = quoteSpans[qScan]?.maxY ?? -CGFloat.greatestFiniteMagnitude
-                for lineFrag in lineFragments {
-                    let lineStart = fragStart + lineFrag.characterRange.location
-                    let lineEnd = lineStart + lineFrag.characterRange.length
-                    if tEnd > lineStart && tStart < lineEnd {
-                        let tBounds = lineFrag.typographicBounds
-                        spanMinY = min(spanMinY, originY + tBounds.minY)
-                        spanMaxY = max(spanMaxY, originY + tBounds.maxY)
-                    }
-                }
-                if lineFragments.isEmpty && tEnd > fragStart && tStart < fragEnd {
-                    spanMinY = min(spanMinY, originY)
-                    spanMaxY = max(spanMaxY, originY + fragFrame.height)
-                }
-                if spanMinY <= spanMaxY, spanMinY.isFinite, spanMaxY.isFinite {
-                    quoteSpans[qScan] = (minY: spanMinY, maxY: spanMaxY)
-                }
-                if tEnd <= fragEnd {
-                    quoteIdx = qScan + 1
-                }
-                qScan += 1
-            }
-
-            return codeIdx < codeRanges.count || ruleIdx < ruleRanges.count || quoteIdx < quoteRanges.count
         }
 
         CATransaction.begin()

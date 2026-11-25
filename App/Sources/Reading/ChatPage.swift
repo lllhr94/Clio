@@ -195,7 +195,7 @@ struct ChatPage: View {
                 if !botTexts.isEmpty {
                     let uiKitMode = useUIKitChatList
                     let styleKey: ProseStyleKey? = uiKitMode ? nil : ProseStyleKey.current()
-                    await Task.detached(priority: .userInitiated) {
+                    let worker = Task.detached(priority: .userInitiated) {
                         if uiKitMode {
                             for raw in botTexts {
                                 if Task.isCancelled { return }
@@ -212,7 +212,12 @@ struct ChatPage: View {
                         } else if let styleKey {
                             ProsePrewarm.prewarm(lines: targetSlice[...], styleKey: styleKey)
                         }
-                    }.value
+                    }
+                    await withTaskCancellationHandler {
+                        await worker.value
+                    } onCancel: {
+                        worker.cancel()
+                    }
                 }
             }
             guard !Task.isCancelled, historyPage == nil, selecting.isEmpty else { return }

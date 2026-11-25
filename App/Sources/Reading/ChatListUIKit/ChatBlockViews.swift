@@ -407,7 +407,10 @@ private final class ChatTableCellLabel: UILabel {
         layoutManager.addTextContainer(container)
         storage.addLayoutManager(layoutManager)
 
+        let numGlyphs = layoutManager.numberOfGlyphs
+        guard numGlyphs > 0 else { return }
         let glyphIndex = layoutManager.glyphIndex(for: point, in: container, fractionOfDistanceThroughGlyph: nil)
+        guard glyphIndex < numGlyphs else { return }
         let glyphBounds = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: container)
         guard glyphBounds.insetBy(dx: -4, dy: -4).contains(point) else { return }
         let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
@@ -531,9 +534,11 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         currentStyle = nil
         lastWidth = 0
         onOpenURL = nil
+        scrollView.contentOffset = .zero
     }
 
     private func applyGrid(slice: ChatTableSlice) {
+        scrollView.contentOffset = .zero
         let allRows = [slice.headerCells] + slice.rowCells
         let rowCount = allRows.count
         let colCount = max(1, slice.naturalWidths.count)

@@ -182,7 +182,15 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         } else {
             photoID = 0
         }
-        let signature = "\(face)|\(PetLibrary.shared.choice)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(Theme.shared.key)"
+        let resolvedPackID: String
+        if face.hasPrefix("pet:") {
+            let targetID = String(face.dropFirst(4))
+            resolvedPackID = PetLibrary.shared.packs.first(where: { $0.id == targetID })?.id ?? "missing"
+        } else {
+            resolvedPackID = PetLibrary.shared.pack?.id ?? "none"
+        }
+        let theme = Theme.shared
+        let signature = "\(face)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(resolvedPackID)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
         guard signature != lastRenderedSignature else { return }
         lastRenderedSignature = signature
 
