@@ -1,8 +1,8 @@
 # 现状与交接
 
-## 当前一览（11-25，Clio 0.36 Wave 1–4 全部收口集成）
+## 当前一览（11-25，Clio 0.36 全 App 120Hz 流畅度与对标 Telegram 引擎升级收口）
 
-- **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"` / `CFBundleVersion = "37"`，`fc2f66c` 起，当前已合并 PR #67–#85，最新代码合入提交为 `792ac13`）；**未碰 `main` / `latest` / `v0.36`**，正式发版仍等主人说「发」。
+- **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"` / `CFBundleVersion = "37"`，`fc2f66c` 起，当前已合并 PR #67–#93，最新代码合入提交为 `9d92652`）；**未碰 `main` / `latest` / `v0.36`**，正式发版仍等主人说「发」。
 - **CI 改进**：`0545787` 为 `.github/workflows/build.yml` 的 `AgentKit` 测试补充失败断言高亮输出（不再被 `tail -n 80` 遮盖前置套件错误）。
 - **已合入 PR（Wave 1–4 与两次安全加固均已通过本地门禁、Pro 审查及 macOS CI 全绿）**：
   - **Wave 1**
@@ -29,10 +29,19 @@
     - `v36-4b-sec-fix`（PR #84，`53a30a8`，CI `45512687307`）：根据 Codex 对 PR #83 的只读审计修齐 5 处边界——检索查询截断与 `Set`/单次分析防耗时拖慢、PDF 越界页码 `Int32(exactly:)` 防崩溃、`search_docs` 路径与返回边界实时信匣脱敏及轮换重检、`Disk.frozen` 阻断读盘与 `MountedFolders.revision` 变动失效防陈旧命中、`LiveChatMemoryGate` 在单对话关闭记忆后同轮立即停发常驻与召回记忆。
   - **真机 120Hz 流畅度与小地图专项（PR #85）**
     - `v36-perf-uikit-scroll`（PR #85，`792ac13`，CI `45535306791`）：针对真机 120Hz 掉帧追踪（进页 160 ms、载入更早 159 ms、滚动 16–77 ms）与小地图问题完成 7+1 项优化——① `ChatListViewController` 滚动度量 ≥0.10s 节流+停滑立即追平、触摸滚动期冻结 `@Observable PetPerch` 突变与布局失效、隔离 `Hitches` 写 `UserDefaults` 触发头像重刷的反馈环、取消进页 `premeasureItems` 双重测算并下调 `.steps` 估算至 50；② `ChatListState.isEquivalent` 28 字段等价短路；③ `ChatTraceHostingCell` 复用持久 `TraceRowModel` 与 `UIHostingConfiguration`（`.id` 隔离行态+`TraceGeometry` 防串高）；④ `ChatProseRenderer` 用 `CTFramesetter` 单次无界/窄边安全测算替代主线程 `UITextView.sizeThatFits`；⑤ `ChatRichTextView` 无装饰跳过布局、规则/引用改单趟 `enumerateTextLayoutFragments` 与行内代码走原生 `enumerateTextSegments(.selection)`；⑥ 表格改 `UILabel` 对象池加 `contentOffset` 归零与字形越界保护、气泡 `shadowPath` 缓存、`UIDeferredMenuElement.uncached` 懒构菜单、`ChatMeAvatarView` 异步宠物包/主题签名失效及隐藏续行钮跳过重配；⑦ `loadEarlier()` 后台提前预热待展开楼层 Markdown 与代码分词（含任务取消透传）；⑧ 右侧小地图改 `ChatChrome.activeTurnID` 120Hz 单轮实时追踪、背景刻度 `Canvas` 化与独立单游标浮层，确保滑多快都仅亮唯一当前轮游标。
+  - **全 App 120Hz 流畅度与对标 Telegram 聊天引擎升级（PR #86–#93）**
+    - `v36-async-text-render`（PR #86，`792b398`，CI `45551380342`）：CoreText 瓦片异步栅格化底座 `ChatTextTileRenderer`、`CarePage` 分段加载、导出路径清理。
+    - `perf-1-cross-page-hitches`（PR #87，`b088207`，CI `45557663856`）：全 App 跨页隐形杀手清障（`Theme` / `UIScale` 观测域拆分、滚动期隔离 `PetPerch` 突发读写不改拖拽定位、`ModelError` / `EndpointKey` / `Chat` 主线程清理、`tools/lint.py` 性能守卫规则）。
+    - `perf-3-subpages-io-lazy`（PR #88，`b07e129`，CI `45566799046`）：高频子页 I/O 与懒加载改造（`MemoryImporter`、`MemoryStoreBridge` `commitQueue`、`CareWebDAVCoordinator`、`Inkstone`、`Grants`、`SecretsPage`、`Attach` 等）。
+    - `perf-2-settings-services`（PR #89，`3566424`，CI `45566183786`）：设置页与服务商/模型流畅度（`ChatDisk` + `TeamModel+Options` 统一落盘与刷盘栅栏、`EndpointMutationGate`、字体进度门控、`BrandIcons` 限额缓存）。
+    - `perf-4-chat-desk-120hz`（PR #90，`5edea12`，CI `45579920302`）：聊天 120Hz 清障与首页 `Desk` 拆解（`BoundedLRUCache`、`DeskHomeView`/`DeskSidebarView`/`DeskSlideHost`、`tools/lint.py` 四条性能规则升级为硬错误，0 perf errors）。
+    - `perf-5a-chat-bg-prefetch`（PR #91，`766f9a9`，CI `45593836738`）：Telegram Step 1 — 只读 `Sendable` 布局测量快照、`UICollectionViewDataSourcePrefetching` 滚动前方与进场/更早后台预热、公式非阻塞估算+无跳动锚点回填、进程级单调递增 `renderToken`。
+    - `perf-5b-chat-uikit-cards`（PR #92，`9b8cc58`，CI `45604825230`）：Telegram Step 2 — 清除列表滚动内 `ChatHostedBlockView`，将文件卡片/图片块（共用 `LocalPictureCache` / `FileCardCache` / SSRF 防护下载器）、折叠与实时 `.steps` 摘要（点击弹原有 SwiftUI 详情 sheet，带卡片/展开回退 `ChatTraceHostingCell`）与 `.liveToolTail` 全部切为纯 UIKit 视图。
+    - `perf-5c-chat-async-coretext`（PR #93，`9d92652`，CI `45615041312`）：Telegram Step 3 — 补齐 `didReceiveMemoryWarning` 瓦片与装饰缓存清理、`drawGeneration` 复用防串图与流式 15Hz→定稿无闪烁交接、旁白静态朗读与链接自定义操作、`hitTestLink` 行内边界收敛、深浅/缩放无残影重绘，及气泡更多菜单「选择文本」（异步弹起原生选字并保留自定义菜单）。
 - **审查覆盖与交接 Claude 复核重点**：
-  - Wave 3–4 与两轮安全修复均经过 Antigravity Pro 只读逐行复审及 macOS CI 单测编译验证；Codex CLI 对 `batch-0.36` 安全边界与 `4B-1` 做了两轮只读对抗审计（已修问题见 PR #82、PR #84）。
+  - Wave 3–4、两轮安全修复及 PR #86–#93 均经过 Antigravity Pro 只读逐行复审（全部 `READY TO MERGE`）及 macOS CI 单测编译验证；Codex CLI 对 `batch-0.36` 安全边界与 `4B-1` 做了两轮只读对抗审计（已修问题见 PR #82、PR #84）。
   - **留待 Claude 回来重点复核**：① `Agent.swift` 只读并发门禁与循环刹车（PR #77）；② `Backup.swift` / `BackupCrypto.swift` 口令流、`#keys` 拒绝未加密导入与 `书案/技能/` 暂存回滚（PR #78、PR #82），以及原有 `Team/mounts.json` 进备份评估；③ `AskUserRules.swift` URL 凭证拦截范围（PR #75、PR #82）；④ `MemoryStore` / `MemoryRecall` / `DocSearchIndex` 访问隔离与 `LiveChatMemoryGate` 轮内实时关停（PR #73、#76、#83、#84）；⑤ **设计裁决留档**：`MountedFolders` 用户自行在文件 App 挂载的本地文件夹暂维持与 `read_file`/`read_pdf` 一致的「非外部网页污点」策略（见 `CraftTests.swift:508`），待 Claude 一并确认 `search_docs` / `read_file` 挂载目录是否需要单独接入 `Taint`。
-- **下一步**：待最新 `probe-batch-0.36`（含 PR #85）发布后由主人在 iPhone 真机复测 120Hz 聊天流畅度与右侧小地图单游标跟随；待主人确认「发」且 `docs/releases/0.36.md` 写好后，再合并到 `main`。
+- **下一步**：待含 PR #86–#93 的最新 `probe-batch-0.36` 测试包在 iPhone 真机按 120Hz 清单复测后确认手感；待决产品问题：是否把「记忆 / 拾遗」从「调弦 › 旅伴」上提到设置首页；待主人确认「发」且 `docs/releases/0.36.md` 写好后，再合并到 `main`。
 
 ---
 
