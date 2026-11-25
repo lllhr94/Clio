@@ -110,28 +110,36 @@ enum RoutineTools {
 // MARK: Notifications
 
 extension Notify {
+    private static let routineQueue = DispatchQueue(label: "clio.notify.routine", qos: .utility)
+
     /// One repeating notification per day the routine runs on.
     static func schedule(_ routine: Routine, from name: String) {
-        unschedule(routine: routine.id)
-        guard routine.on else { return }
-        let center = UNUserNotificationCenter.current()
-        let content = UNMutableNotificationContent()
-        content.title = "\(name)要做：\(routine.title)"
-        content.body = "打开 Clio，\(name)就开始做。"
-        content.sound = .default
-        content.userInfo = ["chat": TeamModel.key(bot: routine.botId)]
-        let validDays = routine.days.filter { (1...7).contains($0) }
-        for day in validDays.isEmpty ? [0] : validDays {
-            var parts = DateComponents()
-            parts.hour = routine.hour
-            parts.minute = routine.minute
-            if day > 0 { parts.weekday = Routine.weekday(day) }
-            center.add(UNNotificationRequest(identifier: "routine-\(routine.id)-\(day)", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
+        let identifiers = (0...7).map { "routine-\(routine.id)-\($0)" }
+        routineQueue.async {
+            let center = UNUserNotificationCenter.current()
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+            guard routine.on else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "\(name)要做：\(routine.title)"
+            content.body = "打开 Clio，\(name)就开始做。"
+            content.sound = .default
+            content.userInfo = ["chat": TeamModel.key(bot: routine.botId)]
+            let validDays = routine.days.filter { (1...7).contains($0) }
+            for day in validDays.isEmpty ? [0] : validDays {
+                var parts = DateComponents()
+                parts.hour = routine.hour
+                parts.minute = routine.minute
+                if day > 0 { parts.weekday = Routine.weekday(day) }
+                center.add(UNNotificationRequest(identifier: "routine-\(routine.id)-\(day)", content: content, trigger: UNCalendarNotificationTrigger(dateMatching: parts, repeats: true)))
+            }
         }
     }
 
     static func unschedule(routine id: String) {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: (0...7).map { "routine-\(id)-\($0)" })
+        let identifiers = (0...7).map { "routine-\(id)-\($0)" }
+        routineQueue.async {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
     }
 }
 
@@ -139,8 +147,10 @@ extension Notify {
 
 /// 定时: the routines, each with its time, who does it and what; on, off, change, take away.
 struct RoutinesPage: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     @Environment(\.dismiss) private var dismiss
+    @State private var routines: [Routine] = []
+    @State private var botNames: [String: String] = [:]
     @State private var editing: Routine?
     @State private var pendingDelete: Routine?
 
@@ -150,13 +160,13 @@ struct RoutinesPage: View {
                 LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-                    if team.routines.isEmpty {
+                    if routines.isEmpty {
                         EmptyNote(symbol: "alarm", words: L.t("empty.createScheduledJob"))
                     } else {
                         LazyVStack(spacing: 0) {
-                            ForEach(team.routines) { routine in
+                            ForEach(routines) { routine in
                                 row(routine)
-                                if routine.id != team.routines.last?.id { Kit.divider }
+                                if routine.id != routines.last?.id { Kit.divider }
                             }
                         }
                         .paperCard()
@@ -199,13 +209,21 @@ struct RoutinesPage: View {
             }
         }
         .hitchPage("定时")
+        .onAppear {
+            routines = team.routines
+            botNames = Dictionary(uniqueKeysWithValues: team.bots.map { ($0.id, $0.name) })
+        }
+        .onReceive(team.$routines) { routines = $0 }
+        .onReceive(team.$bots) { bots in
+            botNames = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0.name) })
+        }
         .sheet(item: $editing) { routine in
             RoutineEditor(team: team, routine: routine)
         }
     }
 
     private func row(_ routine: Routine) -> some View {
-        let who = team.bots.first { $0.id == routine.botId }?.name ?? "?"
+        let who = botNames[routine.botId] ?? "?"
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(routine.title).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(routine.on ? Ink.ink : Ink.inkFaint)
@@ -237,7 +255,7 @@ struct RoutinesPage: View {
 
 /// Setting up or changing one routine.
 struct RoutineEditor: View {
-    @ObservedObject var team: TeamModel
+    let team: TeamModel
     @Environment(\.dismiss) private var dismiss
     @State var routine: Routine
     @State private var time = Date()
@@ -348,7 +366,7 @@ struct RoutineEditor: View {
         // A routine set up or changed now starts counting from now: nothing earlier is owed.
         kept.lastRun = Date().timeIntervalSince1970
         team.setRoutine(kept)
-        Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
+        Task.detached(priority: .utility) { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
         Haptics.thud()
         dismiss()
     }

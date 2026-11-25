@@ -153,26 +153,42 @@ struct ScannerView: UIViewControllerRepresentable {
 
 /// Scanned pages: kept as pictures in 书案/收件, with their words read out into a text file beside them.
 enum Scan {
+    private static let formatterLock = NSLock()
+    private static let stampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmm"
+        return formatter
+    }()
+
+    private static func currentStamp() -> String {
+        formatterLock.withLock { stampFormatter.string(from: Date()) }
+    }
+
     /// Returns the text file's path in 书案 and how many characters were read.
     static func keep(_ pages: [UIImage]) async -> (text: String, count: Int)? {
         guard !pages.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmm"
-        let stamp = formatter.string(from: Date())
+        let stamp = currentStamp()
         let folder = Workspace.root.appendingPathComponent("收件/扫描 \(stamp)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        await Task.detached(priority: .userInitiated) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }.value
         var words: [String] = []
         for (index, page) in pages.enumerated() {
-            if let data = page.jpegData(compressionQuality: 0.8) {
-                try? data.write(to: folder.appendingPathComponent("第\(index + 1)页.jpg"))
-            }
+            let pageURL = folder.appendingPathComponent("第\(index + 1)页.jpg")
+            await Task.detached(priority: .userInitiated) {
+                if let data = page.jpegData(compressionQuality: 0.8) {
+                    try? data.write(to: pageURL)
+                }
+            }.value
             let text = await read(page)
             words.append("——第 \(index + 1) 页——\n" + text)
         }
         let all = words.joined(separator: "\n\n")
         let file = folder.appendingPathComponent("识别的文字.txt")
-        try? Data(all.utf8).write(to: file)
-        return (Workspace.relative(file), all.count)
+        return await Task.detached(priority: .userInitiated) {
+            try? Data(all.utf8).write(to: file)
+            return (Workspace.relative(file), all.count)
+        }.value
     }
 
     /// Reads the words on one picture, Chinese and English.
@@ -219,7 +235,9 @@ struct PlusSheet: View {
     /// What each picked photo became in the composer, to take it back out.
     @State private var placed: [String: Data] = [:]
     @State private var loadingPhotos: Set<String> = []
-    @State private var access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var access: PHAuthorizationStatus? = nil
+    @State private var enabledSkillsCount: Int? = nil
+    @State private var thumbBatcher: ThumbBatcher? = nil
     @State private var abilities = false
     @State private var skills = false
 
@@ -246,7 +264,7 @@ struct PlusSheet: View {
                         line("checkmark.shield", Words.t("本事"), value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
                     }
                     group {
-                        line("books.vertical", "技能", value: "\(SkillShelf.enabled.count) 个") { skills = true }
+                        line("books.vertical", "技能", value: enabledSkillsCount.map { "\($0) 个" }) { skills = true }
                         divider
                         toggle("brain", L.t("nav.memory"), note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
                     }
@@ -284,8 +302,12 @@ struct PlusSheet: View {
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { sheetSize = $0 }
         .sheet(isPresented: $abilities) { AbilitiesSheet(team: team, key: key, name: name) }
-        .sheet(isPresented: $skills) { SkillsPage() }
-        .task { loadRecent() }
+        .sheet(isPresented: $skills, onDismiss: { Task { await refreshSkillsCount() } }) { SkillsPage() }
+        .task {
+            async let skillsCountTask: Void = refreshSkillsCount()
+            async let recentTask: Void = loadRecent()
+            _ = await (skillsCountTask, recentTask)
+        }
     }
 
     // MARK: Recent photos
@@ -320,11 +342,13 @@ struct PlusSheet: View {
             .scrollIndicators(.hidden)
             .clipShape(RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
             .frame(height: thumbnailSide)
+        } else if access == nil {
+            Color.clear.frame(height: 64)
         } else {
             Button {
                 Task {
                     access = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-                    loadRecent()
+                    await loadRecent()
                 }
             } label: {
                 Label("允许后，这里会显示最近的照片，点一下就加上", systemImage: "photo.on.rectangle")
@@ -337,25 +361,90 @@ struct PlusSheet: View {
         }
     }
 
-    private func loadRecent() {
-        guard access == .authorized || access == .limited else { return }
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.fetchLimit = 24
-        let result = PHAsset.fetchAssets(with: .image, options: options)
-        var assets: [PHAsset] = []
-        result.enumerateObjects { asset, _, _ in assets.append(asset) }
-        recent = assets
+    private func refreshSkillsCount() async {
+        let count = await Task.detached(priority: .userInitiated) {
+            SkillShelf.enabled.count
+        }.value
+        guard !Task.isCancelled else { return }
+        enabledSkillsCount = count
+    }
+
+    private func loadRecent() async {
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (status: PHAuthorizationStatus, assets: [PHAsset]) in
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard status == .authorized || status == .limited else {
+                return (status, [])
+            }
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            options.fetchLimit = 24
+            let result = PHAsset.fetchAssets(with: .image, options: options)
+            var assets: [PHAsset] = []
+            assets.reserveCapacity(result.count)
+            result.enumerateObjects { asset, _, _ in assets.append(asset) }
+            return (status, assets)
+        }.value
+        guard !Task.isCancelled else { return }
+        access = loaded.status
+        recent = loaded.assets
+        guard !loaded.assets.isEmpty else { return }
+
+        let batcher = ThumbBatcher { batch in
+            thumbs.merge(batch) { _, newer in newer }
+        }
+        thumbBatcher = batcher
+        let assets = loaded.assets
         let manager = PHImageManager.default()
         let request = PHImageRequestOptions()
         request.deliveryMode = .opportunistic
         request.isNetworkAccessAllowed = true
         for asset in assets {
+            let id = asset.localIdentifier
             manager.requestImage(for: asset, targetSize: CGSize(width: 240, height: 240), contentMode: .aspectFill, options: request) { image, _ in
                 if let image {
-                    Task { @MainActor in thumbs[asset.localIdentifier] = image }
+                    batcher.add(id, image)
                 }
             }
+        }
+    }
+
+    private final class ThumbBatcher: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: [String: UIImage] = [:]
+        private var scheduled = false
+        private let onFlush: @MainActor ([String: UIImage]) -> Void
+
+        init(onFlush: @escaping @MainActor ([String: UIImage]) -> Void) {
+            self.onFlush = onFlush
+        }
+
+        func add(_ id: String, _ image: UIImage) {
+            var shouldSchedule = false
+            lock.lock()
+            pending[id] = image
+            if !scheduled {
+                scheduled = true
+                shouldSchedule = true
+            }
+            lock.unlock()
+            if shouldSchedule {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(30))
+                    self?.flush()
+                }
+            }
+        }
+
+        @MainActor
+        private func flush() {
+            let batch: [String: UIImage] = lock.withLock {
+                scheduled = false
+                let drained = pending
+                pending.removeAll(keepingCapacity: true)
+                return drained
+            }
+            guard !batch.isEmpty else { return }
+            onFlush(batch)
         }
     }
 
