@@ -1,11 +1,326 @@
 import AgentKit
+import CoreText
 import Craft
 import SwiftUI
 import UIKit
 
+/// Pre-resolved concrete `UIColor`s for off-main-thread layout, prose rendering, and CoreText tile rasterization.
+struct ChatResolvedColors: Equatable, @unchecked Sendable {
+    let ink: UIColor
+    let inkSoft: UIColor
+    let inkFaint: UIColor
+    let accent: UIColor
+    let paper: UIColor
+    let paperRaised: UIColor
+    let rule: UIColor
+    let mine: UIColor
+    let accentWash: UIColor
+    let codeOutput: UIColor
+    let codeKeyword: UIColor
+    let codeFunction: UIColor
+    let codeNumber: UIColor
+    let codeString: UIColor
+    let inlineCodeFill: UIColor
+    let ruleFill: UIColor
+    let quoteBackground: UIColor
+    let quoteBorder: UIColor
+    let quoteStripe: UIColor
+
+    @MainActor
+    static func resolve(traits: UITraitCollection) -> ChatResolvedColors {
+        func pick(_ color: Color) -> UIColor {
+            UIColor(color).resolvedColor(with: traits)
+        }
+        let mine = pick(Ink.mine)
+        let rule = pick(Ink.rule)
+        let paperRaised = pick(Ink.paperRaised)
+        let accent = pick(Ink.accent)
+        return ChatResolvedColors(
+            ink: pick(Ink.ink),
+            inkSoft: pick(Ink.inkSoft),
+            inkFaint: pick(Ink.inkFaint),
+            accent: accent,
+            paper: pick(Ink.paper),
+            paperRaised: paperRaised,
+            rule: rule,
+            mine: mine,
+            accentWash: pick(Ink.accentWash),
+            codeOutput: pick(Ink.Code.output),
+            codeKeyword: pick(Ink.Code.keyword),
+            codeFunction: pick(Ink.Code.function),
+            codeNumber: pick(Ink.Code.number),
+            codeString: pick(Ink.Code.string),
+            inlineCodeFill: mine.withAlphaComponent(0.85),
+            ruleFill: rule.withAlphaComponent(0.85),
+            quoteBackground: paperRaised.withAlphaComponent(0.75),
+            quoteBorder: rule.withAlphaComponent(0.55),
+            quoteStripe: accent.withAlphaComponent(0.52)
+        )
+    }
+}
+
+/// Pre-resolved immutable geometry and typography spacing metrics for off-main-thread layout calculation.
+struct ChatResolvedMetrics: Equatable, Sendable {
+    let scale: CGFloat
+    let spaceXS: CGFloat
+    let spaceS: CGFloat
+    let spaceM: CGFloat
+    let spaceL: CGFloat
+    let spaceXL: CGFloat
+    let spaceXXL: CGFloat
+    let spacePage: CGFloat
+    let spaceHuge: CGFloat
+    let radiusSmall: CGFloat
+    let sizeMicro: CGFloat
+    let sizeSmall: CGFloat
+    let sizeSub: CGFloat
+    let sizeBody: CGFloat
+    let sizeTitle: CGFloat
+    let readingSize: CGFloat
+    let codeSize: CGFloat
+    let inlineCodeSize: CGFloat
+    let tableCellSize: CGFloat
+    let rowSpacing: CGFloat
+    let sectionSpacing: CGFloat
+    let userTurnTopPad: CGFloat
+    let faceSize: CGFloat
+    let compactSpeakerSize: CGFloat
+    let timeGapHeight: CGFloat
+    let timeGapBottomPad: CGFloat
+    let photoSize: CGFloat
+    let userBubblePadH: CGFloat
+    let userBubblePadV: CGFloat
+    let botBlockGap: CGFloat
+    let disclosureHeaderHeight: CGFloat
+    let disclosureGap: CGFloat
+    let sourcesPillHeight: CGFloat
+    let continueButtonHeight: CGFloat
+    let footerHeight: CGFloat
+    let queuedActionsHeight: CGFloat
+    let leading: CGFloat
+    let paragraphGap: CGFloat
+    let listSpacing: CGFloat
+    let headingBottom: CGFloat
+    let codeLineSpacing: CGFloat
+    let codeHeaderHeight: CGFloat
+    let codeFoldButtonHeight: CGFloat
+    let inlineCodeCorner: CGFloat
+
+    @MainActor
+    static func resolve(size: Double, lineHeight: Double, face: Pref.Face, uiScale: Double) -> ChatResolvedMetrics {
+        let scale = CGFloat(uiScale)
+        let readingSize = CGFloat(size)
+        let codeSize = max(CGFloat(12), readingSize - 3)
+        let inlineCodeSize = max(CGFloat(12), readingSize - 2)
+        return ChatResolvedMetrics(
+            scale: scale,
+            spaceXS: Ink.Space.xs,
+            spaceS: Ink.Space.s,
+            spaceM: Ink.Space.m,
+            spaceL: Ink.Space.l,
+            spaceXL: Ink.Space.xl,
+            spaceXXL: Ink.Space.xxl,
+            spacePage: Ink.Space.page,
+            spaceHuge: Ink.Space.huge,
+            radiusSmall: Ink.Radius.small,
+            sizeMicro: Ink.Size.micro,
+            sizeSmall: Ink.Size.small,
+            sizeSub: Ink.Size.sub,
+            sizeBody: Ink.Size.body,
+            sizeTitle: Ink.Size.title,
+            readingSize: readingSize,
+            codeSize: codeSize,
+            inlineCodeSize: inlineCodeSize,
+            tableCellSize: inlineCodeSize,
+            rowSpacing: ChatCellMetrics.rowSpacing,
+            sectionSpacing: ChatCellMetrics.sectionSpacing,
+            userTurnTopPad: ChatCellMetrics.userTurnTopPad,
+            faceSize: ChatCellMetrics.faceSize,
+            compactSpeakerSize: ChatCellMetrics.compactSpeakerSize,
+            timeGapHeight: ChatCellMetrics.timeGapHeight,
+            timeGapBottomPad: ChatCellMetrics.timeGapBottomPad,
+            photoSize: ChatCellMetrics.photoSize,
+            userBubblePadH: ChatCellMetrics.userBubblePadH,
+            userBubblePadV: ChatCellMetrics.userBubblePadV,
+            botBlockGap: ChatCellMetrics.botBlockGap,
+            disclosureHeaderHeight: ChatCellMetrics.disclosureHeaderHeight,
+            disclosureGap: ChatCellMetrics.disclosureGap,
+            sourcesPillHeight: ChatCellMetrics.sourcesPillHeight,
+            continueButtonHeight: ChatCellMetrics.continueButtonHeight,
+            footerHeight: ChatCellMetrics.footerHeight,
+            queuedActionsHeight: 24 * scale,
+            leading: Ink.leading(size: size, lineHeight: lineHeight, face: face),
+            paragraphGap: readingSize * 0.72,
+            listSpacing: readingSize * 0.42,
+            headingBottom: readingSize * 0.35,
+            codeLineSpacing: max(1.5, codeSize * 0.13),
+            codeHeaderHeight: 32 * scale,
+            codeFoldButtonHeight: 34 * scale,
+            inlineCodeCorner: 5 * scale
+        )
+    }
+
+    nonisolated func headingSize(level: Int) -> CGFloat {
+        let base = readingSize
+        if level <= 1 { return (base * 1.24).rounded() }
+        if level == 2 { return (base * 1.13).rounded() }
+        return (base * 1.05).rounded()
+    }
+
+    nonisolated func headingTop(level: Int) -> CGFloat {
+        let base = readingSize
+        if level <= 1 { return base * 1.1 }
+        if level == 2 { return base * 0.85 }
+        return base * 0.55
+    }
+}
+
+/// Pre-resolved UIFont variants (regular/bold/italic/boldItalic/inlineCode) for a single text tier.
+struct ChatFontGroup: Equatable, @unchecked Sendable {
+    let regular: UIFont
+    let bold: UIFont
+    let italic: UIFont
+    let boldItalic: UIFont
+    let inlineCode: UIFont
+
+    @MainActor
+    static func resolve(size: CGFloat, face: Pref.Face, code: Pref.Code) -> ChatFontGroup {
+        let regular = Ink.uiFace(size, bold: false, face: face)
+        let bold = Ink.uiFace(size, bold: true, face: face)
+        let italic = ChatResolvedFonts.italicized(regular, size: size)
+        let boldItalic = ChatResolvedFonts.italicized(bold, size: size)
+        let inlineCode = Ink.uiMono(max(CGFloat(12), size - 2), preference: code)
+        return ChatFontGroup(
+            regular: regular,
+            bold: bold,
+            italic: italic,
+            boldItalic: boldItalic,
+            inlineCode: inlineCode
+        )
+    }
+}
+
+/// Pre-resolved concrete `UIFont`s snapshotted on `@MainActor` so background layout never touches `Ink.uiFace`/`Ink.uiMono`.
+struct ChatResolvedFonts: Equatable, @unchecked Sendable {
+    private struct AlignedPair: Equatable, @unchecked Sendable {
+        let narrow: UIFont
+        let wide: UIFont
+    }
+
+    private struct AlignedPairKey: Hashable, Sendable {
+        let sizeKey: Int
+        let codePref: Pref.Code
+        let italic: Bool
+    }
+
+    private static let alignedPairCache = BoundedLRUCache<AlignedPairKey, AlignedPair>(countLimit: 24)
+
+    let reading: ChatFontGroup
+    let heading1: ChatFontGroup
+    let heading2: ChatFontGroup
+    let heading3: ChatFontGroup
+    let table: ChatFontGroup
+    let userBody: UIFont
+    let disclosureSmall: UIFont
+    let ruleMicro: UIFont
+    let listNumberMarker: UIFont
+    let listBulletDepth0: UIFont
+    let listBulletDepthNested: UIFont
+    let codePlainRegular: UIFont
+    let codePlainItalic: UIFont
+    let codeAlignedRegularNarrow: UIFont
+    let codeAlignedRegularWide: UIFont
+    let codeAlignedItalicNarrow: UIFont
+    let codeAlignedItalicWide: UIFont
+    let noteAdviceTitle: UIFont
+    let noteAdviceDetail: UIFont
+    let notePlain: UIFont
+    let queuedMessage: UIFont
+    let failureMessage: UIFont
+    let lookbackSmall: UIFont
+
+    nonisolated func headingGroup(level: Int) -> ChatFontGroup {
+        if level <= 1 { return heading1 }
+        if level == 2 { return heading2 }
+        return heading3
+    }
+
+    nonisolated static func italicized(_ font: UIFont, size: CGFloat) -> UIFont {
+        if let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+            return UIFont(descriptor: slanted, size: size)
+        }
+        return font
+    }
+
+    @MainActor
+    private static func alignedCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> AlignedPair {
+        let key = AlignedPairKey(sizeKey: Int((size * 2).rounded()), codePref: preference, italic: italic)
+        if let hit = alignedPairCache.get(key) { return hit }
+
+        let baseMono = Ink.uiMono(size, preference: preference)
+        let targetMono = italic ? italicized(baseMono, size: size) : baseMono
+        let wideBase = UIFont.systemFont(ofSize: size)
+        let targetWide = italic ? italicized(wideBase, size: size) : wideBase
+
+        let native = targetMono as CTFont
+        var zero: UniChar = 48
+        var glyph: CGGlyph = 0
+        let pair: AlignedPair
+        if CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) {
+            let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
+            if advance > 0 {
+                let matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
+                let scaledDescriptor = targetMono.fontDescriptor.withMatrix(matrix)
+                let halfFont = UIFont(descriptor: scaledDescriptor, size: size)
+                pair = AlignedPair(narrow: halfFont, wide: targetWide)
+            } else {
+                pair = AlignedPair(narrow: targetMono, wide: targetWide)
+            }
+        } else {
+            pair = AlignedPair(narrow: targetMono, wide: targetWide)
+        }
+        alignedPairCache.set(pair, for: key)
+        return pair
+    }
+
+    @MainActor
+    static func resolve(face: Pref.Face, code: Pref.Code, metrics: ChatResolvedMetrics) -> ChatResolvedFonts {
+        let baseMono = Ink.uiMono(metrics.codeSize, preference: code)
+        let plainItalic = italicized(baseMono, size: metrics.codeSize)
+        let alignedRegular = alignedCodeFonts(size: metrics.codeSize, preference: code, italic: false)
+        let alignedItalic = alignedCodeFonts(size: metrics.codeSize, preference: code, italic: true)
+        let smallFont = UIFont.systemFont(ofSize: metrics.sizeSmall)
+        let subFont = UIFont.systemFont(ofSize: metrics.sizeSub)
+        return ChatResolvedFonts(
+            reading: ChatFontGroup.resolve(size: metrics.readingSize, face: face, code: code),
+            heading1: ChatFontGroup.resolve(size: metrics.headingSize(level: 1), face: face, code: code),
+            heading2: ChatFontGroup.resolve(size: metrics.headingSize(level: 2), face: face, code: code),
+            heading3: ChatFontGroup.resolve(size: metrics.headingSize(level: 3), face: face, code: code),
+            table: ChatFontGroup.resolve(size: metrics.tableCellSize, face: face, code: code),
+            userBody: UIFont.systemFont(ofSize: metrics.sizeBody),
+            disclosureSmall: smallFont,
+            ruleMicro: UIFont.systemFont(ofSize: metrics.sizeMicro),
+            listNumberMarker: Ink.uiFace(metrics.readingSize * 0.92, face: face),
+            listBulletDepth0: Ink.uiFace(metrics.readingSize * 0.95, face: face),
+            listBulletDepthNested: Ink.uiFace(metrics.readingSize * 0.78, face: face),
+            codePlainRegular: baseMono,
+            codePlainItalic: plainItalic,
+            codeAlignedRegularNarrow: alignedRegular.narrow,
+            codeAlignedRegularWide: alignedRegular.wide,
+            codeAlignedItalicNarrow: alignedItalic.narrow,
+            codeAlignedItalicWide: alignedItalic.wide,
+            noteAdviceTitle: UIFont.systemFont(ofSize: metrics.sizeSub, weight: .semibold),
+            noteAdviceDetail: subFont,
+            notePlain: smallFont,
+            queuedMessage: UIFont.systemFont(ofSize: metrics.sizeBody, weight: .medium),
+            failureMessage: subFont,
+            lookbackSmall: smallFont
+        )
+    }
+}
+
 /// Snapshot of reading typography, palette, Dynamic Type, and scale for the UIKit chat list.
-@MainActor
-struct ChatListStyle: Equatable {
+struct ChatListStyle: Equatable, Sendable {
     let face: Pref.Face
     let code: Pref.Code
     let size: Double
@@ -20,8 +335,12 @@ struct ChatListStyle: Equatable {
     let fontGeneration: Int
     let isDark: Bool
     let contentSizeCategory: String
+    let isPlainTone: Bool
     let styleKey: String
     let layoutStyleKey: String
+    let colors: ChatResolvedColors
+    let metrics: ChatResolvedMetrics
+    let fonts: ChatResolvedFonts
 
     init(
         face: Pref.Face,
@@ -37,7 +356,11 @@ struct ChatListStyle: Equatable {
         bubble: String,
         fontGeneration: Int,
         isDark: Bool,
-        contentSizeCategory: String
+        contentSizeCategory: String,
+        isPlainTone: Bool,
+        colors: ChatResolvedColors,
+        metrics: ChatResolvedMetrics,
+        fonts: ChatResolvedFonts
     ) {
         self.face = face
         self.code = code
@@ -53,68 +376,185 @@ struct ChatListStyle: Equatable {
         self.fontGeneration = fontGeneration
         self.isDark = isDark
         self.contentSizeCategory = contentSizeCategory
+        self.isPlainTone = isPlainTone
         self.layoutStyleKey = "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(fade)|\(reduceMotion)|\(uiScale)|\(fontGeneration)|\(contentSizeCategory)"
-        self.styleKey = "\(self.layoutStyleKey)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(isDark)"
+        self.styleKey = "\(self.layoutStyleKey)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(isDark)|\(isPlainTone ? 1 : 0)"
+        self.colors = colors
+        self.metrics = metrics
+        self.fonts = fonts
     }
 
-    var scale: CGFloat { CGFloat(uiScale) }
-    var readingSize: CGFloat { CGFloat(size) }
-    var codeSize: CGFloat { max(CGFloat(12), CGFloat(size) - 3) }
-    var inlineCodeSize: CGFloat { max(CGFloat(12), CGFloat(size) - 2) }
-    var tableCellSize: CGFloat { max(CGFloat(12), CGFloat(size) - 2) }
-    var leading: CGFloat { Ink.leading(size: size, lineHeight: lineHeight, face: face) }
-    var paragraphGap: CGFloat { CGFloat(size) * 0.72 }
-    var listSpacing: CGFloat { CGFloat(size) * 0.42 }
-    var headingBottom: CGFloat { CGFloat(size) * 0.35 }
-    var codeLineSpacing: CGFloat { max(1.5, codeSize * 0.13) }
-    var codeHeaderHeight: CGFloat { 32 * scale }
-    var codeFoldButtonHeight: CGFloat { 34 * scale }
-    var inlineCodeCorner: CGFloat { 5 * scale }
+    var scale: CGFloat { metrics.scale }
+    var readingSize: CGFloat { metrics.readingSize }
+    var codeSize: CGFloat { metrics.codeSize }
+    var inlineCodeSize: CGFloat { metrics.inlineCodeSize }
+    var tableCellSize: CGFloat { metrics.tableCellSize }
+    var leading: CGFloat { metrics.leading }
+    var paragraphGap: CGFloat { metrics.paragraphGap }
+    var listSpacing: CGFloat { metrics.listSpacing }
+    var headingBottom: CGFloat { metrics.headingBottom }
+    var codeLineSpacing: CGFloat { metrics.codeLineSpacing }
+    var codeHeaderHeight: CGFloat { metrics.codeHeaderHeight }
+    var codeFoldButtonHeight: CGFloat { metrics.codeFoldButtonHeight }
+    var inlineCodeCorner: CGFloat { metrics.inlineCodeCorner }
 
     private static let lightTraitCollection = UITraitCollection(userInterfaceStyle: .light)
     private static let darkTraitCollection = UITraitCollection(userInterfaceStyle: .dark)
 
-    var resolvedTraitCollection: UITraitCollection {
+    private var resolvedTraitCollection: UITraitCollection {
         isDark ? Self.darkTraitCollection : Self.lightTraitCollection
     }
 
+    @MainActor
     func resolveColor(_ color: Color, alpha: CGFloat = 1) -> UIColor {
         let base = UIColor(color).resolvedColor(with: resolvedTraitCollection)
         return alpha < 1 ? base.withAlphaComponent(alpha) : base
     }
 
+    @MainActor
     static func current(traits: UITraitCollection, reduceMotion: Bool = false) -> ChatListStyle {
         let theme = Theme.shared
+        let face = theme.face
+        let code = theme.code
+        let size = theme.size
+        let lineHeight = theme.lineHeight
+        let fade = theme.fade
+        let uiScale = UIScale.shared.value
+        let isDark = traits.userInterfaceStyle == .dark
+        let resolvedTraits = isDark ? darkTraitCollection : lightTraitCollection
+        let colors = ChatResolvedColors.resolve(traits: resolvedTraits)
+        let metrics = ChatResolvedMetrics.resolve(size: size, lineHeight: lineHeight, face: face, uiScale: uiScale)
+        let fonts = ChatResolvedFonts.resolve(face: face, code: code, metrics: metrics)
         return ChatListStyle(
-            face: theme.face,
-            code: theme.code,
-            size: theme.size,
-            lineHeight: theme.lineHeight,
-            fade: theme.fade,
+            face: face,
+            code: code,
+            size: size,
+            lineHeight: lineHeight,
+            fade: fade,
             reduceMotion: reduceMotion,
-            uiScale: UIScale.shared.value,
+            uiScale: uiScale,
             themeKey: theme.key,
             white: theme.white,
             oled: theme.oled,
             bubble: theme.bubble,
             fontGeneration: FontShelf.shared.generation,
-            isDark: traits.userInterfaceStyle == .dark,
-            contentSizeCategory: traits.preferredContentSizeCategory.rawValue
+            isDark: isDark,
+            contentSizeCategory: traits.preferredContentSizeCategory.rawValue,
+            isPlainTone: theme.plain,
+            colors: colors,
+            metrics: metrics,
+            fonts: fonts
         )
     }
 
     func headingSize(level: Int) -> CGFloat {
-        let base = readingSize
-        if level <= 1 { return (base * 1.24).rounded() }
-        if level == 2 { return (base * 1.13).rounded() }
-        return (base * 1.05).rounded()
+        metrics.headingSize(level: level)
     }
 
     func headingTop(level: Int) -> CGFloat {
-        let base = readingSize
-        if level <= 1 { return base * 1.1 }
-        if level == 2 { return base * 0.85 }
-        return base * 0.55
+        metrics.headingTop(level: level)
+    }
+}
+
+/// Pure `Sendable` snapshot of dynamic per-block height overrides for a single row owner.
+struct BlockOverrideSnapshot: Equatable, Sendable {
+    let ownerID: String
+    let version: UInt64
+    let heights: [String: CGFloat]
+
+    static func empty(ownerID: String = "") -> BlockOverrideSnapshot {
+        BlockOverrideSnapshot(ownerID: ownerID, version: 1, heights: [:])
+    }
+}
+
+/// Pure `Sendable` measurement input extracted from `ChatListRowItem` for off-main-thread user row layout.
+struct UserMeasureInput: Sendable {
+    let id: String
+    let text: String
+    let photoCount: Int
+    let isFirst: Bool
+    let opens: Bool
+    let faces: Bool
+    let hasTimeGap: Bool
+    let collectionWidth: CGFloat
+    let style: ChatListStyle
+
+    @MainActor
+    init(row: ChatListRowItem, collectionWidth: CGFloat, style: ChatListStyle) {
+        self.id = row.line.id
+        self.text = row.line.text
+        self.photoCount = row.line.refs.count
+        self.isFirst = row.isFirst
+        self.opens = row.opens
+        self.faces = row.faces
+        self.hasTimeGap = row.faces && row.opens && row.timeGap != nil
+        self.collectionWidth = collectionWidth
+        self.style = style
+    }
+}
+
+/// Pure `Sendable` measurement input extracted from `ChatListRowItem` + UI toggle state for off-main-thread assistant layout.
+struct AssistantMeasureInput: Sendable {
+    let id: String
+    let text: String
+    let reasoning: String?
+    let pulse: String?
+    let lookbackNote: String?
+    let lookbackRest: String
+    let opens: Bool
+    let faces: Bool
+    let isRoom: Bool
+    let showThinking: Bool
+    let hasTimeGap: Bool
+    let hasSources: Bool
+    let hasContinue: Bool
+    let hasFooter: Bool
+    let isFresh: Bool
+    let freshShown: Int?
+    let expandedThinking: Bool
+    let expandedPulse: Bool
+    let expandedLookback: Bool
+    let unfoldedSlices: Set<Int>
+    let collectionWidth: CGFloat
+    let style: ChatListStyle
+    let overrides: BlockOverrideSnapshot
+
+    @MainActor
+    init(
+        row: ChatListRowItem,
+        collectionWidth: CGFloat,
+        style: ChatListStyle,
+        expandedThinking: Bool,
+        expandedPulse: Bool,
+        expandedLookback: Bool,
+        unfoldedSlices: Set<Int>,
+        overrides: BlockOverrideSnapshot
+    ) {
+        let isFresh = row.isFreshWriting
+        let shown = row.freshShown ?? row.line.text.count
+        self.id = row.line.id
+        self.text = row.line.text
+        self.reasoning = row.line.reasoning
+        self.pulse = row.line.pulse
+        self.lookbackNote = row.lookbackNote
+        self.lookbackRest = isFresh ? String(row.line.text.prefix(shown)) : row.lookbackRest
+        self.opens = row.opens
+        self.faces = row.faces
+        self.isRoom = row.isRoom
+        self.showThinking = row.showThinking
+        self.hasTimeGap = row.faces && row.opens && row.timeGap != nil
+        self.hasSources = !isFresh && (row.lineMeta?.urls.isEmpty == false)
+        self.hasContinue = !isFresh && row.hitStepLimit
+        self.hasFooter = !isFresh && (row.isLatestBot ? !row.working : row.endsTurn)
+        self.isFresh = isFresh
+        self.freshShown = isFresh ? shown : nil
+        self.expandedThinking = expandedThinking
+        self.expandedPulse = expandedPulse
+        self.expandedLookback = expandedLookback
+        self.unfoldedSlices = unfoldedSlices
+        self.collectionWidth = collectionWidth
+        self.style = style
+        self.overrides = overrides
     }
 }
 

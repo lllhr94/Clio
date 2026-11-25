@@ -7,7 +7,7 @@ import SwiftMath
 import SwiftUI
 import UIKit
 
-struct ChatBlockDecorations: Equatable {
+struct ChatBlockDecorations: Equatable, Sendable {
     let inlineCodeRanges: [NSRange]
     let quoteBlocks: [NSRange]
     let ruleRanges: [NSRange]
@@ -23,7 +23,7 @@ struct ChatBlockDecorations: Equatable {
     )
 }
 
-struct ChatRenderedProse {
+struct ChatRenderedProse: @unchecked Sendable {
     let attributed: NSAttributedString
     let decorations: ChatBlockDecorations
     let topInset: CGFloat
@@ -43,7 +43,7 @@ struct ChatRenderedProse {
     )
 }
 
-struct ChatCodeSlice {
+struct ChatCodeSlice: @unchecked Sendable {
     let language: String
     let rawText: String
     let trimmedText: String
@@ -66,7 +66,7 @@ struct ChatCodeSlice {
     }
 }
 
-struct ChatTableSlice: Equatable {
+struct ChatTableSlice: Equatable, @unchecked Sendable {
     let sliceID: UInt64
     let table: Prose.Table
     let prepared: PreparsedTableModel
@@ -77,7 +77,7 @@ struct ChatTableSlice: Equatable {
     let naturalWidths: [CGFloat]
 }
 
-enum ChatProseSlice {
+enum ChatProseSlice: @unchecked Sendable {
     case richText(ChatRenderedProse)
     case code(ChatCodeSlice, sliceIndex: Int)
     case table(ChatTableSlice, sliceIndex: Int)
@@ -91,70 +91,7 @@ private extension NSAttributedString.Key {
 }
 
 /// Renders tokenized code into an aligned UIKit `NSAttributedString` matching `ProseView`'s colors and CJK alignment.
-@MainActor
 enum ChatCodeHighlighter {
-    private struct AlignedFontPair {
-        let narrow: UIFont
-        let wide: UIFont
-    }
-
-    private struct FontPairKey: Hashable {
-        let sizeKey: Int
-        let codePref: Pref.Code
-        let italic: Bool
-    }
-
-    private static let fontPairCache = BoundedLRUCache<FontPairKey, AlignedFontPair>(countLimit: 24)
-
-    private static func alignedCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> AlignedFontPair {
-        let key = FontPairKey(sizeKey: Int((size * 2).rounded()), codePref: preference, italic: italic)
-        if let hit = fontPairCache.get(key) { return hit }
-
-        let baseMono = Ink.uiMono(size, preference: preference)
-        let targetMono: UIFont
-        if italic, let slanted = baseMono.fontDescriptor.withSymbolicTraits(baseMono.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            targetMono = UIFont(descriptor: slanted, size: size)
-        } else {
-            targetMono = baseMono
-        }
-
-        let wideBase = UIFont.systemFont(ofSize: size)
-        let targetWide: UIFont
-        if italic, let slantedWide = wideBase.fontDescriptor.withSymbolicTraits(wideBase.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            targetWide = UIFont(descriptor: slantedWide, size: size)
-        } else {
-            targetWide = wideBase
-        }
-
-        let native = targetMono as CTFont
-        var zero: UniChar = 48
-        var glyph: CGGlyph = 0
-        let pair: AlignedFontPair
-        if CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) {
-            let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
-            if advance > 0 {
-                let matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
-                let scaledDescriptor = targetMono.fontDescriptor.withMatrix(matrix)
-                let halfFont = UIFont(descriptor: scaledDescriptor, size: size)
-                pair = AlignedFontPair(narrow: halfFont, wide: targetWide)
-            } else {
-                pair = AlignedFontPair(narrow: targetMono, wide: targetWide)
-            }
-        } else {
-            pair = AlignedFontPair(narrow: targetMono, wide: targetWide)
-        }
-        fontPairCache.set(pair, for: key)
-        return pair
-    }
-
-    private static func plainCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> UIFont {
-        let baseMono = Ink.uiMono(size, preference: preference)
-        if italic, let slanted = baseMono.fontDescriptor.withSymbolicTraits(baseMono.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            return UIFont(descriptor: slanted, size: size)
-        }
-        return baseMono
-    }
-
     static func highlight(
         _ text: String,
         language: String,
@@ -163,15 +100,17 @@ enum ChatCodeHighlighter {
     ) -> NSAttributedString {
         let model = CodeTokenizer.prepare(text, language: language, isOutput: isOutput)
         let pStyle = NSMutableParagraphStyle()
-        pStyle.lineSpacing = style.codeLineSpacing
+        pStyle.lineSpacing = style.metrics.codeLineSpacing
+        let immutableParagraphStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
 
-        let outputColor = isOutput ? style.resolveColor(Ink.Code.output) : nil
-        let plainColor = outputColor ?? style.resolveColor(Ink.ink)
-        let keywordColor = outputColor ?? style.resolveColor(Ink.Code.keyword)
-        let functionColor = outputColor ?? style.resolveColor(Ink.Code.function)
-        let numberColor = outputColor ?? style.resolveColor(Ink.Code.number)
-        let stringColor = outputColor ?? style.resolveColor(Ink.Code.string)
-        let commentColor = outputColor ?? style.resolveColor(Ink.inkFaint)
+        let colors = style.colors
+        let outputColor = isOutput ? colors.codeOutput : nil
+        let plainColor = outputColor ?? colors.ink
+        let keywordColor = outputColor ?? colors.codeKeyword
+        let functionColor = outputColor ?? colors.codeFunction
+        let numberColor = outputColor ?? colors.codeNumber
+        let stringColor = outputColor ?? colors.codeString
+        let commentColor = outputColor ?? colors.inkFaint
         func color(for kind: CodeTokenKind) -> UIColor {
             switch kind {
             case .plain: return plainColor
@@ -183,29 +122,30 @@ enum ChatCodeHighlighter {
             }
         }
 
+        let fonts = style.fonts
         let out = NSMutableAttributedString()
         out.beginEditing()
         if model.hasWide {
-            let regular = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: false)
-            let italic = alignedCodeFonts(size: style.codeSize, preference: style.code, italic: true)
             for seg in model.segments {
-                let pair = seg.kind == .comment ? italic : regular
-                let font = seg.isWide ? pair.wide : pair.narrow
+                let font: UIFont
+                if seg.kind == .comment {
+                    font = seg.isWide ? fonts.codeAlignedItalicWide : fonts.codeAlignedItalicNarrow
+                } else {
+                    font = seg.isWide ? fonts.codeAlignedRegularWide : fonts.codeAlignedRegularNarrow
+                }
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
                     .foregroundColor: color(for: seg.kind),
-                    .paragraphStyle: pStyle,
+                    .paragraphStyle: immutableParagraphStyle,
                 ]))
             }
         } else {
-            let regular = plainCodeFonts(size: style.codeSize, preference: style.code, italic: false)
-            let italic = plainCodeFonts(size: style.codeSize, preference: style.code, italic: true)
             for seg in model.segments {
-                let font = seg.kind == .comment ? italic : regular
+                let font = seg.kind == .comment ? fonts.codePlainItalic : fonts.codePlainRegular
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
                     .foregroundColor: color(for: seg.kind),
-                    .paragraphStyle: pStyle,
+                    .paragraphStyle: immutableParagraphStyle,
                 ]))
             }
         }
@@ -215,11 +155,10 @@ enum ChatCodeHighlighter {
 }
 
 /// Incremental + cached prose builder producing continuous rich-text runs and interactive block slices.
-@MainActor
-final class ChatProseBuilder {
+final class ChatProseBuilder: @unchecked Sendable {
     private static let picturePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
 
-    private struct BlockCacheEntry {
+    private struct BlockCacheEntry: @unchecked Sendable {
         let attributed: NSAttributedString
         let trailingSeparatorStyle: NSParagraphStyle
         let inlineCodeOffsets: [NSRange]
@@ -227,7 +166,7 @@ final class ChatProseBuilder {
         let isRule: Bool
     }
 
-    private struct BlockCacheKey: Hashable {
+    private struct BlockCacheKey: Hashable, Sendable {
         let styleKey: String
         let blockHash: UInt64
         let byteCount: Int
@@ -262,7 +201,7 @@ final class ChatProseBuilder {
         }
     }
 
-    private struct StreamScannerEntry {
+    private struct StreamScannerEntry: @unchecked Sendable {
         var scanner: StreamBlocks
         var sealedBlocks: [Prose.Block]
         var sealedStyleKey: String
@@ -270,13 +209,13 @@ final class ChatProseBuilder {
         var sealedTableSlices: [Int: ChatTableSlice] = [:]
     }
 
-    private struct RichTextSliceKey: Hashable {
+    private struct RichTextSliceKey: Hashable, Sendable {
         let styleKey: String
         let blockHash: Int
         let keys: [String]
     }
 
-    private struct CodeSliceKey: Hashable {
+    private struct CodeSliceKey: Hashable, Sendable {
         let styleKey: String
         let language: String
         let byteCount: Int
@@ -307,7 +246,7 @@ final class ChatProseBuilder {
         }
     }
 
-    private struct TableSliceKey: Hashable {
+    private struct TableSliceKey: Hashable, Sendable {
         let styleKey: String
         let table: Prose.Table
         private let cachedHash: Int
@@ -337,12 +276,16 @@ final class ChatProseBuilder {
     private let richTextSliceCache = BoundedLRUCache<RichTextSliceKey, ChatRenderedProse>(countLimit: 1200)
     private let codeSliceCache = BoundedLRUCache<CodeSliceKey, ChatCodeSlice>(countLimit: 400)
     private let tableSliceCache = BoundedLRUCache<TableSliceKey, ChatTableSlice>(countLimit: 256)
+    private let scannerLock = NSLock()
     private var streamScanners: [String: StreamScannerEntry] = [:]
+    private let tokenLock = NSLock()
     private var nextToken: UInt64 = 1
 
     private func allocateRenderToken() -> UInt64 {
+        tokenLock.lock()
         let token = nextToken
         nextToken &+= 1
+        tokenLock.unlock()
         return token
     }
 
@@ -351,22 +294,26 @@ final class ChatProseBuilder {
         richTextSliceCache.removeAll()
         codeSliceCache.removeAll()
         tableSliceCache.removeAll()
+        scannerLock.lock()
         streamScanners.removeAll(keepingCapacity: true)
+        scannerLock.unlock()
     }
 
     func resetStreamScanner(for key: String) {
+        scannerLock.lock()
         streamScanners.removeValue(forKey: key)
+        scannerLock.unlock()
     }
 
     func buildUserText(_ text: String, style: ChatListStyle) -> ChatRenderedProse {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = 4
-        let font = UIFont.systemFont(ofSize: Ink.Size.body)
-        let attr = NSAttributedString(attributedString: NSAttributedString(string: text, attributes: [
-            .font: font,
-            .foregroundColor: style.resolveColor(Ink.ink),
-            .paragraphStyle: pStyle,
-        ]))
+        let immutableStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
+        let attr = NSAttributedString(string: text, attributes: [
+            .font: style.fonts.userBody,
+            .foregroundColor: style.colors.ink,
+            .paragraphStyle: immutableStyle,
+        ])
         let token = allocateRenderToken()
         return ChatRenderedProse(
             attributed: attr,
@@ -381,11 +328,12 @@ final class ChatProseBuilder {
     func buildDisclosureText(_ text: String, style: ChatListStyle) -> ChatRenderedProse {
         let pStyle = NSMutableParagraphStyle()
         pStyle.lineSpacing = 3
-        let attr = NSAttributedString(attributedString: NSAttributedString(string: text, attributes: [
-            .font: UIFont.systemFont(ofSize: Ink.Size.small),
-            .foregroundColor: style.resolveColor(Ink.inkSoft),
-            .paragraphStyle: pStyle,
-        ]))
+        let immutableStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
+        let attr = NSAttributedString(string: text, attributes: [
+            .font: style.fonts.disclosureSmall,
+            .foregroundColor: style.colors.inkSoft,
+            .paragraphStyle: immutableStyle,
+        ])
         let token = allocateRenderToken()
         return ChatRenderedProse(
             attributed: attr,
@@ -408,11 +356,11 @@ final class ChatProseBuilder {
         let sealedCount = parsed.sealedCount
         if blocks.isEmpty {
             let pStyle = makeParagraphStyle(style: style)
-            let placeholder = NSAttributedString(attributedString: NSAttributedString(string: isStreaming ? " " : "", attributes: [
-                .font: Ink.uiFace(style.readingSize, bold: false, face: style.face),
-                .foregroundColor: style.resolveColor(Ink.ink),
+            let placeholder = NSAttributedString(string: isStreaming ? " " : "", attributes: [
+                .font: style.fonts.reading.regular,
+                .foregroundColor: style.colors.ink,
                 .paragraphStyle: pStyle,
-            ]))
+            ])
             let token = allocateRenderToken()
             return [
                 .richText(ChatRenderedProse(
@@ -473,15 +421,20 @@ final class ChatProseBuilder {
                 case .code(let lang, let codeText, let closed):
                     let liveCode = isStreaming && isLastSegment && !closed
                     let slice: ChatCodeSlice
-                    if !liveCode,
-                       let streamKey,
-                       let sealedIndex,
-                       let cachedSealed = streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] {
+                    var cachedSealed: ChatCodeSlice?
+                    if !liveCode, let streamKey, let sealedIndex {
+                        scannerLock.lock()
+                        cachedSealed = streamScanners[streamKey]?.sealedCodeSlices[sealedIndex]
+                        scannerLock.unlock()
+                    }
+                    if let cachedSealed {
                         slice = cachedSealed
                     } else {
                         let built = buildCodeSlice(language: lang, rawText: codeText, isLive: liveCode, style: style)
                         if !liveCode, let streamKey, let sealedIndex {
+                            scannerLock.lock()
                             streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] = built
+                            scannerLock.unlock()
                         }
                         slice = built
                     }
@@ -491,15 +444,20 @@ final class ChatProseBuilder {
                 case .table(let table):
                     let isSealed = sealedIndex != nil || !(isStreaming && isLastSegment)
                     let slice: ChatTableSlice
-                    if isSealed,
-                       let streamKey,
-                       let sealedIndex,
-                       let cachedSealed = streamScanners[streamKey]?.sealedTableSlices[sealedIndex] {
+                    var cachedSealed: ChatTableSlice?
+                    if isSealed, let streamKey, let sealedIndex {
+                        scannerLock.lock()
+                        cachedSealed = streamScanners[streamKey]?.sealedTableSlices[sealedIndex]
+                        scannerLock.unlock()
+                    }
+                    if let cachedSealed {
                         slice = cachedSealed
                     } else {
                         let built = buildTableSlice(table, style: style, cacheable: isSealed)
                         if isSealed, let streamKey, let sealedIndex {
+                            scannerLock.lock()
                             streamScanners[streamKey]?.sealedTableSlices[sealedIndex] = built
+                            scannerLock.unlock()
                         }
                         slice = built
                     }
@@ -564,12 +522,18 @@ final class ChatProseBuilder {
         styleKey: String
     ) -> (blocks: [Prose.Block], sealedCount: Int) {
         guard isStreaming else {
-            if let streamKey { streamScanners.removeValue(forKey: streamKey) }
+            if let streamKey {
+                scannerLock.lock()
+                streamScanners.removeValue(forKey: streamKey)
+                scannerLock.unlock()
+            }
             return (ParsedCache.blocks(rawText), 0)
         }
         guard let streamKey else {
             return (Prose.parse(Prose.mend(rawText)), 0)
         }
+        scannerLock.lock()
+        defer { scannerLock.unlock() }
         var entry = streamScanners[streamKey] ?? StreamScannerEntry(
             scanner: StreamBlocks(),
             sealedBlocks: [],
@@ -787,9 +751,9 @@ final class ChatProseBuilder {
         }
 
         let widths: [CGFloat] = (0..<columns).map { column in
-            var natural: CGFloat = column < headerCells.count ? ceil(headerCells[column].size().width) : 0
+            var natural: CGFloat = column < headerCells.count ? Self.naturalSingleLineWidth(headerCells[column]) : 0
             for row in rowCells where column < row.count {
-                natural = max(natural, ceil(row[column].size().width))
+                natural = max(natural, Self.naturalSingleLineWidth(row[column]))
             }
             return max(28, natural + 4)
         }
@@ -809,6 +773,16 @@ final class ChatProseBuilder {
         return built
     }
 
+    private static func naturalSingleLineWidth(_ attributed: NSAttributedString) -> CGFloat {
+        guard attributed.length > 0 else { return 0 }
+        let rect = attributed.boundingRect(
+            with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        return ceil(rect.width)
+    }
+
     private func buildTableCellAttributed(
         _ source: AttributedString,
         isHeader: Bool,
@@ -823,10 +797,12 @@ final class ChatProseBuilder {
         case .trailing: pStyle.alignment = .right
         case .leading: pStyle.alignment = .left
         }
+        let immutableParagraphStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
 
-        let ink = style.resolveColor(Ink.ink)
-        let accent = style.resolveColor(Ink.accent)
-        let monoFont = Ink.uiMono(max(CGFloat(12), cellSize - 2), preference: style.code)
+        let ink = style.colors.ink
+        let accent = style.colors.accent
+        let tableFonts = style.fonts.table
+        let monoFont = tableFonts.inlineCode
         var hasLink = false
         let out = NSMutableAttributedString()
         out.beginEditing()
@@ -838,15 +814,16 @@ final class ChatProseBuilder {
             let isCode = intent.contains(.code)
             let isStrike = intent.contains(.strikethrough)
 
-            var font = Ink.uiFace(cellSize, bold: isBold, face: style.face)
-            if isItalic,
-               let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-                font = UIFont(descriptor: slanted, size: cellSize)
+            let font: UIFont
+            if isBold {
+                font = isItalic ? tableFonts.boldItalic : tableFonts.bold
+            } else {
+                font = isItalic ? tableFonts.italic : tableFonts.regular
             }
             var attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: ink,
-                .paragraphStyle: pStyle,
+                .paragraphStyle: immutableParagraphStyle,
             ]
             if style.face == .wenkai, isBold {
                 attrs[.strokeWidth] = -3.0
@@ -896,7 +873,7 @@ final class ChatProseBuilder {
         var inlineCodeRanges: [NSRange] = []
         var quoteBlocks: [NSRange] = []
         var ruleRanges: [NSRange] = []
-        let separatorFont = Ink.uiFace(style.readingSize, bold: false, face: style.face)
+        let separatorFont = style.fonts.reading.regular
 
         for index in blocks.indices {
             let block = blocks[index]
@@ -939,14 +916,14 @@ final class ChatProseBuilder {
 
         let topInset: CGFloat
         if case .quote = blocks.first {
-            topInset = Ink.Space.m
+            topInset = style.metrics.spaceM
         } else {
             topInset = 0
         }
 
         let bottomInset: CGFloat
         if case .quote = blocks.last {
-            bottomInset = Ink.Space.m
+            bottomInset = style.metrics.spaceM
         } else {
             bottomInset = 2
         }
@@ -1064,7 +1041,14 @@ final class ChatProseBuilder {
             let before = isFirst ? 0 : style.headingTop(level: level)
             let spacing = isLast ? 0 : style.headingBottom
             let pStyle = makeParagraphStyle(style: style, spacing: spacing, before: before, tight: true)
-            let attr = buildInline(text, size: style.headingSize(level: level), bold: true, style: style, ink: style.resolveColor(Ink.ink), paragraph: pStyle)
+            let attr = buildInline(
+                text,
+                fontGroup: style.fonts.headingGroup(level: level),
+                bold: true,
+                style: style,
+                ink: style.colors.ink,
+                paragraph: pStyle
+            )
             return BlockCacheEntry(
                 attributed: attr,
                 trailingSeparatorStyle: pStyle,
@@ -1076,7 +1060,14 @@ final class ChatProseBuilder {
         case .paragraph(let text):
             let spacing = isLast ? 0 : style.paragraphGap
             let pStyle = makeParagraphStyle(style: style, spacing: spacing)
-            let attr = buildInline(text, size: style.readingSize, bold: false, style: style, ink: style.resolveColor(Ink.ink), paragraph: pStyle)
+            let attr = buildInline(
+                text,
+                fontGroup: style.fonts.reading,
+                bold: false,
+                style: style,
+                ink: style.colors.ink,
+                paragraph: pStyle
+            )
             return BlockCacheEntry(
                 attributed: attr,
                 trailingSeparatorStyle: pStyle,
@@ -1089,26 +1080,26 @@ final class ChatProseBuilder {
             let out = NSMutableAttributedString()
             out.beginEditing()
             let base = style.readingSize
-            let bodyInk = style.resolveColor(Ink.ink)
-            let faintInk = style.resolveColor(Ink.inkFaint)
-            let accentInk = style.resolveColor(Ink.accent)
-            let separatorFont = Ink.uiFace(base, face: style.face)
+            let bodyInk = style.colors.ink
+            let faintInk = style.colors.inkFaint
+            let accentInk = style.colors.accent
+            let separatorFont = style.fonts.reading.regular
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : style.paragraphGap)
             for (itemIndex, item) in items.enumerated() {
                 let marker: String
-                let markerSize: CGFloat
+                let markerFont: UIFont
                 let markerColor: UIColor
                 if let checked = item.checked {
                     marker = checked ? "☑︎" : "☐"
-                    markerSize = base
+                    markerFont = style.fonts.reading.regular
                     markerColor = checked ? accentInk : faintInk
                 } else if let number = item.number {
                     marker = "\(number)."
-                    markerSize = base * 0.92
+                    markerFont = style.fonts.listNumberMarker
                     markerColor = faintInk
                 } else {
                     marker = item.depth == 0 ? "•" : (item.depth == 1 ? "◦" : "▪")
-                    markerSize = base * (item.depth == 0 ? 0.95 : 0.78)
+                    markerFont = item.depth == 0 ? style.fonts.listBulletDepth0 : style.fonts.listBulletDepthNested
                     markerColor = faintInk
                 }
                 let indent = CGFloat(item.depth) * base * 1.25
@@ -1124,11 +1115,18 @@ final class ChatProseBuilder {
                     ]))
                 }
                 out.append(NSAttributedString(string: marker + "\t", attributes: [
-                    .font: Ink.uiFace(markerSize, face: style.face),
+                    .font: markerFont,
                     .foregroundColor: markerColor,
                     .paragraphStyle: pStyle,
                 ]))
-                out.append(buildInline(item.text, size: base, bold: false, style: style, ink: bodyInk, paragraph: pStyle))
+                out.append(buildInline(
+                    item.text,
+                    fontGroup: style.fonts.reading,
+                    bold: false,
+                    style: style,
+                    ink: bodyInk,
+                    paragraph: pStyle
+                ))
             }
             out.endEditing()
             let immutable = NSAttributedString(attributedString: out)
@@ -1143,13 +1141,13 @@ final class ChatProseBuilder {
         case .quote(let inner):
             let out = NSMutableAttributedString()
             out.beginEditing()
-            let indent = Ink.Space.l + 4
-            let tail = -Ink.Space.m
-            let cardPadV = Ink.Space.m
-            let quoteInk = style.resolveColor(Ink.inkSoft)
-            let separatorFont = Ink.uiFace(style.readingSize, face: style.face)
+            let indent = style.metrics.spaceL + 4
+            let tail = -style.metrics.spaceM
+            let cardPadV = style.metrics.spaceM
+            let quoteInk = style.colors.inkSoft
+            let separatorFont = style.fonts.reading.regular
             var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : cardPadV + style.paragraphGap, indent: indent, tailIndent: tail)
-            let flatLines = flattenQuoteBlocks(inner)
+            let flatLines = flattenQuoteBlocks(inner, listHanging: style.metrics.sizeSub)
             for (idx, line) in flatLines.enumerated() {
                 let firstInQuote = idx == 0
                 let lastInQuote = idx == flatLines.count - 1
@@ -1171,8 +1169,15 @@ final class ChatProseBuilder {
                     ]))
                 }
                 lastPStyle = pStyle
-                let textSize = line.isHeading ? style.headingSize(level: 3) : style.readingSize
-                out.append(buildInline(line.text, size: textSize, bold: line.isHeading, style: style, ink: quoteInk, paragraph: pStyle))
+                let fontGroup = line.isHeading ? style.fonts.heading3 : style.fonts.reading
+                out.append(buildInline(
+                    line.text,
+                    fontGroup: fontGroup,
+                    bold: line.isHeading,
+                    style: style,
+                    ink: quoteInk,
+                    paragraph: pStyle
+                ))
             }
             if out.length == 0 {
                 out.append(NSAttributedString(string: " ", attributes: [
@@ -1196,11 +1201,11 @@ final class ChatProseBuilder {
             let pStyle = NSMutableParagraphStyle()
             pStyle.paragraphSpacingBefore = isFirst ? 0 : style.paragraphGap * 0.35
             pStyle.paragraphSpacing = isLast ? 0 : style.paragraphGap * 0.85
-            pStyle.maximumLineHeight = Ink.Size.micro
-            pStyle.minimumLineHeight = Ink.Size.micro
+            pStyle.maximumLineHeight = style.metrics.sizeMicro
+            pStyle.minimumLineHeight = style.metrics.sizeMicro
             let immutableStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
             let attr = NSAttributedString(string: "\u{200B}", attributes: [
-                .font: UIFont.systemFont(ofSize: Ink.Size.micro),
+                .font: style.fonts.ruleMicro,
                 .foregroundColor: UIColor.clear,
                 .paragraphStyle: immutableStyle,
             ])
@@ -1230,7 +1235,7 @@ final class ChatProseBuilder {
         let hanging: CGFloat
     }
 
-    private func flattenQuoteBlocks(_ blocks: [Prose.Block]) -> [QuoteLine] {
+    private func flattenQuoteBlocks(_ blocks: [Prose.Block], listHanging: CGFloat) -> [QuoteLine] {
         var result: [QuoteLine] = []
         for inner in blocks {
             switch inner {
@@ -1248,10 +1253,10 @@ final class ChatProseBuilder {
                     } else {
                         prefix = "• "
                     }
-                    result.append(QuoteLine(text: prefix + item.text, isHeading: false, hanging: Ink.Size.sub))
+                    result.append(QuoteLine(text: prefix + item.text, isHeading: false, hanging: listHanging))
                 }
             case .quote(let nested):
-                result.append(contentsOf: flattenQuoteBlocks(nested))
+                result.append(contentsOf: flattenQuoteBlocks(nested, listHanging: listHanging))
             case .code(_, let text, _):
                 result.append(QuoteLine(text: text, isHeading: false, hanging: 0))
             case .math(let latex):
@@ -1290,25 +1295,24 @@ final class ChatProseBuilder {
 
     private func buildInline(
         _ text: String,
-        size: CGFloat,
+        fontGroup: ChatFontGroup,
         bold: Bool,
         style: ChatListStyle,
         ink: UIColor,
         paragraph: NSParagraphStyle
     ) -> NSAttributedString {
         let parsed = PreparsedInline.parse(text)
-        let accent = style.resolveColor(Ink.accent)
-        let regularFont = Ink.uiFace(size, bold: bold, face: style.face)
-        let boldFont = bold ? regularFont : Ink.uiFace(size, bold: true, face: style.face)
-        let monoFont = Ink.uiMono(max(CGFloat(12), size - 2), preference: style.code)
+        let accent = style.colors.accent
+        let monoFont = fontGroup.inlineCode
         let out = NSMutableAttributedString()
         out.beginEditing()
         for run in parsed.runs {
             let isBold = bold || run.bold
-            var font = isBold ? boldFont : regularFont
-            if run.italic,
-               let slanted = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-                font = UIFont(descriptor: slanted, size: size)
+            let font: UIFont
+            if isBold {
+                font = run.italic ? fontGroup.boldItalic : fontGroup.bold
+            } else {
+                font = run.italic ? fontGroup.italic : fontGroup.regular
             }
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
@@ -1348,15 +1352,14 @@ final class ChatProseBuilder {
 }
 
 /// Deterministic layout measurement and height caching for every chat cell type.
-@MainActor
-final class ChatLayoutCache {
-    struct MeasuredSlice {
+final class ChatLayoutCache: @unchecked Sendable {
+    struct MeasuredSlice: @unchecked Sendable {
         let slice: ChatProseSlice
         let height: CGFloat
         let pictureHeights: [CGFloat]
     }
 
-    struct AssistantLayoutEntry {
+    struct AssistantLayoutEntry: @unchecked Sendable {
         let timeGapHeight: CGFloat
         let speakerHeight: CGFloat
         let thinkingText: ChatRenderedProse?
@@ -1370,9 +1373,10 @@ final class ChatLayoutCache {
         let hasFooter: Bool
         let contentWidth: CGFloat
         let cellHeight: CGFloat
+        let hasEstimatedFormula: Bool
     }
 
-    struct UserLayoutEntry {
+    struct UserLayoutEntry: @unchecked Sendable {
         let timeGapHeight: CGFloat
         let photosHeight: CGFloat
         let rendered: ChatRenderedProse
@@ -1383,19 +1387,19 @@ final class ChatLayoutCache {
         let cellHeight: CGFloat
     }
 
-    struct NoteLayoutEntry {
+    struct NoteLayoutEntry: Sendable {
         let titleHeight: CGFloat
         let detailHeight: CGFloat
         let cellHeight: CGFloat
     }
 
-    struct LiveTextEntry {
+    struct LiveTextEntry: @unchecked Sendable {
         let rendered: ChatRenderedProse
         let textHeight: CGFloat
         let cellHeight: CGFloat
     }
 
-    struct QueuedLayoutEntry {
+    struct QueuedLayoutEntry: Sendable {
         let textHeight: CGFloat
         let hasPhotos: Bool
         let cellHeight: CGFloat
@@ -1662,71 +1666,84 @@ final class ChatLayoutCache {
         }
     }
 
-    private struct NoteKey: Hashable {
+    private struct NoteKey: Hashable, Sendable {
         let id: String
         let text: String
         let nextRaw: String
         let fold: Bool
         let isLatestNote: Bool
         let widthKey: Int
-        let uiScale: Double
+        let styleKey: String
     }
 
     let builder = ChatProseBuilder()
 
     private let assistantFinalizedCache = BoundedLRUCache<AssistantKey, AssistantLayoutEntry>(countLimit: 1000)
-    private var assistantStreamingCache: [String: (key: AssistantKey, entry: AssistantLayoutEntry)] = [:]
     private let userCache = BoundedLRUCache<UserKey, UserLayoutEntry>(countLimit: 1200)
     private let noteCache = BoundedLRUCache<NoteKey, NoteLayoutEntry>(countLimit: 256)
-    private var lastLiveStreamingEntry: (key: LiveStreamingKey, entry: AssistantLayoutEntry)?
-    private var blockHeightOverrides: [String: CGFloat] = [:]
     private let hostingHeights = BoundedLRUCache<String, CGFloat>(countLimit: 600)
+
+    private let stateLock = NSLock()
+    private var cacheGeneration: UInt64 = 1
+    private var assistantStreamingCache: [String: (key: AssistantKey, entry: AssistantLayoutEntry)] = [:]
+    private var lastLiveStreamingEntry: (key: LiveStreamingKey, entry: AssistantLayoutEntry)?
+    private var blockHeightOverridesByOwner: [String: [String: CGFloat]] = [:]
     private var overrideVersionsByOwner: [String: UInt64] = [:]
 
-    private let labelMeasurer: UILabel = {
-        let label = UILabel()
-        label.numberOfLines = 0
-        return label
-    }()
-
-    private lazy var hostingMeasurer: UIHostingController<AnyView> = {
-        let vc = UIHostingController(rootView: AnyView(EmptyView()))
-        vc.safeAreaRegions = []
-        return vc
-    }()
-
-    func invalidateAll() {
-        assistantFinalizedCache.removeAll()
+    func invalidateAll(clearOverrides: Bool = false) {
+        stateLock.lock()
+        cacheGeneration &+= 1
         assistantStreamingCache.removeAll(keepingCapacity: true)
+        lastLiveStreamingEntry = nil
+        if clearOverrides {
+            blockHeightOverridesByOwner.removeAll(keepingCapacity: true)
+            overrideVersionsByOwner.removeAll(keepingCapacity: true)
+        }
+        stateLock.unlock()
+        assistantFinalizedCache.removeAll()
         userCache.removeAll()
         noteCache.removeAll()
         hostingHeights.removeAll()
-        lastLiveStreamingEntry = nil
         builder.clearCaches()
     }
 
     func invalidateHeightsOnly() {
-        assistantFinalizedCache.removeAll()
+        stateLock.lock()
+        cacheGeneration &+= 1
         assistantStreamingCache.removeAll(keepingCapacity: true)
+        lastLiveStreamingEntry = nil
+        stateLock.unlock()
+        assistantFinalizedCache.removeAll()
         userCache.removeAll()
         noteCache.removeAll()
         hostingHeights.removeAll()
-        lastLiveStreamingEntry = nil
     }
 
     func invalidateMessage(id: String) {
+        stateLock.lock()
         assistantStreamingCache.removeValue(forKey: id)
+        stateLock.unlock()
         assistantFinalizedCache.removeAll { $0.id == id }
         userCache.removeAll { $0.id == id }
         noteCache.removeAll { $0.id == id }
     }
 
+    func overrideSnapshot(for ownerID: String) -> BlockOverrideSnapshot {
+        stateLock.lock()
+        let version = overrideVersionsByOwner[ownerID] ?? 1
+        let heights = blockHeightOverridesByOwner[ownerID] ?? [:]
+        stateLock.unlock()
+        return BlockOverrideSnapshot(ownerID: ownerID, version: version, heights: heights)
+    }
+
     func setBlockHeightOverride(_ height: CGFloat, key: String, ownerID: String) -> Bool {
         let rounded = ceil(height)
-        if let old = blockHeightOverrides[key], abs(old - rounded) <= 0.5 {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if let old = blockHeightOverridesByOwner[ownerID]?[key], abs(old - rounded) <= 0.5 {
             return false
         }
-        blockHeightOverrides[key] = rounded
+        blockHeightOverridesByOwner[ownerID, default: [:]][key] = rounded
         overrideVersionsByOwner[ownerID, default: 1] &+= 1
         assistantStreamingCache.removeValue(forKey: ownerID)
         if ownerID.hasPrefix("streaming-") {
@@ -1748,69 +1765,70 @@ final class ChatLayoutCache {
         return true
     }
 
-    func measureHostingView<V: View>(_ view: V, width: CGFloat, cacheKey: String) -> CGFloat {
-        if let hit = hostingHeights.get(cacheKey) { return hit }
-        hostingMeasurer.rootView = AnyView(view)
-        let size = hostingMeasurer.sizeThatFits(in: CGSize(width: max(120, width), height: CGFloat.greatestFiniteMagnitude))
-        let h = max(24, ceil(size.height))
-        hostingHeights.set(h, for: cacheKey)
-        return h
-    }
-
+    @MainActor
     func measureUser(
         row: ChatListRowItem,
         collectionWidth: CGFloat,
         style: ChatListStyle
     ) -> UserLayoutEntry {
-        let widthKey = Int((collectionWidth * 2).rounded())
+        measureUser(input: UserMeasureInput(row: row, collectionWidth: collectionWidth, style: style))
+    }
+
+    func measureUser(input: UserMeasureInput) -> UserLayoutEntry {
+        let style = input.style
+        let metrics = style.metrics
+        let widthKey = Int((input.collectionWidth * 2).rounded())
         let key = UserKey(
-            id: row.line.id,
+            id: input.id,
             styleKey: style.styleKey,
             widthKey: widthKey,
-            text: row.line.text,
-            photoCount: row.line.refs.count,
-            isFirst: row.isFirst,
-            opens: row.opens,
-            faces: row.faces,
-            hasTimeGap: row.faces && row.opens && row.timeGap != nil
+            text: input.text,
+            photoCount: input.photoCount,
+            isFirst: input.isFirst,
+            opens: input.opens,
+            faces: input.faces,
+            hasTimeGap: input.hasTimeGap
         )
         if let hit = userCache.get(key) { return hit }
+        stateLock.lock()
+        let startGeneration = cacheGeneration
+        stateLock.unlock()
 
-        let pageMargin = Ink.Space.page
-        let avatarSpace: CGFloat = row.faces ? (ChatCellMetrics.faceSize + Ink.Space.s) : 0
-        let contentArea = max(160, collectionWidth - pageMargin * 2 - avatarSpace)
-        let maxBubbleWidth = max(120, contentArea - Ink.Space.huge)
-        let maxTextWidth = max(60, maxBubbleWidth - ChatCellMetrics.userBubblePadH * 2)
+        let pageMargin = metrics.spacePage
+        let avatarSpace: CGFloat = input.faces ? (metrics.faceSize + metrics.spaceS) : 0
+        let contentArea = max(160, input.collectionWidth - pageMargin * 2 - avatarSpace)
+        let maxBubbleWidth = max(120, contentArea - metrics.spaceHuge)
+        let maxTextWidth = max(60, maxBubbleWidth - metrics.userBubblePadH * 2)
 
-        let timeGapH: CGFloat = (row.faces && row.opens && row.timeGap != nil) ? ChatCellMetrics.timeGapHeight : 0
-        let photosH: CGFloat = row.line.refs.isEmpty ? 0 : ChatCellMetrics.photoSize
+        let timeGapH: CGFloat = input.hasTimeGap ? metrics.timeGapHeight : 0
+        let photosH: CGFloat = input.photoCount == 0 ? 0 : metrics.photoSize
 
-        let rendered = builder.buildUserText(row.line.text, style: style)
+        let rendered = builder.buildUserText(input.text, style: style)
         let textSize: CGSize
         let bubbleW: CGFloat
         let bubbleH: CGFloat
-        if row.line.text.isEmpty {
+        if input.text.isEmpty {
             textSize = .zero
             bubbleW = 0
             bubbleH = 0
         } else {
             textSize = measureTextSize(rendered: rendered, maxWidth: maxTextWidth)
-            bubbleW = min(maxBubbleWidth, max(44, textSize.width + ChatCellMetrics.userBubblePadH * 2))
-            bubbleH = ceil(textSize.height + ChatCellMetrics.userBubblePadV * 2)
+            bubbleW = min(maxBubbleWidth, max(44, textSize.width + metrics.userBubblePadH * 2))
+            bubbleH = ceil(textSize.height + metrics.userBubblePadV * 2)
         }
 
-        var total: CGFloat = row.isFirst ? 0 : ChatCellMetrics.userTurnTopPad
+        var total: CGFloat = input.isFirst ? 0 : metrics.userTurnTopPad
         if timeGapH > 0 {
-            total += timeGapH + ChatCellMetrics.timeGapBottomPad + ChatCellMetrics.sectionSpacing
+            total += timeGapH + metrics.timeGapBottomPad + metrics.sectionSpacing
         }
         var bodyH: CGFloat = 0
         if photosH > 0 { bodyH += photosH }
-        if photosH > 0 && bubbleH > 0 { bodyH += Ink.Space.s }
+        if photosH > 0 && bubbleH > 0 { bodyH += metrics.spaceS }
         if bubbleH > 0 { bodyH += bubbleH }
-        if row.faces && row.opens {
-            bodyH = max(bodyH, ChatCellMetrics.faceSize)
+        if input.faces && input.opens {
+            bodyH = max(bodyH, metrics.faceSize)
         }
-        total += bodyH + ChatCellMetrics.rowSpacing
+        total += bodyH + metrics.rowSpacing
 
         let entry = UserLayoutEntry(
             timeGapHeight: timeGapH,
@@ -1822,10 +1840,16 @@ final class ChatLayoutCache {
             bubbleHeight: bubbleH,
             cellHeight: ceil(total)
         )
-        userCache.set(entry, for: key)
+        stateLock.lock()
+        let validGeneration = cacheGeneration == startGeneration
+        stateLock.unlock()
+        if validGeneration {
+            userCache.set(entry, for: key)
+        }
         return entry
     }
 
+    @MainActor
     func measureAssistant(
         row: ChatListRowItem,
         collectionWidth: CGFloat,
@@ -1833,116 +1857,147 @@ final class ChatLayoutCache {
         expandedThinking: Bool,
         expandedPulse: Bool,
         expandedLookback: Bool,
-        unfoldedSlices: Set<Int>
+        unfoldedSlices: Set<Int>,
+        allowMainThreadMathMeasure: Bool = false
     ) -> AssistantLayoutEntry {
-        let widthKey = Int((collectionWidth * 2).rounded())
-        let isFresh = row.isFreshWriting
-        let shown = row.freshShown ?? row.line.text.count
-        let rawBody = isFresh ? String(row.line.text.prefix(shown)) : row.lookbackRest
-        let hasSources = !isFresh && (row.lineMeta?.urls.isEmpty == false)
-        let hasContinue = !isFresh && row.hitStepLimit
-        let hasFooter = !isFresh && (row.isLatestBot ? !row.working : row.endsTurn)
-        let sortedUnfolded = unfoldedSlices.sorted()
-
-        let key = AssistantKey(
-            id: row.line.id,
-            styleKey: style.styleKey,
-            widthKey: widthKey,
-            text: row.line.text,
-            reasoning: row.line.reasoning ?? "",
-            pulse: row.line.pulse ?? "",
-            lookbackNote: row.lookbackNote ?? "",
-            lookbackRest: rawBody,
-            opens: row.opens,
-            faces: row.faces,
-            isRoom: row.isRoom,
-            showThinking: row.showThinking,
-            hasTimeGap: row.faces && row.opens && row.timeGap != nil,
-            hasSources: hasSources,
-            hasContinue: hasContinue,
-            hasFooter: hasFooter,
-            isStreaming: isFresh,
-            freshShown: isFresh ? shown : -1,
+        let input = AssistantMeasureInput(
+            row: row,
+            collectionWidth: collectionWidth,
+            style: style,
             expandedThinking: expandedThinking,
             expandedPulse: expandedPulse,
             expandedLookback: expandedLookback,
+            unfoldedSlices: unfoldedSlices,
+            overrides: overrideSnapshot(for: row.line.id)
+        )
+        return measureAssistant(input: input, allowMainThreadMathMeasure: allowMainThreadMathMeasure)
+    }
+
+    func measureAssistant(
+        input: AssistantMeasureInput,
+        allowMainThreadMathMeasure: Bool = false
+    ) -> AssistantLayoutEntry {
+        let style = input.style
+        let metrics = style.metrics
+        let widthKey = Int((input.collectionWidth * 2).rounded())
+        let isFresh = input.isFresh
+        let shown = input.freshShown ?? input.text.count
+        let rawBody = input.lookbackRest
+        let sortedUnfolded = input.unfoldedSlices.sorted()
+
+        let key = AssistantKey(
+            id: input.id,
+            styleKey: style.styleKey,
+            widthKey: widthKey,
+            text: input.text,
+            reasoning: input.reasoning ?? "",
+            pulse: input.pulse ?? "",
+            lookbackNote: input.lookbackNote ?? "",
+            lookbackRest: rawBody,
+            opens: input.opens,
+            faces: input.faces,
+            isRoom: input.isRoom,
+            showThinking: input.showThinking,
+            hasTimeGap: input.hasTimeGap,
+            hasSources: input.hasSources,
+            hasContinue: input.hasContinue,
+            hasFooter: input.hasFooter,
+            isStreaming: isFresh,
+            freshShown: isFresh ? shown : -1,
+            expandedThinking: input.expandedThinking,
+            expandedPulse: input.expandedPulse,
+            expandedLookback: input.expandedLookback,
             unfoldedSlices: sortedUnfolded,
-            overrideVersion: overrideVersionsByOwner[row.line.id] ?? 1
+            overrideVersion: input.overrides.version
         )
 
         if isFresh {
-            if let hit = assistantStreamingCache[row.line.id], hit.key == key {
+            stateLock.lock()
+            let hit = assistantStreamingCache[input.id]
+            stateLock.unlock()
+            if let hit, hit.key == key, !Self.needsFormulaRefresh(entry: hit.entry, style: style) {
                 return hit.entry
             }
         } else {
-            assistantStreamingCache.removeValue(forKey: row.line.id)
-            if let hit = assistantFinalizedCache.get(key) {
+            stateLock.lock()
+            if !assistantStreamingCache.isEmpty {
+                assistantStreamingCache.removeValue(forKey: input.id)
+            }
+            stateLock.unlock()
+            if let hit = assistantFinalizedCache.get(key), !Self.needsFormulaRefresh(entry: hit, style: style) {
                 return hit
             }
         }
 
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
-        let timeGapH: CGFloat = (row.faces && row.opens && row.timeGap != nil) ? ChatCellMetrics.timeGapHeight : 0
-        let speakerH: CGFloat = (row.opens && (row.faces || row.isRoom))
-            ? (row.faces ? ChatCellMetrics.faceSize : ChatCellMetrics.compactSpeakerSize)
+        stateLock.lock()
+        let startGeneration = cacheGeneration
+        stateLock.unlock()
+
+        let contentWidth = max(120, input.collectionWidth - metrics.spacePage * 2)
+        let timeGapH: CGFloat = input.hasTimeGap ? metrics.timeGapHeight : 0
+        let speakerH: CGFloat = (input.opens && (input.faces || input.isRoom))
+            ? (input.faces ? metrics.faceSize : metrics.compactSpeakerSize)
             : 0
 
         var thinkingRendered: ChatRenderedProse?
         var thinkingH: CGFloat = 0
-        if let reasoning = row.line.reasoning, row.showThinking {
+        if let reasoning = input.reasoning, input.showThinking {
             let built = builder.buildDisclosureText(reasoning, style: style)
             thinkingRendered = built
-            if expandedThinking {
-                let innerWidth = max(80, contentWidth - Ink.Space.m)
+            if input.expandedThinking {
+                let innerWidth = max(80, contentWidth - metrics.spaceM)
                 thinkingH = measureTextSize(rendered: built, maxWidth: innerWidth).height
             }
         }
 
         var pulseRendered: ChatRenderedProse?
         var pulseH: CGFloat = 0
-        if let pulse = row.line.pulse {
+        if let pulse = input.pulse {
             let built = builder.buildDisclosureText(pulse, style: style)
             pulseRendered = built
-            if expandedPulse {
-                let innerWidth = max(80, contentWidth - Ink.Space.m * 2)
+            if input.expandedPulse {
+                let innerWidth = max(80, contentWidth - metrics.spaceM * 2)
                 pulseH = measureTextSize(rendered: built, maxWidth: innerWidth).height
             }
         }
 
         var lookbackH: CGFloat = 0
-        if !isFresh, let note = row.lookbackNote {
-            lookbackH = measureLookbackHeight(note: note, maxWidth: contentWidth, expanded: expandedLookback)
+        if !isFresh, let note = input.lookbackNote {
+            lookbackH = measureLookbackHeight(note: note, maxWidth: contentWidth, expanded: input.expandedLookback, style: style)
         }
 
         let slices = builder.buildAssistantSlices(
             rawBody,
             style: style,
             isStreaming: isFresh,
-            streamKey: isFresh ? "fresh-\(row.line.id)" : nil
+            streamKey: isFresh ? "fresh-\(input.id)" : nil
         )
-        let measuredSlices = measureSlices(
+        let measuredResult = measureSlices(
             slices,
-            ownerID: row.line.id,
+            ownerID: input.id,
             contentWidth: contentWidth,
             widthKey: widthKey,
             style: style,
-            unfoldedSlices: unfoldedSlices
+            unfoldedSlices: input.unfoldedSlices,
+            overrides: input.overrides.heights,
+            allowMainThreadMathMeasure: allowMainThreadMathMeasure
         )
+        let measuredSlices = measuredResult.slices
 
         var total: CGFloat = 0
         if timeGapH > 0 {
-            total += timeGapH + ChatCellMetrics.timeGapBottomPad + ChatCellMetrics.sectionSpacing
+            total += timeGapH + metrics.timeGapBottomPad + metrics.sectionSpacing
         }
         if speakerH > 0 {
-            total += speakerH + ChatCellMetrics.sectionSpacing
+            total += speakerH + metrics.sectionSpacing
         }
 
         var bodyItems: [CGFloat] = []
         if thinkingRendered != nil {
-            bodyItems.append(ChatCellMetrics.disclosureHeaderHeight + (expandedThinking ? ChatCellMetrics.disclosureGap + thinkingH : 0))
+            bodyItems.append(metrics.disclosureHeaderHeight + (input.expandedThinking ? metrics.disclosureGap + thinkingH : 0))
         }
         if pulseRendered != nil {
-            bodyItems.append(ChatCellMetrics.disclosureHeaderHeight + (expandedPulse ? ChatCellMetrics.disclosureGap + pulseH + Ink.Space.s * 2 : 0))
+            bodyItems.append(metrics.disclosureHeaderHeight + (input.expandedPulse ? metrics.disclosureGap + pulseH + metrics.spaceS * 2 : 0))
         }
         if lookbackH > 0 {
             bodyItems.append(lookbackH)
@@ -1955,15 +2010,15 @@ final class ChatLayoutCache {
             }
             bodyItems.append(proseStackH)
         }
-        if hasSources { bodyItems.append(ChatCellMetrics.sourcesPillHeight) }
-        if hasContinue { bodyItems.append(ChatCellMetrics.continueButtonHeight) }
-        if hasFooter { bodyItems.append(ChatCellMetrics.footerHeight) }
+        if input.hasSources { bodyItems.append(metrics.sourcesPillHeight) }
+        if input.hasContinue { bodyItems.append(metrics.continueButtonHeight) }
+        if input.hasFooter { bodyItems.append(metrics.footerHeight) }
 
         for (idx, h) in bodyItems.enumerated() {
-            if idx > 0 { total += ChatCellMetrics.botBlockGap }
+            if idx > 0 { total += metrics.botBlockGap }
             total += h
         }
-        total += ChatCellMetrics.rowSpacing
+        total += metrics.rowSpacing
 
         let entry = AssistantLayoutEntry(
             timeGapHeight: timeGapH,
@@ -1974,19 +2029,41 @@ final class ChatLayoutCache {
             pulseTextHeight: pulseH,
             lookbackHeight: lookbackH,
             slices: measuredSlices,
-            hasSources: hasSources,
-            hasContinueButton: hasContinue,
-            hasFooter: hasFooter,
+            hasSources: input.hasSources,
+            hasContinueButton: input.hasContinue,
+            hasFooter: input.hasFooter,
             contentWidth: contentWidth,
-            cellHeight: ceil(total)
+            cellHeight: ceil(total),
+            hasEstimatedFormula: measuredResult.hasEstimatedFormula
         )
 
         if isFresh {
-            assistantStreamingCache[row.line.id] = (key: key, entry: entry)
+            stateLock.lock()
+            assistantStreamingCache[input.id] = (key: key, entry: entry)
+            stateLock.unlock()
         } else {
-            assistantFinalizedCache.set(entry, for: key)
+            stateLock.lock()
+            let currentOverrideVersion = overrideVersionsByOwner[input.id] ?? 1
+            let validGeneration = cacheGeneration == startGeneration
+            stateLock.unlock()
+            if validGeneration && currentOverrideVersion == input.overrides.version {
+                assistantFinalizedCache.set(entry, for: key)
+            }
         }
         return entry
+    }
+
+    private nonisolated static func needsFormulaRefresh(entry: AssistantLayoutEntry, style: ChatListStyle) -> Bool {
+        guard entry.hasEstimatedFormula else { return false }
+        for measured in entry.slices {
+            if case .math(let latex, let isLive, _) = measured.slice, !isLive {
+                if let exact = ChatFormulaHeightCache.cachedHeight(latex: latex, style: style),
+                   abs(exact - measured.height) > 0.5 {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     func measureLiveStreamingProse(
@@ -1995,7 +2072,8 @@ final class ChatLayoutCache {
         collectionWidth: CGFloat,
         style: ChatListStyle
     ) -> AssistantLayoutEntry {
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
+        let metrics = style.metrics
+        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
         let widthKey = Int((collectionWidth * 2).rounded())
         let cacheKey = LiveStreamingKey(
             generation: generation,
@@ -2003,24 +2081,32 @@ final class ChatLayoutCache {
             styleKey: style.styleKey,
             text: text
         )
-        if let cached = lastLiveStreamingEntry, cached.key == cacheKey {
+        let ownerID = "streaming-\(generation)"
+        stateLock.lock()
+        let cached = lastLiveStreamingEntry
+        let overrides = blockHeightOverridesByOwner[ownerID] ?? [:]
+        stateLock.unlock()
+        if let cached, cached.key == cacheKey, !Self.needsFormulaRefresh(entry: cached.entry, style: style) {
             return cached.entry
         }
-        let ownerID = "streaming-\(generation)"
+
         let slices = builder.buildAssistantSlices(
             text,
             style: style,
             isStreaming: true,
             streamKey: ownerID
         )
-        let measured = measureSlices(
+        let measuredResult = measureSlices(
             slices,
             ownerID: ownerID,
             contentWidth: contentWidth,
             widthKey: widthKey,
             style: style,
-            unfoldedSlices: []
+            unfoldedSlices: [],
+            overrides: overrides,
+            allowMainThreadMathMeasure: false
         )
+        let measured = measuredResult.slices
         var proseStackH: CGFloat = 0
         for (idx, item) in measured.enumerated() {
             if idx > 0 { proseStackH += style.paragraphGap }
@@ -2039,9 +2125,12 @@ final class ChatLayoutCache {
             hasContinueButton: false,
             hasFooter: false,
             contentWidth: contentWidth,
-            cellHeight: ceil(proseStackH + ChatCellMetrics.rowSpacing)
+            cellHeight: ceil(proseStackH + metrics.rowSpacing),
+            hasEstimatedFormula: measuredResult.hasEstimatedFormula
         )
+        stateLock.lock()
         lastLiveStreamingEntry = (key: cacheKey, entry: entry)
+        stateLock.unlock()
         return entry
     }
 
@@ -2051,9 +2140,13 @@ final class ChatLayoutCache {
         contentWidth: CGFloat,
         widthKey: Int,
         style: ChatListStyle,
-        unfoldedSlices: Set<Int>
-    ) -> [MeasuredSlice] {
-        slices.map { slice in
+        unfoldedSlices: Set<Int>,
+        overrides: [String: CGFloat],
+        allowMainThreadMathMeasure: Bool
+    ) -> (slices: [MeasuredSlice], hasEstimatedFormula: Bool) {
+        let metrics = style.metrics
+        var hasEstimatedFormula = false
+        let measured: [MeasuredSlice] = slices.map { slice in
             switch slice {
             case .richText(let rendered):
                 let h = measureTextSize(rendered: rendered, maxWidth: contentWidth).height
@@ -2067,7 +2160,7 @@ final class ChatLayoutCache {
                 let bodySize = (resolvedCode.folds && !unfolded)
                     ? resolvedCode.foldedContentSize
                     : resolvedCode.resolved(unfolded: unfolded).size
-                let bodyH = max(16, bodySize.height) + Ink.Space.m * 2
+                let bodyH = max(16, bodySize.height) + metrics.spaceM * 2
                 let foldH = resolvedCode.folds ? style.codeFoldButtonHeight : 0
                 let total = ceil(style.codeHeaderHeight + bodyH + foldH)
                 return MeasuredSlice(slice: .code(resolvedCode, sliceIndex: sliceIndex), height: total, pictureHeights: [])
@@ -2076,18 +2169,31 @@ final class ChatLayoutCache {
                 let h = ChatTableBlockView.measureHeight(slice: tableSlice, maxWidth: contentWidth, style: style)
                 return MeasuredSlice(slice: slice, height: ceil(h), pictureHeights: [])
 
-            case .math(let latex, let isLive, _):
-                let h = ChatFormulaBlockView.measureHeight(latex: latex, maxWidth: contentWidth, style: style, streaming: isLive)
-                return MeasuredSlice(slice: slice, height: ceil(h), pictureHeights: [])
+            case .math(let latex, let isLive, let sliceIndex):
+                let mathKey = "math|\(ownerID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(fnv1a64(latex))"
+                if let overrideH = overrides[mathKey] {
+                    return MeasuredSlice(slice: slice, height: ceil(overrideH), pictureHeights: [])
+                }
+                let result = ChatFormulaBlockView.measureHeightInfo(
+                    latex: latex,
+                    maxWidth: contentWidth,
+                    style: style,
+                    streaming: isLive,
+                    allowMainThreadMathMeasure: allowMainThreadMathMeasure
+                )
+                if result.isEstimated {
+                    hasEstimatedFormula = true
+                }
+                return MeasuredSlice(slice: slice, height: ceil(result.height), pictureHeights: [])
 
             case .fileCards(let links, let sliceIndex):
                 let key = "file|\(ownerID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(links.map(\.path).joined(separator: "|"))"
                 let h: CGFloat
-                if let overrideH = blockHeightOverrides[key] {
+                if let overrideH = overrides[key] {
                     h = overrideH
                 } else {
                     let singleH = 68 * style.scale
-                    h = CGFloat(links.count) * singleH + CGFloat(max(0, links.count - 1)) * Ink.Space.s
+                    h = CGFloat(links.count) * singleH + CGFloat(max(0, links.count - 1)) * metrics.spaceS
                 }
                 return MeasuredSlice(slice: slice, height: ceil(h), pictureHeights: [])
 
@@ -2100,7 +2206,7 @@ final class ChatLayoutCache {
                 var picHeights: [CGFloat] = []
                 for (picIndex, pic) in pics.enumerated() {
                     let key = "pic|\(ownerID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(style.styleKey)|\(pic.source)"
-                    let picH = blockHeightOverrides[key] ?? 160
+                    let picH = overrides[key] ?? 160
                     picHeights.append(picH)
                     if picIndex > 0 { total += style.readingSize * 0.6 }
                     total += picH
@@ -2108,9 +2214,18 @@ final class ChatLayoutCache {
                 return MeasuredSlice(slice: slice, height: ceil(total), pictureHeights: picHeights)
             }
         }
+        return (measured, hasEstimatedFormula)
     }
 
-    func measureNote(line: ChatLine, isLatestNote: Bool, collectionWidth: CGFloat) -> NoteLayoutEntry {
+    func measureNote(
+        line: ChatLine,
+        isLatestNote: Bool,
+        collectionWidth: CGFloat,
+        style: ChatListStyle,
+        adviceTitle: String? = nil
+    ) -> NoteLayoutEntry {
+        let metrics = style.metrics
+        let fonts = style.fonts
         let widthKey = Int((collectionWidth * 2).rounded())
         let key = NoteKey(
             id: line.id,
@@ -2119,94 +2234,118 @@ final class ChatLayoutCache {
             fold: line.fold,
             isLatestNote: isLatestNote,
             widthKey: widthKey,
-            uiScale: UIScale.shared.value
+            styleKey: style.styleKey
         )
         if let hit = noteCache.get(key) {
             return hit
         }
 
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
+        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
         let entry: NoteLayoutEntry
         if line.fold {
-            entry = NoteLayoutEntry(titleHeight: 36, detailHeight: 0, cellHeight: ceil(36 + ChatCellMetrics.rowSpacing))
+            entry = NoteLayoutEntry(titleHeight: 36, detailHeight: 0, cellHeight: ceil(36 + metrics.rowSpacing))
         } else if let next = line.next {
             let parts = line.text.split(separator: "\n", maxSplits: 1).map(String.init)
             let advice = Explain.Advice(title: parts.first ?? line.text, detail: parts.count > 1 ? parts[1] : "", next: next)
-            let innerW = max(80, contentWidth - Ink.Space.l * 2)
-            labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
-            labelMeasurer.text = advice.displayTitle
-            let titleH = ceil(labelMeasurer.sizeThatFits(CGSize(width: max(40, innerW - 28), height: .greatestFiniteMagnitude)).height)
+            let resolvedTitle = adviceTitle ?? advice.displayTitle
+            let innerW = max(80, contentWidth - metrics.spaceL * 2)
+            let titleH = Self.measureNSStringHeight(
+                resolvedTitle,
+                font: fonts.noteAdviceTitle,
+                maxWidth: max(40, innerW - 28)
+            )
 
             var detailH: CGFloat = 0
             if !advice.detail.isEmpty {
-                labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.sub)
-                labelMeasurer.text = advice.detail
-                detailH = ceil(labelMeasurer.sizeThatFits(CGSize(width: innerW, height: .greatestFiniteMagnitude)).height)
+                detailH = Self.measureNSStringHeight(
+                    advice.detail,
+                    font: fonts.noteAdviceDetail,
+                    maxWidth: innerW
+                )
             }
 
-            var total = Ink.Space.l * 2 + titleH
-            if detailH > 0 { total += Ink.Space.s + detailH }
-            if isLatestNote && advice.button != nil { total += Ink.Space.s + Ink.Space.xs + 34 }
-            entry = NoteLayoutEntry(titleHeight: titleH, detailHeight: detailH, cellHeight: ceil(total + ChatCellMetrics.rowSpacing))
+            var total = metrics.spaceL * 2 + titleH
+            if detailH > 0 { total += metrics.spaceS + detailH }
+            if isLatestNote && advice.button != nil { total += metrics.spaceS + metrics.spaceXS + 34 }
+            entry = NoteLayoutEntry(titleHeight: titleH, detailHeight: detailH, cellHeight: ceil(total + metrics.rowSpacing))
         } else {
-            labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.small)
-            labelMeasurer.text = line.text
-            let h = ceil(labelMeasurer.sizeThatFits(CGSize(width: contentWidth, height: .greatestFiniteMagnitude)).height)
-            entry = NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + ChatCellMetrics.rowSpacing))
+            let h = Self.measureNSStringHeight(line.text, font: fonts.notePlain, maxWidth: contentWidth)
+            entry = NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + metrics.rowSpacing))
         }
         noteCache.set(entry, for: key)
         return entry
     }
 
     func measureLiveText(_ text: String, collectionWidth: CGFloat, style: ChatListStyle, cardInsetH: CGFloat, cardInsetV: CGFloat) -> LiveTextEntry {
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
+        let metrics = style.metrics
+        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
         let innerWidth = max(80, contentWidth - cardInsetH * 2)
         let rendered = builder.buildDisclosureText(text, style: style)
         let textH = measureTextSize(rendered: rendered, maxWidth: innerWidth).height
-        let cardH = ChatCellMetrics.disclosureHeaderHeight + ChatCellMetrics.disclosureGap + textH + cardInsetV * 2
-        return LiveTextEntry(rendered: rendered, textHeight: textH, cellHeight: ceil(cardH + ChatCellMetrics.rowSpacing))
+        let cardH = metrics.disclosureHeaderHeight + metrics.disclosureGap + textH + cardInsetV * 2
+        return LiveTextEntry(rendered: rendered, textHeight: textH, cellHeight: ceil(cardH + metrics.rowSpacing))
     }
 
-    func measureQueued(_ item: TeamModel.Queued, collectionWidth: CGFloat) -> QueuedLayoutEntry {
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
-        let maxBubbleW = max(120, contentWidth - Ink.Space.huge)
-        let innerW = max(60, maxBubbleW - Ink.Space.l * 2)
-        var bubbleH: CGFloat = Ink.Space.m * 2
+    func measureQueued(_ item: TeamModel.Queued, collectionWidth: CGFloat, style: ChatListStyle) -> QueuedLayoutEntry {
+        let metrics = style.metrics
+        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let maxBubbleW = max(120, contentWidth - metrics.spaceHuge)
+        let innerW = max(60, maxBubbleW - metrics.spaceL * 2)
+        var bubbleH: CGFloat = metrics.spaceM * 2
         let hasPhotos = !item.photos.isEmpty
         if hasPhotos { bubbleH += 20 }
         var textH: CGFloat = 0
         if !item.text.isEmpty {
-            labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.body, weight: .medium)
-            labelMeasurer.numberOfLines = 4
-            labelMeasurer.text = item.text
-            textH = ceil(labelMeasurer.sizeThatFits(CGSize(width: innerW, height: .greatestFiniteMagnitude)).height)
-            labelMeasurer.numberOfLines = 0
+            textH = Self.measureNSStringHeight(
+                item.text,
+                font: style.fonts.queuedMessage,
+                maxWidth: innerW,
+                maxLines: 4
+            )
             if hasPhotos { bubbleH += 4 }
             bubbleH += textH
         }
-        let actionsH: CGFloat = 24 * UIScale.factor
-        let total = bubbleH + Ink.Space.xs + actionsH + ChatCellMetrics.rowSpacing
+        let actionsH: CGFloat = metrics.queuedActionsHeight
+        let total = bubbleH + metrics.spaceXS + actionsH + metrics.rowSpacing
         return QueuedLayoutEntry(textHeight: textH, hasPhotos: hasPhotos, cellHeight: ceil(total))
     }
 
-    func measureFailure(error: String, working: Bool, collectionWidth: CGFloat) -> CGFloat {
-        let contentWidth = max(120, collectionWidth - Ink.Space.page * 2)
-        let buttonReserve: CGFloat = working ? 0 : (92 + Ink.Space.m)
-        let textW = max(80, contentWidth - Ink.Space.l * 2 - 24 - Ink.Space.m - buttonReserve)
-        labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.sub)
-        labelMeasurer.text = error
-        let textH = ceil(labelMeasurer.sizeThatFits(CGSize(width: textW, height: .greatestFiniteMagnitude)).height)
-        let cardH = max(32 + Ink.Space.m * 2, textH + Ink.Space.m * 2)
-        return ceil(cardH + ChatCellMetrics.rowSpacing)
+    func measureFailure(error: String, working: Bool, collectionWidth: CGFloat, style: ChatListStyle) -> CGFloat {
+        let metrics = style.metrics
+        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let buttonReserve: CGFloat = working ? 0 : (92 + metrics.spaceM)
+        let textW = max(80, contentWidth - metrics.spaceL * 2 - 24 - metrics.spaceM - buttonReserve)
+        let textH = Self.measureNSStringHeight(error, font: style.fonts.failureMessage, maxWidth: textW)
+        let cardH = max(32 + metrics.spaceM * 2, textH + metrics.spaceM * 2)
+        return ceil(cardH + metrics.rowSpacing)
     }
 
-    private func measureLookbackHeight(note: String, maxWidth: CGFloat, expanded: Bool) -> CGFloat {
-        labelMeasurer.font = UIFont.systemFont(ofSize: Ink.Size.small)
-        labelMeasurer.numberOfLines = expanded ? 0 : 1
-        labelMeasurer.text = "回望 · " + note
-        let fitted = labelMeasurer.sizeThatFits(CGSize(width: max(40, maxWidth - 22), height: .greatestFiniteMagnitude))
-        labelMeasurer.numberOfLines = 0
-        return ceil(max(18, fitted.height))
+    private func measureLookbackHeight(note: String, maxWidth: CGFloat, expanded: Bool, style: ChatListStyle) -> CGFloat {
+        let h = Self.measureNSStringHeight(
+            "回望 · " + note,
+            font: style.fonts.lookbackSmall,
+            maxWidth: max(40, maxWidth - 22),
+            maxLines: expanded ? 0 : 1
+        )
+        return ceil(max(18, h))
+    }
+
+    private nonisolated static func measureNSStringHeight(_ text: String, font: UIFont, maxWidth: CGFloat, maxLines: Int = 0) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        if maxLines == 1 {
+            return ceil(font.lineHeight)
+        }
+        let rect = (text as NSString).boundingRect(
+            with: CGSize(width: max(1, maxWidth), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        let rawH = ceil(rect.height)
+        if maxLines > 1 {
+            return min(rawH, ceil(font.lineHeight * CGFloat(maxLines)))
+        }
+        return rawH
     }
 
     nonisolated static func prepareCoreTextSource(_ attributed: NSAttributedString) -> NSAttributedString {

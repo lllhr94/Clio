@@ -16,6 +16,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         var onToggleLookback: () -> Void = {}
         var onToggleCodeFold: (Int) -> Void = { _ in }
         var onBlockHeightChanged: (String, String, CGFloat) -> Void = { _, _, _ in }
+        var onFormulaHeightResolved: (String, String, CGFloat) -> Void = { _, _, _ in }
         var onSelectionChanged: (UUID, Bool) -> Void = { _, _ in }
         var onQuoteExcerpt: (String) -> Void = { _ in }
         var onSpeakExcerpt: (String) -> Void = { _ in }
@@ -230,7 +231,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         richTextViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         codeBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         tableBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
-        formulaBlockViews.forEach { $0.isHidden = true }
+        formulaBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         hostedBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         sourcesPill.resetForReuse()
         footerView.resetForReuse()
@@ -638,7 +639,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         var tbIndex = 0
         var fbIndex = 0
         var hbIndex = 0
-        let widthKey = Int(((entry.contentWidth + Ink.Space.page * 2) * 2).rounded())
+        let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
 
         func transferTuple(for idx: Int) -> (range: NSRange, substring: String)? {
@@ -685,10 +686,19 @@ final class ChatAssistantCell: UICollectionViewCell {
                 tb.configure(slice: tableSlice, style: style)
                 tbIndex += 1
 
-            case .math(let latex, let isLive, _):
+            case .math(let latex, let isLive, let sliceIndex):
                 let fb = ensureFormulaBlockView(at: fbIndex)
                 fb.isHidden = false
-                fb.configure(latex: latex, style: style, streaming: isLive)
+                let mathKey = "math|\(lineID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(fnv1a64(latex))"
+                fb.configure(
+                    latex: latex,
+                    style: style,
+                    streaming: isLive,
+                    expectedHeight: measured.height,
+                    onFormulaHeightResolved: { [weak self] exactHeight in
+                        self?.callbacks.onFormulaHeightResolved(lineID, mathKey, exactHeight)
+                    }
+                )
                 fbIndex += 1
 
             case .fileCards(let links, let sliceIndex):
@@ -742,6 +752,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         }
         for idx in fbIndex..<formulaBlockViews.count {
             formulaBlockViews[idx].isHidden = true
+            formulaBlockViews[idx].resetForReuse()
         }
         for idx in hbIndex..<hostedBlockViews.count {
             hostedBlockViews[idx].isHidden = true
