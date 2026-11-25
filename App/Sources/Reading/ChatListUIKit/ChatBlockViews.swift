@@ -957,91 +957,1206 @@ final class ChatFormulaBlockView: UIView, UIContextMenuInteractionDelegate {
     }
 }
 
-/// Top-level observable payload for reusable hosted SwiftUI block views (`FileCard`, `ProsePicture`).
-@MainActor @Observable
-final class ChatHostedBlockModel {
-    var key: String = ""
-    var content: AnyView = AnyView(EmptyView())
-}
+/// Thread-safe layout cache for decoded image aspect ratios, picture heights, and resolved file-card block heights.
+enum ChatMediaLayoutCache: Sendable {
+    private struct PictureHeightKey: Hashable, Sendable {
+        let source: String
+        let widthKey: Int
+        let scaleKey: Int
+    }
 
-private struct ChatHostedBlockWrapper: View {
-    let model: ChatHostedBlockModel
-    let onHeightChanged: (String, CGFloat) -> Void
+    private struct FileCardsHeightKey: Hashable, Sendable {
+        let widthKey: Int
+        let styleKey: String
+        let paths: [String]
+    }
 
-    var body: some View {
-        model.content
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
-                let activeKey = model.key
-                if !activeKey.isEmpty, newHeight.isFinite, newHeight > 0 {
-                    onHeightChanged(activeKey, newHeight)
-                }
-            }
+    private static let localPictureAspects = BoundedLRUCache<String, CGFloat>(countLimit: 256)
+    private static let remotePictureAspects = BoundedLRUCache<String, CGFloat>(countLimit: 256)
+    private static let localPictureHeights = BoundedLRUCache<PictureHeightKey, CGFloat>(countLimit: 512)
+    private static let remotePictureHeights = BoundedLRUCache<PictureHeightKey, CGFloat>(countLimit: 512)
+    private static let fileCardHeights = BoundedLRUCache<FileCardsHeightKey, CGFloat>(countLimit: 256)
+
+    nonisolated(unsafe) private static let mountObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: MountedFolders.changed,
+        object: nil,
+        queue: nil
+    ) { _ in
+        clearLocalEntries()
+    }
+
+    nonisolated static func isRemoteSource(_ source: String) -> Bool {
+        guard let url = URL(string: source),
+              let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    nonisolated static func normalizedSource(_ source: String) -> String {
+        isRemoteSource(source) ? source : (source.removingPercentEncoding ?? source)
+    }
+
+    nonisolated static func clearLocalEntries() {
+        localPictureAspects.removeAll()
+        localPictureHeights.removeAll()
+        fileCardHeights.removeAll()
+    }
+
+    nonisolated static func pictureHeight(source: String, maxWidth: CGFloat, scale: CGFloat) -> CGFloat? {
+        _ = mountObserver
+        let isRemote = isRemoteSource(source)
+        let norm = normalizedSource(source)
+        let widthKey = Int((maxWidth * 2).rounded())
+        let scaleKey = Int((scale * 100).rounded())
+        let key = PictureHeightKey(source: norm, widthKey: widthKey, scaleKey: scaleKey)
+        if let exact = (isRemote ? remotePictureHeights : localPictureHeights).get(key) {
+            return exact
+        }
+        if let aspect = (isRemote ? remotePictureAspects : localPictureAspects).get(norm), aspect > 0 {
+            return ceil(min(360, max(1, maxWidth) / aspect))
+        }
+        return nil
+    }
+
+    nonisolated static func storePictureAspect(_ aspect: CGFloat, source: String) {
+        _ = mountObserver
+        guard aspect.isFinite, aspect > 0 else { return }
+        let isRemote = isRemoteSource(source)
+        let norm = normalizedSource(source)
+        (isRemote ? remotePictureAspects : localPictureAspects).set(aspect, for: norm)
+    }
+
+    nonisolated static func storePictureHeight(_ height: CGFloat, source: String, maxWidth: CGFloat, scale: CGFloat) {
+        _ = mountObserver
+        guard height.isFinite, height > 0 else { return }
+        let isRemote = isRemoteSource(source)
+        let norm = normalizedSource(source)
+        let widthKey = Int((maxWidth * 2).rounded())
+        let scaleKey = Int((scale * 100).rounded())
+        let key = PictureHeightKey(source: norm, widthKey: widthKey, scaleKey: scaleKey)
+        (isRemote ? remotePictureHeights : localPictureHeights).set(ceil(height), for: key)
+    }
+
+    nonisolated static func clearPicture(source: String) {
+        _ = mountObserver
+        let isRemote = isRemoteSource(source)
+        let norm = normalizedSource(source)
+        if isRemote {
+            remotePictureAspects.removeAll { $0 == norm }
+            remotePictureHeights.removeAll { $0.source == norm }
+        } else {
+            localPictureAspects.removeAll { $0 == norm }
+            localPictureHeights.removeAll { $0.source == norm }
+        }
+    }
+
+    nonisolated static func fileCardsHeight(links: [PreparsedFileLink], maxWidth: CGFloat, style: ChatListStyle) -> CGFloat? {
+        _ = mountObserver
+        let widthKey = Int((maxWidth * 2).rounded())
+        let key = FileCardsHeightKey(widthKey: widthKey, styleKey: style.layoutStyleKey, paths: links.map(\.path))
+        return fileCardHeights.get(key)
+    }
+
+    nonisolated static func storeFileCardsHeight(_ height: CGFloat, links: [PreparsedFileLink], maxWidth: CGFloat, style: ChatListStyle) {
+        _ = mountObserver
+        guard height.isFinite, height > 0 else { return }
+        let widthKey = Int((maxWidth * 2).rounded())
+        let key = FileCardsHeightKey(widthKey: widthKey, styleKey: style.layoutStyleKey, paths: links.map(\.path))
+        fileCardHeights.set(ceil(height), for: key)
     }
 }
 
-/// Hosts compact interactive SwiftUI blocks (`FileCard`, `ProsePicture`) inside UIKit cells while reusing a single
-/// `UIHostingController` across cell pooling and reporting dynamic height changes.
+/// Pure UIKit stack of workspace file cards matching `ProseView.FileCard`, with off-main resolution,
+/// interactive HTML/SVG thumbnail preview, mount-safety validation, and sheet/fullScreenCover presentation.
 @MainActor
-final class ChatHostedBlockView: UIView {
-    private let model = ChatHostedBlockModel()
-    private var controller: UIHostingController<ChatHostedBlockWrapper>?
-    private weak var attachedParent: UIViewController?
-    private var currentKey = ""
-    private var onHeightChanged: ((String, CGFloat) -> Void)?
+final class ChatFileCardsBlockView: UIView {
+    private final class CardRowView: UIControl {
+        private let thumbContainer = UIView()
+        private let thumbFallbackIcon = UIImageView()
+        private let thumbImageView = UIImageView()
 
-    func configure<V: View>(key: String, parent: UIViewController?, onHeightChanged: @escaping (CGFloat) -> Void, @ViewBuilder content: () -> V) {
-        self.onHeightChanged = { reportedKey, h in
-            if reportedKey == key {
-                onHeightChanged(h)
+        private let badgeView = UIView()
+        private let badgeGradient = CAGradientLayer()
+        private let badgeIcon = UIImageView()
+
+        private let titleLabel = UILabel()
+        private let subtitleLabel = UILabel()
+        private let chevronView = UIImageView()
+
+        private(set) var link = PreparsedFileLink(label: "", path: "")
+        private(set) var resolved: WorkspaceFileRef?
+        private(set) var checked = false
+        private var thumbImage: UIImage?
+        private var generation: UInt64 = 0
+        private var resolveTask: Task<Void, Never>?
+        private var thumbTask: Task<Void, Never>?
+        private var currentStyle: ChatListStyle?
+
+        var onStateChanged: (() -> Void)?
+        var onTapCard: ((CardRowView) -> Void)?
+
+        var activeResolved: WorkspaceFileRef? {
+            guard let resolved, resolved.isMountCurrent else { return nil }
+            return resolved
+        }
+
+        var activeDocument: InteractiveDocument? {
+            guard let activeResolved, InteractiveDocument.supports(activeResolved.url) else { return nil }
+            return InteractiveDocument(url: activeResolved.url, root: activeResolved.rootURL, mount: activeResolved.mount)
+        }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            setup()
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            setup()
+        }
+
+        override var isHighlighted: Bool {
+            didSet {
+                guard oldValue != isHighlighted else { return }
+                let nextAlpha: CGFloat = isHighlighted ? 0.85 : 1
+                let nextScale: CGFloat = isHighlighted ? 0.985 : 1
+                UIView.animate(withDuration: 0.16, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    self.alpha = nextAlpha
+                    self.transform = CGAffineTransform(scaleX: nextScale, y: nextScale)
+                }
             }
         }
-        if currentKey == key, let controller {
-            attach(controller, to: parent)
-            return
-        }
-        model.key = key
-        model.content = AnyView(content())
-        currentKey = key
 
-        if let controller {
-            attach(controller, to: parent)
-        } else {
-            let vc = UIHostingController(rootView: ChatHostedBlockWrapper(model: model) { [weak self] reportedKey, newHeight in
-                self?.onHeightChanged?(reportedKey, newHeight)
-            })
-            vc.safeAreaRegions = []
-            vc.view.backgroundColor = .clear
-            controller = vc
-            addSubview(vc.view)
-            attach(vc, to: parent)
+        private func setup() {
+            clipsToBounds = true
+            layer.cornerCurve = .continuous
+            layer.borderWidth = 0.5
+
+            thumbContainer.clipsToBounds = true
+            thumbContainer.layer.cornerCurve = .continuous
+            thumbContainer.isUserInteractionEnabled = false
+            thumbContainer.isHidden = true
+            addSubview(thumbContainer)
+
+            thumbFallbackIcon.contentMode = .scaleAspectFit
+            thumbContainer.addSubview(thumbFallbackIcon)
+
+            thumbImageView.contentMode = .scaleAspectFit
+            thumbImageView.isHidden = true
+            thumbContainer.addSubview(thumbImageView)
+
+            badgeView.clipsToBounds = true
+            badgeView.layer.cornerCurve = .continuous
+            badgeView.layer.borderWidth = 0.5
+            badgeView.isUserInteractionEnabled = false
+            badgeGradient.startPoint = CGPoint(x: 0.5, y: 0)
+            badgeGradient.endPoint = CGPoint(x: 0.5, y: 1)
+            badgeView.layer.addSublayer(badgeGradient)
+            addSubview(badgeView)
+
+            badgeIcon.contentMode = .center
+            badgeView.addSubview(badgeIcon)
+
+            titleLabel.numberOfLines = 1
+            titleLabel.lineBreakMode = .byTruncatingTail
+            titleLabel.isUserInteractionEnabled = false
+            addSubview(titleLabel)
+
+            subtitleLabel.numberOfLines = 1
+            subtitleLabel.lineBreakMode = .byTruncatingTail
+            subtitleLabel.isUserInteractionEnabled = false
+            addSubview(subtitleLabel)
+
+            chevronView.contentMode = .scaleAspectFit
+            chevronView.isUserInteractionEnabled = false
+            addSubview(chevronView)
+
+            addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.onTapCard?(self)
+            }, for: .touchUpInside)
+
+            registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: CardRowView, _) in
+                view.refreshThemeColors()
+            }
+            refreshThemeColors()
         }
+
+        func configure(link: PreparsedFileLink, style: ChatListStyle) {
+            let sameLink = self.link == link && (checked || resolveTask != nil)
+            self.currentStyle = style
+            if sameLink {
+                if let ref = resolved, !ref.isMountCurrent {
+                    clearMountInvalidated()
+                } else {
+                    refreshAppearance(style: style)
+                    return
+                }
+            }
+
+            resolveTask?.cancel()
+            resolveTask = nil
+            thumbTask?.cancel()
+            thumbTask = nil
+            generation &+= 1
+            let expectedGen = generation
+
+            self.link = link
+            self.thumbImage = nil
+
+            let clean = link.path.removingPercentEncoding ?? link.path
+            if let hit = FileCardCache.get(clean) {
+                resolved = hit
+                checked = true
+            } else {
+                resolved = nil
+                checked = false
+            }
+
+            refreshAppearance(style: style)
+            if let doc = activeDocument {
+                startThumbnailLoad(doc: doc, generation: expectedGen)
+            }
+            startResolve(cleanPath: clean, generation: expectedGen)
+        }
+
+        func resetForReuse() {
+            resolveTask?.cancel()
+            resolveTask = nil
+            thumbTask?.cancel()
+            thumbTask = nil
+            generation &+= 1
+            link = PreparsedFileLink(label: "", path: "")
+            resolved = nil
+            checked = false
+            thumbImage = nil
+            currentStyle = nil
+            onStateChanged = nil
+            onTapCard = nil
+            thumbImageView.image = nil
+            thumbImageView.isHidden = true
+            thumbContainer.isHidden = true
+            alpha = 1
+            transform = .identity
+        }
+
+        func clearMountInvalidated() {
+            let clean = link.path.removingPercentEncoding ?? link.path
+            FileCardCache.set(nil, for: clean)
+            resolved = nil
+            checked = true
+            thumbImage = nil
+            thumbTask?.cancel()
+            thumbTask = nil
+            refreshAppearance(style: currentStyle)
+        }
+
+        func handleMountsChanged() {
+            guard !link.path.isEmpty else { return }
+            let clean = link.path.removingPercentEncoding ?? link.path
+            if let ref = resolved, !ref.isMountCurrent {
+                FileCardCache.set(nil, for: clean)
+                resolved = nil
+                thumbImage = nil
+                thumbTask?.cancel()
+                thumbTask = nil
+            }
+            if resolved?.mount != nil || resolved == nil {
+                generation &+= 1
+                checked = false
+                refreshAppearance(style: currentStyle)
+                startResolve(cleanPath: clean, generation: generation)
+            }
+        }
+
+        private func startResolve(cleanPath: String, generation expectedGen: UInt64) {
+            resolveTask?.cancel()
+            let startMountRevision = MountedFolders.revision
+            resolveTask = Task { [weak self] in
+                let found = await Task.detached(priority: .utility) {
+                    WorkspaceFileRef.resolve(cleanPath)
+                }.value
+                guard !Task.isCancelled, let self, self.generation == expectedGen else { return }
+                if let found, found.mount != nil, startMountRevision != MountedFolders.revision || !found.isMountCurrent {
+                    FileCardCache.set(nil, for: cleanPath)
+                    self.applyResolution(nil, checked: true, generation: expectedGen)
+                    return
+                }
+                FileCardCache.set(found, for: cleanPath, mountRevision: startMountRevision)
+                self.applyResolution(found, checked: true, generation: expectedGen)
+            }
+        }
+
+        private func applyResolution(_ found: WorkspaceFileRef?, checked nextChecked: Bool, generation expectedGen: UInt64) {
+            guard generation == expectedGen else { return }
+            let changed = (resolved != found) || (checked != nextChecked)
+            resolved = found
+            checked = nextChecked
+
+            if let doc = activeDocument {
+                if thumbImage == nil && thumbTask == nil {
+                    startThumbnailLoad(doc: doc, generation: expectedGen)
+                }
+            } else {
+                thumbTask?.cancel()
+                thumbTask = nil
+                thumbImage = nil
+            }
+
+            if changed {
+                refreshAppearance(style: currentStyle)
+                onStateChanged?()
+            }
+        }
+
+        private func startThumbnailLoad(doc: InteractiveDocument, generation expectedGen: UInt64) {
+            thumbTask?.cancel()
+            thumbTask = Task { [weak self] in
+                let preview = await InteractiveThumbnails.shared.image(for: doc)
+                guard !Task.isCancelled, let self, self.generation == expectedGen else { return }
+                guard let active = self.activeResolved, active.isMountCurrent else {
+                    self.thumbImage = nil
+                    self.refreshThumbnailImage()
+                    return
+                }
+                self.thumbImage = preview
+                self.refreshThumbnailImage()
+            }
+        }
+
+        func refreshAppearance(style: ChatListStyle?) {
+            let active = activeResolved
+            let doc = activeDocument
+
+            titleLabel.font = UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
+            titleLabel.text = link.label.isEmpty ? (link.path as NSString).lastPathComponent : link.label
+
+            subtitleLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
+            if doc != nil {
+                subtitleLabel.text = L.t("interactivePreview.open")
+            } else if let active {
+                subtitleLabel.text = FileCard.detail(active)
+            } else {
+                subtitleLabel.text = checked ? "找不到这个文件了" : L.t("loading.generic")
+            }
+
+            let symbol = FileCard.symbol(for: link.path)
+            let symbolCfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+            badgeIcon.image = UIImage(systemName: "\(symbol).fill", withConfiguration: symbolCfg)
+                ?? UIImage(systemName: symbol, withConfiguration: symbolCfg)
+
+            chevronView.isHidden = active == nil
+            chevronView.image = UIImage(
+                systemName: "chevron.right",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small, weight: .semibold)
+            )
+
+            thumbContainer.isHidden = doc == nil
+            thumbFallbackIcon.image = UIImage(
+                systemName: "chart.xyaxis.line",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.title)
+            )
+            refreshThumbnailImage()
+
+            accessibilityLabel = "打开 \(link.label)"
+            accessibilityTraits = .button
+
+            refreshThemeColors()
+            setNeedsLayout()
+        }
+
+        private func refreshThumbnailImage() {
+            if activeDocument != nil, let thumbImage {
+                thumbImageView.image = thumbImage
+                thumbImageView.isHidden = false
+                thumbFallbackIcon.isHidden = true
+            } else {
+                thumbImageView.image = nil
+                thumbImageView.isHidden = true
+                thumbFallbackIcon.isHidden = false
+            }
+        }
+
+        func refreshThemeColors() {
+            layer.cornerRadius = Ink.Radius.small
+            backgroundColor = UIColor(Ink.paperRaised)
+            layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).cgColor
+
+            thumbContainer.layer.cornerRadius = Ink.Radius.small
+            thumbContainer.backgroundColor = UIColor(Ink.paperRaised)
+            thumbFallbackIcon.tintColor = UIColor(Ink.inkFaint)
+
+            let isActive = activeResolved != nil
+            badgeView.backgroundColor = UIColor(isActive ? Ink.Tile.accent : Ink.Tile.off)
+            badgeView.layer.cornerRadius = Kit.iconCorner(40)
+            badgeView.layer.borderColor = UIColor(Ink.Tile.glyph).resolvedColor(with: traitCollection).withAlphaComponent(0.14).cgColor
+            badgeIcon.tintColor = UIColor(Ink.Tile.glyph)
+
+            let topHighlight = UIColor(Ink.Tile.glyph).resolvedColor(with: traitCollection).withAlphaComponent(0.18).cgColor
+            let clearBottom = UIColor(Ink.Tile.glyph).resolvedColor(with: traitCollection).withAlphaComponent(0).cgColor
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            badgeGradient.colors = [topHighlight, clearBottom]
+            CATransaction.commit()
+
+            titleLabel.textColor = UIColor(Ink.ink)
+            subtitleLabel.textColor = UIColor(Ink.inkSoft)
+            chevronView.tintColor = UIColor(Ink.inkFaint)
+        }
+
+        func measuredHeight(forWidth width: CGFloat, style: ChatListStyle?) -> CGFloat {
+            let pad = style?.metrics.spaceM ?? Ink.Space.m
+            let gap = style?.metrics.spaceS ?? Ink.Space.s
+            let subFont = style?.fonts.noteAdviceTitle ?? UIFont.systemFont(ofSize: Ink.Size.sub, weight: .semibold)
+            let smallFont = style?.fonts.disclosureSmall ?? UIFont.systemFont(ofSize: Ink.Size.small)
+            let rowH = max(40, ceil(subFont.lineHeight) + 2 + ceil(smallFont.lineHeight))
+            var total = pad * 2 + rowH
+            if activeDocument != nil {
+                let innerW = max(60, width - pad * 2)
+                let thumbH = ceil(innerW * 3.0 / 5.0)
+                total += thumbH + gap
+            }
+            return ceil(total)
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let w = bounds.width
+            guard w > 0 else { return }
+            let pad = currentStyle?.metrics.spaceM ?? Ink.Space.m
+            let gap = currentStyle?.metrics.spaceS ?? Ink.Space.s
+            let innerW = max(40, w - pad * 2)
+            var y = pad
+
+            if !thumbContainer.isHidden {
+                let thumbH = ceil(innerW * 3.0 / 5.0)
+                thumbContainer.frame = CGRect(x: pad, y: y, width: innerW, height: thumbH)
+                thumbImageView.frame = thumbContainer.bounds
+                let fallbackSide: CGFloat = 28
+                thumbFallbackIcon.frame = CGRect(
+                    x: (innerW - fallbackSide) * 0.5,
+                    y: (thumbH - fallbackSide) * 0.5,
+                    width: fallbackSide,
+                    height: fallbackSide
+                )
+                y += thumbH + gap
+            }
+
+            let rowH = max(40, bounds.height - pad - y)
+            let badgeSide: CGFloat = 40
+            badgeView.frame = CGRect(x: pad, y: y + (rowH - badgeSide) * 0.5, width: badgeSide, height: badgeSide)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            badgeGradient.frame = badgeView.bounds
+            CATransaction.commit()
+            badgeIcon.frame = badgeView.bounds
+
+            var trailingEdge = w - pad
+            if !chevronView.isHidden {
+                let chevW: CGFloat = 10
+                let chevH: CGFloat = 14
+                chevronView.frame = CGRect(x: trailingEdge - chevW, y: y + (rowH - chevH) * 0.5, width: chevW, height: chevH)
+                trailingEdge = chevronView.frame.minX - gap
+            }
+
+            let textX = badgeView.frame.maxX + pad
+            let textW = max(20, trailingEdge - textX)
+            let titleH = ceil(titleLabel.font.lineHeight)
+            let subH = ceil(subtitleLabel.font.lineHeight)
+            let stackH = titleH + 2 + subH
+            let stackY = y + (rowH - stackH) * 0.5
+            titleLabel.frame = CGRect(x: textX, y: stackY, width: textW, height: titleH)
+            subtitleLabel.frame = CGRect(x: textX, y: stackY + titleH + 2, width: textW, height: subH)
+        }
+    }
+
+    weak var hostViewController: UIViewController?
+    weak var actions: ChatListActions?
+    var onHeightChanged: ((CGFloat) -> Void)?
+
+    private var cardViews: [CardRowView] = []
+    private var currentLinks: [PreparsedFileLink] = []
+    private var currentStyle: ChatListStyle?
+    private var containerWidth: CGFloat = 0
+    private var expectedHeight: CGFloat = 0
+    private var lastReportedHeightSignature = ""
+    private nonisolated(unsafe) var mountObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    deinit {
+        if let observer = mountObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func setup() {
+        backgroundColor = .clear
+        mountObserver = NotificationCenter.default.addObserver(
+            forName: MountedFolders.changed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleMountsChanged()
+            }
+        }
+    }
+
+    nonisolated static func baseMeasureHeight(links: [PreparsedFileLink], maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
+        guard !links.isEmpty else { return 0 }
+        let pad = style.metrics.spaceM
+        let cardGap = style.metrics.spaceS
+        let rowH = max(40, ceil(style.fonts.noteAdviceTitle.lineHeight) + 2 + ceil(style.fonts.disclosureSmall.lineHeight))
+        let singleCardH = pad * 2 + rowH
+        return ceil(CGFloat(links.count) * singleCardH + CGFloat(max(0, links.count - 1)) * cardGap)
+    }
+
+    func configure(
+        links: [PreparsedFileLink],
+        containerWidth: CGFloat,
+        style: ChatListStyle,
+        expectedHeight: CGFloat,
+        hostViewController: UIViewController?,
+        actions: ChatListActions?,
+        onHeightChanged: ((CGFloat) -> Void)?
+    ) {
+        self.hostViewController = hostViewController
+        self.actions = actions
+        self.onHeightChanged = onHeightChanged
+        self.containerWidth = max(1, containerWidth)
+        self.expectedHeight = expectedHeight
+        self.currentStyle = style
+        let sameLinks = currentLinks == links
+        if !sameLinks {
+            lastReportedHeightSignature = ""
+        }
+        currentLinks = links
+
+        while cardViews.count < links.count {
+            let card = CardRowView()
+            card.onStateChanged = { [weak self] in
+                self?.recomputeAndReportHeightIfNeeded()
+                self?.setNeedsLayout()
+            }
+            card.onTapCard = { [weak self] tapped in
+                self?.handleTap(card: tapped)
+            }
+            addSubview(card)
+            cardViews.append(card)
+        }
+
+        for idx in cardViews.indices {
+            let card = cardViews[idx]
+            if idx < links.count {
+                card.isHidden = false
+                card.configure(link: links[idx], style: style)
+            } else {
+                card.isHidden = true
+                card.resetForReuse()
+            }
+        }
+
+        recomputeAndReportHeightIfNeeded()
         setNeedsLayout()
     }
 
-    private func attach(_ vc: UIHostingController<ChatHostedBlockWrapper>, to parent: UIViewController?) {
-        if vc.parent !== parent {
-            if vc.parent != nil {
-                vc.willMove(toParent: nil)
-                vc.removeFromParent()
-            }
-            if let parent {
-                parent.addChild(vc)
-                vc.didMove(toParent: parent)
-            }
-            attachedParent = parent
+    func resetForReuse() {
+        currentLinks = []
+        currentStyle = nil
+        containerWidth = 0
+        expectedHeight = 0
+        lastReportedHeightSignature = ""
+        hostViewController = nil
+        actions = nil
+        onHeightChanged = nil
+        for card in cardViews {
+            card.isHidden = true
+            card.resetForReuse()
         }
     }
 
-    func resetForReuse() {
-        currentKey = ""
-        onHeightChanged = nil
-        model.key = ""
-        model.content = AnyView(EmptyView())
+    private func handleMountsChanged() {
+        guard !currentLinks.isEmpty else { return }
+        for idx in 0..<currentLinks.count where idx < cardViews.count {
+            cardViews[idx].handleMountsChanged()
+        }
+        recomputeAndReportHeightIfNeeded()
+        setNeedsLayout()
+    }
+
+    private func totalMeasuredHeight(forWidth width: CGFloat) -> CGFloat {
+        guard !currentLinks.isEmpty else { return 0 }
+        let cardGap = currentStyle?.metrics.spaceS ?? Ink.Space.s
+        var total: CGFloat = 0
+        for idx in 0..<currentLinks.count where idx < cardViews.count {
+            if idx > 0 { total += cardGap }
+            total += cardViews[idx].measuredHeight(forWidth: width, style: currentStyle)
+        }
+        return ceil(total)
+    }
+
+    private func recomputeAndReportHeightIfNeeded() {
+        guard !currentLinks.isEmpty, let style = currentStyle else { return }
+        let w = bounds.width > 0 ? bounds.width : containerWidth
+        guard w > 0 else { return }
+        let measured = totalMeasuredHeight(forWidth: w)
+        let allChecked = (0..<currentLinks.count).allSatisfy { idx in
+            idx < cardViews.count && cardViews[idx].checked
+        }
+        if allChecked {
+            ChatMediaLayoutCache.storeFileCardsHeight(measured, links: currentLinks, maxWidth: w, style: style)
+        }
+        guard expectedHeight > 0, abs(measured - expectedHeight) > 0.5 else { return }
+        let sig = "\(currentLinks.map(\.path).joined(separator: "|"))|\(Int((w * 2).rounded()))|\(Int(measured.rounded()))"
+        guard sig != lastReportedHeightSignature else { return }
+        lastReportedHeightSignature = sig
+        onHeightChanged?(measured)
+    }
+
+    private func handleTap(card: CardRowView) {
+        guard let ref = card.activeResolved else {
+            if card.resolved != nil {
+                card.clearMountInvalidated()
+                recomputeAndReportHeightIfNeeded()
+                setNeedsLayout()
+            }
+            return
+        }
+        guard ref.isMountCurrent else {
+            card.clearMountInvalidated()
+            recomputeAndReportHeightIfNeeded()
+            setNeedsLayout()
+            return
+        }
+        Haptics.light()
+        if InteractiveDocument.supports(ref.url) {
+            let doc = InteractiveDocument(url: ref.url, root: ref.rootURL, mount: ref.mount)
+            let vc = UIHostingController(rootView: InteractivePreviewPage(document: doc))
+            vc.modalPresentationStyle = .fullScreen
+            if let host = hostViewController, host.presentedViewController == nil {
+                host.present(vc, animated: true)
+            }
+        } else if let host = hostViewController, host.presentedViewController == nil {
+            let vc = UIHostingController(rootView: NavigationStack {
+                StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
+            })
+            host.present(vc, animated: true)
+        } else {
+            actions?.bridge.onOpenFile(ref.url, ref.mount)
+        }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        controller?.view.frame = bounds
+        let w = bounds.width
+        guard w > 0, !currentLinks.isEmpty else { return }
+        let cardGap = currentStyle?.metrics.spaceS ?? Ink.Space.s
+        var y: CGFloat = 0
+        for idx in 0..<currentLinks.count where idx < cardViews.count {
+            if idx > 0 { y += cardGap }
+            let card = cardViews[idx]
+            let h = card.measuredHeight(forWidth: w, style: currentStyle)
+            card.frame = CGRect(x: 0, y: y, width: w, height: h)
+            y += h
+        }
+        recomputeAndReportHeightIfNeeded()
+    }
+}
+
+/// Pure UIKit inline picture block matching `ProseView.ProsePicture`: local downsampled cache,
+/// SSRF-guarded remote download, aspect-fit rounded display, error fallback, and preview sheet presentation.
+@MainActor
+final class ChatProsePictureView: UIView {
+    private enum LocalOutcome: Sendable {
+        case unchanged
+        case missing
+        case updated(WorkspaceFileRef, UIImage)
+    }
+
+    weak var hostViewController: UIViewController?
+    weak var actions: ChatListActions?
+    var onHeightChanged: ((CGFloat) -> Void)?
+
+    private let loadingBox = UIView()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let errorIcon = UIImageView()
+    private let errorLabel = UILabel()
+    private let imageView = UIImageView()
+
+    private var currentSource = ""
+    private var currentLabel = ""
+    private var containerWidth: CGFloat = 0
+    private var currentScale: CGFloat = 1
+    private var expectedHeight: CGFloat = 0
+    private var lastReportedHeightSignature = ""
+
+    private var generation: UInt64 = 0
+    private var loadTask: Task<Void, Never>?
+    private var activeImage: UIImage?
+    private var workspaceRef: WorkspaceFileRef?
+    private var isFailed = false
+    private nonisolated(unsafe) var remoteFile: URL?
+    private nonisolated(unsafe) var mountObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    deinit {
+        if let observer = mountObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let url = remoteFile {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func setup() {
+        backgroundColor = .clear
+
+        loadingBox.clipsToBounds = true
+        loadingBox.layer.cornerCurve = .continuous
+        addSubview(loadingBox)
+
+        spinner.hidesWhenStopped = true
+        loadingBox.addSubview(spinner)
+
+        errorIcon.image = UIImage(
+            systemName: "photo.badge.exclamationmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.small)
+        )
+        errorIcon.contentMode = .scaleAspectFit
+        errorIcon.isHidden = true
+        addSubview(errorIcon)
+
+        errorLabel.numberOfLines = 0
+        errorLabel.isHidden = true
+        addSubview(errorLabel)
+
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+        imageView.layer.cornerCurve = .continuous
+        imageView.isUserInteractionEnabled = true
+        imageView.isHidden = true
+        imageView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleImageTap)))
+        addSubview(imageView)
+
+        mountObserver = NotificationCenter.default.addObserver(
+            forName: MountedFolders.changed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleMountsChanged()
+            }
+        }
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatProsePictureView, _) in
+            view.refreshThemeColors()
+        }
+        refreshThemeColors()
+    }
+
+    private var previewMaxPixelSize: Int {
+        let scale: CGFloat
+        if traitCollection.displayScale > 0 {
+            scale = traitCollection.displayScale
+        } else if let winScale = window?.windowScene?.screen.scale, winScale > 0 {
+            scale = winScale
+        } else {
+            scale = max(1, currentScale)
+        }
+        return Int(min(1440, max(720, (420 * scale).rounded())))
+    }
+
+    private var activeWorkspaceRef: WorkspaceFileRef? {
+        guard let workspaceRef, workspaceRef.isMountCurrent else { return nil }
+        return workspaceRef
+    }
+
+    private var displayedImage: UIImage? {
+        if let workspaceRef, !workspaceRef.isMountCurrent { return nil }
+        return activeImage
+    }
+
+    private var canOpen: Bool {
+        activeWorkspaceRef != nil || remoteFile != nil
+    }
+
+    func configure(
+        source: String,
+        label: String,
+        containerWidth: CGFloat,
+        scale: CGFloat,
+        expectedHeight: CGFloat,
+        hostViewController: UIViewController?,
+        actions: ChatListActions?,
+        onHeightChanged: ((CGFloat) -> Void)?
+    ) {
+        self.hostViewController = hostViewController
+        self.actions = actions
+        self.onHeightChanged = onHeightChanged
+        self.containerWidth = max(1, containerWidth)
+        self.currentScale = max(1, scale)
+        self.expectedHeight = expectedHeight
+
+        if currentSource == source && currentLabel == label {
+            if let ref = workspaceRef, !ref.isMountCurrent {
+                let decodedPath = source.removingPercentEncoding ?? source
+                LocalPictureCache.set(nil, for: decodedPath)
+                ChatMediaLayoutCache.clearPicture(source: source)
+            } else if displayedImage != nil || isFailed || loadTask != nil {
+                updateVisualState()
+                reportHeightIfNeeded()
+                setNeedsLayout()
+                return
+            }
+        }
+
+        beginLoad(source: source, label: label)
+    }
+
+    func resetForReuse() {
+        loadTask?.cancel()
+        loadTask = nil
+        generation &+= 1
+        clearRemoteTempFile()
+        currentSource = ""
+        currentLabel = ""
+        containerWidth = 0
+        expectedHeight = 0
+        lastReportedHeightSignature = ""
+        activeImage = nil
+        workspaceRef = nil
+        isFailed = false
+        hostViewController = nil
+        actions = nil
+        onHeightChanged = nil
+        spinner.stopAnimating()
+        imageView.image = nil
+        imageView.isHidden = true
+        errorIcon.isHidden = true
+        errorLabel.isHidden = true
+        loadingBox.isHidden = false
+    }
+
+    private func clearRemoteTempFile() {
+        if let url = remoteFile {
+            try? FileManager.default.removeItem(at: url)
+            remoteFile = nil
+        }
+    }
+
+    private func beginLoad(source: String, label: String) {
+        loadTask?.cancel()
+        loadTask = nil
+        clearRemoteTempFile()
+        generation &+= 1
+        let expectedGen = generation
+
+        currentSource = source
+        currentLabel = label
+        activeImage = nil
+        workspaceRef = nil
+        isFailed = false
+        lastReportedHeightSignature = ""
+
+        let remote = URL(string: source).flatMap { url in
+            ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? url : nil
+        }
+        if let remote {
+            updateVisualState()
+            setNeedsLayout()
+            loadTask = Task { [weak self] in
+                await self?.loadRemote(remote, source: source, generation: expectedGen)
+            }
+            return
+        }
+
+        let decodedPath = source.removingPercentEncoding ?? source
+        if let cached = LocalPictureCache.get(decodedPath) {
+            workspaceRef = cached.ref
+            activeImage = cached.image
+            isFailed = false
+            let aspect = cached.image.size.width / max(0.01, cached.image.size.height)
+            ChatMediaLayoutCache.storePictureAspect(aspect, source: source)
+            updateVisualState()
+            reportHeightIfNeeded()
+        } else {
+            updateVisualState()
+        }
+        setNeedsLayout()
+
+        let maxPixels = previewMaxPixelSize
+        loadTask = Task { [weak self] in
+            await self?.loadLocal(decodedPath: decodedPath, source: source, maxPixels: maxPixels, generation: expectedGen)
+        }
+    }
+
+    private func loadRemote(_ remote: URL, source: String, generation expectedGen: UInt64) async {
+        guard !LocalAddress.isLocal(remote), !(await LocalAddress.resolvesToLocal(remote)) else {
+            guard !Task.isCancelled, generation == expectedGen else { return }
+            isFailed = true
+            ChatMediaLayoutCache.clearPicture(source: source)
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+            return
+        }
+        do {
+            let downloaded = try await ProsePicture.downloadRemoteImage(remote)
+            let preview = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let thumb = Workspace.picture(downloaded) else { return nil }
+                return UIImage(data: thumb.data)
+            }.value
+            guard !Task.isCancelled, generation == expectedGen else {
+                try? FileManager.default.removeItem(at: downloaded)
+                return
+            }
+            guard let preview else {
+                try? FileManager.default.removeItem(at: downloaded)
+                isFailed = true
+                ChatMediaLayoutCache.clearPicture(source: source)
+                updateVisualState()
+                reportHeightIfNeeded()
+                setNeedsLayout()
+                return
+            }
+            clearRemoteTempFile()
+            remoteFile = downloaded
+            activeImage = preview
+            isFailed = false
+            let aspect = preview.size.width / max(0.01, preview.size.height)
+            ChatMediaLayoutCache.storePictureAspect(aspect, source: source)
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+        } catch {
+            guard !Task.isCancelled, generation == expectedGen else { return }
+            isFailed = true
+            ChatMediaLayoutCache.clearPicture(source: source)
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+        }
+    }
+
+    private func loadLocal(decodedPath: String, source: String, maxPixels: Int, generation expectedGen: UInt64) async {
+        let startMountRevision = MountedFolders.revision
+        let cachedRef = LocalPictureCache.get(decodedPath)?.ref
+        let outcome = await Task.detached(priority: .userInitiated) { () -> LocalOutcome in
+            guard let ref = WorkspaceFileRef.resolve(decodedPath) else { return .missing }
+            if let cachedRef, cachedRef == ref {
+                return .unchanged
+            }
+            guard let picture = WorkspaceFileRef.loadImage(ref, maxPixelSize: maxPixels) else { return .missing }
+            return .updated(ref, picture)
+        }.value
+        guard !Task.isCancelled, generation == expectedGen else { return }
+        switch outcome {
+        case .unchanged:
+            if let ref = workspaceRef, !ref.isMountCurrent {
+                LocalPictureCache.set(nil, for: decodedPath)
+                ChatMediaLayoutCache.clearPicture(source: source)
+                activeImage = nil
+                workspaceRef = nil
+                isFailed = true
+                updateVisualState()
+                reportHeightIfNeeded()
+                setNeedsLayout()
+            }
+        case .missing:
+            LocalPictureCache.set(nil, for: decodedPath)
+            ChatMediaLayoutCache.clearPicture(source: source)
+            activeImage = nil
+            workspaceRef = nil
+            isFailed = true
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+        case .updated(let ref, let picture):
+            if ref.mount != nil, startMountRevision != MountedFolders.revision || !ref.isMountCurrent {
+                LocalPictureCache.set(nil, for: decodedPath)
+                ChatMediaLayoutCache.clearPicture(source: source)
+                activeImage = nil
+                workspaceRef = nil
+                isFailed = true
+                updateVisualState()
+                reportHeightIfNeeded()
+                setNeedsLayout()
+                return
+            }
+            LocalPictureCache.set(
+                CachedLocalPicture(ref: ref, image: picture, mountRevision: startMountRevision),
+                for: decodedPath
+            )
+            workspaceRef = ref
+            activeImage = picture
+            isFailed = false
+            let aspect = picture.size.width / max(0.01, picture.size.height)
+            ChatMediaLayoutCache.storePictureAspect(aspect, source: source)
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+        }
+    }
+
+    private func handleMountsChanged() {
+        guard !currentSource.isEmpty else { return }
+        if let ref = workspaceRef, !ref.isMountCurrent {
+            let decodedPath = currentSource.removingPercentEncoding ?? currentSource
+            LocalPictureCache.set(nil, for: decodedPath)
+            ChatMediaLayoutCache.clearPicture(source: currentSource)
+            activeImage = nil
+            workspaceRef = nil
+        }
+        if workspaceRef?.mount != nil || (remoteFile == nil && (activeImage == nil || isFailed)) {
+            beginLoad(source: currentSource, label: currentLabel)
+        }
+    }
+
+    private func updateVisualState() {
+        if let displayed = displayedImage {
+            loadingBox.isHidden = true
+            spinner.stopAnimating()
+            errorIcon.isHidden = true
+            errorLabel.isHidden = true
+            imageView.isHidden = false
+            imageView.image = displayed
+            isAccessibilityElement = true
+            accessibilityLabel = currentLabel.isEmpty ? "图片" : currentLabel
+            accessibilityTraits = [.image]
+        } else if isFailed {
+            loadingBox.isHidden = true
+            spinner.stopAnimating()
+            imageView.isHidden = true
+            imageView.image = nil
+            errorIcon.isHidden = false
+            errorLabel.isHidden = false
+            let msg = currentLabel.isEmpty ? "图片打不开" : "图片打不开：\(currentLabel)"
+            errorLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
+            errorLabel.text = msg
+            isAccessibilityElement = true
+            accessibilityLabel = msg
+            accessibilityTraits = [.staticText]
+        } else {
+            imageView.isHidden = true
+            imageView.image = nil
+            errorIcon.isHidden = true
+            errorLabel.isHidden = true
+            loadingBox.isHidden = false
+            spinner.startAnimating()
+            isAccessibilityElement = false
+        }
+        refreshThemeColors()
+    }
+
+    private func refreshThemeColors() {
+        loadingBox.layer.cornerRadius = Ink.Radius.small
+        loadingBox.backgroundColor = UIColor(Ink.mine)
+        errorIcon.tintColor = UIColor(Ink.inkFaint)
+        errorLabel.textColor = UIColor(Ink.inkFaint)
+        imageView.layer.cornerRadius = Ink.Radius.small
+    }
+
+    private func measuredHeight(forWidth width: CGFloat) -> CGFloat {
+        if let img = displayedImage {
+            let aspect = max(0.01, img.size.width) / max(0.01, img.size.height)
+            let safeW = max(1, width)
+            return ceil(max(1, min(360, safeW / aspect)))
+        }
+        if isFailed {
+            let iconSide: CGFloat = 18
+            let textW = max(40, width - iconSide - Ink.Space.xs)
+            let fit = errorLabel.sizeThatFits(CGSize(width: textW, height: .greatestFiniteMagnitude))
+            return ceil(max(iconSide, fit.height))
+        }
+        return 160
+    }
+
+    private func reportHeightIfNeeded() {
+        let w = bounds.width > 0 ? bounds.width : containerWidth
+        guard w > 0 else { return }
+        let targetH = measuredHeight(forWidth: w)
+        if displayedImage != nil {
+            ChatMediaLayoutCache.storePictureHeight(targetH, source: currentSource, maxWidth: w, scale: currentScale)
+        }
+        guard expectedHeight > 0, abs(targetH - expectedHeight) > 0.5 else { return }
+        let sig = "\(currentSource)|\(Int((w * 2).rounded()))|\(Int(targetH.rounded()))|\(isFailed ? 1 : 0)"
+        guard sig != lastReportedHeightSignature else { return }
+        lastReportedHeightSignature = sig
+        onHeightChanged?(targetH)
+    }
+
+    @objc private func handleImageTap() {
+        if let ref = workspaceRef, !ref.isMountCurrent {
+            let decodedPath = currentSource.removingPercentEncoding ?? currentSource
+            LocalPictureCache.set(nil, for: decodedPath)
+            ChatMediaLayoutCache.clearPicture(source: currentSource)
+            activeImage = nil
+            workspaceRef = nil
+            isFailed = true
+            updateVisualState()
+            reportHeightIfNeeded()
+            setNeedsLayout()
+            return
+        }
+        guard canOpen else { return }
+        Haptics.light()
+        if let ref = activeWorkspaceRef {
+            if let host = hostViewController, host.presentedViewController == nil {
+                let vc = UIHostingController(rootView: NavigationStack {
+                    StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
+                })
+                host.present(vc, animated: true)
+            } else {
+                actions?.bridge.onOpenFile(ref.url, ref.mount)
+            }
+        } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
+            let vc = UIHostingController(rootView: QuickPreview(url: remoteFile).ignoresSafeArea())
+            host.present(vc, animated: true)
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let w = bounds.width
+        guard w > 0 else { return }
+
+        if let img = displayedImage {
+            let aspect = max(0.01, img.size.width) / max(0.01, img.size.height)
+            let targetH = min(360, w / aspect)
+            let targetW = min(w, targetH * aspect)
+            imageView.frame = CGRect(x: 0, y: 0, width: targetW, height: targetH)
+            imageView.layer.cornerRadius = Ink.Radius.small
+        } else if isFailed {
+            let iconSide: CGFloat = 18
+            let gap = Ink.Space.xs
+            let textW = max(40, w - iconSide - gap)
+            let fit = errorLabel.sizeThatFits(CGSize(width: textW, height: .greatestFiniteMagnitude))
+            let rowH = max(iconSide, ceil(fit.height))
+            errorIcon.frame = CGRect(x: 0, y: (rowH - iconSide) * 0.5, width: iconSide, height: iconSide)
+            errorLabel.frame = CGRect(x: iconSide + gap, y: 0, width: textW, height: rowH)
+        } else {
+            let boxH = bounds.height > 0 ? min(bounds.height, 160) : 160
+            loadingBox.frame = CGRect(x: 0, y: 0, width: w, height: boxH)
+            loadingBox.layer.cornerRadius = Ink.Radius.small
+            spinner.center = CGPoint(x: loadingBox.bounds.midX, y: loadingBox.bounds.midY)
+        }
+        reportHeightIfNeeded()
     }
 }

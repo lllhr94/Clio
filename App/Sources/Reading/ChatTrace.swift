@@ -133,24 +133,29 @@ struct Trace: View {
     var openFile: (URL, MountedFolder?) -> Void = { _, _ in }
     /// Takes back something the companion wrote into 拾遗 in these steps. False: it was not there any more.
     var unremember: ((String, String) -> Bool)?
+    var initiallyOpen: Bool
     @State private var undone: Set<String> = []
     @State private var keepsakes: [Keepsake]
     @State private var rememberedItems: [Remembered]
     @State private var openedPages: [URL]
     @State private var hasCachedData: Bool
     @State private var mountRevision = MountedFolders.revision
+    @State private var open: Bool
 
     @MainActor
     init(
         line: ChatLine,
         visit: @escaping (URL) -> Void = { _ in },
         openFile: @escaping (URL, MountedFolder?) -> Void = { _, _ in },
-        unremember: ((String, String) -> Bool)? = nil
+        unremember: ((String, String) -> Bool)? = nil,
+        initiallyOpen: Bool = Pref.traceOpen
     ) {
         self.line = line
         self.visit = visit
         self.openFile = openFile
         self.unremember = unremember
+        self.initiallyOpen = initiallyOpen
+        self._open = State(initialValue: initiallyOpen)
         if !line.live, let cached = TraceKeepsakeCache.get(line: line, desk: Words.t("书案/")) {
             _keepsakes = State(initialValue: cached.items)
             _rememberedItems = State(initialValue: cached.remembered)
@@ -162,6 +167,42 @@ struct Trace: View {
             _openedPages = State(initialValue: [])
             _hasCachedData = State(initialValue: false)
         }
+    }
+
+    /// True when the steps row can render as a pure UIKit 1-line summary cell (no open drawer or inline outcome cards).
+    @MainActor
+    static func shouldUseSummaryCell(for line: ChatLine) -> Bool {
+        guard !Pref.traceOpen else { return false }
+        if line.live {
+            return buildPages(line).isEmpty
+        }
+        let desk = Words.t("书案/")
+        if let cached = TraceKeepsakeCache.get(line: line, desk: desk) {
+            return cached.items.isEmpty && cached.remembered.isEmpty && cached.pages.isEmpty
+        }
+        let keepsakes = buildKeepsakes(line, desk: desk).filter { item in
+            item.mount.map(MountedFolders.isCurrent) ?? true
+        }
+        let remembered = buildRemembered(line)
+        let pages = buildPages(line)
+        TraceKeepsakeCache.set(keepsakes, remembered: remembered, pages: pages, line: line, desk: desk)
+        return keepsakes.isEmpty && remembered.isEmpty && pages.isEmpty
+    }
+
+    nonisolated static func summaryDisplayText(for line: ChatLine) -> String {
+        if line.live {
+            guard let current = line.tools.last else { return "沉吟" }
+            return "第 \(line.tools.count) 步：" + current
+        }
+        var kinds: [String] = []
+        for tool in line.tools {
+            let kind = String(tool.split(whereSeparator: { $0 == "：" || $0 == "·" }).first ?? Substring(tool)).trimmingCharacters(in: .whitespaces)
+            if !kind.isEmpty, !kinds.contains(kind) { kinds.append(kind) }
+        }
+        var out = "\(line.tools.count) 步"
+        if !kinds.isEmpty { out += " · " + kinds.prefix(3).joined(separator: "、") + (kinds.count > 3 ? " 等" : "") }
+        if let seconds = line.seconds { out += " · " + Clock.said(seconds) }
+        return out
     }
 
     /// Normalizes a step label's leading place/tool prefix across daily and literary tones.
@@ -718,26 +759,7 @@ struct Trace: View {
         }
         return out
     }
-    @State private var open = Pref.traceOpen
 
-    /// While it works: 「第 3 步：搜索 重庆天气」.
-    private var liveLine: String {
-        guard let current = line.tools.last else { return "沉吟" }
-        return "第 \(line.tools.count) 步：" + current
-    }
-
-    /// Done: 「6 步 · 搜索、读网页、写文件 · 12 秒」.
-    private var summary: String {
-        var kinds: [String] = []
-        for tool in line.tools {
-            let kind = String(tool.split(whereSeparator: { $0 == "：" || $0 == "·" }).first ?? Substring(tool)).trimmingCharacters(in: .whitespaces)
-            if !kind.isEmpty, !kinds.contains(kind) { kinds.append(kind) }
-        }
-        var out = "\(line.tools.count) 步"
-        if !kinds.isEmpty { out += " · " + kinds.prefix(3).joined(separator: "、") + (kinds.count > 3 ? " 等" : "") }
-        if let seconds = line.seconds { out += " · " + Clock.said(seconds) }
-        return out
-    }
     @State private var peeking: Set<Int> = []
 
     /// Pages a companion opened in 远游 during these steps, newest last, each once.
@@ -779,7 +801,7 @@ struct Trace: View {
                     } else {
                         Image(systemName: "checkmark.circle").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ok)
                     }
-                    Text(Words.t(line.live ? liveLine : summary))
+                    Text(Words.t(Self.summaryDisplayText(for: line)))
                         .font(Ink.secondary)
                         .foregroundStyle(Ink.inkSoft)
                         .lineLimit(1)
@@ -879,9 +901,9 @@ struct Trace: View {
             mountRevision = MountedFolders.revision
         }
         .animation(Ink.Motion.settle, value: line.tools.count)
-        // Done: everything folds into the one line again.
+        // Done: everything folds into the initial state again.
         .onChange(of: line.live) { _, live in
-            if !live { withAnimation(Ink.Motion.unfold) { open = Pref.traceOpen } }
+            if !live { withAnimation(Ink.Motion.unfold) { open = initiallyOpen } }
         }
         if !line.live, changedFiles.count >= 2 {
             changesCard

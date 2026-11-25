@@ -51,7 +51,8 @@ final class ChatAssistantCell: UICollectionViewCell {
     private var codeBlockViews: [ChatCodeBlockView] = []
     private var tableBlockViews: [ChatTableBlockView] = []
     private var formulaBlockViews: [ChatFormulaBlockView] = []
-    private var hostedBlockViews: [ChatHostedBlockView] = []
+    private var fileCardBlockViews: [ChatFileCardsBlockView] = []
+    private var pictureBlockViews: [ChatProsePictureView] = []
 
     private let sourcesPill = ChatSourcesPillView()
     private let continueButton = UIButton(type: .system)
@@ -232,7 +233,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         codeBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         tableBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         formulaBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
-        hostedBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
+        fileCardBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
+        pictureBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         sourcesPill.resetForReuse()
         footerView.resetForReuse()
     }
@@ -619,13 +621,22 @@ final class ChatAssistantCell: UICollectionViewCell {
         return formulaBlockViews[index]
     }
 
-    private func ensureHostedBlockView(at index: Int) -> ChatHostedBlockView {
-        while hostedBlockViews.count <= index {
-            let hb = ChatHostedBlockView()
-            contentView.addSubview(hb)
-            hostedBlockViews.append(hb)
+    private func ensureFileCardBlockView(at index: Int) -> ChatFileCardsBlockView {
+        while fileCardBlockViews.count <= index {
+            let fc = ChatFileCardsBlockView()
+            contentView.addSubview(fc)
+            fileCardBlockViews.append(fc)
         }
-        return hostedBlockViews[index]
+        return fileCardBlockViews[index]
+    }
+
+    private func ensurePictureBlockView(at index: Int) -> ChatProsePictureView {
+        while pictureBlockViews.count <= index {
+            let pb = ChatProsePictureView()
+            contentView.addSubview(pb)
+            pictureBlockViews.append(pb)
+        }
+        return pictureBlockViews[index]
     }
 
     private func applySlices(
@@ -638,7 +649,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         var cbIndex = 0
         var tbIndex = 0
         var fbIndex = 0
-        var hbIndex = 0
+        var fcIndex = 0
+        var pbIndex = 0
         let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
 
@@ -702,19 +714,21 @@ final class ChatAssistantCell: UICollectionViewCell {
                 fbIndex += 1
 
             case .fileCards(let links, let sliceIndex):
-                let hb = ensureHostedBlockView(at: hbIndex)
-                hb.isHidden = false
+                let fc = ensureFileCardBlockView(at: fcIndex)
+                fc.isHidden = false
                 let heightKey = "file|\(lineID)|\(sliceIndex)|\(widthKey)|\(style.styleKey)|\(links.map(\.path).joined(separator: "|"))"
-                hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
-                    self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
-                }) {
-                    VStack(alignment: .leading, spacing: Ink.Space.s) {
-                        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
-                            FileCard(label: link.label, path: link.path)
-                        }
+                fc.configure(
+                    links: links,
+                    containerWidth: entry.contentWidth,
+                    style: style,
+                    expectedHeight: measured.height,
+                    hostViewController: hostViewController,
+                    actions: actions,
+                    onHeightChanged: { [weak self] h in
+                        self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                     }
-                }
-                hbIndex += 1
+                )
+                fcIndex += 1
 
             case .pictures(let words, let pics, let sliceIndex):
                 if let words {
@@ -725,15 +739,23 @@ final class ChatAssistantCell: UICollectionViewCell {
                     rtIndex += 1
                 }
                 for (picIndex, pic) in pics.enumerated() {
-                    let hb = ensureHostedBlockView(at: hbIndex)
-                    hb.isHidden = false
+                    let pb = ensurePictureBlockView(at: pbIndex)
+                    pb.isHidden = false
                     let heightKey = "pic|\(lineID)|\(sliceIndex)|\(picIndex)|\(widthKey)|\(style.styleKey)|\(pic.source)"
-                    hb.configure(key: heightKey, parent: hostViewController, onHeightChanged: { [weak self] h in
-                        self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
-                    }) {
-                        ProsePicture(source: pic.source, label: pic.label)
-                    }
-                    hbIndex += 1
+                    let picExpectedH = picIndex < measured.pictureHeights.count ? measured.pictureHeights[picIndex] : 160
+                    pb.configure(
+                        source: pic.source,
+                        label: pic.label,
+                        containerWidth: entry.contentWidth,
+                        scale: style.scale,
+                        expectedHeight: picExpectedH,
+                        hostViewController: hostViewController,
+                        actions: actions,
+                        onHeightChanged: { [weak self] h in
+                            self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
+                        }
+                    )
+                    pbIndex += 1
                 }
             }
         }
@@ -754,9 +776,13 @@ final class ChatAssistantCell: UICollectionViewCell {
             formulaBlockViews[idx].isHidden = true
             formulaBlockViews[idx].resetForReuse()
         }
-        for idx in hbIndex..<hostedBlockViews.count {
-            hostedBlockViews[idx].isHidden = true
-            hostedBlockViews[idx].resetForReuse()
+        for idx in fcIndex..<fileCardBlockViews.count {
+            fileCardBlockViews[idx].isHidden = true
+            fileCardBlockViews[idx].resetForReuse()
+        }
+        for idx in pbIndex..<pictureBlockViews.count {
+            pictureBlockViews[idx].isHidden = true
+            pictureBlockViews[idx].resetForReuse()
         }
     }
 
@@ -939,7 +965,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         var cbIndex = 0
         var tbIndex = 0
         var fbIndex = 0
-        var hbIndex = 0
+        var fcIndex = 0
+        var pbIndex = 0
 
         for (idx, measured) in entry.slices.enumerated() {
             if idx > 0 { y += style.paragraphGap }
@@ -973,9 +1000,9 @@ final class ChatAssistantCell: UICollectionViewCell {
                 y += measured.height
 
             case .fileCards:
-                if hbIndex < hostedBlockViews.count {
-                    hostedBlockViews[hbIndex].frame = CGRect(x: x, y: y, width: width, height: measured.height)
-                    hbIndex += 1
+                if fcIndex < fileCardBlockViews.count {
+                    fileCardBlockViews[fcIndex].frame = CGRect(x: x, y: y, width: width, height: measured.height)
+                    fcIndex += 1
                 }
                 y += measured.height
 
@@ -989,9 +1016,9 @@ final class ChatAssistantCell: UICollectionViewCell {
                 }
                 for (picIdx, picH) in measured.pictureHeights.enumerated() {
                     if picIdx > 0 { innerY += style.readingSize * 0.6 }
-                    if hbIndex < hostedBlockViews.count {
-                        hostedBlockViews[hbIndex].frame = CGRect(x: x, y: innerY, width: width, height: picH)
-                        hbIndex += 1
+                    if pbIndex < pictureBlockViews.count {
+                        pictureBlockViews[pbIndex].frame = CGRect(x: x, y: innerY, width: width, height: picH)
+                        pbIndex += 1
                     }
                     innerY += picH
                 }

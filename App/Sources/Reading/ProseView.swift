@@ -2063,7 +2063,7 @@ private final class PublicImageRedirectDelegate: NSObject, URLSessionTaskDelegat
     }
 }
 
-private final class CachedLocalPicture {
+final class CachedLocalPicture {
     let ref: WorkspaceFileRef
     let image: UIImage
     let mountRevision: UInt64
@@ -2076,7 +2076,7 @@ private final class CachedLocalPicture {
 }
 
 @MainActor
-private enum LocalPictureCache {
+enum LocalPictureCache {
     private static let totalByteBudget = 24 * 1024 * 1024
 
     private static let cache: NSCache<NSString, CachedLocalPicture> = {
@@ -2084,6 +2084,9 @@ private enum LocalPictureCache {
         cache.countLimit = 24
         cache.totalCostLimit = totalByteBudget
         _ = NotificationCenter.default.addObserver(forName: MountedFolders.changed, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { LocalPictureCache.clear() }
+        }
+        _ = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { LocalPictureCache.clear() }
         }
         return cache
@@ -2130,7 +2133,7 @@ private enum LocalPictureCache {
 /// One picture in a reply: from the web, or from 书案 (a path the companion wrote there). Tap to see it whole,
 /// with the system viewer's share and save.
 struct ProsePicture: View {
-    private static let maxRemoteBytes = 25 * 1024 * 1024
+    static let maxRemoteBytes = 25 * 1024 * 1024
 
     let source: String
     var label: String = ""
@@ -2339,7 +2342,7 @@ struct ProsePicture: View {
         }
     }
 
-    private static func downloadRemoteImage(_ remote: URL) async throws -> URL {
+    static func downloadRemoteImage(_ remote: URL) async throws -> URL {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 45
@@ -2405,7 +2408,7 @@ private final class CachedFileRef {
 }
 
 @MainActor
-private enum FileCardCache {
+enum FileCardCache {
     private static let cache: NSCache<NSString, CachedFileRef> = {
         let cache = NSCache<NSString, CachedFileRef>()
         cache.countLimit = 128

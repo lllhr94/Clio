@@ -1,4 +1,5 @@
 import AgentKit
+import Combine
 import Craft
 import SwiftUI
 import UIKit
@@ -1295,5 +1296,474 @@ final class ChatLiveFoldingCell: UICollectionViewCell {
         let startX = margin + max(0, (contentW - totalW) * 0.5)
         iconView.frame = CGRect(x: startX, y: (h - iconW) * 0.5, width: iconW, height: iconW)
         label.frame = CGRect(x: iconView.frame.maxX + 6, y: 0, width: totalW - iconW - 6, height: h)
+    }
+}
+
+/// Pure UIKit collapsed 1-line summary cell for `.steps` rows (`Trace` when closed and without inline keepsake/page/memory cards).
+/// Tapping opens a full `Trace` SwiftUI sheet.
+@MainActor
+final class ChatTraceSummaryCell: UICollectionViewCell {
+    static let reuseID = "ChatTraceSummaryCell"
+
+    private final class SummaryControl: UIControl {
+        override var isHighlighted: Bool {
+            didSet {
+                guard oldValue != isHighlighted else { return }
+                let targetAlpha: CGFloat = isHighlighted ? 0.65 : 1
+                UIView.animate(withDuration: 0.14, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    self.alpha = targetAlpha
+                }
+            }
+        }
+    }
+
+    var onOpenDetails: (() -> Void)?
+
+    private let litBackdrop = UIView()
+    private let timeGapLabel = UILabel()
+    private let speakerAvatar = ChatPetAvatarView()
+    private let speakerLabel = UILabel()
+
+    private let summaryButton = SummaryControl()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let checkIcon = UIImageView()
+    private let summaryLabel = UILabel()
+    private let chevronIcon = UIImageView()
+
+    private var currentRow: ChatListRowItem?
+    private var currentEntry: ChatLayoutCache.TraceSummaryLayoutEntry?
+    private var currentStyle: ChatListStyle?
+    private var lastColorSignature = ""
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+
+        litBackdrop.layer.cornerCurve = .continuous
+        litBackdrop.isHidden = true
+        contentView.addSubview(litBackdrop)
+
+        timeGapLabel.textAlignment = .center
+        timeGapLabel.isHidden = true
+        contentView.addSubview(timeGapLabel)
+
+        speakerAvatar.isHidden = true
+        contentView.addSubview(speakerAvatar)
+
+        speakerLabel.lineBreakMode = .byTruncatingTail
+        speakerLabel.isHidden = true
+        contentView.addSubview(speakerLabel)
+
+        spinner.hidesWhenStopped = true
+        spinner.isUserInteractionEnabled = false
+        spinner.transform = CGAffineTransform(scaleX: 0.72, y: 0.72)
+        summaryButton.addSubview(spinner)
+
+        checkIcon.contentMode = .scaleAspectFit
+        checkIcon.isUserInteractionEnabled = false
+        summaryButton.addSubview(checkIcon)
+
+        summaryLabel.numberOfLines = 1
+        summaryLabel.lineBreakMode = .byTruncatingTail
+        summaryLabel.isUserInteractionEnabled = false
+        summaryButton.addSubview(summaryLabel)
+
+        chevronIcon.contentMode = .scaleAspectFit
+        chevronIcon.isUserInteractionEnabled = false
+        summaryButton.addSubview(chevronIcon)
+
+        summaryButton.accessibilityTraits = .button
+        summaryButton.addAction(UIAction { [weak self] _ in
+            Haptics.light()
+            self?.onOpenDetails?()
+        }, for: .touchUpInside)
+        contentView.addSubview(summaryButton)
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatTraceSummaryCell, _) in
+            cell.refreshColors()
+        }
+        refreshColors()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        spinner.stopAnimating()
+        spinner.isHidden = true
+        checkIcon.isHidden = true
+        litBackdrop.isHidden = true
+        timeGapLabel.isHidden = true
+        speakerAvatar.isHidden = true
+        speakerLabel.isHidden = true
+        currentRow = nil
+        currentEntry = nil
+        currentStyle = nil
+        lastColorSignature = ""
+        onOpenDetails = nil
+    }
+
+    func configure(
+        row: ChatListRowItem,
+        entry: ChatLayoutCache.TraceSummaryLayoutEntry,
+        style: ChatListStyle,
+        onOpenDetails: @escaping () -> Void
+    ) {
+        self.onOpenDetails = onOpenDetails
+        applyContent(row: row, entry: entry, style: style)
+    }
+
+    func updateLineInPlace(
+        row: ChatListRowItem,
+        entry: ChatLayoutCache.TraceSummaryLayoutEntry,
+        style: ChatListStyle
+    ) {
+        applyContent(row: row, entry: entry, style: style)
+        layoutIfNeeded()
+    }
+
+    private func applyContent(
+        row: ChatListRowItem,
+        entry: ChatLayoutCache.TraceSummaryLayoutEntry,
+        style: ChatListStyle
+    ) {
+        currentRow = row
+        currentEntry = entry
+        currentStyle = style
+
+        litBackdrop.isHidden = !row.lit
+
+        if entry.timeGapHeight > 0, let gap = row.timeGap {
+            timeGapLabel.isHidden = false
+            timeGapLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
+            timeGapLabel.text = gap
+        } else {
+            timeGapLabel.isHidden = true
+        }
+
+        if entry.speakerHeight > 0 {
+            speakerAvatar.isHidden = false
+            speakerLabel.isHidden = false
+            let wash = row.speakerBot.map { Ink.wash(for: $0) }
+            speakerAvatar.configure(bot: row.speakerBot, state: "idle", wash: wash, avatar: true)
+            speakerLabel.font = UIFont.systemFont(ofSize: Ink.Size.small, weight: .semibold)
+            speakerLabel.text = row.speakerTitle
+        } else {
+            speakerAvatar.isHidden = true
+            speakerLabel.isHidden = true
+        }
+
+        if row.line.live {
+            checkIcon.isHidden = true
+            spinner.isHidden = false
+            spinner.startAnimating()
+        } else {
+            spinner.stopAnimating()
+            spinner.isHidden = true
+            checkIcon.isHidden = false
+        }
+
+        checkIcon.image = UIImage(
+            systemName: "checkmark.circle",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.sub, weight: .medium)
+        )
+        chevronIcon.image = UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .bold)
+        )
+
+        let summaryText = Words.t(Trace.summaryDisplayText(for: row.line))
+        summaryLabel.font = UIFont.systemFont(ofSize: Ink.Size.sub)
+        summaryLabel.text = summaryText
+        summaryButton.accessibilityLabel = summaryText
+
+        refreshColors()
+        setNeedsLayout()
+    }
+
+    private func refreshColors() {
+        let theme = Theme.shared
+        let sig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(UIScale.factor)"
+        guard sig != lastColorSignature else { return }
+        lastColorSignature = sig
+
+        litBackdrop.layer.cornerRadius = Ink.Radius.small
+        litBackdrop.backgroundColor = UIColor(Ink.accentWash)
+        timeGapLabel.textColor = UIColor(Ink.inkFaint)
+        speakerLabel.textColor = UIColor(Ink.inkSoft)
+        spinner.color = UIColor(Ink.accent)
+        checkIcon.tintColor = UIColor(Ink.ok)
+        summaryLabel.textColor = UIColor(Ink.inkSoft)
+        chevronIcon.tintColor = UIColor(Ink.inkFaint)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let entry = currentEntry else { return }
+
+        let pageMargin = Ink.Space.page
+        let contentWidth = max(120, contentView.bounds.width - pageMargin * 2)
+        var y: CGFloat = 0
+
+        if entry.timeGapHeight > 0 {
+            timeGapLabel.frame = CGRect(x: pageMargin, y: y, width: contentWidth, height: entry.timeGapHeight)
+            y += entry.timeGapHeight + ChatCellMetrics.timeGapBottomPad + ChatCellMetrics.sectionSpacing
+        }
+
+        if entry.speakerHeight > 0 {
+            let size = entry.speakerHeight
+            speakerAvatar.frame = CGRect(x: pageMargin, y: y, width: size, height: size)
+            speakerLabel.frame = CGRect(
+                x: pageMargin + size + ChatCellMetrics.speakerRowGap,
+                y: y,
+                width: max(40, contentWidth - size - ChatCellMetrics.speakerRowGap),
+                height: size
+            )
+            y += size + ChatCellMetrics.sectionSpacing
+        }
+
+        let summaryH = entry.summaryHeight
+        summaryButton.frame = CGRect(x: pageMargin, y: y, width: contentWidth, height: summaryH)
+
+        let leadSide: CGFloat = max(16, ceil(Ink.Size.sub + 2))
+        spinner.center = CGPoint(x: leadSide * 0.5, y: summaryH * 0.5)
+        checkIcon.frame = CGRect(x: 0, y: (summaryH - leadSide) * 0.5, width: leadSide, height: leadSide)
+
+        let chevW: CGFloat = 11 * UIScale.factor
+        let chevH: CGFloat = 11 * UIScale.factor
+        chevronIcon.frame = CGRect(x: contentWidth - chevW, y: (summaryH - chevH) * 0.5, width: chevW, height: chevH)
+
+        let textX = leadSide + Ink.Space.s
+        let textW = max(20, chevronIcon.frame.minX - Ink.Space.s - textX)
+        summaryLabel.frame = CGRect(x: textX, y: 0, width: textW, height: summaryH)
+
+        if !litBackdrop.isHidden {
+            let inset = Ink.Space.s
+            litBackdrop.frame = CGRect(
+                x: pageMargin - inset,
+                y: 0,
+                width: contentWidth + inset * 2,
+                height: max(20, contentView.bounds.height - Ink.Space.xs)
+            )
+        }
+    }
+}
+
+/// Pure UIKit live tool output tail cell observing `team.toolTail(for: chatKey)` via Combine,
+/// matching `ToolTailView` (`Ink.mono(Ink.Size.micro)` lines in `inkBlock()` with a 2.5pt `Ink.Code.output` stripe).
+@MainActor
+final class ChatLiveToolTailCell: UICollectionViewCell {
+    static let reuseID = "ChatLiveToolTailCell"
+
+    private let cardView = UIView()
+    private let outputStripe = UIView()
+    private var lineLabels: [UILabel] = []
+
+    private var currentLines: [ToolTail.Line] = []
+    private var currentStyle: ChatListStyle?
+    private weak var observedTail: ToolTail?
+    private var cancellable: AnyCancellable?
+    private var onHeightChanged: ((CGFloat) -> Void)?
+    private var lastReportedHeight: CGFloat = -1
+    private var lastColorSignature = ""
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+
+        cardView.clipsToBounds = true
+        cardView.layer.cornerCurve = .continuous
+        cardView.layer.borderWidth = 0.5
+        cardView.isHidden = true
+        contentView.addSubview(cardView)
+
+        cardView.addSubview(outputStripe)
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: ChatLiveToolTailCell, _) in
+            cell.refreshColors()
+        }
+        refreshColors()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        cancellable?.cancel()
+        cancellable = nil
+        observedTail = nil
+        onHeightChanged = nil
+        currentLines = []
+        currentStyle = nil
+        lastReportedHeight = -1
+        lastColorSignature = ""
+        cardView.isHidden = true
+        cardView.isAccessibilityElement = false
+        for label in lineLabels {
+            label.isHidden = true
+            label.text = nil
+        }
+    }
+
+    static func measureHeight(lines: [ToolTail.Line], style: ChatListStyle) -> CGFloat {
+        guard !lines.isEmpty else { return 1 }
+        let font = Ink.uiMono(style.metrics.sizeMicro, bold: false, preference: style.code)
+        let lineH = ceil(font.lineHeight)
+        let lineGap = style.metrics.spaceXS * 0.5
+        let textH = CGFloat(lines.count) * lineH + CGFloat(max(0, lines.count - 1)) * lineGap
+        let cardH = style.metrics.spaceS * 2 + textH
+        return ceil(cardH + style.metrics.rowSpacing)
+    }
+
+    func configure(
+        tail: ToolTail,
+        style: ChatListStyle,
+        expectedHeight: CGFloat = -1,
+        onHeightChanged: @escaping (CGFloat) -> Void
+    ) {
+        self.currentStyle = style
+        self.onHeightChanged = onHeightChanged
+
+        let measured = Self.measureHeight(lines: tail.lines, style: style)
+        if observedTail !== tail {
+            cancellable?.cancel()
+            observedTail = tail
+            lastReportedHeight = expectedHeight >= 0 ? expectedHeight : measured
+            applyLines(tail.lines, reportHeight: expectedHeight >= 0)
+            cancellable = tail.$lines
+                .dropFirst()
+                .sink { [weak self] lines in
+                    self?.applyLines(lines, reportHeight: true)
+                }
+        } else {
+            lastReportedHeight = expectedHeight >= 0 ? expectedHeight : measured
+            applyLines(tail.lines, reportHeight: expectedHeight >= 0)
+        }
+        refreshColors()
+        setNeedsLayout()
+    }
+
+    func refreshTypography(style: ChatListStyle) {
+        currentStyle = style
+        let font = Ink.uiMono(style.metrics.sizeMicro, bold: false, preference: style.code)
+        for idx in 0..<currentLines.count where idx < lineLabels.count {
+            lineLabels[idx].font = font
+        }
+        lastReportedHeight = Self.measureHeight(lines: currentLines, style: style)
+        refreshColors()
+        setNeedsLayout()
+    }
+
+    private func applyLines(_ lines: [ToolTail.Line], reportHeight: Bool) {
+        currentLines = lines
+        guard !lines.isEmpty else {
+            cardView.isHidden = true
+            cardView.isAccessibilityElement = false
+            for label in lineLabels {
+                label.isHidden = true
+                label.text = nil
+            }
+            if reportHeight {
+                reportMeasuredHeight(1)
+            }
+            return
+        }
+
+        cardView.isHidden = false
+        cardView.isAccessibilityElement = true
+        cardView.accessibilityLabel = "正在输出：" + (lines.last?.text ?? "")
+
+        let codePref = currentStyle?.code ?? Pref.code
+        let font = Ink.uiMono(Ink.Size.micro, bold: false, preference: codePref)
+
+        while lineLabels.count < lines.count {
+            let label = UILabel()
+            label.numberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            cardView.addSubview(label)
+            lineLabels.append(label)
+        }
+
+        for idx in lineLabels.indices {
+            let label = lineLabels[idx]
+            if idx < lines.count {
+                label.isHidden = false
+                label.font = font
+                label.textColor = UIColor(Ink.inkSoft)
+                label.text = lines[idx].text
+            } else {
+                label.isHidden = true
+                label.text = nil
+            }
+        }
+
+        refreshColors()
+        setNeedsLayout()
+        if reportHeight, let style = currentStyle {
+            reportMeasuredHeight(Self.measureHeight(lines: lines, style: style))
+        }
+    }
+
+    private func reportMeasuredHeight(_ nextHeight: CGFloat) {
+        guard lastReportedHeight < 0 || abs(nextHeight - lastReportedHeight) > 0.5 else { return }
+        lastReportedHeight = nextHeight
+        onHeightChanged?(nextHeight)
+    }
+
+    private func refreshColors() {
+        let theme = Theme.shared
+        let sig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(UIScale.factor)"
+        guard sig != lastColorSignature else { return }
+        lastColorSignature = sig
+
+        cardView.layer.cornerRadius = Ink.Radius.small
+        cardView.backgroundColor = UIColor(Ink.paperRaised)
+        cardView.layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).cgColor
+        outputStripe.backgroundColor = UIColor(Ink.Code.output).withAlphaComponent(0.65)
+        let textInk = UIColor(Ink.inkSoft)
+        for label in lineLabels where !label.isHidden {
+            label.textColor = textInk
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !cardView.isHidden, !currentLines.isEmpty else { return }
+        let margin = Ink.Space.page
+        let contentW = max(120, contentView.bounds.width - margin * 2)
+        let padH = Ink.Space.m
+        let padV = Ink.Space.s
+        let lineGap = Ink.Space.xs * 0.5
+        let codePref = currentStyle?.code ?? Pref.code
+        let font = Ink.uiMono(Ink.Size.micro, bold: false, preference: codePref)
+        let lineH = ceil(font.lineHeight)
+        let textH = CGFloat(currentLines.count) * lineH + CGFloat(max(0, currentLines.count - 1)) * lineGap
+        let cardH = padV * 2 + textH
+
+        cardView.frame = CGRect(x: margin, y: 0, width: contentW, height: cardH)
+        outputStripe.frame = CGRect(x: 0, y: 0, width: 2.5, height: cardH)
+
+        let textW = max(20, contentW - padH * 2)
+        var y = padV
+        for idx in 0..<currentLines.count where idx < lineLabels.count {
+            lineLabels[idx].frame = CGRect(x: padH, y: y, width: textW, height: lineH)
+            y += lineH + lineGap
+        }
     }
 }
