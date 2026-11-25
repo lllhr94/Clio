@@ -3,11 +3,19 @@ import UIKit
 
 /// A button revealed when a row is pushed left.
 struct SwipeAction: Identifiable {
-    let id = UUID()
+    let id: String
     var title: String
     var symbol: String
     var tint: Color
     var act: () -> Void
+
+    init(id: String? = nil, title: String, symbol: String, tint: Color, act: @escaping () -> Void) {
+        self.id = id ?? "\(title)|\(symbol)"
+        self.title = title
+        self.symbol = symbol
+        self.tint = tint
+        self.act = act
+    }
 }
 
 /// A row that slides left to show a few actions, like Mail's. Vertical scrolling is left alone:
