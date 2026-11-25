@@ -80,7 +80,7 @@ public enum MemoryRecall: Sendable {
         "一下", "知道", "觉得", "帮我", "请问", "谢谢", "有没有",
     ]
 
-    private struct QueryAnalysis {
+    fileprivate struct QueryAnalysis {
         let normalizedQuery: String
         let words: [String]
         let cjkRuns: [String]
@@ -93,16 +93,22 @@ public enum MemoryRecall: Sendable {
         }
     }
 
-    private static func analyzeQuery(_ query: String) -> QueryAnalysis {
-        let normalized = MemoryIndexTokenizer.normalize(query)
+    fileprivate static func analyzeQuery(_ query: String) -> QueryAnalysis {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bounded = String(trimmed.unicodeScalars.prefix(512))
+        let normalized = MemoryIndexTokenizer.normalize(bounded)
         var words: [String] = []
         var cjkRuns: [String] = []
+        var seenWords = Set<String>()
+        var seenRuns = Set<String>()
         var wordBuffer = ""
         var cjkBuffer: [Character] = []
 
         func flushWord() {
             if !wordBuffer.isEmpty {
-                if !words.contains(wordBuffer) { words.append(wordBuffer) }
+                if words.count < 48, seenWords.insert(wordBuffer).inserted {
+                    words.append(wordBuffer)
+                }
                 wordBuffer.removeAll(keepingCapacity: true)
             }
         }
@@ -110,7 +116,9 @@ public enum MemoryRecall: Sendable {
         func flushCJK() {
             if !cjkBuffer.isEmpty {
                 let run = String(cjkBuffer)
-                if !cjkRuns.contains(run) { cjkRuns.append(run) }
+                if cjkRuns.count < 48, seenRuns.insert(run).inserted {
+                    cjkRuns.append(run)
+                }
                 cjkBuffer.removeAll(keepingCapacity: true)
             }
         }
@@ -129,22 +137,37 @@ public enum MemoryRecall: Sendable {
                 flushWord()
                 flushCJK()
             }
+            if words.count >= 48 && cjkRuns.count >= 48 && wordBuffer.isEmpty && cjkBuffer.isEmpty {
+                break
+            }
         }
         flushWord()
         flushCJK()
 
         var bigrams: [String] = []
         var singleChars: [String] = []
+        var seenBigrams = Set<String>()
+        var seenSingles = Set<String>()
         for run in cjkRuns {
             let chars = Array(run)
             if chars.count == 1 {
-                let ch = String(chars[0])
-                if !singleChars.contains(ch) { singleChars.append(ch) }
-            } else {
-                for index in 0..<(chars.count - 1) {
-                    let pair = String(chars[index...index + 1])
-                    if !bigrams.contains(pair) { bigrams.append(pair) }
+                if singleChars.count < 32 {
+                    let ch = String(chars[0])
+                    if seenSingles.insert(ch).inserted {
+                        singleChars.append(ch)
+                    }
                 }
+            } else if bigrams.count < 64 {
+                for index in 0..<(chars.count - 1) {
+                    if bigrams.count >= 64 { break }
+                    let pair = String(chars[index...index + 1])
+                    if seenBigrams.insert(pair).inserted {
+                        bigrams.append(pair)
+                    }
+                }
+            }
+            if bigrams.count >= 64 && singleChars.count >= 32 {
+                break
             }
         }
 
@@ -164,7 +187,10 @@ public enum MemoryRecall: Sendable {
 
     /// Builds an OR-composed FTS5 `MATCH` expression so conversational prompts can recall relevant `.deep` items.
     public static func buildFTS5OrMatchExpression(for query: String) -> String? {
-        let analysis = analyzeQuery(query)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let bounded = String(trimmed.unicodeScalars.prefix(512))
+        let analysis = analyzeQuery(bounded)
         guard !analysis.isEmpty else { return nil }
 
         var clauses: [String] = []
@@ -237,6 +263,42 @@ public enum MemoryRecall: Sendable {
         return "\"\(sanitized)\""
     }
 
+    private static func extractNormalizedWords(
+        from normalized: String,
+        maxWords: Int = 256
+    ) -> (ordered: [String], set: Set<String>) {
+        var ordered: [String] = []
+        var seen = Set<String>()
+        var wordBuffer = ""
+
+        func flushWord() {
+            if !wordBuffer.isEmpty {
+                if ordered.count < maxWords, seen.insert(wordBuffer).inserted {
+                    ordered.append(wordBuffer)
+                }
+                wordBuffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        for scalar in normalized.unicodeScalars {
+            if scalar.properties.generalCategory == .nonspacingMark {
+                continue
+            }
+            if MemoryIndexTokenizer.isCJKScalar(scalar) {
+                flushWord()
+            } else if CharacterSet.alphanumerics.contains(scalar) {
+                wordBuffer.append(Character(scalar))
+            } else {
+                flushWord()
+            }
+            if ordered.count >= maxWords && wordBuffer.isEmpty {
+                break
+            }
+        }
+        flushWord()
+        return (ordered, seen)
+    }
+
     /// Relevance score (`<= 0` means no credible match).
     public static func scoreText(
         query: String,
@@ -244,15 +306,29 @@ public enum MemoryRecall: Sendable {
         topic: String = "",
         bm25Rank: Double? = nil
     ) -> Double {
-        let analysis = analyzeQuery(query)
+        scoreText(
+            analysis: analyzeQuery(query),
+            text: text,
+            topic: topic,
+            bm25Rank: bm25Rank
+        )
+    }
+
+    fileprivate static func scoreText(
+        analysis: QueryAnalysis,
+        text: String,
+        topic: String = "",
+        bm25Rank: Double? = nil
+    ) -> Double {
         guard !analysis.isEmpty else { return 0 }
 
         let combinedRaw = topic.isEmpty ? text : "\(text) \(topic)"
-        let haystack = MemoryIndexTokenizer.normalize(combinedRaw)
+        let boundedCombined = String(combinedRaw.unicodeScalars.prefix(4096))
+        let haystack = MemoryIndexTokenizer.normalize(boundedCombined)
         guard !haystack.isEmpty else { return 0 }
 
-        let haystackAnalysis = analyzeQuery(combinedRaw)
-        let haystackWordSet = Set(haystackAnalysis.words)
+        let haystackWords = extractNormalizedWords(from: haystack)
+        let haystackWordSet = haystackWords.set
 
         var score: Double = 0
         var matchedWordCount = 0
@@ -264,7 +340,7 @@ public enum MemoryRecall: Sendable {
                 matchedWordCount += 1
                 if word.count >= 2 { matchedNonStopSignals += 1 }
             } else if word.count >= 3,
-                      haystackAnalysis.words.contains(where: { $0.hasPrefix(word) || word.hasPrefix($0) }) {
+                      haystackWords.ordered.contains(where: { $0.hasPrefix(word) || word.hasPrefix($0) }) {
                 score += 11
                 matchedWordCount += 1
                 matchedNonStopSignals += 1
@@ -347,6 +423,8 @@ public enum MemoryRecall: Sendable {
     ) -> [Hit] {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else { return [] }
+        let queryAnalysis = analyzeQuery(cleanQuery)
+        guard !queryAnalysis.isEmpty else { return [] }
 
         let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         let normalizedSuppressed = Set(suppressedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
@@ -380,7 +458,7 @@ public enum MemoryRecall: Sendable {
             let key = MemorySafety.normalizedFactKey(safeText)
             guard !key.isEmpty, !seenSurfaceKeys.contains(key) else { continue }
 
-            let matchScore = scoreText(query: cleanQuery, text: safeText, topic: safeTopic, bm25Rank: nil)
+            let matchScore = scoreText(analysis: queryAnalysis, text: safeText, topic: safeTopic, bm25Rank: nil)
             guard matchScore > 0 else { continue }
 
             let confidenceBoost = min(1.0, max(0.0, record.confidence)) * 0.5
@@ -742,6 +820,8 @@ public final class MemoryRecallIndex: @unchecked Sendable {
     ) throws -> [MemoryRecall.Hit] {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else { return [] }
+        let queryAnalysis = MemoryRecall.analyzeQuery(cleanQuery)
+        guard !queryAnalysis.isEmpty else { return [] }
 
         let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         let normalizedSuppressed = Set(suppressedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
@@ -865,7 +945,7 @@ public final class MemoryRecallIndex: @unchecked Sendable {
                     guard !key.isEmpty, !surfaceKeys.contains(key) else { continue }
 
                     let relevance = MemoryRecall.scoreText(
-                        query: cleanQuery,
+                        analysis: queryAnalysis,
                         text: safeText,
                         topic: safeTopic,
                         bm25Rank: fts5Active ? bm25Rank : nil
@@ -1512,9 +1592,11 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
     private let state: MemorySafety.PromptState
     private var recalledHits: [MemoryRecall.Hit]
     private var lastObservedGeneration: UInt64
+    private var lastObservedMemoryEnabled: Bool
     private var lastObservedRecallAllowed: Bool
     private var lastObservedSecretsDigest: String
     private let isRecallAllowed: @Sendable () -> Bool
+    private let isMemoryEnabled: @Sendable () -> Bool
     private let activeSecrets: @Sendable () -> [String]
     private var snapshot: MemorySafety.AssembledSystemPrompt
 
@@ -1523,9 +1605,11 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         state: MemorySafety.PromptState,
         recalledHits: [MemoryRecall.Hit] = [],
         isRecallAllowed: @escaping @Sendable () -> Bool = { true },
+        isMemoryEnabled: @escaping @Sendable () -> Bool = { true },
         activeSecrets: @escaping @Sendable () -> [String] = { [] }
     ) {
         let gen = state.currentGeneration
+        let memoryEnabled = isMemoryEnabled()
         let allowed = isRecallAllowed()
         let orderedSecrets = Self.orderSecrets(activeSecrets())
         let secretsDigest = Self.secretsFingerprint(orderedSecrets)
@@ -1545,14 +1629,17 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         self.state = state
         self.recalledHits = reconciled
         self.lastObservedGeneration = gen
+        self.lastObservedMemoryEnabled = memoryEnabled
         self.lastObservedRecallAllowed = allowed
         self.lastObservedSecretsDigest = secretsDigest
         self.isRecallAllowed = isRecallAllowed
+        self.isMemoryEnabled = isMemoryEnabled
         self.activeSecrets = activeSecrets
         self.snapshot = Self.buildSnapshot(
             baseInput: input,
             state: state,
             recalledHits: reconciled,
+            memoryEnabled: memoryEnabled,
             recallAllowed: allowed,
             orderedSecrets: orderedSecrets
         )
@@ -1560,12 +1647,14 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
 
     public func currentPrompt() -> MemorySafety.AssembledSystemPrompt {
         let gen = state.currentGeneration
+        let memoryEnabled = isMemoryEnabled()
         let allowed = isRecallAllowed()
         let orderedSecrets = Self.orderSecrets(activeSecrets())
         let secretsDigest = Self.secretsFingerprint(orderedSecrets)
         lock.lock()
         defer { lock.unlock() }
         if gen != lastObservedGeneration
+            || memoryEnabled != lastObservedMemoryEnabled
             || allowed != lastObservedRecallAllowed
             || secretsDigest != lastObservedSecretsDigest {
             let retractedIDs = state.retractedIDsSnapshot()
@@ -1580,12 +1669,14 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
                 orderedSecrets: orderedSecrets
             )
             lastObservedGeneration = gen
+            lastObservedMemoryEnabled = memoryEnabled
             lastObservedRecallAllowed = allowed
             lastObservedSecretsDigest = secretsDigest
             snapshot = Self.buildSnapshot(
                 baseInput: baseInput,
                 state: state,
                 recalledHits: recalledHits,
+                memoryEnabled: memoryEnabled,
                 recallAllowed: allowed,
                 orderedSecrets: orderedSecrets
             )
@@ -1595,6 +1686,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
 
     public func refresh(memories: [MemorySafety.Fact]) {
         let gen = state.currentGeneration
+        let memoryEnabled = isMemoryEnabled()
         let allowed = isRecallAllowed()
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
@@ -1613,12 +1705,14 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
             orderedSecrets: orderedSecrets
         )
         lastObservedGeneration = gen
+        lastObservedMemoryEnabled = memoryEnabled
         lastObservedRecallAllowed = allowed
         lastObservedSecretsDigest = secretsDigest
         snapshot = Self.buildSnapshot(
             baseInput: baseInput,
             state: state,
             recalledHits: recalledHits,
+            memoryEnabled: memoryEnabled,
             recallAllowed: allowed,
             orderedSecrets: orderedSecrets
         )
@@ -1627,6 +1721,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
 
     public func updateRecalledHits(_ hits: [MemoryRecall.Hit]) {
         let gen = state.currentGeneration
+        let memoryEnabled = isMemoryEnabled()
         let allowed = isRecallAllowed()
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
@@ -1644,12 +1739,14 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
             orderedSecrets: orderedSecrets
         )
         lastObservedGeneration = gen
+        lastObservedMemoryEnabled = memoryEnabled
         lastObservedRecallAllowed = allowed
         lastObservedSecretsDigest = secretsDigest
         snapshot = Self.buildSnapshot(
             baseInput: baseInput,
             state: state,
             recalledHits: recalledHits,
+            memoryEnabled: memoryEnabled,
             recallAllowed: allowed,
             orderedSecrets: orderedSecrets
         )
@@ -1713,13 +1810,15 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         baseInput: MemorySafety.SystemPromptInput,
         state: MemorySafety.PromptState,
         recalledHits: [MemoryRecall.Hit],
+        memoryEnabled: Bool,
         recallAllowed: Bool,
         orderedSecrets: [String]
     ) -> MemorySafety.AssembledSystemPrompt {
+        let effectiveMemoryEnabled = baseInput.memoryEnabled && memoryEnabled
         let retractedIDs = state.retractedIDsSnapshot()
         let suppressedHashes = state.suppressedFlushHashesSnapshot()
         let effectiveHits: [MemoryRecall.Hit]
-        if baseInput.memoryEnabled && recallAllowed {
+        if effectiveMemoryEnabled && recallAllowed {
             effectiveHits = reconcileHits(
                 recalledHits,
                 against: baseInput.memories,
@@ -1740,6 +1839,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         }
 
         var effectiveInput = baseInput
+        effectiveInput.memoryEnabled = effectiveMemoryEnabled
         effectiveInput.extraTail = combinedTailParts.isEmpty ? nil : combinedTailParts.joined(separator: "\n\n")
         return MemorySafety.assembleSystemPrompt(effectiveInput, state: state)
     }

@@ -436,8 +436,9 @@ public final class DocSearchIndex: @unchecked Sendable {
         limit: Int = 12,
         secrets: [String] = []
     ) throws -> [DocSearch.Hit] {
-        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanQuery.isEmpty else { return [] }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return [] }
+        let cleanQuery = String(trimmedQuery.prefix(512))
         let clampedLimit = max(1, limit)
         let cleanScope = Self.normalizedScope(folderPrefix)
         let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
@@ -524,7 +525,10 @@ public final class DocSearchIndex: @unchecked Sendable {
             while true {
                 let stepRC = sqlite3_step(stmt)
                 if stepRC == SQLITE_ROW {
-                    let path = Self.columnText(stmt, 0)
+                    let rawPath = Self.columnText(stmt, 0)
+                    let safePath = orderedSecrets.isEmpty
+                        ? rawPath
+                        : MemorySafety.redactSecrets(rawPath, secrets: orderedSecrets)
                     let passageIndex = Int(sqlite3_column_int(stmt, 1))
                     let page: Int? = sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 2))
                     let rawText = Self.columnText(stmt, 3)
@@ -565,7 +569,7 @@ public final class DocSearchIndex: @unchecked Sendable {
                     }
 
                     let snippet = DocSearch.snippet(safeText, around: words + soft)
-                    let hit = DocSearch.Hit(path: path, page: page, snippet: snippet, score: score)
+                    let hit = DocSearch.Hit(path: safePath, page: page, snippet: snippet, score: score)
                     scoredHits.append((hit: hit, passageIndex: passageIndex))
                 } else if stepRC == SQLITE_DONE {
                     break
@@ -596,7 +600,9 @@ public final class DocSearchIndex: @unchecked Sendable {
     // MARK: - Query Tokenization Helpers
 
     static func buildFTS5OrMatchExpression(for query: String) -> String? {
-        let normalized = MemoryIndexTokenizer.normalize(query)
+        let bounded = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(512))
+        guard !bounded.isEmpty else { return nil }
+        let normalized = MemoryIndexTokenizer.normalize(bounded)
         let runs = extractRuns(from: normalized)
         guard !runs.isEmpty else { return nil }
 
@@ -645,7 +651,9 @@ public final class DocSearchIndex: @unchecked Sendable {
     }
 
     static func fallbackTerms(for query: String) -> [String] {
-        let normalized = MemoryIndexTokenizer.normalize(query)
+        let bounded = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(512))
+        guard !bounded.isEmpty else { return [] }
+        let normalized = MemoryIndexTokenizer.normalize(bounded)
         let runs = extractRuns(from: normalized)
         var terms: [String] = []
         var seen = Set<String>()
@@ -661,9 +669,11 @@ public final class DocSearchIndex: @unchecked Sendable {
                     for i in 0..<(chars.count - 1) {
                         let bg = String(chars[i...i + 1])
                         if seen.insert(bg).inserted { terms.append(bg) }
+                        if terms.count >= 24 { break }
                     }
                 }
             }
+            if terms.count >= 24 { break }
         }
         return Array(terms.prefix(24))
     }
@@ -1001,7 +1011,7 @@ public final class DocSearchIndex: @unchecked Sendable {
                 [
                     .text(doc.path),
                     .int(Int32(index)),
-                    .optionalInt(passage.page.map(Int32.init)),
+                    .optionalInt(passage.page.flatMap { Int32(exactly: $0) }),
                     .text(passage.text),
                     .text(normalized),
                     .text(tokens.bodyTokens),

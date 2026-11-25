@@ -356,4 +356,73 @@ final class DocSearchIndexTests: XCTestCase {
 
         XCTAssertEqual(try fallback.search(query: "Xcode").map(\.path), ["报销指南.pdf"])
     }
+
+    // MARK: 6. Security & Bounds Regression Guards
+
+    func testRedactsSecretsInDocumentPaths() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let index = DocSearchIndex(cachesRoot: dir)
+        defer { index.close() }
+
+        let secret = "sk-live-secret-9999"
+        try index.sync(
+            documents: [
+                ("secret/\(secret).md", "内部部署文档与灰度发布步骤。"),
+            ],
+            secrets: [secret]
+        )
+
+        let hits = try index.search(query: "灰度发布", secrets: [secret])
+        XCTAssertEqual(hits.map(\.path), ["secret/〔隐去〕.md"])
+        XCTAssertFalse(hits[0].path.contains(secret))
+        XCTAssertFalse(index.consumeUnredactedSecretDetected())
+    }
+
+    func testOverflowPDFPageNumberDoesNotCrashAndIndexesWithNilPage() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let overflowDoc = "[第 999999999999999 页]\n超大数据页码测试正文，包含报销单据归档要求。"
+        let passages = DocSearch.passages(overflowDoc)
+        XCTAssertEqual(passages.count, 1)
+        XCTAssertNil(passages[0].page)
+        XCTAssertTrue(passages[0].text.contains("超大数据页码测试正文"))
+
+        let index = DocSearchIndex(cachesRoot: dir)
+        defer { index.close() }
+
+        try index.sync(documents: [("overflow.pdf", overflowDoc)])
+        let hits = try index.search(query: "报销单据归档")
+        XCTAssertEqual(hits.map(\.path), ["overflow.pdf"])
+        XCTAssertNil(hits[0].page)
+    }
+
+    func testHugeMultiTokenQueryBoundsCleanly() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let padding = (0..<2500).map { "token\($0)" }.joined(separator: " ")
+        let hugeQuery = "报销 发票 " + padding
+        XCTAssertGreaterThan(hugeQuery.utf8.count, 20_000)
+
+        let terms = DocSearch.terms(hugeQuery)
+        XCTAssertLessThanOrEqual(terms.count, 24)
+        XCTAssertTrue(terms.contains("报销"))
+        XCTAssertTrue(terms.contains("发票"))
+        XCTAssertNotNil(DocSearchIndex.buildFTS5OrMatchExpression(for: hugeQuery))
+
+        let docs: [(path: String, text: String)] = [
+            ("finance/reimburse.md", "公司差旅报销与发票规范说明。"),
+            ("notes/other.md", "普通日常会议纪要。"),
+        ]
+        XCTAssertEqual(DocSearch.find(hugeQuery, in: docs).map(\.path), ["finance/reimburse.md"])
+
+        let index = DocSearchIndex(cachesRoot: dir)
+        defer { index.close() }
+        try index.sync(documents: docs)
+        let hits = try index.search(query: hugeQuery)
+        XCTAssertEqual(hits.map(\.path), ["finance/reimburse.md"])
+    }
 }

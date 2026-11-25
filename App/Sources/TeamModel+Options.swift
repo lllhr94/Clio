@@ -31,6 +31,7 @@ extension TeamModel {
         if let kept = optionBook[key] { return kept }
         let loaded = keeping ? (Disk.load(ChatOptions.self, Self.optionsFile(key)) ?? ChatOptions()) : ChatOptions()
         optionBook[key] = loaded
+        liveChatMemoryGate.setDisabled(loaded.off.contains(Grant.memory.rawValue), for: key)
         return loaded
     }
 
@@ -45,14 +46,21 @@ extension TeamModel {
     }
 
     func setOptions(_ key: String, _ value: ChatOptions) {
-        let oldHostID = WorkPlace(code: (optionBook[key] ?? options(key)).place).hostID
+        let oldOptions = optionBook[key] ?? options(key)
+        let oldHostID = WorkPlace(code: oldOptions.place).hostID
+        let oldOff = oldOptions.off.contains(Grant.memory.rawValue)
+        let newOff = value.off.contains(Grant.memory.rawValue)
         objectWillChange.send()
         optionBook[key] = value
+        liveChatMemoryGate.setDisabled(newOff, for: key)
         let newHostID = WorkPlace(code: value.place).hostID
         hostBindings.set(newHostID, for: key)
         if keeping { Disk.save(value, Self.optionsFile(key)) }
         if oldHostID != newHostID {
             cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: oldHostID)
+        }
+        if oldOff != newOff {
+            invalidateMemoryPromptCache()
         }
     }
 

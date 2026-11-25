@@ -669,8 +669,12 @@ enum Workspace {
             return ToolOutput(reading.shown(limit: 24_000))
         })
         tools.append(DeskTool(name: "search_docs", description: "在书案和挂载文件夹的资料里找和问题有关的段落：PDF、Markdown、文本、网页存档、表格都算。先用它找到在哪个文件哪一页，再用 read_pdf 或 read_file 细读。关键词用空格隔开。", parameters: ["type": "object", "properties": ["query": ["type": "string", "description": "关键词，比如：报销 发票 期限"], "folder": ["type": "string", "description": "只在这个文件夹里找（可不填，如 挂载/Obsidian）"]], "required": ["query"]], label: { "翻资料：\(($0["query"]?.string ?? "").prefix(20))" }) { arguments in
+            if Disk.frozen {
+                return ToolOutput("刚恢复了备份，重新打开 Clio 后再试。", isError: true)
+            }
             let query = arguments["query"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !query.isEmpty else { return ToolOutput("要给关键词。", isError: true) }
+            let startMountRevision = MountedFolders.revision
             let target: Target
             do {
                 target = try parse(arguments["folder"]?.string)
@@ -678,20 +682,48 @@ enum Workspace {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
             let scopeName: String
+            let targetInvolvesMounts: Bool
             switch target {
             case .desk(_, let rel):
                 scopeName = rel
+                targetInvolvesMounts = rel == "/"
             case .mountsRoot:
                 scopeName = MountedFolders.virtualFolder
+                targetInvolvesMounts = true
             case .mounted(_, _, let rel):
                 scopeName = rel
+                targetInvolvesMounts = true
             }
             do {
-                let result = try await DocSearchIndexService.shared.search(query: query, target: target)
-                guard result.totalCount > 0 else {
-                    return ToolOutput("\(scopeName) 里还没有能翻的资料（PDF、md、txt 等）。用户可以从文件 App 把资料放进书案，或挂载外部文件夹。")
+                let result = try await DocSearchIndexService.shared.search(
+                    query: query,
+                    target: target,
+                    startMountRevision: startMountRevision
+                )
+                if Disk.frozen {
+                    throw TeamError(message: "刚恢复了备份，重新打开 Clio 后再试。")
                 }
-                return ToolOutput("翻了 \(result.totalCount) 份资料。" + DocSearch.shown(result.hits, query: query))
+                if targetInvolvesMounts {
+                    if MountedFolders.revision != startMountRevision {
+                        throw TeamError(message: "挂载文件夹刚刚变动，请再找一次。")
+                    }
+                    if case .mounted(let mount, _, _) = target, !MountedFolders.isCurrent(mount) {
+                        throw TeamError(message: "挂载文件夹刚刚变动，请再找一次。")
+                    }
+                }
+                let activeSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+                guard result.totalCount > 0 else {
+                    let emptyText = "\(scopeName) 里还没有能翻的资料（PDF、md、txt 等）。用户可以从文件 App 把资料放进书案，或挂载外部文件夹。"
+                    let safeEmptyText = activeSecrets.isEmpty
+                        ? emptyText
+                        : MemorySafety.redactSecrets(emptyText, secrets: activeSecrets)
+                    return ToolOutput(safeEmptyText)
+                }
+                let resultText = "翻了 \(result.totalCount) 份资料。" + DocSearch.shown(result.hits, query: query)
+                let safeResultText = activeSecrets.isEmpty
+                    ? resultText
+                    : MemorySafety.redactSecrets(resultText, secrets: activeSecrets)
+                return ToolOutput(safeResultText)
             } catch {
                 return ToolOutput(error.localizedDescription, isError: true)
             }
@@ -989,15 +1021,13 @@ final class DocSearchIndexService: @unchecked Sendable {
         }
     }
 
-    func search(query: String, target: Workspace.Target) async throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
+    func search(
+        query: String,
+        target: Workspace.Target,
+        startMountRevision: UInt64 = MountedFolders.revision
+    ) async throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
         if Disk.frozen {
-            return try await Task.detached(priority: .userInitiated) {
-                let documents = try Self.collectFallbackDocuments(for: target)
-                guard !documents.isEmpty else { return (0, []) }
-                let secrets = Self.orderedSecrets(Vault.allStrings())
-                let safeDocs = Self.redactDocuments(documents, secrets: secrets)
-                return (documents.count, DocSearch.find(query, in: safeDocs))
-            }.value
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后再试。")
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -1007,7 +1037,11 @@ final class DocSearchIndexService: @unchecked Sendable {
                     return
                 }
                 do {
-                    let result = try self.performSearchLocked(query: query, target: target)
+                    let result = try self.performSearchLocked(
+                        query: query,
+                        target: target,
+                        startMountRevision: startMountRevision
+                    )
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -1018,33 +1052,101 @@ final class DocSearchIndexService: @unchecked Sendable {
 
     // MARK: - Private Queue Execution
 
-    private func performSearchLocked(query: String, target: Workspace.Target) throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
+    private static func involvesMounts(_ target: Workspace.Target) -> Bool {
+        switch target {
+        case .desk(_, let rel):
+            return rel == "/"
+        case .mountsRoot, .mounted:
+            return true
+        }
+    }
+
+    private static func verifySearchState(target: Workspace.Target, startMountRevision: UInt64) throws {
+        if Disk.frozen {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后再试。")
+        }
+        if involvesMounts(target) {
+            if MountedFolders.revision != startMountRevision {
+                throw TeamError(message: "挂载文件夹刚刚变动，请再找一次。")
+            }
+            if case .mounted(let mount, _, _) = target, !MountedFolders.isCurrent(mount) {
+                throw TeamError(message: "挂载文件夹刚刚变动，请再找一次。")
+            }
+        }
+    }
+
+    private func performSearchLocked(
+        query: String,
+        target: Workspace.Target,
+        startMountRevision: UInt64
+    ) throws -> (totalCount: Int, hits: [DocSearch.Hit]) {
+        try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
         let secrets = Self.orderedSecrets(Vault.allStrings())
         let scopePrefix = Self.scopePrefix(for: target)
 
         do {
-            let syncedCount = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: false)
+            let syncedCount = try syncTargetLocked(
+                target: target,
+                scopePrefix: scopePrefix,
+                secrets: secrets,
+                startMountRevision: startMountRevision,
+                force: false
+            )
+            try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
             guard syncedCount > 0 else { return (0, []) }
 
-            var hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
-            if index.consumeUnredactedSecretDetected() || index.needsRebuildFromSource {
+            var activeSecrets = secrets
+            var hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: activeSecrets)
+            let latestSecrets = Self.orderedSecrets(Vault.allStrings())
+            let needsRebuild = latestSecrets != activeSecrets
+                || index.consumeUnredactedSecretDetected()
+                || index.needsRebuildFromSource
+            if needsRebuild {
+                hits = []
+                try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
+                activeSecrets = latestSecrets
                 try? index.resetForSecretRotation()
-                _ = try syncTargetLocked(target: target, scopePrefix: scopePrefix, secrets: secrets, force: true)
-                hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: secrets)
+                _ = try syncTargetLocked(
+                    target: target,
+                    scopePrefix: scopePrefix,
+                    secrets: activeSecrets,
+                    startMountRevision: startMountRevision,
+                    force: true
+                )
+                hits = try index.search(query: query, folderPrefix: scopePrefix, limit: 12, secrets: activeSecrets)
             }
-            return (syncedCount, hits)
+            try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
+            let finalSecrets = Self.orderedSecrets(Vault.allStrings())
+            if finalSecrets != activeSecrets {
+                try? index.resetForSecretRotation()
+            }
+            return (syncedCount, Self.redactHits(hits, secrets: finalSecrets))
+        } catch let teamError as TeamError {
+            throw teamError
         } catch let workspaceError as WorkspaceError {
             throw workspaceError
         } catch {
             // Transparent fallback to in-memory `DocSearch.find` if SQLite index initialization/query ever fails.
+            try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
             let documents = try Self.collectFallbackDocuments(for: target)
+            try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
             guard !documents.isEmpty else { return (0, []) }
-            let safeDocs = Self.redactDocuments(documents, secrets: secrets)
-            return (documents.count, DocSearch.find(query, in: safeDocs))
+            let fallbackSecrets = Self.orderedSecrets(Vault.allStrings())
+            let safeDocs = Self.redactDocuments(documents, secrets: fallbackSecrets)
+            let fallbackHits = DocSearch.find(query, in: safeDocs)
+            try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
+            let finalSecrets = Self.orderedSecrets(Vault.allStrings())
+            return (documents.count, Self.redactHits(fallbackHits, secrets: finalSecrets))
         }
     }
 
-    private func syncTargetLocked(target: Workspace.Target, scopePrefix: String?, secrets: [String], force: Bool) throws -> Int {
+    private func syncTargetLocked(
+        target: Workspace.Target,
+        scopePrefix: String?,
+        secrets: [String],
+        startMountRevision: UInt64,
+        force: Bool
+    ) throws -> Int {
         var deskEntries: [PaperShelf.ScannedEntry] = []
         var mountTargets: [(mount: MountedFolder, inner: [String], descriptors: [DocSearchDocumentDescriptor])] = []
         var allDescriptors: [DocSearchDocumentDescriptor] = []
@@ -1092,6 +1194,7 @@ final class DocSearchIndexService: @unchecked Sendable {
             allDescriptors.append(contentsOf: mountDescs)
         }
 
+        try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
         let plan = try index.planSync(descriptors: allDescriptors, scopePrefix: scopePrefix, secrets: secrets, force: force)
         guard !plan.staleOrNewPaths.isEmpty || !plan.removedPaths.isEmpty else {
             return allDescriptors.count
@@ -1141,6 +1244,7 @@ final class DocSearchIndexService: @unchecked Sendable {
             upserts.append(contentsOf: loaded)
         }
 
+        try Self.verifySearchState(target: target, startMountRevision: startMountRevision)
         try index.applyIncrementalSync(upserts: upserts, removedPaths: plan.removedPaths, secrets: secrets)
         return allDescriptors.count
     }
@@ -1194,8 +1298,27 @@ final class DocSearchIndexService: @unchecked Sendable {
         if secrets.isEmpty {
             return documents
         }
-        return documents.map { document in
-            (path: document.path, text: MemorySafety.redactSecrets(document.text, secrets: secrets))
+        return documents.map { document -> (path: String, text: String) in
+            let safePath = MemorySafety.redactSecrets(document.path, secrets: secrets)
+            let safeText = MemorySafety.redactSecrets(document.text, secrets: secrets)
+            return (path: safePath, text: safeText)
+        }
+    }
+
+    private static func redactHits(
+        _ hits: [DocSearch.Hit],
+        secrets: [String]
+    ) -> [DocSearch.Hit] {
+        if secrets.isEmpty {
+            return hits
+        }
+        return hits.map { hit in
+            DocSearch.Hit(
+                path: MemorySafety.redactSecrets(hit.path, secrets: secrets),
+                page: hit.page,
+                snippet: MemorySafety.redactSecrets(hit.snippet, secrets: secrets),
+                score: hit.score
+            )
         }
     }
 
