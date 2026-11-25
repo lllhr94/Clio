@@ -9,6 +9,7 @@ struct CarePage: View {
     let team: TeamModel
     var openRestore = false
     @State private var denState = Den.State.asleep
+    @State private var formSectionsReady = false
     @State private var diagnosticsReady = false
     @State private var hitchesReady = false
     @State private var recentErrors: [String] = []
@@ -75,8 +76,10 @@ struct CarePage: View {
             Form {
                 PaperRows {
                     localBackupSection
-                    webdavSection
-                    archivedSection
+                    if formSectionsReady {
+                        webdavSection
+                        archivedSection
+                    }
                     if diagnosticsReady {
                         diagnosticInfoSection
                         storageSection
@@ -103,7 +106,10 @@ struct CarePage: View {
             }
             .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
             .task {
-                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+                do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                formSectionsReady = true
+                do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+                guard !Task.isCancelled else { return }
                 let errors = Array((await Diag.snapshot(suffix: 20)).reversed())
                 guard !Task.isCancelled else { return }
                 recentErrors = errors

@@ -227,7 +227,7 @@ struct StudyFolder: View {
                 .padding(.vertical, Ink.Space.l)
             }
         }
-        .hitchPage("书案")
+        .hitchPage("书案列表")
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarItems }
@@ -657,9 +657,22 @@ struct StudyFile: View {
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
     private var longPlainText: String? {
-        // Keep the formatted preview for short snippets. A large TXT can create thousands of prose views.
-        guard ext == "txt", let text, text.utf8.count >= 64 * 1024 else { return nil }
-        return text
+        // Keep the formatted preview for short snippets. A large TXT or huge Markdown dump can create thousands of prose views.
+        guard let text else { return nil }
+        if ext == "txt" {
+            if text.utf8.count >= 4 * 1024 || text.utf8.lazy.filter({ $0 == UInt8(ascii: "\n") }).prefix(60).count >= 60 {
+                return text
+            }
+            return nil
+        }
+        if ["md", "markdown"].contains(ext), text.utf8.count >= 128 * 1024 {
+            return text
+        }
+        return nil
+    }
+    private var longTextStyleSignature: String {
+        let theme = Theme.shared
+        return "\(theme.size)|\(theme.face.rawValue)|\(theme.code.rawValue)|\(theme.key)|\(theme.oled ? 1 : 0)|\(theme.white ? 1 : 0)|\(theme.fontsArrived)"
     }
 
     var body: some View {
@@ -687,7 +700,11 @@ struct StudyFile: View {
                         .containerRelativeFrame(.horizontal)
                 }
             } else if let longPlainText {
-                LongTextPreview(text: longPlainText)
+                LongTextPreview(
+                    text: longPlainText,
+                    isPlainProseText: ext == "txt",
+                    themeSignature: longTextStyleSignature
+                )
                     .id(url)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if table, !plain, let csvRows {
@@ -719,7 +736,7 @@ struct StudyFile: View {
                 }
             }
         }
-        .hitchPage("书案")
+        .hitchPage("书案文件")
         .navigationTitle(url.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -860,22 +877,65 @@ struct StudyFile: View {
 /// The text view owns scrolling so TextKit 2 can lay out the visible range without sizing the whole document.
 private struct LongTextPreview: UIViewRepresentable {
     let text: String
+    var isPlainProseText = false
+    var themeSignature = ""
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView(usingTextLayoutManager: true)
         view.isEditable = false
         view.isSelectable = true
+        view.alwaysBounceVertical = true
         view.backgroundColor = .clear
         view.textContainer.lineFragmentPadding = 0
         view.textContainerInset = UIEdgeInsets(top: Ink.Space.l, left: Ink.Space.page,
                                               bottom: Ink.Space.l, right: Ink.Space.page)
-        view.font = Ink.uiMono(max(12, Pref.size - 3))
-        view.textColor = UIColor(Ink.ink)
+        let style = resolvedStyle()
+        applyStyle(style, to: view)
         view.text = text
+        context.coordinator.lastText = text
+        context.coordinator.lastStyleSignature = style.signature
         return view
     }
 
-    func updateUIView(_ view: UITextView, context: Context) {}
+    func updateUIView(_ view: UITextView, context: Context) {
+        let style = resolvedStyle()
+        if context.coordinator.lastStyleSignature != style.signature {
+            applyStyle(style, to: view)
+            context.coordinator.lastStyleSignature = style.signature
+        }
+        if context.coordinator.lastText != text {
+            view.text = text
+            context.coordinator.lastText = text
+        }
+    }
+
+    private func resolvedStyle() -> (font: UIFont, color: UIColor, signature: String) {
+        let theme = Theme.shared
+        let font = isPlainProseText
+            ? Ink.uiFace(CGFloat(Pref.size))
+            : Ink.uiMono(max(12, CGFloat(Pref.size) - 3))
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        let color = UIColor(Ink.ink).resolvedColor(with: traits)
+        let signature = "\(isPlainProseText ? 1 : 0)|\(colorScheme == .dark ? 1 : 0)|\(theme.size)|\(theme.face.rawValue)|\(theme.code.rawValue)|\(theme.key)|\(theme.oled ? 1 : 0)|\(theme.white ? 1 : 0)|\(theme.fontsArrived)|\(themeSignature)"
+        return (font, color, signature)
+    }
+
+    private func applyStyle(_ style: (font: UIFont, color: UIColor, signature: String), to view: UITextView) {
+        if view.font != style.font {
+            view.font = style.font
+        }
+        if view.textColor != style.color {
+            view.textColor = style.color
+        }
+    }
+
+    final class Coordinator {
+        var lastText = ""
+        var lastStyleSignature = ""
+    }
 }
 
 /// Comma- or tab-separated text as rows of cells. Quotes may hold separators, line breaks and doubled quotes.

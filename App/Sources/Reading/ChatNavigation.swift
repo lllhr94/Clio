@@ -161,6 +161,7 @@ struct ChatMinimapOverlay: View {
     let onCancelHide: () -> Void
     let onJump: (String, Bool, String) -> Void
     let onStepQuestion: (Bool) -> Void
+    var onPrewarm: (String) -> Void = { _ in }
 
     var body: some View {
         let rows = historyPage.map { $0[...] } ?? chat.lines.suffix(shownCount)
@@ -221,6 +222,9 @@ struct ChatMinimapOverlay: View {
                         guard let index = nearest(drag.location.y), index != chrome.minimapScrub else { return }
                         if chrome.minimapScrub != nil { Haptics.tick(0.3) }
                         chrome.minimapScrub = index
+                        if rows.indices.contains(index) {
+                            onPrewarm(rows[index].id)
+                        }
                     }
                     .onEnded { drag in
                         let index = nearest(drag.location.y) ?? chrome.minimapScrub

@@ -20,7 +20,7 @@ struct SettingsView: View {
 
     private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
         ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models]),
-        ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .pet, .morning]),
+        ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .memory, .rooms, .pet, .morning]),
         ("settings.appearance", Ink.Tile.teng, [.theme, .font, .size, .tone]),
         ("settingsHome.chatGroup", Ink.Tile.mo, [.display, .context]),
         ("agent.capabilities", Ink.Tile.xiang, [.grants, .searchEngine, .connectors, .skills, .timing, .hosts]),
@@ -76,7 +76,7 @@ struct SettingsView: View {
 
     private var found: [SettingsPage] {
         let words = query.split(whereSeparator: \.isWhitespace)
-        let pages = Self.groups.flatMap(\.pages) + [.memory, .vault, .voice]
+        let pages = Self.groups.flatMap(\.pages) + [.vault, .voice]
         return pages.filter { page in
             let terms = [L.daily[page.titleKey], L.literary[page.titleKey],
                          L.daily[page.lineKey], L.literary[page.lineKey], page.keywords].compactMap { $0 }

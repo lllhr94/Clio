@@ -35,6 +35,10 @@ final class ChatScroller {
             listProxy.scrollTo(id: id, anchor: anchor, animated: shouldAnimate)
         }
     }
+
+    func prewarm(_ id: String) {
+        listProxy?.prewarmAround(id: id)
+    }
 }
 
 /// Top-level observable model for hosted `Trace` cells (top-level avoids Xcode 26.3 nested `@Observable` traps).
