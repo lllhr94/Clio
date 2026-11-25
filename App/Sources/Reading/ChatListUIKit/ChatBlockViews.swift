@@ -164,6 +164,8 @@ final class ChatCodeBlockView: UIView {
         setNeedsLayout()
     }
 
+    var hasSelectableText: Bool { codeTextView.hasSelectableText }
+
     func clearSelection() {
         codeTextView.clearSelectionIfNeeded()
     }

@@ -25,6 +25,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     var hasSelectableText: Bool {
         !currentRendered.isEmpty
+            && !currentRendered.attributed.string
+                .replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
     }
 
     var selectedRange: NSRange {
@@ -402,7 +406,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         } else {
             let expectedDrawGen = drawGeneration
             inFlightRenderKey = renderKey
-            ChatTextTileRenderer.shared.renderAsync(request) { [weak self] key, tiles in
+            ChatTextTileRenderer.shared.renderAsync(request) { [weak self] key, result in
                 guard let self else { return }
                 if self.drawGeneration == expectedDrawGen && self.inFlightRenderKey == key {
                     self.inFlightRenderKey = ""
@@ -412,9 +416,12 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                       self.selectionTextView == nil || self.isAwaitingFinalizedTiles else {
                     return
                 }
-                if let tiles {
+                switch result {
+                case .rendered(let tiles):
                     self.applyTiles(tiles, forKey: key, scale: scale)
-                } else {
+                case .staleOrCancelled:
+                    self.setNeedsLayout()
+                case .failed:
                     self.isAwaitingFinalizedTiles = false
                     self.mountFallbackTextView()
                 }
@@ -625,18 +632,38 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     @discardableResult
     func activateSelectionAll() -> Bool {
+        guard hasSelectableText else { return false }
         isActivatingSelection = true
         defer { isActivatingSelection = false }
         guard let tv = prepareSelectionTextView() else { return false }
 
-        let len = tv.attributedText?.length ?? 0
+        let nsText = (tv.attributedText?.string ?? "") as NSString
+        let len = nsText.length
         guard len > 0 else {
             if !currentIsLive && !keepsFallbackTextView {
                 teardownSelectionTextView(notifyIfNeeded: false)
             }
             return false
         }
-        tv.selectedRange = NSRange(location: 0, length: len)
+        var start = 0
+        while start < len {
+            let ch = nsText.character(at: start)
+            if ch == 0x200B || ch == 0x000A || ch == 0x000D {
+                start += 1
+            } else {
+                break
+            }
+        }
+        var end = len
+        while end > start {
+            let ch = nsText.character(at: end - 1)
+            if ch == 0x200B || ch == 0x000A || ch == 0x000D {
+                end -= 1
+            } else {
+                break
+            }
+        }
+        tv.selectedRange = end > start ? NSRange(location: start, length: end - start) : NSRange(location: 0, length: len)
         tv.becomeFirstResponder()
         publishSelection(true)
         updateGestureStates()
@@ -644,15 +671,60 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         return true
     }
 
+    private struct AccessibilityLinkKey: Hashable {
+        let title: String
+        let url: URL
+    }
+
+    private func makeLinkAccessibilityActions() -> [UIAccessibilityCustomAction]? {
+        let attributed = currentRendered.attributed
+        guard attributed.length > 0 else { return nil }
+        let fullText = attributed.string as NSString
+        var actions: [UIAccessibilityCustomAction] = []
+        var seen = Set<AccessibilityLinkKey>()
+
+        attributed.enumerateAttribute(
+            .link,
+            in: NSRange(location: 0, length: attributed.length),
+            options: []
+        ) { value, range, _ in
+            let url: URL?
+            if let direct = value as? URL {
+                url = direct
+            } else if let str = value as? String {
+                url = URL(string: str)
+            } else {
+                url = nil
+            }
+            guard let url else { return }
+            let rawTitle = fullText.substring(with: range)
+                .replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = rawTitle.isEmpty ? url.absoluteString : rawTitle
+            let key = AccessibilityLinkKey(title: title, url: url)
+            guard seen.insert(key).inserted else { return }
+            actions.append(UIAccessibilityCustomAction(name: title) { [weak self] _ in
+                self?.onLinkTapped?(url)
+                return true
+            })
+        }
+        return actions.isEmpty ? nil : actions
+    }
+
     private func updateAccessibility() {
-        if selectionTextView == nil && !currentRendered.isEmpty {
+        let label = currentRendered.attributed.string
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if selectionTextView == nil && !currentRendered.isEmpty && !label.isEmpty {
             isAccessibilityElement = true
-            accessibilityLabel = currentRendered.attributed.string
+            accessibilityLabel = label
             accessibilityTraits = [.staticText]
+            accessibilityCustomActions = currentRendered.hasLinks ? makeLinkAccessibilityActions() : nil
         } else {
             isAccessibilityElement = false
             accessibilityLabel = nil
             accessibilityTraits = []
+            accessibilityCustomActions = nil
         }
     }
 
@@ -660,7 +732,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     private func updateGestureStates() {
         let tilesActive = (selectionTextView == nil)
-        let hasText = !currentRendered.isEmpty
+        let hasText = hasSelectableText
         linkTapGesture?.isEnabled = tilesActive && currentRendered.hasLinks
         doubleTapGesture?.isEnabled = tilesActive && hasText
         longPressGesture?.isEnabled = tilesActive && hasText && allowLongPressSelection
@@ -720,6 +792,9 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         let attrLength = currentRendered.attributed.length
         for i in 0..<lineCount {
             let line = unsafeBitCast(CFArrayGetValueAtIndex(cfLines, i), to: CTLine.self)
+            let cfRange = CTLineGetStringRange(line)
+            guard cfRange.location != kCFNotFound, cfRange.length > 0 else { continue }
+            let lineRange = cfRange.location..<(cfRange.location + cfRange.length)
             let origin = origins[i]
             var ascent: CGFloat = 0
             var descent: CGFloat = 0
@@ -737,7 +812,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             guard rawIndex != kCFNotFound else { continue }
 
             let candidates = [rawIndex, rawIndex - 1]
-            for idx in candidates where idx >= 0 && idx < attrLength {
+            for idx in candidates where lineRange.contains(idx) && idx >= 0 && idx < attrLength {
                 let value = currentRendered.attributed.attribute(.link, at: idx, effectiveRange: nil)
                 if let url = value as? URL {
                     return url

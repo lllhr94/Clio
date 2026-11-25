@@ -63,6 +63,14 @@ final class ChatRenderedTiles: @unchecked Sendable {
     }
 }
 
+/// Outcome of an asynchronous tile rasterization request, distinguishing stale or cancelled work
+/// from true rasterization failures.
+enum ChatTileRenderResult: @unchecked Sendable {
+    case rendered(ChatRenderedTiles)
+    case staleOrCancelled
+    case failed
+}
+
 /// Off-main-thread CoreText tiled bitmap renderer with bounded `NSCache`, coalesced in-flight work,
 /// and `UICollectionViewDataSourcePrefetching` support.
 final class ChatTextTileRenderer: @unchecked Sendable {
@@ -92,7 +100,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     }()
 
     private let lock = NSLock()
-    private var inFlight: [String: (op: Operation, completions: [@MainActor (String, ChatRenderedTiles?) -> Void])] = [:]
+    private var inFlight: [String: (op: Operation, completions: [@MainActor (String, ChatTileRenderResult) -> Void])] = [:]
     private var generation: UInt64 = 0
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -141,12 +149,12 @@ final class ChatTextTileRenderer: @unchecked Sendable {
 
     func renderAsync(
         _ request: ChatTextRenderRequest,
-        completion: @escaping @MainActor (String, ChatRenderedTiles?) -> Void
+        completion: @escaping @MainActor (String, ChatTileRenderResult) -> Void
     ) {
         if let hit = cache.object(forKey: request.cacheKey as NSString) {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    completion(request.cacheKey, hit)
+                    completion(request.cacheKey, .rendered(hit))
                 }
             }
             return
@@ -157,7 +165,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
             lock.unlock()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    completion(request.cacheKey, hit)
+                    completion(request.cacheKey, .rendered(hit))
                 }
             }
             return
@@ -296,11 +304,18 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         lock.unlock()
 
         guard !completions.isEmpty else { return }
-        let delivered: ChatRenderedTiles? = validGen ? rendered : nil
+        let result: ChatTileRenderResult
+        if !validGen {
+            result = .staleOrCancelled
+        } else if let rendered {
+            result = .rendered(rendered)
+        } else {
+            result = .failed
+        }
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 for cb in completions {
-                    cb(key, delivered)
+                    cb(key, result)
                 }
             }
         }
