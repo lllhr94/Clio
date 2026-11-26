@@ -225,11 +225,17 @@ final class ChatAssistantCell: UICollectionViewCell {
         actions = nil
         callbacks = Callbacks()
 
+        thinkingTextView?.setRevealVisible(false)
         thinkingTextView?.resetForReuse()
         thinkingTextView?.isHidden = true
+        pulseTextView?.setRevealVisible(false)
         pulseTextView?.resetForReuse()
         pulseTextView?.isHidden = true
-        richTextViews.forEach { $0.resetForReuse(); $0.isHidden = true }
+        richTextViews.forEach {
+            $0.setRevealVisible(false)
+            $0.resetForReuse()
+            $0.isHidden = true
+        }
         codeBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         tableBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         formulaBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
@@ -347,6 +353,21 @@ final class ChatAssistantCell: UICollectionViewCell {
         return row.line.id
     }
 
+    func setRevealVisible(_ visible: Bool) {
+        for tv in richTextViews where !tv.isHidden {
+            tv.setRevealVisible(visible)
+        }
+    }
+
+    func captureRevealHandoff() -> ChatRevealHandoff? {
+        for tv in richTextViews.reversed() where !tv.isHidden {
+            if let handoff = tv.captureRevealHandoff() {
+                return handoff
+            }
+        }
+        return nil
+    }
+
     func footerActionsRectInWindow() -> CGRect {
         guard !footerView.isHidden else { return .null }
         return footerView.actionsRectInWindow()
@@ -363,7 +384,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         hostViewController: UIViewController?,
         actions: ChatListActions,
         callbacks: Callbacks,
-        transferredSelection: ChatProseSelectionSnapshot? = nil
+        transferredSelection: ChatProseSelectionSnapshot? = nil,
+        transferredReveal: ChatRevealHandoff? = nil
     ) {
         self.ownerID = row.line.id
         self.isLiveStreamingOnly = false
@@ -382,7 +404,8 @@ final class ChatAssistantCell: UICollectionViewCell {
             row: row,
             entry: entry,
             style: style,
-            transferredSelection: transferredSelection
+            transferredSelection: transferredSelection,
+            transferredReveal: transferredReveal
         )
     }
 
@@ -425,7 +448,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         continueButton.isHidden = true
         footerView.isHidden = true
 
-        applySlices(entry: entry, style: style, lineID: ownerID, transferredSelection: nil)
+        applySlices(entry: entry, style: style, lineID: ownerID, transferredSelection: nil, transferredReveal: nil)
         refreshColors()
         setNeedsLayout()
     }
@@ -434,7 +457,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         guard isLiveStreamingOnly else { return }
         self.currentEntry = entry
         self.currentStyle = style
-        applySlices(entry: entry, style: style, lineID: ownerID, transferredSelection: nil)
+        applySlices(entry: entry, style: style, lineID: ownerID, transferredSelection: nil, transferredReveal: nil)
         setNeedsLayout()
         layoutIfNeeded()
     }
@@ -446,7 +469,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         expandedThinking: Bool,
         expandedPulse: Bool,
         expandedLookback: Bool,
-        unfoldedSlices: Set<Int>
+        unfoldedSlices: Set<Int>,
+        transferredReveal: ChatRevealHandoff? = nil
     ) {
         guard !isLiveStreamingOnly, ownerID == row.line.id else { return }
         self.currentRow = row
@@ -456,7 +480,13 @@ final class ChatAssistantCell: UICollectionViewCell {
         self.isPulseExpanded = expandedPulse
         self.isLookbackExpanded = expandedLookback
         self.unfoldedSlices = unfoldedSlices
-        applySettledContents(row: row, entry: entry, style: style, transferredSelection: nil)
+        applySettledContents(
+            row: row,
+            entry: entry,
+            style: style,
+            transferredSelection: nil,
+            transferredReveal: transferredReveal
+        )
         layoutIfNeeded()
     }
 
@@ -464,7 +494,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         row: ChatListRowItem,
         entry: ChatLayoutCache.AssistantLayoutEntry,
         style: ChatListStyle,
-        transferredSelection: ChatProseSelectionSnapshot?
+        transferredSelection: ChatProseSelectionSnapshot?,
+        transferredReveal: ChatRevealHandoff?
     ) {
         litBackdrop.isHidden = !row.lit
 
@@ -492,7 +523,13 @@ final class ChatAssistantCell: UICollectionViewCell {
         configurePulse(row: row, entry: entry, style: style)
         configureLookback(row: row, entry: entry)
 
-        applySlices(entry: entry, style: style, lineID: row.line.id, transferredSelection: transferredSelection)
+        applySlices(
+            entry: entry,
+            style: style,
+            lineID: row.line.id,
+            transferredSelection: transferredSelection,
+            transferredReveal: transferredReveal
+        )
 
         if entry.hasSources, let meta = row.lineMeta {
             sourcesPill.isHidden = false
@@ -712,7 +749,8 @@ final class ChatAssistantCell: UICollectionViewCell {
         entry: ChatLayoutCache.AssistantLayoutEntry,
         style: ChatListStyle,
         lineID: String,
-        transferredSelection: ChatProseSelectionSnapshot?
+        transferredSelection: ChatProseSelectionSnapshot?,
+        transferredReveal: ChatRevealHandoff?
     ) {
         var rtIndex = 0
         var cbIndex = 0
@@ -722,10 +760,28 @@ final class ChatAssistantCell: UICollectionViewCell {
         var pbIndex = 0
         let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
+        let prevLiveHandoff: ChatRevealHandoff? = isLive ? captureRevealHandoff() : nil
+
+        var totalRichTextCount = 0
+        for measured in entry.slices {
+            switch measured.slice {
+            case .richText:
+                totalRichTextCount += 1
+            case .pictures(let words, _, _) where words != nil:
+                totalRichTextCount += 1
+            default:
+                break
+            }
+        }
+        let lastRichTextIndex = totalRichTextCount - 1
 
         func transferTuple(for idx: Int) -> (range: NSRange, substring: String)? {
-            guard let snap = transferredSelection, snap.richTextIndex == idx else { return nil }
-            return (snap.range, snap.substring)
+            guard let snap = transferredSelection else { return nil }
+            if snap.richTextIndex == idx { return (snap.range, snap.substring) }
+            if snap.richTextIndex > lastRichTextIndex && idx == lastRichTextIndex {
+                return (snap.range, snap.substring)
+            }
+            return nil
         }
 
         for (slicePos, measured) in entry.slices.enumerated() {
@@ -734,7 +790,24 @@ final class ChatAssistantCell: UICollectionViewCell {
                 let tv = ensureRichTextView(at: rtIndex)
                 tv.isHidden = false
                 wireTextViewCallbacks(tv, lineID: lineID)
-                tv.apply(ownerID: "\(lineID)#rt\(rtIndex)", rendered: rendered, style: style, isLive: isLive, transferredSelection: transferTuple(for: rtIndex))
+                let isSliceLiveTail = isLive && (rendered.liveTailIndex != nil)
+                let sliceRevealTransfer: ChatRevealHandoff?
+                if isSliceLiveTail {
+                    sliceRevealTransfer = (rtIndex == lastRichTextIndex) ? prevLiveHandoff : nil
+                } else if !isLive && rtIndex == lastRichTextIndex {
+                    sliceRevealTransfer = transferredReveal
+                } else {
+                    sliceRevealTransfer = nil
+                }
+                tv.apply(
+                    ownerID: "\(lineID)#rt\(rtIndex)",
+                    rendered: rendered,
+                    style: style,
+                    isLive: isLive,
+                    isLiveTail: isSliceLiveTail,
+                    transferredSelection: transferTuple(for: rtIndex),
+                    transferredReveal: sliceRevealTransfer
+                )
                 rtIndex += 1
 
             case .code(let codeSlice, let sliceIndex):
@@ -804,7 +877,16 @@ final class ChatAssistantCell: UICollectionViewCell {
                     let tv = ensureRichTextView(at: rtIndex)
                     tv.isHidden = false
                     wireTextViewCallbacks(tv, lineID: lineID)
-                    tv.apply(ownerID: "\(lineID)#picwords\(slicePos)", rendered: words, style: style, isLive: isLive, transferredSelection: transferTuple(for: rtIndex))
+                    let picRevealTransfer = (!isLive && rtIndex == lastRichTextIndex) ? transferredReveal : nil
+                    tv.apply(
+                        ownerID: "\(lineID)#picwords\(slicePos)",
+                        rendered: words,
+                        style: style,
+                        isLive: isLive,
+                        isLiveTail: false,
+                        transferredSelection: transferTuple(for: rtIndex),
+                        transferredReveal: picRevealTransfer
+                    )
                     rtIndex += 1
                 }
                 for (picIndex, pic) in pics.enumerated() {
@@ -902,19 +984,21 @@ final class ChatAssistantCell: UICollectionViewCell {
         guard let entry = currentEntry, let style = currentStyle else { return }
 
         let pageMargin = Ink.Space.page
-        let contentWidth = max(120, contentView.bounds.width - pageMargin * 2)
+        let maxAvailable = max(120, contentView.bounds.width - pageMargin * 2)
+        let contentWidth = min(maxAvailable, max(120, entry.contentWidth))
+        let contentX = max(pageMargin, ((contentView.bounds.width - contentWidth) * 0.5).rounded())
         var y: CGFloat = 0
 
         if entry.timeGapHeight > 0 {
-            timeGapLabel.frame = CGRect(x: pageMargin, y: y, width: contentWidth, height: entry.timeGapHeight)
+            timeGapLabel.frame = CGRect(x: contentX, y: y, width: contentWidth, height: entry.timeGapHeight)
             y += entry.timeGapHeight + ChatCellMetrics.timeGapBottomPad + ChatCellMetrics.sectionSpacing
         }
 
         if entry.speakerHeight > 0 {
             let size = entry.speakerHeight
-            speakerAvatar.frame = CGRect(x: pageMargin, y: y, width: size, height: size)
+            speakerAvatar.frame = CGRect(x: contentX, y: y, width: size, height: size)
             speakerLabel.frame = CGRect(
-                x: pageMargin + size + ChatCellMetrics.speakerRowGap,
+                x: contentX + size + ChatCellMetrics.speakerRowGap,
                 y: y,
                 width: max(40, contentWidth - size - ChatCellMetrics.speakerRowGap),
                 height: size
@@ -930,17 +1014,17 @@ final class ChatAssistantCell: UICollectionViewCell {
 
         if entry.thinkingText != nil {
             advanceGap()
-            layoutThinking(x: pageMargin, y: &y, width: contentWidth, entry: entry)
+            layoutThinking(x: contentX, y: &y, width: contentWidth, entry: entry)
         }
 
         if entry.pulseText != nil {
             advanceGap()
-            layoutPulse(x: pageMargin, y: &y, width: contentWidth, entry: entry)
+            layoutPulse(x: contentX, y: &y, width: contentWidth, entry: entry)
         }
 
         if entry.lookbackHeight > 0 {
             advanceGap()
-            lookbackButton.frame = CGRect(x: pageMargin, y: y, width: contentWidth, height: entry.lookbackHeight)
+            lookbackButton.frame = CGRect(x: contentX, y: y, width: contentWidth, height: entry.lookbackHeight)
             let iconSize: CGFloat = 13
             lookbackIcon.frame = CGRect(x: 0, y: 2, width: iconSize, height: iconSize)
             lookbackLabel.frame = CGRect(x: iconSize + Ink.Space.s, y: 0, width: max(20, contentWidth - iconSize - Ink.Space.s), height: entry.lookbackHeight)
@@ -949,33 +1033,33 @@ final class ChatAssistantCell: UICollectionViewCell {
 
         if !entry.slices.isEmpty {
             advanceGap()
-            layoutSlices(x: pageMargin, y: &y, width: contentWidth, entry: entry, style: style)
+            layoutSlices(x: contentX, y: &y, width: contentWidth, entry: entry, style: style)
         }
 
         if entry.hasSources {
             advanceGap()
             let pillSize = sourcesPill.sizeThatFits(CGSize(width: contentWidth, height: ChatCellMetrics.sourcesPillHeight))
-            sourcesPill.frame = CGRect(x: pageMargin, y: y, width: pillSize.width, height: ChatCellMetrics.sourcesPillHeight)
+            sourcesPill.frame = CGRect(x: contentX, y: y, width: pillSize.width, height: ChatCellMetrics.sourcesPillHeight)
             y += ChatCellMetrics.sourcesPillHeight
         }
 
         if entry.hasContinueButton {
             advanceGap()
             let fit = continueButton.sizeThatFits(CGSize(width: contentWidth, height: ChatCellMetrics.continueButtonHeight))
-            continueButton.frame = CGRect(x: pageMargin, y: y, width: min(contentWidth, fit.width), height: ChatCellMetrics.continueButtonHeight)
+            continueButton.frame = CGRect(x: contentX, y: y, width: min(contentWidth, fit.width), height: ChatCellMetrics.continueButtonHeight)
             y += ChatCellMetrics.continueButtonHeight
         }
 
         if entry.hasFooter {
             advanceGap()
-            footerView.frame = CGRect(x: pageMargin, y: y, width: contentWidth, height: ChatCellMetrics.footerHeight)
+            footerView.frame = CGRect(x: contentX, y: y, width: contentWidth, height: ChatCellMetrics.footerHeight)
             y += ChatCellMetrics.footerHeight
         }
 
         if !litBackdrop.isHidden {
             let inset = Ink.Space.s
             litBackdrop.frame = CGRect(
-                x: pageMargin - inset,
+                x: contentX - inset,
                 y: -inset,
                 width: contentWidth + inset * 2,
                 height: max(20, y + inset * 2)
@@ -1038,7 +1122,14 @@ final class ChatAssistantCell: UICollectionViewCell {
         var pbIndex = 0
 
         for (idx, measured) in entry.slices.enumerated() {
-            if idx > 0 { y += style.paragraphGap }
+            if idx > 0 {
+                if case .richText(let prev) = entry.slices[idx - 1].slice,
+                   let explicitGap = prev.spacingAfter {
+                    y += explicitGap
+                } else {
+                    y += style.paragraphGap
+                }
+            }
             switch measured.slice {
             case .richText:
                 if rtIndex < richTextViews.count {

@@ -159,6 +159,7 @@ final class ChatModel {
     }
     @ObservationIgnored private var toolRows: Task<Void, Never>?
     @ObservationIgnored private var prewarmTask: Task<Void, Never>?
+    @ObservationIgnored private var uiKitCoalesce: Task<Void, Never>?
     private var browsingHistory = false
     private var heldRows: [ChatLine]?
     /// Everything received of the reply being written; `streaming` follows it at an even pace.
@@ -270,6 +271,8 @@ final class ChatModel {
         clearThinking()
         typing?.cancel()
         typing = nil
+        uiKitCoalesce?.cancel()
+        uiKitCoalesce = nil
         fresh = nil
     }
 
@@ -289,6 +292,47 @@ final class ChatModel {
 
     /// Text arrives in bursts; this lets it out a little each frame, faster when more is waiting.
     private func type() {
+        if Pref.useUIKitChatList {
+            typing?.cancel()
+            typing = nil
+            if let settling = fresh, settling.shown != nil {
+                uiKitCoalesce?.cancel()
+                uiKitCoalesce = nil
+                shown = finalCount
+                fresh?.shown = nil
+                return
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            let goal = target.count
+            let minInterval = 1.0 / 30.0
+            if streaming.isEmpty || (now - published >= minInterval) {
+                uiKitCoalesce?.cancel()
+                uiKitCoalesce = nil
+                shown = goal
+                publishedShown = goal
+                if streaming != target { streaming = target }
+                published = now
+                return
+            }
+            guard uiKitCoalesce == nil else { return }
+            let waitSeconds = max(0.001, minInterval - (now - published))
+            uiKitCoalesce = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                self.uiKitCoalesce = nil
+                guard Pref.useUIKitChatList else { return }
+                if self.fresh?.shown != nil {
+                    self.shown = self.finalCount
+                    self.fresh?.shown = nil
+                }
+                let currentGoal = self.target.count
+                self.shown = currentGoal
+                self.publishedShown = currentGoal
+                if self.streaming != self.target { self.streaming = self.target }
+                self.published = ProcessInfo.processInfo.systemUptime
+            }
+            return
+        }
         guard typing == nil else { return }
         typing = Task { [weak self] in
             while !Task.isCancelled, let self, self.step() {
@@ -670,6 +714,8 @@ final class ChatModel {
     func retry(restoring: Bool = false) {
         guard !demo else { return }
         withAnimation(.smooth) { error = nil }
+        uiKitCoalesce?.cancel()
+        uiKitCoalesce = nil
         target = ""
         streaming = ""
         team.retry(key, restoring: restoring)
@@ -682,6 +728,8 @@ final class ChatModel {
         guard !demo, !trimmed.isEmpty else { return false }
         guard team.canAcceptInput(for: key) else { return false }
         withAnimation(.smooth) { error = nil }
+        uiKitCoalesce?.cancel()
+        uiKitCoalesce = nil
         target = ""
         streaming = ""
         return team.resend(key, entry: id, text: trimmed, restoring: restoring)

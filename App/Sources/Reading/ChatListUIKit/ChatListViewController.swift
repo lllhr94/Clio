@@ -179,10 +179,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         keyboardObserverTokens.removeAll()
         if let collectionView {
             for cell in collectionView.visibleCells {
+                (cell as? ChatAssistantCell)?.setRevealVisible(false)
                 (cell as? ChatAssistantCell)?.prepareForReuse()
                 (cell as? ChatLiveToolTailCell)?.stopObserving()
             }
         }
+        pendingRevealTransfers.removeAll()
         cancelAllPrefetches()
         cancelPrewarm()
         let owner = lastReportedReplyOwner
@@ -292,12 +294,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             activeKeyboardDeadline = 0
             updateCollectionInsetsIfNeeded()
         }
+        collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(true) }
         startStyleObservationIfVisible()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         isViewVisible = false
+        collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(false) }
         styleObservationGeneration &+= 1
         activeKeyboardDeadline = 0
         stopInsetDisplayLink()
@@ -638,6 +642,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ) as? ChatAssistantCell else { return UICollectionViewCell() }
             let entry = measureAssistant(row: row, width: width)
             let transfer = pendingSelectionTransfers.removeValue(forKey: row.line.id)
+            let revealTransfer = pendingRevealTransfers.removeValue(forKey: row.line.id)
             cell.configure(
                 row: row,
                 entry: entry,
@@ -649,7 +654,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 hostViewController: self,
                 actions: actions,
                 callbacks: makeAssistantCallbacks(lineID: row.line.id),
-                transferredSelection: transfer
+                transferredSelection: transfer,
+                transferredReveal: revealTransfer
             )
             return cell
 
@@ -711,6 +717,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private var pendingSelectionTransfers: [String: ChatProseSelectionSnapshot] = [:]
+    private var pendingRevealTransfers: [String: ChatRevealHandoff] = [:]
 
     private func makeAssistantCallbacks(lineID: String) -> ChatAssistantCell.Callbacks {
         ChatAssistantCell.Callbacks(
@@ -1043,6 +1050,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         expandedLookbackIDs.removeAll()
         unfoldedCodeSlices.removeAll()
         pendingSelectionTransfers.removeAll()
+        pendingRevealTransfers.removeAll()
         if activeTraceSheetLineID != nil,
            activeTraceSheetModel != nil,
            let presented = presentedViewController,
@@ -1345,6 +1353,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         switch newRow.line.kind {
         case .bot:
             let entry = measureAssistant(row: newRow, width: width)
+            let revealTransfer = pendingRevealTransfers.removeValue(forKey: newRow.line.id)
             if let cell = collectionView.cellForItem(at: indexPath) as? ChatAssistantCell {
                 cell.updateSettledInPlace(
                     row: newRow,
@@ -1353,7 +1362,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     expandedThinking: expandedThinkingIDs.contains(newRow.line.id),
                     expandedPulse: expandedPulseIDs.contains(newRow.line.id),
                     expandedLookback: expandedLookbackIDs.contains(newRow.line.id),
-                    unfoldedSlices: unfoldedCodeSlices[newRow.line.id] ?? []
+                    unfoldedSlices: unfoldedCodeSlices[newRow.line.id] ?? [],
+                    transferredReveal: revealTransfer
                 )
             }
             return entry.cellHeight
@@ -1407,13 +1417,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let loadedInitialRows = (prev.rows.isEmpty && !next.rows.isEmpty)
             || (!prev.loaded && next.loaded && !next.rows.isEmpty)
 
-        // Transfer active text selection seamlessly if live stream just handed off to a committed bot reply.
+        // Transfer active selection or smooth reveal tail seamlessly from live stream to committed bot reply.
         if prev.hasStreaming && !next.hasStreaming,
            let liveIdx = itemIndexByID[.liveProse(prev.streamGeneration)],
            let liveCell = collectionView.cellForItem(at: IndexPath(item: 0, section: liveIdx)) as? ChatAssistantCell,
-           let snap = liveCell.currentProseSelectionSnapshot(),
            let targetBotID = next.fresh?.id ?? next.rows.last(where: { $0.line.kind == .bot })?.line.id {
-            pendingSelectionTransfers[targetBotID] = snap
+            if let snap = liveCell.currentProseSelectionSnapshot() {
+                pendingSelectionTransfers[targetBotID] = snap
+            } else if currentStyle.fade && !currentStyle.reduceMotion,
+                      let handoff = liveCell.captureRevealHandoff() {
+                pendingRevealTransfers[targetBotID] = handoff
+            }
         }
 
         let shouldPinToBottom = canAutoPinToBottom
@@ -2508,7 +2522,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
-        if let toolTailCell = cell as? ChatLiveToolTailCell {
+        if let assistant = cell as? ChatAssistantCell {
+            assistant.setRevealVisible(true)
+        } else if let toolTailCell = cell as? ChatLiveToolTailCell {
             let chatKey = currentState?.chatKey ?? actions.chat.key
             let tail = actions.team.toolTail(for: chatKey)
             let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
@@ -2520,6 +2536,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         if let assistant = cell as? ChatAssistantCell {
+            assistant.setRevealVisible(false)
             for uuid in assistant.activeSelectionOwnerIDs() {
                 handleSelectionChanged(uuid, false)
             }
