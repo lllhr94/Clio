@@ -1,5 +1,22 @@
 # 现状与交接
 
+## Clio DS 2.0 工程实施汇总（11-26，Wave 1–5 堆叠 PR #95–#100）
+
+- **冻结设计基线**：`origin/design/v2-review` v16（Design Tokens `2.4.0`；Telegram 原版参考上游提交 `24638bc`），基于 `batch-0.36`（`ee034ac`，已合入 PR #67–#94）以 5 组可独立回滚的堆叠分支依次实现；**`main` / `latest` / `batch-0.36` 保持未动**，正式合并与发版仍等主人真机验收后明确说「发」。
+- **堆叠分支与试签验证进展**：
+  - **Wave 1**（`antigravity/ds2-wave1-tokens-haptics` -> `batch-0.36`，PR #95）：WCAG 2.1 AA 全量色彩与 `UIScale`/排版开关 Token、`PressStyle` 去默认震动与语义/节流触觉、`StopRuler` 默认档位圆点与震感、双语词典对称键及 `tools/lint.py` 规则。
+  - **Wave 2**（`antigravity/ds2-wave2-typography-reveal` -> Wave 1，PR #96）：原样移植 Telegram `TextRevealController.swift`（附 `UPSTREAM.md` 与 `README.md` `GPL-2.0-or-later` 致谢）、CoreText `Points` 揭示掩码与突发降级、单源 `SafeLineBox`（消除 `lineSpacing`/`minimumLineHeight` 叠加并对齐用户气泡）及四套阅读预设 + 9 项精细排版控件。
+  - **Wave 3A**（`antigravity/ds2-wave3a-chat-chrome` -> Wave 2，PR #97，CI `45750773619`）：`ChatChromeCoordinator` 统一协调 12 项浮层、`Scroll-Aware Chrome` 沉浸阅读与流式停止胶囊、顶栏模型名简化、`Paper Scrim` 防透字。
+  - **Wave 3B**（`antigravity/ds2-wave3b-ia-settings` -> Wave 3A，PR #98，CI `45756201280`）：侧栏 `4+1` 信息架构、`UnifiedGlobalSearchSheet` 全域检索（含中文 IME 防断保护）、设置页 `8+1` 统一 `NavigationStack` 分类与 `CarePage` 拆解。
+  - **Wave 4**（`antigravity/ds2-wave4-workflow-network` -> Wave 3B，PR #99，CI `45758960253`，`AgentKit` 407/407 通过）：工具执行严格 7 态、批准单手势取消保护与无障碍等效按钮、`PrivateNetworkPolicy` 五域分类与 Fake-IP 代理兼容开关、`PrivateNetworkGrant` 作用域授权与 6 类可懂诊断、多跳 SSH `ProxyJump` 及路径绑定指纹校验。
+  - **Wave 5**（`antigravity/ds2-wave5-polish-a11y` -> Wave 4）：`InteractivePreview` 与 UIKit 图片/交互卡 `.matchedTransitionSource` / `preferredTransition = .zoom` 一镜到底缩放；`Ink.inkFaint`、边框/分隔线高对比度自适应，减透明降级、减动效避让、`DenPage` 非纯色终端状态图标与 `StopRow`/`StopRuler`/`ApproveView`/`InlineApproval`/`InlineAsk`/`AlwaysOn` 全组件 AX1–AX5 断点重排。
+- **待 iPhone 真机联合验收清单**（60Hz 标准屏 + 120Hz ProMotion，详表见 `design/design-system-2.0/engineering/04-device-qa-and-acceptance-rubric.md` D1–D15）：
+  1. **排版与字体**：实测霞鹜文楷、`New York`、苹方与宋体在 7 处正文面的无双倍行距对齐，确认长文档/混合中英代码块与表格手感。
+  2. **Telegram 渐显实体校准**：在实体 iPhone 上对照慢速/突发/中英混排流式长段实测 `durationMultiplier`、`SnippetLayer` 高负载熔断与定稿选区稳定性。
+  3. **Scroll-Aware Chrome 与 Zoom 过渡**：沉浸收起/恢复及「停止生成」胶囊、中文输入法全域检索连续选词、图片与 `InteractivePreview` 缩放过渡。
+  4. **私网与跳板实网验证**：Fake-IP（`198.18.0.0/15`）开/关对照、`*.local` / `.ts.net` / 已授权内网 HTTP/HTTPS、SSH `ProxyJump` 多跳指纹校验，确认 `127.0.0.1` 与云元数据 `169.254.169.254` 零豁免拦截。
+  5. **无障碍全开关**：VoiceOver 逐项朗读与操作、`AX3+` 大字号重排与旋转、增强对比度、减弱透明度、减弱动态效果、纯黑 OLED 切换。
+
 ## 当前一览（11-25，Clio 0.36 全 App 120Hz 流畅度与对标 Telegram 引擎升级收口）
 
 - **集成分支**：`batch-0.36`（`CFBundleShortVersionString = "0.36"` / `CFBundleVersion = "37"`，`fc2f66c` 起，当前已合并 PR #67–#94，最新代码合入提交为 `8417b4d`）；**未碰 `main` / `latest` / `v0.36`**，正式发版仍等主人说「发」。
