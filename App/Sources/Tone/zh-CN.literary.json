@@ -421,7 +421,7 @@
     "densitySampleTitle": "设置里的一行",
     "densitySampleLine": "换一档看看，整个界面一起变",
     "sample": "示例",
-    "densityNote": "按钮、图标、列表和间距一起放大缩小，对话字号另外调。",
+    "densityNote": "列表、卡片和设置间距会按标准 95% 一起调整；正文顶栏和输入框保留顺手大小，对话字号也另外调。",
     "followSystem": "跟随系统",
     "lightAppearance": "纸白",
     "darkAppearance": "夜墨",

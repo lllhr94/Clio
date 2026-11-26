@@ -366,7 +366,7 @@ struct ReadingSizePage: View {
                 stops: UIScale.levels.indices.map {
                     Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
                 },
-                defaultValue: 1.0,
+                defaultValue: UIScale.defaultFactor,
                 onEditingChanged: { editing in
                     draggingDensity = editing
                     if !editing, let committed = pendingDensity {
@@ -402,7 +402,7 @@ struct ReadingSizePage: View {
         pendingDensity = nil
         draggingDensity = false
         Theme.shared.resetReadingTypography()
-        if UIScale.shared.value != 1 { UIScale.shared.value = 1 }
+        if UIScale.shared.value != UIScale.defaultFactor { UIScale.shared.value = UIScale.defaultFactor }
     }
 }
 
@@ -854,7 +854,7 @@ struct MorningSettingsPage: View {
     @AppStorage("morning.hour") private var morningHour = 7
 
     var body: some View {
-        PreferenceForm(embeddedTitle ?? L.t("settingsHome.morning"), reset: reset) {
+        PreferenceForm(embeddedTitle ?? L.t("settingsHome.morning"), embedded: embeddedTitle != nil, reset: reset) {
             Section {
                 Toggle(L.t("settings.dailyBrief"), isOn: $morningOn)
                 if morningOn {
@@ -936,11 +936,13 @@ struct PrivacySettingsPage<VaultRow: View>: View {
 
 private struct PreferenceForm<Content: View>: View {
     let title: String
+    let embedded: Bool
     let reset: () -> Void
     @ViewBuilder var content: Content
 
-    init(_ title: String, reset: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+    init(_ title: String, embedded: Bool = false, reset: @escaping () -> Void, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.embedded = embedded
         self.reset = reset
         self.content = content()
     }
@@ -958,6 +960,7 @@ private struct PreferenceForm<Content: View>: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(embedded ? .fixed(16) : .navigationBar)
         .paperForm()
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

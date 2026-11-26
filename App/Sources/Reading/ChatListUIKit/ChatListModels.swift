@@ -907,6 +907,8 @@ final class ChatListActions {
     var onScrollPhaseChanged: (String) -> Void = { _ in }
     var onScrollDelta: (CGFloat, CGFloat, CGFloat, CGFloat, Bool, Bool) -> Void = { _, _, _, _, _, _ in }
     var onChromeDragEnded: () -> Void = {}
+    var canRestoreImmersiveChrome: () -> Bool = { false }
+    var onImmersiveBackgroundTap: () -> Void = {}
     var onKeyboardVisibilityChanged: (Bool) -> Void = { _ in }
     var onProgrammaticScroll: () -> Void = {}
     var onDragStarted: () -> Void = {}

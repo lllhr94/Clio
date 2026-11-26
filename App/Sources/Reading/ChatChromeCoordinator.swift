@@ -32,6 +32,7 @@ final class ChatChromeCoordinator {
     @ObservationIgnored private var lastDragDirection: Int = 0
     @ObservationIgnored private var programmaticUntil: CFTimeInterval = 0
     @ObservationIgnored private nonisolated(unsafe) var voiceOverObserver: NSObjectProtocol?
+    @ObservationIgnored private nonisolated(unsafe) var switchControlObserver: NSObjectProtocol?
 
     init() {
         voiceOverObserver = NotificationCenter.default.addObserver(
@@ -46,11 +47,26 @@ final class ChatChromeCoordinator {
                 }
             }
         }
+        switchControlObserver = NotificationCenter.default.addObserver(
+            forName: UIAccessibility.switchControlStatusDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if UIAccessibility.isSwitchControlRunning && (self.mode == .immersive || self.collapseProgress > 0) {
+                    self.restore()
+                }
+            }
+        }
     }
 
     deinit {
         if let voiceOverObserver {
             NotificationCenter.default.removeObserver(voiceOverObserver)
+        }
+        if let switchControlObserver {
+            NotificationCenter.default.removeObserver(switchControlObserver)
         }
     }
 
@@ -74,6 +90,7 @@ final class ChatChromeCoordinator {
             || hasActiveSelection
             || isDictating
             || UIAccessibility.isVoiceOverRunning
+            || UIAccessibility.isSwitchControlRunning
             || hasQuoteOrEdit
             || hasPendingApproval
             || hasInlineAsk

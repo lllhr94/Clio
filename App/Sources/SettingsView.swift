@@ -50,6 +50,7 @@ struct SettingsView: View {
                 listContent
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .searchable(text: $query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .automatic),
                         prompt: L.t("settingsHome.search"))
@@ -480,6 +481,7 @@ struct SettingsView: View {
                 .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t(page.titleKey))
@@ -582,6 +584,7 @@ private struct SettingsCompanionsPage: View {
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .safeAreaInset(edge: .top, spacing: 0) {
             SlidingCapsuleControl(selection: $tab, items: [
                 (value: .companions, title: L.t("settingsHome.companions")),
@@ -589,7 +592,18 @@ private struct SettingsCompanionsPage: View {
             ])
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.s)
-            .background(Ink.paper)
+            .background {
+                LinearGradient(
+                    stops: [
+                        .init(color: Ink.paper.opacity(0.92), location: 0),
+                        .init(color: Ink.paper.opacity(0.76), location: 0.72),
+                        .init(color: Ink.paper.opacity(0), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+            }
         }
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t("settingsHome.companionsAndRooms"))

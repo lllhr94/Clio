@@ -66,6 +66,7 @@ struct ServicePage: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(endpoint?.name ?? L.t("settings.modelService"))
         .navigationBarTitleDisplayMode(.inline)
@@ -692,6 +693,7 @@ private struct ManageModelsSheet: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("settings.manageModels"))
             .navigationBarTitleDisplayMode(.inline)
@@ -954,6 +956,7 @@ struct ModelSheet: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(model)
             .navigationBarTitleDisplayMode(.inline)

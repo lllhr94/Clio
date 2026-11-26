@@ -1130,6 +1130,19 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             chromeCoordinator.handleUserDragEnded()
         }
 
+        actions.canRestoreImmersiveChrome = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return false }
+            return chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0
+        }
+
+        actions.onImmersiveBackgroundTap = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            if chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0 {
+                Haptics.selection()
+                chromeCoordinator.restore()
+            }
+        }
+
         actions.onKeyboardVisibilityChanged = { [weak coordinator] isOpen in
             guard let coordinator, !coordinator.isDismantled else { return }
             chromeCoordinator.syncLocks(keyboardOpen: isOpen)

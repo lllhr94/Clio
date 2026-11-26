@@ -43,6 +43,7 @@ struct DefaultModelsPage: View {
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t("settingsHome.defaultAndSpecialModels"))
@@ -231,6 +232,7 @@ private struct ModelPickerSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(role.title)
             .navigationBarTitleDisplayMode(.inline)

@@ -228,15 +228,33 @@ struct WideButtonStyle: ButtonStyle {
 final class UIScale {
     static let shared = UIScale()
     static let key = "look.ui"
-    static let levels: [(title: String, factor: Double)] = [("紧凑", 0.88), ("偏小", 0.94), ("标准", 1.0), ("偏大", 1.08)]
+    static let defaultFactor: Double = 0.95
+    static let levels: [(title: String, factor: Double)] = [("紧凑", 0.84), ("偏小", 0.90), ("标准", defaultFactor), ("偏大", 1.02)]
 
     @ObservationIgnored private var watching: NSObjectProtocol?
     @ObservationIgnored private var isWritingDefaults = false
 
-    var value: Double = {
-        let stored = UserDefaults.standard.double(forKey: UIScale.key)
-        return stored > 0 ? stored : 1.0
-    }() {
+    /// Legacy v1 scale values `{0.88, 0.94, 1.00, 1.08}` are disjoint from v2 `{0.84, 0.90, 0.95, 1.02}`,
+    /// so upgrades and restored v1 backups always migrate deterministically without relying on extra keys.
+    private static func resolveAndMigrateStoredFactor() -> Double {
+        let defaults = UserDefaults.standard
+        let stored = defaults.double(forKey: key)
+        guard stored > 0 else { return defaultFactor }
+
+        let legacyMapping: [(old: Double, new: Double)] = [
+            (0.88, 0.84),
+            (0.94, 0.90),
+            (1.00, 0.95),
+            (1.08, 1.02),
+        ]
+        if let mapped = legacyMapping.first(where: { abs($0.old - stored) < 0.005 })?.new {
+            defaults.set(mapped, forKey: key)
+            return mapped
+        }
+        return stored
+    }
+
+    var value: Double = UIScale.resolveAndMigrateStoredFactor() {
         didSet {
             guard UserDefaults.standard.double(forKey: Self.key) != value else { return }
             isWritingDefaults = true
@@ -263,8 +281,9 @@ final class UIScale {
     }
 
     private func syncFromDefaults() {
-        let stored = UserDefaults.standard.double(forKey: Self.key)
-        let next = stored > 0 ? stored : 1.0
+        isWritingDefaults = true
+        let next = Self.resolveAndMigrateStoredFactor()
+        isWritingDefaults = false
         if next != value { value = next }
     }
 

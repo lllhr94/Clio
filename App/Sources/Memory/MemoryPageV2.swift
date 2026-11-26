@@ -365,6 +365,7 @@ struct MemoryPageV2: View {
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
     }
 
     // MARK: - Snapshot Sync
@@ -971,6 +972,7 @@ private struct MemoryDetailSheet: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .scrollDismissesKeyboard(.interactively)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.detailTitle"))
@@ -1327,6 +1329,7 @@ private struct MemoryMirrorViewerSheet: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.mirrorsTitle"))
             .navigationBarTitleDisplayMode(.inline)

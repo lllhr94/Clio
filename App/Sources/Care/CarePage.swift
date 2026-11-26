@@ -143,6 +143,7 @@ struct CarePage: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .paperForm()
         .hitchPage("养护")
         .navigationTitle(navigationTitleText)

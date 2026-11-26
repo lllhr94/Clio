@@ -498,6 +498,14 @@ struct ChatPage: View {
                 conversationContent
             }
             .observeProseStyle()
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    if chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0 {
+                        Haptics.selection()
+                        chromeCoordinator.restore()
+                    }
+                }
+            )
             .environment(\.chatSelectionChanged, selectionChanged)
             .environment(\.chatQuoteSelection) { picked in
                 Haptics.tick(0.5)
@@ -1547,19 +1555,24 @@ private struct ChatRoamThumbHost: View {
     let open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @ViewBuilder
     var body: some View {
         let p = chromeCoordinator.visualProgress
-        let expandedTop = (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s
+        let expandedTop = (headerHeight > 0 ? headerHeight : ChatBarMetrics.height + Ink.Space.s) + Ink.Space.s
         let collapsedTop = Ink.Space.m
         let roamTop = expandedTop + (collapsedTop - expandedTop) * p
-        HStack {
+        let row = HStack {
             Spacer()
             ChatRoamThumbOverlay(browser: browser, chrome: chrome, open: open)
         }
         .padding(.top, roamTop)
         .padding(.trailing, Ink.Space.page)
         .zIndex(3)
-        .animation(reduceMotion ? .easeOut(duration: 0.18) : nil, value: p)
+        if reduceMotion {
+            row.animation(.easeOut(duration: 0.18), value: p)
+        } else {
+            row
+        }
     }
 }
 

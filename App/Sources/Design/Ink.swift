@@ -847,8 +847,8 @@ extension View {
         modifier(GlassBackingModifier(shape: shape))
     }
 
-    /// Anti-bleed Liquid Glass backing for the bottom composer shell so scrolled chat text
-    /// cannot read through into the input prompt while preserving glass depth.
+    /// Frosted material backing for the bottom composer shell (HanaAgent-style creamy blur) so scrolled
+    /// text reads soft behind the capsule instead of refracting sharply through Liquid Glass.
     func composerGlassBacking<S: InsettableShape>(in shape: S) -> some View {
         modifier(ComposerGlassBackingModifier(shape: shape))
     }
@@ -929,18 +929,27 @@ private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         let solid = reduceTransparency || Theme.shared.reduceVisualEffects
         let lineWidth: CGFloat = (contrast == .increased || solid) ? 1 : 0.5
-        let ruleOpacity: Double = contrast == .increased ? 1 : (solid ? 0.8 : 0.45)
+        let ruleOpacity: Double = contrast == .increased ? 1 : (solid ? 0.8 : 0.55)
         if solid {
             content
-                .background { shape.fill(Ink.paperRaised) }
+                .background {
+                    shape
+                        .fill(Ink.paperRaised)
+                        .shadow(color: Ink.Artwork.black.opacity(0.08), radius: 14, y: 4)
+                }
                 .overlay {
                     shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
                         .allowsHitTesting(false)
                 }
         } else {
             content
-                .background { shape.fill(Color.white.opacity(0.001)) }
-                .glassEffect(.regular, in: shape)
+                .background {
+                    ZStack {
+                        shape.fill(.regularMaterial)
+                        shape.fill(Ink.paperRaised.opacity(0.62))
+                    }
+                    .shadow(color: Ink.Artwork.black.opacity(0.08), radius: 14, y: 4)
+                }
                 .overlay {
                     shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
                         .allowsHitTesting(false)

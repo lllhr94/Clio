@@ -147,6 +147,7 @@ struct FontPage: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .clioTopBlurVeil(.navigationBar)
         .paperForm()
         .navigationTitle(L.t("settings.fonts"))
         .navigationBarTitleDisplayMode(.inline)

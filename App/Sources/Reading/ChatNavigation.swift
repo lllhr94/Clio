@@ -75,6 +75,24 @@ struct ChatRoamThumbOverlay: View {
     }
 }
 
+struct ChatUnreadBadge: View {
+    let count: Int
+
+    var body: some View {
+        let label = count > 99 ? "99+" : "\(count)"
+        Text(label)
+            .font(.system(size: ChatBarMetrics.microFontSize, weight: .bold).monospacedDigit())
+            .foregroundStyle(Ink.onAccent)
+            .padding(.horizontal, 5 * ChatBarMetrics.scale)
+            .frame(minWidth: 18 * ChatBarMetrics.scale)
+            .frame(height: 18 * ChatBarMetrics.scale)
+            .background(Ink.accent, in: Capsule(style: .continuous))
+            .offset(x: 4 * ChatBarMetrics.scale, y: -4 * ChatBarMetrics.scale)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 struct ChatFloatingJumpOverlay: View {
     let chrome: ChatChrome
     let petPerch: PetPerch
@@ -104,23 +122,23 @@ struct ChatFloatingJumpOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .offset(y: -(38 * UIScale.factor + Ink.Space.s))
+        .offset(y: -(ChatBarMetrics.jumpSize + Ink.Space.s))
         .onChange(of: latestIsFloating, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: suppressed, initial: true) { _, _ in updateKeepOut() }
         .animation(Ink.Motion.settle, value: showLatest)
     }
 
     private var latestButton: some View {
-        let latestSize = 38 * UIScale.factor
+        let latestSize = ChatBarMetrics.jumpSize
         return Button(action: onLatest) {
             Image(systemName: "chevron.down")
-                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .font(.system(size: ChatBarMetrics.titleFontSize, weight: .semibold))
                 .foregroundStyle(Ink.ink)
                 .frame(width: latestSize, height: latestSize)
                 .glassFace(in: Circle())
                 .overlay(alignment: .topTrailing) {
                     if chrome.unreadCount > 0 {
-                        unreadBadge(count: chrome.unreadCount)
+                        ChatUnreadBadge(count: chrome.unreadCount)
                     }
                 }
                 .frame(minWidth: 44, minHeight: 44)
@@ -132,20 +150,6 @@ struct ChatFloatingJumpOverlay: View {
                 ? "\(L.t("chat.latest"))，\(chrome.unreadCount)"
                 : L.t("chat.latest")
         )
-    }
-
-    private func unreadBadge(count: Int) -> some View {
-        let label = count > 99 ? "99+" : "\(count)"
-        return Text(label)
-            .font(.system(size: Ink.Size.micro, weight: .bold).monospacedDigit())
-            .foregroundStyle(Ink.onAccent)
-            .padding(.horizontal, 5 * UIScale.factor)
-            .frame(minWidth: 18 * UIScale.factor)
-            .frame(height: 18 * UIScale.factor)
-            .background(Ink.accent, in: Capsule(style: .continuous))
-            .offset(x: 4 * UIScale.factor, y: -4 * UIScale.factor)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
     }
 }
 
@@ -326,9 +330,9 @@ struct ChatBrowserIndicator: View {
         if browser.acting {
             Button(action: open) {
                 Image(systemName: "globe")
-                    .font(.system(size: Ink.Size.body, weight: .medium))
+                    .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                     .symbolEffect(.pulse)
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                    .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
                     .glassFace(in: Circle())
             }
             .buttonStyle(PressStyle())

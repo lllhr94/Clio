@@ -1113,6 +1113,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         }
     }
 
+    var hasActiveSelection: Bool {
+        selectionTextView != nil
+    }
+
     // MARK: - Gestures & CoreText Link Hit-Testing
 
     private func updateGestureStates() {
@@ -1148,7 +1152,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         activateSelection(at: recognizer.location(in: self))
     }
 
-    private func hitTestLink(at point: CGPoint) -> URL? {
+    func hitTestLink(at point: CGPoint) -> URL? {
         guard currentRendered.hasLinks,
               !currentRendered.isEmpty,
               bounds.width > 0,

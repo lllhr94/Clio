@@ -11,7 +11,7 @@ import UIKit
 /// - Upward pagination anchor lock (0.0 pt viewport shift)
 /// - Clean `following` / `touchScrolling` / `PetPerch` clearance bridging
 @MainActor
-final class ChatListViewController: UIViewController, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate {
+final class ChatListViewController: UIViewController, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let actions: ChatListActions
     private let layoutCache = ChatLayoutCache()
     private var currentStyle: ChatListStyle!
@@ -20,6 +20,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     var makeEmptyView: (() -> AnyView)?
 
     private var collectionView: UICollectionView!
+    private var immersiveRestoreTapGesture: UITapGestureRecognizer?
     private var dataSource: UICollectionViewDiffableDataSource<ChatListItemID, ChatListItemID>!
 
     private var items: [ChatListItemID] = []
@@ -351,6 +352,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleImmersiveBackgroundTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        collectionView.addGestureRecognizer(tap)
+        immersiveRestoreTapGesture = tap
 
         dataSource = UICollectionViewDiffableDataSource<ChatListItemID, ChatListItemID>(
             collectionView: collectionView
@@ -3299,6 +3306,61 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func traceHeightKey(_ row: ChatListRowItem) -> String {
         "trace|\(row.line.id)|\(row.line.tools.count)|\(row.line.live ? 1 : 0)|\(row.opens ? 1 : 0)|\(row.faces ? 1 : 0)|\(row.lit ? 1 : 0)"
+    }
+
+    @objc private func handleImmersiveBackgroundTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended, actions.canRestoreImmersiveChrome() else { return }
+        let location = recognizer.location(in: collectionView)
+        if let hitView = collectionView.hitTest(location, with: nil) {
+            var cursor: UIView? = hitView
+            while let current = cursor, current !== collectionView {
+                if current is UIControl
+                    || current is UITextView
+                    || current is ChatPetAvatarView
+                    || current is ChatMeAvatarView
+                    || current is ChatTraceHostingCell {
+                    return
+                }
+                if let richText = current as? ChatRichTextView {
+                    if richText.hasActiveSelection {
+                        return
+                    }
+                    if richText.hitTestLink(at: collectionView.convert(location, to: richText)) != nil {
+                        return
+                    }
+                } else if let recognizers = current.gestureRecognizers,
+                          recognizers.contains(where: { $0 is UITapGestureRecognizer && $0.isEnabled }) {
+                    return
+                }
+                cursor = current.superview
+            }
+        }
+        actions.onImmersiveBackgroundTap()
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === immersiveRestoreTapGesture else { return true }
+        return actions.canRestoreImmersiveChrome()
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === immersiveRestoreTapGesture
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        guard gestureRecognizer === immersiveRestoreTapGesture else { return false }
+        guard let otherTap = otherGestureRecognizer as? UITapGestureRecognizer,
+              otherTap.numberOfTapsRequired > 1,
+              otherTap.view is ChatRichTextView else {
+            return false
+        }
+        return true
     }
 }
 

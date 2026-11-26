@@ -516,13 +516,15 @@ struct ChatBottomStackView<FindBar: View>: View {
             ChatImmersiveBottomBar(
                 chat: chat,
                 team: team,
+                chrome: chrome,
                 confirmStop: confirmStop,
                 askingStop: $askingStop,
                 onRestore: { chromeCoordinator.restore() },
                 onLatest: onReturnToLatest
             )
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.trailing, Ink.Space.page)
-            .padding(.bottom, 8 * UIScale.factor)
+            .padding(.bottom, 8 * ChatBarMetrics.scale)
             .opacity(fabAlpha)
             .offset(y: calmPetMotion ? 0 : CGFloat(1 - fabAlpha) * 12)
             .scaleEffect(calmPetMotion ? 1 : CGFloat(0.88 + 0.12 * fabAlpha))
@@ -1024,7 +1026,7 @@ private struct ChatComposerMainCard: View {
     }
 
     private func cardBody(composing: Bool) -> some View {
-        let idleMargin = max(28, 28 * UIScale.factor)
+        let idleMargin = largeText ? Ink.Space.page : 34 * ChatBarMetrics.scale
         let sidePadding = composing ? Ink.Space.page : idleMargin
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             ChatComposerQuoteBanner(quote: $quote)
@@ -1080,9 +1082,9 @@ private struct ChatComposerMainCard: View {
                 outgoingText: outgoingText
             )
         }
-        .padding(.horizontal, 7 * UIScale.factor)
-        .padding(.vertical, 5 * UIScale.factor)
-        .composerGlassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
+        .padding(.horizontal, 8 * ChatBarMetrics.scale)
+        .padding(.vertical, 7 * ChatBarMetrics.scale)
+        .composerGlassBacking(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
         .padding(.horizontal, sidePadding)
         .animation(Ink.Motion.quick, value: composing)
     }
@@ -1517,9 +1519,9 @@ private struct ChatComposerAccessoryCore: View {
             } label: {
                 let lit = !photos.isEmpty || !files.isEmpty
                 Image(systemName: "plus")
-                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                     .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
-                    .frame(width: 34, height: 34)
+                    .frame(width: ChatBarMetrics.controlHeight, height: ChatBarMetrics.controlHeight)
                     .background(lit ? Ink.accentWash : Color.clear, in: .circle)
                     .contentShape(.circle)
             }
@@ -1670,13 +1672,13 @@ private struct ChatDraftFieldCore: View {
             text: Binding(get: { draftState.text }, set: { draftState.text = $0 }),
             axis: .vertical
         )
-        .font(largeText ? .body : Ink.label)
+        .font(largeText ? .body : .system(size: ChatBarMetrics.iconFontSize))
         .foregroundStyle(Ink.ink)
         .lineLimit(1...(largeText ? 3 : 6))
         .focused(typing)
         .onChange(of: draftState.text) { old, new in onPasteChange(old, new) }
-        .padding(.vertical, 6)
-        .frame(minHeight: 34)
+        .padding(.vertical, 7 * ChatBarMetrics.scale)
+        .frame(minHeight: ChatBarMetrics.controlHeight)
     }
 }
 
@@ -1893,19 +1895,19 @@ private struct ChatActionButtonCore: View {
                     ProgressView()
                         .controlSize(.small)
                         .tint(Ink.accent)
-                        .frame(width: 34, height: 34)
+                        .frame(width: ChatBarMetrics.controlHeight, height: ChatBarMetrics.controlHeight)
                         .background(fill, in: .circle)
                 } else {
                     Image(systemName: symbol)
-                        .font(.system(size: Ink.Size.sub, weight: mode == 3 ? .medium : .bold))
+                        .font(.system(size: ChatBarMetrics.titleFontSize, weight: mode == 3 ? .medium : .bold))
                         .foregroundStyle(mode == 3 ? Ink.inkSoft : Ink.paper)
                         .contentTransition(.symbolEffect(.replace))
                         .symbolEffect(.variableColor.iterative, isActive: mode == 0)
-                        .frame(width: 34, height: 34)
+                        .frame(width: ChatBarMetrics.controlHeight, height: ChatBarMetrics.controlHeight)
                         .background(fill, in: .circle)
                 }
             }
-            .frame(width: 34, height: 34)
+            .frame(width: ChatBarMetrics.controlHeight, height: ChatBarMetrics.controlHeight)
             .opacity(mode == 2 && sendingBlocked ? 0.45 : 1)
         }
         .disabled(mode == 2 && sendingBlocked)
@@ -1965,6 +1967,7 @@ private struct ChatDockedJumpOverlaySlot: View {
 private struct ChatImmersiveBottomBar: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
+    let chrome: ChatChrome
     let confirmStop: Bool
     @Binding var askingStop: Bool
     let onRestore: () -> Void
@@ -1975,7 +1978,7 @@ private struct ChatImmersiveBottomBar: View {
     }
 
     var body: some View {
-        let fabSize = 40 * UIScale.factor
+        let fabSize = ChatBarMetrics.jumpSize
         HStack(spacing: Ink.Space.xs) {
             if working {
                 Button {
@@ -1988,7 +1991,7 @@ private struct ChatImmersiveBottomBar: View {
                     }
                 } label: {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .font(.system(size: ChatBarMetrics.subTitleFontSize, weight: .semibold))
                         .foregroundStyle(Ink.stop)
                         .frame(width: fabSize, height: fabSize)
                         .glassFace(in: Circle())
@@ -2000,35 +2003,33 @@ private struct ChatImmersiveBottomBar: View {
             }
 
             Button {
-                Haptics.selection()
-                onRestore()
-            } label: {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: Ink.Size.small, weight: .semibold))
-                    .foregroundStyle(Ink.inkSoft)
-                    .frame(width: fabSize, height: fabSize)
-                    .glassFace(in: Circle())
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle(haptic: false))
-            .accessibilityLabel(L.t("chat.restoreControls"))
-
-            Button {
                 Haptics.light()
                 onRestore()
                 onLatest()
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .font(.system(size: ChatBarMetrics.titleFontSize, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: fabSize, height: fabSize)
                     .glassFace(in: Circle())
+                    .overlay(alignment: .topTrailing) {
+                        if chrome.unreadCount > 0 {
+                            ChatUnreadBadge(count: chrome.unreadCount)
+                        }
+                    }
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
-            .accessibilityLabel(L.t("chat.latest"))
+            .accessibilityLabel(
+                chrome.unreadCount > 0
+                    ? "\(L.t("chat.latest"))，\(chrome.unreadCount)"
+                    : L.t("chat.latest")
+            )
+            .accessibilityAction(named: L.t("chat.restoreControls")) {
+                Haptics.selection()
+                onRestore()
+            }
         }
     }
 }

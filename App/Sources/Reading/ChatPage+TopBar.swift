@@ -107,76 +107,25 @@ extension ChatPage {
     }
 }
 
+/// Reading-chrome physical metrics aligned with HanaAgent on modern iPhones (46pt bars, 38pt avatar, 44pt jump)
+/// so compact/small list scaling never shrinks high-frequency chat touch targets.
+enum ChatBarMetrics {
+    static var scale: CGFloat { max(1, UIScale.factor) }
+    static var height: CGFloat { 46 * scale }
+    static var avatarSize: CGFloat { 38 * scale }
+    static var concentricPadding: CGFloat { (height - avatarSize) / 2 }
+    static var jumpSize: CGFloat { 44 * scale }
+    static var controlHeight: CGFloat { 38 * scale }
+    static var iconFontSize: CGFloat { 17 * scale }
+    static var titleFontSize: CGFloat { 15 * scale }
+    static var subTitleFontSize: CGFloat { 13 * scale }
+    static var microFontSize: CGFloat { 11 * scale }
+}
+
 /// Pure optical progressive blur locked strictly above `safeAreaTop + 4pt` (status bar bottom edge) with zero fog below.
 struct ChatStatusBarBlurVeil: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @State private var fullTopY: CGFloat = 0
-    @State private var safeTopY: CGFloat = 0
-
-    private var safeAreaTop: CGFloat {
-        max(0, safeTopY - fullTopY)
-    }
-
-    private var veilHeight: CGFloat {
-        safeAreaTop > 0 ? safeAreaTop + 4 : 0
-    }
-
-    private var usesReducedBlur: Bool {
-        reduceTransparency || Theme.shared.reduceVisualEffects
-    }
-
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.clear
-                .ignoresSafeArea(edges: .top)
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { fullTopY = $0 }
-            Color.clear
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { safeTopY = $0 }
-
-            if veilHeight > 0 {
-                VStack(spacing: 0) {
-                    blurSurface
-                        .frame(height: veilHeight)
-                    Spacer(minLength: 0)
-                }
-                .ignoresSafeArea(edges: .top)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var blurSurface: some View {
-        if usesReducedBlur {
-            LinearGradient(
-                stops: [
-                    .init(color: Ink.paper.opacity(0.95), location: 0),
-                    .init(color: Ink.paper.opacity(0.70), location: 0.60),
-                    .init(color: Ink.paper.opacity(0.24), location: 0.86),
-                    .init(color: Ink.paper.opacity(0), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        } else {
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                Rectangle().fill(Ink.paper.opacity(0.06))
-            }
-            .mask {
-                LinearGradient(
-                    stops: [
-                        .init(color: .white, location: 0),
-                        .init(color: .white.opacity(0.86), location: 0.56),
-                        .init(color: .white.opacity(0.30), location: 0.84),
-                        .init(color: .clear, location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-        }
+        TopEdgeBlurVeil(scope: .statusBar)
     }
 }
 
@@ -257,7 +206,7 @@ struct ChatTopBarView: View {
                     controlsView
                 }
                 centeredIdentityPill
-                    .padding(.horizontal, Ink.Bar.height + Ink.Space.s)
+                    .padding(.horizontal, ChatBarMetrics.height + Ink.Space.s)
             }
         }
     }
@@ -320,9 +269,9 @@ private struct ChatHeaderBackButton: View {
     var body: some View {
         Button(action: onLeave) {
             Image(systemName: "line.3.horizontal")
-                .font(.system(size: Ink.Size.body, weight: .medium))
+                .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                 .foregroundStyle(Ink.ink)
-                .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
                 .glassFace(in: Circle())
         }
         .buttonStyle(PressStyle())
@@ -361,15 +310,15 @@ private struct ChatCenteredIdentityPill: View {
     }
 
     private var avatarRingSize: CGFloat {
-        36 * UIScale.factor
+        ChatBarMetrics.avatarSize
     }
 
     private var concentricPadding: CGFloat {
-        4 * UIScale.factor
+        ChatBarMetrics.concentricPadding
     }
 
     private var pillHeight: CGFloat? {
-        largeText ? nil : Ink.Bar.height
+        largeText ? nil : ChatBarMetrics.height
     }
 
     var body: some View {
@@ -433,7 +382,7 @@ private struct ChatCenteredIdentityPill: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(bot.name)
                     .font(.system(
-                        size: (active && !largeText ? Ink.Size.small : Ink.Size.sub) * (largeText ? textScale : 1),
+                        size: (active && !largeText ? ChatBarMetrics.subTitleFontSize : ChatBarMetrics.titleFontSize) * (largeText ? textScale : 1),
                         weight: .semibold
                     ))
                     .foregroundStyle(Ink.ink)
@@ -445,7 +394,7 @@ private struct ChatCenteredIdentityPill: View {
                             .fill(waiting != nil ? Ink.warn : Ink.accent)
                             .frame(width: 5, height: 5)
                         Text(headerLine)
-                            .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
+                            .font(largeText ? .footnote : .system(size: ChatBarMetrics.microFontSize, weight: .medium))
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(largeText ? 2 : 1)
                             .truncationMode(.tail)
@@ -459,7 +408,7 @@ private struct ChatCenteredIdentityPill: View {
             .animation(.easeInOut(duration: 0.35), value: headerLine)
 
             Image(systemName: "chevron.down")
-                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                .font(.system(size: ChatBarMetrics.microFontSize, weight: .semibold))
                 .foregroundStyle(Ink.inkFaint)
                 .rotationEffect(.degrees(showCompanionHub ? 180 : 0))
                 .animation(reduceMotion ? .easeOut(duration: 0.14) : Ink.Motion.quick, value: showCompanionHub)
@@ -468,7 +417,7 @@ private struct ChatCenteredIdentityPill: View {
         .padding(.vertical, largeText ? concentricPadding : 0)
         .padding(.trailing, Ink.Space.m)
         .frame(height: pillHeight)
-        .frame(minHeight: Ink.Bar.height, alignment: .leading)
+        .frame(minHeight: ChatBarMetrics.height, alignment: .leading)
         .glassBacking(in: Capsule())
         .overlay {
             Capsule(style: .continuous)
@@ -553,7 +502,10 @@ private struct ChatCompanionHubPopover: View {
 
     private var currentSubtitle: String {
         if let currentResolved {
-            return "\(currentResolved.endpoint.name) · \(currentResolved.model)"
+            if currentDisplayName != currentResolved.model || currentResolved.endpoint.customName(for: currentResolved.model) != nil {
+                return "\(currentResolved.endpoint.name) · \(currentResolved.model)"
+            }
+            return currentResolved.endpoint.name
         }
         return L.t("chatHub.noProviders")
     }
@@ -562,8 +514,8 @@ private struct ChatCompanionHubPopover: View {
         if active {
             return ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
         }
-        if currentResolved != nil {
-            return currentDisplayName
+        if let title = team.title(of: chat.key), !title.isEmpty {
+            return title
         }
         return ChatPage.companionStatus(waiting: nil, doing: nil, streaming: false)
     }
@@ -613,7 +565,7 @@ private struct ChatCompanionHubPopover: View {
                 .id(route.idKey)
                 .transition(routeTransition)
         }
-        .frame(width: 298 * UIScale.factor)
+        .frame(width: 312 * ChatBarMetrics.scale)
         .clipped()
         .animation(hubAnimation, value: route)
         .task(id: chat.key) {
@@ -943,8 +895,8 @@ private struct ChatCompanionHubPopover: View {
 
     private func modelsView(endpointID: String) -> some View {
         let endpoint = endpoints.first(where: { $0.id == endpointID })
-        let backLabel = endpoints.count >= 2 ? L.t("chatHub.providers") : L.t("chatHub.back")
-        let backTarget: Route = endpoints.count >= 2 ? .providers : .root
+        let backLabel = L.t("chatHub.providers")
+        let backTarget: Route = .providers
 
         return VStack(spacing: 0) {
             pickerHeader(backTitle: backLabel, title: endpoint?.name ?? L.t("chatHub.models")) {
@@ -959,9 +911,6 @@ private struct ChatCompanionHubPopover: View {
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
-                            if endpoints.count == 1 {
-                                defaultModelResetRowIfNeeded
-                            }
                             ForEach(endpoint.models, id: \.self) { model in
                                 modelOptionRow(endpoint: endpoint, model: model)
                                 if model != endpoint.models.last {
@@ -1098,7 +1047,8 @@ private struct ChatCompanionHubPopover: View {
                 .lineLimit(1)
         }
         .padding(.horizontal, Ink.Space.m)
-        .padding(.vertical, Ink.Space.s)
+        .padding(.top, Ink.Space.m)
+        .padding(.bottom, Ink.Space.s)
     }
 
     private var manageProvidersFooter: some View {
@@ -1112,7 +1062,8 @@ private struct ChatCompanionHubPopover: View {
             }
             .foregroundStyle(Ink.accent)
             .padding(.horizontal, Ink.Space.m)
-            .padding(.vertical, Ink.Space.s)
+            .padding(.top, Ink.Space.s)
+            .padding(.bottom, Ink.Space.m + Ink.Space.xs)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
@@ -1127,11 +1078,7 @@ private struct ChatCompanionHubPopover: View {
         guard !isRoom else { return }
         Haptics.light()
         navigatingForward = true
-        if endpoints.count == 1, let only = endpoints.first {
-            route = .models(endpointID: only.id)
-        } else {
-            route = .providers
-        }
+        route = .providers
     }
 
     private func openProvidersSettings() {
@@ -1210,8 +1157,6 @@ private struct ChatTopBarControlsView: View {
                 roaming = true
             }
             headerMoreMenu
-                .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                .glassFace(in: Circle())
         }
         .onChange(of: offeredThinking, initial: true) { _, offered in
             if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
@@ -1299,10 +1244,10 @@ private struct ChatTopBarControlsView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: Ink.Size.body, weight: .medium))
+                .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                 .foregroundStyle(Ink.ink)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+                .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
+                .glassFace(in: Circle())
         }
         .accessibilityLabel(L.t("chat.menu"))
     }

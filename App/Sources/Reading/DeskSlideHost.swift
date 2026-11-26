@@ -95,7 +95,7 @@ struct DeskSlideHost<Sidebar: View>: View {
             .scaleEffect(sideScale, anchor: .leading)
             .offset(x: parallaxX)
             .opacity(sideOpacity)
-            .animation(reduceMotion ? .easeOut(duration: 0.15) : nil, value: sideOpen)
+            .reducedMotionFade(enabled: reduceMotion, duration: 0.15, value: sideOpen)
             .frame(width: sideWidth)
             .clipped()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,7 +109,7 @@ struct DeskSlideHost<Sidebar: View>: View {
             Ink.Artwork.black
                 .opacity(0.18 * Double(progress))
                 .ignoresSafeArea()
-                .animation(reduceMotion ? .easeOut(duration: 0.15) : nil, value: sideOpen)
+                .reducedMotionFade(enabled: reduceMotion, duration: 0.15, value: sideOpen)
                 .contentShape(Rectangle())
                 .allowsHitTesting(sideOpen)
                 .onTapGesture {
@@ -146,6 +146,17 @@ struct DeskSlideHost<Sidebar: View>: View {
                 ChatPage(team: team, room: room, side: sideControl)
                     .id(target.id)
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func reducedMotionFade<V: Equatable>(enabled: Bool, duration: Double, value: V) -> some View {
+        if enabled {
+            self.animation(.easeOut(duration: duration), value: value)
+        } else {
+            self
         }
     }
 }

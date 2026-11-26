@@ -72,6 +72,7 @@ struct DeskSidebarView: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .clioTopBlurVeil(.fixed(20))
             .scrollDismissesKeyboard(.interactively)
 
             settingsFooter
