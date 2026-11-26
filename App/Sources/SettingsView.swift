@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import PhotosUI
 import SwiftUI
 
 struct SettingsView: View {
@@ -13,6 +14,7 @@ struct SettingsView: View {
 
     @AppStorage("look.scheme") private var scheme = "system"
     @AppStorage("lock.faceid") private var faceLock = false
+    @AppStorage(WebDAV.urlKey) private var davURL = ""
     @AppStorage("morning.on") private var morningOn = false
     @AppStorage("diary.on") private var diaryOn = false
     @AppStorage("notify.done") private var notifyDone = true
@@ -21,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
     @AppStorage(SearchEngine.providerKey) private var searchProviderRaw = WebSearchProvider.builtin.rawValue
 
+    @State private var storageBytes: Int64?
     @State private var path: [SettingsPage] = []
     @State private var query = ""
     @State private var searching = false
@@ -30,15 +33,15 @@ struct SettingsView: View {
     @State private var editingRoom: RoomInfo?
 
     private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
-        ("settingsHome.modelsGroup", Ink.Tile.dai, [.services, .models, .image]),
-        ("settings.appearance", Ink.Tile.teng, [.theme, .font, .size, .tone]),
-        ("settingsHome.chatGroup", Ink.Tile.mo, [.display, .context, .voice]),
-        ("settingsHome.companionsGroup", Ink.Tile.yan, [.companions, .rooms, .memory, .pet, .morning]),
-        ("agent.capabilities", Ink.Tile.xiang, [.connectors, .skills, .searchEngine, .hosts, .timing]),
-        ("settingsHome.privacyGroup", Ink.Tile.zhu, [.grants, .vault, .lock]),
-        ("settingsHome.notifyGroup", Ink.Tile.dai, [.notifications]),
-        ("settingsHome.dataGroup", Ink.Tile.mo, [.careBackup, .careUsage, .careStorage, .careDiagnostics]),
-        ("settingsHome.aboutGroup", Ink.Tile.teng, [.about]),
+        ("settingsHome.modelsAndCapsGroup", Ink.Tile.dai, [.services, .models, .grants, .connectors, .skills, .searchEngine, .hosts]),
+        ("settingsHome.companionsCareGroup", Ink.Tile.yan, [.companions, .memory, .pet, .timing]),
+        ("settingsHome.lookInteractGroup", Ink.Tile.teng, [.theme, .size, .tone, .display]),
+        ("settingsHome.chatSecurityNotifyGroup", Ink.Tile.zhu, [.context, .voice, .notifications, .vault, .lock]),
+        ("settingsHome.dataCareGroup", Ink.Tile.mo, [.careBackup, .careUsage, .careStorage, .careDiagnostics]),
+    ]
+
+    private static let searchAliases: [SettingsPage: SettingsPage] = [
+        .image: .models, .rooms: .companions, .font: .size, .morning: .timing, .about: .careDiagnostics,
     ]
 
     var body: some View {
@@ -46,8 +49,9 @@ struct SettingsView: View {
             ScrollView {
                 listContent
             }
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
-            .searchable(text: $query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .always),
+            .searchable(text: $query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .automatic),
                         prompt: L.t("settingsHome.search"))
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
@@ -60,6 +64,7 @@ struct SettingsView: View {
                 }
             }
             .navigationDestination(for: SettingsPage.self, destination: destination)
+            .task { await measureQuickStorage() }
         }
         .clioScheme(scheme)
         .task {
@@ -80,11 +85,13 @@ struct SettingsView: View {
         LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
             if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 identityHeader
+                quickStatus
                 ForEach(Self.groups, id: \.title) { group in
                     RowCard(title: L.t(group.title)) {
                         ForEach(group.pages) { page in pageRow(page, group.tint) }
                     }
                 }
+                aboutFooter
             } else {
                 searchResults
             }
@@ -142,32 +149,110 @@ struct SettingsView: View {
                     .frame(width: 0.5, height: 32 * UIScale.factor)
             }
 
-            HStack(spacing: Ink.Space.m) {
-                MeAvatar(size: 36 * UIScale.factor)
-                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    Text(L.t("settingsHome.identityMe"))
-                        .font(.system(size: Ink.Size.sub, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1)
-                    Text(L.t("settingsHome.identityTapAvatar"))
-                        .font(.system(size: Ink.Size.micro))
-                        .foregroundStyle(Ink.inkSoft)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            SettingsUserAvatarButton()
         }
         .padding(Ink.Space.l)
         .paperCard()
     }
 
+    private var servicesStatus: String {
+        let count = team.settings.endpoints.count
+        return count == 0 ? L.t("settingsHome.notConnected") : L.format("settingsHome.connectedCount", count)
+    }
+
+    private var servicesTint: Color { team.settings.endpoints.isEmpty ? Ink.warn : Ink.ok }
+
+    private var defaultModelName: String {
+        guard team.resolve(team.settings.defaultModel) != nil else { return L.t("settingsHome.unset") }
+        return team.modelShort(team.settings.defaultModel)
+    }
+
+    private var backupStatus: String {
+        L.t(davURL.isEmpty ? "settingsHome.quickBackupUnset" : "settingsHome.quickBackupReady")
+    }
+
+    private var quickStatus: some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: Ink.Space.s))
+            : AnyLayout(HStackLayout(spacing: Ink.Space.s))
+        return layout {
+            statusTile("settingsHome.quickServices", value: servicesStatus, dot: servicesTint, page: .services)
+            statusTile("settingsHome.quickModel", value: defaultModelName, page: .models)
+            statusTile(
+                "settingsHome.quickStorage",
+                value: storageBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? backupStatus,
+                dot: storageBytes != nil || !davURL.isEmpty ? Ink.ok : Ink.inkFaint,
+                page: .careStorage
+            )
+        }
+    }
+
+    private func statusTile(_ title: String, value: String, dot: Color? = nil, page: SettingsPage) -> some View {
+        Button {
+            Haptics.light()
+            open(page)
+        } label: {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                Text(L.t(title)).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                HStack(spacing: Ink.Space.xs) {
+                    if let dot {
+                        Circle().fill(dot).frame(width: 6 * UIScale.factor, height: 6 * UIScale.factor)
+                            .accessibilityHidden(true)
+                    }
+                    Text(value).font(Ink.label).foregroundStyle(Ink.ink)
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .padding(Ink.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .paperCard()
+        }
+        .buttonStyle(PressStyle(elevated: true))
+    }
+
+    private func measureQuickStorage() async {
+        let work = Task.detached(priority: .utility) { () -> Int64? in
+            guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+                return nil
+            }
+            return StorageCleanup.totalSize(appSupportRoot: base, workspaceRoot: Workspace.root)
+        }
+        let bytes = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        guard !Task.isCancelled else { return }
+        storageBytes = bytes
+    }
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+
+    private var aboutFooter: some View {
+        Button {
+            Haptics.light()
+            open(.about)
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                ClioSeal(size: 18 * UIScale.factor)
+                Text("Clio").font(Ink.wordmark(Ink.Size.body)).foregroundStyle(Ink.ink)
+                Text("v\(version)").font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+            }
+            .padding(Ink.Space.m)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(L.t("settingsHome.aboutFooter"))
+        .accessibilityValue("v\(version)")
+    }
+
     private var found: [SettingsPage] {
         let words = query.split(whereSeparator: \.isWhitespace)
-        let pages = Self.groups.flatMap(\.pages)
+        let pages = Self.groups.flatMap(\.pages) + Self.searchAliases.keys.sorted { $0.rawValue < $1.rawValue }
         return pages.filter { page in
-            let terms = [L.daily[page.titleKey], L.literary[page.titleKey],
-                         L.daily[page.lineKey], L.literary[page.lineKey], page.keywords].compactMap { $0 }
+            let keys = [page.titleKey, page.lineKey] + page.previousSearchKeys
+            let terms = keys.flatMap { key in [L.daily[key], L.literary[key]].compactMap { $0 } } + [page.keywords]
             return words.allSatisfy { word in terms.contains { $0.localizedCaseInsensitiveContains(String(word)) } }
         }
     }
@@ -181,7 +266,8 @@ struct SettingsView: View {
         } else {
             RowCard {
                 ForEach(found) { page in
-                    let group = Self.groups.first { $0.pages.contains(page) }
+                    let parent = Self.searchAliases[page] ?? page
+                    let group = Self.groups.first { $0.pages.contains(parent) }
                     let breadcrumb = group.map { "\(L.t($0.title)) · \(L.t(page.lineKey))" }
                     pageRow(page, group?.tint ?? Ink.accent, lineOverride: breadcrumb)
                 }
@@ -190,7 +276,7 @@ struct SettingsView: View {
     }
 
     private func pageRow(_ page: SettingsPage, _ tint: Color, lineOverride: String? = nil) -> some View {
-        let end: RowEnd = summary(for: page).map { .valueChevron($0) } ?? .chevron
+        let end = rowEnd(for: page)
         return Button {
             Haptics.light()
             open(page)
@@ -204,6 +290,15 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(PressStyle(haptic: false))
+    }
+
+    private func rowEnd(for page: SettingsPage) -> RowEnd {
+        switch page {
+        case .services: .dotValueChevron(servicesTint, servicesStatus)
+        case .lock where faceLock: .dotValueChevron(Ink.ok, L.t("settingsHome.enabled"))
+        case .careBackup: .dotValueChevron(davURL.isEmpty ? Ink.warn : Ink.ok, backupStatus)
+        default: summary(for: page).map { .valueChevron($0) } ?? .chevron
+        }
     }
 
     private var schemeSummary: String {
@@ -230,18 +325,11 @@ struct SettingsView: View {
 
     private func summary(for page: SettingsPage) -> String? {
         switch page {
-        case .services:
-            return team.settings.endpoints.isEmpty
-                ? L.t("settingsHome.notConnected")
-                : L.format("settingsHome.connectedCount", team.settings.endpoints.count)
         case .models:
-            if let resolved = team.resolve(team.settings.defaultModel) {
-                return ChatPage.shortModelName(resolved.model)
-            }
-            return L.t("settingsHome.unset")
+            return defaultModelName
         case .image:
             if let selection = team.imageModelSelection {
-                return ChatPage.shortModelName(selection.model)
+                return selection.endpoint.displayName(for: selection.model)
             }
             return L.t("settingsHome.disabled")
         case .theme:
@@ -283,7 +371,6 @@ struct SettingsView: View {
         case .careStorage:
             return team.archived.isEmpty ? nil : L.format("settingsHome.archivedCount", team.archived.count)
         case .about:
-            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
             return "v\(version)"
         default:
             return nil
@@ -324,14 +411,9 @@ struct SettingsView: View {
             }
         case .image:
             ImageModelPage(team: team)
-        case .companions:
-            subpage(page) {
-                SettingsCompanionsSection(team: team, editingBot: $editingBot) { open(.memory) }
-            }
-        case .rooms:
-            subpage(page) {
-                SettingsRoomsSection(team: team, creatingRoom: $creatingRoom, editingRoom: $editingRoom)
-            }
+        case .companions, .rooms:
+            SettingsCompanionsPage(team: team, tab: page, editingBot: $editingBot,
+                                   creatingRoom: $creatingRoom, editingRoom: $editingRoom)
         case .pet:
             PetPage(embedded: true)
         case .theme:
@@ -358,14 +440,12 @@ struct SettingsView: View {
             SearchSettingsPage()
         case .hosts:
             HillsPage(embedded: true)
-        case .timing:
-            RoutinesPage(team: team, embedded: true)
+        case .timing, .morning:
+            SettingsSchedulePage(team: team, tab: page)
         case .vault:
             SecretsPage(embedded: true)
         case .notifications:
             NotificationSettingsPage()
-        case .morning:
-            MorningSettingsPage()
         case .lock:
             PrivacySettingsPage(showsVaultRow: false) { EmptyView() }
         case .memory:
@@ -399,9 +479,146 @@ struct SettingsView: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t(page.titleKey))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SettingsUserAvatarButton: View {
+    @AppStorage("me.avatar") private var face = ""
+    @State private var choosingPhoto = false
+    @State private var item: PhotosPickerItem?
+    @State private var photoVersion = 0
+
+    private let avatarID = "me"
+    private var size: CGFloat { 36 * UIScale.factor }
+
+    var body: some View {
+        Menu {
+            Button {
+                Haptics.light()
+                choosingPhoto = true
+            } label: {
+                Label(L.t("settingsHome.identityAlbum"), systemImage: "photo")
+            }
+            Button {
+                Haptics.light()
+                item = nil
+                face = ""
+            } label: {
+                if face != "photo" {
+                    Label(L.t("settingsHome.identityResetMe"), systemImage: "checkmark")
+                } else {
+                    Text(L.t("settingsHome.identityResetMe"))
+                }
+            }
+        } label: {
+            HStack(spacing: Ink.Space.m) {
+                portrait.id(photoVersion).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    Text(L.t("settingsHome.identityMe"))
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
+                        .foregroundStyle(Ink.ink)
+                    Text(L.t("settingsHome.identityTapAvatar"))
+                        .font(Ink.footnote)
+                        .foregroundStyle(Ink.inkSoft)
+                }
+                .lineLimit(1)
+                Spacer(minLength: 0)
+                Kit.chevron
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: true))
+        .photosPicker(isPresented: $choosingPhoto, selection: $item, matching: .images)
+        .task(id: item) {
+            guard let picked = item else { return }
+            let data = try? await picked.loadTransferable(type: Data.self)
+            guard !Task.isCancelled, item == picked else { return }
+            if let data, let image = UIImage(data: data) {
+                Avatars.save(image, for: avatarID)
+                face = "photo"
+                photoVersion += 1
+            }
+            item = nil
+        }
+    }
+
+    @ViewBuilder
+    private var portrait: some View {
+        if face == "photo", let photo = Avatars.image(avatarID) {
+            Image(uiImage: photo).resizable().scaledToFill().frame(width: size, height: size).clipShape(Circle())
+        } else {
+            Text("我")
+                .font(.system(size: Ink.Size.sub, weight: .semibold))
+                .foregroundStyle(Ink.paper)
+                .frame(width: size, height: size)
+                .background(Ink.accent, in: .circle)
+        }
+    }
+}
+
+private struct SettingsCompanionsPage: View {
+    let team: TeamModel
+    @State var tab: SettingsPage
+    @Binding var editingBot: BotInfo?
+    @Binding var creatingRoom: Bool
+    @Binding var editingRoom: RoomInfo?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                if tab == .rooms {
+                    SettingsRoomsSection(team: team, creatingRoom: $creatingRoom, editingRoom: $editingRoom)
+                } else {
+                    SettingsCompanionsSection(team: team, editingBot: $editingBot)
+                }
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SlidingCapsuleControl(selection: $tab, items: [
+                (value: .companions, title: L.t("settingsHome.companions")),
+                (value: .rooms, title: L.t("nav.groupChat")),
+            ])
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.s)
+            .background(Ink.paper)
+        }
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(L.t("settingsHome.companionsAndRooms"))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SettingsSchedulePage: View {
+    let team: TeamModel
+    @State var tab: SettingsPage
+
+    var body: some View {
+        let title = L.t("settingsHome.scheduleAndMorning")
+        VStack(spacing: 0) {
+            SlidingCapsuleControl(selection: $tab, items: [
+                (value: .timing, title: L.t("agent.scheduledJobs")),
+                (value: .morning, title: L.t("settingsHome.morning")),
+            ])
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.s)
+
+            if tab == .morning {
+                MorningSettingsPage(embeddedTitle: title)
+            } else {
+                RoutinesPage(team: team, embedded: true, embeddedTitle: title)
+            }
+        }
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -437,7 +654,6 @@ private struct SettingsServicesSection: View {
 private struct SettingsCompanionsSection: View {
     @ObservedObject var team: TeamModel
     @Binding var editingBot: BotInfo?
-    let openMemory: () -> Void
 
     var body: some View {
         RowCard {
@@ -447,15 +663,6 @@ private struct SettingsCompanionsSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(Ink.Space.l)
             }
             ForEach(team.bots) { companionRow($0) }
-            if team.phase != .demo {
-                Button {
-                    Haptics.light()
-                    openMemory()
-                } label: {
-                    RowLabel(SettingsPage.memory.symbol, tint: Ink.Tile.yan, title: L.t(SettingsPage.memory.titleKey), line: L.t(SettingsPage.memory.lineKey))
-                }
-                .buttonStyle(PressStyle(haptic: false))
-            }
         }
     }
 
@@ -537,6 +744,10 @@ private enum SettingsPage: String, Identifiable {
     var titleKey: String {
         switch self {
         case .services: "settings.modelService"
+        case .models: "settingsHome.defaultAndSpecialModels"
+        case .companions: "settingsHome.companionsAndRooms"
+        case .size: "settingsHome.typography"
+        case .display: "settingsHome.displayAndHaptics"
         case .image: "settings.imageModel"
         case .rooms: "nav.groupChat"
         case .pet: "nav.pet"
@@ -544,7 +755,7 @@ private enum SettingsPage: String, Identifiable {
         case .tone: "styleSwitcher.title"
         case .connectors: "agent.connectors"
         case .skills: "agent.skills"
-        case .timing: "agent.scheduledJobs"
+        case .timing: "settingsHome.scheduleAndMorning"
         case .hosts: "nav.remoteHost"
         case .lock: "settings.faceLock"
         case .memory: "nav.memory"
@@ -558,6 +769,11 @@ private enum SettingsPage: String, Identifiable {
 
     var lineKey: String {
         switch self {
+        case .models: "settingsHome.defaultAndSpecialModelsLine"
+        case .companions: "settingsHome.companionsAndRoomsLine"
+        case .timing: "settingsHome.scheduleAndMorningLine"
+        case .size: "settingsHome.typographyLine"
+        case .display: "settingsHome.displayAndHapticsLine"
         case .voice: "voiceSettings.rowFooter"
         case .about: "settingsHome.aboutClioLine"
         default: "settingsHome." + rawValue + "Line"
@@ -596,6 +812,17 @@ private enum SettingsPage: String, Identifiable {
         case .vault: "lock.rectangle.stack"
         case .voice: "waveform.and.mic"
         case .add: "plus"
+        }
+    }
+
+    var previousSearchKeys: [String] {
+        switch self {
+        case .models, .companions, .size, .display:
+            ["settingsHome." + rawValue, "settingsHome." + rawValue + "Line"]
+        case .timing:
+            ["agent.scheduledJobs", "settingsHome.timingLine"]
+        default:
+            []
         }
     }
 

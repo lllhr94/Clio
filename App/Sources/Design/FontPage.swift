@@ -146,6 +146,7 @@ struct FontPage: View {
                 }
             }
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .paperForm()
         .navigationTitle(L.t("settings.fonts"))
         .navigationBarTitleDisplayMode(.inline)

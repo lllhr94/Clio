@@ -149,6 +149,7 @@ extension Notify {
 struct RoutinesPage: View {
     let team: TeamModel
     var embedded = false
+    var embeddedTitle: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var routines: [Routine] = []
     @State private var botNames: [String: String] = [:]
@@ -197,8 +198,9 @@ struct RoutinesPage: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
-            .navigationTitle(L.t("agent.scheduledJobs"))
+            .navigationTitle(embeddedTitle ?? L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if !embedded {

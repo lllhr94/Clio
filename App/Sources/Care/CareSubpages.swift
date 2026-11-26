@@ -43,6 +43,7 @@ struct CareUsagePage: View {
         }
         .background(Ink.paper.ignoresSafeArea())
         .hitchPage("全量用量")
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .navigationTitle(L.t("settingsHome.careUsage"))
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -288,6 +289,7 @@ struct CareAboutPage: View {
         }
         .background(Ink.paper.ignoresSafeArea())
         .hitchPage("关于")
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .navigationTitle(L.t("settingsHome.aboutClio"))
         .navigationBarTitleDisplayMode(.inline)
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {

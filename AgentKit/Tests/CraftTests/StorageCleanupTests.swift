@@ -27,6 +27,74 @@ final class StorageCleanupTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
     }
 
+    func testStorageBreakdownCountsEachFileOnceForSeparateAndNestedWorkspaces() throws {
+        let box = try makeSandbox()
+        let external = box.appSupport.appendingPathExtension("workspace")
+        defer {
+            try? FileManager.default.removeItem(at: box.appSupport)
+            try? FileManager.default.removeItem(at: external)
+        }
+
+        let now = Date()
+        let fm = FileManager.default
+        let diary = box.team.appendingPathComponent("diary", isDirectory: true)
+        let memories = box.team.appendingPathComponent("memories", isDirectory: true)
+        for directory in [external, diary, memories] {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+
+        let chat = box.chats.appendingPathComponent("chat.json")
+        let live = box.media.appendingPathComponent("live.jpg")
+        let orphan = box.media.appendingPathComponent("orphan.jpg")
+        let cache = box.doccache.appendingPathComponent("cache.txt")
+        let study = external.appendingPathComponent("study.pdf")
+        let memoryFiles = [
+            diary.appendingPathComponent("entry.md"),
+            memories.appendingPathComponent("note.md"),
+            box.team.appendingPathComponent("memories.json"),
+            box.team.appendingPathComponent("memory-index.db"),
+        ]
+
+        try writeFile(chat, contents: Data("[\"live.jpg\"]".utf8), now: now)
+        for (index, url) in ([live, orphan, cache, study] + memoryFiles).enumerated() {
+            try writeFile(url, contents: Data(repeating: UInt8(index), count: 1024 + 8192 * index), now: now)
+        }
+
+        func bytes(_ url: URL) throws -> Int64 {
+            let values = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+            return Int64(try XCTUnwrap(values.totalFileAllocatedSize ?? values.fileSize))
+        }
+
+        let expected = StorageBreakdown(
+            totalBytes: try ([chat, live, orphan, cache, study] + memoryFiles).map(bytes).reduce(0, +),
+            mediaBytes: try bytes(live) + bytes(orphan),
+            orphanMediaCount: 1,
+            orphanMediaBytes: try bytes(orphan),
+            docCacheCount: 1,
+            docCacheBytes: try bytes(cache),
+            chatsBytes: try bytes(chat),
+            studyBytes: try bytes(study),
+            memoryBytes: try memoryFiles.map(bytes).reduce(0, +)
+        )
+
+        func inspect(_ workspace: URL) -> StorageBreakdown {
+            StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, now: now, workspaceRoot: workspace)
+        }
+
+        let separate = inspect(external)
+        XCTAssertEqual(separate, expected)
+        XCTAssertGreaterThan(separate.cleanableBytes, 0)
+        XCTAssertEqual(
+            separate.chatsBytes + separate.studyBytes + separate.activeMediaBytes + separate.memoryBytes + separate.cacheBytes,
+            separate.totalBytes
+        )
+
+        let nested = box.appSupport.appendingPathComponent("Workspace", isDirectory: true)
+        try fm.moveItem(at: external, to: nested)
+        XCTAssertEqual(inspect(nested), expected)
+        XCTAssertEqual(inspect(box.appSupport), expected, "A workspace containing Team must not reclassify its files")
+    }
+
     func testCleanRemovesOnlyOldOrphanMediaAndDocCache() throws {
         let box = try makeSandbox()
         defer { try? FileManager.default.removeItem(at: box.appSupport) }

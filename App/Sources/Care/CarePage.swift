@@ -36,6 +36,7 @@ struct CarePage: View {
     @State private var restored = false
     @State private var notice: String?
     @State private var probes: [String: String] = [:]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WebDAV.urlKey) private var davURL = ""
     @AppStorage(WebDAV.userKey) private var davUser = ""
     @AppStorage(WebDAV.encryptKey) private var davEncrypt = false
@@ -141,6 +142,7 @@ struct CarePage: View {
                 }
             }
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .paperForm()
         .hitchPage("养护")
         .navigationTitle(navigationTitleText)
@@ -425,11 +427,12 @@ struct CarePage: View {
         }
     }
 
-    private func row(_ title: String, _ value: String) -> some View {
+    private func row(_ title: String, _ value: String, bytes: Int64? = nil) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).foregroundStyle(Ink.ink)
             Spacer()
             Text(value).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.trailing).font(.system(size: Ink.Size.sub))
+                .contentTransition(bytes.map { .numericText(value: Double($0)) } ?? .identity)
         }
     }
 
@@ -447,9 +450,10 @@ struct CarePage: View {
     private var storageSection: some View {
         Section {
             if let storage {
-                row(L.t("careStorage.total"), Self.formatBytes(storage.totalBytes))
-                row(L.t("careStorage.media"), mediaSummary(storage))
-                row(L.t("careStorage.docCache"), Self.formatBytes(storage.docCacheBytes))
+                CareStorageBreakdownView(storage: storage)
+                row(L.t("careStorage.total"), Self.formatBytes(storage.totalBytes), bytes: storage.totalBytes)
+                row(L.t("careStorage.media"), mediaSummary(storage), bytes: storage.mediaBytes)
+                row(L.t("careStorage.docCache"), Self.formatBytes(storage.docCacheBytes), bytes: storage.docCacheBytes)
                 Button {
                     cleanCache()
                 } label: {
@@ -457,6 +461,7 @@ struct CarePage: View {
                         Text(L.t("careStorage.cleaning"))
                     } else if storage.cleanableBytes > 0 {
                         Text(L.format("careStorage.cleanButton", Self.formatBytes(storage.cleanableBytes)))
+                            .contentTransition(.numericText(value: Double(storage.cleanableBytes)))
                     } else {
                         Text(L.t("careStorage.cleanNothing"))
                     }
@@ -480,7 +485,7 @@ struct CarePage: View {
         return base
     }
 
-    private static func formatBytes(_ bytes: Int64) -> String {
+    fileprivate static func formatBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
     }
 
@@ -494,11 +499,13 @@ struct CarePage: View {
                 appSupportRoot: base,
                 teamRoot: teamRoot,
                 extraReferencedMedia: referenced,
-                skipOrphanMedia: hasWriteFailures
+                skipOrphanMedia: hasWriteFailures,
+                workspaceRoot: Workspace.root
             )
         }
         let breakdown = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
-        if !Task.isCancelled {
+        guard !Task.isCancelled else { return }
+        withAnimation(Ink.Motion.prefersReduced(reduceMotion) ? nil : Ink.Motion.quick) {
             storage = breakdown
             sizeText = Self.formatBytes(breakdown.totalBytes)
         }
@@ -1332,6 +1339,99 @@ private struct PassphraseUnlockSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+private struct CareStorageBreakdownView: View {
+    let storage: StorageBreakdown
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private struct Segment: Identifiable {
+        let id: String
+        let bytes: Int64
+        let tint: Color
+    }
+
+    private var segments: [Segment] {
+        [
+            Segment(id: "careStorage.segChats", bytes: storage.chatsBytes, tint: Ink.Tile.dai),
+            Segment(id: "careStorage.segStudy", bytes: storage.studyBytes, tint: Ink.Tile.zhu),
+            Segment(id: "careStorage.segMedia", bytes: storage.activeMediaBytes, tint: Ink.Tile.xiang),
+            Segment(id: "careStorage.segMemory", bytes: storage.memoryBytes, tint: Ink.Tile.teng),
+            Segment(id: "careStorage.segCache", bytes: storage.cacheBytes, tint: Ink.Tile.mo),
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(L.t("careStorage.breakdownTitle")).font(Ink.label).foregroundStyle(Ink.ink)
+                .accessibilityAddTraits(.isHeader)
+            bar
+            let columns = Array(repeating: GridItem(.flexible(), spacing: Ink.Space.m), count: typeSize.isAccessibilitySize ? 1 : 2)
+            LazyVGrid(columns: columns, alignment: .leading, spacing: Ink.Space.s) {
+                ForEach(segments) { legend($0) }
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
+    private var bar: some View {
+        let visible = segments.filter { $0.bytes > 0 }
+        let counted = visible.reduce(Int64(0)) { $0 + $1.bytes }
+        let total = max(counted, storage.totalBytes)
+        let gap = 2 * UIScale.factor
+        return GeometryReader { geometry in
+            if total > 0, !visible.isEmpty {
+                let available = max(0, geometry.size.width - gap * CGFloat(max(0, visible.count - 1)))
+                let sliceWidths = resolvedBarWidths(for: visible, total: total, available: available)
+                HStack(spacing: gap) {
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, segment in
+                        Capsule().fill(segment.tint)
+                            .frame(width: sliceWidths[index])
+                    }
+                }
+            }
+        }
+        .frame(height: 10 * UIScale.factor)
+        .background(Ink.surfaceSubtle, in: .capsule)
+        .clipShape(Capsule())
+        .accessibilityHidden(true)
+    }
+
+    private func resolvedBarWidths(for visible: [Segment], total: Int64, available: CGFloat) -> [CGFloat] {
+        guard available > 0, total > 0, !visible.isEmpty else {
+            return Array(repeating: 0, count: visible.count)
+        }
+        let minWidth = min(6 * UIScale.factor, available / CGFloat(visible.count))
+        var widths = visible.map { max(minWidth, available * CGFloat($0.bytes) / CGFloat(total)) }
+        let excess = widths.reduce(0, +) - available
+        if excess > 0.5 {
+            let reducible = widths.map { max(0, $0 - minWidth) }
+            let reducibleSum = reducible.reduce(0, +)
+            if reducibleSum > 0 {
+                for idx in widths.indices {
+                    widths[idx] -= excess * (reducible[idx] / reducibleSum)
+                }
+            }
+        }
+        return widths
+    }
+
+    private func legend(_ segment: Segment) -> some View {
+        HStack(spacing: Ink.Space.xs) {
+            Circle().fill(segment.tint)
+                .frame(width: 6 * UIScale.factor, height: 6 * UIScale.factor)
+                .accessibilityHidden(true)
+            Text(L.t(segment.id)).foregroundStyle(Ink.inkSoft)
+            Spacer(minLength: 0)
+            Text(CarePage.formatBytes(segment.bytes))
+                .foregroundStyle(Ink.ink)
+                .contentTransition(.numericText(value: Double(segment.bytes)))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .font(Ink.footnote)
+        .accessibilityElement(children: .combine)
     }
 }
 

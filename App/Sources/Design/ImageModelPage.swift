@@ -46,6 +46,7 @@ struct ImageModelPage: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .navigationTitle(L.t("settings.imageModel"))
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L.t("settings.imageModelSearch"))

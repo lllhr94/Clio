@@ -3,17 +3,24 @@ import SwiftUI
 
 struct LookPage: View {
     @AppStorage("look.scheme") private var scheme = "system"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var accentRingNS
+    @Namespace private var bubbleRingNS
+
+    private var ringAnimation: Animation? {
+        Ink.Motion.prefersReduced(reduceMotion) ? nil : Ink.Motion.quick
+    }
 
     var body: some View {
         PreferenceForm(L.t("settingsHome.theme"), reset: reset) {
             // No section title: the page is already called 设色, and three of the same word in a row read as a stutter.
             Section {
-                Picker(L.t("settingsHome.lightMode"), selection: $scheme) {
-                    Text(L.t("settings.followSystem")).tag("system")
-                    Text(L.t("settings.lightAppearance")).tag("light")
-                    Text(L.t("settings.darkAppearance")).tag("dark")
-                }
-                .pickerStyle(.segmented)
+                SlidingCapsuleControl(selection: $scheme, items: [
+                    (value: "system", title: L.t("settings.followSystem")),
+                    (value: "light", title: L.t("settings.lightAppearance")),
+                    (value: "dark", title: L.t("settings.darkAppearance")),
+                ])
+                .accessibilityLabel(L.t("settingsHome.lightMode"))
                 palettes
                 grounds
                 bubbles
@@ -80,12 +87,20 @@ struct LookPage: View {
         let picked = Theme.shared.bubble == key
         return Button {
             Haptics.tick(0.5)
-            withAnimation(Ink.Motion.settle) { Theme.shared.setBubble(key) }
+            withAnimation(ringAnimation) { Theme.shared.setBubble(key) }
         } label: {
             VStack(spacing: Ink.Space.xs) {
                 Capsule().fill(color)
-                    .overlay(Capsule().strokeBorder(picked ? Ink.accent : Ink.rule, lineWidth: picked ? 2 : 1))
+                    .overlay { Capsule().strokeBorder(Ink.rule, lineWidth: 1) }
                     .frame(width: 34, height: 22)
+                    .overlay {
+                        if picked {
+                            Capsule()
+                                .strokeBorder(Ink.accent, lineWidth: 2)
+                                .matchedGeometryEffect(id: "bubbleRing", in: bubbleRingNS)
+                                .transition(.identity)
+                        }
+                    }
                 Text(title).font(.system(size: Ink.Size.small, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
             }
             .frame(maxWidth: .infinity)
@@ -103,12 +118,19 @@ struct LookPage: View {
                     let picked = Theme.shared.key == palette.key
                     Button {
                         Haptics.tick(0.5)
-                        withAnimation(Ink.Motion.settle) { Theme.shared.pick(palette.key) }
+                        withAnimation(ringAnimation) { Theme.shared.pick(palette.key) }
                     } label: {
                         VStack(spacing: Ink.Space.xs) {
                             Circle().fill(palette.accent).frame(width: 28, height: 28)
                                 .padding(Ink.Space.xs)
-                                .overlay(Circle().strokeBorder(picked ? palette.accent : Color.clear, lineWidth: 2))
+                                .overlay {
+                                    if picked {
+                                        Circle()
+                                            .strokeBorder(palette.accent, lineWidth: 2)
+                                            .matchedGeometryEffect(id: "accentRing", in: accentRingNS)
+                                            .transition(.identity)
+                                    }
+                                }
                             Text(palette.title).font(.system(size: Ink.Size.small, weight: picked ? .semibold : .regular)).foregroundStyle(picked ? Ink.ink : Ink.inkSoft)
                         }
                         .frame(maxWidth: .infinity)
@@ -191,7 +213,7 @@ struct ReadingSizePage: View {
     }
 
     var body: some View {
-        PreferenceForm(L.t("settingsHome.size"), reset: reset) {
+        PreferenceForm(L.t("settingsHome.typography"), reset: reset) {
             readingSection
             moreTypographySection
             densitySection
@@ -211,6 +233,7 @@ struct ReadingSizePage: View {
                 face: theme.face,
                 code: theme.code
             )
+            fontChips
             presetRow(theme: theme)
             NavigationLink {
                 FontPage()
@@ -267,6 +290,33 @@ struct ReadingSizePage: View {
         .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 
+    private var fontChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Ink.Space.s) {
+                ForEach(Pref.Face.allCases) { face in
+                    let picked = Theme.shared.face == face
+                    Button {
+                        Haptics.tick(0.5)
+                        Theme.shared.setFace(face)
+                        FontShelf.shared.fetch(face)
+                    } label: {
+                        Text(face.title)
+                            .font(Ink.label)
+                            .foregroundStyle(picked ? Ink.accent : Ink.inkSoft)
+                            .padding(.horizontal, Ink.Space.m)
+                            .frame(minHeight: 44)
+                            .background(picked ? Ink.accentWash : Ink.surfaceSubtle, in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(picked ? .isSelected : [])
+                }
+            }
+            .padding(.vertical, Ink.Space.xs)
+        }
+        .scrollIndicators(.hidden)
+        .accessibilityLabel(L.t("settings.fontBody"))
+    }
+
     @ViewBuilder
     private var moreTypographySection: some View {
         Section {
@@ -275,13 +325,9 @@ struct ReadingSizePage: View {
                     Text(L.t("settingsHome.headingWeight"))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    Picker(L.t("settingsHome.headingWeight"), selection: headingWeightBinding) {
-                        ForEach(Pref.HeadingWeight.allCases) { weight in
-                            Text(headingWeightTitle(weight)).tag(weight)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    SlidingCapsuleControl(selection: headingWeightBinding, options: Pref.HeadingWeight.allCases,
+                                          title: headingWeightTitle)
+                        .accessibilityLabel(L.t("settingsHome.headingWeight"))
                 }
                 .padding(.vertical, Ink.Space.xs)
 
@@ -289,13 +335,8 @@ struct ReadingSizePage: View {
                     Text(L.t("settingsHome.codeFontRow"))
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
-                    Picker(L.t("settingsHome.codeFontRow"), selection: codeBinding) {
-                        ForEach(Pref.Code.allCases) { code in
-                            Text(code.title).tag(code)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    SlidingCapsuleControl(selection: codeBinding, options: Pref.Code.allCases) { $0.title }
+                        .accessibilityLabel(L.t("settingsHome.codeFontRow"))
                 }
                 .padding(.vertical, Ink.Space.xs)
 
@@ -542,6 +583,7 @@ struct ToneSettingsPage: View {
 }
 
 struct ChatDisplayPage: View {
+    @AppStorage("look.hapticMode") private var hapticModeRaw = ""
     @AppStorage("look.haptics") private var haptics = true
     @AppStorage("look.hapticIntensity") private var hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
     @AppStorage("look.fade") private var fade = true
@@ -555,6 +597,39 @@ struct ChatDisplayPage: View {
     @AppStorage("look.uikitChatList") private var useUIKitChatList = true
     @AppStorage(VoiceTranscription.modeKey) private var voiceModeRaw = VoiceTranscription.Mode.system.rawValue
     @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
+
+    private var hapticMode: Pref.HapticMode { Pref.HapticMode(rawValue: hapticModeRaw) ?? Pref.hapticMode }
+
+    private var visualEffectsBinding: Binding<Bool> {
+        Binding(get: { Theme.shared.reduceVisualEffects }, set: { Theme.shared.setReduceVisualEffects($0) })
+    }
+
+    private var hapticModeBinding: Binding<Pref.HapticMode> {
+        Binding(get: { hapticMode }, set: { mode in
+            hapticModeRaw = mode.rawValue
+            haptics = mode != .off
+        })
+    }
+
+    private func hapticModeTitle(_ mode: Pref.HapticMode) -> String {
+        switch mode {
+        case .always: L.t("settings.hapticModeAlways")
+        case .auto: L.t("settings.hapticModeAuto")
+        case .off: L.t("settings.hapticModeOff")
+        }
+    }
+
+    private var hapticModeRow: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(L.t("settings.hapticMode"))
+            SlidingCapsuleControl(selection: hapticModeBinding, options: Pref.HapticMode.allCases, title: hapticModeTitle)
+                .accessibilityLabel(L.t("settings.hapticMode"))
+            if hapticMode == .auto {
+                Text(L.t("settings.hapticModeAutoNote")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
 
     private var hapticIntensityBinding: Binding<Pref.HapticIntensity> {
         Binding(
@@ -582,7 +657,7 @@ struct ChatDisplayPage: View {
     }
 
     var body: some View {
-        PreferenceForm(L.t("settingsHome.display"), reset: reset) {
+        PreferenceForm(L.t("settingsHome.displayAndHaptics"), reset: reset) {
             Section {
                 Toggle(L.t("settings.chatFaces"), isOn: $faces)
                 Toggle(L.t("settings.confirmStop"), isOn: $confirmStop)
@@ -591,8 +666,8 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
                 Toggle(L.t("settings.immersiveChrome"), isOn: $immersiveChrome)
-                Toggle(L.t("settings.haptics"), isOn: $haptics)
-                if haptics {
+                hapticModeRow
+                if hapticMode != .off {
                     StopRow(
                         title: L.t("settings.hapticIntensity"),
                         value: hapticIntensityBinding,
@@ -603,6 +678,11 @@ struct ChatDisplayPage: View {
                     )
                 }
                 Toggle(L.t("settings.showReplyStats"), isOn: $stats)
+            }
+            Section {
+                Toggle(L.t("settings.reduceVisualEffects"), isOn: visualEffectsBinding)
+            } footer: {
+                Text(L.t("settings.reduceVisualEffectsNote"))
             }
             Section {
                 Toggle(L.t("lookChatList.toggle"), isOn: $useUIKitChatList)
@@ -627,10 +707,18 @@ struct ChatDisplayPage: View {
                 Text(L.t("voiceSettings.rowFooter"))
             }
         }
+        .onAppear {
+            if Pref.HapticMode(rawValue: hapticModeRaw) == nil {
+                hapticModeRaw = Pref.hapticMode.rawValue
+            }
+            haptics = hapticMode != .off
+        }
     }
 
     private func reset() {
+        hapticModeRaw = Pref.HapticMode.auto.rawValue
         haptics = true
+        Theme.shared.setReduceVisualEffects(false)
         hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
         fade = true
         immersiveChrome = false
@@ -760,12 +848,13 @@ struct NotificationSettingsPage: View {
 }
 
 struct MorningSettingsPage: View {
+    var embeddedTitle: String? = nil
     @AppStorage("morning.on") private var morningOn = false
     @AppStorage("diary.on") private var diaryOn = false
     @AppStorage("morning.hour") private var morningHour = 7
 
     var body: some View {
-        PreferenceForm(L.t("settingsHome.morning"), reset: reset) {
+        PreferenceForm(embeddedTitle ?? L.t("settingsHome.morning"), reset: reset) {
             Section {
                 Toggle(L.t("settings.dailyBrief"), isOn: $morningOn)
                 if morningOn {
@@ -868,6 +957,7 @@ private struct PreferenceForm<Content: View>: View {
                 }
             }
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .paperForm()
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

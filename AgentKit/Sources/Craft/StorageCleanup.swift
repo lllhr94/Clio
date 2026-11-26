@@ -9,6 +9,9 @@ import Glibc
 public struct StorageBreakdown: Equatable, Sendable {
     public var totalBytes: Int64
     public var mediaBytes: Int64
+    public var chatsBytes: Int64
+    public var studyBytes: Int64
+    public var memoryBytes: Int64
     public var orphanMediaCount: Int
     public var orphanMediaBytes: Int64
     public var docCacheCount: Int
@@ -17,6 +20,8 @@ public struct StorageBreakdown: Equatable, Sendable {
     public var scanSkippedOrphans: Bool
 
     public var cleanableBytes: Int64 { orphanMediaBytes + docCacheBytes }
+    public var activeMediaBytes: Int64 { max(0, mediaBytes - orphanMediaBytes) }
+    public var cacheBytes: Int64 { cleanableBytes }
 
     public init(
         totalBytes: Int64 = 0,
@@ -25,10 +30,16 @@ public struct StorageBreakdown: Equatable, Sendable {
         orphanMediaBytes: Int64 = 0,
         docCacheCount: Int = 0,
         docCacheBytes: Int64 = 0,
-        scanSkippedOrphans: Bool = false
+        scanSkippedOrphans: Bool = false,
+        chatsBytes: Int64 = 0,
+        studyBytes: Int64 = 0,
+        memoryBytes: Int64 = 0
     ) {
         self.totalBytes = totalBytes
         self.mediaBytes = mediaBytes
+        self.chatsBytes = chatsBytes
+        self.studyBytes = studyBytes
+        self.memoryBytes = memoryBytes
         self.orphanMediaCount = orphanMediaCount
         self.orphanMediaBytes = orphanMediaBytes
         self.docCacheCount = docCacheCount
@@ -73,10 +84,17 @@ public enum StorageCleanup {
         extraReferencedMedia: Set<String> = [],
         skipOrphanMedia: Bool = false,
         graceSeconds: TimeInterval = 60,
-        now: Date = Date()
+        now: Date = Date(),
+        workspaceRoot: URL? = nil
     ) -> StorageBreakdown {
-        let totalBytes = directorySize(appSupportRoot)
-        let mediaFiles = regularFiles(in: teamRoot.appendingPathComponent("media", isDirectory: true))
+        let chatsDir = teamRoot.appendingPathComponent("chats", isDirectory: true)
+        let mediaDir = teamRoot.appendingPathComponent("media", isDirectory: true)
+        let docCacheDir = teamRoot.appendingPathComponent("doccache", isDirectory: true)
+        let memoryRoots = memoryLocations(in: teamRoot)
+        let studyBytes = workspaceRoot.map {
+            directorySize($0, excluding: [chatsDir, mediaDir, docCacheDir] + memoryRoots)
+        } ?? 0
+        let mediaFiles = regularFiles(in: mediaDir)
         let mediaBytes = mediaFiles.reduce(Int64(0)) { $0 + $1.bytes }
 
         let orphanScan: (orphans: [FileInfo], skipped: Bool)
@@ -85,7 +103,7 @@ public enum StorageCleanup {
         } else {
             orphanScan = findOrphanMedia(
                 mediaFiles: mediaFiles,
-                chatsDir: teamRoot.appendingPathComponent("chats", isDirectory: true),
+                chatsDir: chatsDir,
                 extraReferenced: extraReferencedMedia,
                 graceSeconds: graceSeconds,
                 now: now
@@ -93,18 +111,38 @@ public enum StorageCleanup {
         }
         let orphanBytes = orphanScan.orphans.reduce(Int64(0)) { $0 + $1.bytes }
 
-        let docCacheFiles = regularFiles(in: teamRoot.appendingPathComponent("doccache", isDirectory: true))
+        let docCacheFiles = regularFiles(in: docCacheDir)
         let docCacheBytes = docCacheFiles.reduce(Int64(0)) { $0 + $1.bytes }
 
         return StorageBreakdown(
-            totalBytes: totalBytes,
+            totalBytes: totalSize(appSupportRoot: appSupportRoot, workspaceRoot: workspaceRoot),
             mediaBytes: mediaBytes,
             orphanMediaCount: orphanScan.orphans.count,
             orphanMediaBytes: orphanBytes,
             docCacheCount: docCacheFiles.count,
             docCacheBytes: docCacheBytes,
-            scanSkippedOrphans: orphanScan.skipped
+            scanSkippedOrphans: orphanScan.skipped,
+            chatsBytes: directorySize(chatsDir),
+            studyBytes: studyBytes,
+            memoryBytes: memoryRoots.reduce(0) { $0 + itemSize($1) }
         )
+    }
+
+    /// Measures Application Support and the local workspace, counting shared paths once.
+    public static func totalSize(appSupportRoot: URL, workspaceRoot: URL? = nil) -> Int64 {
+        let appBytes = directorySize(appSupportRoot)
+        guard let workspaceRoot, !Task.isCancelled else { return appBytes }
+        return appBytes + directorySize(workspaceRoot, excluding: [appSupportRoot])
+    }
+
+    private static func memoryLocations(in teamRoot: URL) -> [URL] {
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: teamRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+        return children.filter {
+            let name = $0.lastPathComponent.lowercased()
+            return name == "diary" || name.hasPrefix("memor")
+        }
     }
 
     /// Removes only unreferenced `media/` files older than `graceSeconds` and regenerable `doccache/` files.
@@ -355,17 +393,40 @@ public enum StorageCleanup {
         )
     }
 
-    private static func directorySize(_ root: URL) -> Int64 {
+    private static func itemSize(_ url: URL) -> Int64 {
+        guard let values = try? url.resourceValues(forKeys: [
+            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey,
+        ]), values.isSymbolicLink != true else { return 0 }
+        if values.isDirectory == true { return directorySize(url) }
+        guard values.isRegularFile == true else { return 0 }
+        return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+    }
+
+    private static func directorySize(_ root: URL, excluding exclusions: [URL] = []) -> Int64 {
+        guard !Task.isCancelled, directoryIdentity(root) != nil else { return 0 }
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let rootParts = resolvedRoot.pathComponents
+        let excludedPaths = Set(exclusions.map {
+            $0.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.pathComponents
+                + [$0.lastPathComponent]
+        })
+        guard !excludedPaths.contains(where: { rootParts.starts(with: $0) }) else { return 0 }
+
         let fm = FileManager.default
         var total: Int64 = 0
         guard let walker = fm.enumerator(
-            at: root,
+            at: resolvedRoot,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey],
             options: [.skipsPackageDescendants]
         ) else {
             return 0
         }
         for case let url as URL in walker {
+            if Task.isCancelled { break }
+            if !excludedPaths.isEmpty, excludedPaths.contains(url.pathComponents) {
+                walker.skipDescendants()
+                continue
+            }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey]) else {
                 continue
             }

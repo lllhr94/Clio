@@ -42,9 +42,10 @@ struct DefaultModelsPage: View {
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.l)
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
-        .navigationTitle(L.t("settingsHome.models"))
+        .navigationTitle(L.t("settingsHome.defaultAndSpecialModels"))
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $picking) { role in
             ModelPickerSheet(
@@ -57,6 +58,7 @@ struct DefaultModelsPage: View {
                     openServices()
                 }
             )
+            .detentPaperBackdrop(initial: .large, detents: [.medium, .large])
         }
     }
 
@@ -192,11 +194,13 @@ private struct ModelPickerSheet: View {
     @State private var query = ""
 
     private var filteredEndpoints: [(endpoint: Endpoint, models: [String])] {
-        let search = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return team.settings.endpoints.compactMap { endpoint in
-            let models = search.isEmpty
-                ? endpoint.models
-                : endpoint.models.filter { $0.lowercased().contains(search) || endpoint.name.lowercased().contains(search) }
+            let matchesProvider = search.isEmpty || endpoint.name.localizedCaseInsensitiveContains(search)
+            let models = matchesProvider ? endpoint.models : endpoint.models.filter { model in
+                model.localizedCaseInsensitiveContains(search)
+                    || endpoint.displayName(for: model).localizedCaseInsensitiveContains(search)
+            }
             return models.isEmpty ? nil : (endpoint, models)
         }
     }
@@ -226,8 +230,8 @@ private struct ModelPickerSheet: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .scrollDismissesKeyboard(.interactively)
-            .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(role.title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L.t("settings.imageModelSearch"))
@@ -298,10 +302,13 @@ private struct ModelPickerSheet: View {
             HStack(spacing: Ink.Space.m) {
                 ModelIcon(model: model, service: service, size: Kit.badge, name: endpoint.name)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    Text(model)
+                    Text(endpoint.displayName(for: model))
                         .font(Ink.mono(Ink.Size.sub, weight: selected ? .semibold : .medium))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
+                    if endpoint.customName(for: model) != nil {
+                        Text(model).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
+                    }
                     TraitChips(traits: endpoint.traits(model), corrected: endpoint.corrected(model))
                 }
                 Spacer(minLength: Ink.Space.s)
