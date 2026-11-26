@@ -56,17 +56,25 @@ jobs:
           UDID="$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
           data = json.load(sys.stdin)["devices"]
-          phones = [d for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
-          phones = phones or [d for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone")]
-          print(phones[-1]["udid"])
+          phones = [(rt, d) for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
+          phones = phones or [(rt, d) for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone")]
+          rt, dev = phones[-1]
+          sys.stderr.write("Selected iOS Simulator: " + dev["name"] + " | " + rt + " | " + dev["udid"] + "\n")
+          print(dev["udid"])
           ')"
           echo "Selected iOS Simulator UDID: $UDID"
           SCHEME="$(xcodebuild -list -json | python3 -c '
           import json, sys
           info = json.load(sys.stdin)
           schemes = info.get("workspace", {}).get("schemes") or info.get("project", {}).get("schemes") or []
-          preferred = [s for s in schemes if "TelegramRevealSpike" in s]
-          print(preferred[0] if preferred else schemes[0])
+          sys.stderr.write("Discovered SwiftPM schemes: " + repr(schemes) + "\n")
+          if "TelegramRevealSpike-Package" in schemes:
+              print("TelegramRevealSpike-Package")
+          elif "TelegramRevealSpike" in schemes:
+              print("TelegramRevealSpike")
+          else:
+              preferred = [s for s in schemes if "TelegramRevealSpike" in s]
+              print(preferred[0] if preferred else schemes[0])
           ')"
           echo "Resolved SwiftPM Scheme: $SCHEME"
           xcodebuild test \
