@@ -108,6 +108,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     var credentialSlot: UUID?
     /// Whether Anthropic endpoints send `cache_control` breakpoints; nil defaults to on.
     var promptCache: Bool?
+    /// Optional user-defined display names for models (`[modelID: customName]`).
+    var modelNames: [String: String]?
     var credentialID: String { EndpointKeyCoordinator.credentialID(for: id, slot: credentialSlot) }
 
     init(
@@ -158,6 +160,85 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     static func looksLikeImageModel(_ model: String) -> Bool {
         let name = model.lowercased()
         return ["image", "dall-e", "flux", "seedream", "imagen"].contains { name.contains($0) }
+    }
+
+    /// Strips routing prefixes, date stamps, and noisy suffixes into compact readable model badges.
+    static func shortName(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return model }
+        var name = trimmed
+        if let slash = name.lastIndex(of: "/") {
+            let tail = String(name[name.index(after: slash)...])
+            if !tail.isEmpty { name = tail }
+        }
+        for tag in [":free", ":thinking", ":exacto", ":extended"] {
+            if name.lowercased().hasSuffix(tag), name.count > tag.count {
+                name = String(name.dropLast(tag.count))
+            }
+        }
+        if name.count > 9 {
+            let suffix = name.suffix(9)
+            if suffix.first == "-", suffix.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) {
+                let base = String(name.dropLast(9))
+                if !base.isEmpty { name = base }
+            }
+        }
+        for suffix in ["-latest", "-preview"] {
+            if name.lowercased().hasSuffix(suffix), name.count > suffix.count {
+                name = String(name.dropLast(suffix.count))
+            }
+        }
+
+        let lower = name.lowercased()
+        if lower == "deepseek-reasoner" || lower == "deepseek-r1" { return "DeepSeek R1" }
+        if lower == "deepseek-chat" || lower == "deepseek-v3" { return "DeepSeek V3" }
+
+        let parts = name.split(separator: "-").map(String.init)
+        if parts.first?.lowercased() == "claude", parts.count >= 2 {
+            let rest = parts.dropFirst()
+            if let familyIdx = rest.firstIndex(where: { ["sonnet", "opus", "haiku"].contains($0.lowercased()) }) {
+                let family = rest[familyIdx].capitalized
+                let versionParts = rest.indices
+                    .filter { $0 != familyIdx }
+                    .map { rest[$0] }
+                    .filter { $0.allSatisfy { $0.isASCII && $0.isNumber } }
+                if !versionParts.isEmpty {
+                    return "\(family) \(versionParts.joined(separator: "."))"
+                }
+                return family
+            }
+        }
+        if parts.first?.lowercased() == "gpt", parts.count >= 2 {
+            return "GPT-" + parts.dropFirst().joined(separator: "-")
+        }
+        if parts.first?.lowercased() == "gemini", parts.count >= 2 {
+            return "Gemini " + parts.dropFirst().joined(separator: " ")
+        }
+        return name
+    }
+
+    /// Returns the user's trimmed custom display name for `model`, if one is set.
+    func customName(for model: String) -> String? {
+        guard let raw = modelNames?[model]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        return raw
+    }
+
+    /// Returns the user-visible display name for `model`: custom name if set, otherwise shortened ID.
+    func displayName(for model: String) -> String {
+        customName(for: model) ?? Self.shortName(model)
+    }
+
+    /// Returns a display name disambiguated against `peers` (defaulting to `models`) so variants like `:free` stay distinct.
+    func distinguishableDisplayName(for model: String, among peers: [String]? = nil) -> String {
+        let candidate = displayName(for: model)
+        let pool = peers ?? models
+        var hits = 0
+        for peer in pool where displayName(for: peer) == candidate {
+            hits += 1
+            if hits > 1 { return model }
+        }
+        return candidate
     }
 
     var usesPromptCache: Bool { promptCache ?? AnthropicProvider.caches(baseURL) }

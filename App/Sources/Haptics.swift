@@ -1,4 +1,5 @@
 import CoreHaptics
+import Foundation
 import QuartzCore
 import UIKit
 
@@ -11,9 +12,11 @@ enum Haptics {
     private static let notificationGen = UINotificationFeedbackGenerator()
     private static let stateLock = NSLock()
     private static let minTickInterval: CFTimeInterval = 0.035
+    private static let minEngineRetryInterval: CFTimeInterval = 2.0
 
     nonisolated(unsafe) private static var engine: CHHapticEngine?
     nonisolated(unsafe) private static var lastTickTime: CFTimeInterval = 0
+    nonisolated(unsafe) private static var lastEngineAttempt: CFTimeInterval = 0
     nonisolated(unsafe) private static var voiceCaptureMuted = false
 
     static func prepare() {
@@ -23,7 +26,7 @@ enum Haptics {
         rigidGen.prepare()
         selectionGen.prepare()
         notificationGen.prepare()
-        startEngine()
+        startEngine(force: true)
     }
 
     static func setVoiceCaptureMuted(_ muted: Bool) {
@@ -34,17 +37,31 @@ enum Haptics {
 
     private static var activeScale: CGFloat? {
         let muted = stateLock.withLock { voiceCaptureMuted }
-        guard !muted, Pref.haptics else { return nil }
+        guard !muted else { return nil }
+        switch Pref.hapticMode {
+        case .off:
+            return nil
+        case .auto:
+            if ProcessInfo.processInfo.isLowPowerModeEnabled { return nil }
+        case .always:
+            break
+        }
         let intensity = Pref.hapticIntensity
         guard intensity != .off else { return nil }
         return intensity.scale
     }
 
-    private static func startEngine() {
-        stateLock.lock()
-        let hasEngine = engine != nil
-        stateLock.unlock()
-        guard !hasEngine, CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+    private static func startEngine(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        let shouldAttempt = stateLock.withLock { () -> Bool in
+            guard engine == nil else { return false }
+            if !force && now - lastEngineAttempt < minEngineRetryInterval {
+                return false
+            }
+            lastEngineAttempt = now
+            return true
+        }
+        guard shouldAttempt, CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
         do {
             let made = try CHHapticEngine()
             made.isAutoShutdownEnabled = true
@@ -66,6 +83,7 @@ enum Haptics {
     }
 
     private static func playPattern(_ events: [CHHapticEvent]) -> Bool {
+        startEngine()
         let currentEngine: CHHapticEngine? = stateLock.withLock { engine }
         guard let currentEngine else { return false }
         do {
@@ -78,21 +96,39 @@ enum Haptics {
         }
     }
 
-    /// A light semantic tap (e.g. sending a message), never `.medium 0.8`.
-    static func light() {
-        guard let scale = activeScale else { return }
-        lightGen.impactOccurred(intensity: min(1.0, max(0.3, 0.65 * scale)))
+    private static func playTransient(intensity: Float, sharpness: Float) -> Bool {
+        let event = CHHapticEvent(
+            eventType: .hapticTransient,
+            parameters: [
+                CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
+                CHHapticEventParameter(parameterID: .hapticSharpness, value: sharpness),
+            ],
+            relativeTime: 0
+        )
+        return playPattern([event])
     }
 
-    /// Discrete choice change (model or thinking level picker).
+    /// Clean crisp tap for avatar micro-bounce, row taps, and toolbar buttons.
+    static func light() {
+        guard let scale = activeScale else { return }
+        lightGen.prepare()
+        lightGen.impactOccurred(intensity: min(1.0, max(0.32, 0.58 * scale)))
+    }
+
+    /// Discrete choice change (capsule segment crossing, model, or thinking level picker).
     static func selection() {
-        guard activeScale != nil else { return }
-        selectionGen.selectionChanged()
+        guard let scale = activeScale else { return }
+        let level = min(Float(0.85), Float(0.50 * scale))
+        if !playTransient(intensity: level, sharpness: 0.72) {
+            selectionGen.prepare()
+            selectionGen.selectionChanged()
+        }
     }
 
     /// Taking hold of something.
     static func grab() {
         guard let scale = activeScale else { return }
+        mediumGen.prepare()
         mediumGen.impactOccurred(intensity: min(1.0, max(0.4, scale)))
     }
 
@@ -107,6 +143,7 @@ enum Haptics {
         }
         guard allowed else { return }
         let resolved = min(1.0, max(0.25, strength * scale))
+        rigidGen.prepare()
         rigidGen.impactOccurred(intensity: resolved)
     }
 
@@ -114,17 +151,8 @@ enum Haptics {
     static func detent() {
         guard let scale = activeScale else { return }
         let level = min(Float(1.0), Float(0.68 * scale))
-        let events = [
-            CHHapticEvent(
-                eventType: .hapticTransient,
-                parameters: [
-                    CHHapticEventParameter(parameterID: .hapticIntensity, value: level),
-                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.78),
-                ],
-                relativeTime: 0
-            ),
-        ]
-        if !playPattern(events) {
+        if !playTransient(intensity: level, sharpness: 0.78) {
+            rigidGen.prepare()
             rigidGen.impactOccurred(intensity: min(1.0, max(0.4, 0.68 * scale)))
         }
     }
@@ -132,22 +160,26 @@ enum Haptics {
     /// Something locking into place.
     static func lock() {
         guard let scale = activeScale else { return }
+        heavyGen.prepare()
         heavyGen.impactOccurred(intensity: min(1.0, max(0.45, scale)))
     }
 
     /// High-value completion confirmation (backup, long foreground turn).
     static func success() {
         guard activeScale != nil else { return }
+        notificationGen.prepare()
         notificationGen.notificationOccurred(.success)
     }
 
     static func warning() {
         guard activeScale != nil else { return }
+        notificationGen.prepare()
         notificationGen.notificationOccurred(.warning)
     }
 
     static func error() {
         guard activeScale != nil else { return }
+        notificationGen.prepare()
         notificationGen.notificationOccurred(.error)
     }
 
@@ -175,6 +207,7 @@ enum Haptics {
             ),
         ]
         if !playPattern(events) {
+            lightGen.prepare()
             lightGen.impactOccurred(intensity: min(1.0, 0.5 * scale))
         }
     }
@@ -197,8 +230,10 @@ enum Haptics {
     }
 
     private static func fallbackThud(scale: CGFloat) {
+        heavyGen.prepare()
         heavyGen.impactOccurred(intensity: min(1.0, max(0.5, scale)))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            rigidGen.prepare()
             rigidGen.impactOccurred(intensity: min(1.0, max(0.45, 0.8 * scale)))
         }
     }

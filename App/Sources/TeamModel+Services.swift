@@ -406,6 +406,22 @@ extension TeamModel {
         saveSettings()
     }
 
+    /// Sets or clears a user-defined display name for one model on an endpoint.
+    @MainActor func setModelName(_ name: String?, for model: String, in endpointId: String) {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == endpointId }) else { return }
+        var book = settings.endpoints[index].modelNames ?? [:]
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty {
+            book[model] = trimmed
+        } else {
+            book.removeValue(forKey: model)
+        }
+        let updated: [String: String]? = book.isEmpty ? nil : book
+        guard settings.endpoints[index].modelNames != updated else { return }
+        settings.endpoints[index].modelNames = updated
+        saveSettings()
+    }
+
     static func normalizedEndpointAddress(_ raw: String) -> String? {
         EndpointAddressPolicy.normalize(raw)
     }
@@ -805,11 +821,20 @@ extension TeamModel {
         return "\(found.model) · \(found.endpoint.name)"
     }
 
-    /// Just the model, without a relay's routing prefix ("auto/deepseek-v4.1-flash" reads as "deepseek-v4.1-flash"),
-    /// for places too narrow for the whole name.
+    /// Display name for a model reference: user custom name if set, otherwise shortened model ID.
     func modelShort(_ ref: String?) -> String {
-        guard let found = resolve(ref) else { return "没有设置" }
-        return found.model.split(separator: "/").last.map(String.init) ?? found.model
+        if let found = resolve(ref) {
+            return found.endpoint.displayName(for: found.model)
+        }
+        guard let ref else { return "没有设置" }
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "没有设置" }
+        if let slash = trimmed.firstIndex(of: "/") {
+            let tail = String(trimmed[trimmed.index(after: slash)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tail.isEmpty else { return "没有设置" }
+            return Endpoint.shortName(tail)
+        }
+        return Endpoint.shortName(trimmed)
     }
 }
 

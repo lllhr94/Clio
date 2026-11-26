@@ -324,7 +324,30 @@
     "aboutLicense": "开源许可",
     "aboutRepo": "代码仓库",
     "aboutCreditsTitle": "开源与字体致谢",
-    "aboutOpenSource": "Clio 遵循 GNU GPL-3.0 开源协议。\n\n• HanaAgent（Apache-2.0）：产品架构启发\n• iSH（GPL）：本地 Linux 环境\n• SwiftTerm / Citadel：终端画面与 SSH\n• Telegram-iOS TextRevealController（GPL-2.0+）：流式渐显控制器\n• 霞鹜文楷 / Clio Kai、Maple Mono（SIL OFL 1.1）：中文字体与等宽字体"
+    "aboutOpenSource": "Clio 遵循 GNU GPL-3.0 开源协议。\n\n• HanaAgent（Apache-2.0）：产品架构启发\n• iSH（GPL）：本地 Linux 环境\n• SwiftTerm / Citadel：终端画面与 SSH\n• Telegram-iOS TextRevealController（GPL-2.0+）：流式渐显控制器\n• 霞鹜文楷 / Clio Kai、Maple Mono（SIL OFL 1.1）：中文字体与等宽字体",
+    "modelsAndCapsGroup": "模型与能力",
+    "companionsCareGroup": "助手与日常",
+    "lookInteractGroup": "外观与交互",
+    "chatSecurityNotifyGroup": "对话、安全与通知",
+    "dataCareGroup": "数据与养护",
+    "defaultAndSpecialModels": "默认与专用模型",
+    "defaultAndSpecialModelsLine": "聊天、备用、记忆整理与生图模型",
+    "companionsAndRooms": "助手与群聊",
+    "companionsAndRoomsLine": "改名字、头像、性格和模型，管理群聊",
+    "scheduleAndMorning": "定时与早报",
+    "scheduleAndMorningLine": "定时任务、早报时间与晚间日记",
+    "typography": "字体与排版",
+    "typographyLine": "正文字号、行距、字体与界面大小",
+    "displayAndHaptics": "显示与触感",
+    "displayAndHapticsLine": "思考过程、淡入、触感反馈与统计",
+    "identityAlbum": "从相册选一张",
+    "identityResetMe": "恢复默认「我」",
+    "quickServices": "服务",
+    "quickModel": "默认模型",
+    "quickStorage": "空间",
+    "quickBackupReady": "网盘就绪",
+    "quickBackupUnset": "未设网盘",
+    "aboutFooter": "关于与版本"
   },
   "alwaysOn": {
     "open": "常亮黑屏",
@@ -505,7 +528,14 @@
     "providerCountSummary": "%@ · %lld 个模型",
     "manageServicesShortcut": "去管理模型服务",
     "imageModelFromServicesNote": "候选列表来自「模型服务」里已接的 OpenAI 兼容服务；刷新列表请到对应服务页。",
-    "modelSearchEmpty": "没有名字里带「%@」的模型。"
+    "modelSearchEmpty": "没有名字里带「%@」的模型。",
+    "hapticMode": "触感反馈",
+    "hapticModeAlways": "始终开启",
+    "hapticModeAuto": "自动",
+    "hapticModeOff": "关闭",
+    "hapticModeAutoNote": "正常时保留细腻震动，系统低电量模式下自动静音省电",
+    "reduceVisualEffects": "减弱视觉效果",
+    "reduceVisualEffectsNote": "使用纯纸面底色与简洁过渡，减轻玻璃渲染与动态效果"
   },
   "styleSwitcher": {
     "title": "称谓",
@@ -963,7 +993,13 @@
     "cleaning": "正在清理缓存…",
     "footer": "只清理不再被任何对话引用的旧图片和可重新生成的 PDF 提取缓存，不动任何对话、记忆与文件。",
     "cleanedNotice": "已释放 %@（%lld 张未引用图片、%lld 份文档缓存）。",
-    "nothingCleaned": "没有需要清理的缓存。"
+    "nothingCleaned": "没有需要清理的缓存。",
+    "breakdownTitle": "空间分布",
+    "segChats": "对话",
+    "segStudy": "文件",
+    "segMedia": "图片",
+    "segMemory": "记忆",
+    "segCache": "缓存"
   },
   "saveNote": {
     "title": "存成笔记",
@@ -1060,7 +1096,10 @@
     "sourceAPIAndName": "来源：服务接口与名称识别。",
     "sourceCatalog": "来源：模型资料库（models.dev）。",
     "sourceName": "来源：按模型名自动识别。",
-    "capabilitiesFooter": "不能看图时，发来的照片会换成编号，助手可以用 photo_text 读图上的字；不会用工具时，助手只聊天，不上网也不动手。"
+    "capabilitiesFooter": "不能看图时，发来的照片会换成编号，助手可以用 photo_text 读图上的字；不会用工具时，助手只聊天，不上网也不动手。",
+    "customModelName": "显示名称",
+    "customModelNamePlaceholder": "留空则显示简短 ID",
+    "customModelNameNote": "设个好记的名字后，顶部和设置里会优先显示它"
   },
   "trace": {
     "commandsCount": "跑了 %lld 条命令",
@@ -1316,5 +1355,22 @@
     "allowHTTP": "允许局域网明文 HTTP",
     "scopePicker": "最高权限级别",
     "invalidHostError": "请输入有效的私网 IP、局域网域名或 *.ts.net 后缀（禁止 127.0.0.1、localhost、169.254.169.254 或通配 *）。"
+  },
+  "chatHub": {
+    "providers": "模型服务",
+    "models": "模型",
+    "manageProviders": "添加或管理模型服务",
+    "thinking": "思考深度",
+    "context": "上下文",
+    "compressNow": "压缩前文",
+    "noProviders": "还没有接模型服务",
+    "nameCard": "资料卡",
+    "details": "详情",
+    "back": "返回",
+    "modelSwitched": "已切到 %@"
+  },
+  "chatMenu": {
+    "workbench": "工作台",
+    "manageExport": "管理与导出"
   }
 }

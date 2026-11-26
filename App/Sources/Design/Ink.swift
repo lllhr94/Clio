@@ -113,6 +113,11 @@ final class Theme {
         writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.uiDensity") }
     }
 
+    func setReduceVisualEffects(_ value: Bool) {
+        if reduceVisualEffects != value { reduceVisualEffects = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.reduceVisualEffects") }
+    }
+
     func applyReadingPreset(_ preset: Pref.ReadingPreset) {
         writeDefaults {
             let defaults = UserDefaults.standard
@@ -188,6 +193,7 @@ final class Theme {
     private(set) var clreqSqueeze: Bool = UserDefaults.standard.object(forKey: "look.clreqSqueeze") as? Bool ?? true
     private(set) var readingWidth: Double = Theme.snappedNumber("look.readingWidth", stops: Pref.readingWidthStops, fallback: Pref.defaultReadingWidth)
     private(set) var uiDensity: Pref.UIDensity = Pref.UIDensity(rawValue: UserDefaults.standard.string(forKey: "look.uiDensity") ?? "") ?? .standard
+    private(set) var reduceVisualEffects: Bool = UserDefaults.standard.bool(forKey: "look.reduceVisualEffects")
     private(set) var fade: Bool = UserDefaults.standard.object(forKey: "look.fade") as? Bool ?? true
     private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
     @ObservationIgnored private var watching: NSObjectProtocol?
@@ -244,6 +250,8 @@ final class Theme {
         if nextWidth != readingWidth { readingWidth = nextWidth }
         let nextDensity = Pref.UIDensity(rawValue: defaults.string(forKey: "look.uiDensity") ?? "") ?? .standard
         if nextDensity != uiDensity { uiDensity = nextDensity }
+        let nextReduceVisual = defaults.bool(forKey: "look.reduceVisualEffects")
+        if nextReduceVisual != reduceVisualEffects { reduceVisualEffects = nextReduceVisual }
         let nextKey = defaults.string(forKey: "look.accent") ?? "dai"
         if nextKey != key { key = nextKey }
         let nextPlain = defaults.bool(forKey: "look.plainNames")
@@ -753,24 +761,48 @@ enum Ink {
         static let press = instant
         static let unfold = standard
         static let settle = quick
+
+        static func prefersReduced(_ systemReduceMotion: Bool) -> Bool {
+            systemReduceMotion || Theme.shared.reduceVisualEffects
+        }
     }
 }
 
 /// Anything tappable: gives a little under the finger and springs back cleanly; stays silent unless opted in.
 struct PressStyle: ButtonStyle {
     var haptic = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var elevated = false
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // The whole frame takes the tap, not just the drawn strokes and glyphs.
-            .contentShape(Rectangle())
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(reduceMotion ? .easeOut(duration: 0.12) : Ink.Motion.press, value: configuration.isPressed)
-            .onChange(of: configuration.isPressed) { _, pressed in
-                if pressed, haptic { Haptics.tick(0.5) }
+        let reduce = accessibilityReduceMotion || Theme.shared.reduceVisualEffects
+        let pressed = configuration.isPressed
+        styledLabel(configuration.label, pressed: pressed, reduce: reduce)
+            .scaleEffect(pressed && !reduce ? 0.97 : 1)
+            .opacity(pressed ? 0.85 : 1)
+            .animation(reduce ? .easeOut(duration: 0.12) : Ink.Motion.press, value: pressed)
+            .onChange(of: pressed) { _, isPressed in
+                if isPressed, haptic { Haptics.tick(0.5) }
             }
+    }
+
+    @ViewBuilder
+    private func styledLabel(_ label: Configuration.Label, pressed: Bool, reduce: Bool) -> some View {
+        if elevated {
+            label
+                .shadow(
+                    color: Ink.bubbleShadow.opacity(pressed ? 0.35 : 0.75),
+                    radius: pressed ? 3 : 8,
+                    y: pressed ? 1 : 3
+                )
+                // The whole frame takes the tap, not just the drawn strokes and glyphs.
+                .contentShape(Rectangle())
+                .offset(y: pressed && !reduce ? 1 : 0)
+        } else {
+            label
+                // The whole frame takes the tap, not just the drawn strokes and glyphs.
+                .contentShape(Rectangle())
+        }
     }
 }
 
@@ -848,7 +880,8 @@ private struct GlassFaceModifier<S: Shape>: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        if reduceTransparency {
+        let solid = reduceTransparency || Theme.shared.reduceVisualEffects
+        if solid {
             content
                 .background { shape.fill(Ink.paperRaised) }
                 .overlay {
@@ -872,7 +905,8 @@ private struct GlassBackingModifier<S: Shape>: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        if reduceTransparency {
+        let solid = reduceTransparency || Theme.shared.reduceVisualEffects
+        if solid {
             content
                 .background { shape.fill(Ink.paperRaised) }
                 .overlay {
@@ -893,9 +927,10 @@ private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        let lineWidth: CGFloat = (contrast == .increased || reduceTransparency) ? 1 : 0.5
-        let ruleOpacity: Double = contrast == .increased ? 1 : (reduceTransparency ? 0.8 : 0.45)
-        if reduceTransparency {
+        let solid = reduceTransparency || Theme.shared.reduceVisualEffects
+        let lineWidth: CGFloat = (contrast == .increased || solid) ? 1 : 0.5
+        let ruleOpacity: Double = contrast == .increased ? 1 : (solid ? 0.8 : 0.45)
+        if solid {
             content
                 .background { shape.fill(Ink.paperRaised) }
                 .overlay {
@@ -904,7 +939,6 @@ private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
                 }
         } else {
             content
-                .background { shape.fill(Ink.paper.opacity(0.92)) }
                 .background { shape.fill(Color.white.opacity(0.001)) }
                 .glassEffect(.regular, in: shape)
                 .overlay {

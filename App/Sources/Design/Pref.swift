@@ -144,9 +144,23 @@ enum Pref {
     }
     /// "system", "light" or "dark".
     static var scheme: String { Theme.shared.scheme }
-    static var haptics: Bool { bool("look.haptics", true) }
 
-    /// Haptic strength calibrated across Wave 1–5; returns `.off` when master `look.haptics` is off.
+    /// When haptics play: always, muted automatically in Low Power Mode (`auto`), or off.
+    enum HapticMode: String, CaseIterable, Identifiable {
+        case always, auto, off
+        var id: String { rawValue }
+    }
+
+    static var hapticMode: HapticMode {
+        if let raw = store.string(forKey: "look.hapticMode"), let mode = HapticMode(rawValue: raw) {
+            return mode
+        }
+        return bool("look.haptics", true) ? .auto : .off
+    }
+
+    static var haptics: Bool { hapticMode != .off }
+
+    /// Haptic strength calibrated across Wave 1–5; returns `.off` when `hapticMode` is `.off`.
     enum HapticIntensity: String, CaseIterable, Identifiable {
         case off, gentle, standard, crisp
         var id: String { rawValue }
@@ -162,7 +176,7 @@ enum Pref {
         }
     }
     static var hapticIntensity: HapticIntensity {
-        guard haptics else { return .off }
+        guard hapticMode != .off else { return .off }
         return HapticIntensity(rawValue: store.string(forKey: "look.hapticIntensity") ?? "") ?? .standard
     }
 
@@ -205,6 +219,7 @@ enum Pref {
     static var readingWidth: Double { Theme.shared.readingWidth }
 
     static var clreqSqueeze: Bool { Theme.shared.clreqSqueeze }
+    static var reduceVisualEffects: Bool { Theme.shared.reduceVisualEffects }
     static var fade: Bool { bool("look.fade", true) }
     static var stats: Bool { bool("look.stats", true) }
     static var traceOpen: Bool { bool("look.traceOpen", false) }

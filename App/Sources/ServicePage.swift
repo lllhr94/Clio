@@ -606,6 +606,9 @@ private struct ServiceActiveModelsSection: View {
         let traits = endpoint.traits(model)
         let isDefault = defaultModelRef == "\(endpoint.id)/\(model)"
         let gone = listedSet.map { !$0.contains(model) } ?? false
+        let custom = endpoint.customName(for: model)
+        let title = endpoint.displayName(for: model)
+        let titleFont: Font = Ink.mono(Ink.Size.sub, weight: .medium)
         return Button {
             Haptics.light()
             onEdit(model)
@@ -614,7 +617,7 @@ private struct ServiceActiveModelsSection: View {
                 ModelIcon(model: model, service: service, size: Kit.badge, name: endpoint.name)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
                     HStack(spacing: Ink.Space.s) {
-                        Text(model).font(Ink.mono(Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
+                        Text(title).font(titleFont).foregroundStyle(Ink.ink).lineLimit(1)
                         if isDefault {
                             Text(L.t("settings.defaultModelBadge"))
                                 .font(.system(size: Ink.Size.micro, weight: .semibold))
@@ -623,6 +626,12 @@ private struct ServiceActiveModelsSection: View {
                                 .padding(.vertical, Ink.Space.xs / 4)
                                 .background(Ink.accentWash, in: .capsule)
                         }
+                    }
+                    if custom != nil {
+                        Text(model)
+                            .font(Ink.mono(Ink.Size.micro))
+                            .foregroundStyle(Ink.inkFaint)
+                            .lineLimit(1)
                     }
                     TraitChips(traits: traits, corrected: endpoint.corrected(model))
                     if gone {
@@ -711,7 +720,11 @@ private struct ManageModelsSheet: View {
     private func catalogCard(_ endpoint: Endpoint) -> some View {
         let all = endpoint.allModels
         let words = search.trimmingCharacters(in: .whitespaces).lowercased()
-        let found = words.isEmpty ? all : all.filter { $0.lowercased().contains(words) }
+        let found = words.isEmpty ? all : all.filter { model in
+            model.lowercased().contains(words)
+                || (endpoint.customName(for: model)?.lowercased().contains(words) ?? false)
+                || endpoint.displayName(for: model).lowercased().contains(words)
+        }
         let shown = Array(found.prefix(100))
         let firstModel = shown.first
         let activeSet = Set(endpoint.models)
@@ -758,7 +771,9 @@ private struct ManageModelsSheet: View {
     }
 
     private func catalogRow(_ endpoint: Endpoint, _ model: String, enabled: Bool) -> some View {
-        Button {
+        let custom = endpoint.customName(for: model)
+        let titleFont: Font = Ink.mono(Ink.Size.sub, weight: enabled ? .medium : .regular)
+        return Button {
             Haptics.tick(0.5)
             withAnimation(.smooth) {
                 if enabled {
@@ -773,10 +788,16 @@ private struct ManageModelsSheet: View {
                     .font(.system(size: Ink.Size.title))
                     .foregroundStyle(enabled ? Ink.accent : Ink.inkFaint)
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    Text(model)
-                        .font(Ink.mono(Ink.Size.sub, weight: enabled ? .medium : .regular))
+                    Text(custom ?? model)
+                        .font(titleFont)
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
+                    if custom != nil {
+                        Text(model)
+                            .font(Ink.mono(Ink.Size.micro))
+                            .foregroundStyle(Ink.inkFaint)
+                            .lineLimit(1)
+                    }
                     Text(endpoint.traits(model).summary)
                         .font(.system(size: Ink.Size.small))
                         .foregroundStyle(Ink.inkSoft)
@@ -899,6 +920,9 @@ struct ModelSheet: View {
     let model: String
     @Environment(\.dismiss) private var dismiss
     @State private var traits = ModelTraits(sees: false)
+    @State private var customName = ""
+    @State private var hasLoaded = false
+    @State private var removingModel = false
     @State private var note: String?
     @State private var working = false
 
@@ -910,6 +934,7 @@ struct ModelSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    nameCard
                     capabilitiesCard
                     probeCard
                     actionsCard
@@ -925,12 +950,26 @@ struct ModelSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L.t("actions.done")) {
                         Haptics.light()
+                        commitCustomName()
                         dismiss()
                     }
                 }
             }
         }
-        .onAppear { traits = endpoint?.traits(model) ?? ModelTraits.known(model) }
+        .onAppear {
+            traits = endpoint?.traits(model) ?? ModelTraits.known(model)
+            customName = endpoint?.customName(for: model) ?? ""
+            hasLoaded = true
+        }
+        .task(id: customName) {
+            guard hasLoaded else { return }
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            commitCustomName()
+        }
+        .onDisappear {
+            commitCustomName()
+        }
         .onChange(of: traits.thinks) { _, thinks in
             if !thinks && traits.levels != nil {
                 traits.levels = nil
@@ -943,6 +982,49 @@ struct ModelSheet: View {
             let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
             team.setTraits(endpointId, model: model, value == baseline ? nil : value)
         }
+    }
+
+    private var nameCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            SectionTitle(L.t("servicePage.customModelName"))
+            HStack(spacing: Ink.Space.s) {
+                TextField(customNamePlaceholder, text: $customName)
+                    .font(.system(size: Ink.Size.body))
+                    .foregroundStyle(Ink.ink)
+                    .submitLabel(.done)
+                    .onSubmit { commitCustomName() }
+                if !customName.isEmpty {
+                    Button {
+                        Haptics.tick(0.4)
+                        customName = ""
+                        commitCustomName()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.inkFaint)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L.t("actions.clear"))
+                }
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .frame(minHeight: Kit.rowHeight)
+            .paperCard()
+            Text(L.t("servicePage.customModelNameNote"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.l)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var customNamePlaceholder: String {
+        "\(Endpoint.shortName(model)) · \(L.t("servicePage.customModelNamePlaceholder"))"
+    }
+
+    private func commitCustomName() {
+        guard hasLoaded, !removingModel else { return }
+        team.setModelName(customName, for: model, in: endpointId)
     }
 
     private var capabilitiesCard: some View {
@@ -1078,6 +1160,7 @@ struct ModelSheet: View {
                 Kit.rule(inset: Ink.Space.l)
             }
             actionRow(L.t("actions.removeModel"), symbol: "minus.circle", tint: Ink.stop, disabled: false) {
+                removingModel = true
                 if let endpoint { team.setModels(endpointId, endpoint.models.filter { $0 != model }) }
                 dismiss()
             }
@@ -1308,10 +1391,11 @@ struct ModelChoices: View {
                     Button {
                         pick("\(endpoint.id)/\(model)")
                     } label: {
+                        let title = endpoint.distinguishableDisplayName(for: model)
                         if current == "\(endpoint.id)/\(model)" {
-                            Label(model, systemImage: "checkmark")
+                            Label(title, systemImage: "checkmark")
                         } else {
-                            Text(model)
+                            Text(title)
                         }
                         Text(endpoint.traits(model).summary)
                     }

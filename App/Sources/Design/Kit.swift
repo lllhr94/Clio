@@ -43,6 +43,8 @@ enum RowEnd {
     case chevron
     case value(String, Color = Ink.inkSoft)
     case valueChevron(String, Color = Ink.inkSoft)
+    case dotValueChevron(Color, String, Color = Ink.inkSoft)
+    case dotChevron(Color)
 }
 
 /// One list row: something leading, a title, an optional line under it, and what trails.
@@ -99,7 +101,25 @@ struct RowLabel<Leading: View>: View {
                 Text(text).font(.system(size: Ink.Size.sub * multiplier)).foregroundStyle(color).lineLimit(large ? nil : 1)
                 Kit.chevron
             }
+        case .dotValueChevron(let dotColor, let text, let color):
+            HStack(spacing: Ink.Space.s) {
+                statusDot(dotColor)
+                Text(text).font(.system(size: Ink.Size.sub * multiplier)).foregroundStyle(color).lineLimit(large ? nil : 1)
+                Kit.chevron
+            }
+        case .dotChevron(let dotColor):
+            HStack(spacing: Ink.Space.s) {
+                statusDot(dotColor)
+                Kit.chevron
+            }
         }
+    }
+
+    private func statusDot(_ color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6 * UIScale.factor, height: 6 * UIScale.factor)
+            .accessibilityHidden(true)
     }
 }
 
