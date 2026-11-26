@@ -64,7 +64,7 @@ public struct CleanupResult: Equatable, Sendable {
 /// Measures Clio's storage and safely reclaims unreferenced `media/` images and regenerable `doccache/` text extracts.
 /// Never touches conversation JSONs, memories, notes, or referenced photos; fails closed if any chat file is unreadable.
 public enum StorageCleanup {
-    private struct FileIdentity: Equatable {
+    private struct FileIdentity: Hashable {
         let device: UInt64
         let inode: UInt64
     }
@@ -402,15 +402,34 @@ public enum StorageCleanup {
         return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
     }
 
+    private static func itemIdentity(_ url: URL) -> FileIdentity? {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return nil }
+        return FileIdentity(
+            device: UInt64(truncatingIfNeeded: st.st_dev),
+            inode: UInt64(truncatingIfNeeded: st.st_ino)
+        )
+    }
+
+    private static func isExcludedRoot(_ url: URL, excludedIDs: Set<FileIdentity>) -> Bool {
+        guard !excludedIDs.isEmpty else { return false }
+        var current = url.resolvingSymlinksInPath().standardizedFileURL
+        while true {
+            if let id = itemIdentity(current), excludedIDs.contains(id) {
+                return true
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return false
+    }
+
     private static func directorySize(_ root: URL, excluding exclusions: [URL] = []) -> Int64 {
         guard !Task.isCancelled, directoryIdentity(root) != nil else { return 0 }
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
-        let rootParts = resolvedRoot.pathComponents
-        let excludedPaths = Set(exclusions.map {
-            $0.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.pathComponents
-                + [$0.lastPathComponent]
-        })
-        guard !excludedPaths.contains(where: { rootParts.starts(with: $0) }) else { return 0 }
+        let excludedIDs = Set(exclusions.compactMap { itemIdentity($0) })
+        guard !isExcludedRoot(resolvedRoot, excludedIDs: excludedIDs) else { return 0 }
 
         let fm = FileManager.default
         var total: Int64 = 0
@@ -423,7 +442,7 @@ public enum StorageCleanup {
         }
         for case let url as URL in walker {
             if Task.isCancelled { break }
-            if !excludedPaths.isEmpty, excludedPaths.contains(url.pathComponents) {
+            if !excludedIDs.isEmpty, let id = itemIdentity(url), excludedIDs.contains(id) {
                 walker.skipDescendants()
                 continue
             }
