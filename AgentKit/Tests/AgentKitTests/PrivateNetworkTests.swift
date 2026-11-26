@@ -135,4 +135,78 @@ final class PrivateNetworkTests: XCTestCase {
             XCTAssertFalse(msg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
+
+    func testBrowserActionScopeHierarchyAndRevocationOnOpenEndpoint() {
+        let ctx = makePolicy("browser-scope")
+        defer { ctx.defaults.removePersistentDomain(forName: ctx.suite) }
+        let policy = ctx.policy
+
+        let httpEndpoint = URL(string: "http://192.168.1.25:8080/control")!
+        let httpsEndpoint = URL(string: "https://192.168.1.25:8443/login")!
+
+        // Read-only grant allows .read, blocks .write and .credential.
+        XCTAssertTrue(policy.addGrant(PrivateNetworkGrant(
+            id: "router-ro",
+            label: "路由器只读",
+            hostPattern: "192.168.1.25",
+            port: nil,
+            allowPlainHTTP: true,
+            maxAction: .read
+        )))
+        XCTAssertTrue(policy.evaluate(url: httpEndpoint, action: .read, allowAuthorizedPrivate: true).allowed)
+
+        let writeBlocked = policy.evaluate(url: httpEndpoint, action: .write, allowAuthorizedPrivate: true)
+        XCTAssertFalse(writeBlocked.allowed)
+        XCTAssertEqual(writeBlocked.diagnostic, .scopeEscalationBlocked)
+
+        let credBlockedOnRO = policy.evaluate(url: httpsEndpoint, action: .credential, allowAuthorizedPrivate: true, hasCredentials: true)
+        XCTAssertFalse(credBlockedOnRO.allowed)
+        XCTAssertEqual(credBlockedOnRO.diagnostic, .scopeEscalationBlocked)
+
+        // Write grant permits .read and .write, still blocks .credential.
+        policy.revokeGrant(id: "router-ro")
+        XCTAssertTrue(policy.addGrant(PrivateNetworkGrant(
+            id: "router-rw",
+            label: "路由器读写",
+            hostPattern: "192.168.1.25",
+            port: nil,
+            allowPlainHTTP: true,
+            maxAction: .write
+        )))
+        XCTAssertTrue(policy.evaluate(url: httpEndpoint, action: .read, allowAuthorizedPrivate: true).allowed)
+        XCTAssertTrue(policy.evaluate(url: httpEndpoint, action: .write, allowAuthorizedPrivate: true).allowed)
+
+        let credBlockedOnRW = policy.evaluate(url: httpsEndpoint, action: .credential, allowAuthorizedPrivate: true, hasCredentials: true)
+        XCTAssertFalse(credBlockedOnRW.allowed)
+        XCTAssertEqual(credBlockedOnRW.diagnostic, .scopeEscalationBlocked)
+
+        // Credential grant allows HTTPS .credential, while plaintext HTTP .credential remains blocked.
+        policy.revokeGrant(id: "router-rw")
+        XCTAssertTrue(policy.addGrant(PrivateNetworkGrant(
+            id: "router-cred",
+            label: "路由器登录",
+            hostPattern: "192.168.1.25",
+            port: nil,
+            allowPlainHTTP: true,
+            maxAction: .credential
+        )))
+        XCTAssertTrue(policy.evaluate(url: httpsEndpoint, action: .credential, allowAuthorizedPrivate: true, hasCredentials: true).allowed)
+
+        let httpCredBlocked = policy.evaluate(url: httpEndpoint, action: .credential, allowAuthorizedPrivate: true, hasCredentials: true)
+        XCTAssertFalse(httpCredBlocked.allowed)
+        XCTAssertEqual(httpCredBlocked.diagnostic, .scopeEscalationBlocked)
+
+        // Revoking immediately blocks every action on previously open endpoints.
+        policy.revokeGrant(id: "router-cred")
+        for action in [PrivateNetworkAction.read, .write, .credential] {
+            let revokedEval = policy.evaluate(
+                url: httpsEndpoint,
+                action: action,
+                allowAuthorizedPrivate: true,
+                hasCredentials: action == .credential
+            )
+            XCTAssertFalse(revokedEval.allowed)
+            XCTAssertEqual(revokedEval.diagnostic, .unauthorizedPrivate)
+        }
+    }
 }
