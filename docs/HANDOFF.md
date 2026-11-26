@@ -50,7 +50,12 @@
 - 主人说「发」：写 `docs/releases/0.35.md`（中文、主人看得懂），把 `batch-0.35` 快进合进 `main`（不要 force），在 `main` 上跑 CI 发版。
 - 每做完一段，更新 `docs/STATUS.md`、`docs/FEEDBACK.md`、`docs/TASKS.md`。
 
-**仍然等 Claude 回来的**（安全边界，别动；真要改先写进 FEEDBACK）
+## 仍然等 Claude 回来的（安全边界，别动；真要改先写进 FEEDBACK）
 - `Team.swift` 里的批准（`ask` / `answer`）、污点（`TaintGuard`、`Taint.swift`）、帮忙时带过去的标记；`AgentKit` 的 `Agent.run` 主循环。
 - `Care/Backup.swift`（备份带上技能这件留给 Claude）、`Vault/`（信匣）。
 - 宠物「只在输入框上沿左右动」的规矩。
+
+## Clio 0.37 授权记录（主人已明确放行）
+
+- 自 `batch-0.37` 起（对应 Batch 1–4 融合升级蓝图），主人已明确授权可控调整上述安全边界文件（`Agent.swift`、`Taint.swift`、`Backup.swift`、`Vault/`、`PetPerch.swift`、`PetStage.swift` 及 `Team.swift` 中的 `ask`/`answer`/污点/帮忙路径），用于在保持安全不变量的前提下消除隐患并完成 0.37 架构升级。
+- 所有边界改动均须严格执行：每批 PR 完成 **Antigravity ↔ Codex 双向只读互审** + **CI 全门禁通过**（`tools/lint.py`、`swift test`、`ClioAppTests`、`iphoneos` 编译）；宠物继续严守「只在输入框上沿左右拖、不侧闪、触摸穿透」红线。

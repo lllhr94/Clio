@@ -88,6 +88,7 @@ gh api repos/lllhr94/Clio/actions/jobs/<job>/logs | grep "error:"
 ## 宠物
 
 - 代码在 `App/Sources/Pet/`。`PetStage` 站在输入框上沿（主人定：只能左右拖，拖着稍提起、松手落回，不能钉到别的高度）；`PetMood` 由 `ChatPage.petMood` 算；别的对话的事件经 `PetNews.shared.post` 冒气泡（`TeamModel` 在做完、出错、递批准单时调用）。
+- **Clio 0.37 解耦约定**：从 `Clio 0.37`（Batch 3）起，旅伴头像统一走独立 `CompanionAvatar`（相册照片 / 默认纸墨单字名印），与书桌小宠 `PetPerch` 彻底解耦（切旅伴宠物不跟着变脸；老用户显式选过的 `pet:<id>` 头像仍兼容显示）；书桌宠物自身「只能左右拖、站在输入框上沿」的定位红线保持不变。
 - **只有一套角色：宠物包。** 内置的在 `App/Pets/`（小克 `builtin-xiaoke` 是默认，肉包 `builtin-roubao`），用户导入的在手机里。选中的那只（`PetLibrary.choice`）既站在输入框上，也是旅伴头像、空状态、欢迎页、批准单、引导插画（`PetStill` 取对应状态的第一帧）。「站在输入框上」是单独的开关（`PetLibrary.visible`），关掉头像照样是它。旧的剪影形象（卷卷、墨团、天鹅、鲸鱼、「形象」页）已删掉，不要再加回来。
 - 新角色：按 `docs/DESIGN-BRIEF.md` 第 2 节画，用 `tools/make_pet_pack.py` 打包放进 `App/Pets/<id>/`；引导插画放进 `Assets.xcassets` 的 `onboarding-<id>-1…4`（`SetupView.artist` 按当前宠物挑）。
 - 自定义宠物包：schema 1 格式（`pack.json` + PNG 序列帧），与 DSH Go / Clawd on Desk 兼容。解析在 `PetPack.parse`，导入在 `PetLibrary.install`。`tools/make_pet_pack.py` 能把动图或序列帧做成宠物包。
