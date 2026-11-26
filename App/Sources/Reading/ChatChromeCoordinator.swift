@@ -28,6 +28,28 @@ final class ChatChromeCoordinator {
     @ObservationIgnored private var upwardAccumulated: CGFloat = 0
     @ObservationIgnored private var downwardAccumulated: CGFloat = 0
     @ObservationIgnored private var programmaticUntil: CFTimeInterval = 0
+    @ObservationIgnored private nonisolated(unsafe) var voiceOverObserver: NSObjectProtocol?
+
+    init() {
+        voiceOverObserver = NotificationCenter.default.addObserver(
+            forName: UIAccessibility.voiceOverStatusDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if UIAccessibility.isVoiceOverRunning && self.mode == .immersive {
+                    self.restore()
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let voiceOverObserver {
+            NotificationCenter.default.removeObserver(voiceOverObserver)
+        }
+    }
 
     let enterUpwardDistance: CGFloat = 44
     let exitDownwardDistance: CGFloat = 56

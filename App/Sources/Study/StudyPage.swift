@@ -1,4 +1,5 @@
 import ImageIO
+import PDFKit
 import QuickLook
 import SwiftUI
 import UIKit
@@ -635,6 +636,7 @@ struct StudyFile: View {
     let url: URL
     var mount: MountedFolder? = nil
     var showsDone = false
+    var initialPage: Int? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @State private var text: String?
@@ -653,7 +655,7 @@ struct StudyFile: View {
 
     private var ext: String { url.pathExtension.lowercased() }
     private var interactive: Bool { InteractiveDocument.supports(url) }
-    private var taskKey: String { (mount?.id ?? "desk") + "|" + url.path }
+    private var taskKey: String { (mount?.id ?? "desk") + "|" + url.path + "|\(initialPage ?? 0)" }
     private var markdown: Bool { ["md", "markdown", "txt"].contains(ext) }
     private var table: Bool { ["csv", "tsv"].contains(ext) }
     private var longPlainText: String? {
@@ -727,7 +729,11 @@ struct StudyFile: View {
                 }
             } else if loaded {
                 if let quickLookURL {
-                    QuickPreview(url: quickLookURL).ignoresSafeArea(edges: .bottom)
+                    if ext == "pdf", let initialPage, initialPage >= 1 {
+                        StudyPDFPreview(url: quickLookURL, initialPage: initialPage).ignoresSafeArea(edges: .bottom)
+                    } else {
+                        QuickPreview(url: quickLookURL).ignoresSafeArea(edges: .bottom)
+                    }
                 } else {
                     Text(L.t("files.previewUnavailable"))
                         .font(Ink.secondary)
@@ -1044,5 +1050,52 @@ struct QuickPreview: UIViewControllerRepresentable {
         init(url: URL) { self.url = url }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
+    }
+}
+
+/// PDFKit viewer used when jumping directly to a matched page number from unified search.
+private struct StudyPDFPreview: UIViewRepresentable {
+    let url: URL
+    let initialPage: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = UIColor(Ink.paper)
+        applyDocument(on: view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {
+        view.backgroundColor = UIColor(Ink.paper)
+        applyDocument(on: view, coordinator: context.coordinator)
+    }
+
+    private func applyDocument(on view: PDFView, coordinator: Coordinator) {
+        let targetKey = "\(url.path)#\(initialPage)"
+        guard coordinator.appliedKey != targetKey else { return }
+        coordinator.appliedKey = targetKey
+        if view.document?.documentURL != url {
+            view.document = PDFDocument(url: url)
+        }
+        guard let document = view.document, document.pageCount > 0 else { return }
+        let clampedIndex = min(max(0, initialPage - 1), document.pageCount - 1)
+        guard let page = document.page(at: clampedIndex) else { return }
+        view.go(to: page)
+        DispatchQueue.main.async { [weak view] in
+            guard let view, let doc = view.document, doc.pageCount > 0 else { return }
+            let idx = min(max(0, initialPage - 1), doc.pageCount - 1)
+            if let page = doc.page(at: idx) {
+                view.go(to: page)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var appliedKey = ""
     }
 }

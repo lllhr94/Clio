@@ -141,7 +141,7 @@ struct ChatRevealLineLayout: Equatable, Sendable {
 }
 
 /// CoreText line + grapheme/ligature layout matching `ChatTextTileRenderer.render` coordinates bit-for-bit.
-final class ChatRevealLayoutSnapshot {
+final class ChatRevealLayoutSnapshot: @unchecked Sendable {
     let sourceRenderToken: UInt64
     let attributedLength: Int
     let layoutSize: CGSize
@@ -165,7 +165,7 @@ final class ChatRevealLayoutSnapshot {
         self.totalPoints = totalPoints
     }
 
-    static func build(
+    nonisolated static func build(
         attributed: NSAttributedString,
         width: CGFloat,
         height: CGFloat,
@@ -193,6 +193,41 @@ final class ChatRevealLayoutSnapshot {
         let framesetter = CTFramesetterCreateWithAttributedString(source as CFAttributedString)
         let framePath = CGPath(rect: CGRect(x: 0, y: 0, width: safeWidth, height: textHeight), transform: nil)
         let ctFrame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: source.length), framePath, nil)
+        return build(
+            from: ctFrame,
+            fullText: fullText,
+            realLength: realLength,
+            width: safeWidth,
+            height: safeHeight,
+            topInset: topInset,
+            bottomInset: bottomInset,
+            sourceRenderToken: sourceRenderToken
+        )
+    }
+
+    nonisolated static func build(
+        from ctFrame: CTFrame,
+        fullText: String,
+        realLength: Int,
+        width: CGFloat,
+        height: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        sourceRenderToken: UInt64
+    ) -> ChatRevealLayoutSnapshot {
+        let safeWidth = max(1, width)
+        let safeHeight = max(1, height)
+        guard realLength > 0 else {
+            return ChatRevealLayoutSnapshot(
+                sourceRenderToken: sourceRenderToken,
+                attributedLength: 0,
+                layoutSize: CGSize(width: safeWidth, height: safeHeight),
+                textSample: fullText,
+                lines: [],
+                totalPoints: 0
+            )
+        }
+        let textHeight = max(1, safeHeight - topInset - bottomInset)
 
         let cfLines = CTFrameGetLines(ctFrame)
         let lineCount = CFArrayGetCount(cfLines)
@@ -331,7 +366,7 @@ final class ChatRevealLayoutSnapshot {
         )
     }
 
-    private static func buildAtomicUnits(
+    nonisolated private static func buildAtomicUnits(
         line: CTLine,
         originX: CGFloat,
         nsText: NSString,
