@@ -209,4 +209,133 @@ final class PrivateNetworkTests: XCTestCase {
             XCTAssertEqual(revokedEval.diagnostic, .unauthorizedPrivate)
         }
     }
+
+    func testAuthorizedPageIdentityRecheckPreventsNavigationSwap() {
+        let initialPage = URL(string: "http://192.168.1.25/status")!
+        let swappedPath = URL(string: "http://192.168.1.25/reboot")!
+        let swappedHost = URL(string: "http://192.168.1.99/status")!
+
+        XCTAssertTrue(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: initialPage
+        ))
+        XCTAssertTrue(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: initialPage,
+            lastReadURL: initialPage,
+            requireLastRead: true
+        ))
+
+        // Mid-check redirect or navigation must invalidate the action.
+        XCTAssertFalse(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: swappedPath,
+            lastReadURL: initialPage,
+            requireLastRead: true
+        ))
+        XCTAssertFalse(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: swappedHost,
+            lastReadURL: initialPage,
+            requireLastRead: true
+        ))
+        XCTAssertFalse(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: nil,
+            lastReadURL: initialPage,
+            requireLastRead: true
+        ))
+        XCTAssertFalse(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: initialPage,
+            lastReadURL: nil,
+            requireLastRead: true
+        ))
+        XCTAssertFalse(PrivateNetworkPolicy.isSameAuthorizedPage(
+            checkedURL: initialPage,
+            currentURL: initialPage,
+            lastReadURL: swappedPath,
+            requireLastRead: true
+        ))
+    }
+
+    func testReadOnlyNavigationLinkClassification() {
+        let ctx = makePolicy("ro-links")
+        defer { ctx.defaults.removePersistentDomain(forName: ctx.suite) }
+        let policy = ctx.policy
+
+        XCTAssertTrue(policy.addGrant(PrivateNetworkGrant(
+            id: "router-ro",
+            label: "路由器只读",
+            hostPattern: "192.168.1.25",
+            port: nil,
+            allowPlainHTTP: true,
+            maxAction: .read
+        )))
+
+        let basePage = URL(string: "http://192.168.1.25/index.html")!
+
+        let plainPath = BrowserClickTargetDescriptor(
+            tagName: "a",
+            rawHref: "/status",
+            resolvedHref: "http://192.168.1.25/status"
+        )
+        let plainDest = PrivateNetworkPolicy.readOnlyNavigationURL(for: plainPath, from: basePage)
+        XCTAssertEqual(plainDest, URL(string: "http://192.168.1.25/status"))
+        XCTAssertTrue(policy.evaluate(url: plainDest!, action: .read, allowAuthorizedPrivate: true).allowed)
+
+        let relativeDest = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "A", rawHref: "network.html"),
+            from: basePage
+        )
+        XCTAssertEqual(relativeDest, URL(string: "http://192.168.1.25/network.html"))
+
+        let queryDest = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "a", rawHref: "?tab=wifi"),
+            from: basePage
+        )
+        XCTAssertEqual(queryDest, URL(string: "http://192.168.1.25/index.html?tab=wifi"))
+
+        let hashRouteDest = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "a", rawHref: "#/overview"),
+            from: basePage
+        )
+        XCTAssertEqual(hashRouteDest, URL(string: "http://192.168.1.25/index.html#/overview"))
+
+        let menuItemDest = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "a", rawHref: "/sys", role: "menuitem"),
+            from: basePage
+        )
+        XCTAssertEqual(menuItemDest, URL(string: "http://192.168.1.25/sys"))
+
+        let tabDest = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "a", rawHref: "/wifi", role: "tab"),
+            from: basePage
+        )
+        XCTAssertEqual(tabDest, URL(string: "http://192.168.1.25/wifi"))
+
+        // Navigating to an unauthorized private host must still be rejected by .read policy.
+        let otherHostLink = PrivateNetworkPolicy.readOnlyNavigationURL(
+            for: BrowserClickTargetDescriptor(tagName: "a", rawHref: "http://192.168.1.99/admin"),
+            from: basePage
+        )
+        XCTAssertEqual(otherHostLink, URL(string: "http://192.168.1.99/admin"))
+        XCTAssertFalse(policy.evaluate(url: otherHostLink!, action: .read, allowAuthorizedPrivate: true).allowed)
+
+        // Buttons, stubs, script links, downloads, and mutating links must NOT downgrade to .read.
+        let blockedTargets: [BrowserClickTargetDescriptor] = [
+            BrowserClickTargetDescriptor(tagName: "button", rawHref: nil),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "#"),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: ""),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "javascript:reboot()"),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "/status", hasOnClick: true),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "/file.bin", hasDownload: true),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "/del", hasMutatingAttribute: true),
+            BrowserClickTargetDescriptor(tagName: "a", rawHref: "/toggle", role: "button"),
+        ]
+        for target in blockedTargets {
+            XCTAssertNil(PrivateNetworkPolicy.readOnlyNavigationURL(for: target, from: basePage))
+        }
+        XCTAssertFalse(policy.evaluate(url: basePage, action: .write, allowAuthorizedPrivate: true).allowed)
+    }
 }

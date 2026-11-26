@@ -702,3 +702,100 @@ public final class PrivateNetworkPolicy: @unchecked Sendable {
         }
     }
 }
+
+/// DOM attributes inspected for a browser click target before deciding whether a read-only grant may follow it.
+public struct BrowserClickTargetDescriptor: Equatable, Sendable {
+    public let tagName: String
+    public let rawHref: String?
+    public let resolvedHref: String?
+    public let role: String?
+    public let hasOnClick: Bool
+    public let hasDownload: Bool
+    public let hasMutatingAttribute: Bool
+
+    public init(
+        tagName: String,
+        rawHref: String? = nil,
+        resolvedHref: String? = nil,
+        role: String? = nil,
+        hasOnClick: Bool = false,
+        hasDownload: Bool = false,
+        hasMutatingAttribute: Bool = false
+    ) {
+        self.tagName = tagName
+        self.rawHref = rawHref
+        self.resolvedHref = resolvedHref
+        self.role = role
+        self.hasOnClick = hasOnClick
+        self.hasDownload = hasDownload
+        self.hasMutatingAttribute = hasMutatingAttribute
+    }
+}
+
+extension PrivateNetworkPolicy {
+    private static let readOnlyAllowedAnchorRoles: Set<String> = ["", "link", "menuitem", "tab"]
+    private static let blockedNavigationSchemes = [
+        "javascript:", "vbscript:", "data:", "blob:", "mailto:", "tel:",
+    ]
+
+    /// Re-checks after an async policy query that the tab still sits on the same authorized page.
+    public static func isSameAuthorizedPage(
+        checkedURL: URL?,
+        currentURL: URL?,
+        lastReadURL: URL? = nil,
+        requireLastRead: Bool = false
+    ) -> Bool {
+        guard checkedURL == currentURL else { return false }
+        if requireLastRead {
+            guard let lastReadURL, lastReadURL == currentURL else { return false }
+        }
+        return true
+    }
+
+    /// Returns a pure HTTP(S) navigation destination when a clicked target is a plain non-mutating anchor.
+    public static func readOnlyNavigationURL(
+        for target: BrowserClickTargetDescriptor,
+        from currentURL: URL? = nil
+    ) -> URL? {
+        guard target.tagName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "a",
+              !target.hasOnClick,
+              !target.hasDownload,
+              !target.hasMutatingAttribute else {
+            return nil
+        }
+
+        let normalizedRole = (target.role ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard readOnlyAllowedAnchorRoles.contains(normalizedRole) else { return nil }
+
+        let trimmedRaw = (target.rawHref ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRaw.isEmpty, trimmedRaw != "#" else { return nil }
+
+        let lowerRaw = trimmedRaw.lowercased()
+        if blockedNavigationSchemes.contains(where: { lowerRaw.hasPrefix($0) }) {
+            return nil
+        }
+
+        let resolvedURL: URL?
+        let trimmedResolved = (target.resolvedHref ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedResolved.isEmpty, let parsed = URL(string: trimmedResolved) {
+            resolvedURL = parsed
+        } else if let currentURL {
+            resolvedURL = URL(string: trimmedRaw, relativeTo: currentURL)?.absoluteURL
+        } else {
+            resolvedURL = URL(string: trimmedRaw)
+        }
+
+        guard let url = resolvedURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        if trimmedRaw.hasPrefix("#") {
+            guard let fragment = url.fragment, !fragment.isEmpty else { return nil }
+        }
+        return url
+    }
+}
