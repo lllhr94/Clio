@@ -337,9 +337,12 @@ struct AskFieldControl: View {
                 )
             }
             if limitWarning, let max = field.maxSelections {
-                Text(L.format("ask.maxReached", max))
+                Label(L.format("ask.maxReached", max), systemImage: "exclamationmark.circle.fill")
                     .font(.system(size: Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.warn)
+                    .padding(.horizontal, Ink.Space.s)
+                    .padding(.vertical, Ink.Space.xs)
+                    .background(Ink.warn.opacity(0.12), in: Capsule())
             }
         }
     }
@@ -358,9 +361,20 @@ struct AskFieldControl: View {
             }
             Spacer(minLength: 0)
             if kind == .multi {
-                Text(multiHintText)
-                    .font(.system(size: Ink.Size.micro, weight: .medium))
-                    .foregroundStyle(selectedOrCustomCount > 0 ? Ink.accent : Ink.inkFaint)
+                HStack(spacing: Ink.Space.xs) {
+                    Text(multiHintText)
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(selectedOrCustomCount > 0 ? Ink.accent : Ink.inkFaint)
+                    if let max = field.maxSelections {
+                        let atCap = selectedOrCustomCount >= max
+                        Text("\(selectedOrCustomCount)/\(max)")
+                            .font(.system(size: Ink.Size.micro, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(atCap ? Ink.warn : Ink.inkSoft)
+                            .padding(.horizontal, Ink.Space.s)
+                            .padding(.vertical, Ink.Space.xs / 2)
+                            .background((atCap ? Ink.warn : Ink.inkSoft).opacity(0.12), in: Capsule())
+                    }
+                }
             }
         }
     }

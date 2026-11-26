@@ -99,11 +99,17 @@ private enum TraceKeepsakeCache {
 }
 
 enum TraceStepStatus: Equatable, Sendable {
-    case ok, failed, unknown
+    case ok, failed, cancelled, unknown
 
-    nonisolated static func parse(_ label: String) -> (status: TraceStepStatus, clean: String) {
+    nonisolated static func parse(_ label: String, output: String? = nil) -> (status: TraceStepStatus, clean: String) {
         if label.hasSuffix("（没成功）") {
-            return (.failed, String(label.dropLast(5)).trimmingCharacters(in: .whitespaces))
+            let clean = String(label.dropLast(5)).trimmingCharacters(in: .whitespaces)
+            if let output,
+               output.hasPrefix("用户没有同意这次操作")
+                || output.hasPrefix("这一轮已经停下，这一步没有做") {
+                return (.cancelled, clean)
+            }
+            return (.failed, clean)
         }
         if label.hasSuffix("（结果未知）") {
             return (.unknown, String(label.dropLast(6)).trimmingCharacters(in: .whitespaces))
@@ -118,11 +124,57 @@ enum TraceStepStatus: Equatable, Sendable {
     /// while skipping commands that were rejected, cancelled, blocked, or empty before running.
     nonisolated static func shouldKeepCommand(status: TraceStepStatus, output: String) -> Bool {
         if status == .ok { return true }
+        if status == .cancelled { return false }
         let skipped = output == "命令是空的。"
             || output.hasPrefix("用户没有同意这次操作")
             || output.hasPrefix("这一轮已经停下，这一步没有做")
             || output.hasPrefix("这一步刚才结果未知，同样的事没有再做一次")
         return !skipped
+    }
+}
+
+enum TraceAggregateStatus: Equatable, Sendable {
+    case succeeded
+    case partial
+    case failed
+    case cancelled
+    case running
+    case pending
+    case waitingApproval
+
+    var symbolName: String {
+        switch self {
+        case .succeeded: "checkmark.circle"
+        case .partial: "exclamationmark.triangle"
+        case .failed: "xmark.circle"
+        case .cancelled: "stop.circle"
+        case .running: "arrow.trianglehead.2.clockwise"
+        case .pending: "circle.dotted"
+        case .waitingApproval: "exclamationmark.shield"
+        }
+    }
+
+    @MainActor var color: Color {
+        switch self {
+        case .succeeded: Ink.ok
+        case .partial, .waitingApproval: Ink.warn
+        case .failed: Ink.stop
+        case .cancelled: Ink.inkSoft
+        case .running: Ink.accent
+        case .pending: Ink.inkFaint
+        }
+    }
+
+    @MainActor var label: String {
+        switch self {
+        case .succeeded: L.t("trace.statusSucceeded")
+        case .partial: L.t("trace.statusPartial")
+        case .failed: L.t("trace.statusFailed")
+        case .cancelled: L.t("trace.statusCancelled")
+        case .running: L.t("trace.statusRunning")
+        case .pending: L.t("trace.statusPending")
+        case .waitingApproval: L.t("trace.statusWaitingApproval")
+        }
     }
 }
 
@@ -386,6 +438,37 @@ struct Trace: View {
         return mayReferenceWorkspaceFiles(line)
     }
 
+    nonisolated static func aggregateStatus(for line: ChatLine, waitingApproval: Bool = false) -> TraceAggregateStatus {
+        if waitingApproval { return .waitingApproval }
+        if line.live {
+            return line.tools.isEmpty ? .pending : .running
+        }
+        if line.tools.isEmpty { return .succeeded }
+        var okCount = 0
+        var failedCount = 0
+        var cancelledCount = 0
+        var unknownCount = 0
+        for (index, tool) in line.tools.enumerated() {
+            let output = index < line.details.count ? line.details[index].output : nil
+            switch TraceStepStatus.parse(tool, output: output).status {
+            case .ok: okCount += 1
+            case .failed: failedCount += 1
+            case .cancelled: cancelledCount += 1
+            case .unknown: unknownCount += 1
+            }
+        }
+        if failedCount == 0 && cancelledCount == 0 && unknownCount == 0 {
+            return .succeeded
+        }
+        if okCount == 0 && failedCount == 0 && unknownCount == 0 && cancelledCount > 0 {
+            return .cancelled
+        }
+        if okCount == 0 && (failedCount > 0 || unknownCount > 0) {
+            return .failed
+        }
+        return .partial
+    }
+
     nonisolated static func summaryDisplayText(for line: ChatLine) -> String {
         if line.live {
             guard let current = line.tools.last else { return "沉吟" }
@@ -559,6 +642,7 @@ struct Trace: View {
         switch status {
         case .ok: return normal
         case .failed: return Ink.stop
+        case .cancelled: return Ink.inkSoft
         case .unknown: return Ink.warn
         }
     }
@@ -993,10 +1077,13 @@ struct Trace: View {
                 withAnimation(Ink.Motion.unfold) { open.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
-                    if line.live {
+                    let agg = Self.aggregateStatus(for: line)
+                    if agg == .running {
                         ProgressView().controlSize(.mini).tint(Ink.accent)
                     } else {
-                        Image(systemName: "checkmark.circle").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ok)
+                        Image(systemName: agg.symbolName)
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(agg.color)
                     }
                     Text(Words.t(Self.summaryDisplayText(for: line)))
                         .font(Ink.secondary)
@@ -1225,17 +1312,33 @@ struct Trace: View {
     }
 
     private func step(_ tool: String, index: Int, last: Bool) -> some View {
-        let parts = tool.split(separator: "：", maxSplits: 1).map(String.init)
-        let name = parts.first ?? tool
-        let detail = parts.count > 1 ? parts[1] : nil
-        let failed = tool.hasSuffix("（没成功）")
         let more = index < line.details.count ? line.details[index] : nil
+        let parsed = TraceStepStatus.parse(tool, output: more?.output)
+        let parts = parsed.clean.split(separator: "：", maxSplits: 1).map(String.init)
+        let name = parts.first ?? parsed.clean
+        let detail = parts.count > 1 ? parts[1] : nil
         let shown = peeking.contains(index)
+        let stepSymbol: String
+        let stepColor: Color
+        switch parsed.status {
+        case .ok:
+            stepSymbol = Self.icon(for: name)
+            stepColor = Ink.inkSoft
+        case .failed:
+            stepSymbol = "xmark.circle"
+            stepColor = Ink.stop
+        case .cancelled:
+            stepSymbol = "stop.circle"
+            stepColor = Ink.inkSoft
+        case .unknown:
+            stepSymbol = "questionmark.circle"
+            stepColor = Ink.warn
+        }
         return HStack(alignment: .top, spacing: Ink.Space.m) {
             VStack(spacing: 0) {
-                Image(systemName: failed ? "exclamationmark" : Self.icon(for: name))
+                Image(systemName: stepSymbol)
                     .font(.system(size: Ink.Size.small, weight: .medium))
-                    .foregroundStyle(failed ? Ink.stop : Ink.inkSoft)
+                    .foregroundStyle(stepColor)
                     .frame(width: 22, height: 22)
                 if !last { Rectangle().fill(Ink.rule).frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2) }
             }
@@ -1679,6 +1782,10 @@ private struct CommandSheet: View {
                                 Label(L.t("trace.commandFailedDetail"), systemImage: "exclamationmark.triangle.fill")
                                     .font(.system(size: Ink.Size.small, weight: .medium))
                                     .foregroundStyle(Ink.stop)
+                            } else if status == .cancelled {
+                                Label(L.t("trace.statusCancelled"), systemImage: "stop.circle.fill")
+                                    .font(.system(size: Ink.Size.small, weight: .medium))
+                                    .foregroundStyle(Ink.inkSoft)
                             } else if status == .unknown {
                                 Label(L.t("trace.commandUnknownDetail"), systemImage: "questionmark.circle.fill")
                                     .font(.system(size: Ink.Size.small, weight: .medium))

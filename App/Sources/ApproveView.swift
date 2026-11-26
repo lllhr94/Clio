@@ -6,9 +6,13 @@ struct ApproveView: View {
     @ObservedObject var team: TeamModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
     private var largeText: Bool { typeSize.isAccessibilitySize }
     private var accessibilityScale: CGFloat { largeText ? textScale : 1 }
+    private var prefersTapConfirm: Bool {
+        UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning || largeText || reduceMotion
+    }
 
     private enum Verdict { case allowed, rejected }
 
@@ -132,7 +136,6 @@ struct ApproveView: View {
             .modifier(ApprovalViewport(scrolls: largeText || shortWindow))
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
-        .fontDesign(.rounded)
         .onAppear {
             Haptics.prepare()
             withAnimation(.spring(response: 0.6, dampingFraction: 0.72).delay(0.1)) { shown = true }
@@ -166,8 +169,24 @@ struct ApproveView: View {
     private var controls: some View {
         if verdict == nil && answerable {
             VStack(spacing: Ink.Space.s) {
-                SlideTrack(resetToken: slideResetToken) { answer(allow: true) }
+                if prefersTapConfirm {
+                    Button {
+                        Haptics.lock()
+                        answer(allow: true)
+                    } label: {
+                        Text(L.t("actions.approveConfirm"))
+                            .font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold))
+                            .foregroundStyle(Ink.paper)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(Ink.accent, in: Capsule())
+                    }
+                    .buttonStyle(TapStyle())
                     .disabled(busy)
+                    .opacity(busy ? 0.5 : 1)
+                } else {
+                    SlideTrack(resetToken: slideResetToken) { answer(allow: true) }
+                        .disabled(busy)
+                }
                 if current.forced == true {
                     // Standing permission would not cover this step anyway: say why instead of offering it.
                     // Forced because the turn read outside text, or because the step is one that always asks (a routine).
@@ -494,8 +513,11 @@ private struct SlideTrack: View {
     let resetToken: UInt64
     let onDone: () -> Void
 
+    @Environment(\.scenePhase) private var scenePhase
+    @GestureState private var isDragging = false
     @State private var progress: CGFloat = 0
     @State private var lastTick = 0
+    @State private var committed = false
 
     private let height: CGFloat = 62
     private let knob: CGFloat = 52
@@ -532,13 +554,19 @@ private struct SlideTrack: View {
                     .offset(x: 5 + travel * progress)
                     .gesture(
                         DragGesture(minimumDistance: 0)
+                            .updating($isDragging) { _, state, _ in
+                                state = true
+                            }
                             .onChanged { value in
+                                guard !committed else { return }
                                 let next = max(0, min(1, value.translation.width / travel))
                                 progress = next
                                 tickIfNeeded(Int(next * 8))
                             }
                             .onEnded { _ in
+                                guard !committed else { return }
                                 if progress > 0.86 {
+                                    committed = true
                                     Haptics.lock()
                                     withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) { progress = 1 }
                                     onDone()
@@ -551,13 +579,30 @@ private struct SlideTrack: View {
                     )
                     .accessibilityLabel(L.t("actions.slideToApprove"))
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { onDone() }
+                    .accessibilityAction {
+                        guard !committed else { return }
+                        committed = true
+                        onDone()
+                    }
             }
             .frame(height: height)
             .glassBacking(in: Capsule())
         }
         .frame(height: height)
+        .onChange(of: isDragging) { _, active in
+            if !active && !committed && progress > 0 {
+                lastTick = 0
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) { progress = 0 }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active && !committed && progress > 0 {
+                lastTick = 0
+                progress = 0
+            }
+        }
         .onChange(of: resetToken) { _, _ in
+            committed = false
             lastTick = 0
             withAnimation(.spring(response: 0.42, dampingFraction: 0.6)) { progress = 0 }
         }

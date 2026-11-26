@@ -1461,7 +1461,8 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
             speakerLabel.isHidden = true
         }
 
-        if row.line.live {
+        let agg = Trace.aggregateStatus(for: row.line)
+        if agg == .running {
             checkIcon.isHidden = true
             spinner.isHidden = false
             spinner.startAnimating()
@@ -1469,12 +1470,12 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
             spinner.stopAnimating()
             spinner.isHidden = true
             checkIcon.isHidden = false
+            checkIcon.image = UIImage(
+                systemName: agg.symbolName,
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.sub, weight: .medium)
+            )
+            checkIcon.tintColor = UIColor(agg.color)
         }
-
-        checkIcon.image = UIImage(
-            systemName: "checkmark.circle",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.sub, weight: .medium)
-        )
         chevronIcon.image = UIImage(
             systemName: "chevron.down",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: Ink.Size.micro, weight: .bold)
@@ -1483,13 +1484,15 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
         let summaryText = Words.t(Trace.summaryDisplayText(for: row.line))
         summaryLabel.font = UIFont.systemFont(ofSize: Ink.Size.sub)
         summaryLabel.text = summaryText
-        summaryButton.accessibilityLabel = summaryText
+        summaryButton.accessibilityLabel = "\(agg.label)，\(summaryText)"
 
-        refreshColors()
+        refreshColors(agg: agg)
         setNeedsLayout()
     }
 
-    private func refreshColors() {
+    private func refreshColors(agg: TraceAggregateStatus? = nil) {
+        let resolvedAgg = agg ?? currentRow.map { Trace.aggregateStatus(for: $0.line) } ?? .succeeded
+        checkIcon.tintColor = UIColor(resolvedAgg.color)
         let theme = Theme.shared
         let sig = "\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)|\(UIScale.factor)"
         guard sig != lastColorSignature else { return }
@@ -1500,7 +1503,6 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
         timeGapLabel.textColor = UIColor(Ink.inkFaint)
         speakerLabel.textColor = UIColor(Ink.inkSoft)
         spinner.color = UIColor(Ink.accent)
-        checkIcon.tintColor = UIColor(Ink.ok)
         summaryLabel.textColor = UIColor(Ink.inkSoft)
         chevronIcon.tintColor = UIColor(Ink.inkFaint)
     }

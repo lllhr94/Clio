@@ -612,7 +612,10 @@
     "testModelAll": "全面测一下（看图、工具、思考）",
     "davUpload": "备份到网盘",
     "davRestore": "从网盘恢复最新的",
-    "testModelOnly": "只测连通性"
+    "testModelOnly": "只测连通性",
+    "approveConfirm": "确认批准",
+    "revoke": "撤销",
+    "addPrivateEndpoint": "添加私人设备或内网服务"
   },
   "pet": {
     "showNow": "让宠物出来",
@@ -806,7 +809,11 @@
     "displayName": "称呼",
     "address": "地址",
     "tunneledAddress": "在那台电脑上的地址",
-    "startBrowser": "在 VPS 上手动启动浏览器"
+    "startBrowser": "在 VPS 上手动启动浏览器",
+    "jumpHost": "跳板主机（ProxyJump）",
+    "jumpDirect": "直连（不用跳板）",
+    "jumpNote": "通过另一台已配置主机经 SSH 通道转发连入目标内网机。目标主机指纹按跳板路径独立校验。",
+    "viaJumpBadge": "经 %@ 跳板"
   },
   "diary": {
     "writeToday": "现在写今天的"
@@ -1281,5 +1288,32 @@
     "unmeasured": "点击刷新",
     "retryCheck": "刷新",
     "topUp": "去充值"
+  },
+  "trace": {
+    "statusSucceeded": "已完成",
+    "statusPartial": "部分完成",
+    "statusFailed": "执行失败",
+    "statusCancelled": "已取消",
+    "statusRunning": "执行中",
+    "statusPending": "等待执行",
+    "statusWaitingApproval": "等待确认"
+  },
+  "privateNet": {
+    "sectionTitle": "私人网络与代理兼容",
+    "fakeIPToggle": "Fake-IP 代理兼容",
+    "fakeIPNote": "使用 Clash / Mihomo / Surge TUN 时，允许公网域名经 198.18.0.0/15 占位地址联网。始终保留 TLS 证书校验、重定向检查，且永不放行本机与云元数据地址。",
+    "grantsTitle": "已授权的私人设备与服务",
+    "grantsEmpty": "默认拒绝所有局域网与私网访问。需要让助手访问 NAS、内网服务或 Tailscale 节点时，可在此添加范围化授权。",
+    "grantsFooter": "撤销后会立即阻止后续请求并通知待审批队列；已发往远端服务器的改动无法撤回。",
+    "scopeRead": "只读",
+    "scopeWrite": "可写",
+    "scopeCredential": "含凭据",
+    "editorTitle": "添加私人网络授权",
+    "labelField": "名称（如：家庭 NAS）",
+    "hostField": "主机或网段后缀（如 192.168.1.10 / nas.local / *.ts.net）",
+    "portField": "端口（可选，留空为默认端口）",
+    "allowHTTP": "允许局域网明文 HTTP",
+    "scopePicker": "最高权限级别",
+    "invalidHostError": "请输入有效的私网 IP、局域网域名或 *.ts.net 后缀（禁止 127.0.0.1、localhost、169.254.169.254 或通配 *）。"
   }
 }

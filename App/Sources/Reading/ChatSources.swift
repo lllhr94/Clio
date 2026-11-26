@@ -118,14 +118,14 @@ struct SourcesSheet: View {
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                        if index > 0 { Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.leading, 60) }
+                        if index > 0 { Kit.divider }
                         Button {
                             Haptics.light()
                             open(url)
                         } label: {
                             HStack(spacing: Ink.Space.m) {
-                                BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: 32)
-                                VStack(alignment: .leading, spacing: 2) {
+                                BrandIcon(domain: SourcesRow.site(url), mark: String(SourcesRow.site(url).first ?? "?").uppercased(), tint: Ink.inkSoft, size: Kit.badge)
+                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                                     // The name the answer gave it, when it gave one; then the site.
                                     Text(titles[url] ?? SourcesRow.site(url)).font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.ink).lineLimit(1)
                                     Text(titles[url] == nil ? Self.path(url) : SourcesRow.site(url)).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
@@ -134,7 +134,7 @@ struct SourcesSheet: View {
                                 Image(systemName: "arrow.up.right").font(.system(size: Ink.Size.small, weight: .semibold)).foregroundStyle(Ink.inkFaint)
                             }
                             .padding(.horizontal, Ink.Space.l)
-                            .padding(.vertical, 12)
+                            .padding(.vertical, Ink.Space.m)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(PressStyle(haptic: false))
