@@ -27,7 +27,7 @@
 
 - 顶栏助手胶囊过长，输入区会盖住刚发的消息，沉浸时顶栏和遮罩占位过大。已在 [PR #101](https://github.com/lllhr94/Clio/pull/101) 收紧顶栏和沉浸控件，并补输入区避让，待真机复核。
 - 流式正文一次冒出整段、阅读位置跟不上，以及短消息气泡两端呈尖角。后续分支 `codex/ds2-stream-reveal` 叠在 #101 上。正文逐帧显露，贴底时滚动跟着已显示的行走，上翻和选字时停留。短气泡的底色、光泽和阴影沿同一轮廓绘制。需在真机对照慢速、突发和单次回包，以及单字、短句、换行和长按气泡。
-- 流式和气泡改动的 [iOS CI](https://github.com/lllhr94/Clio/actions/runs/45777593327) 使用 `shots=false`、`publish=false`。
+- Antigravity 接手后续分支 `antigravity/ds2-stream-reveal-polish`（叠在 PR #101 上，开 PR #102）：微调长回复收敛速度与 `SnippetLayer` 触发阈值（120 pts），并取消渐显中途向下拖动进入空白区时的回弹，发布含全量改动的 `probe-antigravity-ds2-stream-reveal-polish` 试签包。
 
 ## 当前一览（11-25，Clio 0.36 全 App 120Hz 流畅度与对标 Telegram 引擎升级收口）
 

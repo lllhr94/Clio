@@ -2563,8 +2563,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             isPinnedToBottom = shouldFollow
             actions.onFollowingChanged(shouldFollow)
         }
-        if shouldFollow && abs(distanceFromBottom) > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
-            scrollToBottom(animated: abs(distanceFromBottom) > 12)
+        if shouldFollow && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
+            scrollToBottom(animated: distanceFromBottom > 12)
         }
         actions.onScrollEnded()
         publishVisibleAndFooterMetricsNow()

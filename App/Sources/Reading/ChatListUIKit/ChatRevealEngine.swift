@@ -8,14 +8,14 @@ import UIKit
 enum ChatRevealPolicy {
     static let durationMultiplier: Double = 2.0
     static let maxTailAttributedLength: Int = 6_000
-    static let snippetMaxBacklogPoints: Int = 45
+    static let snippetMaxBacklogPoints: Int = 120
 
     nonisolated static func pacedPoints(current: Double, target: Double, total: Int, elapsed: Double) -> Double {
         let remaining = max(0, Double(total) - current)
         let dt = min(max(0, elapsed), 0.05)
         // Work through a large initial chunk even before a second chunk supplies an arrival-rate sample.
-        let catchup = current + dt * max(0, remaining - 120) * 0.32
-        let rate = max(80 + min(220, remaining * 0.16), remaining / 4)
+        let catchup = current + dt * max(0, remaining - 120) * 0.36
+        let rate = max(120 + min(240, remaining * 0.25), remaining / 2.2)
         return min(Double(total), max(target, catchup, current), current + dt * rate)
     }
 
