@@ -22,6 +22,34 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     var onSpeakSelection: ((String) -> Void)?
     var onSelectionActiveChanged: ((UUID, Bool) -> Void)?
     var onLinkTapped: ((URL) -> Void)?
+    var onRevealFrame: ((Bool) -> Void)?
+
+    var hasPaintedLiveTail: Bool { currentIsLiveTail && appliedRenderToken != 0 }
+
+    /// Local bottom of the line currently being revealed, or the first line while tiles are being prepared.
+    var revealedLineBottom: CGFloat? {
+        guard let style = currentStyle, selectionTextView == nil,
+              ChatRevealPolicy.isEligible(
+                fade: style.fade, reduceMotion: style.reduceMotion, attributedLength: currentRendered.attributed.length
+              ) else { return nil }
+
+        let bottom: CGFloat
+        if let session = revealSession {
+            switch session.currentMaskState() {
+            case .hidden:
+                bottom = session.snapshot.lines.first?.bandBottom ?? bounds.height
+            case .partial(_, let top, let height, _, _, _):
+                bottom = top + height
+            case .complete:
+                bottom = session.snapshot.layoutSize.height
+            }
+        } else if pendingRevealHandoff != nil || (currentIsLiveTail && !hasPaintedLiveTail) {
+            bottom = currentRendered.topInset + style.fonts.reading.regular.lineHeight
+        } else {
+            return nil
+        }
+        return min(bounds.height, max(0, bottom))
+    }
 
     var hasSelectableText: Bool {
         !currentRendered.isEmpty
@@ -453,6 +481,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         onSpeakSelection = nil
         onSelectionActiveChanged = nil
         onLinkTapped = nil
+        onRevealFrame = nil
         updateGestureStates()
         updateAccessibility()
     }
@@ -811,6 +840,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         let stepResult = session.step(now: now)
         if stepResult.isComplete {
             teardownReveal()
+            onRevealFrame?(true)
             return
         }
         let allowsSnippets = ChatRevealPolicy.allowsSnippets(
@@ -831,6 +861,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             snippetHost: layer
         )
         CATransaction.commit()
+        onRevealFrame?(false)
 
         if !session.isFinalizing
             && stepResult.backlogPoints == 0

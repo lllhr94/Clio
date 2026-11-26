@@ -254,15 +254,15 @@ extension ChatPage {
                         .tracking(userBox.trackingPoints)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, 10 * UIScale.factor)
-                        .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous),
+                        .glassBubble(in: ChatMessageBubbleShape(),
                                      tint: bubbleTint(editing: isEditing))
                         .overlay {
                             if isEditing {
-                                RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
+                                ChatMessageBubbleShape()
                                     .strokeBorder(Ink.accent, lineWidth: 1.5)
                             }
                         }
-                        .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                        .contentShape(.contextMenuPreview, ChatMessageBubbleShape())
                         .contextMenu {
                             Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
                             // Your own words too can be picked from and quoted, as replies can.
@@ -637,6 +637,25 @@ private struct ChatReplyClearanceMarker: View {
     }
 }
 
+private struct ChatMessageBubbleShape: InsettableShape {
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let cardRadius = Ink.Radius.card
+        let radius = min(cardRadius, min(rect.width, rect.height) / 2)
+        return RoundedRectangle(
+            cornerRadius: radius,
+            style: rect.height <= 2 * cardRadius ? .circular : .continuous
+        )
+        .inset(by: insetAmount)
+        .path(in: rect)
+    }
+
+    func inset(by amount: CGFloat) -> some InsettableShape {
+        ChatMessageBubbleShape(insetAmount: insetAmount + amount)
+    }
+}
+
 /// Equatable settled row view: isolated from streaming tokens, composer typing, and global status changes.
 struct ChatSettledRowView: View, Equatable {
     let line: ChatLine
@@ -796,14 +815,14 @@ struct ChatSettledRowView: View, Equatable {
                     .tracking(userBox.trackingPoints)
                     .padding(.horizontal, Ink.Space.l)
                     .padding(.vertical, 10 * UIScale.factor)
-                    .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous), tint: bubbleTint)
+                    .glassBubble(in: ChatMessageBubbleShape(), tint: bubbleTint)
                     .overlay {
                         if isEditing {
-                            RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous)
+                            ChatMessageBubbleShape()
                                 .strokeBorder(Ink.accent, lineWidth: 1.5)
                         }
                     }
-                    .contentShape(.contextMenuPreview, .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                    .contentShape(.contextMenuPreview, ChatMessageBubbleShape())
                     .contextMenu {
                         Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = line.text }
                         Button("选字引用", systemImage: "text.quote") { bridge.onQuote(line.id, line.text) }

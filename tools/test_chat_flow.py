@@ -52,7 +52,13 @@ def fixture() -> str:
     grants = ROOT / "App/Sources/Grant/Grants.swift"
     reply_text = extract(model, r"^        case \.text\(let piece\):\n.*?(?=^        case )", "live reply text handler")
     reply_reset = extract(model, r"^        case \.streamReset:\n.*?(?=^        case )", "live reply reset handler")
+    reveal = READING / "ChatListUIKit/ChatRevealEngine.swift"
+    reveal_pacing = extract(reveal, r"^    nonisolated static func pacedPoints\([^\n]*\{\n.*?^    \}", "reveal pacing")
+    reveal_upstream = (READING / "ThirdParty/TelegramReveal/TextRevealController.swift").read_text()
+
     fragments = {
+        "REVEAL_PACING": reveal_upstream.removeprefix("import Foundation\n") + "\n"
+        + "private enum RevealPacing {\n" + reveal_pacing + "\n}",
         "INLINE_APPROVAL": extract(READING / "InlineApproval.swift", r"^enum InlineApprovalPolicy \{\n.*?^\}", "inline approval routing"),
         "TRACE_STEP_STATUS": extract(READING / "ChatTrace.swift", r"^enum TraceStepStatus: Equatable, Sendable \{\n.*?^\}", "trace step status rules"),
         "SMART_QUERY": member(grants, "allowsSmartQuery"),

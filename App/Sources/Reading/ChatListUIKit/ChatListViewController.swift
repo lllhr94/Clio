@@ -187,6 +187,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
         }
         pendingRevealTransfers.removeAll()
+        settlingRevealID = nil
         cancelAllPrefetches()
         cancelPrewarm()
         let owner = lastReportedReplyOwner
@@ -720,6 +721,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private var pendingSelectionTransfers: [String: ChatProseSelectionSnapshot] = [:]
     private var pendingRevealTransfers: [String: ChatRevealHandoff] = [:]
+    private var settlingRevealID: String?
 
     private func makeAssistantCallbacks(lineID: String) -> ChatAssistantCell.Callbacks {
         ChatAssistantCell.Callbacks(
@@ -755,6 +757,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             },
             onShareText: { [weak self] text in
                 self?.presentShareSheet(for: text)
+            },
+            onRevealFrame: { [weak self] completed in
+                self?.followRevealFrame(ownerID: lineID, completed: completed)
             }
         )
     }
@@ -1053,6 +1058,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         unfoldedCodeSlices.removeAll()
         pendingSelectionTransfers.removeAll()
         pendingRevealTransfers.removeAll()
+        settlingRevealID = nil
         if activeTraceSheetLineID != nil,
            activeTraceSheetModel != nil,
            let presented = presentedViewController,
@@ -1419,16 +1425,23 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let loadedInitialRows = (prev.rows.isEmpty && !next.rows.isEmpty)
             || (!prev.loaded && next.loaded && !next.rows.isEmpty)
 
-        // Transfer active selection or smooth reveal tail seamlessly from live stream to committed bot reply.
-        if prev.hasStreaming && !next.hasStreaming,
-           let liveIdx = itemIndexByID[.liveProse(prev.streamGeneration)],
-           let liveCell = collectionView.cellForItem(at: IndexPath(item: 0, section: liveIdx)) as? ChatAssistantCell,
-           let targetBotID = next.fresh?.id ?? next.rows.last(where: { $0.line.kind == .bot })?.line.id {
-            if let snap = liveCell.currentProseSelectionSnapshot() {
+        // The model can commit before the first tile returns, or before a live row is mounted at all.
+        if !next.hasStreaming, let targetBotID = next.fresh?.id,
+           prev.hasStreaming || prev.fresh?.id != targetBotID {
+            let liveCell = itemIndexByID[.liveProse(prev.streamGeneration)].flatMap {
+                collectionView.cellForItem(at: IndexPath(item: 0, section: $0)) as? ChatAssistantCell
+            }
+            if let snap = liveCell?.currentProseSelectionSnapshot() {
                 pendingSelectionTransfers[targetBotID] = snap
-            } else if currentStyle.fade && !currentStyle.reduceMotion,
-                      let handoff = liveCell.captureRevealHandoff() {
-                pendingRevealTransfers[targetBotID] = handoff
+            } else if currentStyle.fade && !currentStyle.reduceMotion {
+                let handoff = liveCell?.captureRevealHandoff()
+                if let handoff {
+                    pendingRevealTransfers[targetBotID] = handoff
+                    settlingRevealID = targetBotID
+                } else if canAutoPinToBottom, liveCell?.hasPaintedLiveTail != true {
+                    pendingRevealTransfers[targetBotID] = .unseenReply
+                    settlingRevealID = targetBotID
+                }
             }
         }
 
@@ -2322,9 +2335,83 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         return max(minY, maxY)
     }
 
+    private var revealFollowItem: (id: ChatListItemID, ownerID: String)? {
+        guard currentStyle.fade, !currentStyle.reduceMotion, let state = currentState else { return nil }
+        if state.hasStreaming {
+            return (.liveProse(state.streamGeneration), "streaming-\(state.streamGeneration)")
+        }
+        if let id = settlingRevealID,
+           state.rows.last(where: { $0.line.kind == .user || $0.line.kind == .bot })?.line.id == id {
+            return (.line(id), id)
+        }
+        return nil
+    }
+
+    private func bottomOffsetFollowingReveal() -> CGFloat {
+        let bottom = bottomOffsetY(for: collectionView)
+        guard let item = revealFollowItem, let section = itemIndexByID[item.id] else { return bottom }
+        let path = IndexPath(item: 0, section: section)
+        let lineBottom: CGFloat
+        if let cell = collectionView.cellForItem(at: path) as? ChatAssistantCell {
+            guard let visible = cell.revealedLineBottom(in: collectionView) else { return bottom }
+            lineBottom = visible
+        } else {
+            guard let attrs = collectionView.layoutAttributesForItem(at: path) else { return bottom }
+            let entry: ChatLayoutCache.AssistantLayoutEntry
+            switch item.id {
+            case .liveProse(let generation):
+                guard let state = currentState else { return bottom }
+                entry = layoutCache.measureLiveStreamingProse(
+                    text: state.streamText, generation: generation,
+                    collectionWidth: collectionView.bounds.width, style: currentStyle
+                )
+            case .line(let id):
+                guard let row = rowByID[id] else { return bottom }
+                entry = measureAssistant(row: row, width: collectionView.bounds.width)
+            default:
+                return bottom
+            }
+            let canReveal = entry.slices.contains {
+                guard case .richText(let prose) = $0.slice else { return false }
+                if case .liveProse = item.id, prose.liveTailIndex == nil { return false }
+                return ChatRevealPolicy.isEligible(
+                    fade: currentStyle.fade, reduceMotion: currentStyle.reduceMotion,
+                    attributedLength: prose.attributed.length
+                )
+            }
+            guard canReveal else { return bottom }
+            lineBottom = attrs.frame.minY + min(attrs.frame.height, 2 * Ink.Size.body)
+        }
+        let visibleHeight = collectionView.bounds.height - collectionView.contentInset.bottom
+        let headroom = max(Ink.Space.s, currentStyle.fonts.reading.regular.lineHeight)
+        return max(-collectionView.contentInset.top, min(bottom, lineBottom + headroom - visibleHeight))
+    }
+
+    private func followRevealFrame(ownerID: String, completed: Bool) {
+        guard revealFollowItem?.ownerID == ownerID else { return }
+        if completed && settlingRevealID == ownerID {
+            settlingRevealID = nil
+        }
+        guard hasPerformedInitialScroll, canAutoPinToBottom, !isProgrammaticScroll,
+              !isInHostUpdate, !isDismantled, isViewVisible else { return }
+        let target = bottomOffsetFollowingReveal()
+        let current = collectionView.contentOffset.y
+        let distance = target - current
+        guard distance > 0.5 else { return }
+        if completed {
+            scrollToBottom(animated: true, layoutIfNeeded: false)
+        } else {
+            // Move a fraction of the distance per reveal frame, without restarting a scroll animation.
+            isProgrammaticScroll = true
+            collectionView.contentOffset.y = current + min(distance, max(0.5, distance * 0.22))
+            lastScrollOffsetY = collectionView.contentOffset.y
+            isProgrammaticScroll = false
+        }
+    }
+
     private func scrollToBottom(animated: Bool, layoutIfNeeded: Bool = true, publishMetrics: Bool = true) {
         actions.onProgrammaticScroll()
-        let targetY = bottomOffsetY(for: collectionView)
+        let targetY = bottomOffsetFollowingReveal()
         isPinnedToBottom = true
         if animated {
             if abs(collectionView.contentOffset.y - targetY) < 0.5 {
@@ -2468,7 +2555,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
         }
 
-        let distanceFromBottom = bottomOffsetY(for: scrollView) - scrollView.contentOffset.y
+        let distanceFromBottom = bottomOffsetFollowingReveal() - scrollView.contentOffset.y
         let withinFollowThreshold = distanceFromBottom < 80
             || (wasPinnedAtDragStart && !userMovedAwayFromBottomDuringDrag && distanceFromBottom < 120)
         let shouldFollow = !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty && withinFollowThreshold
@@ -2476,8 +2563,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             isPinnedToBottom = shouldFollow
             actions.onFollowingChanged(shouldFollow)
         }
-        if shouldFollow && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
-            scrollToBottom(animated: distanceFromBottom > 12)
+        if shouldFollow && abs(distanceFromBottom) > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
+            scrollToBottom(animated: abs(distanceFromBottom) > 12)
         }
         actions.onScrollEnded()
         publishVisibleAndFooterMetricsNow()
@@ -2490,8 +2577,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let prevY = lastScrollOffsetY
         lastScrollOffsetY = currentY
 
-        let bottomY = bottomOffsetY(for: scrollView)
         let touching = scrollView.isDragging || scrollView.isDecelerating
+        let bottomY = touching ? bottomOffsetFollowingReveal() : bottomOffsetY(for: scrollView)
         if !isProgrammaticScroll && !isInHostUpdate {
             if currentY < prevY - 0.5 {
                 scrollDirection = -1

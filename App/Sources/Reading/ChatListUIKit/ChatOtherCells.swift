@@ -211,7 +211,6 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         litBackdrop.backgroundColor = UIColor(Ink.accentWash)
         timeGapLabel.textColor = UIColor(Ink.inkFaint)
 
-        bubbleView.layer.cornerRadius = Ink.Radius.card
         bubbleView.backgroundColor = UIColor(editing ? Ink.accentWash : Ink.bubble)
         bubbleView.layer.borderWidth = editing ? 1.5 : 0.75
         bubbleView.layer.borderColor = UIColor(editing ? Ink.accent : Ink.rule).resolvedColor(with: traitCollection).cgColor
@@ -269,7 +268,8 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
             let bubbleX = max(pageMargin, rightEdge - entry.bubbleWidth)
             bubbleView.frame = CGRect(x: bubbleX, y: y, width: entry.bubbleWidth, height: entry.bubbleHeight)
             let bubbleBounds = bubbleView.bounds
-            let cornerRadius = Ink.Radius.card
+            let cornerRadius = min(Ink.Radius.card, min(bubbleBounds.width, bubbleBounds.height) / 2)
+            let curve: CALayerCornerCurve = bubbleBounds.height <= 2 * Ink.Radius.card ? .circular : .continuous
             if !bubbleBounds.isEmpty,
                (cachedShadowBounds.size != bubbleBounds.size || abs(cachedShadowCornerRadius - cornerRadius) > 0.1) {
                 cachedShadowBounds = bubbleBounds
@@ -278,7 +278,10 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
             }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            bubbleView.layer.cornerCurve = curve
+            bubbleView.layer.cornerRadius = cornerRadius
             sheenLayer.frame = bubbleBounds
+            sheenLayer.cornerCurve = curve
             sheenLayer.cornerRadius = cornerRadius
             CATransaction.commit()
             richTextView.frame = CGRect(
@@ -327,7 +330,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
 
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
         let params = UIPreviewParameters()
-        params.visiblePath = UIBezierPath(roundedRect: bubbleView.bounds, cornerRadius: Ink.Radius.card)
+        params.visiblePath = UIBezierPath(roundedRect: bubbleView.bounds, cornerRadius: bubbleView.layer.cornerRadius)
         return UITargetedPreview(view: bubbleView, parameters: params)
     }
 }

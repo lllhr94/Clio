@@ -22,6 +22,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         var onSpeakExcerpt: (String) -> Void = { _ in }
         var onSaveNoteExcerpt: (String, String) -> Void = { _, _ in }
         var onShareText: (String) -> Void = { _ in }
+        var onRevealFrame: (Bool) -> Void = { _ in }
     }
 
     private let litBackdrop = UIView()
@@ -359,6 +360,19 @@ final class ChatAssistantCell: UICollectionViewCell {
         }
     }
 
+    var hasPaintedLiveTail: Bool {
+        richTextViews.contains { !$0.isHidden && $0.hasPaintedLiveTail }
+    }
+
+    func revealedLineBottom(in view: UIView) -> CGFloat? {
+        for textView in richTextViews.reversed() where !textView.isHidden {
+            if let bottom = textView.revealedLineBottom, textView.bounds.height > 0 {
+                return textView.convert(CGPoint(x: 0, y: bottom), to: view).y
+            }
+        }
+        return nil
+    }
+
     func captureRevealHandoff() -> ChatRevealHandoff? {
         for tv in richTextViews.reversed() where !tv.isHidden {
             if let handoff = tv.captureRevealHandoff() {
@@ -674,6 +688,7 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     private func wireTextViewCallbacks(_ tv: ChatRichTextView, lineID: String) {
+        tv.onRevealFrame = { [weak self] complete in self?.callbacks.onRevealFrame(complete) }
         tv.onQuoteSelection = { [weak self] excerpt in
             self?.callbacks.onQuoteExcerpt(excerpt)
         }

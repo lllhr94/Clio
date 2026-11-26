@@ -7,10 +7,17 @@ import UIKit
 @MainActor
 enum ChatRevealPolicy {
     static let durationMultiplier: Double = 2.0
-    static let maxTailAttributedLength: Int = 3_000
-    static let burstCatchupPointBacklog: Int = 450
+    static let maxTailAttributedLength: Int = 6_000
     static let snippetMaxBacklogPoints: Int = 45
-    static let maxFinalizeDuration: CFTimeInterval = 0.85
+
+    nonisolated static func pacedPoints(current: Double, target: Double, total: Int, elapsed: Double) -> Double {
+        let remaining = max(0, Double(total) - current)
+        let dt = min(max(0, elapsed), 0.05)
+        // Work through a large initial chunk even before a second chunk supplies an arrival-rate sample.
+        let catchup = current + dt * max(0, remaining - 120) * 0.32
+        let rate = max(80 + min(220, remaining * 0.16), remaining / 4)
+        return min(Double(total), max(target, catchup, current), current + dt * rate)
+    }
 
     static func isEligible(fade: Bool, reduceMotion: Bool, attributedLength: Int) -> Bool {
         fade && !reduceMotion && attributedLength > 0 && attributedLength <= maxTailAttributedLength
@@ -874,6 +881,14 @@ struct ChatRevealHandoff {
     let remainingRevealedUTF16: Int
     let wasFinalizing: Bool
     let capturedAt: CFTimeInterval
+    var startsAtBeginning = false
+
+    static var unseenReply: ChatRevealHandoff {
+        ChatRevealHandoff(
+            tailText: "", remainingRevealedUTF16: 0, wasFinalizing: false,
+            capturedAt: 0, startsAtBeginning: true
+        )
+    }
 }
 
 /// Stateful streaming reveal coordinator wrapping Telegram's verbatim `TextRevealController`.
@@ -882,12 +897,14 @@ final class ChatRevealSession {
     private var controller: TextRevealController
     private(set) var snapshot: ChatRevealLayoutSnapshot
     private(set) var isComplete = false
-    private var finalizeStartedAt: CFTimeInterval?
+    private var displayedPoints: Double
+    private var lastDisplayTime: CFTimeInterval
     private var lastClock: CFTimeInterval
 
     static func resolveInitialUTF16(handoff: ChatRevealHandoff, in targetText: String) -> Int? {
         let targetNS = targetText as NSString
         guard targetNS.length > 0 else { return nil }
+        if handoff.startsAtBeginning { return 0 }
         if targetText == handoff.tailText {
             return max(0, min(targetNS.length, handoff.remainingRevealedUTF16))
         }
@@ -921,6 +938,8 @@ final class ChatRevealSession {
 
         let clampedOffset = max(0, min(snapshot.attributedLength, initialRevealedUTF16))
         let initialPoints = snapshot.pointsBefore(utf16Offset: clampedOffset)
+        self.displayedPoints = Double(initialPoints)
+        self.lastDisplayTime = now
 
         self.controller = TextRevealController(
             initialRevealedCount: initialPoints,
@@ -929,23 +948,22 @@ final class ChatRevealSession {
         )
 
         if finalizeImmediately {
-            self.finalizeStartedAt = now
             self.controller.finalize(finalLength: snapshot.totalPoints)
         } else {
             self.controller.observeUpdate(latestLength: snapshot.totalPoints, at: now)
         }
 
-        if snapshot.totalPoints == 0 || (controller.isFinalizing && controller.currentGlyphCount >= snapshot.totalPoints) {
+        if snapshot.totalPoints == 0 || (controller.isFinalizing && displayedPoints >= Double(snapshot.totalPoints)) {
             self.isComplete = true
         }
     }
 
     var currentPoints: Double {
-        controller.revealedCount
+        displayedPoints
     }
 
     var currentRevealedUTF16: Int {
-        snapshot.utf16Offset(forPoints: controller.currentGlyphCount)
+        snapshot.utf16Offset(forPoints: Int(displayedPoints))
     }
 
     var isFinalizing: Bool {
@@ -953,14 +971,14 @@ final class ChatRevealSession {
     }
 
     var backlogPoints: Int {
-        max(0, snapshot.totalPoints - controller.currentGlyphCount)
+        max(0, snapshot.totalPoints - Int(displayedPoints))
     }
 
     func update(snapshot nextSnapshot: ChatRevealLayoutSnapshot, isLive: Bool, now: CFTimeInterval = CACurrentMediaTime()) {
         let clock = max(lastClock, now)
         lastClock = clock
 
-        let prevRevealedUTF16 = snapshot.utf16Offset(forPoints: controller.currentGlyphCount)
+        let prevRevealedUTF16 = currentRevealedUTF16
         let prevLength = snapshot.attributedLength
         let textShrunk = nextSnapshot.attributedLength < prevLength
             || (!nextSnapshot.textSample.hasPrefix(snapshot.textSample)
@@ -976,48 +994,25 @@ final class ChatRevealSession {
                 initialLength: nextSnapshot.totalPoints,
                 durationMultiplier: ChatRevealPolicy.durationMultiplier
             )
-            if isLive {
-                finalizeStartedAt = nil
-            } else {
-                finalizeStartedAt = finalizeStartedAt ?? clock
-            }
+            displayedPoints = Double(remappedPoints)
         }
+        displayedPoints = min(displayedPoints, Double(nextSnapshot.totalPoints))
 
         if isLive {
             controller.observeUpdate(latestLength: nextSnapshot.totalPoints, at: clock)
-            let backlog = nextSnapshot.totalPoints - controller.currentGlyphCount
-            if backlog > ChatRevealPolicy.burstCatchupPointBacklog {
-                let targetJump = max(controller.currentGlyphCount, nextSnapshot.totalPoints - 90)
-                controller = TextRevealController(
-                    initialRevealedCount: targetJump,
-                    initialLength: nextSnapshot.totalPoints,
-                    durationMultiplier: ChatRevealPolicy.durationMultiplier
-                )
-                controller.observeUpdate(latestLength: nextSnapshot.totalPoints, at: clock)
-            }
         } else {
-            if finalizeStartedAt == nil {
-                finalizeStartedAt = clock
-            }
             controller.finalize(finalLength: nextSnapshot.totalPoints)
         }
-
-        if controller.isFinalizing && controller.currentGlyphCount >= nextSnapshot.totalPoints {
-            isComplete = true
-        } else if nextSnapshot.totalPoints == 0 {
-            isComplete = true
-        } else {
-            isComplete = false
-        }
+        isComplete = nextSnapshot.totalPoints == 0
+            || (controller.isFinalizing && displayedPoints >= Double(nextSnapshot.totalPoints))
     }
 
     func markFinalizing(now: CFTimeInterval = CACurrentMediaTime()) {
         guard !controller.isFinalizing else { return }
         let clock = max(lastClock, now)
         lastClock = clock
-        finalizeStartedAt = finalizeStartedAt ?? clock
         controller.finalize(finalLength: snapshot.totalPoints)
-        if snapshot.totalPoints == 0 || controller.currentGlyphCount >= snapshot.totalPoints {
+        if displayedPoints >= Double(snapshot.totalPoints) {
             isComplete = true
         }
     }
@@ -1028,29 +1023,24 @@ final class ChatRevealSession {
         }
         let clock = max(lastClock, now)
         lastClock = clock
-        let tickResult = controller.tick(now: clock)
-        let timedOutFinalize: Bool
-        if controller.isFinalizing, let finalizeStart = finalizeStartedAt {
-            timedOutFinalize = (clock - finalizeStart) >= ChatRevealPolicy.maxFinalizeDuration
-        } else {
-            timedOutFinalize = false
-        }
-        if tickResult.isComplete || (controller.isFinalizing && (tickResult.revealedGlyphCount >= snapshot.totalPoints || timedOutFinalize)) {
-            isComplete = true
-            return (.complete, 0, true)
-        }
-        let backlog = max(0, snapshot.totalPoints - tickResult.revealedGlyphCount)
-        let maskState = snapshot.maskState(forPoints: controller.revealedCount)
-        if maskState == .complete && controller.isFinalizing {
-            isComplete = true
-            return (.complete, 0, true)
-        }
-        return (maskState, backlog, false)
+        _ = controller.tick(now: clock)
+        // The upstream controller eases asymptotically; once it is subpixel-close, drain the final point.
+        let target = Double(snapshot.totalPoints) - controller.revealedCount < 1
+            ? Double(snapshot.totalPoints)
+            : controller.revealedCount
+        displayedPoints = ChatRevealPolicy.pacedPoints(
+            current: displayedPoints, target: target, total: snapshot.totalPoints,
+            elapsed: clock - lastDisplayTime
+        )
+        lastDisplayTime = clock
+        let maskState = snapshot.maskState(forPoints: displayedPoints)
+        isComplete = maskState == .complete && controller.isFinalizing
+        return (maskState, backlogPoints, isComplete)
     }
 
     func currentMaskState() -> ChatRevealLayoutSnapshot.MaskState {
         if isComplete { return .complete }
-        return snapshot.maskState(forPoints: controller.revealedCount)
+        return snapshot.maskState(forPoints: displayedPoints)
     }
 
     func makeHandoff(sealedPrefixUTF16: Int = 0, now: CFTimeInterval = CACurrentMediaTime()) -> ChatRevealHandoff? {

@@ -10,6 +10,7 @@ import CoreGraphics
 // RULE: TURN_EVENT
 // RULE: INLINE_APPROVAL
 // RULE: TRACE_STEP_STATUS
+// RULE: REVEAL_PACING
 
 private enum ScrollPhase { case idle, tracking, interacting, decelerating, animating }
 
@@ -358,6 +359,7 @@ private enum ChatFlowTests {
             try await growingReplyKeepsFollowing()
             try await releasingSelectionResumesFollowing()
             try replyHandoff()
+            try revealPacing()
             try replyBoundaries()
             try PetSurfaceFixture.checkPassThrough()
             try await approvalPausesFollowing()
@@ -372,6 +374,34 @@ private enum ChatFlowTests {
             FileHandle.standardError.write(Data("Chat flow check failed: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    static func revealPacing() throws {
+        let total = 600
+        let live = TextRevealController(initialRevealedCount: 2, initialLength: 60, durationMultiplier: 2)
+        live.observeUpdate(latestLength: 60, at: 0)
+        live.observeUpdate(latestLength: total, at: 0.2)
+        _ = live.tick(now: 0.2)
+        let first = RevealPacing.pacedPoints(current: 2, target: live.revealedCount, total: total, elapsed: 1.0 / 60)
+        try check(first > 2 && first < 10, true, "A burst advances a few points without jumping to the end")
+
+        let resumed = RevealPacing.pacedPoints(current: 2, target: Double(total), total: total, elapsed: 30)
+        try check(resumed < 20, true, "Clock gaps do not dump the rest of the reply in a single frame")
+
+        let quick = TextRevealController(initialRevealedCount: 0, initialLength: total, durationMultiplier: 2)
+        quick.finalize(finalLength: total)
+        var displayed = 0.0
+        var halfSecond = 0.0
+        for frame in 0...360 {
+            _ = quick.tick(now: Double(frame) / 60)
+            let target = Double(total) - quick.revealedCount < 1 ? Double(total) : quick.revealedCount
+            let next = RevealPacing.pacedPoints(current: displayed, target: target, total: total, elapsed: 1.0 / 60)
+            try check(next >= displayed && next - displayed < 10, true, "Committed reply progresses monotonically")
+            displayed = next
+            if frame == 30 { halfSecond = next }
+        }
+        try check(halfSecond > 0 && halfSecond < Double(total), true, "A single immediately committed chunk fades in")
+        try check(displayed, Double(total), "The final point is shown and pacing ends")
     }
 
     @MainActor
