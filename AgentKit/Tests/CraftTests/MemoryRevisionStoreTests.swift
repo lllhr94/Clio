@@ -25,9 +25,9 @@ final class MemoryRevisionStoreTests: XCTestCase {
         let encoder = JSONEncoder()
 
         // First commit crash when pre-commit file did NOT exist (`preCommitExisted == false`) -> roll back to empty!
+        try FileManager.default.createDirectory(at: revDir, withIntermediateDirectories: true)
         let partialUncommitted = try encoder.encode(makeBook(texts: ["不该保留的未提交草稿"], generation: 1))
         try partialUncommitted.write(to: memURL)
-        try FileManager.default.createDirectory(at: revDir, withIntermediateDirectories: true)
         let firstCrashJournal = MemoryPendingJournal(
             id: "j-first-crash",
             phase: .prepared,
