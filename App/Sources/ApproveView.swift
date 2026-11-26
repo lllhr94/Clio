@@ -102,14 +102,14 @@ struct ApproveView: View {
                         .rotationEffect(.degrees(largeText ? 0 : Double(-4 - 2 * press)))
                         .offset(y: 12 * press)
                         .id(current.id)
-                        .transition(.asymmetric(
+                        .transition(reduceMotion ? .opacity : .asymmetric(
                             insertion: .scale(scale: 0.86).combined(with: .opacity).combined(with: .offset(x: 10, y: 30)),
                             removal: .offset(x: viewport.width * 0.85, y: -viewport.height * 0.65).combined(with: .opacity)
                         ))
                 }
                 .scaleEffect(shown ? 1 : 0.9)
                 .opacity(shown ? 1 : 0)
-                .blur(radius: shown ? 0 : 10)
+                .blur(radius: (shown || reduceMotion) ? 0 : 10)
 
                 Spacer(minLength: 12)
 
@@ -138,7 +138,9 @@ struct ApproveView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
         .onAppear {
             Haptics.prepare()
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.72).delay(0.1)) { shown = true }
+            withAnimation(reduceMotion ? .easeOut(duration: 0.14) : .spring(response: 0.6, dampingFraction: 0.72).delay(0.1)) {
+                shown = true
+            }
         }
         .onChange(of: team.approvals) {
             // Answered somewhere else while this slip was open.
@@ -176,7 +178,7 @@ struct ApproveView: View {
                     } label: {
                         Text(L.t("actions.approveConfirm"))
                             .font(.system(size: Ink.Size.body * accessibilityScale, weight: .semibold))
-                            .foregroundStyle(Ink.paper)
+                            .foregroundStyle(Ink.onAccent)
                             .frame(maxWidth: .infinity, minHeight: 52)
                             .background(Ink.accent, in: Capsule())
                     }
@@ -199,9 +201,16 @@ struct ApproveView: View {
                             .accessibilityHint(L.t("approval.inlineTrustThroughWebHint"))
                     }
                 } else {
-                    HStack(spacing: Ink.Space.s) {
-                        choice(L.t("actions.allowAlways"), on: $always)
-                        choice(L.t("actions.allowConversation"), on: $trustChat)
+                    if largeText {
+                        VStack(spacing: Ink.Space.s) {
+                            choice(L.t("actions.allowAlways"), on: $always)
+                            choice(L.t("actions.allowConversation"), on: $trustChat)
+                        }
+                    } else {
+                        HStack(spacing: Ink.Space.s) {
+                            choice(L.t("actions.allowAlways"), on: $always)
+                            choice(L.t("actions.allowConversation"), on: $trustChat)
+                        }
                     }
                 }
                 Button {

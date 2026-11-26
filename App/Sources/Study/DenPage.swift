@@ -4,6 +4,7 @@ import SwiftUI
 struct DenPage: View {
     @ObservedObject var den = Den.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Commands typed while one is still running wait their turn, so output never interleaves.
     @State private var line: Task<Void, Never>?
     @State private var inkstone = false
@@ -31,7 +32,11 @@ struct DenPage: View {
                     .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                     .padding(.horizontal, Ink.Space.m)
                     .onChange(of: den.log.count) { _, _ in
-                        withAnimation(.linear(duration: 0.12)) { proxy.scrollTo("end", anchor: .bottom) }
+                        if reduceMotion {
+                            proxy.scrollTo("end", anchor: .bottom)
+                        } else {
+                            withAnimation(.linear(duration: 0.12)) { proxy.scrollTo("end", anchor: .bottom) }
+                        }
                     }
                 }
                 DenCommandComposer { typed in
@@ -56,9 +61,13 @@ struct DenPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(L.t("nav.terminal")).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
                 HStack(spacing: Ink.Space.xs) {
-                    Circle().fill(dot).frame(width: 6, height: 6)
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(dot)
+                        .accessibilityHidden(true)
                     Text(status).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
+                .accessibilityElement(children: .combine)
             }
             Spacer(minLength: 0)
             if !den.running.isEmpty {
@@ -113,13 +122,21 @@ struct DenPage: View {
         }
     }
 
+    private var statusSymbol: String {
+        switch den.state {
+        case .awake: den.running.isEmpty ? "checkmark.circle.fill" : "play.circle.fill"
+        case .broken: "exclamationmark.triangle.fill"
+        default: "clock.fill"
+        }
+    }
+
     private var status: String {
         switch den.state {
         case .asleep: "未启动"
         case .unpacking: "第一次打开，正在准备（要一会儿）"
         case .waking: "正在启动"
         case .awake: den.running.isEmpty ? "Alpine Linux · 就绪" : "正在运行"
-        case .broken(let why): why
+        case .broken(let why): why.hasPrefix("异常") ? why : "异常 · \(why)"
         }
     }
 
@@ -190,7 +207,11 @@ private struct DenCommandComposer: View {
                     back = min(back + 1, history.count)
                     command = history[history.count - back]
                 } label: {
-                    Image(systemName: "arrow.up").font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.inkSoft)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: Ink.Size.sub, weight: .semibold))
+                        .foregroundStyle(Ink.inkSoft)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel(L.t("actions.previousCommand"))
             }

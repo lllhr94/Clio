@@ -19,9 +19,11 @@ struct InlineApproval: View {
     /// Opens the full slip.
     var more: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var busy = false
     @State private var note: String?
 
+    private var largeText: Bool { typeSize.isAccessibilitySize }
     private var readOutside: Bool { approval.detail?.text?.hasPrefix(Taint.reason) == true }
 
     private var title: String {
@@ -46,11 +48,13 @@ struct InlineApproval: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(spacing: Ink.Space.s) {
-                Image(systemName: "seal").foregroundStyle(Ink.warn)
+                Image(systemName: "seal")
+                    .foregroundStyle(Ink.warn)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.system(size: Ink.Size.sub, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .lineLimit(2)
+                    .lineLimit(largeText ? nil : 2)
                 Spacer(minLength: 0)
                 Button {
                     Haptics.light()
@@ -85,18 +89,41 @@ struct InlineApproval: View {
             if let note {
                 Text(note).font(Ink.footnote).foregroundStyle(Ink.stop)
             }
-            HStack(spacing: Ink.Space.s) {
-                Spacer(minLength: 0)
-                Button(L.t("actions.rejectApproval")) { decide(false) }
-                    .buttonStyle(.bordered)
-                    .tint(Ink.inkSoft)
-                    .disabled(busy)
-                Button(L.t("approval.inlineOnce")) { decide(true) }
+            if largeText {
+                VStack(spacing: Ink.Space.s) {
+                    Button {
+                        decide(true)
+                    } label: {
+                        Text(L.t("approval.inlineOnce"))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
                     .buttonStyle(.borderedProminent)
                     .tint(Ink.accent)
                     .disabled(busy)
+                    Button {
+                        decide(false)
+                    } label: {
+                        Text(L.t("actions.rejectApproval"))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Ink.inkSoft)
+                    .disabled(busy)
+                }
+            } else {
+                HStack(spacing: Ink.Space.s) {
+                    Spacer(minLength: 0)
+                    Button(L.t("actions.rejectApproval")) { decide(false) }
+                        .buttonStyle(.bordered)
+                        .tint(Ink.inkSoft)
+                        .disabled(busy)
+                    Button(L.t("approval.inlineOnce")) { decide(true) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Ink.accent)
+                        .disabled(busy)
+                }
+                .controlSize(.small)
             }
-            .controlSize(.small)
             if approval.forced != true {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: Ink.Space.m) { permissionChoices }

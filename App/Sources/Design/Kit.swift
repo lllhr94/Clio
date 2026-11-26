@@ -121,7 +121,20 @@ extension Kit {
 
     /// A hairline rule, from `inset` to the trailing edge.
     static func rule(inset: CGFloat = Ink.Space.l) -> some View {
-        Rectangle().fill(Ink.rule).frame(height: 0.5).padding(.leading, inset)
+        KitRuleView(inset: inset)
+    }
+}
+
+private struct KitRuleView: View {
+    let inset: CGFloat
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        Rectangle()
+            .fill(Ink.rule)
+            .frame(height: contrast == .increased ? 1 : 0.5)
+            .padding(.leading, inset)
+            .accessibilityHidden(true)
     }
 }
 
@@ -173,6 +186,7 @@ struct SectionTitle: View {
 struct WideButtonStyle: ButtonStyle {
     var tint: Color = Ink.accent
     var filled = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -182,8 +196,8 @@ struct WideButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity, minHeight: Kit.rowHeight)
             .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
             .opacity(configuration.isPressed ? 0.8 : 1)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(Ink.Motion.press, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+            .animation(reduceMotion ? .easeOut(duration: 0.12) : Ink.Motion.press, value: configuration.isPressed)
     }
 }
 
@@ -242,8 +256,18 @@ extension View {
     /// A block inside running text (code, a table): raised paper with the small corner and a hairline edge.
     /// Cards that hold rows use `paperCard()`; blocks in what you read use this.
     func inkBlock() -> some View {
-        background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous).strokeBorder(Ink.rule, lineWidth: 0.5))
+        modifier(InkBlockModifier())
+    }
+}
+
+private struct InkBlockModifier: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
+        content
+            .background(Ink.paperRaised, in: .rect(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(shape.strokeBorder(Ink.rule, lineWidth: contrast == .increased ? 1 : 0.5))
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
     }
 }
@@ -309,12 +333,12 @@ struct Inscription: View {
 
     var body: some View {
         HStack(spacing: Ink.Space.m) {
-            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
+            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5).accessibilityHidden(true)
             Text(text)
                 .font(Ink.mark(Ink.Size.body))
                 .foregroundStyle(Ink.inkSoft)
                 .multilineTextAlignment(.center)
-            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5)
+            Rectangle().fill(Ink.inkFaint).frame(width: 24 * UIScale.factor, height: 0.5).accessibilityHidden(true)
         }
     }
 }

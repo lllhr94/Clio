@@ -20,24 +20,47 @@ struct StopRow<Value: Hashable>: View {
     var defaultValue: Value? = nil
     var opensForShot = false
     var onEditingChanged: ((Bool) -> Void)? = nil
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var open = false
+
+    private var largeText: Bool { typeSize.isAccessibilitySize }
 
     var body: some View {
         Button {
             open = true
         } label: {
-            HStack(spacing: Ink.Space.m) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundStyle(Ink.ink)
-                    if let line {
-                        Text(line).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+            Group {
+                if largeText {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                        Text(title).foregroundStyle(Ink.ink).lineLimit(nil)
+                        if let line {
+                            Text(line).font(Ink.footnote).foregroundStyle(Ink.inkFaint).lineLimit(nil)
+                        }
+                        HStack(spacing: Ink.Space.s) {
+                            Text(current?.name ?? "").foregroundStyle(Ink.inkSoft).lineLimit(nil)
+                            Spacer(minLength: Ink.Space.s)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.inkFaint)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                } else {
+                    HStack(spacing: Ink.Space.m) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(title).foregroundStyle(Ink.ink)
+                            if let line {
+                                Text(line).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
+                            }
+                        }
+                        Spacer(minLength: Ink.Space.s)
+                        Text(current?.name ?? "").foregroundStyle(Ink.inkSoft).lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: Ink.Size.micro, weight: .semibold))
+                            .foregroundStyle(Ink.inkFaint)
+                            .accessibilityHidden(true)
                     }
                 }
-                Spacer(minLength: Ink.Space.s)
-                Text(current?.name ?? "").foregroundStyle(Ink.inkSoft).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: Ink.Size.micro, weight: .semibold))
-                    .foregroundStyle(Ink.inkFaint)
             }
             .contentShape(.rect)
         }
@@ -61,7 +84,7 @@ struct StopRow<Value: Hashable>: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     StopRuler(value: $value, stops: stops, name: title, defaultValue: defaultValue, onEditingChanged: onEditingChanged)
                 }
-                .frame(maxHeight: 340)
+                .frame(maxHeight: largeText ? 420 : 340)
             }
             .presentationCompactAdaptation(.popover)
         }
@@ -80,10 +103,15 @@ struct StopRuler<Value: Hashable>: View {
     var defaultValue: Value? = nil
     var onEditingChanged: ((Bool) -> Void)? = nil
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lockedGeometry: (step: CGFloat, width: CGFloat)?
 
+    private var largeText: Bool { typeSize.isAccessibilitySize }
     /// Long rulers (a pet's ten sizes, a model's eight windows) use shorter stops so the card stays on screen.
-    private var liveStep: CGFloat { (stops.count > 6 ? 28 : 32) * UIScale.factor }
+    private var liveStep: CGFloat {
+        (largeText ? 44 : (stops.count > 6 ? 28 : 32)) * UIScale.factor
+    }
     /// A slim bar: the names do the telling, the bar is what the thumb runs along.
     private var liveWidth: CGFloat { 26 * UIScale.factor }
     private var step: CGFloat { lockedGeometry?.step ?? liveStep }
@@ -155,7 +183,7 @@ struct StopRuler<Value: Hashable>: View {
         }
         .frame(width: width, height: height)
         .clipShape(.capsule(style: .continuous))
-        .animation(Ink.Motion.settle, value: index)
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : Ink.Motion.settle, value: index)
         .contentShape(.rect.inset(by: -Ink.Space.s))
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -188,7 +216,7 @@ struct StopRuler<Value: Hashable>: View {
                     pick(at)
                 } label: {
                     cell(at)
-                        .lineLimit(1)
+                        .lineLimit(largeText ? 2 : 1)
                         .frame(minHeight: step, maxHeight: step)
                         .contentShape(.rect)
                 }

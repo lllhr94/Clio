@@ -312,7 +312,21 @@ enum Ink {
     }
     static let ink = pair(0x1F1E1B, 0xEFEAE0)
     static let inkSoft = pair(0x57534A, 0xB9B1A2)
-    static let inkFaint = pair(0x696459, 0x989082)
+    static let inkFaint: Color = Color(UIColor { traits in
+        let isDark = traits.userInterfaceStyle == .dark
+        let hex: UInt32
+        if traits.accessibilityContrast == .high {
+            hex = isDark ? 0xB9B1A2 : 0x57534A
+        } else {
+            hex = isDark ? 0x989082 : 0x696459
+        }
+        return UIColor(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    })
     /// 朱: the seal's cinnabar for strokes/text and fill ground. Only for the seal.
     static let seal = pair(0xB5382A, 0xE87568)
     static let sealFill = pair(0xB5382A, 0xB84134)
@@ -745,14 +759,15 @@ enum Ink {
 /// Anything tappable: gives a little under the finger and springs back cleanly; stays silent unless opted in.
 struct PressStyle: ButtonStyle {
     var haptic = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             // The whole frame takes the tap, not just the drawn strokes and glyphs.
             .contentShape(Rectangle())
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(Ink.Motion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? .easeOut(duration: 0.12) : Ink.Motion.press, value: configuration.isPressed)
             .onChange(of: configuration.isPressed) { _, pressed in
                 if pressed, haptic { Haptics.tick(0.5) }
             }
@@ -762,12 +777,7 @@ struct PressStyle: ButtonStyle {
 extension View {
     /// A card that reads as paper: a raised sheet with a hairline edge.
     func paperCard(radius: CGFloat = Ink.Radius.card) -> some View {
-        background {
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(Ink.paperRaised)
-                .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
-        }
-        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Ink.rule.opacity(0.7), lineWidth: 0.5))
+        modifier(PaperCardModifier(radius: radius))
     }
 
     /// A small glass capsule: only for controls that float above content.
@@ -781,9 +791,7 @@ extension View {
     /// The system draws the glass itself and takes any touch that lands on it, so taps on the glass around an icon
     /// never reached the button. A nearly clear layer over the glass catches them for SwiftUI.
     func glassFace<S: Shape>(in shape: S) -> some View {
-        glassEffect(.regular, in: shape)
-            .overlay { shape.fill(Color.white.opacity(0.001)) }
-            .contentShape(shape)
+        modifier(GlassFaceModifier(shape: shape))
     }
 
     /// Your message bubble: a touch of glass, without the cost of real glass on every bubble in a long chat.
@@ -804,8 +812,7 @@ extension View {
     /// Liquid Glass behind a bar that holds its own controls (the composer, an address bar). The clear layer sits
     /// between the glass and the controls: taps between them land on it instead of on the glass.
     func glassBacking<S: Shape>(in shape: S) -> some View {
-        background { shape.fill(Color.white.opacity(0.001)) }
-            .glassEffect(.regular, in: shape)
+        modifier(GlassBackingModifier(shape: shape))
     }
 
     /// Anti-bleed Liquid Glass backing for the bottom composer shell so scrolled chat text
@@ -815,16 +822,84 @@ extension View {
     }
 }
 
-private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
+private struct PaperCardModifier: ViewModifier {
+    let radius: CGFloat
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        content
+            .background {
+                shape
+                    .fill(Ink.paperRaised)
+                    .shadow(color: .black.opacity(0.035), radius: 6, y: 2)
+            }
+            .overlay {
+                shape
+                    .strokeBorder(Ink.rule.opacity(contrast == .increased ? 1 : 0.7), lineWidth: contrast == .increased ? 1 : 0.5)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+private struct GlassFaceModifier<S: Shape>: ViewModifier {
     let shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
         if reduceTransparency {
             content
                 .background { shape.fill(Ink.paperRaised) }
                 .overlay {
-                    shape.strokeBorder(Ink.rule.opacity(0.65), lineWidth: 0.5)
+                    shape.stroke(Ink.rule, lineWidth: contrast == .increased ? 1 : 0.75)
+                        .allowsHitTesting(false)
+                }
+                .clipShape(shape)
+                .contentShape(shape)
+        } else {
+            content
+                .glassEffect(.regular, in: shape)
+                .overlay { shape.fill(Color.white.opacity(0.001)) }
+                .contentShape(shape)
+        }
+    }
+}
+
+private struct GlassBackingModifier<S: Shape>: ViewModifier {
+    let shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background { shape.fill(Ink.paperRaised) }
+                .overlay {
+                    shape.stroke(Ink.rule, lineWidth: contrast == .increased ? 1 : 0.75)
+                        .allowsHitTesting(false)
+                }
+        } else {
+            content
+                .background { shape.fill(Color.white.opacity(0.001)) }
+                .glassEffect(.regular, in: shape)
+        }
+    }
+}
+
+private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
+    let shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        let lineWidth: CGFloat = (contrast == .increased || reduceTransparency) ? 1 : 0.5
+        let ruleOpacity: Double = contrast == .increased ? 1 : (reduceTransparency ? 0.8 : 0.45)
+        if reduceTransparency {
+            content
+                .background { shape.fill(Ink.paperRaised) }
+                .overlay {
+                    shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
                         .allowsHitTesting(false)
                 }
         } else {
@@ -833,7 +908,7 @@ private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
                 .background { shape.fill(Color.white.opacity(0.001)) }
                 .glassEffect(.regular, in: shape)
                 .overlay {
-                    shape.strokeBorder(Ink.rule.opacity(0.45), lineWidth: 0.5)
+                    shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
                         .allowsHitTesting(false)
                 }
         }

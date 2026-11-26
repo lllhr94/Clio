@@ -79,6 +79,7 @@ enum AlwaysOn {
 private struct AlwaysOnStatus: View {
     let chat: String
     @ObservedObject var team: TeamModel
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var opened = Date()
     @State private var started: Date?
     @State private var finished: Date?
@@ -106,7 +107,7 @@ private struct AlwaysOnStatus: View {
                 Text(words)
                     .font(Ink.label)
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 3)
                 elapsed
                     .font(Ink.mono(Ink.Size.sub))
                     .monospacedDigit()

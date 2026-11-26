@@ -7,10 +7,13 @@ import SwiftUI
 struct InlineAsk: View {
     let form: Asker.Form
 
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var selectedByKey: [String: [String]] = [:]
     @State private var customByKey: [String: String] = [:]
     @State private var customOpenKeys: Set<String> = []
     @State private var limitWarningKey: String?
+
+    private var largeText: Bool { typeSize.isAccessibilitySize }
 
     init(form: Asker.Form) {
         self.form = form
@@ -61,6 +64,7 @@ struct InlineAsk: View {
         HStack(spacing: Ink.Space.s) {
             Image(systemName: "questionmark.bubble")
                 .foregroundStyle(Ink.accent)
+                .accessibilityHidden(true)
             Text(L.format("ask.questionHeader", form.from, form.title))
                 .font(.system(size: Ink.Size.sub, weight: .semibold))
                 .foregroundStyle(Ink.ink)
@@ -87,24 +91,56 @@ struct InlineAsk: View {
         }
     }
 
+    @ViewBuilder
     private var footerButtons: some View {
-        HStack {
-            Button(L.t("actions.cancel")) {
-                Haptics.light()
-                Asker.shared.cancel(form.id)
+        if largeText {
+            VStack(spacing: Ink.Space.s) {
+                Button {
+                    submit()
+                } label: {
+                    Text(L.t("actions.submitForm"))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .tint(Ink.accent)
+                .disabled(!canSubmit)
+
+                Button {
+                    Haptics.light()
+                    Asker.shared.cancel(form.id)
+                } label: {
+                    Text(L.t("actions.cancel"))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .foregroundStyle(Ink.inkSoft)
+                .buttonStyle(.plain)
             }
-            .foregroundStyle(Ink.inkSoft)
-            .buttonStyle(.plain)
-            Spacer()
-            Button(L.t("actions.submitForm")) {
-                submit()
+            .font(.system(size: Ink.Size.sub, weight: .semibold))
+        } else {
+            HStack {
+                Button {
+                    Haptics.light()
+                    Asker.shared.cancel(form.id)
+                } label: {
+                    Text(L.t("actions.cancel"))
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .foregroundStyle(Ink.inkSoft)
+                .buttonStyle(.plain)
+                Spacer()
+                Button(L.t("actions.submitForm")) {
+                    submit()
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .tint(Ink.accent)
+                .disabled(!canSubmit)
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .tint(Ink.accent)
-            .disabled(!canSubmit)
+            .font(.system(size: Ink.Size.sub, weight: .semibold))
         }
-        .font(.system(size: Ink.Size.sub, weight: .semibold))
     }
 
     private var activeValidationError: String? {
