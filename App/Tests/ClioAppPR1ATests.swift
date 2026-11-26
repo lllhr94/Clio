@@ -1,3 +1,4 @@
+import AgentKit
 @testable import Clio
 import Craft
 import Foundation
@@ -113,9 +114,13 @@ final class ClioAppPR1ATests: XCTestCase {
 
     @MainActor
     func testTeamModelExperienceSourceGatingZeroWriteRecallReadOnlyAndProcessedDedupe() async throws {
+        let previousMemoryPolicy = Grant.memory.policy
+        Grant.memory.policy = .allow
+        defer { Grant.memory.policy = previousMemoryPolicy }
+
         let team = TeamModel()
-        team.keeping = false
-        let bot = BotInfo(id: "b-test", name: "小测", role: nil, model: nil, instructions: nil)
+        team.phase = .demo
+        let bot = BotInfo(id: "b-test", name: "小测", role: nil, instructions: nil, model: nil)
 
         // 1. Experience write-source propagation across routine / subtask / mainChat
         let routineTools = team.tools(for: bot, key: "bot-b-test", canSee: false, helping: false, workplace: .desk, experienceSource: .routine)
