@@ -418,7 +418,8 @@ public enum StorageCleanup {
             if let id = itemIdentity(current), excludedIDs.contains(id) {
                 return true
             }
-            let parent = current.deletingLastPathComponent()
+            if current.pathComponents.count <= 1 { break }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
             if parent.path == current.path { break }
             current = parent
         }
