@@ -228,7 +228,6 @@ struct StudyFolder: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(.navigationBar)
         }
         .hitchPage("书案列表")
         .navigationTitle(navigationTitle)
@@ -752,7 +751,6 @@ struct StudyFile: View {
                     .padding(.vertical, Ink.Space.l)
                 }
                 .scrollEdgeEffectStyle(.soft, for: .vertical)
-                .clioTopBlurVeil(.navigationBar)
             } else if loaded {
                 if let quickLookURL {
                     if ext == "pdf", let initialPage, initialPage >= 1 {

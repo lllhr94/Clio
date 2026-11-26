@@ -538,20 +538,49 @@ extension TeamModel {
 
     @discardableResult
     func setMemoryLayerOffMain(_ id: String, _ layer: MemoryLayer, kind: String? = nil, topic: String? = nil, confidence: Double? = nil) async throws -> Bool {
+        try await setMemoryLayerCapturingPreviousOffMain(id, layer, kind: kind, topic: topic, confidence: confidence).succeeded
+    }
+
+    func archiveMemoryCapturingLayerOffMain(_ id: String) async throws -> (succeeded: Bool, previousLayer: MemoryLayer) {
+        let outcome = try await setMemoryLayerCapturingPreviousOffMain(id, .archived)
+        return (outcome.succeeded, outcome.previousLayer ?? .surface)
+    }
+
+    private func setMemoryLayerCapturingPreviousOffMain(
+        _ id: String,
+        _ layer: MemoryLayer,
+        kind: String? = nil,
+        topic: String? = nil,
+        confidence: Double? = nil
+    ) async throws -> (succeeded: Bool, previousLayer: MemoryLayer?) {
         try await serializedMemoryMutation {
-            guard self.canMutateMemoryState else { return false }
+            guard self.canMutateMemoryState else { return (false, nil) }
             let keeping = self.keeping
             let needsArchiveLookup = keeping && layer != .archived
             let needsHasRecord = keeping && layer == .archived
-            let needsPins = keeping && layer != .archived && layer != .deep
-            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], archived: Memory?, hasRecord: Bool, pins: Set<String>) in
+            let needsPins = keeping
+            let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], archived: Memory?, hasRecord: Bool, pins: Set<String>, bridgeLayer: MemoryLayer?) in
                 let secrets = keeping ? Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } : []
                 let archived = needsArchiveLookup ? MemoryStoreBridge.shared.archivedMemorySnapshot(id: id) : nil
                 let hasRecord = needsHasRecord ? MemoryStoreBridge.shared.hasRecordSnapshot(id: id) : false
                 let pins = needsPins ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
-                return (secrets, archived, hasRecord, pins)
+                let bridgeLayer = needsHasRecord
+                    ? MemoryStoreBridge.shared.recordsSnapshot().first(where: { $0.id == id })?.layer
+                    : nil
+                return (secrets, archived, hasRecord, pins, bridgeLayer)
             }.value
-            guard self.canMutateMemoryState else { return false }
+            guard self.canMutateMemoryState else { return (false, nil) }
+            let capturedLayer: MemoryLayer? = {
+                guard layer == .archived else { return nil }
+                if let bridgeLayer = prep.bridgeLayer, bridgeLayer != .archived {
+                    return bridgeLayer
+                }
+                if let memory = self.memories.first(where: { $0.id == id }) {
+                    if prep.pins.contains(id) { return .pinned }
+                    return memory.deep == true ? .deep : .surface
+                }
+                return nil
+            }()
             let fallbackForCurrentState = self.memories.contains(where: { $0.id == id }) ? nil : prep.archived
             switch self.buildSetLayerPlan(
                 id,
@@ -564,13 +593,13 @@ extension TeamModel {
                 pinnedIDs: prep.pins
             ) {
             case .noOp(let succeeded):
-                return succeeded
+                return (succeeded, capturedLayer)
             case .local(let nextMemories, let nextReviews, let retract, let clearRetract):
                 self.executeLocalPlan(nextMemories: nextMemories, nextReviews: nextReviews, retract: retract, clearRetract: clearRetract)
-                return true
+                return (true, capturedLayer)
             case .commit(let nextBook, let mutation):
                 _ = try await self.commitMemoryBookPreparedAsync(nextBook, mutation: mutation, orderedSecrets: prep.secrets)
-                return true
+                return (true, capturedLayer)
             }
         }
     }
@@ -1008,32 +1037,38 @@ extension TeamModel {
     private func buildRestorePlan(
         _ id: String,
         restored initial: Memory,
+        toLayer targetLayer: MemoryLayer = .surface,
         pinnedIDs: Set<String>
     ) -> (book: MemoryBook, mutation: MemoryCommitMutation) {
+        let resolvedLayer = targetLayer == .archived ? .surface : targetLayer
         let now = Now.ms
         var restored = initial
-        restored.deep = nil
+        restored.deep = (resolvedLayer == .deep) ? true : nil
         restored.used = now
 
         var nextMemories = memories
         nextMemories.removeAll { $0.id == id }
         nextMemories.append(restored)
         var candidatePins = pinnedIDs
-        candidatePins.remove(id)
+        if resolvedLayer == .pinned {
+            candidatePins.insert(id)
+        } else {
+            candidatePins.remove(id)
+        }
         Self.settleMemory(&nextMemories, pinnedIDs: candidatePins)
 
         var nextBook = memoryBook
         nextBook.memories = nextMemories
-        return (nextBook, .restore(id: id, memory: restored, nowMs: now))
+        return (nextBook, .restore(id: id, memory: restored, layer: resolvedLayer, nowMs: now))
     }
 
     @discardableResult
-    func restoreMemory(_ id: String) -> Bool {
+    func restoreMemory(_ id: String, toLayer targetLayer: MemoryLayer = .surface) -> Bool {
         guard canMutateMemoryState, keeping else { return false }
         let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         guard let restored = MemoryStoreBridge.shared.restorableMemorySnapshot(id: id) else { return false }
         let pins = MemoryStoreBridge.shared.pinnedIDsSnapshot()
-        let plan = buildRestorePlan(id, restored: restored, pinnedIDs: pins)
+        let plan = buildRestorePlan(id, restored: restored, toLayer: targetLayer, pinnedIDs: pins)
         return (try? commitMemoryBookPrepared(
             plan.book,
             mutation: plan.mutation,
@@ -1042,7 +1077,7 @@ extension TeamModel {
     }
 
     @discardableResult
-    func restoreMemoryOffMain(_ id: String) async throws -> Bool {
+    func restoreMemoryOffMain(_ id: String, toLayer targetLayer: MemoryLayer = .surface) async throws -> Bool {
         try await serializedMemoryMutation {
             guard self.canMutateMemoryState, self.keeping else { return false }
             let prep = await Task.detached(priority: .userInitiated) { () -> (secrets: [String], restored: Memory?, pins: Set<String>) in
@@ -1052,7 +1087,7 @@ extension TeamModel {
                 return (secrets, restored, pins)
             }.value
             guard self.canMutateMemoryState, self.keeping, let restored = prep.restored else { return false }
-            let plan = self.buildRestorePlan(id, restored: restored, pinnedIDs: prep.pins)
+            let plan = self.buildRestorePlan(id, restored: restored, toLayer: targetLayer, pinnedIDs: prep.pins)
             _ = try await self.commitMemoryBookPreparedAsync(
                 plan.book,
                 mutation: plan.mutation,

@@ -93,6 +93,55 @@ final class StorageCleanupTests: XCTestCase {
         try fm.moveItem(at: external, to: nested)
         XCTAssertEqual(inspect(nested), expected)
         XCTAssertEqual(inspect(box.appSupport), expected, "A workspace containing Team must not reclassify its files")
+
+        // Verify otherBytes accounts for leftover non-bucket files under appSupportRoot without double counting.
+        let extra = box.appSupport.appendingPathComponent("misc-extra.dat")
+        try writeFile(extra, contents: Data(repeating: 0x5A, count: 12288), now: now)
+        let extraSize = try bytes(extra)
+        let withExtra = StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, now: now, workspaceRoot: nested)
+        XCTAssertEqual(withExtra.totalBytes, expected.totalBytes + extraSize)
+        XCTAssertEqual(withExtra.otherBytes, extraSize)
+        XCTAssertEqual(
+            withExtra.chatsBytes + withExtra.studyBytes + withExtra.activeMediaBytes + withExtra.memoryBytes + withExtra.cacheBytes + withExtra.otherBytes,
+            withExtra.totalBytes
+        )
+
+        // Verify both nesting directions (`workspaceRoot` inside `appSupportRoot` and vice versa) never double-count.
+        XCTAssertEqual(
+            StorageCleanup.totalSize(appSupportRoot: box.appSupport, workspaceRoot: nested),
+            withExtra.totalBytes
+        )
+        XCTAssertEqual(
+            StorageCleanup.totalSize(appSupportRoot: box.team, workspaceRoot: box.appSupport),
+            withExtra.totalBytes
+        )
+    }
+
+    func testHardlinksWithinAndAcrossMediaAndDocCacheAreCountedOnce() throws {
+        let box = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: box.appSupport) }
+
+        let now = Date()
+        let fm = FileManager.default
+        let primary = box.media.appendingPathComponent("primary.jpg")
+        try writeFile(primary, contents: Data(repeating: 0x7A, count: 16384), now: now)
+        try writeFile(
+            box.chats.appendingPathComponent("bot-a.json"),
+            contents: Data("[{\"photos\":[\"primary.jpg\"]}]".utf8),
+            now: now
+        )
+
+        // Intra-directory hardlink + cross-directory hardlink into doccache sharing primary's inode.
+        let intraLink = box.media.appendingPathComponent("duplicate.jpg")
+        let crossLink = box.doccache.appendingPathComponent("mirror.txt")
+        try fm.linkItem(at: primary, to: intraLink)
+        try fm.linkItem(at: primary, to: crossLink)
+
+        let breakdown = StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, now: now)
+        XCTAssertEqual(
+            breakdown.chatsBytes + breakdown.studyBytes + breakdown.activeMediaBytes + breakdown.memoryBytes + breakdown.cacheBytes + breakdown.otherBytes,
+            breakdown.totalBytes
+        )
     }
 
     func testCleanRemovesOnlyOldOrphanMediaAndDocCache() throws {

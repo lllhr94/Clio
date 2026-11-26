@@ -365,7 +365,6 @@ struct MemoryPageV2: View {
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(.navigationBar)
     }
 
     // MARK: - Snapshot Sync
@@ -737,9 +736,19 @@ struct MemoryPageV2: View {
 
     private func moveRecord(_ id: String, to layer: MemoryLayer) {
         guard team.canMutateMemoryState else { return }
+        let cachedFallbackLayer = cachedSnapshotByID[id]?.layer ?? (cachedPinnedIDs.contains(id) ? .pinned : .surface)
         Task {
             do {
-                let ok = try await team.setMemoryLayerOffMain(id, layer)
+                let ok: Bool
+                let previousLayer: MemoryLayer
+                if layer == .archived {
+                    let outcome = try await team.archiveMemoryCapturingLayerOffMain(id)
+                    ok = outcome.succeeded
+                    previousLayer = outcome.previousLayer == .archived ? cachedFallbackLayer : outcome.previousLayer
+                } else {
+                    ok = try await team.setMemoryLayerOffMain(id, layer)
+                    previousLayer = cachedFallbackLayer
+                }
                 guard ok else {
                     Haptics.lock()
                     return
@@ -756,9 +765,10 @@ struct MemoryPageV2: View {
                         symbol: "archivebox",
                         tint: Ink.inkSoft,
                         actionTitle: L.t("homeThreads.undo"),
+                        dedupeKey: "archive-memory-\(id)",
                         duration: 4
                     ) {
-                        restoreRecord(id)
+                        restoreRecord(id, to: previousLayer)
                     }
                 }
             } catch {
@@ -768,18 +778,19 @@ struct MemoryPageV2: View {
         }
     }
 
-    private func restoreRecord(_ id: String) {
+    private func restoreRecord(_ id: String, to targetLayer: MemoryLayer = .surface) {
         guard team.canMutateMemoryState else { return }
+        let resolvedLayer: MemoryLayer = targetLayer == .archived ? .surface : targetLayer
         Task {
             do {
-                let ok = try await team.restoreMemoryOffMain(id)
+                let ok = try await team.restoreMemoryOffMain(id, toLayer: resolvedLayer)
                 guard ok else {
                     Haptics.lock()
                     return
                 }
                 mutationError = nil
                 withAnimation(Ink.Motion.settle) {
-                    applyLocalLayerTransition(id: id, to: .surface)
+                    applyLocalLayerTransition(id: id, to: resolvedLayer)
                     refreshRevision &+= 1
                 }
                 Haptics.tick(0.6)
@@ -972,7 +983,6 @@ private struct MemoryDetailSheet: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(.navigationBar)
             .scrollDismissesKeyboard(.interactively)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.detailTitle"))
@@ -1329,7 +1339,6 @@ private struct MemoryMirrorViewerSheet: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.mirrorsTitle"))
             .navigationBarTitleDisplayMode(.inline)

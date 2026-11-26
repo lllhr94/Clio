@@ -299,6 +299,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             updateCollectionInsetsIfNeeded()
         }
         collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(true) }
+        updateNativeScrollEdgeInsets()
         startStyleObservationIfVisible()
     }
 
@@ -322,8 +323,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
-        collectionView.topEdgeEffect.isHidden = true
-        collectionView.bottomEdgeEffect.isHidden = true
+        collectionView.topEdgeEffect.style = .soft
+        collectionView.topEdgeEffect.isHidden = false
+        collectionView.bottomEdgeEffect.style = .soft
+        collectionView.bottomEdgeEffect.isHidden = false
         collectionView.keyboardDismissMode = .interactive
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.delegate = self
@@ -1931,6 +1934,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
+            updateNativeScrollEdgeInsets()
         }
     }
 
@@ -1950,6 +1954,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
+            updateNativeScrollEdgeInsets()
         }
         activeKeyboardDeadline = 0
         if insetDisplayLink != nil {
@@ -2030,6 +2035,50 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         hostTopInset = clampedTop
         hostBottomInset = clampedBottom
         updateCollectionInsetsIfNeeded()
+        updateNativeScrollEdgeInsets()
+    }
+
+    func syncNativeScrollEdgeInsets(animated: Bool = false) {
+        guard !isDismantled, isViewLoaded else { return }
+        if animated && !reduceMotionEnabled {
+            UIView.animate(withDuration: 0.28, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                self.updateNativeScrollEdgeInsets()
+                self.view.layoutIfNeeded()
+            }
+        } else {
+            updateNativeScrollEdgeInsets()
+        }
+    }
+
+    private func updateNativeScrollEdgeInsets() {
+        guard isViewLoaded, let window = view.window else { return }
+        let baseTop = max(0, view.safeAreaInsets.top - additionalSafeAreaInsets.top)
+        let baseBottom = max(0, view.safeAreaInsets.bottom - additionalSafeAreaInsets.bottom)
+        let windowTop = window.safeAreaInsets.top
+        let windowBottom = window.safeAreaInsets.bottom
+
+        let collapseProgress = min(1, max(0, actions.currentChromeVisualProgress()))
+        let rawHeaderTotal = hostTopInset > 0 ? hostTopInset : (windowTop + (currentState?.headerHeight ?? 0))
+        let headerExtra = max(0, rawHeaderTotal - windowTop)
+        let targetSafeTop = windowTop + (headerExtra * (1 - collapseProgress)).rounded(.toNearestOrAwayFromZero)
+        let desiredAdditionalTop = max(0, targetSafeTop - baseTop)
+
+        let keyboardOpen = lastReportedKeyboardOpen == true || activeKeyboardEndOverlap > 10
+        let dockExtra = keyboardOpen ? 0 : min(96, max(0, hostBottomInset - windowBottom))
+        let targetSafeBottom = keyboardOpen
+            ? baseBottom
+            : (windowBottom + (dockExtra * (1 - collapseProgress)).rounded(.toNearestOrAwayFromZero))
+        let desiredAdditionalBottom = max(0, targetSafeBottom - baseBottom)
+
+        if abs(additionalSafeAreaInsets.top - desiredAdditionalTop) > 0.5
+            || abs(additionalSafeAreaInsets.bottom - desiredAdditionalBottom) > 0.5 {
+            additionalSafeAreaInsets = UIEdgeInsets(
+                top: desiredAdditionalTop,
+                left: 0,
+                bottom: desiredAdditionalBottom,
+                right: 0
+            )
+        }
     }
 
     private func updateCollectionInsetsIfNeeded() {
@@ -2038,6 +2087,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
         }
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
+        updateNativeScrollEdgeInsets()
         let windowTop = view.window?.safeAreaInsets.top ?? 0
         let resolvedTop = hostTopInset > 0
             ? hostTopInset
@@ -2519,6 +2569,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         actions.onChromeDragEnded()
+        syncNativeScrollEdgeInsets(animated: true)
         if decelerate {
             actions.onScrollPhaseChanged("惯性")
         } else {
@@ -2625,6 +2676,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                         scrollView.isDragging,
                         isScrollable
                     )
+                    updateNativeScrollEdgeInsets()
                 }
             }
         }

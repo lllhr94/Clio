@@ -960,7 +960,6 @@ private struct PreferenceForm<Content: View>: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(embedded ? .fixed(16) : .navigationBar)
         .paperForm()
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

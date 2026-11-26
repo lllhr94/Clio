@@ -61,7 +61,6 @@ struct ChatDetail: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)

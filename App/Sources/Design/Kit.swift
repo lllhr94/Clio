@@ -251,7 +251,12 @@ final class UIScale {
             defaults.set(mapped, forKey: key)
             return mapped
         }
-        return stored
+        let validFactors = levels.map(\.factor)
+        let snapped = Stops.nearest(stored, in: validFactors)
+        if abs(snapped - stored) >= 0.001 {
+            defaults.set(snapped, forKey: key)
+        }
+        return snapped
     }
 
     var value: Double = UIScale.resolveAndMigrateStoredFactor() {

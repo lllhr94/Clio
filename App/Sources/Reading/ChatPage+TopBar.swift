@@ -114,6 +114,8 @@ enum ChatBarMetrics {
     static var height: CGFloat { 46 * scale }
     static var avatarSize: CGFloat { 38 * scale }
     static var concentricPadding: CGFloat { (height - avatarSize) / 2 }
+    static var itemSpacing: CGFloat { 8 * scale }
+    static var pillTrailing: CGFloat { 14 * scale }
     static var jumpSize: CGFloat { 44 * scale }
     static var controlHeight: CGFloat { 38 * scale }
     static var iconFontSize: CGFloat { 17 * scale }
@@ -122,10 +124,58 @@ enum ChatBarMetrics {
     static var microFontSize: CGFloat { 11 * scale }
 }
 
-/// Pure optical progressive blur locked strictly above `safeAreaTop + 4pt` (status bar bottom edge) with zero fog below.
-struct ChatStatusBarBlurVeil: View {
-    var body: some View {
-        TopEdgeBlurVeil(scope: .statusBar)
+/// Measures left and right top-bar controls and centers the companion capsule cleanly within the free span
+/// without shrinking short names or overlapping when right controls expand.
+private struct ChatTopBarThreeSlotLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 3 else {
+            return subviews.first?.sizeThatFits(proposal) ?? .zero
+        }
+        let leftSize = subviews[0].sizeThatFits(.unspecified)
+        let rightSize = subviews[2].sizeThatFits(.unspecified)
+        let proposedWidth = proposal.width ?? (leftSize.width + rightSize.width + spacing * 2)
+        let availableCenter = max(0, proposedWidth - leftSize.width - rightSize.width - spacing * 2)
+        let centerSize = subviews[1].sizeThatFits(ProposedViewSize(width: availableCenter, height: proposal.height))
+        let width = proposal.width ?? (leftSize.width + centerSize.width + rightSize.width + spacing * 2)
+        let height = max(leftSize.height, max(centerSize.height, rightSize.height))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let leftSize = subviews[0].sizeThatFits(.unspecified)
+        let rightSize = subviews[2].sizeThatFits(.unspecified)
+        let availableCenter = max(0, bounds.width - leftSize.width - rightSize.width - spacing * 2)
+        let centerSize = subviews[1].sizeThatFits(ProposedViewSize(width: availableCenter, height: bounds.height))
+
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(leftSize)
+        )
+        subviews[2].place(
+            at: CGPoint(x: bounds.maxX, y: bounds.midY),
+            anchor: .trailing,
+            proposal: ProposedViewSize(rightSize)
+        )
+
+        let placedCenterWidth = min(availableCenter, centerSize.width)
+        let minAllowedX = bounds.minX + leftSize.width + spacing
+        let maxAllowedX = bounds.maxX - rightSize.width - spacing - placedCenterWidth
+        let desiredMinX = bounds.midX - placedCenterWidth / 2
+        let centerX: CGFloat
+        if minAllowedX <= maxAllowedX {
+            centerX = min(maxAllowedX, max(minAllowedX, desiredMinX))
+        } else {
+            centerX = minAllowedX
+        }
+        subviews[1].place(
+            at: CGPoint(x: centerX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: placedCenterWidth, height: centerSize.height)
+        )
     }
 }
 
@@ -170,12 +220,16 @@ struct ChatTopBarView: View {
     let onReturnToLatest: () -> Void
     let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
 
+    private var effectiveReduceMotion: Bool {
+        Ink.Motion.prefersReduced(reduceMotion)
+    }
+
     var body: some View {
         let p = chromeCoordinator.visualProgress
         ZStack {
             innerBar
-                .offset(y: reduceMotion ? 0 : -60 * p)
-                .scaleEffect(reduceMotion ? 1 : (1 - 0.03 * p), anchor: .top)
+                .offset(y: effectiveReduceMotion ? 0 : -60 * p)
+                .scaleEffect(effectiveReduceMotion ? 1 : (1 - 0.03 * p), anchor: .top)
                 .opacity(max(0, 1 - Double(p) * 1.18))
                 .allowsHitTesting(p < 0.5)
                 .accessibilityHidden(p >= 0.5)
@@ -199,14 +253,10 @@ struct ChatTopBarView: View {
                     .layoutPriority(1)
             }
         } else {
-            ZStack {
-                HStack(spacing: Ink.Space.xs) {
-                    ChatHeaderBackButton(onLeave: onLeave)
-                    Spacer(minLength: 0)
-                    controlsView
-                }
+            ChatTopBarThreeSlotLayout(spacing: ChatBarMetrics.itemSpacing) {
+                ChatHeaderBackButton(onLeave: onLeave)
                 centeredIdentityPill
-                    .padding(.horizontal, ChatBarMetrics.height + Ink.Space.s)
+                controlsView
             }
         }
     }
@@ -272,14 +322,16 @@ private struct ChatHeaderBackButton: View {
                 .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                 .foregroundStyle(Ink.ink)
                 .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
-                .glassFace(in: Circle())
+                .frostedChatChrome(in: Circle())
+                .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel("打开侧边栏")
     }
 }
 
-/// Unified companion identity pill (`44 * UIScale.factor` tall): `36pt` circular avatar + name/status, anchored to `ChatCompanionHubPopover`.
+/// Unified companion identity pill (`46pt` tall): `38pt` circular avatar + name (plus status while working),
+/// matching HanaAgent minimalism and anchored to `ChatCompanionHubPopover`.
 private struct ChatCenteredIdentityPill: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
@@ -304,6 +356,7 @@ private struct ChatCenteredIdentityPill: View {
     private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
     private var active: Bool { working || waiting != nil }
+    private var effectiveReduceMotion: Bool { Ink.Motion.prefersReduced(reduceMotion) }
 
     private var headerLine: String {
         ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
@@ -346,6 +399,7 @@ private struct ChatCenteredIdentityPill: View {
                 contextMetrics: contextMetrics,
                 dictationSlot: dictationSlot,
                 idleMood: idleMood,
+                viewportWidth: viewportWidth,
                 typing: typing,
                 isPresented: $showCompanionHub,
                 detailOpen: $detailOpen,
@@ -357,7 +411,7 @@ private struct ChatCenteredIdentityPill: View {
     }
 
     private var pillContent: some View {
-        HStack(spacing: Ink.Space.s) {
+        HStack(spacing: ChatBarMetrics.itemSpacing) {
             ChatTopBarPetFace(
                 dictationSlot: dictationSlot,
                 waiting: waiting,
@@ -388,6 +442,8 @@ private struct ChatCenteredIdentityPill: View {
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .layoutPriority(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 if active {
                     HStack(spacing: Ink.Space.xs) {
                         Circle()
@@ -398,32 +454,21 @@ private struct ChatCenteredIdentityPill: View {
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(largeText ? 2 : 1)
                             .truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: largeText)
+                            .fixedSize(horizontal: false, vertical: true)
                             .contentTransition(.opacity)
                     }
                     .transition(.opacity)
                 }
             }
-            .animation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: active)
+            .animation(effectiveReduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: active)
             .animation(.easeInOut(duration: 0.35), value: headerLine)
-
-            Image(systemName: "chevron.down")
-                .font(.system(size: ChatBarMetrics.microFontSize, weight: .semibold))
-                .foregroundStyle(Ink.inkFaint)
-                .rotationEffect(.degrees(showCompanionHub ? 180 : 0))
-                .animation(reduceMotion ? .easeOut(duration: 0.14) : Ink.Motion.quick, value: showCompanionHub)
         }
         .padding(.leading, concentricPadding)
         .padding(.vertical, largeText ? concentricPadding : 0)
-        .padding(.trailing, Ink.Space.m)
+        .padding(.trailing, ChatBarMetrics.pillTrailing)
         .frame(height: pillHeight)
-        .frame(minHeight: ChatBarMetrics.height, alignment: .leading)
-        .glassBacking(in: Capsule())
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Ink.rule.opacity(0.55), lineWidth: 0.5)
-                .allowsHitTesting(false)
-        }
+        .frame(minHeight: ChatBarMetrics.height)
+        .frostedChatChrome(in: Capsule(style: .continuous))
         .contentShape(Capsule(style: .continuous))
     }
 
@@ -460,6 +505,7 @@ private struct ChatCompanionHubPopover: View {
     let contextMetrics: ChatContextMetrics
     let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
+    let viewportWidth: CGFloat
     let typing: FocusState<Bool>.Binding
 
     @Binding var isPresented: Bool
@@ -560,12 +606,13 @@ private struct ChatCompanionHubPopover: View {
     }
 
     var body: some View {
+        let maxPopoverWidth: CGFloat = viewportWidth > 0 ? max(240, viewportWidth - Ink.Space.page * 2) : 312 * ChatBarMetrics.scale
         ZStack {
             routeBody
                 .id(route.idKey)
                 .transition(routeTransition)
         }
-        .frame(width: 312 * ChatBarMetrics.scale)
+        .frame(width: min(312 * ChatBarMetrics.scale, maxPopoverWidth))
         .clipped()
         .animation(hubAnimation, value: route)
         .task(id: chat.key) {
@@ -1247,7 +1294,8 @@ private struct ChatTopBarControlsView: View {
                 .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                 .foregroundStyle(Ink.ink)
                 .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
-                .glassFace(in: Circle())
+                .frostedChatChrome(in: Circle())
+                .contentShape(Circle())
         }
         .accessibilityLabel(L.t("chat.menu"))
     }

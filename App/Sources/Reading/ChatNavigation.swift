@@ -125,6 +125,7 @@ struct ChatFloatingJumpOverlay: View {
         .offset(y: -(ChatBarMetrics.jumpSize + Ink.Space.s))
         .onChange(of: latestIsFloating, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: suppressed, initial: true) { _, _ in updateKeepOut() }
+        .onChange(of: UIScale.factor) { _, _ in updateKeepOut() }
         .animation(Ink.Motion.settle, value: showLatest)
     }
 
@@ -135,7 +136,8 @@ struct ChatFloatingJumpOverlay: View {
                 .font(.system(size: ChatBarMetrics.titleFontSize, weight: .semibold))
                 .foregroundStyle(Ink.ink)
                 .frame(width: latestSize, height: latestSize)
-                .glassFace(in: Circle())
+                .frostedChatChrome(in: Circle())
+                .contentShape(Circle())
                 .overlay(alignment: .topTrailing) {
                     if chrome.unreadCount > 0 {
                         ChatUnreadBadge(count: chrome.unreadCount)
@@ -333,7 +335,8 @@ struct ChatBrowserIndicator: View {
                     .font(.system(size: ChatBarMetrics.iconFontSize, weight: .medium))
                     .symbolEffect(.pulse)
                     .frame(width: ChatBarMetrics.height, height: ChatBarMetrics.height)
-                    .glassFace(in: Circle())
+                    .frostedChatChrome(in: Circle())
+                    .contentShape(Circle())
             }
             .buttonStyle(PressStyle())
             .accessibilityLabel(L.t("nav.browser"))

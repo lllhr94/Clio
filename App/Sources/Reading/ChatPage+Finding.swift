@@ -145,7 +145,7 @@ extension ChatPage {
         .foregroundStyle(Ink.accent)
         .padding(.horizontal, Ink.Space.l)
         .frame(minHeight: 48)
-        .glassBacking(in: Capsule())
+        .frostedChatChrome(in: Capsule(style: .continuous))
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
         .transition(.opacity.combined(with: .move(edge: .bottom)))

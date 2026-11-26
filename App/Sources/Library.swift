@@ -229,16 +229,43 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
         customName(for: model) ?? Self.shortName(model)
     }
 
-    /// Returns a display name disambiguated against `peers` (defaulting to `models`) so variants like `:free` stay distinct.
+    /// Returns a display name disambiguated against `peers` (defaulting to `models`) via global fixed-point
+    /// settlement so `:free` variants, custom-name swaps, and cascading raw-ID collisions never duplicate labels.
     func distinguishableDisplayName(for model: String, among peers: [String]? = nil) -> String {
-        let candidate = displayName(for: model)
         let pool = peers ?? models
-        var hits = 0
-        for peer in pool where displayName(for: peer) == candidate {
-            hits += 1
-            if hits > 1 { return model }
+        var uniquePeers: [String] = []
+        var seen: Set<String> = []
+        for peer in pool where seen.insert(peer).inserted {
+            uniquePeers.append(peer)
         }
-        return candidate
+        if seen.insert(model).inserted {
+            uniquePeers.append(model)
+        }
+
+        let baseByPeer = Dictionary(uniqueKeysWithValues: uniquePeers.map { ($0, displayName(for: $0)) })
+        var labels = baseByPeer
+
+        for _ in 0..<(uniquePeers.count * 2 + 2) {
+            var counts: [String: Int] = [:]
+            for peer in uniquePeers {
+                counts[labels[peer] ?? peer, default: 0] += 1
+            }
+            var changed = false
+            for peer in uniquePeers {
+                let current = labels[peer] ?? peer
+                guard (counts[current] ?? 0) > 1 else { continue }
+                let base = baseByPeer[peer] ?? peer
+                let tagged = base != peer ? "\(base) (\(peer))" : peer
+                let next = current != peer ? peer : tagged
+                if next != current {
+                    labels[peer] = next
+                    changed = true
+                }
+            }
+            if !changed { break }
+        }
+
+        return labels[model] ?? displayName(for: model)
     }
 
     var usesPromptCache: Bool { promptCache ?? AnthropicProvider.caches(baseURL) }

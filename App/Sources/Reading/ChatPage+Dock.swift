@@ -1084,7 +1084,7 @@ private struct ChatComposerMainCard: View {
         }
         .padding(.horizontal, 8 * ChatBarMetrics.scale)
         .padding(.vertical, 7 * ChatBarMetrics.scale)
-        .composerGlassBacking(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
+        .frostedChatChrome(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
         .padding(.horizontal, sidePadding)
         .animation(Ink.Motion.quick, value: composing)
     }
@@ -1523,9 +1523,8 @@ private struct ChatComposerAccessoryCore: View {
                     .foregroundStyle(lit ? Ink.accent : Ink.inkSoft)
                     .frame(width: ChatBarMetrics.controlHeight, height: ChatBarMetrics.controlHeight)
                     .background(lit ? Ink.accentWash : Color.clear, in: .circle)
-                    .contentShape(.circle)
             }
-            .buttonStyle(PressStyle(haptic: false))
+            .buttonStyle(PressStyle(haptic: false, grow: max(0, (44 - ChatBarMetrics.controlHeight) / 2)))
             .accessibilityLabel(Words.t("加照片、文件，或改这段絮语的设置"))
             .photosPicker(isPresented: $pickerShown, selection: $picks, maxSelectionCount: 4, matching: .images)
             .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -1911,7 +1910,7 @@ private struct ChatActionButtonCore: View {
             .opacity(mode == 2 && sendingBlocked ? 0.45 : 1)
         }
         .disabled(mode == 2 && sendingBlocked)
-        .buttonStyle(PressStyle(haptic: false))
+        .buttonStyle(PressStyle(haptic: false, grow: max(0, (44 - ChatBarMetrics.controlHeight) / 2)))
         .animation(Ink.Motion.press, value: mode)
         .accessibilityLabel(label)
         .contextMenu {
@@ -1994,7 +1993,8 @@ private struct ChatImmersiveBottomBar: View {
                         .font(.system(size: ChatBarMetrics.subTitleFontSize, weight: .semibold))
                         .foregroundStyle(Ink.stop)
                         .frame(width: fabSize, height: fabSize)
-                        .glassFace(in: Circle())
+                        .frostedChatChrome(in: Circle())
+                        .contentShape(Circle())
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -2011,7 +2011,8 @@ private struct ChatImmersiveBottomBar: View {
                     .font(.system(size: ChatBarMetrics.titleFontSize, weight: .semibold))
                     .foregroundStyle(Ink.ink)
                     .frame(width: fabSize, height: fabSize)
-                    .glassFace(in: Circle())
+                    .frostedChatChrome(in: Circle())
+                    .contentShape(Circle())
                     .overlay(alignment: .topTrailing) {
                         if chrome.unreadCount > 0 {
                             ChatUnreadBadge(count: chrome.unreadCount)

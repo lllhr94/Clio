@@ -7,7 +7,7 @@ import UIKit
 private enum ChatAvatarTapBounce {
     static func play(on view: UIView) {
         Haptics.light()
-        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        guard !UIAccessibility.isReduceMotionEnabled && !Theme.shared.reduceVisualEffects else { return }
         view.layer.removeAllAnimations()
         view.transform = CGAffineTransform(scaleX: 0.86, y: 0.86)
         UIView.animate(
@@ -629,19 +629,25 @@ final class ChatSourcesPillView: UIView {
         guard !urls.isEmpty, let host = hostViewController else { return }
         Haptics.light()
         let onOpen = onOpenURL
+        let weakHostBox = WeakViewControllerBox()
         let observer = SourcesDetentObserver { [weak self] in
             self?.detentObserver = nil
         }
         detentObserver = observer
-        var sheetHolder: UIViewController?
-        let sheet = SourcesHostedSheet(detent: observer, urls: urls, titles: titles) { url in
-            sheetHolder?.dismiss(animated: true) {
+        let sheet = SourcesHostedSheet(detent: observer, urls: urls, titles: titles) { [weak self] url in
+            let presented = weakHostBox.vc
+            self?.detentObserver = nil
+            if let presented {
+                presented.dismiss(animated: true) {
+                    onOpen?(url)
+                }
+            } else {
                 onOpen?(url)
             }
         }
         let vc = UIHostingController(rootView: sheet)
         vc.view.backgroundColor = .clear
-        sheetHolder = vc
+        weakHostBox.vc = vc
         if let presentation = vc.sheetPresentationController {
             presentation.detents = [.medium(), .large()]
             presentation.selectedDetentIdentifier = .medium
@@ -939,6 +945,10 @@ final class ChatBotFooterView: UIView {
             statsLabel.frame = CGRect(x: statsX, y: 0, width: statsW, height: h)
         }
     }
+}
+
+private final class WeakViewControllerBox {
+    weak var vc: UIViewController?
 }
 
 @MainActor

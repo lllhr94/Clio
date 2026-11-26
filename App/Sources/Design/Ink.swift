@@ -772,6 +772,7 @@ enum Ink {
 struct PressStyle: ButtonStyle {
     var haptic = false
     var elevated = false
+    var grow: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
@@ -796,12 +797,12 @@ struct PressStyle: ButtonStyle {
                     y: pressed ? 1 : 3
                 )
                 // The whole frame takes the tap, not just the drawn strokes and glyphs.
-                .contentShape(Rectangle())
+                .contentShape(Rectangle().inset(by: -grow))
                 .offset(y: pressed && !reduce ? 1 : 0)
         } else {
             label
                 // The whole frame takes the tap, not just the drawn strokes and glyphs.
-                .contentShape(Rectangle())
+                .contentShape(Rectangle().inset(by: -grow))
         }
     }
 }
@@ -847,10 +848,15 @@ extension View {
         modifier(GlassBackingModifier(shape: shape))
     }
 
-    /// Frosted material backing for the bottom composer shell (HanaAgent-style creamy blur) so scrolled
-    /// text reads soft behind the capsule instead of refracting sharply through Liquid Glass.
+    /// Frosted creamy paper material backing shared across chat floating controls (HanaAgent-style blur)
+    /// so scrolled text reads soft behind pills instead of refracting sharply through Liquid Glass.
+    func frostedChatChrome<S: InsettableShape>(in shape: S) -> some View {
+        modifier(FrostedChatChromeModifier(shape: shape))
+    }
+
+    /// Frosted material backing for the bottom composer shell (HanaAgent-style creamy blur).
     func composerGlassBacking<S: InsettableShape>(in shape: S) -> some View {
-        modifier(ComposerGlassBackingModifier(shape: shape))
+        frostedChatChrome(in: shape)
     }
 }
 
@@ -921,7 +927,7 @@ private struct GlassBackingModifier<S: Shape>: ViewModifier {
     }
 }
 
-private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
+private struct FrostedChatChromeModifier<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast

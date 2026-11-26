@@ -199,7 +199,6 @@ struct RoutinesPage: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(embedded ? .fixed(16) : .navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(embeddedTitle ?? L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)

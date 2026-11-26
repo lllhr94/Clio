@@ -821,10 +821,10 @@ extension TeamModel {
         return "\(found.model) · \(found.endpoint.name)"
     }
 
-    /// Display name for a model reference: user custom name if set, otherwise shortened model ID.
+    /// Display name for a model reference: user custom name (disambiguated within endpoint) if set, otherwise shortened model ID.
     func modelShort(_ ref: String?) -> String {
         if let found = resolve(ref) {
-            return found.endpoint.displayName(for: found.model)
+            return found.endpoint.distinguishableDisplayName(for: found.model)
         }
         guard let ref else { return "没有设置" }
         let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)

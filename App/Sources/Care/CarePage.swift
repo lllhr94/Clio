@@ -143,7 +143,6 @@ struct CarePage: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(.navigationBar)
         .paperForm()
         .hitchPage("养护")
         .navigationTitle(navigationTitleText)
@@ -1354,13 +1353,17 @@ private struct CareStorageBreakdownView: View {
     }
 
     private var segments: [Segment] {
-        [
+        var list = [
             Segment(id: "careStorage.segChats", bytes: storage.chatsBytes, tint: Ink.Tile.dai),
             Segment(id: "careStorage.segStudy", bytes: storage.studyBytes, tint: Ink.Tile.zhu),
             Segment(id: "careStorage.segMedia", bytes: storage.activeMediaBytes, tint: Ink.Tile.xiang),
             Segment(id: "careStorage.segMemory", bytes: storage.memoryBytes, tint: Ink.Tile.teng),
             Segment(id: "careStorage.segCache", bytes: storage.cacheBytes, tint: Ink.Tile.mo),
         ]
+        if storage.otherBytes > 0 {
+            list.append(Segment(id: "careStorage.segOther", bytes: storage.otherBytes, tint: Ink.inkFaint.opacity(0.65)))
+        }
+        return list
     }
 
     var body: some View {

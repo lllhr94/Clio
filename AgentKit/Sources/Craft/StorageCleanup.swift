@@ -22,6 +22,9 @@ public struct StorageBreakdown: Equatable, Sendable {
     public var cleanableBytes: Int64 { orphanMediaBytes + docCacheBytes }
     public var activeMediaBytes: Int64 { max(0, mediaBytes - orphanMediaBytes) }
     public var cacheBytes: Int64 { cleanableBytes }
+    public var otherBytes: Int64 {
+        max(0, totalBytes - chatsBytes - studyBytes - activeMediaBytes - memoryBytes - cacheBytes)
+    }
 
     public init(
         totalBytes: Int64 = 0,
@@ -91,11 +94,8 @@ public enum StorageCleanup {
         let mediaDir = teamRoot.appendingPathComponent("media", isDirectory: true)
         let docCacheDir = teamRoot.appendingPathComponent("doccache", isDirectory: true)
         let memoryRoots = memoryLocations(in: teamRoot)
-        let studyBytes = workspaceRoot.map {
-            directorySize($0, excluding: [chatsDir, mediaDir, docCacheDir] + memoryRoots)
-        } ?? 0
+
         let mediaFiles = regularFiles(in: mediaDir)
-        let mediaBytes = mediaFiles.reduce(Int64(0)) { $0 + $1.bytes }
 
         let orphanScan: (orphans: [FileInfo], skipped: Bool)
         if skipOrphanMedia {
@@ -109,10 +109,32 @@ public enum StorageCleanup {
                 now: now
             )
         }
-        let orphanBytes = orphanScan.orphans.reduce(Int64(0)) { $0 + $1.bytes }
+
+        var bucketSeen = Set<FileIdentity>()
+        let orphanNames = Set(orphanScan.orphans.map(\.name))
+        var activeMediaBytes: Int64 = 0
+        for file in mediaFiles where !orphanNames.contains(file.name) {
+            if bucketSeen.insert(file.identity).inserted {
+                activeMediaBytes += file.bytes
+            }
+        }
+        var orphanBytes: Int64 = 0
+        for orphan in orphanScan.orphans where bucketSeen.insert(orphan.identity).inserted {
+            orphanBytes += orphan.bytes
+        }
+        let mediaBytes = activeMediaBytes + orphanBytes
 
         let docCacheFiles = regularFiles(in: docCacheDir)
-        let docCacheBytes = docCacheFiles.reduce(Int64(0)) { $0 + $1.bytes }
+        var docCacheBytes: Int64 = 0
+        for file in docCacheFiles where bucketSeen.insert(file.identity).inserted {
+            docCacheBytes += file.bytes
+        }
+
+        let chatsBytes = directorySize(chatsDir, seen: &bucketSeen)
+        let memoryBytes = memoryRoots.reduce(Int64(0)) { $0 + itemSize($1, seen: &bucketSeen) }
+        let studyBytes = workspaceRoot.map {
+            directorySize($0, excluding: [chatsDir, mediaDir, docCacheDir] + memoryRoots, seen: &bucketSeen)
+        } ?? 0
 
         return StorageBreakdown(
             totalBytes: totalSize(appSupportRoot: appSupportRoot, workspaceRoot: workspaceRoot),
@@ -122,17 +144,18 @@ public enum StorageCleanup {
             docCacheCount: docCacheFiles.count,
             docCacheBytes: docCacheBytes,
             scanSkippedOrphans: orphanScan.skipped,
-            chatsBytes: directorySize(chatsDir),
+            chatsBytes: chatsBytes,
             studyBytes: studyBytes,
-            memoryBytes: memoryRoots.reduce(0) { $0 + itemSize($1) }
+            memoryBytes: memoryBytes
         )
     }
 
-    /// Measures Application Support and the local workspace, counting shared paths once.
+    /// Measures Application Support and the local workspace, counting shared paths and identical files once.
     public static func totalSize(appSupportRoot: URL, workspaceRoot: URL? = nil) -> Int64 {
-        let appBytes = directorySize(appSupportRoot)
+        var seen = Set<FileIdentity>()
+        let appBytes = directorySize(appSupportRoot, seen: &seen)
         guard let workspaceRoot, !Task.isCancelled else { return appBytes }
-        return appBytes + directorySize(workspaceRoot, excluding: [appSupportRoot])
+        return appBytes + directorySize(workspaceRoot, excluding: [appSupportRoot], seen: &seen)
     }
 
     private static func memoryLocations(in teamRoot: URL) -> [URL] {
@@ -393,12 +416,13 @@ public enum StorageCleanup {
         )
     }
 
-    private static func itemSize(_ url: URL) -> Int64 {
+    private static func itemSize(_ url: URL, seen: inout Set<FileIdentity>) -> Int64 {
         guard let values = try? url.resourceValues(forKeys: [
             .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey,
         ]), values.isSymbolicLink != true else { return 0 }
-        if values.isDirectory == true { return directorySize(url) }
+        if values.isDirectory == true { return directorySize(url, seen: &seen) }
         guard values.isRegularFile == true else { return 0 }
+        if let id = regularFileIdentity(url), !seen.insert(id).inserted { return 0 }
         return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
     }
 
@@ -426,7 +450,11 @@ public enum StorageCleanup {
         return false
     }
 
-    private static func directorySize(_ root: URL, excluding exclusions: [URL] = []) -> Int64 {
+    private static func directorySize(
+        _ root: URL,
+        excluding exclusions: [URL] = [],
+        seen: inout Set<FileIdentity>
+    ) -> Int64 {
         guard !Task.isCancelled, directoryIdentity(root) != nil else { return 0 }
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let excludedIDs = Set(exclusions.compactMap { itemIdentity($0) })
@@ -443,7 +471,8 @@ public enum StorageCleanup {
         }
         for case let url as URL in walker {
             if Task.isCancelled { break }
-            if !excludedIDs.isEmpty, let id = itemIdentity(url), excludedIDs.contains(id) {
+            let id = itemIdentity(url)
+            if !excludedIDs.isEmpty, let id, excludedIDs.contains(id) {
                 walker.skipDescendants()
                 continue
             }
@@ -455,6 +484,7 @@ public enum StorageCleanup {
                 continue
             }
             if values.isRegularFile == true {
+                if let id, !seen.insert(id).inserted { continue }
                 total += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
             }
         }

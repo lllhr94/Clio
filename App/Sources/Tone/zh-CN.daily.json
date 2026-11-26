@@ -999,7 +999,8 @@
     "segStudy": "文件",
     "segMedia": "图片",
     "segMemory": "记忆",
-    "segCache": "缓存"
+    "segCache": "缓存",
+    "segOther": "其他"
   },
   "saveNote": {
     "title": "存成笔记",

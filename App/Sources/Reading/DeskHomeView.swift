@@ -61,7 +61,6 @@ struct DeskHomeView: View {
         }
         .scrollIndicators(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(.statusBar)
         .animation(Ink.Motion.settle, value: team.approvals.count)
     }
 

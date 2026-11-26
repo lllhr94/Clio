@@ -282,7 +282,8 @@ final class ChatChromeCoordinator {
         }
     }
 
+    @MainActor
     static func jumpKeepOutWidth(latestVisible: Bool) -> CGFloat {
-        latestVisible ? 48 * UIScale.factor : 0
+        latestVisible ? (ChatBarMetrics.jumpSize + 8 * ChatBarMetrics.scale) : 0
     }
 }

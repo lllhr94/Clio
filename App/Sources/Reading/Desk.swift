@@ -246,6 +246,7 @@ struct Desk: View {
                 symbol: "archivebox",
                 tint: Ink.inkSoft,
                 actionTitle: L.t("homeThreads.undo"),
+                dedupeKey: "archive-thread-\(key)",
                 duration: 4
             ) {
                 guard team.archived.contains(key),

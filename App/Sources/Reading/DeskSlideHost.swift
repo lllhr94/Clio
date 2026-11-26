@@ -28,6 +28,10 @@ struct DeskSlideHost<Sidebar: View>: View {
         min(1, max(0, shift / max(1, sideWidth)))
     }
 
+    private var effectiveReduceMotion: Bool {
+        Ink.Motion.prefersReduced(reduceMotion)
+    }
+
     private var sideDragGesture: some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
@@ -42,19 +46,27 @@ struct DeskSlideHost<Sidebar: View>: View {
             .onEnded { value in
                 guard pull != 0, sideWidth > 0 else { return }
                 let fling = value.predictedEndTranslation.width
-                let settleAnimation: Animation? = reduceMotion ? nil : Ink.Motion.settle
-                let transitionAnimation: Animation? = reduceMotion ? nil : Ink.Motion.unfold
+                let settleAnimation: Animation? = effectiveReduceMotion ? nil : Ink.Motion.settle
+                let transitionAnimation: Animation? = effectiveReduceMotion ? nil : Ink.Motion.unfold
                 if sideOpen {
                     if -pull > sideWidth * 0.3 || fling < -180 {
-                        withAnimation(transitionAnimation) { pull = 0 }
-                        closeSide()
+                        Haptics.light()
+                        withAnimation(transitionAnimation) {
+                            pull = 0
+                            sideOpen = false
+                        }
+                        DiagTrail.record("关侧边栏")
                     } else {
                         withAnimation(settleAnimation) { pull = 0 }
                     }
                 } else {
                     if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 {
-                        withAnimation(transitionAnimation) { pull = 0 }
-                        openSide()
+                        Haptics.light()
+                        withAnimation(transitionAnimation) {
+                            pull = 0
+                            sideOpen = true
+                        }
+                        DiagTrail.record("开侧边栏")
                     } else {
                         withAnimation(settleAnimation) { pull = 0 }
                     }
@@ -76,7 +88,7 @@ struct DeskSlideHost<Sidebar: View>: View {
         }
         .onChange(of: sideOpen) { _, _ in
             if pull != 0 {
-                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) {
+                withAnimation(effectiveReduceMotion ? nil : Ink.Motion.unfold) {
                     pull = 0
                 }
             }
@@ -85,37 +97,37 @@ struct DeskSlideHost<Sidebar: View>: View {
 
     @ViewBuilder
     private func sidebarLayer(progress: CGFloat) -> some View {
-        let parallaxX: CGFloat = reduceMotion ? 0 : -(1 - progress) * sideWidth * 0.14
-        let sideScale: CGFloat = reduceMotion ? 1 : (0.96 + 0.04 * progress)
-        let sideOpacity: Double = reduceMotion
+        let parallaxX: CGFloat = effectiveReduceMotion ? 0 : -(1 - progress) * sideWidth * 0.14
+        let sideScale: CGFloat = effectiveReduceMotion ? 1 : (0.96 + 0.04 * progress)
+        let sideOpacity: Double = effectiveReduceMotion
             ? (sideOpen ? 1 : Double(progress))
             : min(1, Double(progress) * 1.3)
+        let revealedWidth = max(0, min(sideWidth, shift))
         sidebarContent()
             .frame(width: sideWidth)
             .scaleEffect(sideScale, anchor: .leading)
             .offset(x: parallaxX)
             .opacity(sideOpacity)
-            .reducedMotionFade(enabled: reduceMotion, duration: 0.15, value: sideOpen)
+            .reducedMotionFade(enabled: effectiveReduceMotion, duration: 0.15, value: sideOpen)
             .frame(width: sideWidth)
+            .frame(width: revealedWidth, alignment: .leading)
             .clipped()
             .frame(maxWidth: .infinity, alignment: .leading)
             .allowsHitTesting(sideOpen)
             .accessibilityHidden(!sideOpen && progress <= 0.01)
     }
 
-    @ViewBuilder
     private func sidebarDimVeil(progress: CGFloat) -> some View {
-        if progress > 0 || sideOpen {
-            Ink.Artwork.black
-                .opacity(0.18 * Double(progress))
-                .ignoresSafeArea()
-                .reducedMotionFade(enabled: reduceMotion, duration: 0.15, value: sideOpen)
-                .contentShape(Rectangle())
-                .allowsHitTesting(sideOpen)
-                .onTapGesture {
-                    if sideOpen { closeSide() }
-                }
-        }
+        Ink.Artwork.black
+            .opacity(0.18 * Double(progress))
+            .ignoresSafeArea()
+            .reducedMotionFade(enabled: effectiveReduceMotion, duration: 0.15, value: sideOpen)
+            .contentShape(Rectangle())
+            .allowsHitTesting(sideOpen)
+            .accessibilityHidden(!sideOpen)
+            .onTapGesture {
+                if sideOpen { closeSide() }
+            }
     }
 
     private func openedConversationLayer(for target: Opened, progress: CGFloat) -> some View {

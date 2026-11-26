@@ -5,6 +5,7 @@ import UIKit
 /// A single transient toast pill item displayed by `ToastCenter`.
 struct ToastItem: Identifiable, Equatable {
     let id: UUID
+    let dedupeKey: String?
     let message: String
     let symbol: String?
     let tintColor: Color
@@ -13,6 +14,7 @@ struct ToastItem: Identifiable, Equatable {
 
     init(
         id: UUID = UUID(),
+        dedupeKey: String? = nil,
         message: String,
         symbol: String? = nil,
         tintColor: Color = Ink.ink,
@@ -20,6 +22,7 @@ struct ToastItem: Identifiable, Equatable {
         action: (() -> Void)? = nil
     ) {
         self.id = id
+        self.dedupeKey = dedupeKey
         self.message = message
         self.symbol = symbol
         self.tintColor = tintColor
@@ -29,6 +32,7 @@ struct ToastItem: Identifiable, Equatable {
 
     static func == (lhs: ToastItem, rhs: ToastItem) -> Bool {
         lhs.id == rhs.id
+            && lhs.dedupeKey == rhs.dedupeKey
             && lhs.message == rhs.message
             && lhs.symbol == rhs.symbol
             && lhs.actionTitle == rhs.actionTitle
@@ -54,20 +58,44 @@ final class ToastCenter {
         symbol: String? = nil,
         tint: Color = Ink.ink,
         actionTitle: String? = nil,
+        dedupeKey: String? = nil,
         duration: TimeInterval = 2.6,
         action: (() -> Void)? = nil
     ) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, AppLock.isCurrentlyUnlocked else { return }
 
-        if let last = items.last, last.message == trimmed {
-            items[items.count - 1] = ToastItem(
-                id: last.id,
+        if let dedupeKey,
+           let idx = items.lastIndex(where: { $0.dedupeKey == dedupeKey }) {
+            let existing = items[idx]
+            items[idx] = ToastItem(
+                id: existing.id,
+                dedupeKey: dedupeKey,
                 message: trimmed,
                 symbol: symbol,
                 tintColor: tint,
                 actionTitle: actionTitle,
                 action: action
+            )
+            scheduleDismiss(for: existing.id, duration: duration)
+            return
+        }
+
+        // Only coalesce identical non-action informational toasts; never clobber an active undo action.
+        if dedupeKey == nil,
+           action == nil,
+           let last = items.last,
+           last.dedupeKey == nil,
+           last.action == nil,
+           last.message == trimmed {
+            items[items.count - 1] = ToastItem(
+                id: last.id,
+                dedupeKey: nil,
+                message: trimmed,
+                symbol: symbol,
+                tintColor: tint,
+                actionTitle: actionTitle,
+                action: nil
             )
             scheduleDismiss(for: last.id, duration: duration)
             return
@@ -75,6 +103,7 @@ final class ToastCenter {
 
         let item = ToastItem(
             id: UUID(),
+            dedupeKey: dedupeKey,
             message: trimmed,
             symbol: symbol,
             tintColor: tint,
@@ -285,9 +314,13 @@ private final class FloatingToastWindowController: NSObject {
         }
     }
 
+    private var alertPollTask: Task<Void, Never>?
+
     private func tearDownWindow() {
         hideTask?.cancel()
         hideTask = nil
+        alertPollTask?.cancel()
+        alertPollTask = nil
         window?.isHidden = true
         window = nil
     }
@@ -318,6 +351,43 @@ private final class FloatingToastWindowController: NSObject {
         return isSystem
     }
 
+    private func hasBlockingAlertController(in root: UIViewController?) -> Bool {
+        var current = root
+        while let vc = current {
+            if vc is UIAlertController, !vc.isBeingDismissed {
+                return true
+            }
+            if let nav = vc as? UINavigationController,
+               let visible = nav.visibleViewController,
+               visible is UIAlertController,
+               !visible.isBeingDismissed {
+                return true
+            }
+            current = vc.presentedViewController
+        }
+        return false
+    }
+
+    private func ensureAlertPollRunning(_ active: Bool) {
+        if active {
+            guard alertPollTask == nil else { return }
+            alertPollTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled, let self else { return }
+                    if ToastCenter.shared.items.isEmpty && (self.window?.isHidden ?? true) {
+                        self.alertPollTask = nil
+                        return
+                    }
+                    self.sync()
+                }
+            }
+        } else {
+            alertPollTask?.cancel()
+            alertPollTask = nil
+        }
+    }
+
     private func sync() {
         guard let window, let source = sourceWindow, let scene = source.windowScene else { return }
         if window.frame != source.frame {
@@ -327,23 +397,28 @@ private final class FloatingToastWindowController: NSObject {
             window.overrideUserInterfaceStyle = source.overrideUserInterfaceStyle
         }
 
-        let alertCovering = !AppLock.isCurrentlyUnlocked || scene.windows.contains { other in
-            guard other !== window, !other.isHidden, other.alpha > 0.01, other.windowLevel >= .alert else {
-                return false
+        let alertCovering = !AppLock.isCurrentlyUnlocked
+            || hasBlockingAlertController(in: source.rootViewController)
+            || scene.windows.contains { other in
+                guard other !== window, !other.isHidden, other.alpha > 0.01, other.windowLevel >= .alert else {
+                    return false
+                }
+                return !isSystemAlertWindow(other)
             }
-            return !isSystemAlertWindow(other)
-        }
 
         let hasItems = !ToastCenter.shared.items.isEmpty
         if alertCovering {
             hideTask?.cancel()
             hideTask = nil
             if !window.isHidden { window.isHidden = true }
+            ensureAlertPollRunning(hasItems)
         } else if hasItems {
             hideTask?.cancel()
             hideTask = nil
             if window.isHidden { window.isHidden = false }
+            ensureAlertPollRunning(true)
         } else if !window.isHidden, hideTask == nil {
+            ensureAlertPollRunning(false)
             hideTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(0.38))
                 guard !Task.isCancelled, let self else { return }
@@ -352,6 +427,8 @@ private final class FloatingToastWindowController: NSObject {
                     self.window?.isHidden = true
                 }
             }
+        } else if window.isHidden {
+            ensureAlertPollRunning(false)
         }
     }
 }

@@ -50,7 +50,6 @@ struct SettingsView: View {
                 listContent
             }
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .clioTopBlurVeil(.navigationBar)
             .background(Ink.paper.ignoresSafeArea())
             .searchable(text: $query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .automatic),
                         prompt: L.t("settingsHome.search"))
@@ -173,19 +172,31 @@ struct SettingsView: View {
     }
 
     private var quickStatus: some View {
-        let layout = typeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: Ink.Space.s))
-            : AnyLayout(HStackLayout(spacing: Ink.Space.s))
-        return layout {
-            statusTile("settingsHome.quickServices", value: servicesStatus, dot: servicesTint, page: .services)
-            statusTile("settingsHome.quickModel", value: defaultModelName, page: .models)
-            statusTile(
-                "settingsHome.quickStorage",
-                value: storageBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? backupStatus,
-                dot: storageBytes != nil || !davURL.isEmpty ? Ink.ok : Ink.inkFaint,
-                page: .careStorage
-            )
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(spacing: Ink.Space.s) {
+                    statusTile("settingsHome.quickServices", value: servicesStatus, dot: servicesTint, page: .services)
+                    statusTile("settingsHome.quickStorage", value: storageValueText, dot: storageDotColor, page: .careStorage)
+                    statusTile("settingsHome.quickModel", value: defaultModelName, page: .models)
+                }
+            } else {
+                VStack(spacing: Ink.Space.s) {
+                    HStack(spacing: Ink.Space.s) {
+                        statusTile("settingsHome.quickServices", value: servicesStatus, dot: servicesTint, page: .services)
+                        statusTile("settingsHome.quickStorage", value: storageValueText, dot: storageDotColor, page: .careStorage)
+                    }
+                    wideModelStatusTile
+                }
+            }
         }
+    }
+
+    private var storageValueText: String {
+        storageBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? backupStatus
+    }
+
+    private var storageDotColor: Color {
+        storageBytes != nil || !davURL.isEmpty ? Ink.ok : Ink.inkFaint
     }
 
     private func statusTile(_ title: String, value: String, dot: Color? = nil, page: SettingsPage) -> some View {
@@ -206,6 +217,35 @@ struct SettingsView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.85)
             .padding(Ink.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .paperCard()
+        }
+        .buttonStyle(PressStyle(elevated: true))
+    }
+
+    private var wideModelStatusTile: some View {
+        Button {
+            Haptics.light()
+            open(.models)
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Text(L.t("settingsHome.quickModel"))
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+                    .layoutPriority(0)
+                Spacer(minLength: Ink.Space.s)
+                Text(defaultModelName)
+                    .font(Ink.label)
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.85)
+                    .layoutPriority(1)
+                Kit.chevron
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .paperCard()
@@ -481,7 +521,6 @@ struct SettingsView: View {
                 .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(.navigationBar)
         .scrollDismissesKeyboard(.interactively)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(L.t(page.titleKey))
@@ -584,7 +623,6 @@ private struct SettingsCompanionsPage: View {
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .clioTopBlurVeil(.navigationBar)
         .safeAreaInset(edge: .top, spacing: 0) {
             SlidingCapsuleControl(selection: $tab, items: [
                 (value: .companions, title: L.t("settingsHome.companions")),

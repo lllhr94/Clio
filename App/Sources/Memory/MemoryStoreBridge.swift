@@ -29,7 +29,7 @@ enum MemoryCommitMutation: Sendable {
         nowMs: Double
     )
     case importBatch(items: [MemoryImportBatchEntry], nowMs: Double)
-    case restore(id: String, memory: Memory, nowMs: Double)
+    case restore(id: String, memory: Memory, layer: MemoryLayer, nowMs: Double)
     case softDelete(items: [(id: String, text: String?)], reason: String, nowMs: Double)
     case edit(id: String, text: String, editedByUser: Bool, nowMs: Double)
 }
@@ -678,7 +678,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
              .pin(_, _, let nowMs),
              .layerAndMetadata(_, _, _, _, _, _, _, _, let nowMs),
              .importBatch(_, let nowMs),
-             .restore(_, _, let nowMs),
+             .restore(_, _, _, let nowMs),
              .softDelete(_, _, let nowMs),
              .edit(_, _, _, let nowMs):
             return nowMs
@@ -904,7 +904,9 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 shouldInvalidatePromptCache = true
             }
 
-        case .restore(let id, let memory, let restoreNow):
+        case .restore(let id, let memory, let targetLayer, let restoreNow):
+            let resolvedLayer: MemoryLayer = targetLayer == .archived ? .surface : targetLayer
+            let isPinned = resolvedLayer == .pinned
             let safeText = Self.redact(memory.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let hash = MemorySafety.retractionHash(safeText)
@@ -912,7 +914,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
             if let idx = workingArchived.firstIndex(where: { $0.id == id }) {
                 restoredFromArchive = workingArchived.remove(at: idx)
             }
-            workingPinnedIDs.remove(id)
+            if isPinned {
+                workingPinnedIDs.insert(id)
+            } else {
+                workingPinnedIDs.remove(id)
+            }
             if !hash.isEmpty {
                 workingTombstones.removeValue(forKey: hash)
                 effectiveSuppressedHashes.remove(hash)
@@ -922,8 +928,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     id: id,
                     text: safeText,
                     textSHA256: hash,
-                    layer: .surface,
-                    pinned: false,
+                    layer: resolvedLayer,
+                    pinned: isPinned,
                     createdAtMs: memory.at,
                     updatedAtMs: restoreNow,
                     usedAtMs: restoreNow,
@@ -934,15 +940,15 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 )
                 rec.text = safeText
                 rec.textSHA256 = hash
-                rec.layer = .surface
-                rec.pinned = false
+                rec.layer = resolvedLayer
+                rec.pinned = isPinned
                 rec.deletedAtMs = nil
                 rec.usedAtMs = restoreNow
                 rec.updatedAtMs = max(rec.updatedAtMs, restoreNow)
                 workingRecordsByID[id] = rec
                 clearRetractions.append((id: id, text: safeText))
             }
-            sqliteActions.restoreEvents.append((id: id, layer: .surface, nowMs: restoreNow))
+            sqliteActions.restoreEvents.append((id: id, layer: resolvedLayer, nowMs: restoreNow))
 
         case .softDelete(let items, let reason, let deleteNow):
             let safeReason = Self.redact(reason, orderedSecrets: secrets)

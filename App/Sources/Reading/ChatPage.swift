@@ -634,6 +634,7 @@ struct ChatPage: View {
                     .padding(.vertical, Ink.Bar.height)
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .safeAreaInset(edge: .top, spacing: 0) {
                 Color.clear.frame(height: max(headerHeight, Ink.Bar.height + Ink.Space.s))
             }
@@ -1066,7 +1067,6 @@ struct ChatPage: View {
                     nonKeyboardSafeMaxY = $0
                 }
             conversation
-            ChatStatusBarBlurVeil()
             if !roaming {
                 ChatRoamThumbHost(
                     browser: team.browser,
@@ -2011,6 +2011,7 @@ private struct ChatSecondaryObservers: View {
     let onTakeShortcut: () -> Void
 
     @State private var trackedLineIDs: Set<String>?
+    @State private var lastTailLineID: String?
 
     private var lineIDs: [String] {
         chat.lines.map(\.id)
@@ -2045,11 +2046,13 @@ private struct ChatSecondaryObservers: View {
             }
             .onChange(of: chat.key) {
                 trackedLineIDs = nil
+                lastTailLineID = nil
                 chrome.unreadCount = 0
             }
             .onChange(of: chat.loaded) { _, loaded in
                 if loaded, trackedLineIDs == nil {
                     trackedLineIDs = Set(chat.lines.map(\.id))
+                    lastTailLineID = chat.lines.last?.id
                 }
             }
     }
@@ -2091,20 +2094,38 @@ private struct ChatSecondaryObservers: View {
         let nextSet = Set(nextIDs)
         if chat.lines.isEmpty {
             trackedLineIDs = nil
+            lastTailLineID = nil
             chrome.unreadCount = 0
             onClearedLines()
         } else if let previousSet = trackedLineIDs {
-            let addedLines = chat.lines.filter { !previousSet.contains($0.id) }
-            if addedLines.contains(where: { $0.kind == .bot }) {
+            // Only inspect newly appended tail lines so loading earlier history (`loadEarlier()`)
+            // prepending older rows at the front never counts as unread replies or triggers haptics.
+            let newTailLines: [ChatLine]
+            if let prevTailID = lastTailLineID,
+               let prevTailIndex = chat.lines.lastIndex(where: { $0.id == prevTailID }) {
+                let start = prevTailIndex + 1
+                if start < chat.lines.count {
+                    newTailLines = chat.lines[start...].filter { !previousSet.contains($0.id) }
+                } else {
+                    newTailLines = []
+                }
+            } else if !chat.loadingEarlier, let tail = chat.lines.last, !previousSet.contains(tail.id) {
+                newTailLines = [tail]
+            } else {
+                newTailLines = []
+            }
+            if newTailLines.contains(where: { $0.kind == .bot }) {
                 Haptics.tick(0.45)
             }
             if !followState.following && chrome.farFromEnd {
-                let unreadAdded = addedLines.filter { $0.kind == .bot || $0.kind == .note }.count
+                let unreadAdded = newTailLines.filter { $0.kind == .bot || $0.kind == .note }.count
                 if unreadAdded > 0 { chrome.unreadCount += unreadAdded }
             }
             trackedLineIDs = nextSet
+            lastTailLineID = nextIDs.last
         } else if chat.loaded {
             trackedLineIDs = nextSet
+            lastTailLineID = nextIDs.last
         }
         onFollowToEnd()
     }

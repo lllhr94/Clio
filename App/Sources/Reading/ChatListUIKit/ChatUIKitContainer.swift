@@ -670,7 +670,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
 
     private var styleSignal: String {
         let darkFlag = colorScheme == .dark ? 1 : 0
-        let motionFlag = reduceMotion ? 1 : 0
+        let motionFlag = Ink.Motion.prefersReduced(reduceMotion) ? 1 : 0
         return "\(darkFlag)|\(motionFlag)|\(dynamicTypeSize)"
     }
 
@@ -695,7 +695,12 @@ struct ChatUIKitContainer<Minimap: View>: View {
         ZStack {
             photoHeroProxy
 
-            ChatFollowHostSyncView(followState: followState, listProxy: listProxy, petPerch: petPerch)
+            ChatFollowHostSyncView(
+                followState: followState,
+                chromeCoordinator: chromeCoordinator,
+                listProxy: listProxy,
+                petPerch: petPerch
+            )
 
             ChatListUIKitRepresentable(
                 state: state,
@@ -883,13 +888,14 @@ struct ChatUIKitContainer<Minimap: View>: View {
             starters: starters,
             reach: reach,
             headerHeight: headerHeight,
-            reduceMotion: reduceMotion
+            reduceMotion: Ink.Motion.prefersReduced(reduceMotion)
         )
     }
 }
 
 private struct ChatFollowHostSyncView: View {
     let followState: ChatFollowState
+    let chromeCoordinator: ChatChromeCoordinator
     let listProxy: ChatListControllerProxy
     let petPerch: PetPerch
 
@@ -903,6 +909,12 @@ private struct ChatFollowHostSyncView: View {
                 if let controller = listProxy.controller, controller.isPinnedToBottom != next {
                     controller.setFollowingFromHost(next)
                 }
+            }
+            .onChange(of: chromeCoordinator.mode) { _, _ in
+                listProxy.controller?.syncNativeScrollEdgeInsets(animated: true)
+            }
+            .onChange(of: chromeCoordinator.visualProgress == 0) { _, _ in
+                listProxy.controller?.syncNativeScrollEdgeInsets(animated: true)
             }
     }
 }
@@ -1133,6 +1145,11 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         actions.canRestoreImmersiveChrome = { [weak coordinator] in
             guard let coordinator, !coordinator.isDismantled else { return false }
             return chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0
+        }
+
+        actions.currentChromeVisualProgress = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return 0 }
+            return chromeCoordinator.visualProgress
         }
 
         actions.onImmersiveBackgroundTap = { [weak coordinator] in
