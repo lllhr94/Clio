@@ -13,10 +13,10 @@
   4. 补充 `tools/lint.py` 检查规则，确保双词典 1,075+ 键完全对等、禁止滚动 Cell 引入真玻璃。
 - **验证方式**：跑 `python3 tools/lint.py` + GitHub Actions `publish=true, shots=false` 出第一个底层兼容测试包。
 
-## Wave 2：排版引擎与 Telegram 原版流式渐显（最小实验前置 -> `SafeLineBox` + `TextRevealController` + 9 控排版页）
-- **改动文件**：*(前置可丢弃原型 Target 验证 -> 后合入)* `App/Sources/Reading/ThirdParty/TelegramReveal/TextRevealController.swift` & `UPSTREAM.md`, `App/Sources/Reading/ChatListUIKit/ChatListModels.swift`, `ChatProseRenderer.swift`, `ChatTextTileRenderer.swift`, `ChatBlockViews.swift`, `App/Sources/Design/LookPage.swift`, `App/Sources/Design/FontPage.swift`, `App/Sources/Design/Ink.swift`, `App/Sources/Reading/ProseView.swift`
+## Wave 2：排版引擎与 Telegram 原版流式渐显（前置原生实验已过门禁 -> `SafeLineBox` + `TextRevealController` + 9 控排版页）
+- **改动文件**：*(前置独立可丢弃 `experiments/TelegramRevealSpike/` 已在 macOS 11/11 + iPhone 17 Pro iOS 26.5 Simulator 12/12 通过，待主人明确批准后再合入生产)* `App/Sources/Reading/ThirdParty/TelegramReveal/TextRevealController.swift` & `UPSTREAM.md`, `App/Sources/Reading/ChatListUIKit/ChatListModels.swift`, `ChatProseRenderer.swift`, `ChatTextTileRenderer.swift`, `ChatBlockViews.swift`, `App/Sources/Chat.swift`（绕过旧 `ChatModel.type()/step()` 防重复缓冲）, `App/Sources/Design/LookPage.swift`, `App/Sources/Design/FontPage.swift`, `App/Sources/Design/Ink.swift`, `App/Sources/Reading/ProseView.swift`
 - **交付内容**：
-  1. **Wave 2 前置门禁（独立可丢弃原生验证 Target）**：实测原样 `TextRevealController.swift` + Points 宽度成本 + CoreText `SnippetLayer/revealMaskLayer`，测定真机 Points/s 与 `durationMultiplier` 并检验 `GPL-2.0-or-later` 隔离合规后再合入主列表。
+  1. **Wave 2 前置门禁 *(已完成 CI 原生实验 · 待实体真机微调)***：`TelegramRevealSpike` 在 `Xcode 26.6` 完成原样 `TextRevealController.swift`（SHA256 `d666036...`）+ CoreText `Points` 成本 + `RevealMaskCoordinator`/`SnippetLayer` 双平台验证（Run `45732265944 @ 48ecdfd`），实测混合中文长段在 `durationMultiplier = 2.5–5.0` 下兼具平滑与 `< 0.5s` 收尾；合入生产后仍需在实体 iPhone 上以 `60Hz/120Hz` 实录微调最终倍率与 `SnippetLayer` 熔断线。
   2. 彻底替换旧 `Pref.leading`/`Ink.leading`，上线单源 `SafeLineBox`（`lineSpacing = 0`, `maximumLineHeight = 0`, `lhOffset = 0`）+ H1–H4 阶梯；同步修复 `userBody` 使 7 处阅读面完全一致。
   3. 在 `ChatListUIKit` 接入 Telegram 级渐显（受 `Pref.fade` / Reduce Motion / 后台暂停 / Points 突发降级控制），确保定稿/停止零重排与选中文本延迟提交。
   4. **零破坏检查**：逐行对比流式生成至定稿瞬间高度 `delta == 0.0pt`、120Hz 向上翻页锚点无漂移。

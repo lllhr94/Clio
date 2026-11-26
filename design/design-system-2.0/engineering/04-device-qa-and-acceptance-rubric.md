@@ -6,9 +6,9 @@
 > 1. `静态校验通过`：`scripts/verify_design_system.py`（WCAG AA 对比度、相对路径、零本地绝对路径 scheme、`App/Fonts/*.ttf` 引用、`tokens.v2.json` 2.4.0、JS 语法、零生产代码修改）。
 > 2. `模拟环境自动化测试通过`：`scripts/test_prototype_behavior.mjs` 14 项回归（100% 前缀扫测、600 次 Unicode fuzz、Telegram `TextRevealController` 参数一致性、Points/multiplier 验证、定稿去标与 Wrapper 清理、选区延迟提交、审批取消保护与中文 IME）。
 > 3. `真实浏览器验证通过`：`scripts/test_prototype_browser_e2e.mjs` 在真实 Chrome DOM 下通过（6 字体 `loaded`、选区跨流式完成/Stop/延迟补交不丢、Scroll-Aware Chrome + 生成停止、0 JS 异常、0 HTTP 错误）。
-> 4. `原生实验验证通过`：独立可丢弃 Swift Target 实测原版 `TextRevealController` + Points 宽度成本 + CoreText `SnippetLayer/revealMaskLayer` *(当前 Windows 无 Xcode 环境，标注 **`[待 macOS/Xcode 或 CI 原生实验验证]`**)*。
-> 5. `待 Swift 正式实现`：Wave 1–5 生产 Swift 源码改造（当前严格零改动 `batch-0.36`）。
-> 6. `待 iPhone 真机验证`：`New York` / 苹方 / 宋体 CoreText 视觉与行框实测、60Hz/120Hz 真机帧率、Fake-IP/Tailscale/SSH 实体网络实测及 Core Haptics 触感闭环。
+> 4. `原生实验验证通过（macOS + iOS Simulator）`：独立可丢弃 Swift Package [`experiments/TelegramRevealSpike/`](../experiments/TelegramRevealSpike/Package.swift) 已在 GitHub Actions `Xcode 26.6`（Run `45732265944 @ 48ecdfd`）通过 **macOS `swift test` 11/11** 与 **iPhone 17 Pro iOS 26.5 Simulator `xcodebuild test` 12/12**，验证原样 `TextRevealController`、`Points` 宽度成本、真实 `App/Fonts/*.ttf`、`SafeLineBox`、不双加混合间距与 `CALayer/UIKit` 遮罩；**此层级不包含实体 iPhone ProMotion 真机验证**。
+> 5. `待 Swift 正式实现`：Wave 1–5 生产 Swift 源码改造（当前严格零改动 `batch-0.36` 与 `App/`/`AgentKit/`，等待主人明确批准后推进）。
+> 6. `待 iPhone 真机验证`：`New York` / 苹方 / 宋体 CoreText 视觉与行框实测、实体 60Hz/120Hz 真机帧率与 `durationMultiplier` 体感（非 Simulator）、Fake-IP/Tailscale/SSH 实体网络实测及 Core Haptics 触感闭环。
 
 ---
 

@@ -83,7 +83,20 @@ ChatListViewController (UICollectionView) + ChatTextTileRenderer + ChatFollowSta
 3. **可复现执行入口与真机分界**：
    - macOS 单元测试：`cd design/design-system-2.0/experiments/TelegramRevealSpike && CLIO_REPO_ROOT="$(git rev-parse --show-toplevel)" swift test`
    - iOS Simulator 集成测试：`gh workflow run ds2-reveal-spike.yml --ref design/v2-review`（或推送触发运行 `xcodebuild test`）；
-   - 本节在 macOS CI 与 iOS Simulator 验证完成后回填实测编译通过率、`Points/s`、`durationMultiplier`（`1.0` vs `10.0`）与帧耗时分布；**Simulator 实测仍不等同于实体 iPhone 120Hz ProMotion 真机最终体验，真机验证另见 Deliverable #21**。
+4. **实测 CI 验证结果（Run `45732265944` @ Commit `48ecdfd32738eb48ff7eafe961637be5d279b727`）**：
+   - **编译工具链**：`Xcode 26.6 (Build 17F113)` · `Apple Swift 6.3.3`（Swift 5 语言模式）· **0 错误、0 警告**；
+   - **macOS 原生单元测试 (`swift test`)**：**11/11 全部通过（0 失败，耗时 0.402s）**，验证原样 `TextRevealController.swift`（SHA256 `d666036...`，首帧初始化时钟后第 5 帧突破 `1.0`）、CoreText 字形墨迹 `Points` 成本、`ClioKai-Medium.ttf`/`MapleMono-Regular.ttf`/`ClioMonoCN-Regular.ttf` 加载、`SafeLineBox`、`ClioMixedScriptKerning`（已有空格 0 叠加）、ZWJ/肤色/连字/组合音标零切断及完整生命周期；
+   - **iOS Simulator UIKit + CoreText + CALayer 测试 (`xcodebuild test`)**：在 **`iPhone 17 Pro (iOS 26.5 Simulator)`** 实测 **12/12 全部通过（0 失败，耗时 9.037s）**，覆盖 `SpikeRevealTextView` 纹理裁剪、`RevealMaskCoordinator`、`UIScrollView` 锚点锁（`delta = 0.00pt`）与 `CADisplayLinkRevealScheduler`；
+   - **实测 `Points` 与 `durationMultiplier` 对照（3,432 CoreText Points 混合文本，60Hz 采样）**：
+
+| `durationMultiplier` | 首字 TTFT | 平均揭示率 (`Points/s`) | 峰值速率 (`Points/s`) | 峰值积压 (`Points`) | 流结束后收尾耗时 (`finalizeDrainMs`) | 实测启发 |
+|---|---|---|---|---|---|---|
+| `1.0` | `50.0 ms` | `3550.3` | `5640.0` | `716` | `66.7 ms` | 跟流极快，但高突发时几乎不蓄水平滑 |
+| **`2.5` *(推荐初值下限)*** | `50.0 ms` | `3073.4` | `4140.0` | `1056` | `216.7 ms` | 抖动吸收与及时收尾均衡 |
+| **`5.0` *(推荐初值上限)*** | `66.7 ms` | `2481.0` | `3420.0` | `1758` | `483.3 ms` | 柔和阅读感更强，收尾仍 `< 0.5s` |
+| `10.0` *(Telegram RichData 原值)* | `83.3 ms` | `1775.2` | `2280.0` | `2442` | `1033.3 ms` | 长混合中文下尾部拖尾 > 1 秒，需真机体感确认是否偏慢 |
+
+   - **Simulator UIKit 帧耗时观测 (`[SIM_METRIC]`, 39 行 / 30 步)**：`layoutAndRasterMs = 119.02 ms`、`p95MaskUpdateMs = 2.459 ms`、`avgMaskUpdateMs = 4.942 ms`、`maxMaskUpdateMs = 126.599 ms`（首次 `CALayer` 遮罩树/多字形 Snippet 冷分配触发单帧峰值，稳态 P95 `< 2.5ms`）。因此正式合入 Wave 2 必须延续 `batch-0.36` 的后台 `ChatTextTileRenderer` 预栅格化并按单块增量遮罩；**Simulator 实测仍不等同于实体 iPhone 120Hz ProMotion 真机最终体验，实体真机验证见 Deliverable #21**。
 
 ---
 
