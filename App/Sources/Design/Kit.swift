@@ -178,7 +178,7 @@ struct WideButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: Ink.Size.body, weight: .semibold))
             // On the accent, the paper's color: dark on the pale accent of dark mode, light on the deep one of light mode.
-            .foregroundStyle(filled ? Ink.paper : tint)
+            .foregroundStyle(filled ? Ink.onAccent : tint)
             .frame(maxWidth: .infinity, minHeight: Kit.rowHeight)
             .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
             .opacity(configuration.isPressed ? 0.8 : 1)
@@ -297,7 +297,7 @@ struct ClioSeal: View {
             .font(face)
             .foregroundStyle(Ink.sealInk)
             .frame(width: size, height: size)
-            .background(Ink.seal, in: .rect(cornerRadius: size * 0.12, style: .continuous))
+            .background(Ink.sealFill, in: .rect(cornerRadius: size * 0.12, style: .continuous))
             .rotationEffect(.degrees(tilt))
             .accessibilityHidden(true)
     }

@@ -24,9 +24,9 @@ struct LookPage: View {
     /// The page itself: paper or pure white by day, warm ink-grey or pure black by night.
     private var grounds: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
-            groundRow(L.t("settings.lightGround"), [(L.t("settings.groundPaper"), 0xF6F1E7, false), (L.t("settings.groundWhite"), 0xFFFFFF, true)],
+            groundRow(L.t("settings.lightGround"), [(L.t("settings.groundPaper"), 0xF8F5EE, false), (L.t("settings.groundWhite"), 0xFFFFFF, true)],
                       picked: Theme.shared.white) { Theme.shared.setWhite($0) }
-            groundRow(L.t("settings.darkGround"), [(L.t("settings.groundInk"), 0x1C1A17, false), (L.t("settings.groundBlack"), 0x000000, true)],
+            groundRow(L.t("settings.darkGround"), [(L.t("settings.groundInk"), 0x191815, false), (L.t("settings.groundBlack"), 0x000000, true)],
                       picked: Theme.shared.oled) { Theme.shared.setOled($0) }
         }
         .padding(.vertical, Ink.Space.xs)
@@ -175,10 +175,10 @@ struct ReadingSizePage: View {
                 )
                 StopRow(title: L.t("settingsHome.fontSize"), value: sizeBinding, stops: Self.sizes.indices.map {
                     Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
-                }, opensForShot: Shots.name == "stops")
+                }, defaultValue: 17.0, opensForShot: Shots.name == "stops")
                 StopRow(title: L.t("settingsHome.lineSpacing"), value: lineHeightBinding, stops: Pref.lineHeights.indices.map {
                     Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
-                })
+                }, defaultValue: Pref.defaultLineHeight)
             } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
 
             Section {
@@ -188,6 +188,7 @@ struct ReadingSizePage: View {
                     stops: UIScale.levels.indices.map {
                         Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
                     },
+                    defaultValue: 1.0,
                     onEditingChanged: { editing in
                         draggingDensity = editing
                         if !editing, let committed = pendingDensity {
@@ -350,6 +351,7 @@ struct ToneSettingsPage: View {
 
 struct ChatDisplayPage: View {
     @AppStorage("look.haptics") private var haptics = true
+    @AppStorage("look.hapticIntensity") private var hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
     @AppStorage("look.fade") private var fade = true
     @AppStorage("look.stats") private var stats = true
     @AppStorage("look.traceOpen") private var traceOpen = false
@@ -360,6 +362,22 @@ struct ChatDisplayPage: View {
     @AppStorage("look.uikitChatList") private var useUIKitChatList = true
     @AppStorage(VoiceTranscription.modeKey) private var voiceModeRaw = VoiceTranscription.Mode.system.rawValue
     @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
+
+    private var hapticIntensityBinding: Binding<Pref.HapticIntensity> {
+        Binding(
+            get: { Pref.HapticIntensity(rawValue: hapticIntensityRaw) ?? .standard },
+            set: { hapticIntensityRaw = $0.rawValue }
+        )
+    }
+
+    private static func hapticIntensityTitle(_ level: Pref.HapticIntensity) -> String {
+        switch level {
+        case .off: return ""
+        case .gentle: return L.t("settings.hapticGentle")
+        case .standard: return L.t("settings.hapticStandard")
+        case .crisp: return L.t("settings.hapticCrisp")
+        }
+    }
 
     private var voiceSummary: String {
         let mode = VoiceTranscription.Mode(rawValue: voiceModeRaw) ?? .system
@@ -380,6 +398,16 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
                 Toggle(L.t("settings.haptics"), isOn: $haptics)
+                if haptics {
+                    StopRow(
+                        title: L.t("settings.hapticIntensity"),
+                        value: hapticIntensityBinding,
+                        stops: Pref.HapticIntensity.activeCases.map {
+                            Stop(value: $0, name: Self.hapticIntensityTitle($0))
+                        },
+                        defaultValue: .standard
+                    )
+                }
                 Toggle(L.t("settings.showReplyStats"), isOn: $stats)
             }
             Section {
@@ -409,6 +437,7 @@ struct ChatDisplayPage: View {
 
     private func reset() {
         haptics = true
+        hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
         fade = true
         stats = true
         traceOpen = false

@@ -17,13 +17,13 @@ struct StopRow<Value: Hashable>: View {
     let stops: [Stop<Value>]
     /// The detail under the current value in the row, when it helps (like how much that 档位 is for this model).
     var line: String? = nil
+    var defaultValue: Value? = nil
     var opensForShot = false
     var onEditingChanged: ((Bool) -> Void)? = nil
     @State private var open = false
 
     var body: some View {
         Button {
-            Haptics.light()
             open = true
         } label: {
             HStack(spacing: Ink.Space.m) {
@@ -56,10 +56,10 @@ struct StopRow<Value: Hashable>: View {
             // No title inside: the row it opens from already says what it is, and the card stays short enough
             // to fit above or below the row (the system picks the side with room).
             ViewThatFits(in: .vertical) {
-                StopRuler(value: $value, stops: stops, name: title, onEditingChanged: onEditingChanged)
+                StopRuler(value: $value, stops: stops, name: title, defaultValue: defaultValue, onEditingChanged: onEditingChanged)
                     .fixedSize()
                 ScrollView(.vertical, showsIndicators: false) {
-                    StopRuler(value: $value, stops: stops, name: title, onEditingChanged: onEditingChanged)
+                    StopRuler(value: $value, stops: stops, name: title, defaultValue: defaultValue, onEditingChanged: onEditingChanged)
                 }
                 .frame(maxHeight: 340)
             }
@@ -77,6 +77,7 @@ struct StopRuler<Value: Hashable>: View {
     let stops: [Stop<Value>]
     /// What VoiceOver calls it when no title is shown.
     var name: String? = nil
+    var defaultValue: Value? = nil
     var onEditingChanged: ((Bool) -> Void)? = nil
 
     @State private var lockedGeometry: (step: CGFloat, width: CGFloat)?
@@ -98,9 +99,17 @@ struct StopRuler<Value: Hashable>: View {
             }
             HStack(alignment: .top, spacing: Ink.Space.l) {
                 column(alignment: .leading) { at in
-                    Text(stops[at].name)
-                        .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
-                        .foregroundStyle(at == index ? Ink.accent : Ink.inkSoft)
+                    HStack(spacing: Ink.Space.xs) {
+                        Text(stops[at].name)
+                            .font(.system(size: Ink.Size.sub, weight: at == index ? .semibold : .regular))
+                            .foregroundStyle(at == index ? Ink.accent : Ink.inkSoft)
+                        if defaultValue == stops[at].value {
+                            Circle()
+                                .fill(at == index ? Ink.accent : Ink.inkFaint.opacity(0.65))
+                                .frame(width: 5, height: 5)
+                                .accessibilityHidden(true)
+                        }
+                    }
                 }
                 if stops.contains(where: { $0.detail != nil }) {
                     column(alignment: .trailing) { at in
@@ -192,7 +201,11 @@ struct StopRuler<Value: Hashable>: View {
     private func pick(_ at: Int) {
         let clamped = min(max(at, 0), stops.count - 1)
         guard stops.indices.contains(clamped), stops[clamped].value != value else { return }
-        Haptics.tick(0.5)
+        if defaultValue == stops[clamped].value {
+            Haptics.detent()
+        } else {
+            Haptics.tick(0.45)
+        }
         value = stops[clamped].value
     }
 }

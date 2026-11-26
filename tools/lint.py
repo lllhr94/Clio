@@ -139,6 +139,8 @@ SWIPE_ACTION_INIT = re.compile(r'\bSwipeAction\s*\(')
 FOREACH_CALL = re.compile(r'\bForEach\s*\(')
 FOREACH_ID_ARG = re.compile(r'\bid\s*:')
 UUID_CALL = re.compile(r'\bUUID\s*\(\s*\)')
+GLASS_EFFECT_CALL = re.compile(r'\.\s*glassEffect\s*\(')
+RAW_HAPTIC_GENERATOR_CALL = re.compile(r'\bUI(?:Impact|Selection|Notification)FeedbackGenerator\s*\(')
 
 
 def _scan_swift_string(text, pos, n, out, hashes):
@@ -432,6 +434,28 @@ def perf_checks():
                         path,
                         lineno,
                         "UUID() inside ForEach(..., id:) causes view identity churn (or // lint:perf-ok)",
+                    ))
+
+        # 5. Forbid Liquid Glass inside scrolling UIKit chat list cells.
+        if path.is_relative_to("App/Sources/Reading/ChatListUIKit"):
+            for match in GLASS_EFFECT_CALL.finditer(stripped):
+                lineno = stripped.count("\n", 0, match.start()) + 1
+                if not has_perf_exemption(raw_lines, lineno):
+                    perf_errors.append((
+                        path,
+                        lineno,
+                        ".glassEffect( inside ChatListUIKit cell hurts 120Hz scrolling; use light glassBubble or paper (or // lint:perf-ok)",
+                    ))
+
+        # 6. Route haptic generators through App/Sources/Haptics.swift so intensity/voice-mute/throttle hold.
+        if path != Path("App/Sources/Haptics.swift"):
+            for match in RAW_HAPTIC_GENERATOR_CALL.finditer(stripped):
+                lineno = stripped.count("\n", 0, match.start()) + 1
+                if not has_perf_exemption(raw_lines, lineno):
+                    perf_errors.append((
+                        path,
+                        lineno,
+                        "raw UIFeedbackGenerator outside Haptics.swift bypasses intensity, throttle and voice mute (or // lint:perf-ok)",
                     ))
 
     return perf_errors

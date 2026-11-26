@@ -99,6 +99,60 @@ enum Pref {
     /// "system", "light" or "dark".
     static var scheme: String { Theme.shared.scheme }
     static var haptics: Bool { bool("look.haptics", true) }
+
+    /// Haptic strength calibrated across Wave 1–5; returns `.off` when master `look.haptics` is off.
+    enum HapticIntensity: String, CaseIterable, Identifiable {
+        case off, gentle, standard, crisp
+        var id: String { rawValue }
+        static let activeCases: [HapticIntensity] = [.gentle, .standard, .crisp]
+
+        var scale: CGFloat {
+            switch self {
+            case .off: 0.0
+            case .gentle: 0.62
+            case .standard: 1.0
+            case .crisp: 1.25
+            }
+        }
+    }
+    static var hapticIntensity: HapticIntensity {
+        guard haptics else { return .off }
+        return HapticIntensity(rawValue: store.string(forKey: "look.hapticIntensity") ?? "") ?? .standard
+    }
+
+    /// Heading weight preference introduced for Wave 2 editorial typography.
+    enum HeadingWeight: String, CaseIterable, Identifiable {
+        case medium, semibold, bold
+        var id: String { rawValue }
+    }
+    static var headingWeight: HeadingWeight {
+        HeadingWeight(rawValue: store.string(forKey: "look.headingWeight") ?? "") ?? .semibold
+    }
+
+    /// Reading list density preference reserved for Wave 2–3 layout tuning.
+    enum UIDensity: String, CaseIterable, Identifiable {
+        case comfortable, standard, compact
+        var id: String { rawValue }
+    }
+    static var uiDensity: UIDensity {
+        UIDensity(rawValue: store.string(forKey: "look.uiDensity") ?? "") ?? .standard
+    }
+
+    static let paragraphGapStops: [Double] = [10, 13, 16, 20]
+    static let defaultParagraphGap = 13.0
+    static var paragraphGap: Double {
+        let raw = double("look.paragraphGap", defaultParagraphGap)
+        return paragraphGapStops.min { abs($0 - raw) < abs($1 - raw) } ?? defaultParagraphGap
+    }
+
+    static let readingWidthStops: [Double] = [560, 640, 700]
+    static let defaultReadingWidth = 640.0
+    static var readingWidth: Double {
+        let raw = double("look.readingWidth", defaultReadingWidth)
+        return readingWidthStops.min { abs($0 - raw) < abs($1 - raw) } ?? defaultReadingWidth
+    }
+
+    static var clreqSqueeze: Bool { bool("look.clreqSqueeze", true) }
     static var fade: Bool { bool("look.fade", true) }
     static var stats: Bool { bool("look.stats", true) }
     static var traceOpen: Bool { bool("look.traceOpen", false) }

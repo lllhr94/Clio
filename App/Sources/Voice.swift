@@ -124,6 +124,7 @@ final class Dictation: ObservableObject {
             tapInstalled = true
             activeEngine.prepare()
             try activeEngine.start()
+            Haptics.setVoiceCaptureMuted(true)
             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { listening = true }
             task = activeRecognizer.recognitionTask(with: request, resultHandler: Self.results { [weak self] text, done in
                 Task { @MainActor in
@@ -196,6 +197,7 @@ final class Dictation: ObservableObject {
             cloudKey = key
             cloudModel = modelName
             cloudLanguage = VoiceTranscription.language
+            Haptics.setVoiceCaptureMuted(true)
             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { listening = true }
 
             meterTask = Task { [weak self] in
@@ -286,6 +288,7 @@ final class Dictation: ObservableObject {
     }
 
     private func stopRecording() {
+        Haptics.setVoiceCaptureMuted(false)
         teardownEngine()
         if let rec = recorder {
             rec.stop()

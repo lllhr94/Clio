@@ -231,11 +231,12 @@ enum Ink {
         if theme.white { return theme.oled ? palette.raisedWhiteOled : palette.raisedWhite }
         return theme.oled ? palette.raisedOled : palette.raised
     }
-    static let ink = pair(0x2B2A27, 0xECE6DA)
-    static let inkSoft = pair(0x6F6A60, 0xA39C8E)
-    static let inkFaint = pair(0xA8A294, 0x6E685D)
-    /// 朱: the seal's cinnabar, and the paper-white of the character cut into it. Only for the seal.
-    static let seal = pair(0xB23A2B, 0xC5564A)
+    static let ink = pair(0x1F1E1B, 0xEFEAE0)
+    static let inkSoft = pair(0x57534A, 0xB9B1A2)
+    static let inkFaint = pair(0x696459, 0x989082)
+    /// 朱: the seal's cinnabar for strokes/text and fill ground. Only for the seal.
+    static let seal = pair(0xB5382A, 0xE87568)
+    static let sealFill = pair(0xB5382A, 0xB84134)
 
     // Exported artwork and image previews keep their own contrast in either appearance.
     enum Artwork {
@@ -250,18 +251,26 @@ enum Ink {
         static let badgeRed = UIColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1)
     }
 
-    /// Code in a reply, from the same pigments as everything else; lighter in dark mode so they read on dark paper.
+    /// Code in a reply, from the same pigments as everything else; calibrated AA against code surfaces.
     enum Code {
-        static let keyword = pair(0x6F5C96, 0xB3A3D6)
-        static let function = pair(0x4A6A8A, 0x8FB0CF)
-        static let string = pair(0x4F7A5A, 0x8DBB97)
-        static let number = pair(0xA9772F, 0xD9A65C)
+        static let keyword = pair(0x5E478C, 0xB8A6DE)
+        static let function = pair(0x2E587D, 0x8EB6DB)
+        static let string = pair(0x286644, 0x84C498)
+        static let number = pair(0x8A560B, 0xE0AE60)
         /// A block of what a program printed, not code to read.
-        static let output = pair(0x4F7A5A, 0x8DBB97)
+        static let output = pair(0x286644, 0x84C498)
     }
 
     /// A failure in the conversation: the card's ground.
-    static let stopWash = pair(0xF4E3E0, 0x3A2624)
+    static let stopWash = pair(0xF5E2DF, 0x3D2624)
+    /// Subtle surface well inside paper/cards (tags, inline code, table headers).
+    static var surfaceSubtle: Color {
+        Theme.shared.oled ? pair(0xEFEAE0, 0x1C1A17) : pair(0xEFEAE0, 0x2C2924)
+    }
+    /// Ground for multi-line code blocks, decoupled from paper and message bubbles.
+    static var codeBg: Color {
+        Theme.shared.oled ? pair(0xF1ECE1, 0x141310) : pair(0xF1ECE1, 0x1F1D19)
+    }
 
     /// The tiles settings rows lead with: one pigment per group, deep enough for a white glyph, the same in light
     /// and dark (as a printed tile would be). Named for the colors Clio's palette already uses.
@@ -290,14 +299,16 @@ enum Ink {
         let theme = Theme.shared, palette = theme.palette
         return theme.white ? palette.ruleWhite : palette.rule
     }
-    /// The accent and its pale ground, from the palette the user picked.
+    /// The accent, its foreground contrast ink, and its pale ground, from the palette the user picked.
     static var accent: Color { Theme.shared.palette.accent }
+    static var onAccent: Color { Theme.shared.palette.onAccent }
     static var accentWash: Color { Theme.shared.palette.wash }
 
     struct Palette: Identifiable {
         var key: String
         var title: String
         var accent: Color
+        var onAccent: Color
         /// The accent as a tile ground: the light-mode accent in both modes.
         var tile: Color
         var wash: Color
@@ -323,29 +334,30 @@ enum Ink {
         var id: String { key }
 
         /// `light` and `dark` are the accent in both modes; `tint` is how much of it the neutrals take (0 for none).
-        init(key: String, title: String, light: UInt32, dark: UInt32, wash: Color, tint: Double) {
+        init(key: String, title: String, light: UInt32, dark: UInt32, wash: Color, onAccent: Color = Ink.pair(0xFFFDF8, 0x14181E), tint: Double) {
             self.key = key
             self.title = title
             self.accent = Ink.pair(light, dark)
+            self.onAccent = onAccent
             self.tile = Ink.pair(light, Ink.mix(light, 0xFFFFFF, 0.08))
             self.wash = wash
-            paperLight = Ink.mix(0xF6F1E7, light, 0.05 * tint)
-            raisedLight = Ink.mix(0xFBF8F1, light, 0.035 * tint)
-            paperDark = Ink.mix(0x1C1A17, dark, 0.05 * tint)
-            raisedDark = Ink.mix(0x26231F, dark, 0.035 * tint)
-            ruleDark = Ink.mix(0x37332D, dark, 0.08 * tint)
-            mineDark = Ink.mix(0x322E28, dark, 0.07 * tint)
+            paperLight = Ink.mix(0xF8F5EE, light, 0.05 * tint)
+            raisedLight = Ink.mix(0xFFFDF8, light, 0.035 * tint)
+            paperDark = Ink.mix(0x191815, dark, 0.05 * tint)
+            raisedDark = Ink.mix(0x23211D, dark, 0.035 * tint)
+            ruleDark = Ink.mix(0x3A362F, dark, 0.08 * tint)
+            mineDark = Ink.mix(0x312D26, dark, 0.07 * tint)
             paper = Ink.pair(paperLight, paperDark)
             paperWhite = Ink.pair(0xFFFFFF, paperDark)
             paperOled = Ink.pair(paperLight, 0x000000)
             paperWhiteOled = Ink.pair(0xFFFFFF, 0x000000)
             raised = Ink.pair(raisedLight, raisedDark)
             raisedWhite = Ink.pair(0xF4F4F5, raisedDark)
-            raisedOled = Ink.pair(raisedLight, 0x121212)
-            raisedWhiteOled = Ink.pair(0xF4F4F5, 0x121212)
-            rule = Ink.pair(Ink.mix(0xE4DCCB, light, 0.08 * tint), ruleDark)
+            raisedOled = Ink.pair(raisedLight, 0x12110F)
+            raisedWhiteOled = Ink.pair(0xF4F4F5, 0x12110F)
+            rule = Ink.pair(Ink.mix(0xE2DACB, light, 0.08 * tint), ruleDark)
             ruleWhite = Ink.pair(0xE4E4E7, ruleDark)
-            mine = Ink.pair(Ink.mix(0xECE4D3, light, 0.07 * tint), mineDark)
+            mine = Ink.pair(Ink.mix(0xEAE2D3, light, 0.07 * tint), mineDark)
             mineWhite = Ink.pair(0xEFEFF1, mineDark)
         }
     }
@@ -359,14 +371,14 @@ enum Ink {
         return channel(16) | channel(8) | channel(0)
     }
 
-    /// 主色: ink colors with old names. 黛 is the first and the default.
+    /// 主色: ink colors with old names. 黛 (素笺黛蓝) is the first and the default; 竹 carries 栖息松绿.
     static let palettes: [Palette] = [
-        Palette(key: "dai", title: "黛", light: 0x4A6A8A, dark: 0x8FB0CF, wash: pair(0xE3EAF0, 0x2A3642), tint: 0),
-        Palette(key: "yan", title: "胭", light: 0xA4504A, dark: 0xD98C84, wash: pair(0xF2E1DE, 0x3D2B29), tint: 1),
-        Palette(key: "zhu", title: "竹", light: 0x4F7A5A, dark: 0x8DBB97, wash: pair(0xE1ECE3, 0x283A2D), tint: 1),
-        Palette(key: "xiang", title: "缃", light: 0x93702F, dark: 0xD2AA62, wash: pair(0xF3E8D2, 0x3D3322), tint: 0.6),
-        Palette(key: "teng", title: "藤", light: 0x6E5A92, dark: 0xA996CF, wash: pair(0xE9E4F2, 0x332C42), tint: 1),
-        Palette(key: "mo", title: "墨", light: 0x3F3D39, dark: 0xC9C2B5, wash: pair(0xE8E5DF, 0x35332F), tint: 0.5),
+        Palette(key: "dai", title: "黛", light: 0x35587B, dark: 0x8CB4DB, wash: pair(0xE2EAF2, 0x253443), onAccent: pair(0xFFFDF8, 0x14181E), tint: 0),
+        Palette(key: "yan", title: "胭", light: 0x9E3E38, dark: 0xE38E86, wash: pair(0xF4E2DF, 0x3D2928), onAccent: pair(0xFFFDF8, 0x1E1211), tint: 1),
+        Palette(key: "zhu", title: "竹", light: 0x276454, dark: 0x70BFAA, wash: pair(0xDFECE7, 0x203630), onAccent: pair(0xFCFAF6, 0x0E1A16), tint: 1),
+        Palette(key: "xiang", title: "缃", light: 0x855B10, dark: 0xDFB15B, wash: pair(0xF3E8D2, 0x3A301F), onAccent: pair(0xFFFDF8, 0x1D160B), tint: 0.6),
+        Palette(key: "teng", title: "藤", light: 0x624D8A, dark: 0xB39FD9, wash: pair(0xEAE4F3, 0x312940), onAccent: pair(0xFFFDF8, 0x16121F), tint: 1),
+        Palette(key: "mo", title: "墨", light: 0x363430, dark: 0xCFC8BB, wash: pair(0xE9E5DE, 0x32302C), onAccent: pair(0xFFFDF8, 0x191815), tint: 0.5),
     ]
     private static let paletteMap: [String: Palette] = Dictionary(uniqueKeysWithValues: palettes.map { ($0.key, $0) })
     static func palette(for key: String) -> Palette { paletteMap[key] ?? palettes[0] }
@@ -381,9 +393,9 @@ enum Ink {
         let theme = Theme.shared, palette = theme.palette
         return theme.white ? palette.mineWhite : palette.mine
     }
-    static let ok = pair(0x5E8C6A, 0x7FB08C)
-    static let warn = pair(0xC08A3E, 0xD9A65C)
-    static let stop = pair(0xB4534B, 0xD4776F)
+    static let ok = pair(0x286644, 0x6EC08E)
+    static let warn = pair(0x945608, 0xE4A952)
+    static let stop = pair(0xB4322A, 0xEC7E75)
 
     /// The grounds a companion's portrait can sit on, each with a name to keep and a name to show.
     static let tints: [(key: String, title: String, color: Color)] = [
@@ -631,15 +643,20 @@ enum Ink {
     // MARK: Motion
 
     enum Motion {
-        static let press = Animation.spring(response: 0.25, dampingFraction: 0.7)
-        static let unfold = Animation.spring(response: 0.42, dampingFraction: 0.82)
-        static let settle = Animation.smooth(duration: 0.35)
+        static let instant = Animation.spring(response: 0.18, dampingFraction: 0.88)
+        static let quick = Animation.spring(response: 0.26, dampingFraction: 0.85)
+        static let standard = Animation.spring(response: 0.36, dampingFraction: 0.84)
+        static let expressive = Animation.spring(response: 0.48, dampingFraction: 0.72)
+
+        static let press = instant
+        static let unfold = standard
+        static let settle = quick
     }
 }
 
-/// Anything tappable: gives a little under the finger, springs back, and ticks.
+/// Anything tappable: gives a little under the finger and springs back cleanly; stays silent unless opted in.
 struct PressStyle: ButtonStyle {
-    var haptic = true
+    var haptic = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
