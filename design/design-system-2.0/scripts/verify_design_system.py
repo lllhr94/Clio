@@ -44,7 +44,11 @@ REQUIRED_FILES = [
     DS / "engineering" / "03-phased-refactoring-roadmap.md",
     DS / "engineering" / "04-device-qa-and-acceptance-rubric.md",
     DS / "engineering" / "05-telegram-porting-and-private-network.md",
-    # Scripts & Prototype v15 (Deliverables 9-10)
+    # Isolated Native Swift Reveal Spike (Zero Production Mutation)
+    DS / "experiments" / "TelegramRevealSpike" / "Package.swift",
+    DS / "experiments" / "TelegramRevealSpike" / "UPSTREAM.md",
+    DS / "experiments" / "TelegramRevealSpike" / "Sources" / "TelegramRevealUpstream" / "TextRevealController.swift",
+    # Scripts & Prototype v16 (Deliverables 9-10)
     DS / "scripts" / "build_pet_sprites.py",
     DS / "scripts" / "test_prototype_behavior.mjs",
     DS / "scripts" / "test_prototype_browser_e2e.mjs",
@@ -290,7 +294,7 @@ def main() -> int:
         errors.append(f"test_prototype_behavior.mjs failed:\n{beh.stdout}\n{beh.stderr}")
 
     diff_res = subprocess.run(
-        ["git", "diff", "--name-only", "--", ":!design/design-system-2.0"],
+        ["git", "diff", "--name-only", "--", ":!design/design-system-2.0", ":!.github/workflows/ds2-reveal-spike.yml"],
         cwd=ROOT,
         capture_output=True,
         text=True,

@@ -74,13 +74,16 @@ ChatListViewController (UICollectionView) + ChatTextTileRenderer + ChatFollowSta
 
 **严禁事项**：不得退回 WebView 渲染正文；不得每 token 重建整条 Cell；不得每帧重解析全文 Markdown 或全量重栅格化；不得对已揭示稳定字符重复播动画；不得用顶层 `@Observable` 高频广播触发整个 `UICollectionView` 整表重刷。
 
-### 1.5 最小可丢弃原生验证工程设计（环境说明）
+### 1.5 最小可丢弃原生验证工程设计（`experiments/TelegramRevealSpike/`）
 
-> **诚实边界**：当前工作环境为 Windows 无 Xcode / macOS iOS SDK 工具链，因此 **本轮未编译或运行 Swift 原生验证工程**；正式实现前置以下可独立丢弃（不接入生产 `ChatListViewController` 与 `ChatPage`）的实验验证契约，待 macOS/Xcode 或 CI 原生环节执行：
+已在设计分支建立完全独立、可丢弃（零接入、零修改 `App/Sources/` 与 `AgentKit/Sources/`）的 Swift Package 实验工程 [`design/design-system-2.0/experiments/TelegramRevealSpike/`](../experiments/TelegramRevealSpike/Package.swift)，并配置独立 macOS + iOS Simulator CI 工作流 `.github/workflows/ds2-reveal-spike.yml`：
 
-1. 建立独立 Swift Package Target（或单页调试宿主 View，与生产 `TeamModel` / `ChatListViewController` 零耦连）：放入原样 `TextRevealController.swift`、`CoreText` 字符框测量辅助器与可开关 `SnippetLayer` / `CALayer` Mask 演示视图；
-2. 固定回放样本：中文/英文/`ClioKai-Medium`/Emoji ZWJ/代码块/表格/公式；注入慢速/高速/网络抖动/突发/中途 Stop/后台恢复与 `durationMultiplier` (`1.0` vs `10.0` + `Points` 成本) 对比；
-3. 记录 `Points/s`、`80 图素/s` 等效模糊关闭线、60Hz (`16.67ms`) / 120Hz (`8.33ms`) 单帧峰值及真机选区稳定性后，再按 Wave 2 正式合入 `batch-*`。
+1. **上游原样核查隔离**：[`Sources/TelegramRevealUpstream/TextRevealController.swift`](../experiments/TelegramRevealSpike/Sources/TelegramRevealUpstream/TextRevealController.swift) 逐字节原样复制自 Telegram-iOS `24638bc69bd083981b178dd1e7f921eebbf7fc46`（仅 `import Foundation`），并在 [`UPSTREAM.md`](../experiments/TelegramRevealSpike/UPSTREAM.md) 登记许可证依据、上游路径与最小改动清单；
+2. **CoreText `Points` 成本与遮罩适配实测**：`ClioRevealSpike` 在 macOS (`swift test`) 与 iOS Simulator (`xcodebuild test`) 双平台验证 `CTFontManagerCreateFontDescriptorsFromURL` 加载仓库真实 `App/Fonts/ClioKai-Medium.ttf`、`SafeLineBox`、`ClioMixedScriptKerning`（已有空格零叠加）、`computeRevealCharacterRects`（中文 / 英文 / ZWJ Emoji / 肤色 / 组合音标 / `fi` 连字 / 代码 / 表格 / 公式不切断）、`revealMaskLayer` 整行合并与 `SnippetLayer` 降级、完整流式生命周期与阅读锚点锁；
+3. **可复现执行入口与真机分界**：
+   - macOS 单元测试：`cd design/design-system-2.0/experiments/TelegramRevealSpike && CLIO_REPO_ROOT="$(git rev-parse --show-toplevel)" swift test`
+   - iOS Simulator 集成测试：`gh workflow run ds2-reveal-spike.yml --ref design/v2-review`（或推送触发运行 `xcodebuild test`）；
+   - 本节在 macOS CI 与 iOS Simulator 验证完成后回填实测编译通过率、`Points/s`、`durationMultiplier`（`1.0` vs `10.0`）与帧耗时分布；**Simulator 实测仍不等同于实体 iPhone 120Hz ProMotion 真机最终体验，真机验证另见 Deliverable #21**。
 
 ---
 
@@ -118,14 +121,13 @@ ChatListViewController (UICollectionView) + ChatTextTileRenderer + ChatFollowSta
 ### 2.3 Fake-IP 可信代理兼容契约（禁止削弱 SSRF 边界）
 
 **明确否决的伪安全做法**：
-- **禁止**仅凭检测到系统存在 `utun` 网卡就认定当前连接处于可信代理（普通系统 VPN、公司内网 VPN 甚至 iCloud 专用代理也会挂 `utun`）；
-- **禁止**以为仅凭客户端发起一次外部 DoH 解析拿到公网 IP 就能证明底层 `URLSession` 没有连向局域网（若代理侧规则把该域名路由回内网/Fake-IP 仍指向本地分流规则，DoH 与真实连接目标不一致）；
+- **禁止**仅凭 `utun` 网卡存在、外部 DoH 解析拿到公网 IP 或 TLS 域名/证书验证通过，就宣称已经验证了最终连接目标的真实网络位置（普通系统 VPN/公司内网 VPN/iCloud 专用代理也会挂 `utun`；若代理分流规则将该公网域名内部改指局域网 IP，客户端 DoH 与实际流向依然可能不一致；TLS SAN 校验也只能证明对端持有证书，无法在用户空间反查 VPN 内部分流表）；
 - **禁止**直接把 `198.18.0.0/15` 从 `LocalAddress.isLocalV4` 删掉。
 
 **工程可行且诚实的设计**：
 1. **双通道预检与严格特征识别**：
    - 将 **`198.18.0.0/15`** 与普通内网私网（`10/8`、`172.16-31/12`、`192.168/16`、`127/8`、`169.254/16`）在分类函数 `LocalAddress.classify(...)` 中显式拆分为 `.fakeIPRange` vs `.privateLAN` vs `.cgnatMesh` vs `.loopbackOrMetadata`；
-   - **明确识别范围上限**：在 iOS 沙盒 + `URLSession` 下，App 无法直接读取第三方 VPN/NEPacketTunnelProvider 的内部分流映射表，因此无法由客户端独立密码学证明某个 `198.18.x.y` 在 TUN 内部一定指向公网。
+   - **明确识别范围上限与安全隔离**：在 iOS 沙盒 + `URLSession` 下，App 无法读取第三方 VPN/`NEPacketTunnelProvider` 的内部分流表，因此客户端不声称密码学证明 `198.18.x.y` 在 TUN 内部绝不回环；**真实内网设备授权（Domain 3/4）与可信公网 Fake-IP 兼容（Domain 2）保持严格架构隔离**。
 2. **显式「可信代理兼容模式（Fake-IP 公网访问）」安全契约**：
    - 当用户（在设置中经明确风险说明）**主动开启「我在使用代理 Fake-IP（允许公网域名经 198.18.0.0/15 通道联网）」**：
      * **仅适用于**：原始 URL 拥有**非私有公网格式域名**（非 IP 字面量、`localhost` 或 `.local`/`.lan`/`.internal`/`.home.arpa`）、采用 **`https://`（或按需公网 `web_read` 受控 HTTP 且禁发凭证）**，且 **`getaddrinfo` 仅在 `198.18.0.0/15` 内返回占位地址**（若混合 DNS 同时混入 `10.x` / `192.168.x` / `127.x` / `169.254.x` / IPv6 ULA，立即判定混合 DNS 风险拒绝！）；
@@ -139,11 +141,11 @@ ChatListViewController (UICollectionView) + ChatTextTileRenderer + ChatFollowSta
 **直接扩展现成底座（零平行权限架构）**：
 1. **作用域资产描述 (`PrivateNetworkGrant`)**（纳入现成持久化设置 + `PermissionGate` 审批与即时撤销队列 `PendingApprovalQueue.reconcile`）：
    - **允许授权形态**：① 已配 `Hills.Host` / `Hills.Server` (MCP) / 已配 `SearXNGEndpoint`；② 明确指定的 **`host[:port]`**、私有域名（如 `nas.local`、`hermes.ts.net`）；③ 受控范围 **CIDR**（配置宽网段如 `192.168.1.0/24` 时必须弹显式高风险提示，禁止一键默认放开整张 `0.0.0.0/0` 或全部私网）。
-   - **能力正交拆分**：每个授权独立表达允许或需询问的动作：
-     * `reach`（网络可达与连接） · `read`（只读 GET/查询） · `write`（写方法/POST/PUT/DELETE/修改状态） · `exec`（SSH/远程脚本） · `credential`（允许携带对应绑定主机/Origin 密钥，由 `Vault` 按 origin 精准注入，严禁跨域泄漏） · `crossNetworkExfil`（跨网络外传，一旦涉外部 Web `Taint` 标记必须独立强制确认）。
+   - **能力正交拆分与副作用独立判断**：每个授权独立表达允许或需询问的动作：`reach`（网络可达与连接） · `read`（只读查询） · `write`（修改状态） · `exec`（SSH/远程脚本） · `credential`（由 `Vault` 按绑定 origin 精准注入，严禁跨域泄漏） · `crossNetworkExfil`（跨网络外传，一旦涉外部 Web `Taint` 标记必须独立强制确认）。**严禁仅依据 HTTP 方法（如 `GET` vs `POST`）判定操作是否具有副作用**：许多私有设备控制端点与 Webhook 会在 `GET` 上触发开关、重启或写操作，必须结合工具语义、请求体/查询意图与主机授权级别共同决策。
 2. **与已有安全边界的关系（不可削弱条款）**：
-   - **已授权常规读/用不再反复弹窗**：如用户已将「家庭 NAS Web API (只读)」或已接入「局域网 Hermes MCP」设为 `.allow`，日常工作流免重复打扰，但**随时可在设置一键撤销**，并通过 `PendingApprovalQueue.reconcile` + `HostBindingBook` 令在途或挂起请求立即失效；
-   - **外部提示注入零越权**：哪怕在读取外网网页后或读取私人 NAS 文档后，外部文本中的任意指令**均不可**：① 自动新建私人网络授权；② 扩大已有 `reach/read` 至 `write/exec/credential`；③ 绕过 `Taint.hardExits` 或跨网络将数据外发到未经授权外网服务器（即“私人设备可信，不代表设备上任意文件或网页摘录文本为可信指令”）；
+   - **已授权常规读/用不再反复弹窗**：如用户已将「家庭 NAS Web API (只读)」或已接入「局域网 Hermes MCP」设为 `.allow`，日常工作流免重复打扰；
+   - **权限撤销诚实边界**：用户随时可在设置一键撤销授权，撤销后**立即阻止所有后续操作，并经 `PendingApprovalQueue.reconcile`、`HostBindingBook` 与 `URLSession`/SSH 会话取消机制尽可能取消在途任务**；但**不宣称可以撤销远端服务器已经发生的副作用**（已发出的远端写入/指令如实记录于日志与 `Trace`）；
+   - **外部提示注入零越权**：哪怕在读取外网网页后或读取私人 NAS 文档后，外部文本中的任意指令**均不可**：① 自动新建私人网络授权；② 扩大已有 `reach/read` 至 `write/exec/credential`；③ 绕过 `Taint.hardExits` 或跨网络将数据外发到未经授权外网服务器（即“私人设备可信，不代表设备上读取到的任意内容或网页摘录能成为可信指令”）；
    - **永久不可放行项**：云厂商元数据地址 `169.254.169.254`（及 `fd00:ec2::254` 等）、未明确的本机未知服务端口 `127.0.0.1`、带账号密码直嵌的 URL 等，无论开启什么兼容模式均强制拒绝。
 
 ---
@@ -191,3 +193,25 @@ ChatListViewController (UICollectionView) + ChatTextTileRenderer + ChatFollowSta
 | **8** | 动态贴纸对 Clio 宠物动画借鉴 | [PetPack.swift:759-783](../../../App/Sources/Pet/PetPack.swift#L759-L783) 已按 `scenePhase == .active`、睡眠 `4fps` / 活跃 `12fps` 节流播放 | **已达低功耗基准，无需引入 RLottie 套件** |
 | **9** | 离屏动画暂停与功耗控制 | 宠物与主流程已听从 `scenePhase`；`TextRevealController` + `SharedDisplayLink` 需确保仅对可视且正在流式生成的最近气泡激活 DisplayLink | **在 Wave 2 渐显适配层明确“离屏 Cell 摘除 DisplayLink 监听，回屏无缝续传/直接定稿”** |
 | **10** | 60Hz/120Hz 及内存压力降级 | 现成 `FrameMeter` 监测 + `MemoryWarning` 缓存修剪 | **纳入 Wave 2/5 真机量化验收**（若掉帧/低电量模式自动关闭 `SnippetLayer` 仅保纯 `CALayer` 行进） |
+
+---
+
+### 3.2 与并行技术审计任务的性能/能效协作边界与防重复缓冲契约
+
+> **协作分工边界**：另有独立 Agent 正在开展 Telegram 其他功能与底层技术的全量差异化源码审计；**本文件及 `TelegramRevealSpike` 不接管、不重复该审计**，仅在原生架构与实验适配器（[`StreamRevealAdapter.swift`](../experiments/TelegramRevealSpike/Sources/ClioRevealSpike/StreamRevealAdapter.swift)）中为其后续经确认的实施任务预留以下 7 个清晰接口边界：
+
+| 预留扩展点 / 协议名 | 对应未来协同方向 | Wave 2 现成对齐约束（不锁死未来实现） |
+|---|---|---|
+| `StableBlockCaching` | 长正文稳定块复用 | 已闭合 Markdown 块保持不可变 `blockID`，与 [ChatProseRenderer.swift](../../../App/Sources/Reading/ChatListUIKit/ChatProseRenderer.swift#L1695-L1698) 多级 `BoundedLRUCache` 键体系对齐 |
+| `IncrementalCodeHighlighting` | 增量代码高亮 | 超过单块阈值的长代码支持按行切片高亮并沿用稳定 `blockID`，不每 token 重亮全块 |
+| `RevealAnimationScheduling` | 动画统一调度 | 单一共享调度器（生产可收敛 `SharedDisplayLink`），**静止、定稿、停止、切后台或离屏后必须立刻卸载 DisplayLink，严格做到 0 无意义 120Hz 空转刷新** |
+| `PowerThermalPolicyProvider` | 低电量与发热降载 | 接入 `ProcessInfo.processInfo.isLowPowerModeEnabled` 与 `.thermalState`，高热/低电自动旁路 `SnippetLayer` 并降低重绘频率 |
+| `MemoryPressureHandling` | 内存告警治理 | 响应 `UIApplication.didReceiveMemoryWarningNotification`，立即清剪块缓存与临时位图后备缓冲，不丢失已接收文本 |
+| `AdaptivePrefetchCoordinating` | 自适应预取 | 对接 `ChatListViewController` 的 `prefetchItemsAt` / `cancelPrefetching`，预布局已定稿历史块但不预生成 `SnippetLayer` |
+| `MediaCacheBudgeting` | 媒体资源缓存 | 图片/缩略解码预算与流式文字遮罩池分离配额，避免并发竞争主线程与纹理内存 |
+
+**防重复缓冲强制契约（Eliminate Double Buffering）**：
+- 核查 `batch-0.36` 现役实现：
+  1. [Chat.swift](../../../App/Sources/Chat.swift#L164-L321) 中 `ChatModel.type()` / `step()` 采用固定 `16ms` 协程步进（`(goal - shown) / 10`）配合 `Self.redraws = 15.0` (15Hz) 向 `ChatLiveStreamState.text` 释放字符；
+  2. [ChatProseRenderer.swift](../../../App/Sources/Reading/ChatListUIKit/ChatProseRenderer.swift#L414,L974-L992) 的 `applyStreamingTailFade` 会在最后 12 个字符静态重写 `.foregroundColor` Alpha 渐变，与旧批量刷新叠加形成抖动。
+- **正式接入硬规则**：在 Wave 2 上线 `TextRevealController` 时，SSE 原始增量到达 `ChatModel` 后**必须直通 `StreamRevealAdapter`（绕过旧 `(goal - shown) / 10` `step()` 二次调速），并关闭 `applyStreamingTailFade` 属性重算**；全程由 `Telegram TextRevealController` 作为**唯一调速权威（Single Pacing Authority）**，严禁“旧 15Hz 字符释放器 + 新 EWMA DisplayLink”双重缓冲叠加导致延迟翻倍与不必要的全量排版重建。

@@ -1,0 +1,89 @@
+# Isolated native verification workflow for DS 2.0 v16 TelegramRevealSpike.
+# Does NOT modify App/, AgentKit/, batch-0.36, or main.
+
+name: DS 2.0 Native Reveal Spike
+
+on:
+  push:
+    branches:
+      - design/v2-review
+    paths:
+      - 'design/design-system-2.0/experiments/TelegramRevealSpike/**'
+      - '.github/workflows/ds2-reveal-spike.yml'
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label (macos-latest or macos-15-intel)
+        default: macos-latest
+
+jobs:
+  spike-verify:
+    name: TelegramRevealSpike (macOS + iOS Simulator)
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
+          swift --version
+
+      - name: Verify upstream TextRevealController pin and bundled fonts
+        run: |
+          test -f App/Fonts/ClioKai-Medium.ttf
+          test -f App/Fonts/MapleMono-Regular.ttf
+          test -f App/Fonts/ClioMonoCN-Regular.ttf
+          wc -l design/design-system-2.0/experiments/TelegramRevealSpike/Sources/TelegramRevealUpstream/TextRevealController.swift
+          shasum -a 256 design/design-system-2.0/experiments/TelegramRevealSpike/Sources/TelegramRevealUpstream/TextRevealController.swift
+
+      - name: Run macOS SwiftPM tests (swift test)
+        working-directory: design/design-system-2.0/experiments/TelegramRevealSpike
+        env:
+          CLIO_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          set -o pipefail
+          swift test --verbose 2>&1 | tee macos-swift-test.log
+
+      - name: Run iOS Simulator UIKit + CoreText + CALayer tests (xcodebuild test)
+        working-directory: design/design-system-2.0/experiments/TelegramRevealSpike
+        env:
+          TEST_RUNNER_CLIO_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          set -o pipefail
+          UDID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          phones = [d for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
+          phones = phones or [d for rt in sorted(data.keys()) if "iOS" in rt for d in data[rt] if d["name"].startswith("iPhone")]
+          print(phones[-1]["udid"])
+          ')"
+          echo "Selected iOS Simulator UDID: $UDID"
+          SCHEME="$(xcodebuild -list -json | python3 -c '
+          import json, sys
+          info = json.load(sys.stdin)
+          schemes = info.get("workspace", {}).get("schemes") or info.get("project", {}).get("schemes") or []
+          preferred = [s for s in schemes if "TelegramRevealSpike" in s]
+          print(preferred[0] if preferred else schemes[0])
+          ')"
+          echo "Resolved SwiftPM Scheme: $SCHEME"
+          xcodebuild test \
+            -scheme "$SCHEME" \
+            -destination "id=$UDID" \
+            -derivedDataPath /tmp/ds2-reveal-spike-dd \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee ios-sim-xcodebuild-test.log
+          echo "--- Empirical Metrics Summary ---"
+          grep -E "\[(METRIC|SIM_METRIC)\]|Test Suite .* passed|Executed .* test" ios-sim-xcodebuild-test.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ds2-reveal-spike-logs
+          path: |
+            design/design-system-2.0/experiments/TelegramRevealSpike/macos-swift-test.log
+            design/design-system-2.0/experiments/TelegramRevealSpike/ios-sim-xcodebuild-test.log
+          if-no-files-found: ignore

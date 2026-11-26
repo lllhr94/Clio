@@ -75,6 +75,7 @@
    - 连续出现的全角标点（如 `”，`、`。）`）总宽由 `2em` 视觉挤压至 `1.5em`（CoreText `kern` 自动微调），行尾半角留白适度收紧而不使用简体出版不推荐的边缘悬挂（§6.1.3）。
 3. **中西文混排光学微距（§6.3.3）**：
    - 汉字与拉丁字母/数字相邻边界注入约 `1/4 em`（实际画面 `0.12em–0.20em`）光学 `kern` 间距；
+   - **已有空格不重复叠加规则**：当原字符串在汉字与拉丁字母/数字之间**已经存在显式空格**（含半角空格 `U+0020`、不换行空格 `U+00A0`、全角空格 `U+3000` 或制表符 `\t`）时，**严禁再于渲染层注入 `.kern` 微距**，防止空格 + `kern` 双重加宽造成明显断层；
    - **仅在渲染层 `NSAttributedString` 生效，绝不修改原始字符串、绝不污染剪贴板**；行首行尾、紧邻中文点号（`、` `，` `。`）与成对括号内侧不额外加距。
 4. **2:1 等宽代码块对齐引擎收敛**：
    - `App/Sources/Design/Ink.swift` 目前并存 `mapleWithChinese(_:bold:)`（使用 `MapleMono` + `.cascadeList: [ClioMonoCN-Regular]`，本身即为 `0.60 : 1.20 = 1:2`）与 `codeBlockFonts` / `ChatListModels.swift` 的 `alignedCodeFonts`（对数字测宽 `scaleX = size * 0.5 / advance` + 系统中文）。**工程落地时应收敛为以 `mapleWithChinese` 为首选单一对齐引擎**（当用户切为系统等宽 `SF Mono` 时再使用 `scaleX` 微校），消除双路代码对齐维护负担。

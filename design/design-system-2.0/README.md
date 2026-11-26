@@ -1,6 +1,6 @@
 # Clio Design System 2.0：全量 21 项交付物索引（Master Delivery Pack）
 
-> **遵守底线**：当前阶段零生产代码改动（`git diff --name-only` 严守为空），所有研究、审计、信息架构、设计规范、工程落地方案及交互原型全部沉淀于 `design/design-system-2.0/`；等待正式设计方向获批后再分波推进 `batch-*` PR。
+> **遵守底线**：当前阶段零生产代码改动（`App/`、`AgentKit/`、`tools/`、`batch-0.36` 与 `main` 严守零修改）；所有研究、审计、信息架构、设计规范、工程落地方案、交互原型与独立可丢弃原生实验均沉淀于 `design/design-system-2.0/`（配 `.github/workflows/ds2-reveal-spike.yml` 独立 CI 验证）；等待明确批准后再分波推进 `batch-*` PR。
 
 ---
 
@@ -16,7 +16,7 @@
 | **6** | **设置分类树** | [`ia/02-settings-taxonomy.md`](./ia/02-settings-taxonomy.md) | 对比现状 6 组与候选 9 组，定案 **8+1** 全 `Push` 一致分类树、拆解 1583 行 `CarePage`、提亮记忆/语音/密码匣。 |
 | **7** | **用户操作路径分析** | [`ia/03-user-flows-and-click-paths.md`](./ia/03-user-flows-and-click-paths.md) | API 配置、调行距、SSH 公钥、关记忆（`4→1 tap`）、权限、`WebDAV` 恢复、聊天换模型、全局搜索 8 大路径量化前后对比。 |
 | **8** | **视觉方向提案与正式定稿** | [`languages/06-three-design-languages.md`](./languages/06-three-design-languages.md) | 对候选色板做 WCAG 校验，并经确认定稿为 **`AC`（素笺·栖息 / A 骨 + C 韵 + B 序）**，双头牌色盘（素笺黛蓝/栖息松绿）。 |
-| **9** | **全页面高保真原型 (v15 收口)** | **Magpie 实机互动页 (`http://127.0.0.1:3425/a/pfrmwhcemcbess5bh7jvjcvisa/`)**<br>[`prototype/index.html`](./prototype/index.html) &amp; [`app.js`](./prototype/app.js) | **P0/P1 真机基线回归 & 选区保护流式收口**：直载仓库 `App/Fonts/*.ttf`、统一无重复 `SafeLineBox` + 用户气泡同步、顶栏缩写、输入栏防透字、`ChatChromeCoordinator` + Scroll-Aware Chrome、工具 7 态语义、原位定稿/停止选区不销毁及延迟补交（通过 [`test_prototype_behavior.mjs`](./scripts/test_prototype_behavior.mjs) 14/14 行为套组与 [`test_prototype_browser_e2e.mjs`](./scripts/test_prototype_browser_e2e.mjs) 6/6 Chrome E2E 实测）。 |
+| **9** | **全页面高保真原型 (v16 冻结)** | **Magpie 实机互动页 (`http://127.0.0.1:3425/a/pfrmwhcemcbess5bh7jvjcvisa/`)**<br>[`prototype/index.html`](./prototype/index.html) &amp; [`app.js`](./prototype/app.js) | **P0/P1 真机基线回归 & 选区保护流式收口**：直载仓库 `App/Fonts/*.ttf`、统一无重复 `SafeLineBox` + 用户气泡同步、顶栏缩写、输入栏防透字、`ChatChromeCoordinator` + Scroll-Aware Chrome、工具 7 态语义、原位定稿/停止选区不销毁及延迟补交（通过 [`test_prototype_behavior.mjs`](./scripts/test_prototype_behavior.mjs) 14/14 行为套组与 [`test_prototype_browser_e2e.mjs`](./scripts/test_prototype_browser_e2e.mjs) 6/6 Chrome E2E 实测）。 |
 | **10** | **可交互的动效原型** | 同上，选择分组 **「动效与触觉实验室」**（`scene=motion_lab`） | 交互实测 **4 档弹簧阶梯**、**手势可打断**、**键盘锚点**、**Haptics 监视器**，以及 **⑤ Telegram 级流式揭示 A / B / C 同源对照实验室**（含 6 路 Trace、原版参数 `finalizeTime=0.30s` & `200ms` 渐显与零重建验证）。 |
 | **11** | **Typography System** | [`specs/01-typography.md`](./specs/01-typography.md) | **W3C CLREQ** 禁则/挤压/混排规则 + 全 18 类 Markdown 度量矩阵（H1–H3/Code/Table）+ **9 项独立排版控制**。 |
 | **12** | **Color System** | [`specs/02-color.md`](./specs/02-color.md) + [`specs/tokens.v2.json`](./specs/tokens.v2.json) | 全语义色阶表 + **117 组 Light/Dark/OLED 自动化校验 ≥ 4.5:1** + Liquid Glass 仅限 Chrome 红线。 |
@@ -26,6 +26,6 @@
 | **16** | **Haptics Design System** | [`specs/06-haptics.md`](./specs/06-haptics.md) | **普通按钮默认不震**；11 场景完整语义映射 + 4 套专属 AHAP 图谱 + 视听触同步与听写期间强制静默保护。 |
 | **17** | **Accessibility 规范** | [`specs/07-accessibility.md`](./specs/07-accessibility.md) | WCAG AA + AX1–AX5 结构化重排 + VoiceOver + 减动效/减透明/增对比与三重状态防色盲编码。 |
 | **18** | **组件与源码映射表** | [`engineering/01-component-source-mapping.md`](./engineering/01-component-source-mapping.md) | DS 2.0 每个 Token 与模块 1:1 映射 `App/Sources/**/*.swift` 真实文件路径与结构体名称。 |
-| **19** | **SwiftUI/UIKit 实现方案** | [`engineering/02-swiftui-uikit-implementation.md`](./engineering/02-swiftui-uikit-implementation.md)<br>[`engineering/05-telegram-porting-and-private-network.md`](./engineering/05-telegram-porting-and-private-network.md) | 保护 `batch-0.36` 全量底层护城河；补充 **Telegram `24638bc` 原版核心源码复用路线、许可证核查、5 列模块依赖表、`Points` 揭示成本 Model 与私人网络/Fake-IP 统一安全架构**。 |
+| **19** | **SwiftUI/UIKit 实现方案** | [`engineering/02-swiftui-uikit-implementation.md`](./engineering/02-swiftui-uikit-implementation.md)<br>[`engineering/05-telegram-porting-and-private-network.md`](./engineering/05-telegram-porting-and-private-network.md)<br>[`experiments/TelegramRevealSpike/UPSTREAM.md`](./experiments/TelegramRevealSpike/UPSTREAM.md) | 保护 `batch-0.36` 全量底层护城河；补充 **Telegram `24638bc` 原版核心源码复用路线、许可证核查、5 列模块依赖表、`Points` 揭示成本 Model 与私人网络/Fake-IP 统一安全架构**，并建立独立可丢弃 Swift 实验包 `TelegramRevealSpike`。 |
 | **20** | **分阶段重构路线图** | [`engineering/03-phased-refactoring-roadmap.md`](./engineering/03-phased-refactoring-roadmap.md) | 5 Wave 递进合入计划（Token → 阅读 → IA/搜索/Care拆解 → Agent/审批 → 动效真机验收）。 |
 | **21** | **真机测试与设计验收清单** | [`engineering/04-device-qa-and-acceptance-rubric.md`](./engineering/04-device-qa-and-acceptance-rubric.md) | 任务书 20-20-15-15-15-5-5-5 加权验收表 + **11 项一票否决项** + 60Hz vs 120Hz ProMotion 双机实测流程。 |
