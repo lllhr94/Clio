@@ -5,27 +5,36 @@ struct SlidingCapsuleControl<Value: Hashable>: View {
     @Binding var selection: Value
     let items: [(value: Value, title: String)]
     var compact: Bool = false
+    var commitsOnRelease: Bool = false
 
     @Namespace private var thumbNamespace
     @State private var hoveredIndex: Int?
     @State private var trackWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(selection: Binding<Value>, items: [(value: Value, title: String)], compact: Bool = false) {
+    init(
+        selection: Binding<Value>,
+        items: [(value: Value, title: String)],
+        compact: Bool = false,
+        commitsOnRelease: Bool = false
+    ) {
         self._selection = selection
         self.items = items
         self.compact = compact
+        self.commitsOnRelease = commitsOnRelease
     }
 
     init(
         selection: Binding<Value>,
         options: [Value],
         compact: Bool = false,
+        commitsOnRelease: Bool = false,
         title: @escaping (Value) -> String
     ) {
         self._selection = selection
         self.items = options.map { ($0, title($0)) }
         self.compact = compact
+        self.commitsOnRelease = commitsOnRelease
     }
 
     private var trackHeight: CGFloat {
@@ -120,19 +129,27 @@ struct SlidingCapsuleControl<Value: Hashable>: View {
                 let clamped = min(max(raw, 0), items.count - 1)
                 if hoveredIndex != clamped {
                     hoveredIndex = clamped
-                    select(index: clamped)
+                    if commitsOnRelease {
+                        Haptics.selection()
+                    } else {
+                        select(index: clamped)
+                    }
                 }
             }
             .onEnded { _ in
+                let finalIndex = hoveredIndex
                 hoveredIndex = nil
+                if commitsOnRelease, let finalIndex {
+                    select(index: finalIndex, playHaptic: false)
+                }
             }
     }
 
-    private func select(index: Int) {
+    private func select(index: Int, playHaptic: Bool = true) {
         guard items.indices.contains(index) else { return }
         let target = items[index].value
         guard selection != target else { return }
-        Haptics.selection()
+        if playHaptic { Haptics.selection() }
         withAnimation(transitionAnimation) {
             selection = target
         }

@@ -1997,6 +1997,12 @@ private struct ChatSecondaryObservers: View {
     let onFollowToEnd: () -> Void
     let onTakeShortcut: () -> Void
 
+    @State private var trackedLineIDs: Set<String>?
+
+    private var lineIDs: [String] {
+        chat.lines.map(\.id)
+    }
+
     private var estimateTrigger: String {
         let folding = team.compressing.contains(chat.key)
         let lastFold = chat.lines.last(where: { $0.fold })?.id ?? ""
@@ -2020,13 +2026,33 @@ private struct ChatSecondaryObservers: View {
             .onChange(of: chrome.farFromEnd) { _, far in
                 if !far { chrome.unreadCount = 0 }
             }
-            .onChange(of: chat.lines.last?.id) { oldID, newID in
-                if chat.lines.isEmpty { onClearedLines() }
-                if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
-                if let oldID, let newID, oldID != newID,
-                   !followState.following, chrome.farFromEnd,
-                   let last = chat.lines.last, last.kind == .bot || last.kind == .note {
-                    chrome.unreadCount += 1
+            .onChange(of: chat.key) {
+                trackedLineIDs = nil
+                chrome.unreadCount = 0
+            }
+            .onChange(of: chat.loaded) { _, loaded in
+                if loaded, trackedLineIDs == nil {
+                    trackedLineIDs = Set(chat.lines.map(\.id))
+                }
+            }
+            .onChange(of: lineIDs, initial: true) { _, nextIDs in
+                let nextSet = Set(nextIDs)
+                if chat.lines.isEmpty {
+                    trackedLineIDs = nil
+                    chrome.unreadCount = 0
+                    onClearedLines()
+                } else if let previousSet = trackedLineIDs {
+                    let addedLines = chat.lines.filter { !previousSet.contains($0.id) }
+                    if addedLines.contains(where: { $0.kind == .bot }) {
+                        Haptics.tick(0.45)
+                    }
+                    if !followState.following && chrome.farFromEnd {
+                        let unreadAdded = addedLines.filter { $0.kind == .bot || $0.kind == .note }.count
+                        if unreadAdded > 0 { chrome.unreadCount += unreadAdded }
+                    }
+                    trackedLineIDs = nextSet
+                } else if chat.loaded {
+                    trackedLineIDs = nextSet
                 }
                 onFollowToEnd()
             }

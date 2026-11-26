@@ -610,7 +610,7 @@ private struct ServiceActiveModelsSection: View {
         let isDefault = defaultModelRef == "\(endpoint.id)/\(model)"
         let gone = listedSet.map { !$0.contains(model) } ?? false
         let custom = endpoint.customName(for: model)
-        let title = endpoint.displayName(for: model)
+        let title = endpoint.distinguishableDisplayName(for: model)
         let titleFont: Font = Ink.mono(Ink.Size.sub, weight: .medium)
         return Button {
             Haptics.light()

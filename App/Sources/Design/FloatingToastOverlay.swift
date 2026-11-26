@@ -58,7 +58,7 @@ final class ToastCenter {
         action: (() -> Void)? = nil
     ) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, AppLock.isCurrentlyUnlocked else { return }
 
         if let last = items.last, last.message == trimmed {
             items[items.count - 1] = ToastItem(
@@ -327,7 +327,7 @@ private final class FloatingToastWindowController: NSObject {
             window.overrideUserInterfaceStyle = source.overrideUserInterfaceStyle
         }
 
-        let alertCovering = scene.windows.contains { other in
+        let alertCovering = !AppLock.isCurrentlyUnlocked || scene.windows.contains { other in
             guard other !== window, !other.isHidden, other.alpha > 0.01, other.windowLevel >= .alert else {
                 return false
             }

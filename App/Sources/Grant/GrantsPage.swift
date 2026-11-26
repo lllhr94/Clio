@@ -240,7 +240,8 @@ struct GrantsPage: View {
                         }
                     }
                 }),
-                options: grant.availablePolicies
+                options: grant.availablePolicies,
+                commitsOnRelease: true
             ) { $0.title }
             .accessibilityLabel(grant.title)
             .padding(.leading, Kit.badge + Ink.Space.m)

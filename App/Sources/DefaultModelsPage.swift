@@ -302,7 +302,7 @@ private struct ModelPickerSheet: View {
             HStack(spacing: Ink.Space.m) {
                 ModelIcon(model: model, service: service, size: Kit.badge, name: endpoint.name)
                 VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    Text(endpoint.displayName(for: model))
+                    Text(endpoint.distinguishableDisplayName(for: model))
                         .font(Ink.mono(Ink.Size.sub, weight: selected ? .semibold : .medium))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)

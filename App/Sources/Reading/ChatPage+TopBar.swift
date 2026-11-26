@@ -74,6 +74,7 @@ extension ChatPage {
             viewportWidth: chatViewport.width,
             largeText: largeText,
             textScale: textScale,
+            historyInView: historyPage != nil,
             typing: $typing,
             headerHeight: $headerHeight,
             detailOpen: $detailOpen,
@@ -93,6 +94,7 @@ extension ChatPage {
             renaming: $renaming,
             onLeave: leave,
             onStartFinding: startFinding,
+            onReturnToLatest: returnToLatest,
             onLoadOutlinePairs: {
                 await loadEverything()
                 return outline
@@ -193,6 +195,7 @@ struct ChatTopBarView: View {
     let viewportWidth: CGFloat
     let largeText: Bool
     let textScale: CGFloat
+    let historyInView: Bool
     let typing: FocusState<Bool>.Binding
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -215,6 +218,7 @@ struct ChatTopBarView: View {
 
     let onLeave: () -> Void
     let onStartFinding: () -> Void
+    let onReturnToLatest: () -> Void
     let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
 
     var body: some View {
@@ -286,6 +290,7 @@ struct ChatTopBarView: View {
             followState: followState,
             viewportWidth: viewportWidth,
             largeText: largeText,
+            historyInView: historyInView,
             typing: typing,
             roaming: $roaming,
             sharing: $sharing,
@@ -303,6 +308,7 @@ struct ChatTopBarView: View {
             cardOpen: $cardOpen,
             detailOpen: $detailOpen,
             onStartFinding: onStartFinding,
+            onReturnToLatest: onReturnToLatest,
             onLoadOutlinePairs: onLoadOutlinePairs
         )
     }
@@ -1170,6 +1176,7 @@ private struct ChatTopBarControlsView: View {
     let followState: ChatFollowState
     let viewportWidth: CGFloat
     let largeText: Bool
+    let historyInView: Bool
     let typing: FocusState<Bool>.Binding
 
     @Binding var roaming: Bool
@@ -1189,6 +1196,7 @@ private struct ChatTopBarControlsView: View {
     @Binding var detailOpen: Bool
 
     let onStartFinding: () -> Void
+    let onReturnToLatest: () -> Void
     let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
 
     private var isRoom: Bool { chat.roomId != nil }
@@ -1215,6 +1223,11 @@ private struct ChatTopBarControlsView: View {
     private var headerMoreMenu: some View {
         Menu {
             Section {
+                if historyInView {
+                    menuButton("chat.latest", icon: "arrow.down.to.line") {
+                        onReturnToLatest()
+                    }
+                }
                 menuButton("chat.newConversation", icon: "square.and.pencil") {
                     side.fresh(isRoom ? nil : bot.id)
                 }
