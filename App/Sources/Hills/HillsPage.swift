@@ -175,12 +175,23 @@ struct HillsPage: View {
     }
 
     private func hostRow(_ host: Hills.Host) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+        let jumpName = host.jumpHostID.flatMap { id in
+            hills.hosts.first(where: { $0.id == id })?.name
+        }
+        return VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack(spacing: Ink.Space.m) {
                 IconBadge(symbol: "server.rack")
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     Text(host.name).font(.system(size: Ink.Size.body, weight: .medium)).foregroundStyle(Ink.ink)
                     Text("\(host.user)@\(host.address):\(host.port) · \(host.useKey ? "钥匙" : "密码")").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                    if let jumpName {
+                        Text(L.format("remote.viaJumpBadge", jumpName))
+                            .font(.system(size: Ink.Size.micro, weight: .medium))
+                            .foregroundStyle(Ink.accent)
+                            .padding(.horizontal, Ink.Space.s)
+                            .padding(.vertical, Ink.Space.xs / 2)
+                            .background(Ink.accentWash, in: Capsule())
+                    }
                 }
                 Spacer()
                 Button(testing == host.id ? "在连…" : "试连") { test(host) }
@@ -193,7 +204,7 @@ struct HillsPage: View {
                     Text("指纹 " + fingerprint).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button("重新信任") {
-                        HostKeyKeeper.forget(host.address, host.port)
+                        HostKeyKeeper.forget(host.address, host.port, via: host.jumpHostID)
                         fingerprints[host.id] = nil
                         tested[host.id] = "已忘掉旧指纹，下次连接时记住新的。"
                     }
@@ -342,7 +353,7 @@ struct HillsPage: View {
         let hosts = hills.hosts
         let found = await Task.detached(priority: .utility) {
             Dictionary(uniqueKeysWithValues: hosts.compactMap { host in
-                HostKeyKeeper.known(host.address, host.port).map { (host.id, HostKeyKeeper.fingerprint($0)) }
+                HostKeyKeeper.known(host.address, host.port, via: host.jumpHostID).map { (host.id, HostKeyKeeper.fingerprint($0)) }
             })
         }.value
         if !Task.isCancelled { fingerprints = found }
@@ -383,7 +394,21 @@ private struct HostEditor: View {
     private var canSave: Bool {
         let cleanAddress = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanUser = host.user.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !cleanAddress.isEmpty && !cleanUser.isEmpty && parsedPort != nil
+        let jumpValid = host.jumpHostID == nil || jumpCandidates.contains(where: { $0.id == host.jumpHostID })
+        return !cleanAddress.isEmpty && !cleanUser.isEmpty && parsedPort != nil && jumpValid
+    }
+
+    private var jumpCandidates: [Hills.Host] {
+        let allHosts = Hills.shared.hosts
+        return allHosts.filter { candidate in
+            guard candidate.id != host.id else { return false }
+            var simulated = host
+            simulated.jumpHostID = candidate.id
+            let merged = allHosts.contains(where: { $0.id == host.id })
+                ? allHosts.map { $0.id == host.id ? simulated : $0 }
+                : allHosts + [simulated]
+            return (try? Hills.resolveJumpChain(for: simulated, in: merged)) != nil
+        }
     }
 
     var body: some View {
@@ -407,6 +432,16 @@ private struct HostEditor: View {
                     }
                 } footer: {
                     Text(host.useKey ? Words.t("记得先把「远山」页里的公钥加到服务器上。") : "密码只存在这台手机的钥匙串里。")
+                }
+                Section {
+                    Picker(L.t("remote.jumpHost"), selection: $host.jumpHostID) {
+                        Text(L.t("remote.jumpDirect")).tag(String?.none)
+                        ForEach(jumpCandidates) { candidate in
+                            Text(candidate.name).tag(String?.some(candidate.id))
+                        }
+                    }
+                } footer: {
+                    Text(L.t("remote.jumpNote"))
                 }
             }
             }

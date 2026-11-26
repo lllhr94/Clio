@@ -20,6 +20,7 @@ final class Hills: ObservableObject {
         var port: Int = 22
         var user: String
         var useKey: Bool = false
+        var jumpHostID: String? = nil
     }
 
     struct Server: Codable, Identifiable, Hashable, Sendable {
@@ -72,21 +73,66 @@ final class Hills: ObservableObject {
     }
 
     func save(_ host: Host, password: String?) {
+        let dependents = dependentHosts(of: host.id)
         changeHostBinding(host.id, to: UUID())
+        for dep in dependents { changeHostBinding(dep.id, to: UUID()) }
         if let index = hosts.firstIndex(where: { $0.id == host.id }) { hosts[index] = host } else { hosts.append(host) }
         if let password, !password.isEmpty { Vault.save(password, as: "hill.\(host.id)") }
         Disk.save(hosts, "hills.json")
         // Kept connections and tunnels were to the host as it was: close them, so the next command goes to the
         // address, account and password just saved (the review, #5).
         Self.forget(host)
+        for dep in dependents { Self.forget(dep) }
     }
 
     func remove(_ host: Host) {
+        let dependents = dependentHosts(of: host.id)
         changeHostBinding(host.id, to: nil)
+        for dep in dependents { changeHostBinding(dep.id, to: UUID()) }
         Vault.remove("hill.\(host.id)")
         hosts.removeAll { $0.id == host.id }
+        for index in hosts.indices where hosts[index].jumpHostID == host.id {
+            hosts[index].jumpHostID = nil
+        }
         Disk.save(hosts, "hills.json")
         Self.forget(host)
+        for dep in dependents { Self.forget(dep) }
+    }
+
+    private func dependentHosts(of rootID: String) -> [Host] {
+        var visited: Set<String> = [rootID]
+        var result: [Host] = []
+        var queue = [rootID]
+        while let current = queue.first {
+            queue.removeFirst()
+            for candidate in hosts where candidate.jumpHostID == current && !visited.contains(candidate.id) {
+                visited.insert(candidate.id)
+                result.append(candidate)
+                queue.append(candidate.id)
+            }
+        }
+        return result
+    }
+
+    nonisolated static func resolveJumpChain(for host: Host, in hosts: [Host]) throws -> [Host] {
+        var chain: [Host] = []
+        var seen: Set<String> = [host.id]
+        var currentJumpID = host.jumpHostID
+        while let jumpID = currentJumpID, !jumpID.isEmpty {
+            if seen.contains(jumpID) {
+                throw ProviderError("跳板主机配置出现了循环引用，请检查「远山」设置。")
+            }
+            guard chain.count < 3 else {
+                throw ProviderError("跳板主机链最多支持 3 跳。")
+            }
+            guard let bastion = hosts.first(where: { $0.id == jumpID }) else {
+                throw ProviderError("找不到指定的跳板主机，请在「远山」重新选择。")
+            }
+            seen.insert(bastion.id)
+            chain.append(bastion)
+            currentJumpID = bastion.jumpHostID
+        }
+        return chain
     }
 
     private static func forget(_ host: Host) {
@@ -128,7 +174,7 @@ final class Hills: ObservableObject {
         var output: String
     }
 
-    /// Logs in to a host: by the phone's key, or by the password kept in the Vault.
+    /// Logs in to a host (directly or through a ProxyJump bastion chain): by the phone's key, or by the password kept in the Vault.
     nonisolated static func connect(_ host: Host) async throws -> SSHClient {
         let method: SSHAuthenticationMethod
         if host.useKey {
@@ -136,6 +182,22 @@ final class Hills: ObservableObject {
         } else {
             guard let password = Vault.load(String.self, key: "hill.\(host.id)") else { throw ProviderError("还没存 \(host.name) 的密码。") }
             method = .passwordBased(username: host.user, password: password)
+        }
+        if let jumpID = host.jumpHostID, !jumpID.isEmpty {
+            let allHosts = await MainActor.run { Hills.shared.hosts }
+            let chain = try resolveJumpChain(for: host, in: allHosts)
+            guard let bastion = chain.first else {
+                throw ProviderError("找不到指定的跳板主机。")
+            }
+            let forwardedPort = try await Tunnels.shared.tcpPort(to: host.address, targetPort: host.port, through: bastion)
+            return try await SSHClient.connect(
+                host: "127.0.0.1",
+                port: forwardedPort,
+                authenticationMethod: method,
+                hostKeyValidator: .custom(HostKeyKeeper(host: host.address, port: host.port, via: bastion.id)),
+                reconnect: .never,
+                connectTimeout: .seconds(15)
+            )
         }
         return try await SSHClient.connect(host: host.address, port: host.port, authenticationMethod: method, hostKeyValidator: .custom(HostKeyKeeper(host: host.address, port: host.port)), reconnect: .never, connectTimeout: .seconds(15))
     }
@@ -636,16 +698,21 @@ struct MCPClient: Sendable {
                 throw MCPError.rpc("隧道本地地址不合法：\(url)")
             }
         } else {
-            guard target.scheme?.lowercased() == "https",
+            guard let targetScheme = target.scheme?.lowercased(),
+                  targetScheme == "https" || targetScheme == "http",
                   let host = target.host, !host.isEmpty else {
-                throw MCPError.rpc(Words.t("未开启远山隧道时，MCP 服务必须使用 https 公网地址。"))
+                throw MCPError.rpc(Words.t("未开启远山隧道时，MCP 服务地址格式无效。"))
             }
-            var isLocalTarget = LocalAddress.isLocal(target)
-            if !isLocalTarget {
-                isLocalTarget = await LocalAddress.resolvesToLocal(target)
-            }
-            if isLocalTarget {
-                throw MCPError.rpc(Words.t("MCP 服务地址指向本机或局域网，已拒绝。若在远程机器内网，请开启远山 SSH 隧道。"))
+            let eval = await PrivateNetworkPolicy.shared.evaluateAsync(
+                url: target,
+                action: hasCredentials ? .credential : .read,
+                allowAuthorizedPrivate: true,
+                hasCredentials: hasCredentials
+            )
+            let schemeAllowed = targetScheme == "https"
+                || (eval.allowed && (eval.domain == .authorizedPrivate || eval.domain == .privateMesh) && !hasCredentials)
+            guard eval.allowed && schemeAllowed else {
+                throw MCPError.rpc(Words.t(eval.reason ?? "未开启远山隧道时，MCP 服务必须使用 https 公网地址或已授权的私人网络端点。"))
             }
         }
         var request = URLRequest(url: target, timeoutInterval: 120)
@@ -745,18 +812,28 @@ private final class MCPRedirectDelegate: NSObject, URLSessionTaskDelegate, @unch
             }
             return request
         }
-        guard next.scheme?.lowercased() == "https",
-              let nextHost = next.host?.lowercased(), !nextHost.isEmpty,
-              !LocalAddress.isLocal(next) else {
+        guard let nextScheme = next.scheme?.lowercased(),
+              nextScheme == "https" || nextScheme == "http",
+              let nextHost = next.host?.lowercased(), !nextHost.isEmpty else {
             return nil
         }
         if hasCredentials {
+            let originPort = origin.port ?? (origin.scheme?.lowercased() == "https" ? 443 : 80)
+            let nextPort = next.port ?? (nextScheme == "https" ? 443 : 80)
             guard origin.host?.lowercased() == nextHost,
-                  (origin.port ?? 443) == (next.port ?? 443) else {
+                  originPort == nextPort else {
                 return nil
             }
         }
-        if await LocalAddress.resolvesToLocal(next) {
+        let eval = await PrivateNetworkPolicy.shared.evaluateAsync(
+            url: next,
+            action: hasCredentials ? .credential : .read,
+            allowAuthorizedPrivate: true,
+            hasCredentials: hasCredentials
+        )
+        let schemeAllowed = nextScheme == "https"
+            || (eval.allowed && (eval.domain == .authorizedPrivate || eval.domain == .privateMesh) && !hasCredentials)
+        guard eval.allowed && schemeAllowed else {
             return nil
         }
         return request
@@ -768,13 +845,21 @@ private final class MCPRedirectDelegate: NSObject, URLSessionTaskDelegate, @unch
 final class HostKeyKeeper: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
     let host: String
     let port: Int
+    let via: String?
 
-    init(host: String, port: Int) {
+    init(host: String, port: Int, via: String? = nil) {
         self.host = host
         self.port = port
+        self.via = via
     }
 
-    static func slot(_ host: String, _ port: Int) -> String { "hostkey.\(host.lowercased()):\(port)" }
+    static func slot(_ host: String, _ port: Int, via: String? = nil) -> String {
+        let base = "hostkey.\(host.lowercased()):\(port)"
+        if let via, !via.isEmpty {
+            return "\(base)@via.\(via)"
+        }
+        return base
+    }
 
     /// What the user sees: SHA256 of the key, like `ssh-keygen -l` prints.
     static func fingerprint(_ openSSH: String) -> String {
@@ -784,12 +869,16 @@ final class HostKeyKeeper: NIOSSHClientServerAuthenticationDelegate, @unchecked 
         return "SHA256:" + Data(digest).base64EncodedString().replacingOccurrences(of: "=", with: "")
     }
 
-    static func known(_ host: String, _ port: Int) -> String? { UserDefaults.standard.string(forKey: slot(host, port)) }
-    static func forget(_ host: String, _ port: Int) { UserDefaults.standard.removeObject(forKey: slot(host, port)) }
+    static func known(_ host: String, _ port: Int, via: String? = nil) -> String? {
+        UserDefaults.standard.string(forKey: slot(host, port, via: via))
+    }
+    static func forget(_ host: String, _ port: Int, via: String? = nil) {
+        UserDefaults.standard.removeObject(forKey: slot(host, port, via: via))
+    }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
         let seen = String(openSSHPublicKey: hostKey)
-        let slot = Self.slot(host, port)
+        let slot = Self.slot(host, port, via: via)
         if let known = UserDefaults.standard.string(forKey: slot) {
             if known == seen {
                 validationCompletePromise.succeed(())
@@ -812,7 +901,7 @@ actor HillPool {
     private var connecting: [String: (to: String, gen: UInt64, task: Task<SSHClient, Error>)] = [:]
     private var generation: [String: UInt64] = [:]
 
-    private static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port) key=\(host.useKey)" }
+    private static func identity(_ host: Hills.Host) -> String { "\(host.user)@\(host.address):\(host.port) key=\(host.useKey) jump=\(host.jumpHostID ?? "")" }
     /// A connection left alone this long is closed and made again.
     private let idle: TimeInterval = 600
 

@@ -39,13 +39,19 @@ actor Tunnels {
         let remotePort = parts.port ?? (remoteScheme == "https" ? 443 : 80)
         let target = parts.host ?? "127.0.0.1"
         // Who the host is now is part of the key: an edited host never reuses a tunnel to where it used to point.
-        let key = "\(host.id)|\(host.user)@\(host.address):\(host.port)|\(target):\(remotePort)"
+        let key = "\(host.id)|\(host.user)@\(host.address):\(host.port)|\(host.jumpHostID ?? "")|\(target):\(remotePort)"
         let local = try await localPort(key: key, host: host, targetHost: target, targetPort: remotePort)
         parts.scheme = remoteScheme
         parts.host = (target.lowercased() == "localhost") ? "localhost" : "127.0.0.1"
         parts.port = local
         guard let url = parts.string else { throw ProviderError("隧道地址拼不出来") }
         return url
+    }
+
+    /// Opens a raw local TCP forwarder through `host` for nested ProxyJump SSH connections.
+    func tcpPort(to targetHost: String, targetPort: Int, through host: Hills.Host) async throws -> Int {
+        let key = "\(host.id)|jump|\(host.user)@\(host.address):\(host.port)|\(host.jumpHostID ?? "")|\(targetHost):\(targetPort)"
+        return try await localPort(key: key, host: host, targetHost: targetHost, targetPort: targetPort, preferring: 0)
     }
 
     /// Closes every tunnel (when the app goes away or a host is removed).
@@ -95,7 +101,7 @@ actor Tunnels {
         }
     }
 
-    private func localPort(key: String, host: Hills.Host, targetHost: String, targetPort: Int) async throws -> Int {
+    private func localPort(key: String, host: Hills.Host, targetHost: String, targetPort: Int, preferring preferredPort: Int? = nil) async throws -> Int {
         let currentGen = generation[key, default: 0]
         if let kept = open[key], !kept.closed, kept.listener.state == .ready { return kept.port }
         if let inFlight = starting[key], inFlight.gen == currentGen {
@@ -112,9 +118,10 @@ actor Tunnels {
         }
         let nextGen = currentGen &+ 1
         generation[key] = nextGen
+        let bindTarget = preferredPort ?? targetPort
         let task = Task<Int, Error> {
             do {
-                let (listener, port) = try await Self.bindLoopback(preferring: targetPort)
+                let (listener, port) = try await Self.bindLoopback(preferring: bindTarget)
                 return try await self.finishListener(key: key, gen: nextGen, listener: listener, port: port, host: host, targetHost: targetHost, targetPort: targetPort)
             } catch {
                 await self.clearStarting(key: key, gen: nextGen)
