@@ -14,10 +14,29 @@ extension ChatPage {
     static func companionStatus(waiting: Approval?, doing: String?) -> String {
         if waiting != nil { return Words.t("候印") }
         guard let doing else { return Words.t("闲坐") }
-        switch doing {
-        case "正在回复": return Words.t("落笔")
-        case "正在想", "等你批准": return Words.t("沉吟")
-        default: return Words.t(doing)
+        if doing == "正在回复" { return Words.t("落笔") }
+        if doing == "正在想" || doing == "等你批准" || doing.contains("在想") || doing.contains("开口") || doing.contains("递出") {
+            return Words.t("沉吟")
+        }
+        if doing.contains("压缩") || doing.contains("提要") {
+            return L.t("chat.statusOrganizing")
+        }
+        let verb = doing.split(separator: "：", maxSplits: 1).first.map(String.init) ?? doing
+        switch verb {
+        case "搜索", "读网页", "浏览":
+            return Words.t("寻访")
+        case "读", "看", "查", "翻", "找":
+            return L.t("chat.statusReading")
+        case "写", "改", "存", "删", "新建":
+            return L.t("chat.statusEditing")
+        case "跑", "终端", "命令", "SSH":
+            return L.t("chat.statusRunning")
+        default:
+            if doing.contains("寻访") || doing.contains("远游") { return Words.t("寻访") }
+            if doing.contains("读") || doing.contains("看") || doing.contains("查") { return L.t("chat.statusReading") }
+            if doing.contains("写") || doing.contains("改") { return L.t("chat.statusEditing") }
+            if doing.contains("命令") || doing.contains("终端") || doing.contains("SSH") { return L.t("chat.statusRunning") }
+            return L.t("chat.statusWorking")
         }
     }
 
@@ -49,6 +68,7 @@ extension ChatPage {
             idleMood: idleMood,
             followState: followState,
             notice: notice,
+            chromeCoordinator: chromeCoordinator,
             viewportWidth: chatViewport.width,
             largeText: largeText,
             textScale: textScale,
@@ -95,10 +115,12 @@ struct ChatTopBarView: View {
     let idleMood: ChatIdleMood
     let followState: ChatFollowState
     let notice: ChatComposerNotice
+    let chromeCoordinator: ChatChromeCoordinator
     let viewportWidth: CGFloat
     let largeText: Bool
     let textScale: CGFloat
     let typing: FocusState<Bool>.Binding
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var headerHeight: CGFloat
     @Binding var glancing: Bool
@@ -125,12 +147,29 @@ struct ChatTopBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            if largeText {
+            if chromeCoordinator.isImmersive {
+                ChatImmersiveTopPill(
+                    chat: chat,
+                    team: team,
+                    bot: bot,
+                    onRestore: {
+                        Haptics.selection()
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick) {
+                            chromeCoordinator.restore()
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if largeText {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
                     ChatHeaderBackButton(onLeave: onLeave)
+                        .layoutPriority(2)
                     identityView
+                        .layoutPriority(0)
                     Spacer(minLength: 0)
                     controlsView
+                        .layoutPriority(1)
                 }
                 ChatModelMenuView(
                     chat: chat,
@@ -144,7 +183,9 @@ struct ChatTopBarView: View {
             } else {
                 HStack(alignment: .center, spacing: Ink.Space.s) {
                     ChatHeaderBackButton(onLeave: onLeave)
+                        .layoutPriority(2)
                     identityView
+                        .layoutPriority(0)
                     Spacer(minLength: Ink.Space.xs)
                     controlsView
                         .layoutPriority(1)
@@ -160,10 +201,11 @@ struct ChatTopBarView: View {
         }
         .background(alignment: .bottom) {
             LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .frame(height: Ink.Space.m)
-                .offset(y: Ink.Space.m)
+                .frame(height: chromeCoordinator.isImmersive ? Ink.Space.s : Ink.Space.m)
+                .offset(y: chromeCoordinator.isImmersive ? Ink.Space.s : Ink.Space.m)
                 .allowsHitTesting(false)
         }
+        .animation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: chromeCoordinator.isImmersive)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
@@ -300,6 +342,7 @@ private struct ChatTopBarIdentityView: View {
                         .font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     HStack(spacing: Ink.Space.xs) {
                         Circle()
                             .fill(working ? Ink.accent : Ink.ok)
@@ -307,7 +350,8 @@ private struct ChatTopBarIdentityView: View {
                         Text(headerLine)
                             .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
                             .foregroundStyle(Ink.inkSoft)
-                            .lineLimit(largeText ? nil : 1)
+                            .lineLimit(largeText ? 2 : 1)
+                            .truncationMode(.tail)
                             .fixedSize(horizontal: false, vertical: largeText)
                             .contentTransition(.opacity)
                     }
@@ -321,8 +365,53 @@ private struct ChatTopBarIdentityView: View {
         .padding(.leading, Ink.Space.s)
         .padding(.trailing, Ink.Space.m)
         .padding(.vertical, largeText ? Ink.Space.s : 0)
-        .frame(minHeight: Ink.Bar.height)
+        .frame(
+            minWidth: largeText ? nil : min(116, max(86, viewportWidth * 0.27)),
+            maxWidth: largeText ? nil : max(120, viewportWidth - 208),
+            minHeight: Ink.Bar.height,
+            alignment: .leading
+        )
         .glassBacking(in: Capsule())
+    }
+}
+
+private struct ChatImmersiveTopPill: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let bot: BotInfo
+    let onRestore: () -> Void
+
+    private var doing: String? { team.workDetail(for: chat.key).words }
+    private var working: Bool { doing != nil || chat.hasStreaming }
+    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+
+    var body: some View {
+        let status = ChatPage.companionStatus(waiting: waiting, doing: doing)
+        Button(action: onRestore) {
+            HStack(spacing: Ink.Space.xs) {
+                Circle()
+                    .fill(working ? Ink.accent : Ink.ok)
+                    .frame(width: 6, height: 6)
+                Text("\(bot.name) · \(status)")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Rectangle()
+                    .fill(Ink.rule.opacity(0.7))
+                    .frame(width: 0.5, height: 14 * UIScale.factor)
+                Label(L.t("chat.restoreControls"), systemImage: "chevron.down")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .frame(minHeight: 44)
+            .contentShape(Capsule())
+            .glassFace(in: Capsule())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel("\(bot.name)，\(status)，\(L.t("chat.restoreControls"))")
     }
 }
 
