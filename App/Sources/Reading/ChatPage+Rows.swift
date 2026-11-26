@@ -403,6 +403,11 @@ extension ChatPage {
             bridge: bridge,
             sourcesMemo: sourcesMemo,
             listProxy: listProxy,
+            topBarSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(bot.avatar ?? "")|\(bot.model)|\(Int(chatViewport.width.rounded()))|\(largeText)|\(Int((textScale * 100).rounded()))|\(historyPage != nil)|\(typing)|\(Int((UIScale.factor * 100).rounded()))",
+            onTopBarGeometry: { h, bottomY in
+                if abs(headerHeight - h) > 0.5 { headerHeight = h }
+                if abs((headerBottomY ?? 0) - bottomY) > 0.5 { headerBottomY = bottomY }
+            },
             typing: $typing,
             touchScrolling: Binding(
                 get: { touchScrolling },
@@ -442,6 +447,7 @@ extension ChatPage {
             lineMeta: { line in lineMeta(for: line) },
             endsTurn: { line in endsTurn(line) },
             timeGap: { line in timeGap(before: line) },
+            topBar: { headerView(reportsHeight: false) },
             minimap: { minimap }
         )
         .onAppear { scroller = ChatScroller(listProxy: listProxy) }

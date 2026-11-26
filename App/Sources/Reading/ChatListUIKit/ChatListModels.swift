@@ -908,7 +908,6 @@ final class ChatListActions {
     var onScrollDelta: (CGFloat, CGFloat, CGFloat, CGFloat, Bool, Bool) -> Void = { _, _, _, _, _, _ in }
     var onChromeDragEnded: () -> Void = {}
     var canRestoreImmersiveChrome: () -> Bool = { false }
-    var currentChromeVisualProgress: () -> CGFloat = { 0 }
     var onImmersiveBackgroundTap: () -> Void = {}
     var onKeyboardVisibilityChanged: (Bool) -> Void = { _ in }
     var onProgrammaticScroll: () -> Void = {}

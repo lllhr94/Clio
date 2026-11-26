@@ -505,7 +505,7 @@ private final class ChatTeamSliceObserver {
 
 /// SwiftUI host embedding `ChatListViewController` edge-to-edge under `header` and `bottomStack`
 /// while preserving safe-area alignment for `minimap` and automatic keyboard/dock inset tracking.
-struct ChatUIKitContainer<Minimap: View>: View {
+struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
     let chat: ChatModel
     let team: TeamModel
     let bot: BotInfo
@@ -534,6 +534,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let bridge: ChatRowBridge
     let sourcesMemo: ChatPage.SourcesMemo
     let listProxy: ChatListControllerProxy
+    let topBarSignature: String
+    let onTopBarGeometry: (CGFloat, CGFloat) -> Void
     let typing: FocusState<Bool>.Binding
     @Binding var touchScrolling: Bool
     @Binding var quote: String?
@@ -548,11 +550,13 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let lineMeta: (ChatLine) -> ChatPage.SourcesMemo.LineMeta
     let endsTurn: (ChatLine) -> Bool
     let timeGap: (ChatLine) -> String?
+    @ViewBuilder let topBar: () -> TopBar
     @ViewBuilder let minimap: () -> Minimap
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openURL) private var openURL
     @Environment(\.photoZoomNamespace) private var photoZoomNamespace
 
     @AppStorage("chat.faces") private var faces = false
@@ -594,6 +598,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
         bridge: ChatRowBridge,
         sourcesMemo: ChatPage.SourcesMemo,
         listProxy: ChatListControllerProxy,
+        topBarSignature: String,
+        onTopBarGeometry: @escaping (CGFloat, CGFloat) -> Void,
         typing: FocusState<Bool>.Binding,
         touchScrolling: Binding<Bool>,
         quote: Binding<String?>,
@@ -608,6 +614,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         lineMeta: @escaping (ChatLine) -> ChatPage.SourcesMemo.LineMeta,
         endsTurn: @escaping (ChatLine) -> Bool,
         timeGap: @escaping (ChatLine) -> String?,
+        @ViewBuilder topBar: @escaping () -> TopBar,
         @ViewBuilder minimap: @escaping () -> Minimap
     ) {
         self.chat = chat
@@ -638,6 +645,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
         self.bridge = bridge
         self.sourcesMemo = sourcesMemo
         self.listProxy = listProxy
+        self.topBarSignature = topBarSignature
+        self.onTopBarGeometry = onTopBarGeometry
         self.typing = typing
         self._touchScrolling = touchScrolling
         self._quote = quote
@@ -652,6 +661,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         self.lineMeta = lineMeta
         self.endsTurn = endsTurn
         self.timeGap = timeGap
+        self.topBar = topBar
         self.minimap = minimap
         self._teamSlice = State(initialValue: ChatTeamSliceObserver(team: team, chatKey: chat.key))
     }
@@ -705,6 +715,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
             ChatListUIKitRepresentable(
                 state: state,
                 styleSignal: styleSignal,
+                topBarSignature: "\(topBarSignature)|\(styleSignal)",
                 safeTopInset: safeTopInset,
                 safeBottomInset: safeBottomInset,
                 touchScrolling: $touchScrolling,
@@ -722,6 +733,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 idleMood: idleMood,
                 listProxy: listProxy,
                 typing: typing,
+                onTopBarGeometry: onTopBarGeometry,
                 onLoadEarlier: onLoadEarlier,
                 onSelectionChanged: onSelectionChanged,
                 onSpeak: onSpeak,
@@ -730,6 +742,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 onStir: onStir,
                 onDragStarted: onDragStarted,
                 onScrollEnded: onScrollEnded,
+                makeTopBarView: { makeTopBarAnyView() },
                 makeEmptyView: { makeEmptyStatusAnyView() }
             )
             .ignoresSafeArea()
@@ -778,6 +791,15 @@ struct ChatUIKitContainer<Minimap: View>: View {
         if let photoZoomNamespace, !reduceMotion, fullVertical.height > 0 {
             ChatPhotoHeroPreviewView(hero: photoHero, namespace: photoZoomNamespace)
         }
+    }
+
+    private func makeTopBarAnyView() -> AnyView {
+        AnyView(
+            topBar()
+                .environment(\.openURL, openURL)
+                .environment(\.colorScheme, colorScheme)
+                .environment(\.dynamicTypeSize, dynamicTypeSize)
+        )
     }
 
     private func makeEmptyStatusAnyView() -> AnyView {
@@ -910,11 +932,9 @@ private struct ChatFollowHostSyncView: View {
                     controller.setFollowingFromHost(next)
                 }
             }
-            .onChange(of: chromeCoordinator.mode) { _, _ in
-                listProxy.controller?.syncNativeScrollEdgeInsets(animated: true)
-            }
-            .onChange(of: chromeCoordinator.visualProgress == 0) { _, _ in
-                listProxy.controller?.syncNativeScrollEdgeInsets(animated: true)
+            .onChange(of: chromeCoordinator.mode, initial: true) { _, mode in
+                let collapsed = mode == .immersive && chromeCoordinator.isEnabled
+                listProxy.controller?.syncTopBarCollapseState(collapsed: collapsed, animated: true)
             }
     }
 }
@@ -923,6 +943,7 @@ private struct ChatFollowHostSyncView: View {
 private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let state: ChatListState
     let styleSignal: String
+    let topBarSignature: String
     let safeTopInset: CGFloat
     let safeBottomInset: CGFloat
     @Binding var touchScrolling: Bool
@@ -940,6 +961,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let idleMood: ChatIdleMood
     let listProxy: ChatListControllerProxy
     let typing: FocusState<Bool>.Binding
+    let onTopBarGeometry: (CGFloat, CGFloat) -> Void
     let onLoadEarlier: () -> Void
     let onSelectionChanged: (UUID, Bool) -> Void
     let onSpeak: (String) -> Void
@@ -948,10 +970,11 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let onStir: () -> Void
     let onDragStarted: () -> Void
     let onScrollEnded: () -> Void
+    let makeTopBarView: () -> AnyView
     let makeEmptyView: () -> AnyView
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(lastStyleSignal: styleSignal)
+        Coordinator(lastStyleSignal: styleSignal, lastTopBarSignature: topBarSignature)
     }
 
     func makeUIViewController(context: Context) -> ChatListViewController {
@@ -967,8 +990,14 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
 
         let controller = ChatListViewController(actions: actions)
         controller.makeEmptyView = makeEmptyView
+        controller.onTopBarGeometryChanged = onTopBarGeometry
         listProxy.controller = controller
         context.coordinator.actions = actions
+        controller.configureTopBarHost(rootView: makeTopBarView())
+        controller.syncTopBarCollapseState(
+            collapsed: chromeCoordinator.mode == .immersive && chromeCoordinator.isEnabled,
+            animated: false
+        )
         controller.performHostUpdate {
             controller.setHostSafeInsets(top: safeTopInset, bottom: safeBottomInset)
             controller.setFollowingFromHost(followState.following)
@@ -984,7 +1013,17 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             wireActions(actions, coordinator: coordinator)
         }
         uiViewController.makeEmptyView = makeEmptyView
+        uiViewController.onTopBarGeometryChanged = onTopBarGeometry
         listProxy.controller = uiViewController
+
+        if coordinator.lastTopBarSignature != topBarSignature {
+            coordinator.lastTopBarSignature = topBarSignature
+            uiViewController.configureTopBarHost(rootView: makeTopBarView())
+        }
+        uiViewController.syncTopBarCollapseState(
+            collapsed: chromeCoordinator.mode == .immersive && chromeCoordinator.isEnabled,
+            animated: true
+        )
 
         uiViewController.performHostUpdate {
             if coordinator.lastStyleSignal != styleSignal {
@@ -1147,11 +1186,6 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             return chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0
         }
 
-        actions.currentChromeVisualProgress = { [weak coordinator] in
-            guard let coordinator, !coordinator.isDismantled else { return 0 }
-            return chromeCoordinator.visualProgress
-        }
-
         actions.onImmersiveBackgroundTap = { [weak coordinator] in
             guard let coordinator, !coordinator.isDismantled else { return }
             if chromeCoordinator.isImmersive || chromeCoordinator.collapseProgress > 0 {
@@ -1222,6 +1256,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator {
         var lastStyleSignal: String
+        var lastTopBarSignature: String
         var actions: ChatListActions?
         var ownedSelectionIDs: Set<UUID> = []
         var isDismantled = false
@@ -1229,8 +1264,9 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         weak var petPerch: PetPerch?
         weak var listProxy: ChatListControllerProxy?
 
-        init(lastStyleSignal: String) {
+        init(lastStyleSignal: String, lastTopBarSignature: String) {
             self.lastStyleSignal = lastStyleSignal
+            self.lastTopBarSignature = lastTopBarSignature
         }
     }
 }

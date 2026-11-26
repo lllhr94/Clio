@@ -634,9 +634,14 @@ struct ChatPage: View {
                     .padding(.vertical, Ink.Bar.height)
             }
             .scrollDismissesKeyboard(.interactively)
-            .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color.clear.frame(height: max(headerHeight, Ink.Bar.height + Ink.Space.s))
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectHidden(Theme.shared.reduceVisualEffects, for: .top)
+            .scrollEdgeEffectHidden(true, for: .bottom)
+            .safeAreaBar(edge: .top, spacing: 0) {
+                header
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
+                        if abs((headerBottomY ?? 0) - $0) > 0.5 { headerBottomY = $0 }
+                    }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear.frame(height: Ink.Bar.height + Ink.Space.l)
@@ -1078,12 +1083,6 @@ struct ChatPage: View {
                     roaming = true
                 }
             }
-        }
-        .overlay(alignment: .top) {
-            header
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
-                    headerBottomY = $0
-                }
         }
         .overlay(alignment: .bottom) {
             bottomStack

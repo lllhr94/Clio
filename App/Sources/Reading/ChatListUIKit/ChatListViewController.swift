@@ -5,6 +5,28 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
+/// Pass-through container registered with `UIScrollEdgeElementContainerInteraction` so status bar taps and
+/// transparent gaps between floating top-bar controls fall through to `UICollectionView` and sidebar swipe.
+private final class PassThroughTopEdgeContainerView: UIView {
+    weak var hostView: UIView?
+    var interactiveRects: [Int: CGRect] = [:]
+    var isCollapsed = false
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isCollapsed else { return nil }
+        let hit = super.hitTest(point, with: event)
+        guard let hit, hit !== self else { return nil }
+        if let hostView, !interactiveRects.isEmpty {
+            let pointInHost = hostView.convert(point, from: self)
+            let hitsControl = interactiveRects.values.contains { rect in
+                !rect.isEmpty && rect.insetBy(dx: -2, dy: -2).contains(pointInHost)
+            }
+            if !hitsControl { return nil }
+        }
+        return hit
+    }
+}
+
 /// Production `UICollectionView` chat stream controller implementing:
 /// - Deterministic pre-measured heights + hosted SwiftUI cells for `Trace` / empty / tool-tail
 /// - Zero-flicker in-place streaming updates & live-to-settled selection transfer
@@ -18,8 +40,22 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var currentState: ChatListState?
 
     var makeEmptyView: (() -> AnyView)?
+    var onTopBarGeometryChanged: ((CGFloat, CGFloat) -> Void)?
 
     private var collectionView: UICollectionView!
+    private var topEdgeContainerView: PassThroughTopEdgeContainerView?
+    private var topEdgeInteraction: UIScrollEdgeElementContainerInteraction?
+    private var topBarHostingController: UIHostingController<AnyView>?
+    private var pendingTopBarRootView: AnyView?
+    private var topEdgeHeightConstraint: NSLayoutConstraint?
+    private var topBarTopConstraint: NSLayoutConstraint?
+    private var topBarHeightConstraint: NSLayoutConstraint?
+    private var measuredTopBarHeight: CGFloat = 0
+    private var lastMeasuredTopBarWidth: CGFloat = -1
+    private var topBarNeedsRemeasure = true
+    private var lastReportedTopBarHeight: CGFloat = 0
+    private var lastReportedTopBarBottomY: CGFloat = 0
+    private var isTopBarCollapsed = false
     private var immersiveRestoreTapGesture: UITapGestureRecognizer?
     private var dataSource: UICollectionViewDiffableDataSource<ChatListItemID, ChatListItemID>!
 
@@ -191,6 +227,28 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         settlingRevealID = nil
         cancelAllPrefetches()
         cancelPrewarm()
+        if let topEdgeInteraction {
+            topEdgeContainerView?.removeInteraction(topEdgeInteraction)
+            self.topEdgeInteraction = nil
+        }
+        if let topHost = topBarHostingController {
+            if let presented = topHost.presentedViewController, presented.presentingViewController === topHost {
+                presented.dismiss(animated: false)
+            }
+            topHost.willMove(toParent: nil)
+            topHost.view.removeFromSuperview()
+            topHost.removeFromParent()
+            topBarHostingController = nil
+        }
+        topEdgeContainerView?.hostView = nil
+        topEdgeContainerView?.interactiveRects.removeAll()
+        topEdgeContainerView?.removeFromSuperview()
+        topEdgeContainerView = nil
+        pendingTopBarRootView = nil
+        topEdgeHeightConstraint = nil
+        topBarTopConstraint = nil
+        topBarHeightConstraint = nil
+        onTopBarGeometryChanged = nil
         let owner = lastReportedReplyOwner
         lastReportedReplyOwner = nil
         lastReportedReplyRect = .null
@@ -246,6 +304,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         setupKeyboardTracking()
         setupCollectionView()
+        if let pendingTopBarRootView {
+            self.pendingTopBarRootView = nil
+            installOrUpdateTopBarHost(rootView: pendingTopBarRootView)
+        }
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) { (controller: ChatListViewController, _) in
             controller.refreshTypographyAndTheme()
@@ -299,13 +361,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             updateCollectionInsetsIfNeeded()
         }
         collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(true) }
-        updateNativeScrollEdgeInsets()
+        updateTopEdgeContainerLayout(animated: false)
         startStyleObservationIfVisible()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         isViewVisible = false
+        if let topHost = topBarHostingController,
+           let presented = topHost.presentedViewController,
+           presented.presentingViewController === topHost {
+            presented.dismiss(animated: false)
+        }
         collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(false) }
         styleObservationGeneration &+= 1
         activeKeyboardDeadline = 0
@@ -315,7 +382,161 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        updateTopEdgeContainerLayout(animated: false)
         updateCollectionInsetsIfNeeded()
+    }
+
+    func updateTopBarHitRect(_ slot: Int, rect: CGRect) {
+        topEdgeContainerView?.interactiveRects[slot] = rect
+    }
+
+    func updateHostedTopBarHeight(_ height: CGFloat) {
+        guard !isDismantled, isViewLoaded else { return }
+        let clamped = max(ChatBarMetrics.height + 2, height.rounded(.up))
+        guard abs(measuredTopBarHeight - clamped) > 0.5 else { return }
+        measuredTopBarHeight = clamped
+        updateTopEdgeContainerLayout(animated: false)
+        updateCollectionInsetsIfNeeded()
+    }
+
+    func configureTopBarHost(rootView: AnyView) {
+        guard !isDismantled else { return }
+        guard isViewLoaded, collectionView != nil else {
+            pendingTopBarRootView = rootView
+            return
+        }
+        installOrUpdateTopBarHost(rootView: rootView)
+    }
+
+    func syncTopBarCollapseState(collapsed: Bool, animated: Bool) {
+        guard !isDismantled else { return }
+        if isTopBarCollapsed != collapsed {
+            isTopBarCollapsed = collapsed
+            if let container = topEdgeContainerView {
+                container.isCollapsed = collapsed
+            }
+            topBarHostingController?.view.accessibilityElementsHidden = collapsed
+            if collapsed,
+               let topHost = topBarHostingController,
+               let presented = topHost.presentedViewController,
+               presented.presentingViewController === topHost {
+                presented.dismiss(animated: false)
+            }
+            updateTopEdgeContainerLayout(animated: animated)
+        }
+    }
+
+    private func installOrUpdateTopBarHost(rootView: AnyView) {
+        if let host = topBarHostingController {
+            host.rootView = rootView
+            topBarNeedsRemeasure = true
+            updateTopEdgeContainerLayout(animated: false)
+            return
+        }
+        let container = PassThroughTopEdgeContainerView()
+        container.backgroundColor = .clear
+        container.clipsToBounds = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.isCollapsed = isTopBarCollapsed
+        view.addSubview(container)
+
+        let windowTop = view.window?.safeAreaInsets.top ?? view.safeAreaInsets.top
+        let initialBarHeight = max(measuredTopBarHeight, ChatBarMetrics.height + 2)
+        let initialHeight = isTopBarCollapsed ? max(0, windowTop + 2) : (windowTop + initialBarHeight)
+        let containerHeight = container.heightAnchor.constraint(equalToConstant: initialHeight)
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: view.topAnchor),
+            container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            containerHeight,
+        ])
+
+        let host = UIHostingController(rootView: rootView)
+        host.view.backgroundColor = .clear
+        host.view.clipsToBounds = false
+        host.safeAreaRegions = []
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.accessibilityElementsHidden = isTopBarCollapsed
+
+        addChild(host)
+        container.addSubview(host.view)
+        let barTop = host.view.topAnchor.constraint(equalTo: container.topAnchor, constant: windowTop)
+        let barHeightConstraint = host.view.heightAnchor.constraint(equalToConstant: initialBarHeight)
+        NSLayoutConstraint.activate([
+            barTop,
+            host.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            barHeightConstraint,
+        ])
+        host.didMove(toParent: self)
+        container.hostView = host.view
+
+        let interaction = UIScrollEdgeElementContainerInteraction()
+        interaction.scrollView = collectionView
+        interaction.edge = .top
+        container.addInteraction(interaction)
+
+        self.topEdgeContainerView = container
+        self.topEdgeInteraction = interaction
+        self.topBarHostingController = host
+        self.topEdgeHeightConstraint = containerHeight
+        self.topBarTopConstraint = barTop
+        self.topBarHeightConstraint = barHeightConstraint
+        self.topBarNeedsRemeasure = true
+
+        updateTopEdgeContainerLayout(animated: false)
+    }
+
+    private func updateTopEdgeContainerLayout(animated: Bool) {
+        guard !isDismantled, isViewLoaded else { return }
+        collectionView?.topEdgeEffect.isHidden = Theme.shared.reduceVisualEffects
+
+        guard let host = topBarHostingController else { return }
+        let safeInsets = view.safeAreaInsets
+        let windowTop = view.window?.safeAreaInsets.top ?? safeInsets.top
+        let fullWidth = view.bounds.width > 0 ? view.bounds.width : (view.window?.bounds.width ?? 0)
+        let availableWidth = max(0, fullWidth - safeInsets.left - safeInsets.right)
+        if availableWidth > 0 && (topBarNeedsRemeasure || abs(availableWidth - lastMeasuredTopBarWidth) > 0.5) {
+            let fitted = host.sizeThatFits(in: CGSize(width: availableWidth, height: .greatestFiniteMagnitude)).height
+            let measured = fitted > 1 ? fitted.rounded(.up) : max(measuredTopBarHeight, ChatBarMetrics.height + 2)
+            measuredTopBarHeight = measured
+            lastMeasuredTopBarWidth = availableWidth
+            topBarNeedsRemeasure = false
+        }
+        let barHeight = max(measuredTopBarHeight, ChatBarMetrics.height + 2)
+
+        if abs((topBarTopConstraint?.constant ?? -1) - windowTop) > 0.5 {
+            topBarTopConstraint?.constant = windowTop
+        }
+        if abs((topBarHeightConstraint?.constant ?? -1) - barHeight) > 0.5 {
+            topBarHeightConstraint?.constant = barHeight
+        }
+
+        let desiredHeight = isTopBarCollapsed ? max(0, windowTop + 2) : (windowTop + barHeight)
+        let heightDelta = abs((topEdgeHeightConstraint?.constant ?? -1) - desiredHeight)
+        if heightDelta > 0.5 {
+            if animated && !reduceMotionEnabled && view.window != nil {
+                topEdgeHeightConstraint?.constant = desiredHeight
+                UIView.animate(withDuration: 0.24, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    self.view.layoutIfNeeded()
+                }
+            } else {
+                topEdgeHeightConstraint?.constant = desiredHeight
+            }
+        }
+
+        if availableWidth > 0 && view.window != nil {
+            let globalTop = view.convert(CGPoint.zero, to: nil).y
+            let bottomY = (globalTop + windowTop + barHeight).rounded(.up)
+            if abs(barHeight - lastReportedTopBarHeight) > 0.5 || abs(bottomY - lastReportedTopBarBottomY) > 0.5 {
+                lastReportedTopBarHeight = barHeight
+                lastReportedTopBarBottomY = bottomY
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.isDismantled else { return }
+                    self.onTopBarGeometryChanged?(barHeight, bottomY)
+                }
+            }
+        }
     }
 
     private func setupCollectionView() {
@@ -324,9 +545,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.topEdgeEffect.style = .soft
-        collectionView.topEdgeEffect.isHidden = false
-        collectionView.bottomEdgeEffect.style = .soft
-        collectionView.bottomEdgeEffect.isHidden = false
+        collectionView.topEdgeEffect.isHidden = Theme.shared.reduceVisualEffects
+        collectionView.bottomEdgeEffect.isHidden = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.delegate = self
@@ -1634,10 +1854,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func refreshTypographyAndTheme() {
+        let hideEdge = Theme.shared.reduceVisualEffects
+        if collectionView?.topEdgeEffect.isHidden != hideEdge {
+            collectionView?.topEdgeEffect.isHidden = hideEdge
+        }
         guard isViewVisible else { return }
         let nextStyle = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
         view.backgroundColor = UIColor(Ink.paper)
         guard nextStyle != currentStyle else { return }
+        topBarNeedsRemeasure = true
+        updateTopEdgeContainerLayout(animated: false)
         currentStyle = nextStyle
         cancelAllPrefetches()
         cancelPrewarm()
@@ -1668,6 +1894,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func handleUserDefaultsChanged() {
+        let hideEdge = Theme.shared.reduceVisualEffects
+        if collectionView?.topEdgeEffect.isHidden != hideEdge {
+            collectionView?.topEdgeEffect.isHidden = hideEdge
+        }
         guard isViewVisible else {
             pendingAvatarRefresh = true
             return
@@ -1817,6 +2047,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard collectionView.bounds.width > 0 else { return }
 
         performHostUpdate {
+            updateTopEdgeContainerLayout(animated: false)
             updateCollectionInsetsIfNeeded()
 
             if !hasPerformedInitialScroll {
@@ -1934,7 +2165,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
-            updateNativeScrollEdgeInsets()
         }
     }
 
@@ -1954,7 +2184,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
-            updateNativeScrollEdgeInsets()
         }
         activeKeyboardDeadline = 0
         if insetDisplayLink != nil {
@@ -2035,50 +2264,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         hostTopInset = clampedTop
         hostBottomInset = clampedBottom
         updateCollectionInsetsIfNeeded()
-        updateNativeScrollEdgeInsets()
-    }
-
-    func syncNativeScrollEdgeInsets(animated: Bool = false) {
-        guard !isDismantled, isViewLoaded else { return }
-        if animated && !reduceMotionEnabled {
-            UIView.animate(withDuration: 0.28, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-                self.updateNativeScrollEdgeInsets()
-                self.view.layoutIfNeeded()
-            }
-        } else {
-            updateNativeScrollEdgeInsets()
-        }
-    }
-
-    private func updateNativeScrollEdgeInsets() {
-        guard isViewLoaded, let window = view.window else { return }
-        let baseTop = max(0, view.safeAreaInsets.top - additionalSafeAreaInsets.top)
-        let baseBottom = max(0, view.safeAreaInsets.bottom - additionalSafeAreaInsets.bottom)
-        let windowTop = window.safeAreaInsets.top
-        let windowBottom = window.safeAreaInsets.bottom
-
-        let collapseProgress = min(1, max(0, actions.currentChromeVisualProgress()))
-        let rawHeaderTotal = hostTopInset > 0 ? hostTopInset : (windowTop + (currentState?.headerHeight ?? 0))
-        let headerExtra = max(0, rawHeaderTotal - windowTop)
-        let targetSafeTop = windowTop + (headerExtra * (1 - collapseProgress)).rounded(.toNearestOrAwayFromZero)
-        let desiredAdditionalTop = max(0, targetSafeTop - baseTop)
-
-        let keyboardOpen = lastReportedKeyboardOpen == true || activeKeyboardEndOverlap > 10
-        let dockExtra = keyboardOpen ? 0 : min(96, max(0, hostBottomInset - windowBottom))
-        let targetSafeBottom = keyboardOpen
-            ? baseBottom
-            : (windowBottom + (dockExtra * (1 - collapseProgress)).rounded(.toNearestOrAwayFromZero))
-        let desiredAdditionalBottom = max(0, targetSafeBottom - baseBottom)
-
-        if abs(additionalSafeAreaInsets.top - desiredAdditionalTop) > 0.5
-            || abs(additionalSafeAreaInsets.bottom - desiredAdditionalBottom) > 0.5 {
-            additionalSafeAreaInsets = UIEdgeInsets(
-                top: desiredAdditionalTop,
-                left: 0,
-                bottom: desiredAdditionalBottom,
-                right: 0
-            )
-        }
     }
 
     private func updateCollectionInsetsIfNeeded() {
@@ -2087,11 +2272,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
         }
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
-        updateNativeScrollEdgeInsets()
-        let windowTop = view.window?.safeAreaInsets.top ?? 0
-        let resolvedTop = hostTopInset > 0
-            ? hostTopInset
-            : max(view.safeAreaInsets.top, windowTop + (currentState?.headerHeight ?? 0))
+        let windowTop = view.window?.safeAreaInsets.top ?? view.safeAreaInsets.top
+        let embeddedTop = (windowTop > 0 || measuredTopBarHeight > 0) ? (windowTop + measuredTopBarHeight) : 0
+        let resolvedTop = max(
+            hostTopInset,
+            embeddedTop > 0 ? embeddedTop : max(view.safeAreaInsets.top, windowTop + (currentState?.headerHeight ?? 0))
+        )
         let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
         let desiredTop = resolvedTop + Ink.Space.s
         let desiredBottom = resolvedBottom + Ink.Space.m
@@ -2569,7 +2755,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         actions.onChromeDragEnded()
-        syncNativeScrollEdgeInsets(animated: true)
         if decelerate {
             actions.onScrollPhaseChanged("惯性")
         } else {
@@ -2676,7 +2861,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                         scrollView.isDragging,
                         isScrollable
                     )
-                    updateNativeScrollEdgeInsets()
                 }
             }
         }

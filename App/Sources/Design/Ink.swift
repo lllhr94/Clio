@@ -930,35 +930,50 @@ private struct GlassBackingModifier<S: Shape>: ViewModifier {
 private struct FrostedChatChromeModifier<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        let solid = reduceTransparency || Theme.shared.reduceVisualEffects
-        let lineWidth: CGFloat = (contrast == .increased || solid) ? 1 : 0.5
-        let ruleOpacity: Double = contrast == .increased ? 1 : (solid ? 0.8 : 0.55)
+        let solid = reduceTransparency || Theme.shared.reduceVisualEffects || contrast == .increased
+        let lineWidth: CGFloat = solid ? 1 : 0.6
+        let ruleOpacity: Double = solid ? 0.8 : 0.45
         if solid {
+            let solidStroke = contrast == .increased ? Ink.inkSoft.opacity(0.75) : Ink.rule.opacity(ruleOpacity)
             content
                 .background {
                     shape
                         .fill(Ink.paperRaised)
-                        .shadow(color: Ink.Artwork.black.opacity(0.08), radius: 14, y: 4)
+                        .shadow(color: Ink.Artwork.black.opacity(0.08), radius: 10, y: 3)
                 }
                 .overlay {
-                    shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
+                    shape.strokeBorder(solidStroke, lineWidth: lineWidth)
                         .allowsHitTesting(false)
                 }
         } else {
+            let isDark = colorScheme == .dark
+            let tintLayer = (isDark && Theme.shared.oled)
+                ? Ink.paper.opacity(0.18)
+                : Ink.paperRaised.opacity(isDark ? 0.14 : 0.18)
+            let topRim = Ink.Artwork.white.opacity(isDark ? 0.14 : 0.62)
+            let shadowColor = Ink.Artwork.black.opacity(isDark ? 0.22 : 0.07)
             content
                 .background {
                     ZStack {
-                        shape.fill(.regularMaterial)
-                        shape.fill(Ink.paperRaised.opacity(0.62))
+                        shape.fill(.ultraThinMaterial)
+                        shape.fill(tintLayer)
                     }
-                    .shadow(color: Ink.Artwork.black.opacity(0.08), radius: 14, y: 4)
+                    .shadow(color: shadowColor, radius: 10, y: 3)
                 }
                 .overlay {
-                    shape.strokeBorder(Ink.rule.opacity(ruleOpacity), lineWidth: lineWidth)
-                        .allowsHitTesting(false)
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [topRim, Ink.rule.opacity(ruleOpacity)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: lineWidth
+                    )
+                    .allowsHitTesting(false)
                 }
         }
     }

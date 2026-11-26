@@ -60,6 +60,10 @@ extension ChatPage {
     }
 
     var header: some View {
+        headerView(reportsHeight: true)
+    }
+
+    func headerView(reportsHeight: Bool) -> some View {
         ChatTopBarView(
             chat: chat,
             team: team,
@@ -75,7 +79,15 @@ extension ChatPage {
             largeText: largeText,
             textScale: textScale,
             historyInView: historyPage != nil,
-            typing: $typing,
+            isTyping: typing,
+            reportsHeaderHeight: reportsHeight,
+            onDismissTyping: { typing = false },
+            onIntrinsicHeightChanged: reportsHeight ? nil : { height in
+                listProxy.controller?.updateHostedTopBarHeight(height)
+            },
+            onHitRectChanged: reportsHeight ? nil : { slot, rect in
+                listProxy.controller?.updateTopBarHitRect(slot, rect: rect)
+            },
             headerHeight: $headerHeight,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen,
@@ -195,7 +207,11 @@ struct ChatTopBarView: View {
     let largeText: Bool
     let textScale: CGFloat
     let historyInView: Bool
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
+    let reportsHeaderHeight: Bool
+    let onDismissTyping: () -> Void
+    let onIntrinsicHeightChanged: ((CGFloat) -> Void)?
+    let onHitRectChanged: ((Int, CGRect) -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var headerHeight: CGFloat
@@ -224,6 +240,10 @@ struct ChatTopBarView: View {
         Ink.Motion.prefersReduced(reduceMotion)
     }
 
+    private var isImmersiveCollapsed: Bool {
+        chromeCoordinator.mode == .immersive && chromeCoordinator.isEnabled
+    }
+
     var body: some View {
         let p = chromeCoordinator.visualProgress
         ZStack {
@@ -235,18 +255,27 @@ struct ChatTopBarView: View {
                 .accessibilityHidden(p >= 0.5)
         }
         .padding(.horizontal, Ink.Space.page)
-        .padding(.top, Ink.Space.xs)
-        .padding(.bottom, Ink.Space.xs)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+        .padding(.top, 2)
+        .padding(.bottom, 0)
+        .coordinateSpace(name: "chatTopBar")
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { next in
+            if reportsHeaderHeight {
+                if abs(headerHeight - next) > 0.5 {
+                    headerHeight = next
+                }
+            } else {
+                onIntrinsicHeightChanged?(next)
+            }
+        }
     }
 
     @ViewBuilder
     private var innerBar: some View {
         if largeText {
             HStack(alignment: .center, spacing: Ink.Space.s) {
-                ChatHeaderBackButton(onLeave: onLeave)
+                leftSlotView
                     .layoutPriority(2)
-                centeredIdentityPill
+                centerSlotView
                     .layoutPriority(0)
                 Spacer(minLength: 0)
                 controlsView
@@ -254,11 +283,25 @@ struct ChatTopBarView: View {
             }
         } else {
             ChatTopBarThreeSlotLayout(spacing: ChatBarMetrics.itemSpacing) {
-                ChatHeaderBackButton(onLeave: onLeave)
-                centeredIdentityPill
+                leftSlotView
+                centerSlotView
                 controlsView
             }
         }
+    }
+
+    private var leftSlotView: some View {
+        ChatHeaderBackButton(onLeave: onLeave)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("chatTopBar")) } action: { rect in
+                onHitRectChanged?(0, rect)
+            }
+    }
+
+    private var centerSlotView: some View {
+        centeredIdentityPill
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("chatTopBar")) } action: { rect in
+                onHitRectChanged?(1, rect)
+            }
     }
 
     private var centeredIdentityPill: some View {
@@ -273,7 +316,9 @@ struct ChatTopBarView: View {
             viewportWidth: viewportWidth,
             largeText: largeText,
             textScale: textScale,
-            typing: typing,
+            isTyping: isTyping,
+            isImmersiveCollapsed: isImmersiveCollapsed,
+            onDismissTyping: onDismissTyping,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen
         )
@@ -290,7 +335,8 @@ struct ChatTopBarView: View {
             viewportWidth: viewportWidth,
             largeText: largeText,
             historyInView: historyInView,
-            typing: typing,
+            onDismissTyping: onDismissTyping,
+            onHitRectChanged: onHitRectChanged,
             roaming: $roaming,
             sharing: $sharing,
             exportFailed: $exportFailed,
@@ -343,7 +389,9 @@ private struct ChatCenteredIdentityPill: View {
     let viewportWidth: CGFloat
     let largeText: Bool
     let textScale: CGFloat
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
+    let isImmersiveCollapsed: Bool
+    let onDismissTyping: () -> Void
 
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
@@ -390,6 +438,16 @@ private struct ChatCenteredIdentityPill: View {
         .accessibilityLabel("\(bot.name)，\(headerLine)")
         .accessibilityValue("\(displayName)，\(level.title)")
         .accessibilityHint(L.t("chatHub.details"))
+        .onChange(of: isImmersiveCollapsed) { _, hidden in
+            if hidden && showCompanionHub {
+                showCompanionHub = false
+            }
+        }
+        .onDisappear {
+            if showCompanionHub {
+                showCompanionHub = false
+            }
+        }
         .popover(isPresented: $showCompanionHub, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             ChatCompanionHubPopover(
                 chat: chat,
@@ -400,7 +458,8 @@ private struct ChatCenteredIdentityPill: View {
                 dictationSlot: dictationSlot,
                 idleMood: idleMood,
                 viewportWidth: viewportWidth,
-                typing: typing,
+                isTyping: isTyping,
+                onDismissTyping: onDismissTyping,
                 isPresented: $showCompanionHub,
                 detailOpen: $detailOpen,
                 cardOpen: $cardOpen
@@ -418,7 +477,7 @@ private struct ChatCenteredIdentityPill: View {
                 hasStreaming: chat.hasStreaming,
                 doing: doing,
                 working: working,
-                typing: typing.wrappedValue,
+                typing: isTyping,
                 cheering: idleMood.cheering,
                 dozing: idleMood.dozing,
                 isRoom: isRoom,
@@ -476,7 +535,7 @@ private struct ChatCenteredIdentityPill: View {
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastHubToggleAt >= 0.18 else { return }
         lastHubToggleAt = now
-        typing.wrappedValue = false
+        onDismissTyping()
         Haptics.light()
         showCompanionHub.toggle()
     }
@@ -506,7 +565,8 @@ private struct ChatCompanionHubPopover: View {
     let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let viewportWidth: CGFloat
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
+    let onDismissTyping: () -> Void
 
     @Binding var isPresented: Bool
     @Binding var detailOpen: Bool
@@ -656,7 +716,7 @@ private struct ChatCompanionHubPopover: View {
                 hasStreaming: chat.hasStreaming,
                 doing: doing,
                 working: working,
-                typing: typing.wrappedValue,
+                typing: isTyping,
                 cheering: idleMood.cheering,
                 dozing: idleMood.dozing,
                 isRoom: isRoom,
@@ -695,13 +755,13 @@ private struct ChatCompanionHubPopover: View {
                 if !isRoom {
                     hubActionIcon(title: L.t("chatHub.nameCard"), symbol: "person.text.rectangle") {
                         isPresented = false
-                        typing.wrappedValue = false
+                        onDismissTyping()
                         cardOpen = true
                     }
                 }
                 hubActionIcon(title: L.t("chatHub.details"), symbol: "info.circle") {
                     isPresented = false
-                    typing.wrappedValue = false
+                    onDismissTyping()
                     detailOpen = true
                 }
             }
@@ -1131,7 +1191,7 @@ private struct ChatCompanionHubPopover: View {
     private func openProvidersSettings() {
         Haptics.light()
         isPresented = false
-        typing.wrappedValue = false
+        onDismissTyping()
         if let url = URL(string: "clio://settings/services") {
             openURL(url)
         }
@@ -1171,7 +1231,8 @@ private struct ChatTopBarControlsView: View {
     let viewportWidth: CGFloat
     let largeText: Bool
     let historyInView: Bool
-    let typing: FocusState<Bool>.Binding
+    let onDismissTyping: () -> Void
+    let onHitRectChanged: ((Int, CGRect) -> Void)?
 
     @Binding var roaming: Bool
     @Binding var sharing: ChatPage.ShareFile?
@@ -1200,10 +1261,16 @@ private struct ChatTopBarControlsView: View {
     var body: some View {
         HStack(spacing: Ink.Space.xs) {
             ChatBrowserIndicator(browser: team.browser) {
-                typing.wrappedValue = false
+                onDismissTyping()
                 roaming = true
             }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("chatTopBar")) } action: { rect in
+                onHitRectChanged?(3, rect)
+            }
             headerMoreMenu
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("chatTopBar")) } action: { rect in
+                    onHitRectChanged?(2, rect)
+                }
         }
         .onChange(of: offeredThinking, initial: true) { _, offered in
             if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
@@ -1285,7 +1352,7 @@ private struct ChatTopBarControlsView: View {
             }
             Section {
                 Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {
-                    typing.wrappedValue = false
+                    onDismissTyping()
                     clearingChat = true
                 }
             }
@@ -1302,7 +1369,7 @@ private struct ChatTopBarControlsView: View {
 
     private func menuButton(_ key: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(L.t(key), systemImage: icon) {
-            typing.wrappedValue = false
+            onDismissTyping()
             action()
         }
     }

@@ -1667,8 +1667,9 @@ private struct ChatDraftFieldCore: View {
 
     var body: some View {
         TextField(
-            placeholder,
+            "消息",
             text: Binding(get: { draftState.text }, set: { draftState.text = $0 }),
+            prompt: Text(placeholder).foregroundStyle(Ink.inkSoft),
             axis: .vertical
         )
         .font(largeText ? .body : .system(size: ChatBarMetrics.iconFontSize))
